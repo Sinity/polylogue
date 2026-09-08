@@ -177,7 +177,7 @@ def dynamic_object_paths(schema: Mapping[str, object], path: str = "$") -> set[s
     return paths
 
 
-def observed_structure_schema(value: object) -> JSONDocument:
+def observed_structure_schema(value: object, *, field_name: str | None = None) -> JSONDocument:
     """Build a bounded structural schema before Genson sees dynamic keys.
 
     Genson creates one node per object property.  Feeding it provider payloads
@@ -205,14 +205,15 @@ def observed_structure_schema(value: object) -> JSONDocument:
     if not isinstance(value, Mapping):
         raise TypeError(f"Unsupported schema observation value: {type(value).__name__}")
 
-    collapse_all = should_collapse_observed_keys(value.keys())
+    filename_map = field_name == "trackedFileBackups"
+    collapse_all = filename_map or should_collapse_observed_keys(value.keys())
     properties: JSONDocument = {}
     required: list[JSONValue] = []
     for key, child in value.items():
         key_text = str(key)
         if collapse_all or is_dynamic_key(key_text):
             continue
-        properties[key_text] = observed_structure_schema(child)
+        properties[key_text] = observed_structure_schema(child, field_name=key_text)
         required.append(key_text)
 
     object_schema: JSONDocument = {"type": "object"}
@@ -220,12 +221,14 @@ def observed_structure_schema(value: object) -> JSONDocument:
         object_schema["properties"] = properties
         object_schema["required"] = required
     dynamic_values = merge_observed_structure_schemas(
-        observed_structure_schema(child) for key, child in value.items() if collapse_all or is_dynamic_key(str(key))
+        observed_structure_schema(child, field_name=str(key))
+        for key, child in value.items()
+        if collapse_all or is_dynamic_key(str(key))
     )
-    if dynamic_values:
+    if dynamic_values or filename_map:
         object_schema["additionalProperties"] = dynamic_values
         object_schema["x-polylogue-dynamic-keys"] = True
-        if collapse_all:
+        if collapse_all and not filename_map:
             object_schema["x-polylogue-high-cardinality-keys"] = True
     return object_schema
 

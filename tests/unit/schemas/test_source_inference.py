@@ -897,7 +897,17 @@ def test_claude_subagent_files_with_one_parent_session_remain_independent(tmp_pa
     assert warm_evidence.current_source_count == 2
 
 
-@pytest.mark.parametrize("source_key", ["src/private/config.py", r"src\private\config.py", "operator@example.invalid"])
+@pytest.mark.parametrize(
+    "source_key",
+    [
+        "src/private/config.py",
+        r"src\private\config.py",
+        "operator@example.invalid",
+        "private-plan.md",
+        ".env",
+        "README",
+    ],
+)
 def test_source_schema_hides_keys_in_small_content_maps(tmp_path: Path, source_key: str) -> None:
     """Anti-vacuity: retaining small map keys publishes source filenames and addresses."""
     source = tmp_path / "session.jsonl"
