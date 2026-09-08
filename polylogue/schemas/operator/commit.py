@@ -60,6 +60,10 @@ def _element_schemas_by_kind(
 
 
 def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommitResult:
+    if request.source_inputs and not request.full_corpus:
+        raise ValueError("source schema commits require complete inputs; --no-full-corpus is unavailable")
+    if request.source_inputs and request.max_samples is not None:
+        raise ValueError("source schema commits require complete inputs; --max-samples is unavailable")
     provider_token = str(canonical_schema_provider(request.provider))
     output_dir = output_dir.absolute()
     handoff_path = output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
