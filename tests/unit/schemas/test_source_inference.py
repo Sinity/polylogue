@@ -387,6 +387,7 @@ def test_source_chunking_matches_single_record_reduction_and_bounds_records(
         *,
         dynamic_paths: Collection[str] = (),
         is_current: bool | None = None,
+        include_statistics: bool = True,
     ) -> SchemaEvidence:
         records = tuple(observation.records)
         seen_chunk_sizes.append(len(records))
@@ -401,6 +402,7 @@ def test_source_chunking_matches_single_record_reduction_and_bounds_records(
             ),
             dynamic_paths=dynamic_paths,
             is_current=is_current,
+            include_statistics=include_statistics,
         )
 
     monkeypatch.setattr(evidence_module, "collect_source_evidence", collect_with_measurement)
