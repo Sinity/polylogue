@@ -1203,8 +1203,9 @@ def test_terminal_candidate_revision_changes_source_input_manifest_digest(tmp_pa
     assert first.input_manifest_digest != second.input_manifest_digest
 
 
-def test_changed_preliminary_source_cannot_normalize_a_stable_peer(tmp_path: Path) -> None:
-    """Anti-vacuity: a rejected preliminary source used to collapse the stable peer's ordinary object keys."""
+@pytest.mark.parametrize("mutation_phase", ["reduce", "statistics_plan"])
+def test_changed_preliminary_source_cannot_normalize_a_stable_peer(tmp_path: Path, mutation_phase: str) -> None:
+    """Anti-vacuity: a rejected source must not collapse the stable peer's ordinary object keys."""
     stable = tmp_path / "stable.jsonl"
     changing = tmp_path / "changing.jsonl"
 
@@ -1226,7 +1227,7 @@ def test_changed_preliminary_source_cannot_normalize_a_stable_peer(tmp_path: Pat
 
     def replace_after_structure(phase: str, _payload: JSONDocument) -> None:
         nonlocal mutated
-        if phase == "reduce" and not mutated:
+        if phase == mutation_phase and not mutated:
             changing.write_text(record("changing", {"replacement": 1}) + "\n", encoding="utf-8")
             mutated = True
 

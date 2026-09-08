@@ -1526,7 +1526,14 @@ def _cached_contribution(
     for cached, previous_contract in matches:
         if not contracts_match_except_key_limit(previous_contract, current_contract):
             continue
-        if candidate.provider == Provider.CODEX.value and _old_codex_path_fallback(candidate, descriptor):
+        if candidate.provider == Provider.CODEX.value and (
+            _old_codex_path_fallback(candidate, descriptor)
+            or (
+                _contract_revision(previous_contract, "identity_revision") < 2
+                and _contract_revision(current_contract, "identity_revision") >= 2
+                and candidate.path.suffix.lower() == ".zip"
+            )
+        ):
             continue
         if (
             candidate.path.suffix.lower() == ".zip"
@@ -1848,6 +1855,12 @@ def infer_sources(
                         SchemaEvidence.from_json(payload)
                     )
 
+    def preliminary_dynamic_paths() -> dict[str, tuple[str, ...]]:
+        return {
+            kind: tuple(sorted(dynamic_object_paths(accumulator.finish().structure)))
+            for kind, accumulator in preliminary_by_element.items()
+        }
+
     def add_preliminary_from_cache(
         candidate: _SourceCandidate,
         digest: str,
@@ -2070,10 +2083,7 @@ def infer_sources(
                 item.revision_sha256,
             )
         )
-        dynamic_paths_by_element = {
-            kind: tuple(sorted(dynamic_object_paths(accumulator.finish().structure)))
-            for kind, accumulator in preliminary_by_element.items()
-        }
+        dynamic_paths_by_element = preliminary_dynamic_paths()
         report(
             "reduce",
             force=True,
@@ -2082,137 +2092,143 @@ def infer_sources(
         )
 
         statistics_started = time.monotonic_ns()
-        final: list[_CandidateDescriptor] = []
-        final_misses: list[_CandidateDescriptor] = []
-        rejected_preliminary = False
-        for statistics_checked, descriptor in enumerate(descriptors):
+        active_descriptors = descriptors
+        while True:
+            final: list[_CandidateDescriptor] = []
+            final_misses: list[_CandidateDescriptor] = []
+            rejected_preliminary = False
+            for statistics_checked, descriptor in enumerate(active_descriptors):
+                report(
+                    "statistics_cache",
+                    records=preliminary_records,
+                    input_bytes=sum(input_bytes_by_candidate.values()),
+                    extra={
+                        "checked_candidates": statistics_checked,
+                        "reused_candidates": phase_hits["statistics"],
+                        "reprocess_candidates": len(final_misses),
+                    },
+                )
+                candidate = descriptor.candidate
+                try:
+                    final_digest, final_byte_count = _stable_file_digest(candidate.path)
+                except (OSError, SourceInferenceError):
+                    final_digest = None
+                    final_byte_count = _candidate_byte_count(candidate.path)
+                if final_digest != descriptor.revision_sha256:
+                    terminal = SourceTerminal("changed_during_read", final_byte_count)
+                    terminal_counts[terminal.outcome] += 1
+                    reason_code = _terminal_reason_code(terminal)
+                    if reason_code is not None:
+                        terminal_reason_counts[reason_code] += 1
+                    input_bytes_by_candidate[candidate] = terminal.byte_count
+                    terminal_by_candidate[candidate] = terminal
+                    rejected_preliminary = True
+                    continue
+                if any(
+                    _cached_contribution(
+                        cache,
+                        candidate,
+                        contribution,
+                        dynamic_paths_by_element=dynamic_paths_by_element,
+                        recipe=recipe,
+                    )
+                    is None
+                    for contribution in descriptor.contributions
+                ):
+                    final_misses.append(descriptor)
+                    continue
+                final.append(descriptor)
+                cache_hits += 1
+                phase_hits["statistics"] += 1
+
+            if rejected_preliminary:
+                active_descriptors = [*final, *final_misses]
+                rebuild_preliminary(active_descriptors)
+                dynamic_paths_by_element = preliminary_dynamic_paths()
+                continue
+
+            expected_by_candidate = {descriptor.candidate: descriptor for descriptor in final_misses}
             report(
-                "statistics_cache",
+                "statistics_plan",
+                force=True,
                 records=preliminary_records,
                 input_bytes=sum(input_bytes_by_candidate.values()),
                 extra={
-                    "checked_candidates": statistics_checked,
                     "reused_candidates": phase_hits["statistics"],
                     "reprocess_candidates": len(final_misses),
+                    "reprocess_input_bytes": sum(descriptor.byte_count for descriptor in final_misses),
                 },
             )
-            candidate = descriptor.candidate
-            try:
-                final_digest, final_byte_count = _stable_file_digest(candidate.path)
-            except (OSError, SourceInferenceError):
-                final_digest = None
-                final_byte_count = _candidate_byte_count(candidate.path)
-            if final_digest != descriptor.revision_sha256:
-                terminal = SourceTerminal("changed_during_read", final_byte_count)
-                terminal_counts[terminal.outcome] += 1
-                reason_code = _terminal_reason_code(terminal)
-                if reason_code is not None:
-                    terminal_reason_counts[reason_code] += 1
-                input_bytes_by_candidate[candidate] = terminal.byte_count
-                terminal_by_candidate[candidate] = terminal
-                rejected_preliminary = True
-                continue
-            if any(
-                _cached_contribution(
-                    cache,
-                    candidate,
-                    contribution,
-                    dynamic_paths_by_element=dynamic_paths_by_element,
-                    recipe=recipe,
-                )
-                is None
-                for contribution in descriptor.contributions
-            ):
-                final_misses.append(descriptor)
-                continue
-            final.append(descriptor)
-            cache_hits += 1
-            phase_hits["statistics"] += 1
-
-        if rejected_preliminary:
-            final_misses = [*final, *final_misses]
-            final = []
-            rebuild_preliminary(final_misses)
-            dynamic_paths_by_element = {
-                kind: tuple(sorted(dynamic_object_paths(accumulator.finish().structure)))
-                for kind, accumulator in preliminary_by_element.items()
-            }
-
-        expected_by_candidate = {descriptor.candidate: descriptor for descriptor in final_misses}
-        report(
-            "statistics_plan",
-            force=True,
-            records=preliminary_records,
-            input_bytes=sum(input_bytes_by_candidate.values()),
-            extra={
-                "reused_candidates": phase_hits["statistics"],
-                "reprocess_candidates": len(final_misses),
-                "reprocess_input_bytes": sum(descriptor.byte_count for descriptor in final_misses),
-            },
-        )
-        with tempfile.TemporaryDirectory(prefix="polylogue-source-evidence-") as spool_dir:
-            spool_root = Path(spool_dir)
-            with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
-                for item in _bounded_collected_candidates(
-                    executor,
-                    (descriptor.candidate for descriptor in final_misses),
-                    limit=max(1, max_workers) * 2,
-                    dynamic_paths_by_element=dynamic_paths_by_element,
-                    spool_directory=spool_root,
-                    on_wait=lambda: report(
-                        "statistics",
-                        records=preliminary_records,
-                        input_bytes=sum(input_bytes_by_candidate.values()),
-                    ),
-                ):
-                    expected = expected_by_candidate[item.candidate]
-                    if (
-                        item.terminal.outcome != "included"
-                        or item.revision is None
-                        or item.revision.revision_sha256 != expected.revision_sha256
+            rejected_statistics = False
+            with tempfile.TemporaryDirectory(prefix="polylogue-source-evidence-") as spool_dir:
+                spool_root = Path(spool_dir)
+                with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
+                    for item in _bounded_collected_candidates(
+                        executor,
+                        (descriptor.candidate for descriptor in final_misses),
+                        limit=max(1, max_workers) * 2,
+                        dynamic_paths_by_element=dynamic_paths_by_element,
+                        spool_directory=spool_root,
+                        on_wait=lambda: report(
+                            "statistics",
+                            records=preliminary_records,
+                            input_bytes=sum(input_bytes_by_candidate.values()),
+                        ),
                     ):
-                        terminal = (
-                            item.terminal
-                            if item.terminal.outcome != "included"
-                            else SourceTerminal("changed_during_read", item.terminal.byte_count)
-                        )
-                        terminal_counts[terminal.outcome] += 1
-                        reason_code = _terminal_reason_code(terminal)
-                        if reason_code is not None:
-                            terminal_reason_counts[reason_code] += 1
-                        input_bytes_by_candidate[item.candidate] = terminal.byte_count
-                        terminal_by_candidate[item.candidate] = terminal
-                        continue
-                    spooled_rows = (
-                        _spooled_contributions(item.spool_path)
-                        if item.spool_path is not None
-                        else iter(item.contributions)
-                    )
-                    final_contribution_descriptors: list[_ContributionDescriptor] = []
-                    for contribution in spooled_rows:
-                        _put_contribution(
-                            cache,
-                            item.candidate,
-                            contribution,
-                            dynamic_paths_by_element=dynamic_paths_by_element,
-                            recipe_fingerprint=statistics_recipe,
-                            input_bytes=item.terminal.byte_count,
-                        )
-                        final_contribution_descriptors.append(
-                            _ContributionDescriptor(
-                                contribution.logical_source_id,
-                                contribution.revision_sha256,
-                                contribution.record_count,
-                                contribution.declared_updated_at,
+                        expected = expected_by_candidate[item.candidate]
+                        if (
+                            item.terminal.outcome != "included"
+                            or item.revision is None
+                            or item.revision.revision_sha256 != expected.revision_sha256
+                        ):
+                            terminal = (
+                                item.terminal
+                                if item.terminal.outcome != "included"
+                                else SourceTerminal("changed_during_read", item.terminal.byte_count)
                             )
+                            terminal_counts[terminal.outcome] += 1
+                            reason_code = _terminal_reason_code(terminal)
+                            if reason_code is not None:
+                                terminal_reason_counts[reason_code] += 1
+                            input_bytes_by_candidate[item.candidate] = terminal.byte_count
+                            terminal_by_candidate[item.candidate] = terminal
+                            rejected_statistics = True
+                            continue
+                        spooled_rows = (
+                            _spooled_contributions(item.spool_path)
+                            if item.spool_path is not None
+                            else iter(item.contributions)
                         )
-                    if sorted(map(_descriptor_identity, final_contribution_descriptors)) != sorted(
-                        map(_descriptor_identity, expected.contributions)
-                    ):
-                        raise SourceInferenceError("final source identities changed after the structure pass")
-                    final.append(replace(expected, contributions=tuple(final_contribution_descriptors)))
-                    cache_misses += 1
-                    phase_misses["statistics"] += 1
+                        final_contribution_descriptors: list[_ContributionDescriptor] = []
+                        for contribution in spooled_rows:
+                            _put_contribution(
+                                cache,
+                                item.candidate,
+                                contribution,
+                                dynamic_paths_by_element=dynamic_paths_by_element,
+                                recipe_fingerprint=statistics_recipe,
+                                input_bytes=item.terminal.byte_count,
+                            )
+                            final_contribution_descriptors.append(
+                                _ContributionDescriptor(
+                                    contribution.logical_source_id,
+                                    contribution.revision_sha256,
+                                    contribution.record_count,
+                                    contribution.declared_updated_at,
+                                )
+                            )
+                        if sorted(map(_descriptor_identity, final_contribution_descriptors)) != sorted(
+                            map(_descriptor_identity, expected.contributions)
+                        ):
+                            raise SourceInferenceError("final source identities changed after the structure pass")
+                        final.append(replace(expected, contributions=tuple(final_contribution_descriptors)))
+                        cache_misses += 1
+                        phase_misses["statistics"] += 1
+            if not rejected_statistics:
+                break
+            active_descriptors = final
+            rebuild_preliminary(active_descriptors)
+            dynamic_paths_by_element = preliminary_dynamic_paths()
 
         statistics_ms = (time.monotonic_ns() - statistics_started) / 1_000_000
         fold_started = time.monotonic_ns()
