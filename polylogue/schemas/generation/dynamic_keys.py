@@ -70,24 +70,28 @@ def structure_schema_digest(schema: Mapping[str, object]) -> str:
     return legacy_structure_schema_digest(canonicalize_structure_schema(schema))
 
 
+def is_source_structure_witness(value: str) -> bool:
+    """Source evidence uses full SHA-256 IDs; archive cluster IDs are shorter."""
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
 def retain_exact_structure_witnesses(
     prior_witnesses: Iterable[str], current_witnesses: Iterable[str]
 ) -> StructureWitnessRetention:
-    """Preserve published witnesses and deterministically bound new additions.
+    """Preserve all archive IDs and bound source witnesses to 1024.
 
-    Source evidence itself retains 512 current witnesses.  A same-family
-    refresh can therefore carry the 512 old IDs and admit one 512-ID canonical
-    migration set before publication saturates at 1024.  A saturated prior set
-    remains authoritative instead of replacing historical exact matches.
+    Published witnesses remain authoritative when their source budget is full.
     """
 
-    prior = tuple(sorted(set(prior_witnesses)))
-    unseen_current = tuple(sorted(set(current_witnesses) - set(prior)))
-    capacity = max(0, _EXACT_STRUCTURE_WITNESS_CAP - len(prior))
-    admitted = unseen_current[:capacity]
+    prior = set(prior_witnesses)
+    unseen_current = set(current_witnesses) - prior
+    source_ids = sorted(value for value in unseen_current if is_source_structure_witness(value))
+    archive_ids = unseen_current - set(source_ids)
+    capacity = max(0, _EXACT_STRUCTURE_WITNESS_CAP - sum(map(is_source_structure_witness, prior)))
+    admitted = source_ids[:capacity]
     return StructureWitnessRetention(
-        exact_structure_ids=tuple(sorted((*prior, *admitted))),
-        omitted_current_witness_count=len(unseen_current) - len(admitted),
+        exact_structure_ids=tuple(sorted(prior | archive_ids | set(admitted))),
+        omitted_current_witness_count=len(source_ids) - len(admitted),
     )
 
 
@@ -371,6 +375,7 @@ __all__ = [
     "canonicalize_structure_schema",
     "collapse_dynamic_keys",
     "dynamic_object_paths",
+    "is_source_structure_witness",
     "legacy_structure_schema_digest",
     "merge_schemas",
     "merge_observed_structure_schemas",
