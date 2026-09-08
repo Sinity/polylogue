@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     if not result.success:
         error = result.generation.error or "Schema generation failed"
         if args.json:
-            print(json.dumps({"provider": result.provider, "success": False, "error": error}, sort_keys=True))
+            print(json.dumps({**result.to_dict(), "error": error}, sort_keys=True))
         else:
             print(f"schema-commit: {error}", file=sys.stderr)
         return 1

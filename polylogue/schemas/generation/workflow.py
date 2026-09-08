@@ -124,6 +124,8 @@ def build_provider_bundle_from_sources(
         max_workers=max_workers,
         progress=progress_callback,
     )
+    if progress_callback is not None:
+        progress_callback("source_evidence", {"state": "completed", **source.provenance()})
     evidence_by_kind = {
         kind: merge_evidence(SchemaEvidence.from_json(row) for row in rows)
         for kind, rows in source.evidence_by_element.items()
@@ -202,8 +204,6 @@ def build_provider_bundle_from_sources(
         artifact_counts=counts,
         phase_receipt={"source": source.provenance()},
     )
-    if progress_callback is not None:
-        progress_callback("source_evidence", {"state": "completed", **source.provenance()})
     return _ProviderBundle(result, catalog=catalog, package_schemas={version: emitted}, manifest=manifest)
 
 

@@ -179,6 +179,47 @@ def test_schema_commit_exits_nonzero_on_generation_failure(
     assert payload["error"] == "No samples"
 
 
+def test_unsupported_sources_keep_coverage_in_failure_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A no-evidence refusal must still explain every excluded input."""
+    monkeypatch.setattr(
+        schema_commit,
+        "get_config",
+        lambda: _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db"),
+    )
+    source = tmp_path / "capture.json"
+    source.write_text('{"polylogue_capture_kind":"session"}', encoding="utf-8")
+
+    code = schema_commit.main(
+        [
+            "--provider",
+            "browser-capture",
+            "--source",
+            f"browser-capture={source}",
+            "--source-cache",
+            str(tmp_path / "evidence.sqlite"),
+            "--output-dir",
+            str(tmp_path / "packages"),
+            "--json",
+            "--progress",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 1
+    assert payload["success"] is False
+    provenance = payload["phase_receipt"]["source"]
+    assert provenance["source_terminal_reasons"] == {"browser_capture_adapter_unavailable": 1}
+    assert provenance["source_input_bytes"] == source.stat().st_size
+    events = [json.loads(line.removeprefix("schema-commit: ")) for line in captured.err.splitlines()]
+    completed = [event for event in events if event["phase"] == "source_evidence"]
+    assert len(completed) == 1
+    assert completed[0]["state"] == "completed"
+    assert completed[0]["source_terminal_reasons"] == provenance["source_terminal_reasons"]
+
+
 def test_schema_commit_exits_nonzero_when_narrowed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A commit that succeeds but narrows a previously-committed type must
     not report a clean exit code -- the whole point of the report is that a
