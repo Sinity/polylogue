@@ -151,10 +151,14 @@ def test_identity_upgrade_replaces_legacy_codex_path_fallback_cache(
     write_codex(root, "first", "shared", "2026-01-01T00:00:00Z", legacy=True)
     write_codex(root, "second", "shared", "2026-01-02T00:00:00Z", legacy=True)
     cache = tmp_path / "cache.sqlite"
+    legacy_source_ids = {
+        candidate.path: candidate.logical_source_id
+        for candidate in source.inventory_schema_sources((source.SchemaSourceInput("codex", root),))
+    }
 
     def old_native_source_id(_provider: Provider, _payload: JSONValue, fallback: str, *, source_path: Path) -> str:
-        del source_path
-        return fallback
+        del fallback
+        return legacy_source_ids[source_path]
 
     with monkeypatch.context() as old_code:
         old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(identity_revision=1))
@@ -162,6 +166,8 @@ def test_identity_upgrade_replaces_legacy_codex_path_fallback_cache(
         old = run_codex(root, cache)
     upgraded = run_codex(root, cache)
     fresh = run_codex(root, tmp_path / "fresh.sqlite")
+    assert result_evidence(old).current_source_count == 2
+    assert result_evidence(upgraded).current_source_count == result_evidence(fresh).current_source_count == 1
     assert old.evidence_by_element != fresh.evidence_by_element
     assert upgraded.evidence_by_element == fresh.evidence_by_element
 
