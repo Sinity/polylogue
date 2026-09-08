@@ -23,6 +23,7 @@ from polylogue.schemas.generation.dynamic_keys import (
     dynamic_object_paths,
     merge_observed_structure_schemas,
     observed_structure_schema,
+    structure_schema_digest,
 )
 
 SCHEMA_EVIDENCE_VERSION = 1
@@ -63,14 +64,9 @@ def _merge_structure(left: JSONDocument, right: JSONDocument) -> JSONDocument:
     return merge_observed_structure_schemas((left, right))
 
 
-def _schema_digest(schema: JSONDocument) -> str:
-    payload = json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
 def _observe_shape_hash(hashes: set[str], structure: JSONDocument) -> int:
     """Retain one shape hash and return a lower-bound increment beyond the cap."""
-    digest = _schema_digest(structure)
+    digest = structure_schema_digest(structure)
     if digest in hashes:
         return 0
     if len(hashes) < _SHAPE_HASH_CAP:
@@ -216,7 +212,7 @@ def collect_source_evidence(
         for record in observation.records:
             record_count += 1
             record_structure = observed_structure_schema(record)
-            digest = _schema_digest(record_structure)
+            digest = structure_schema_digest(record_structure)
             if digest not in shape_hashes:
                 structure = _merge_structure(structure, record_structure)
                 if len(shape_hashes) < _SHAPE_HASH_CAP:

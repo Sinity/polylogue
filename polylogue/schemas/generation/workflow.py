@@ -157,6 +157,7 @@ def build_provider_bundle_from_sources(
             provider, element_config, evidence, privacy_config=privacy_config, artifact_kind=kind
         )
         emitted[kind]["x-polylogue-sample-granularity"] = element_config.sample_granularity
+        emitted[kind]["x-polylogue-exact-structure-ids"] = list(evidence.shape_hashes)
     preferred_anchor = "session_record_stream" if config.sample_granularity == "record" else "session_document"
     if provider == "claude-code" and "coordinator_session_stream" in emitted:
         preferred_anchor = "coordinator_session_stream"
@@ -181,6 +182,7 @@ def build_provider_bundle_from_sources(
             observed_artifact_count=evidence.current_source_count,
             first_seen=first_seen,
             last_seen=now,
+            exact_structure_ids=list(evidence.shape_hashes),
         )
         for kind, evidence in sorted(evidence_by_kind.items())
     ]

@@ -13,14 +13,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
+from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.raw_payload.decode import JSONRecord
 from polylogue.core.enums import Provider
-from polylogue.core.json import json_document
+from polylogue.core.json import JSONValue, json_document
 from polylogue.core.provider_identity import canonical_schema_provider as _canonical_schema_provider
 from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.schema_subjects import SCHEMA_PACKAGE_DIRECTORIES, SCHEMA_SUBJECTS
 from polylogue.paths import data_home
+from polylogue.schemas.generation.dynamic_keys import observed_structure_schema, structure_schema_digest
 from polylogue.schemas.observation import (
     derive_bundle_scope,
     extract_schema_units_from_payload,
@@ -83,6 +86,15 @@ def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str)]
+
+
+def _is_source_structure_witness(value: str) -> bool:
+    """Identify the full SHA-256 witnesses emitted from source evidence."""
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _structure_witnesses(samples: Sequence[object]) -> tuple[str, ...]:
+    return tuple(sorted({structure_schema_digest(observed_structure_schema(sample)) for sample in samples}))
 
 
 def _int_value(value: object) -> int:
@@ -180,6 +192,7 @@ class _ObservedPayload:
     bundle_scope: str | None
     exact_structure_id: str | None
     profile_tokens: tuple[str, ...]
+    schema_samples: Sequence[object] = ()
 
 
 @dataclass(frozen=True)
@@ -934,6 +947,14 @@ class SchemaRegistry:
         provider_token = _provider_token(provider)
         config = resolve_provider_config(provider_token)
         fallback_bundle_scope = derive_bundle_scope(provider_token, source_path)
+        admitted_artifact_kind = None
+        if provider_token == "gemini-cli" and isinstance(payload, list):
+            artifact = classify_artifact(
+                cast(JSONValue, payload), provider=Provider.GEMINI_CLI, source_path=source_path
+            )
+            if artifact.schema_eligible and artifact.cohort == "session_record_stream":
+                config = dataclasses.replace(config, sample_granularity="record", record_type_key="type")
+                admitted_artifact_kind = artifact.cohort
         units = extract_schema_units_from_payload(
             payload,
             source_name=Provider.from_string(provider_token),
@@ -942,6 +963,7 @@ class SchemaRegistry:
             observed_at=None,
             config=config,
             max_samples=_PROFILE_SAMPLE_LIMIT,
+            admitted_artifact_kind=admitted_artifact_kind,
         )
         return [
             _ObservedPayload(
@@ -949,6 +971,7 @@ class SchemaRegistry:
                 bundle_scope=unit.bundle_scope or fallback_bundle_scope,
                 exact_structure_id=unit.exact_structure_id or None,
                 profile_tokens=unit.profile_tokens,
+                schema_samples=unit.schema_samples,
             )
             for unit in units
         ]
@@ -963,6 +986,14 @@ class SchemaRegistry:
     ) -> _ResolutionCandidate | None:
         candidates: list[_ResolutionCandidate] = []
         observed_profile_tokens = set(observation.profile_tokens)
+        source_witnesses: tuple[str, ...] = ()
+        if any(
+            _is_source_structure_witness(structure_id)
+            for package in packages
+            if (element := package.element(observation.artifact_kind)) is not None
+            for structure_id in element.exact_structure_ids
+        ):
+            source_witnesses = _structure_witnesses(observation.schema_samples)
         for package in packages:
             element = package.element(observation.artifact_kind)
             if element is None:
@@ -975,6 +1006,20 @@ class SchemaRegistry:
                         reason="exact_structure",
                         resolved=resolved,
                         exact_structure_id=observation.exact_structure_id,
+                        bundle_scope=observation.bundle_scope,
+                        observation_index=observation_index,
+                    )
+                )
+            source_witness = next(
+                (witness for witness in source_witnesses if witness in element.exact_structure_ids),
+                None,
+            )
+            if source_witness is not None:
+                candidates.append(
+                    _ResolutionCandidate(
+                        reason="exact_structure",
+                        resolved=resolved,
+                        exact_structure_id=source_witness,
                         bundle_scope=observation.bundle_scope,
                         observation_index=observation_index,
                     )

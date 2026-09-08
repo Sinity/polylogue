@@ -22,6 +22,12 @@ _STRUCTURAL_DEDUP_WINDOW = 1_024
 _COMPOSITE_KEYWORDS = ("anyOf", "oneOf", "allOf")
 
 
+def structure_schema_digest(schema: Mapping[str, object]) -> str:
+    """Return the stable SHA-256 witness for an observed structural schema."""
+    payload = json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def merge_schemas(schemas: Iterable[JSONDocument]) -> JSONDocument:
     """Merge multiple schemas into one using genson when available."""
     if not GENSON_AVAILABLE:
