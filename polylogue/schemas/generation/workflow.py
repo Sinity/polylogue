@@ -24,7 +24,7 @@ from polylogue.schemas.observation import PROVIDERS, resolve_provider_config
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.registry import ClusterManifest, SchemaRegistry
-from polylogue.schemas.runtime_registry import ElementSchemaMap
+from polylogue.schemas.runtime_registry import ElementSchemaMap, canonical_schema_provider
 from polylogue.schemas.source_inference import SchemaSourceInput, infer_sources
 
 
@@ -113,11 +113,13 @@ def build_provider_bundle_from_sources(
     progress_callback: GenerationProgressCallback | None = None,
 ) -> _ProviderBundle:
     """Build a multi-element package with identity independent of statistics."""
-    inputs = tuple(item for item in source_inputs if item.provider == provider)
+    provider_token = str(canonical_schema_provider(provider))
+    inputs = tuple(item for item in source_inputs if str(canonical_schema_provider(item.provider)) == provider_token)
     if not inputs:
         return _ProviderBundle(
-            GenerationResult(provider=provider, schema=None, sample_count=0, error="No declared source inputs")
+            GenerationResult(provider=provider_token, schema=None, sample_count=0, error="No declared source inputs")
         )
+    provider = provider_token
     if progress_callback is not None:
         progress_callback("source_inventory", {"state": "started"})
     source = infer_sources(

@@ -29,6 +29,7 @@ from polylogue.schemas.operator.models import (
     SchemaPromoteRequest,
 )
 from polylogue.schemas.registry import SchemaRegistry
+from polylogue.schemas.source_inference import SchemaSourceInput
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from tests.infra.storage_records import db_setup
@@ -341,3 +342,43 @@ def test_operator_inference_reports_real_unknown_provider_and_audits_bundled_sch
     report = audit_schemas(SchemaAuditRequest(provider="chatgpt"))
     assert report.provider == "chatgpt"
     assert report.checks
+
+
+def test_source_backed_cluster_uses_declared_evidence_without_archive_sampling(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: source-backed clustering used to replace the declared schema evidence with archive samples."""
+    from polylogue.schemas import sampling
+
+    source = tmp_path / "session.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "sessionId": "declared-source",
+                "version": "1.2.3",
+                "message": {"role": "user", "content": "declared only"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def archive_access(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("source-backed clustering accessed the archive")
+
+    monkeypatch.setattr(sampling, "load_samples_from_db", archive_access)
+    result = infer_schema(
+        SchemaInferRequest(
+            provider="claude-code",
+            db_path=workspace_env["archive_root"] / "index.db",
+            cluster=True,
+            source_inputs=(SchemaSourceInput("claude-code", source),),
+            source_cache_path=tmp_path / "source-cache.sqlite3",
+            source_workers=1,
+        )
+    )
+
+    assert result.generation.success
+    assert result.manifest is not None
+    assert result.manifest.artifact_counts == result.generation.artifact_counts
