@@ -20,6 +20,7 @@ from polylogue.cli.shared.schema_command_support import build_schema_privacy_con
 from polylogue.config import get_config
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
+from polylogue.schemas.source_inference import parse_schema_source_input
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "polylogue" / "schemas" / "providers"
@@ -56,6 +57,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Privacy preset level. Defaults to standard.",
     )
     parser.add_argument("--privacy-config", type=Path, default=None, help="Path to TOML privacy config overrides.")
+    parser.add_argument("--source", action="append", default=[], help="Declared source input as provider=path.")
+    parser.add_argument("--source-cache", type=Path, default=None, help="Private reduced-evidence SQLite cache.")
+    parser.add_argument("--source-workers", type=int, default=2, help="Bounded source evidence workers.")
     parser.add_argument(
         "--dry-run",
         "--check",
@@ -80,6 +84,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"schema-commit: {exc}", file=sys.stderr)
         return 1
     output_dir = args.output_dir if args.output_dir is not None else DEFAULT_OUTPUT_DIR
+    try:
+        source_inputs = tuple(parse_schema_source_input(value) for value in args.source)
+    except ValueError as exc:
+        print(f"schema-commit: {exc}", file=sys.stderr)
+        return 1
 
     config = get_config()
     try:
@@ -92,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
                 privacy_config=privacy_config,
                 full_corpus=bool(args.full_corpus),
                 dry_run=bool(args.dry_run),
+                source_inputs=source_inputs,
+                source_cache_path=args.source_cache,
+                source_workers=args.source_workers,
             )
         )
     except ValueError as exc:

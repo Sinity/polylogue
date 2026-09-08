@@ -369,6 +369,9 @@ class SchemaCommitRequest:
     privacy_config: JSONDocument | None = None
     full_corpus: bool = True
     dry_run: bool = False
+    source_inputs: tuple[object, ...] = ()
+    source_cache_path: Path | None = None
+    source_workers: int = 2
 
 
 @dataclass(frozen=True)
