@@ -22,6 +22,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_payload
@@ -371,6 +372,19 @@ def _native_source_id(provider: Provider, payload: JSONValue, fallback: str) -> 
     return fallback
 
 
+def _claude_code_native_identity(declared: str, candidate: _SourceCandidate) -> str:
+    """Apply Claude Code's declared file-identity rules before contribution grouping."""
+    fallback_id = candidate.path.stem
+    session_id = declared.removeprefix("claude-code:")
+    if fallback_id.startswith("agent-"):
+        return f"claude-code:{session_id}:{fallback_id}"
+    try:
+        UUID(fallback_id)
+    except ValueError:
+        return declared
+    return declared if fallback_id == session_id else f"claude-code:{fallback_id}"
+
+
 def _declared_update_key(provider: Provider, payload: JSONValue) -> tuple[int, str] | None:
     """Return an ordering key from a provider-declared session update field."""
     if not isinstance(payload, dict):
@@ -415,6 +429,8 @@ def _collect_payload_evidence(
         producer_versions.update(versions)
         producer_version_unrecognized = producer_version_unrecognized or unrecognized
         declared = _native_source_id(provider, payload, "")
+        if declared and provider is Provider.CLAUDE_CODE:
+            declared = _claude_code_native_identity(declared, candidate)
         if declared:
             header_source_id = declared
         declared_source_id = hash_payload({"source": declared or header_source_id})

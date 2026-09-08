@@ -316,3 +316,34 @@ def test_source_inputs_reject_sample_limited_calls(tmp_path: Path) -> None:
                 source_inputs=(SchemaSourceInput("claude-code", tmp_path),),
             )
         )
+
+
+def test_claude_subagent_files_with_one_parent_session_remain_independent(tmp_path: Path) -> None:
+    """Anti-vacuity: grouping Claude subagents by the inherited parent ID loses one agent's evidence."""
+    source_root = tmp_path / "claude"
+    source_root.mkdir()
+    for agent in ("agent-first", "agent-second"):
+        (source_root / f"{agent}.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "sessionId": "parent-session",
+                    "version": "1.2.3",
+                    "message": {"role": "user", "content": agent},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    result = infer_sources(
+        (SchemaSourceInput("claude-code", source_root),),
+        cache_path=tmp_path / "source-cache.sqlite3",
+        max_workers=1,
+    )
+    evidence = merge_evidence(
+        SchemaEvidence.from_json(item) for rows in result.evidence_by_element.values() for item in rows
+    )
+
+    assert result.terminal_counts == {"included": 2}
+    assert evidence.current_source_count == 2
