@@ -302,12 +302,18 @@ class SchemaValidator:
         schema_resolution: SchemaResolution | None = None,
         strict: bool = True,
     ) -> SchemaValidator:
+        def schema_accepts(schema: JSONDocument) -> bool:
+            probe = cls(schema, strict=strict, provider=_canonical_provider(provider))
+            samples = probe.validation_samples(payload)
+            return not samples or all(probe.validate(sample, include_drift=False).is_valid for sample in samples)
+
         canonical, schema, base_key = resolve_payload_schema(
             provider,
             payload,
             source_path=source_path,
             schema_resolution=schema_resolution,
             registry_cls=SchemaRegistry,
+            schema_accepts=schema_accepts,
         )
         key = (*base_key, strict)
         cached = cls._cache.get(key)

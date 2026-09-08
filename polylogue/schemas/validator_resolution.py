@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -71,6 +72,30 @@ def _load_named_schema(
     return None
 
 
+def _historical_schemas(
+    registry: SchemaRegistry,
+    provider: Provider,
+    *,
+    element_kind: str,
+) -> Iterator[tuple[str, JSONDocument]]:
+    catalog = registry.load_package_catalog(str(provider))
+    if catalog is None:
+        return
+    for package in registry._ranked_packages(catalog):
+        element = package.element(element_kind)
+        if element is None or (
+            package.observation_status != "historical" and element.observation_status != "historical"
+        ):
+            continue
+        schema = _load_schema(
+            registry,
+            provider,
+            package_version=package.version,
+            element_kind=element_kind,
+        )
+        yield package.version, schema
+
+
 def reset_registry_cache() -> None:
     """Clear shared runtime-registry instances used by schema validation."""
     _shared_registry.cache_clear()
@@ -114,6 +139,7 @@ def resolve_payload_schema(
     source_path: str | None = None,
     schema_resolution: SchemaResolution | None = None,
     registry_cls: type[SchemaRegistry] = SchemaRegistry,
+    schema_accepts: Callable[[JSONDocument], bool] | None = None,
 ) -> tuple[Provider, JSONDocument, tuple[str, str, str]]:
     canonical = canonical_provider(provider)
     registry = _registry_for(registry_cls)
@@ -147,6 +173,16 @@ def resolve_payload_schema(
         package_version=package_version,
         element_kind=element_kind,
     )
+    if schema_resolution is not None or schema_accepts is None or schema_accepts(schema):
+        return canonical, schema, (str(canonical), package_version, element_kind)
+
+    for historical_version, historical_schema in _historical_schemas(
+        package_registry,
+        canonical,
+        element_kind=element_kind,
+    ):
+        if schema_accepts(historical_schema):
+            return canonical, historical_schema, (str(canonical), historical_version, element_kind)
     return canonical, schema, (str(canonical), package_version, element_kind)
 
 

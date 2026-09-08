@@ -8,6 +8,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.scenarios import CorpusScenario, CorpusSpec, build_corpus_scenarios, build_inferred_corpus_specs
 from polylogue.schemas.audit.models import AuditReport
+from polylogue.schemas.generation.models import _ProviderBundle
 from polylogue.schemas.operator.models import (
     SchemaAuditRequest,
     SchemaCompareRequest,
@@ -111,21 +112,26 @@ def _privacy_config(payload: Mapping[str, object] | None) -> PrivacyConfig | Non
 
 
 def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
-    from polylogue.schemas.generation.workflow import generate_provider_schema, generate_provider_schema_from_sources
+    from polylogue.schemas.generation.workflow import generate_provider_schema
     from polylogue.schemas.observation import PROVIDERS
     from polylogue.schemas.sampling import load_samples_from_db
 
     if request.source_inputs and request.max_samples is not None:
         raise ValueError("source schema inference requires complete inputs; --max-samples is unavailable")
+    source_bundle: _ProviderBundle | None = None
     if request.source_inputs:
-        result = generate_provider_schema_from_sources(
+        from polylogue.schemas.generation.workflow import build_provider_bundle_from_sources
+
+        source_bundle = build_provider_bundle_from_sources(
             request.provider,
             source_inputs=request.source_inputs,
             cache_path=request.source_cache_path,
             max_workers=request.source_workers,
             privacy_config=_privacy_config(request.privacy_config),
+            prior_catalog=None,
             progress_callback=request.progress_callback,
         )
+        result = source_bundle.result
     else:
         result = generate_provider_schema(
             request.provider,
@@ -148,6 +154,26 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
             generation=result,
             corpus_specs=corpus_specs,
             corpus_scenarios=corpus_scenarios if result.success else (),
+        )
+
+    if source_bundle is not None:
+        manifest = source_bundle.manifest
+        if manifest is None:
+            raise AssertionError("source schema generation did not produce a cluster manifest")
+        manifest_path = registry.save_cluster_manifest(manifest)
+        corpus_specs, corpus_scenarios = _build_inferred_outputs(
+            provider=request.provider,
+            package_version=package_version,
+            manifest=manifest,
+            sample_count=result.sample_count,
+            catalog=source_bundle.catalog,
+        )
+        return SchemaInferResult(
+            generation=result,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            corpus_specs=corpus_specs,
+            corpus_scenarios=corpus_scenarios,
         )
 
     provider_token = Provider.from_string(request.provider)

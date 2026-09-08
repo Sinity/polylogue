@@ -18,6 +18,7 @@ import pytest
 from polylogue.config import Source
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas.inference.semantic.models import SEMANTIC_ROLES
+from polylogue.schemas.inference.semantic.runtime import RECORD_STREAM_ELIGIBLE_ROLES, RECORD_STREAM_KINDS
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.core import SyntheticCorpus
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
@@ -86,7 +87,11 @@ class TestBaselineSchemaAnnotations:
         schema = _bundled_schema(provider)
 
         found_roles = sorted(set(_collect_semantic_roles(schema)))
-        expected = sorted(SEMANTIC_ROLES)
+        package = _BUNDLED_REGISTRY.get_package(provider, version="default")
+        assert package is not None
+        expected = sorted(
+            RECORD_STREAM_ELIGIBLE_ROLES if package.default_element_kind in RECORD_STREAM_KINDS else SEMANTIC_ROLES
+        )
         assert found_roles == expected, f"{provider} schema has roles {found_roles}, expected {expected}"
 
 

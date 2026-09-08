@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Mapping
 from copy import deepcopy
@@ -27,6 +28,138 @@ from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 from tests.infra.wire_support import shared_wire_generation, shared_wire_support_receipt
+
+
+def test_chatgpt_native_witness_does_not_select_unmarked_capture_fields() -> None:
+    """Capture-shaped extra fields must not change the raw parser's expected identity."""
+    payload: JSONValue = {
+        "id": "native-session",
+        "mapping": {
+            "node": {
+                "id": "node",
+                "message": {
+                    "id": "native-message",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["native body"]},
+                },
+            },
+        },
+        "session": {
+            "provider_session_id": "unrelated-session",
+            "turns": [
+                {"provider_turn_id": "unrelated-message", "role": "user", "text": "unrelated body"},
+            ],
+        },
+    }
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    assert len(sessions) == 1 and sessions[0].messages
+    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "chatgpt", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "chatgpt", payload, "fallback")
+
+
+@pytest.mark.parametrize("origin_kind", ["human", "runtime"])
+def test_claude_code_witness_retains_declared_authorship(origin_kind: str) -> None:
+    """Changing parsed authoredness must invalidate the raw provenance witness."""
+    payload: JSONValue = [
+        {
+            "type": "user",
+            "uuid": "message",
+            "sessionId": "session",
+            "origin": {"kind": origin_kind},
+            "message": {"role": "user", "content": [{"type": "text", "text": "authored body"}]},
+        }
+    ]
+    sessions = dispatch_module.parse_payload("claude-code", payload, "fallback")
+    assert len(sessions) == 1 and sessions[0].messages
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "claude-code", payload, "fallback")
+    sessions[0].messages[0].material_origin = MaterialOrigin.UNKNOWN
+    assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "claude-code", payload, "fallback"
+    )
+
+
+def test_chatgpt_witness_checks_tool_identity_and_text_parts() -> None:
+    """Tool identity and part text are obligations; asset metadata is not prose."""
+    payload: JSONValue = {
+        "id": "session",
+        "mapping": {
+            "node": {
+                "id": "node",
+                "message": {
+                    "id": "message",
+                    "author": {"role": "assistant"},
+                    "metadata": {"command": "lookup", "args": {"query": "synthetic"}},
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["first body", {"text": "second body", "asset_pointer": "asset-reference"}],
+                    },
+                },
+            }
+        },
+    }
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    assert len(sessions) == 1 and sessions[0].messages
+    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "chatgpt", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "chatgpt", payload, "fallback")
+    tool = next(block for block in sessions[0].messages[0].blocks if block.type is BlockType.TOOL_USE)
+    tool.tool_id = "wrong-tool"
+    assert not wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "chatgpt", payload, "fallback")
+    sessions[0].messages[0].text = "first body"
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(sessions, "chatgpt", payload, "fallback")
+
+
+def test_codex_witness_checks_content_when_native_message_id_is_null() -> None:
+    """Nullable IDs still require the source's authored text to survive."""
+    payload: JSONValue = [
+        {
+            "type": "message",
+            "id": None,
+            "role": "user",
+            "content": [{"type": "input_text", "text": "anonymous authored body"}],
+        }
+    ]
+    sessions = dispatch_module.parse_payload("codex", payload, "fallback")
+    assert len(sessions) == 1 and sessions[0].messages
+    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "codex", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "codex", payload, "fallback")
+    sessions[0].messages[0].text = "unrelated body"
+    sessions[0].messages[0].blocks = []
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(sessions, "codex", payload, "fallback")
+
+
+def test_generated_browser_capture_attachment_strings_become_valid_bytes() -> None:
+    """The production capture parser rejects unencoded generated attachment strings."""
+    from polylogue.browser_capture.models import BROWSER_CAPTURE_KIND, BROWSER_CAPTURE_SCHEMA_VERSION
+
+    payload: JSONValue = {
+        "polylogue_capture_kind": BROWSER_CAPTURE_KIND,
+        "schema_version": BROWSER_CAPTURE_SCHEMA_VERSION,
+        "provenance": {
+            "source_url": "https://example.test/conversation",
+            "adapter_name": "synthetic",
+            "captured_at": "2026-01-01T00:00:00Z",
+        },
+        "session": {
+            "provider": "chatgpt",
+            "provider_session_id": "capture-session",
+            "turns": [
+                {
+                    "provider_turn_id": "turn",
+                    "role": "user",
+                    "text": "body",
+                    "attachments": [{"provider_attachment_id": "turn-file", "inline_base64": "turn bytes!"}],
+                }
+            ],
+            "attachments": [{"provider_attachment_id": "session-file", "inline_base64": "session bytes!"}],
+        },
+    }
+    corpus = SyntheticCorpus({"type": "object"}, wire_formats.WireFormat(encoding="json"), "chatgpt")
+    wire = json.loads(corpus._serialize(payload))
+    session = wire["session"]
+    assert base64.b64decode(session["attachments"][0]["inline_base64"], validate=True) == b"session bytes!"
+    assert base64.b64decode(session["turns"][0]["attachments"][0]["inline_base64"], validate=True) == b"turn bytes!"
+    sessions = dispatch_module.parse_payload("chatgpt", wire, "fallback")
+    assert len(sessions) == 1 and len(sessions[0].attachments) == 2
 
 
 def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> None:
@@ -132,9 +265,17 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
     complete_supported = [
         entry for entry in supported if not (entry.provider == "chatgpt" and entry.package_version == "v1")
     ]
-    assert all(
-        entry.construct_coverage is not None and entry.construct_coverage.complete for entry in complete_supported
-    )
+    incomplete = [
+        (
+            entry.provider,
+            entry.package_version,
+            entry.element_kind,
+            entry.construct_coverage.missing_keywords if entry.construct_coverage else None,
+        )
+        for entry in complete_supported
+        if entry.construct_coverage is None or not entry.construct_coverage.complete
+    ]
+    assert not incomplete, incomplete
     assert all(
         any(witness.artifact_kind == "baseline" and witness.healthy for witness in entry.parser_witnesses)
         for entry in supported
@@ -1241,7 +1382,9 @@ def test_removed_provider_route_changes_explicit_support_receipt(monkeypatch: py
 
     assert before.to_dict() != after.to_dict()
     assert after.missing_routes == ("codex",)
-    assert after.supported_count == before.supported_count - 1
+    removed = tuple(entry for entry in before.entries if entry.provider == "codex" and entry.status == "supported")
+    assert removed
+    assert after.supported_count == before.supported_count - len(removed)
     with pytest.raises(UnsupportedSyntheticWireRouteError, match="no explicit synthetic wire route"):
         SyntheticCorpus.for_provider("codex")
 

@@ -14,6 +14,7 @@ from polylogue.schemas.generation.provider_bundle_packages import allocate_packa
 from polylogue.schemas.generation.workflow import persist_generated_provider_bundle
 from polylogue.schemas.generation.workload_profiles import workload_profile_identity
 from polylogue.schemas.numeric_privacy import redact_observed_numeric_schema
+from polylogue.schemas.package_publication import publish_provider_tree
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.registry import ClusterManifest, SchemaRegistry
 
@@ -140,6 +141,25 @@ def test_retained_provider_files_survive_replacement(tmp_path: Path) -> None:
     publish(registry, generation=2)
     assert retained.read_text() == "pins: []\n"
     assert not list(tmp_path.glob(".*.staging-*"))
+
+
+def test_concurrent_retained_pin_change_retries_publication(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The optimistic snapshot must cover retained provider files."""
+    registry = SchemaRegistry(storage_root=tmp_path)
+    publish(registry)
+    retained = tmp_path / "synthetic-publication" / "pins.yaml"
+    retained.write_text("pins: initial\n")
+
+    def publish_after_pin_change(staged: Path, destination: Path, *, expected_snapshot: dict[str, bytes]) -> None:
+        retained.write_text("pins: concurrent\n")
+        publish_provider_tree(staged, destination, expected_snapshot=expected_snapshot)
+
+    monkeypatch.setattr("polylogue.schemas.runtime_registry.publish_provider_tree", publish_after_pin_change)
+
+    with pytest.raises(RuntimeError, match="changed during preparation"):
+        publish(registry, generation=2)
+
+    assert retained.read_text() == "pins: concurrent\n"
 
 
 def test_fresh_full_frequency_does_not_inherit_old_partial_frequency() -> None:

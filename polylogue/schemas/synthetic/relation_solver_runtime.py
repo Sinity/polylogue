@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -58,12 +59,10 @@ def _annotation_records(schema: SchemaRecord, key: str) -> tuple[SchemaRecord, .
     return tuple(item for item in value if isinstance(item, dict))
 
 
-#: Parsed annotations per (annotation list object, parser). A solver is built
-#: for every generated batch and re-parses thousands of annotation records
-#: each time; the parse is a pure function of the list, so it is shared while
-#: that exact list object is alive. The entry keeps the list referenced so its
-#: id cannot be reused by another object.
-_PARSED_ANNOTATIONS: dict[tuple[int, str], tuple[object, tuple[Any, ...]]] = {}
+# Retain four annotation kinds for the ordinary and coverage schemas.
+# Strong references prevent object-id reuse until an entry is evicted.
+_PARSED_ANNOTATIONS: OrderedDict[tuple[int, str], tuple[object, tuple[Any, ...]]] = OrderedDict()
+_PARSED_ANNOTATIONS_LIMIT = 8
 _PARSED_ANNOTATIONS_LOCK = threading.Lock()
 
 
@@ -76,11 +75,15 @@ def _parsed_annotations(
     cache_key = (id(value), key)
     with _PARSED_ANNOTATIONS_LOCK:
         cached = _PARSED_ANNOTATIONS.get(cache_key)
-    if cached is not None and cached[0] is value:
-        return cast(tuple[_T, ...], cached[1])
+        if cached is not None and cached[0] is value:
+            _PARSED_ANNOTATIONS.move_to_end(cache_key)
+            return cast(tuple[_T, ...], cached[1])
     parsed = parse(tuple(item for item in value if isinstance(item, dict)))
     with _PARSED_ANNOTATIONS_LOCK:
         _PARSED_ANNOTATIONS[cache_key] = (value, parsed)
+        _PARSED_ANNOTATIONS.move_to_end(cache_key)
+        while len(_PARSED_ANNOTATIONS) > _PARSED_ANNOTATIONS_LIMIT:
+            _PARSED_ANNOTATIONS.popitem(last=False)
     return parsed
 
 
