@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Literal
+from typing import Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -223,6 +223,7 @@ def test_jsonl_stream_shape_beats_drive_cache_json_suffix(tmp_path: Path) -> Non
     assert parsed.source_name == "claude-code"
     assert parsed.provider_session_id == "session-from-drive"
     assert [message.text for message in parsed.messages if message.text] == [
+        "continued session",
         "hello from drive cache",
         "parsed as stream",
     ]
@@ -457,6 +458,7 @@ async def test_acquisition_law_preserves_coordinates_deduplicates_blobs_and_norm
 async def test_validation_law_matches_mode_and_payload_contract(case: ValidationCase) -> None:
     """Validation mode, malformed JSONL, and schema verdicts must produce one stable persisted contract."""
     from polylogue.schemas import ValidationResult
+    from polylogue.schemas.validator import PayloadValidation, SchemaValidator
     from polylogue.storage.blob_store import get_blob_store
 
     raw_content, source_name, source_path = build_validation_payload(case)
@@ -501,9 +503,21 @@ async def test_validation_law_matches_mode_and_payload_contract(case: Validation
 
     validator = _SyntheticValidator()
 
+    def _fake_validate_payload(provider: object, payload: JSONValue, **kwargs: object) -> PayloadValidation:
+        del provider, kwargs
+        samples = tuple(validator.validation_samples(payload))
+        results = tuple(validator.validate(sample) for sample in samples)
+        return PayloadValidation(
+            validator=cast(SchemaValidator, validator),
+            samples=samples,
+            results=results,
+            schema_resolution=None,
+            schema_resolution_is_explicit=True,
+        )
+
     with patch(
-        "polylogue.schemas.validator.SchemaValidator.for_payload",
-        return_value=validator,
+        "polylogue.schemas.validator.SchemaValidator.validate_payload",
+        side_effect=_fake_validate_payload,
     ):
         with patch.dict("os.environ", {"POLYLOGUE_SCHEMA_VALIDATION": case.mode}, clear=False):
             result = await service.validate_raw_ids(raw_ids=[raw_id])
@@ -635,6 +649,7 @@ def test_ingest_worker_reuses_schema_resolution_and_walks_drift(
     from polylogue.pipeline.services.ingest_worker import ingest_record
     from polylogue.schemas import ValidationResult
     from polylogue.schemas.packages import SchemaResolution
+    from polylogue.schemas.validator import PayloadValidation, SchemaValidator
 
     payload = json.dumps(
         {
@@ -692,20 +707,33 @@ def test_ingest_worker_reuses_schema_resolution_and_walks_drift(
             observed["include_drift"] = include_drift
             return ValidationResult(is_valid=True)
 
-    def _fake_for_payload(
+    def _fake_validate_payload(
         provider: str | Provider,
         payload: JSONValue,
         *,
         source_path: str | None = None,
         schema_resolution: SchemaResolution | None = None,
+        schema_resolution_is_explicit: bool = True,
         strict: bool = True,
-    ) -> _CapturingValidator:
+        max_samples: int | None = None,
+    ) -> PayloadValidation:
+        del max_samples
         observed["validator_provider"] = provider
         observed["validator_source_path"] = source_path
         observed["validator_payload"] = payload
         observed["validator_schema_resolution"] = schema_resolution
+        observed["schema_resolution_is_explicit"] = schema_resolution_is_explicit
         observed["validator_strict"] = strict
-        return _CapturingValidator()
+        validator = _CapturingValidator()
+        samples = tuple(validator.validation_samples(payload))
+        results = tuple(validator.validate(sample, include_drift=True) for sample in samples)
+        return PayloadValidation(
+            validator=cast(SchemaValidator, validator),
+            samples=samples,
+            results=results,
+            schema_resolution=schema_resolution,
+            schema_resolution_is_explicit=schema_resolution_is_explicit,
+        )
 
     def _fake_parse_payload(
         provider: str | Provider,
@@ -738,7 +766,7 @@ def test_ingest_worker_reuses_schema_resolution_and_walks_drift(
             )
         ]
 
-    monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", _fake_for_payload)
+    monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.validate_payload", _fake_validate_payload)
     monkeypatch.setattr("polylogue.sources.dispatch.parse_payload", _fake_parse_payload)
 
     result = ingest_record(raw_record, str(tmp_path / "archive"), "strict")
@@ -746,6 +774,7 @@ def test_ingest_worker_reuses_schema_resolution_and_walks_drift(
     assert result.error is None
     assert registry.calls == 1
     assert observed["validator_schema_resolution"] is resolution
+    assert observed["schema_resolution_is_explicit"] is False
     assert observed["parse_schema_resolution"] is resolution
     assert observed["include_drift"] is True
 

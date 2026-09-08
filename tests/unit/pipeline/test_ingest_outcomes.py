@@ -16,6 +16,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -164,6 +165,7 @@ def test_strict_schema_validation_rejection_classifies_validation_rejected(
     schema's content.
     """
     from polylogue.schemas import ValidationResult
+    from polylogue.schemas.validator import PayloadValidation, SchemaValidator
 
     payload = json.dumps({"id": "conv-1", "title": "T", "mapping": {}}).encode()
     record = _make_raw_record("strict-reject", "chatgpt", payload)
@@ -177,9 +179,21 @@ def test_strict_schema_validation_rejection_classifies_validation_rejected(
         def validate(self, _sample: object, *, include_drift: bool | None = None) -> ValidationResult:
             return ValidationResult(is_valid=False, errors=["missing required field 'foo'"])
 
+    def _fake_validate_payload(*args: object, **kwargs: object) -> PayloadValidation:
+        del args, kwargs
+        validator = _RejectingValidator()
+        samples = tuple(validator.validation_samples(payload))
+        return PayloadValidation(
+            validator=cast(SchemaValidator, validator),
+            samples=samples,
+            results=tuple(validator.validate(sample, include_drift=True) for sample in samples),
+            schema_resolution=None,
+            schema_resolution_is_explicit=True,
+        )
+
     monkeypatch.setattr(
-        "polylogue.schemas.validator.SchemaValidator.for_payload",
-        lambda *args, **kwargs: _RejectingValidator(),
+        "polylogue.schemas.validator.SchemaValidator.validate_payload",
+        _fake_validate_payload,
     )
 
     result = ingest_record(record, str(tmp_path / "archive"), "strict")

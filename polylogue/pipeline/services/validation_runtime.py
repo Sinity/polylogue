@@ -9,7 +9,7 @@ from polylogue.archive.raw_payload import RawPayloadEnvelope, build_raw_payload_
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.logging import get_logger
-from polylogue.schemas.validator import SchemaValidator
+from polylogue.schemas.validator import PayloadValidation, SchemaValidator
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -58,9 +58,9 @@ def _validator_for_payload(
     envelope: RawPayloadEnvelope,
     *,
     source_path: str | None,
-) -> SchemaValidator | None:
+) -> PayloadValidation | None:
     try:
-        return SchemaValidator.for_payload(
+        return SchemaValidator.validate_payload(
             envelope.provider,
             envelope.payload,
             source_path=source_path,
@@ -127,7 +127,6 @@ def _validate_record_sync(
             raw_record=raw_record,
             payload_provider=stored_payload_provider,
         )
-        payload = envelope.payload
         malformed_lines = envelope.malformed_jsonl_lines
         malformed_detail = envelope.malformed_jsonl_detail
         payload_provider = envelope.provider
@@ -199,22 +198,22 @@ def _validate_record_sync(
             malformed_detail=malformed_detail,
         )
 
-    validator = _validator_for_payload(
+    payload_validation = _validator_for_payload(
         envelope,
         source_path=raw_record.source_path,
     )
-    if validator is None:
+    if payload_validation is None:
         counts_delta["skipped_no_schema"] += 1
 
     collected_errors: list[str] = []
     collected_drift: list[str] = []
 
-    if validator is not None:
-        samples = validator.validation_samples(payload)
-        if samples:
+    if payload_validation is not None:
+        validator = payload_validation.validator
+        validation_results = payload_validation.sample_results
+        if validation_results:
             invalid_count = 0
-            for sample in samples:
-                sample_result = validator.validate(sample)
+            for _sample, sample_result in validation_results:
                 if not sample_result.is_valid:
                     invalid_count += 1
                     collected_errors.extend(sample_result.errors[:2])
@@ -230,7 +229,7 @@ def _validate_record_sync(
                     "Schema validation errors for %s",
                     canonical_provider,
                     raw_id=raw_record.raw_id,
-                    samples=len(samples),
+                    samples=len(validation_results),
                     invalid_samples=invalid_count,
                     errors=collected_errors[:5],
                 )

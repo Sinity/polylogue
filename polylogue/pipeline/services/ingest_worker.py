@@ -13,7 +13,7 @@ import pickle
 import re
 import threading
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -148,6 +148,7 @@ class _PlanValidation:
     validation_error: str | None = None
     parse_error: str | None = None
     schema_drift: SchemaDriftObservation | None = None
+    schema_resolution: SchemaResolution | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -513,34 +514,35 @@ def _validate_parse_plan(
         )
 
     try:
-        validator = SchemaValidator.for_payload(
+        payload_validation = SchemaValidator.validate_payload(
             plan.provider,
             plan.schema_payload,
             source_path=context.raw_record.source_path,
             schema_resolution=plan.schema_resolution,
+            schema_resolution_is_explicit=False,
         )
     except (FileNotFoundError, ImportError):
         return _PlanValidation(
             status=ValidationStatus.SKIPPED,
         )
 
-    validation_samples = validator.validation_samples(plan.schema_payload)
+    validated_plan = replace(plan, schema_resolution=payload_validation.schema_resolution)
+    validation_results = payload_validation.sample_results
     drift: SchemaDriftObservation | None = None
-    if validation_samples:
+    if validation_results:
         collected_errors: list[str] = []
-        for sample in validation_samples:
+        for _sample, sample_result in validation_results:
             # include_drift=True is cheap (a structural walk of the already
             # in-memory sample) and is what makes format-drift detection
             # possible without a second, redundant validation pass
             # (polylogue-da1). It never changes accept/reject semantics --
             # only `errors`/`is_valid` below still gate STRICT failure.
-            sample_result = validator.validate(sample, include_drift=True)
             if not sample_result.is_valid:
                 collected_errors.extend(sample_result.errors[:2])
             if drift is None:
                 drift = _classify_plan_drift(
                     context,
-                    plan,
+                    validated_plan,
                     is_valid=sample_result.is_valid,
                     drift_warnings=sample_result.drift_warnings,
                 )
@@ -549,11 +551,13 @@ def _validate_parse_plan(
                 status=ValidationStatus.FAILED,
                 validation_error=f"Schema validation failed: {collected_errors[0]}",
                 schema_drift=drift,
+                schema_resolution=validated_plan.schema_resolution,
             )
 
     return _PlanValidation(
         status=ValidationStatus.PASSED,
         schema_drift=drift,
+        schema_resolution=validated_plan.schema_resolution,
     )
 
 
@@ -850,10 +854,15 @@ def _run_parse_plan(
             ),
         )
 
+    accepted_plan = (
+        replace(plan, schema_resolution=validation.schema_resolution)
+        if validation.schema_resolution is not None
+        else plan
+    )
     try:
         parsed_sessions = _parse_plan_sessions(
             context,
-            plan,
+            accepted_plan,
         )
     except Exception as exc:
         return _record_result(
@@ -865,10 +874,10 @@ def _run_parse_plan(
             disposition=classify_parse_exception(exc),
         )
 
-    enriched_sessions, sessions_unenriched = _enrich_parsed_sessions(context, plan, parsed_sessions)
+    enriched_sessions, sessions_unenriched = _enrich_parsed_sessions(context, accepted_plan, parsed_sessions)
     return _materialize_parsed_sessions(
         context,
-        plan,
+        accepted_plan,
         validation=validation,
         parsed_sessions=enriched_sessions,
         sessions_unenriched=sessions_unenriched,
