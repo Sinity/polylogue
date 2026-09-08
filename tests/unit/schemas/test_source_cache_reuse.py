@@ -18,6 +18,7 @@ from polylogue.core.json import JSONValue
 from polylogue.schemas import source_inference as source
 from polylogue.schemas.field_stats import detection
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
+from polylogue.schemas.source_cache import CachedContribution
 from polylogue.schemas.source_recipe import SourceEvidenceRecipe
 
 
@@ -220,7 +221,7 @@ def test_headerless_claude_code_recollects_legacy_path_fallback_cache(
             next(source._cached_contributions(contribution.evidence)), logical_source_id=legacy_id
         )
         cache.put(
-            source.CachedContribution(
+            CachedContribution(
                 cache_key=source._cache_key(
                     candidate,
                     descriptor.revision_sha256,
