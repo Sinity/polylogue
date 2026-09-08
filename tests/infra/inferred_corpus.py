@@ -920,7 +920,10 @@ def _validate_inference_handoff(
         else:
             expected_decision = "unsupported"
         if coverage.decision != expected_decision:
-            raise ValueError("schema-inference handoff coverage decision changed")
+            raise ValueError(
+                f"schema-inference handoff coverage decision changed for {coverage.provider}: "
+                f"expected={expected_decision}, actual={coverage.decision}"
+            )
 
     expected_unsupported: set[tuple[str, str, str, str, str, tuple[str, ...]]] = set()
     entries_by_wire_key = {
