@@ -523,3 +523,12 @@ def test_public_timestamp_annotations_exclude_ranges_and_empirical_deltas() -> N
         child = _object(node)
         assert "x-polylogue-range" not in child
         assert "range" not in _object(child.get("x-polylogue-evidence", {}))
+
+
+def test_schema_frequency_preserves_rare_observations() -> None:
+    """Rounding to three decimal places misrepresents observed fields as absent."""
+    from polylogue.schemas.generation.field_annotations import annotate_schema
+
+    stats = FieldStats(path="$.rare", total_samples=3_000_000, document_encountered_count=5)
+    schema = annotate_schema({"type": "string"}, {"$.rare": stats}, "$.rare")
+    assert schema["x-polylogue-frequency"] == 5 / 3_000_000

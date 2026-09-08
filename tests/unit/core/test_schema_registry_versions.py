@@ -6,7 +6,7 @@ Covers:
 - Retrieving schemas by version (specific and latest)
 - Version bumps only on structural changes
 - Annotation-only changes (x-polylogue-*) still bump version (registry is structural-agnostic)
-- Metadata injection ($id, x-polylogue-version, x-polylogue-registered-at)
+- Schema identity metadata and package registration timestamps
 """
 
 from __future__ import annotations
@@ -153,18 +153,18 @@ class TestMetadataInjection:
         assert v2 is not None
         assert v2["x-polylogue-version"] == 2
 
-    def test_register_injects_timestamp(self, registry: SchemaRegistry) -> None:
+    def test_registration_time_is_recorded_in_package(self, registry: SchemaRegistry) -> None:
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
         registry.register_schema("meta-prov", schema)
         stored = registry.get_schema("meta-prov", version="v1")
         assert stored is not None
-        assert "x-polylogue-registered-at" in stored
-        # Should be a valid ISO timestamp
+        assert "x-polylogue-registered-at" not in stored
         from datetime import datetime
 
-        registered_at = stored.get("x-polylogue-registered-at")
-        assert isinstance(registered_at, str)
-        datetime.fromisoformat(registered_at)
+        package = registry.get_package("meta-prov", version="v1")
+        assert package is not None
+        assert package.first_seen == package.last_seen
+        assert datetime.fromisoformat(package.first_seen).tzinfo is not None
 
     def test_register_does_not_mutate_input(self, registry: SchemaRegistry) -> None:
         """The original dict passed in should not be modified."""

@@ -141,7 +141,7 @@ def annotate_schema(
         schema_node["x-polylogue-observed-distribution"] = _observed_distribution_payload(field_stats)
         freq = field_stats.document_frequency
         if 0.0 < freq < 0.95:
-            schema_node["x-polylogue-frequency"] = round(freq, 3)
+            schema_node["x-polylogue-frequency"] = freq
 
         if field_stats.field_first_seen:
             schema_node["x-polylogue-field-first-seen"] = field_stats.field_first_seen

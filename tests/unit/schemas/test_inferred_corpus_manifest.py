@@ -607,12 +607,13 @@ def test_bundled_registry_relation_annotations_share_one_receipt_classification(
             )
         )
     assert receipt_decisions == manifest_decisions
-    assert all(
-        annotation in details
-        for *_identity, details in receipt_decisions
-        for annotation in expected_annotations
-        if annotation in observed
-    )
+    for entry in manifest.entries:
+        annotations = {
+            item.construct for item in entry.key.construct_support if item.state == "unsupported"
+        } & expected_annotations
+        if annotations:
+            assert entry.unsupported is not None
+            assert annotations <= set(entry.unsupported.details)
 
     package = receipt.packages[0]
     if receipt.unsupported_decisions:

@@ -995,11 +995,14 @@ def test_coverage_witnesses_select_nested_array_union_branches() -> None:
     }
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
 
-    payloads = [json.loads(raw) for raw in wire_formats.generate_coverage_witnesses(corpus, seed=31)]
+    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=31)
+    payloads = [json.loads(raw) for raw in raw_items]
 
     assert {type(payload["choice"]) for payload in payloads} >= {int, str}
     assert {type(payload["items"][0]) for payload in payloads} >= {int, str}
     assert {type(payload["typed_choice"]) for payload in payloads} >= {dict, str}
+    assert wire_formats.construct_coverage(schema, payloads).complete
+    assert len(raw_items) < 128
 
 
 def test_coverage_witnesses_keep_nested_union_choices_independent() -> None:
