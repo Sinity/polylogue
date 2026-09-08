@@ -147,3 +147,21 @@ def test_claude_coordinator_is_default_even_with_a_generic_stream(
     assert package.default_element_kind == "coordinator_session_stream"
     assert package.sample_count == bundle.result.sample_count == 5
     assert sum(element.sample_count for element in package.elements) == package.sample_count
+
+
+def test_source_bundle_canonicalizes_provider_aliases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: parsed aliases used to be filtered out before source inference."""
+    current = source_result(records=1)
+    monkeypatch.setattr(workflow, "infer_sources", lambda *_args, **_kwargs: current)
+
+    bundle = workflow.build_provider_bundle_from_sources(
+        "anthropic",
+        source_inputs=(SchemaSourceInput("anthropic", tmp_path),),
+        cache_path=None,
+        max_workers=1,
+        privacy_config=None,
+        prior_catalog=None,
+    )
+
+    assert bundle.result.success
+    assert bundle.result.provider == "claude-ai"

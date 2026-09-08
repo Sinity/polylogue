@@ -1146,3 +1146,127 @@ def test_gemini_checkpoint_rejects_unrecognized_records(tmp_path: Path, invalid:
     )
     assert not result.evidence_by_element
     assert result.terminal_reason_counts == {"no_schema_units": 1}
+
+
+def test_explicit_file_symlink_reaches_source_evidence(tmp_path: Path) -> None:
+    """Anti-vacuity: directory hardening must not discard an explicitly selected regular-file target."""
+    target = tmp_path / "target.jsonl"
+    target.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "sessionId": "linked-session",
+                "version": "1.2.3",
+                "message": {"role": "user", "content": "linked"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    selected = tmp_path / "selected.jsonl"
+    selected.symlink_to(target)
+
+    result = infer_sources(
+        (SchemaSourceInput("claude-code", selected),), cache_path=tmp_path / "source-cache.sqlite3", max_workers=1
+    )
+
+    assert result.terminal_counts == {"included": 1}
+    assert result.record_count == 1
+
+
+def test_terminal_candidate_revision_changes_source_input_manifest_digest(tmp_path: Path) -> None:
+    """Anti-vacuity: a failed declared file must remain bound into the private input manifest."""
+    valid = tmp_path / "valid.jsonl"
+    valid.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "sessionId": "valid-session",
+                "version": "1.2.3",
+                "message": {"role": "user", "content": "valid"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    broken = tmp_path / "broken.jsonl"
+    broken.write_text('{"broken": nope}\n', encoding="utf-8")
+    cache_path = tmp_path.parent / f"{tmp_path.name}-source-cache.sqlite3"
+
+    first = infer_sources((SchemaSourceInput("claude-code", tmp_path),), cache_path=cache_path, max_workers=1)
+    broken.write_text('{"different": nope}\n', encoding="utf-8")
+    second = infer_sources((SchemaSourceInput("claude-code", tmp_path),), cache_path=cache_path, max_workers=1)
+
+    assert first.terminal_counts["included"] == second.terminal_counts["included"] == 1
+    assert len(first.terminal_counts) == len(second.terminal_counts) == 2
+    assert first.record_count == second.record_count == 1
+    assert first.input_manifest_digest != second.input_manifest_digest
+
+
+@pytest.mark.parametrize("mutation_phase", ["reduce", "statistics_plan"])
+def test_changed_preliminary_source_cannot_normalize_a_stable_peer(tmp_path: Path, mutation_phase: str) -> None:
+    """Anti-vacuity: a rejected source must not collapse the stable peer's ordinary object keys."""
+    stable = tmp_path / "stable.jsonl"
+    changing = tmp_path / "changing.jsonl"
+
+    def record(session_id: str, metadata: dict[str, int]) -> str:
+        return json.dumps(
+            {
+                "type": "user",
+                "sessionId": session_id,
+                "version": "1.2.3",
+                "message": {"role": "user", "content": "synthetic", "metadata": metadata},
+            }
+        )
+
+    stable.write_text(record("stable", {"keep": 1}) + "\n", encoding="utf-8")
+    changing.write_text(
+        "".join(record("changing", {f"key-{index:03d}": index}) + "\n" for index in range(256)), encoding="utf-8"
+    )
+    mutated = False
+
+    def replace_after_structure(phase: str, _payload: JSONDocument) -> None:
+        nonlocal mutated
+        if phase == mutation_phase and not mutated:
+            changing.write_text(record("changing", {"replacement": 1}) + "\n", encoding="utf-8")
+            mutated = True
+
+    result = infer_sources(
+        (SchemaSourceInput("claude-code", tmp_path),),
+        cache_path=tmp_path / "source-cache.sqlite3",
+        max_workers=1,
+        progress=replace_after_structure,
+    )
+    evidence = merge_evidence(
+        SchemaEvidence.from_json(item) for item in result.evidence_by_element["session_record_stream"]
+    )
+
+    assert mutated
+    assert result.terminal_counts == {"changed_during_read": 1, "included": 1}
+    assert "$.message.metadata" not in evidence.normalization_paths
+    assert "$.message.metadata.keep" in evidence.fields
+
+
+def test_identical_headerless_codex_captures_count_once(tmp_path: Path) -> None:
+    """Anti-vacuity: path-derived fallback identities doubled byte-identical headerless captures."""
+    record = {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "same direct message"}],
+    }
+    payload = json.dumps(record) + "\n"
+    (tmp_path / "first.jsonl").write_text(payload, encoding="utf-8")
+    (tmp_path / "second.jsonl").write_text(payload, encoding="utf-8")
+
+    result = infer_sources(
+        (SchemaSourceInput("codex", tmp_path),), cache_path=tmp_path / "source-cache.sqlite3", max_workers=1
+    )
+    evidence = merge_evidence(
+        SchemaEvidence.from_json(item) for item in result.evidence_by_element["session_record_stream"]
+    )
+
+    assert result.terminal_counts == {"included": 1}
+    assert result.included_candidate_count == 2
+    assert result.included_native_source_revision_count == 1
+    assert evidence.current_source_count == 1
+    assert evidence.current_record_count == 1
