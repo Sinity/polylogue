@@ -21,6 +21,7 @@ from polylogue.config import get_config
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
+from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.source_inference import parse_schema_source_input
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -136,7 +137,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"schema-commit: {result.provider} -- {mode}")
         print(f"  sample_count={result.generation.sample_count}")
         if result.handoff is not None:
-            input_manifest = result.handoff.input_manifests[0]
+            provider_token = str(canonical_schema_provider(result.provider))
+            input_manifest = next(item for item in result.handoff.input_manifests if item.provider == provider_token)
             print(f"  input_manifest_digest={input_manifest.digest or input_manifest.unavailable_reason}")
             if result.handoff_path is not None:
                 print(f"  handoff_path={result.handoff_path}")
