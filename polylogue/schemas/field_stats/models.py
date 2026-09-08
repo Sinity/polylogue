@@ -85,6 +85,7 @@ class FieldStats:
     _last_encountered_document: int | None = field(default=None, repr=False)
     _last_non_null_document: int | None = field(default=None, repr=False)
     equality_hash_counts: Counter[str] = field(default_factory=Counter)
+    object_key_hash_counts: Counter[str] = field(default_factory=Counter)
     equality_session_tokens: dict[str, set[str]] = field(default_factory=dict)
     safe_observed_values: Counter[str] = field(default_factory=Counter)
     slash_value_count: int = 0
@@ -173,6 +174,18 @@ class FieldStats:
             self.safe_observed_values[value] += 1
         if "/" in value:
             self.slash_value_count += 1
+
+    def observe_object_key(self, value: str) -> None:
+        """Retain a bounded private witness for one object key."""
+        digest = hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
+        if digest not in self.object_key_hash_counts and len(self.object_key_hash_counts) >= EQUALITY_EVIDENCE_CAP:
+            largest = max(self.object_key_hash_counts)
+            if digest >= largest:
+                self.truncated_evidence["object_key_hashes"] += 1
+                return
+            del self.object_key_hash_counts[largest]
+            self.truncated_evidence["object_key_hashes"] += 1
+        self.object_key_hash_counts[digest] += 1
 
     @property
     def frequency(self) -> float:
@@ -265,7 +278,7 @@ class FieldStats:
 
     @property
     def approximate_entropy(self) -> float | None:
-        values = self.observed_values or self.equality_hash_counts
+        values = self.equality_hash_counts or self.observed_values
         if not values or self.value_count == 0:
             return None
         total = sum(values.values())
