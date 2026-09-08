@@ -329,7 +329,7 @@ def test_claude_subagent_files_with_one_parent_session_remain_independent(tmp_pa
                     "type": "user",
                     "sessionId": "parent-session",
                     "version": "1.2.3",
-                    "message": {"role": "user", "content": agent},
+                    "message": {"role": "user", "content": "shared subagent transcript"},
                 }
             )
             + "\n",
@@ -347,3 +347,13 @@ def test_claude_subagent_files_with_one_parent_session_remain_independent(tmp_pa
 
     assert result.terminal_counts == {"included": 2}
     assert evidence.current_source_count == 2
+    warm = infer_sources(
+        (SchemaSourceInput("claude-code", source_root),),
+        cache_path=tmp_path / "source-cache.sqlite3",
+        max_workers=1,
+    )
+    warm_evidence = merge_evidence(
+        SchemaEvidence.from_json(item) for rows in warm.evidence_by_element.values() for item in rows
+    )
+    assert warm.cache_hits == 4
+    assert warm_evidence.current_source_count == 2
