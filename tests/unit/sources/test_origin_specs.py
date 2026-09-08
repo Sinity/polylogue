@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 from dataclasses import replace
@@ -886,7 +887,7 @@ class TestSemanticSourceClosureMemo:
         first = origin_specs_module._semantic_source_paths(paths)
         assert len(first) == len(paths)
         monkeypatch.setattr(
-            origin_specs_module.ast,
+            ast,
             "parse",
             lambda *_args, **_kwargs: pytest.fail("shared import graph was parsed again"),
         )
