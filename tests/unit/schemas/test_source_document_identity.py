@@ -46,11 +46,12 @@ def test_hermes_snapshot_copies_share_identity_within_their_profile(tmp_path: Pa
 
 def test_declared_document_ids_are_path_independent(tmp_path: Path) -> None:
     """Fallback paths must not split copies when the provider supplies an ID."""
-    for provider, payload in (
+    cases: tuple[tuple[Provider, JSONDocument], ...] = (
         (Provider.GEMINI, {"id": "prompt"}),
         (Provider.DRIVE, {"id": "prompt"}),
         (Provider.ANTIGRAVITY, {"cascadeId": "cascade"}),
-    ):
+    )
+    for provider, payload in cases:
         assert native_document_identity(provider, payload, tmp_path / "a.json") == native_document_identity(
             provider, payload, tmp_path / "b.json"
         )
