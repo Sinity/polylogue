@@ -5,12 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Collection, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import repeat
 from typing import Protocol
 
 from polylogue.core.json import JSONDocument, JSONValue, json_document
-from polylogue.schemas.field_stats.evidence import deserialize_field_stats, merge_field_stats, serialize_field_stats
+from polylogue.schemas.field_stats.evidence import (
+    deserialize_field_stats,
+    finalize_field_stats,
+    merge_field_stats,
+    merge_field_stats_into,
+    serialize_field_stats,
+)
 from polylogue.schemas.field_stats.stats import FieldStats, _collect_field_stats
 from polylogue.schemas.generation.dynamic_keys import (
     collapse_dynamic_keys,
@@ -163,6 +169,7 @@ def collect_source_evidence(
     *,
     dynamic_paths: Collection[str] = (),
     is_current: bool | None = None,
+    include_statistics: bool = True,
 ) -> SchemaEvidence:
     """Consume one complete source revision once and return compact evidence.
 
@@ -180,16 +187,26 @@ def collect_source_evidence(
         for record in observation.records:
             record_count += 1
             record_structure = observed_structure_schema(record)
-            structure = _merge_structure(structure, record_structure)
-            unretained_shape_observation_lower_bound += _observe_shape_hash(shape_hashes, record_structure)
+            digest = _schema_digest(record_structure)
+            if digest not in shape_hashes:
+                structure = _merge_structure(structure, record_structure)
+                if len(shape_hashes) < _SHAPE_HASH_CAP:
+                    shape_hashes.add(digest)
+                else:
+                    unretained_shape_observation_lower_bound += 1
             if isinstance(record, Mapping):
                 yield record
 
-    stats = _collect_field_stats(
-        records_for_stats(),
-        session_ids=repeat(observation.logical_source_id),
-        dynamic_paths=dynamic_paths,
-    )
+    stats: dict[str, FieldStats] = {}
+    if include_statistics:
+        stats = _collect_field_stats(
+            records_for_stats(),
+            session_ids=repeat(observation.logical_source_id),
+            dynamic_paths=dynamic_paths,
+        )
+    else:
+        for _record in records_for_stats():
+            pass
     current = observation.is_current if is_current is None else is_current
     return SchemaEvidence(
         current_structure=structure if current else {},
@@ -219,8 +236,8 @@ def collect_evidence(
     current = tuple(current_observations)
     historical = tuple(historical_observations)
     preliminary = [
-        *(collect_source_evidence(item, is_current=True) for item in current),
-        *(collect_source_evidence(item, is_current=False) for item in historical),
+        *(collect_source_evidence(item, is_current=True, include_statistics=False) for item in current),
+        *(collect_source_evidence(item, is_current=False, include_statistics=False) for item in historical),
     ]
     structure = merge_observed_structure_schemas(item.structure for item in preliminary)
     paths = tuple(sorted(dynamic_object_paths(structure)))
@@ -261,6 +278,59 @@ def collect_sample_evidence(
     )
 
 
+@dataclass
+class SchemaEvidenceAccumulator:
+    """Fold caller-ordered summaries without retaining completed source rows.
+
+    Field sketches and shape witnesses remain bounded. Memory grows with the
+    resulting schema's field paths, rather than with its source count.
+    """
+
+    _current_structure: JSONDocument = field(default_factory=dict)
+    _historical_structure: JSONDocument = field(default_factory=dict)
+    _fields: dict[str, FieldStats] = field(default_factory=dict)
+    _normalization_paths: tuple[str, ...] | None = None
+    _current_sources: int = 0
+    _current_records: int = 0
+    _historical_sources: int = 0
+    _historical_records: int = 0
+    _shape_hashes: set[str] = field(default_factory=set)
+    _unretained_shapes: int = 0
+
+    def add(self, evidence: SchemaEvidence) -> None:
+        if self._normalization_paths is None:
+            self._normalization_paths = evidence.normalization_paths
+        elif self._normalization_paths != evidence.normalization_paths:
+            raise ValueError("cannot merge evidence collected under different dynamic-key normalization")
+        self._current_structure = _merge_structure(self._current_structure, evidence.current_structure)
+        self._historical_structure = _merge_structure(self._historical_structure, evidence.historical_structure)
+        merge_field_stats_into(self._fields, evidence.field_stats)
+        self._current_sources += evidence.current_source_count
+        self._current_records += evidence.current_record_count
+        self._historical_sources += evidence.historical_source_count
+        self._historical_records += evidence.historical_record_count
+        self._shape_hashes.update(evidence.shape_hashes)
+        discarded = max(0, len(self._shape_hashes) - _SHAPE_HASH_CAP)
+        if discarded:
+            self._shape_hashes = set(sorted(self._shape_hashes)[:_SHAPE_HASH_CAP])
+        self._unretained_shapes += evidence.unretained_shape_observation_lower_bound + discarded
+
+    def finish(self) -> SchemaEvidence:
+        finalize_field_stats(self._fields, total_samples=self._current_records)
+        return SchemaEvidence(
+            current_structure=self._current_structure,
+            historical_structure=self._historical_structure,
+            fields={path: serialize_field_stats(stats) for path, stats in sorted(self._fields.items())},
+            normalization_paths=self._normalization_paths or (),
+            current_source_count=self._current_sources,
+            current_record_count=self._current_records,
+            historical_source_count=self._historical_sources,
+            historical_record_count=self._historical_records,
+            shape_hashes=tuple(sorted(self._shape_hashes)),
+            unretained_shape_observation_lower_bound=self._unretained_shapes,
+        )
+
+
 def merge_evidence(evidence: Iterable[SchemaEvidence]) -> SchemaEvidence:
     """Merge deterministic source summaries; replacement callers rebuild here."""
     ordered = tuple(
@@ -294,6 +364,7 @@ def merge_evidence(evidence: Iterable[SchemaEvidence]) -> SchemaEvidence:
 __all__ = [
     "SCHEMA_EVIDENCE_VERSION",
     "SchemaEvidence",
+    "SchemaEvidenceAccumulator",
     "SourceObservation",
     "collect_evidence",
     "collect_sample_evidence",
