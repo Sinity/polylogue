@@ -26,6 +26,7 @@ def source_result(*, records: int) -> SourceInferenceResult:
     return SourceInferenceResult(
         evidence_by_element=elements,
         terminal_counts={"included": 1},
+        candidate_terminal_counts={"included": 1},
         terminal_reason_counts={},
         input_bytes=records * 100,
         record_count=records + 1,
@@ -37,6 +38,9 @@ def source_result(*, records: int) -> SourceInferenceResult:
         producer_version_conflicting_sources=0,
         producer_version_unrecognized_sources=0,
         input_manifest_digest="a" * 64,
+        candidate_count=1,
+        included_candidate_count=1,
+        included_native_source_revision_count=1,
     )
 
 

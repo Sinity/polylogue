@@ -108,8 +108,9 @@ def _extract_record_observation(
     context: _ObservationContext,
     config: ProviderConfig,
     compact_values: bool,
+    admitted_artifact_kind: str | None,
 ) -> _ObservedSchemaUnit | None:
-    artifact_kind = _eligible_artifact_kind(normalized_payload, context=context)
+    artifact_kind = admitted_artifact_kind or _eligible_artifact_kind(normalized_payload, context=context)
     if artifact_kind is None:
         return None
 
@@ -177,8 +178,14 @@ def extract_schema_units_from_payload(
     values_compacted: bool = False,
     full_corpus: bool = False,
     compact_values: bool = True,
+    admitted_artifact_kind: str | None = None,
 ) -> list[SchemaUnit]:
-    """Extract clusterable schema units from one decoded payload."""
+    """Extract clusterable schema units from one decoded payload.
+
+    ``admitted_artifact_kind`` carries a prior whole-stream classification for
+    record-granularity callers. Individual records cannot re-establish a
+    stream classifier's admission contract.
+    """
     if not isinstance(payload, ReplayableRecordSamples) and not is_json_value(payload):
         return []
     normalized_payload = cast(JSONValue, payload)
@@ -198,6 +205,7 @@ def extract_schema_units_from_payload(
             context=context,
             config=config,
             compact_values=compact_values,
+            admitted_artifact_kind=admitted_artifact_kind,
         )
         if observed is None:
             return []

@@ -7,7 +7,7 @@ import json
 import tempfile
 from collections.abc import Collection, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -362,17 +362,130 @@ def test_zip_members_and_jsonl_header_share_the_declared_native_source(tmp_path:
     }
     with zipfile.ZipFile(source, "w") as archive:
         archive.writestr("nested/session.jsonl", "\n".join((json.dumps(header), json.dumps(event))) + "\n")
+        archive.writestr(
+            "nested/second-session.jsonl",
+            "\n".join(
+                (
+                    json.dumps({"type": "session_meta", "payload": {"id": "zip-codex-2", "cli_version": "v1.2.3"}}),
+                    json.dumps(event),
+                )
+            )
+            + "\n",
+        )
+    (tmp_path / "metadata.jsonl").write_text('{"type":"metadata"}\n', encoding="utf-8")
 
     result = infer_sources(
-        (SchemaSourceInput("codex", source),), cache_path=tmp_path / "source-cache.sqlite3", max_workers=1
+        (SchemaSourceInput("codex", tmp_path),), cache_path=tmp_path / "source-cache.sqlite3", max_workers=1
     )
     evidence = merge_evidence(
         SchemaEvidence.from_json(item) for rows in result.evidence_by_element.values() for item in rows
     )
 
-    assert result.terminal_counts == {"included": 1}
+    assert result.terminal_counts == {"included": 2, "unsupported": 1}
     assert evidence.current_source_count >= 1
     assert result.producer_version_counts == {"1.2.3": 1}
+    provenance = result.provenance()
+    assert provenance["source_terminal_outcomes"] == {"included": 2, "unsupported": 1}
+    assert provenance["source_terminal_outcome_units"] == {
+        "included": "native_source_revision",
+        "unsupported": "physical_candidate",
+    }
+    assert provenance["source_candidate_terminal_outcomes"] == {"included": 1, "unsupported": 1}
+    assert provenance["source_candidate_count"] == 2
+    assert provenance["source_included_candidate_count"] == 1
+    assert provenance["source_included_native_source_revision_count"] == 2
+
+
+def test_record_source_uses_codex_whole_stream_admission(tmp_path: Path) -> None:
+    """Anti-vacuity: classifying each line drops valid non-message Codex records."""
+    from polylogue.archive.artifact_taxonomy import classify_artifact
+    from polylogue.core.enums import Provider
+
+    records: tuple[JSONValue, ...] = (
+        {"type": "session_meta", "payload": {"id": "admission", "cli_version": "1.2.3"}},
+        {"type": "turn_context", "payload": {"cwd": "/repo"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+        },
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": 1}}},
+    )
+    path = tmp_path / "rollout.jsonl"
+    candidate = _SourceCandidate("codex", tmp_path, path, "synthetic-codex")
+    revision = SourceRevision("codex", path, candidate.logical_source_id, "a" * 64, 0)
+
+    assert classify_artifact(cast(JSONValue, records), provider=Provider.CODEX, source_path=path).schema_eligible
+    contributions, record_count, _versions, _unrecognized = _collect_payload_evidence(
+        candidate,
+        revision,
+        iter(records),
+        dynamic_paths_by_element={},
+    )
+
+    assert record_count == len(records)
+    assert [contribution.record_count for contribution in contributions] == [len(records)]
+
+    mixed_generation: tuple[JSONValue, ...] = (
+        *records[:3],
+        {
+            "type": "message",
+            "id": "legacy-user",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "legacy"}],
+        },
+    )
+    assert not classify_artifact(
+        cast(JSONValue, mixed_generation), provider=Provider.CODEX, source_path=path
+    ).schema_eligible
+    refused, refused_count, _versions, _unrecognized = _collect_payload_evidence(
+        candidate,
+        revision,
+        iter(mixed_generation),
+        dynamic_paths_by_element={},
+    )
+    assert refused == ()
+    assert refused_count == 0
+
+
+def test_record_source_keeps_claude_snapshot_after_stream_admission(tmp_path: Path) -> None:
+    """Anti-vacuity: a snapshot line alone must not override its admitted transcript."""
+    from polylogue.archive.artifact_taxonomy import classify_artifact
+    from polylogue.core.enums import Provider
+
+    path = tmp_path / ".claude" / "projects" / "project" / "claude-admission.jsonl"
+    records: tuple[JSONValue, ...] = (
+        {
+            "type": "file-history-snapshot",
+            "messageId": "u1",
+            "snapshot": {"messageId": "u1", "trackedFileBackups": {}},
+        },
+        {"type": "user", "sessionId": "claude-admission", "uuid": "u1", "message": {"role": "user", "content": "hi"}},
+        {
+            "type": "assistant",
+            "sessionId": "claude-admission",
+            "uuid": "u2",
+            "parentUuid": "u1",
+            "message": {"role": "assistant", "content": "hey"},
+        },
+    )
+    candidate = _SourceCandidate("claude-code", path.parent, path, "synthetic-claude")
+    revision = SourceRevision("claude-code", path, candidate.logical_source_id, "b" * 64, 0)
+
+    assert classify_artifact(cast(JSONValue, records), provider=Provider.CLAUDE_CODE, source_path=path).schema_eligible
+    assert not classify_artifact([records[0]], provider=Provider.CLAUDE_CODE, source_path=path).schema_eligible
+    contributions, record_count, _versions, _unrecognized = _collect_payload_evidence(
+        candidate,
+        revision,
+        iter(records),
+        dynamic_paths_by_element={},
+    )
+
+    assert record_count == len(records)
+    assert [contribution.record_count for contribution in contributions] == [len(records)]
 
 
 def test_malformed_members_become_terminal_outcomes_without_aborting_inventory(tmp_path: Path) -> None:
