@@ -462,6 +462,7 @@ def test_facets_command_can_scope_query_and_origin(
 def test_analyze_facets_include_deferred_materializes_expensive_families(
     runner: CliRunner,
     seeded_db_env: Path,
+    query_archive_lease: SeededArchiveQueryLease,
 ) -> None:
     """`--include-deferred` opts into the full facet families."""
     import json as _json
@@ -491,14 +492,9 @@ def test_analyze_facets_include_deferred_materializes_expensive_families(
     assert payload["family_status"]["repos"]["canonicalization"].startswith("prefer repo_name")
     assert payload["role_counts"]
     assert payload["material_origins"]
-    # The named ``cli-chatgpt`` workload is deliberately generated through
-    # the schema-backed production route; its deterministic seed currently
-    # realizes 12 message blocks across its two sessions. This count shifts
-    # whenever the chatgpt provider schema package (``x-polylogue-values``
-    # sample pool consumed by synthetic generation) changes shape, since that
-    # changes how many random draws the shared per-corpus RNG consumes before
-    # choosing message counts for later sessions.
-    assert payload["message_types"] == {"message": 12}
+    expected_messages = sum(fact.message_count for fact in query_archive_lease.artifact.facts)
+    assert expected_messages > 0
+    assert payload["message_types"] == {"message": expected_messages}
 
 
 def test_analyze_facets_default_marks_detail_families_deferred_not_authoritative(
