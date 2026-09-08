@@ -120,6 +120,7 @@ def _collect_field_stats(
             key_evidence = dict_key_sets[path]
             for key in value:
                 stats.object_key_distribution.observe(str(key))
+                stats.observe_object_key(str(key))
                 if key in key_evidence or len(key_evidence) < _DICT_KEY_EVIDENCE_CAP:
                     key_evidence.add(key)
                 else:

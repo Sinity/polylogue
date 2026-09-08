@@ -9,7 +9,12 @@ from typing import overload
 
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch
-from polylogue.schemas.field_stats.models import EQUALITY_EVIDENCE_CAP, SESSION_EVIDENCE_CAP, FieldStats
+from polylogue.schemas.field_stats.models import (
+    EQUALITY_EVIDENCE_CAP,
+    REF_MATCH_THRESHOLD,
+    SESSION_EVIDENCE_CAP,
+    FieldStats,
+)
 
 FIELD_EVIDENCE_VERSION = 1
 
@@ -112,6 +117,7 @@ def serialize_field_stats(stats: FieldStats) -> JSONDocument:
         "co_occurring_fields": _counter_state(stats.co_occurring_fields),
         "truncated": _counter_state(stats.truncated_evidence),
         "equality_hashes": _counter_state(stats.equality_hash_counts),
+        "object_key_hashes": _counter_state(stats.object_key_hash_counts),
         "equality_sessions": [
             [digest, _string_tokens(sorted(tokens))] for digest, tokens in sorted(stats.equality_session_tokens.items())
         ],
@@ -146,6 +152,7 @@ def deserialize_field_stats(state: JSONDocument) -> FieldStats:
         co_occurring_fields=_counter_from_state(state.get("co_occurring_fields")),
         truncated_evidence=_counter_from_state(state.get("truncated")),
         equality_hash_counts=_counter_from_state(state.get("equality_hashes")),
+        object_key_hash_counts=_counter_from_state(state.get("object_key_hashes")),
         total_samples=_state_int(counts.get("total_samples", 0)),
         present_count=_state_int(counts.get("present", 0)),
         value_count=_state_int(counts.get("value", 0)),
@@ -208,7 +215,27 @@ def merge_field_stats(
         if total_samples is not None:
             stats.total_samples = total_samples
         stats.observed_values = Counter(stats.safe_observed_values)
+    _qualify_merged_ref_targets(merged)
     return merged
+
+
+def _qualify_merged_ref_targets(stats_by_path: Mapping[str, FieldStats]) -> None:
+    """Qualify mapping references from the aggregate bounded hash evidence."""
+    for source_stats in stats_by_path.values():
+        source_values = set(source_stats.equality_hash_counts)
+        if len(source_values) <= 5:
+            continue
+        candidates = [
+            path
+            for path, target_stats in stats_by_path.items()
+            if target_stats.object_key_hash_counts
+            and len(source_values & set(target_stats.object_key_hash_counts)) / len(source_values)
+            >= REF_MATCH_THRESHOLD
+        ]
+        if candidates:
+            source_stats.ref_target = min(candidates)
+        elif source_stats.ref_target in stats_by_path:
+            source_stats.ref_target = None
 
 
 def _merge_one(target: FieldStats, source: FieldStats) -> None:
@@ -244,6 +271,7 @@ def _merge_one(target: FieldStats, source: FieldStats) -> None:
         "co_occurring_fields",
         "truncated_evidence",
         "equality_hash_counts",
+        "object_key_hash_counts",
         "safe_observed_values",
     ):
         getattr(target, name).update(getattr(source, name))
@@ -281,6 +309,13 @@ def _bound_equality_evidence(stats: FieldStats) -> None:
             digest: tokens for digest, tokens in stats.equality_session_tokens.items() if digest in retained
         }
         stats.truncated_evidence["equality_hashes"] += removed
+    if len(stats.object_key_hash_counts) > EQUALITY_EVIDENCE_CAP:
+        retained = set(sorted(stats.object_key_hash_counts)[:EQUALITY_EVIDENCE_CAP])
+        removed = len(stats.object_key_hash_counts) - len(retained)
+        stats.object_key_hash_counts = Counter(
+            {digest: count for digest, count in stats.object_key_hash_counts.items() if digest in retained}
+        )
+        stats.truncated_evidence["object_key_hashes"] += removed
     for tokens in stats.equality_session_tokens.values():
         if len(tokens) > SESSION_EVIDENCE_CAP:
             tokens.intersection_update(sorted(tokens)[:SESSION_EVIDENCE_CAP])

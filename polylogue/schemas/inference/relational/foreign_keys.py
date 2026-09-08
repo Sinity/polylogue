@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
+from polylogue.schemas.field_stats.models import REF_MATCH_THRESHOLD
 from polylogue.schemas.field_stats.stats import FieldStats
 from polylogue.schemas.inference.relational.models import ForeignKeyRelation
 
@@ -20,20 +21,54 @@ def _equality_values(field_stats: FieldStats) -> set[str]:
     }
 
 
+def _append_mapping_references(stats: dict[str, FieldStats], results: list[ForeignKeyRelation]) -> None:
+    """Detect references against bounded object-key witnesses after aggregation."""
+    emitted: set[tuple[str, str]] = set()
+    for source_path, source_stats in stats.items():
+        source_values = _equality_values(source_stats)
+        if len(source_values) <= 5:
+            continue
+        for target_path, target_stats in stats.items():
+            target_values = set(target_stats.object_key_hash_counts)
+            if source_path == target_path or not target_values:
+                continue
+            overlap = len(source_values & target_values)
+            ratio = overlap / len(source_values)
+            if ratio >= REF_MATCH_THRESHOLD:
+                results.append(
+                    ForeignKeyRelation(
+                        source_path=source_path,
+                        target_path=target_path,
+                        match_ratio=ratio,
+                        evidence={
+                            "source": "object_key_hash_overlap",
+                            "overlap_count": overlap,
+                            "source_count": len(source_values),
+                            "target_count": len(target_values),
+                        },
+                    )
+                )
+                emitted.add((source_path, target_path))
+
+    for source_path, source_stats in stats.items():
+        target_ref = source_stats.ref_target
+        if target_ref is None or (source_path, target_ref) in emitted or target_ref in stats:
+            continue
+        results.append(
+            ForeignKeyRelation(
+                source_path=source_path,
+                target_path=target_ref,
+                match_ratio=1.0,
+                evidence={"source": "field_stats_ref_detection"},
+            )
+        )
+
+
 def detect_foreign_keys(stats: dict[str, FieldStats]) -> list[ForeignKeyRelation]:
     """Detect fields whose values mostly match keys in some dict field."""
     results: list[ForeignKeyRelation] = []
 
-    for path, field_stats in stats.items():
-        if field_stats.ref_target:
-            results.append(
-                ForeignKeyRelation(
-                    source_path=path,
-                    target_path=field_stats.ref_target,
-                    match_ratio=1.0,
-                    evidence={"source": "field_stats_ref_detection"},
-                )
-            )
+    _append_mapping_references(stats, results)
 
     for path, field_stats in stats.items():
         observed = _equality_values(field_stats)
@@ -52,9 +87,6 @@ def detect_foreign_keys(stats: dict[str, FieldStats]) -> list[ForeignKeyRelation
             "source_id",
         }:
             continue
-        if field_stats.ref_target:
-            continue
-
         for other_path, other_stats in stats.items():
             if other_path == path:
                 continue
@@ -68,6 +100,8 @@ def detect_foreign_keys(stats: dict[str, FieldStats]) -> list[ForeignKeyRelation
             overlap = len(observed & other_values)
             ratio = overlap / len(observed) if observed else 0
             if ratio >= _FK_MATCH_THRESHOLD:
+                if any(relation.source_path == path and relation.target_path == other_path for relation in results):
+                    continue
                 results.append(
                     ForeignKeyRelation(
                         source_path=path,

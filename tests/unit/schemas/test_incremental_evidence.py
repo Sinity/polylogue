@@ -21,6 +21,7 @@ from polylogue.schemas.generation.evidence import (
 from polylogue.schemas.generation.schema_builder import emit_schema_from_evidence
 from polylogue.schemas.inference.relational.foreign_keys import detect_foreign_keys
 from polylogue.schemas.inference.semantic.message_scoring import score_role
+from polylogue.schemas.inference.semantic.runtime import infer_semantic_roles, select_best_roles
 from polylogue.schemas.observation import ProviderConfig
 
 
@@ -268,6 +269,57 @@ def test_reduced_evidence_retains_detected_mapping_reference() -> None:
     ]
 
 
+def test_merged_mapping_reference_uses_global_overlap_not_a_source_local_conclusion() -> None:
+    node_ids = [f"node-{index:08x}" for index in range(60)]
+    matched = [{"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids]
+    unmatched = [{"current_node": f"unmatched-{index}"} for index in range(140)]
+    dynamic_paths = ["$.mapping"]
+
+    raw_relations = detect_foreign_keys(_collect_field_stats([*matched, *unmatched], dynamic_paths=dynamic_paths))
+    merged_stats = merge_evidence(
+        [
+            collect_source_evidence(
+                _Observation("source-a", "a" * 64, "claude-code", "session_record_stream", matched),
+                dynamic_paths=dynamic_paths,
+            ),
+            collect_source_evidence(
+                _Observation("source-b", "b" * 64, "claude-code", "session_record_stream", unmatched),
+                dynamic_paths=dynamic_paths,
+            ),
+        ]
+    ).field_stats
+
+    assert raw_relations == []
+    assert merged_stats["$.current_node"].ref_target is None
+    assert [
+        relation for relation in detect_foreign_keys(merged_stats) if relation.source_path == "$.current_node"
+    ] == []
+
+
+def test_merged_mapping_reference_detects_global_overlap_when_each_source_is_below_local_cardinality() -> None:
+    node_ids = [f"node-{index:08x}" for index in range(60)]
+    records = [{"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids]
+    dynamic_paths = ["$.mapping"]
+
+    merged_stats = merge_evidence(
+        [
+            collect_source_evidence(
+                _Observation("source-a", "a" * 64, "claude-code", "session_record_stream", records[:30]),
+                dynamic_paths=dynamic_paths,
+            ),
+            collect_source_evidence(
+                _Observation("source-b", "b" * 64, "claude-code", "session_record_stream", records[30:]),
+                dynamic_paths=dynamic_paths,
+            ),
+        ]
+    ).field_stats
+
+    assert [(relation.source_path, relation.target_path) for relation in detect_foreign_keys(merged_stats)] == [
+        ("$.current_node", "$.mapping")
+    ]
+    assert merged_stats["$.current_node"].ref_target == "$.mapping"
+
+
 def test_reduced_evidence_keeps_hashes_when_safe_values_are_present_for_foreign_keys() -> None:
     records = [{"id": value, "parent_id": value} for value in ["user", *(f"item-{index}" for index in range(6))]]
 
@@ -327,3 +379,18 @@ def test_reduced_evidence_preserves_caseful_known_role_values_for_scoring() -> N
     assert raw_candidate is not None
     assert reduced_candidate == raw_candidate
     assert reduced_candidate.role == "message_role"
+
+
+def test_reduced_evidence_uses_complete_equality_entropy_for_session_title_selection() -> None:
+    records = [
+        {"title": "user" if index == 0 else f"Neutral title {index}", "label": f"Neutral label {index}"}
+        for index in range(21)
+    ]
+
+    raw_best = select_best_roles(infer_semantic_roles(_collect_field_stats(records), artifact_kind="session_document"))
+    reduced_best = select_best_roles(
+        infer_semantic_roles(collect_sample_evidence(records).field_stats, artifact_kind="session_document")
+    )
+
+    assert raw_best["session_title"].path == "$.title"
+    assert reduced_best["session_title"].path == "$.title"
