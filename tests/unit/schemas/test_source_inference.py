@@ -982,3 +982,97 @@ def test_codex_schema_retains_wire_records_without_claiming_parser_support(tmp_p
     assert not classify_artifact(
         [*records, {"type": "invented_record"}], provider=Provider.CODEX, source_path=path
     ).schema_eligible
+
+
+@pytest.mark.parametrize("turns", [False, True])
+@pytest.mark.parametrize("document_suffix", [".json", ".jsonl"])
+def test_gemini_checkpoint_stream_preserves_raw_records_and_document_cache(
+    tmp_path: Path, turns: bool, document_suffix: str
+) -> None:
+    """Checkpoint records must be observed without document reconstruction or losing cached documents."""
+    from polylogue.archive.artifact_taxonomy import classify_artifact
+    from polylogue.core.enums import Provider
+    from polylogue.schemas.generation.workflow import build_provider_bundle_from_sources
+
+    root = tmp_path / "sources"
+    root.mkdir()
+    document: JSONDocument = {
+        "sessionId": "document-session",
+        "projectHash": "synthetic-project",
+        "kind": "main",
+        "startTime": "2026-01-01T00:00:00Z",
+        "lastUpdated": "2026-01-01T00:01:00Z",
+        "messages": [{"id": "document-turn", "type": "user", "content": "synthetic"}],
+    }
+    (root / f"document{document_suffix}").write_text(json.dumps(document))
+    inputs = (SchemaSourceInput("gemini-cli", root),)
+    cache = tmp_path / "cache.sqlite"
+    infer_sources(inputs, cache_path=cache, max_workers=1)
+    records: list[JSONValue] = [
+        {key: value for key, value in document.items() if key not in {"messages", "sessionId"}}
+        | {"sessionId": "checkpoint-session"}
+    ]
+    if turns:
+        records.extend(
+            [
+                {"id": "checkpoint-turn", "timestamp": "2026-01-01T00:00:01Z", "type": "user", "content": "synthetic"},
+                {"$set": {"lastUpdated": "2026-01-01T00:02:00Z"}},
+            ]
+        )
+    path = root / "checkpoint.jsonl"
+    path.write_text("\n".join(json.dumps(record) for record in records))
+    candidate = _SourceCandidate("gemini-cli", root, path, "synthetic-source")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    contributions, *_ = _collect_payload_evidence(
+        candidate,
+        SourceRevision("gemini-cli", path, "synthetic-source", digest, path.stat().st_size),
+        records,
+        dynamic_paths_by_element={},
+    )
+    assert len(contributions) == 1
+    assert contributions[0].declared_updated_at == (
+        1,
+        "2026-01-01T00:02:00.000000+00:00" if turns else "2026-01-01T00:01:00.000000+00:00",
+    )
+    artifact = classify_artifact(records, provider=Provider.GEMINI_CLI, source_path=path)
+    assert artifact.schema_eligible and not artifact.parse_as_session
+    upgraded = infer_sources(inputs, cache_path=cache, max_workers=1)
+    fresh = infer_sources(inputs, cache_path=tmp_path / "fresh.sqlite", max_workers=1)
+    assert upgraded.cache_phase_hits == {"structure": 1, "statistics": 1}
+    assert upgraded.evidence_by_element == fresh.evidence_by_element
+    stream = merge_evidence(
+        SchemaEvidence.from_json(item) for item in upgraded.evidence_by_element["session_record_stream"]
+    )
+    assert stream.current_source_count == 1
+    assert stream.current_record_count == len(records)
+    properties = stream.structure.get("properties")
+    assert isinstance(properties, dict)
+    assert "messages" not in properties
+    if turns:
+        assert "$set" in properties
+    bundle = build_provider_bundle_from_sources(
+        "gemini-cli",
+        source_inputs=inputs,
+        cache_path=cache,
+        max_workers=1,
+        privacy_config=None,
+        prior_catalog=None,
+    )
+    assert bundle.result.sample_count == 1 + len(records)
+    assert bundle.result.schema is not None
+    assert bundle.result.schema["x-polylogue-sample-granularity"] == "document"
+    stream_schema = next(iter(bundle.package_schemas.values()))["session_record_stream"]
+    assert stream_schema["x-polylogue-sample-granularity"] == "record"
+
+
+@pytest.mark.parametrize("invalid", [{"unrelated": True}, {"$set": "invalid"}])
+def test_gemini_checkpoint_rejects_unrecognized_records(tmp_path: Path, invalid: JSONDocument) -> None:
+    """A valid header must not admit arbitrary trailing data as a session record."""
+    path = tmp_path / "checkpoint.jsonl"
+    header = {"sessionId": "synthetic-session", "projectHash": "synthetic-project", "kind": "main"}
+    path.write_text("\n".join(json.dumps(record) for record in (header, invalid)))
+    result = infer_sources(
+        (SchemaSourceInput("gemini-cli", path),), cache_path=tmp_path / "cache.sqlite", max_workers=1
+    )
+    assert not result.evidence_by_element
+    assert result.terminal_reason_counts == {"no_schema_units": 1}

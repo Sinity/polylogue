@@ -12,7 +12,7 @@ from typing import Literal
 
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.schemas.field_stats.detection import key_policy_parameters
+from polylogue.schemas.field_stats.detection import is_dynamic_key, key_policy_parameters
 from polylogue.schemas.generation.evidence import SCHEMA_EVIDENCE_VERSION
 
 EvidencePhase = Literal["structure", "statistics"]
@@ -73,27 +73,22 @@ def has_collapsed_names(schema: JSONValue) -> bool:
 def relevant_normalization_paths(paths: tuple[str, ...], schema: JSONDocument) -> tuple[str, ...]:
     """Ignore normalization changes in object paths absent from this source."""
 
-    def possible(node: JSONValue, steps: tuple[str, ...]) -> bool:
+    selected = set(paths)
+    relevant: set[str] = set()
+
+    def walk(node: JSONValue, path: str) -> None:
         if not isinstance(node, dict):
-            return False
-        if not steps:
-            node_type = node.get("type")
-            return node_type == "object" or isinstance(node_type, list) and "object" in node_type
-        step, *rest = steps
-        remaining = tuple(rest)
-        if step == "[*]":
-            return possible(node.get("items"), remaining)
+            return
+        node_type = node.get("type")
+        if (node_type == "object" or isinstance(node_type, list) and "object" in node_type) and path in selected:
+            relevant.add(path)
         properties = node.get("properties")
-        properties = properties if isinstance(properties, dict) else {}
-        if step == "*":
-            return any(possible(child, remaining) for child in properties.values()) or possible(
-                node.get("additionalProperties"), remaining
-            )
-        if step in properties:
-            return possible(properties[step], remaining)
-        return possible(node.get("additionalProperties"), remaining)
+        if isinstance(properties, dict):
+            for name, child in properties.items():
+                key = "*" if path in selected or is_dynamic_key(name) else name
+                walk(child, f"{path}.{key}")
+        walk(node.get("additionalProperties"), f"{path}.*")
+        walk(node.get("items"), f"{path}[*]")
 
-    def steps(path: str) -> tuple[str, ...]:
-        return tuple(part for part in path.removeprefix("$").replace("[*]", ".[*]").split(".") if part)
-
-    return tuple(sorted(path for path in paths if possible(schema, steps(path))))
+    walk(schema, "$")
+    return tuple(sorted(relevant))

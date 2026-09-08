@@ -125,3 +125,33 @@ def test_new_dynamic_path_only_reprocesses_sources_containing_that_path(
     assert upgraded.cache_phase_hits == {"structure": 1, "statistics": 1}
     assert upgraded.cache_phase_misses == {"structure": 1, "statistics": 1}
     assert upgraded.evidence_by_element == fresh.evidence_by_element
+
+
+@pytest.mark.parametrize("name", ["a.b", "a[*]", "*"])
+def test_literal_path_punctuation_invalidates_affected_statistics(
+    tmp_path: Path,
+    local_workers: None,
+    name: str,
+) -> None:
+    """Parsing a field name as a path incorrectly reuses its pre-normalization counters."""
+    root = tmp_path / "inputs"
+    root.mkdir()
+    write_source(root, "existing", extra={name: {"field": 1}})
+    cache = tmp_path / "cache.sqlite"
+    run(root, cache)
+    write_source(root, "new", extra={name: {"question?": 2}})
+    upgraded = run(root, cache)
+    fresh = run(root, tmp_path / "fresh.sqlite")
+    assert upgraded.cache_phase_misses["statistics"] == 2
+    assert upgraded.cache_phase_hits.get("statistics", 0) == 0
+    assert upgraded.evidence_by_element == fresh.evidence_by_element
+
+
+def test_normalization_below_a_collapsed_ancestor_is_relevant() -> None:
+    """A selected parent changes the collector's path for each literal child."""
+    from polylogue.schemas.generation.dynamic_keys import observed_structure_schema
+    from polylogue.schemas.source_recipe import relevant_normalization_paths
+
+    structure = observed_structure_schema({"map": {"literal": {"nested": {"field": 1}}}})
+    paths = ("$.map", "$.map.*.nested")
+    assert relevant_normalization_paths(paths, structure) == paths

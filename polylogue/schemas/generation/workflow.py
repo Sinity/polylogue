@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -144,9 +145,15 @@ def build_provider_bundle_from_sources(
     emitted: dict[str, JSONDocument] = {}
     reports = {}
     for kind, evidence in evidence_by_kind.items():
-        emitted[kind], reports[kind] = emit_schema_from_evidence(
-            provider, config, evidence, privacy_config=privacy_config, artifact_kind=kind
+        element_config = (
+            replace(config, sample_granularity="record", record_type_key="type")
+            if kind == "session_record_stream"
+            else config
         )
+        emitted[kind], reports[kind] = emit_schema_from_evidence(
+            provider, element_config, evidence, privacy_config=privacy_config, artifact_kind=kind
+        )
+        emitted[kind]["x-polylogue-sample-granularity"] = element_config.sample_granularity
     preferred_anchor = "session_record_stream" if config.sample_granularity == "record" else "session_document"
     if provider == "claude-code" and "coordinator_session_stream" in emitted:
         preferred_anchor = "coordinator_session_stream"

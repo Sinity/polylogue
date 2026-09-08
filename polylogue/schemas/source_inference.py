@@ -24,7 +24,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import timezone
 from functools import partial
-from itertools import islice
+from itertools import chain, islice
 from pathlib import Path
 from typing import BinaryIO, Literal, cast, overload
 from uuid import UUID
@@ -798,6 +798,8 @@ def _declared_update_key(provider: Provider, payload: JSONValue) -> tuple[int, s
     """Return an ordering key from a provider-declared session update field."""
     if not isinstance(payload, dict):
         return None
+    if provider is Provider.GEMINI_CLI and set(payload) == {"$set"} and isinstance(payload["$set"], dict):
+        return _declared_update_key(provider, payload["$set"])
     keys = {
         Provider.CHATGPT: ("update_time",),
         Provider.CLAUDE_AI: ("updated_at", "updatedAt"),
@@ -834,12 +836,27 @@ def _collect_payload_evidence(
         raise ValueError("chunk_record_limit must be positive")
     provider = Provider.from_string(candidate.provider)
     config = resolve_provider_config(provider)
+    if provider is Provider.GEMINI_CLI:
+        from polylogue.sources.parsers.local_agent import looks_like_gemini_cli
+
+        remaining_payloads = iter(payloads)
+        first_payloads = tuple(islice(remaining_payloads, 1))
+        payloads = chain(first_payloads, remaining_payloads)
+        first = _payload_value(first_payloads[0]) if first_payloads else None
+        if isinstance(first, dict) and "messages" not in first and looks_like_gemini_cli(first):
+            config = replace(config, sample_granularity="record", record_type_key="type")
     payload_replay: _PayloadReplay | None = None
     admitted_artifact_kind: str | None = None
     initial_source_id = candidate.logical_source_id
     if config.sample_granularity == "record":
         payload_replay = _PayloadReplay(payloads, replay_payloads=replay_payloads)
         try:
+            if provider is Provider.GEMINI_CLI:
+                from polylogue.sources.parsers.local_agent import is_gemini_cli_checkpoint_stream
+
+                if not is_gemini_cli_checkpoint_stream(cast(Sequence[JSONValue], payload_replay)):
+                    payload_replay.close()
+                    return (), 0, (), False
             artifact = classify_artifact(cast(JSONValue, payload_replay), provider=provider, source_path=candidate.path)
         except BaseException:
             payload_replay.close()
@@ -980,21 +997,28 @@ def _collect_payload_evidence(
                 prior_update = update_keys.get(declared_source_id)
                 if update is not None and (prior_update is None or update > prior_update):
                     update_keys[declared_source_id] = update
-            units = extract_schema_units_from_payload(
-                [payload] if config.sample_granularity == "record" else payload,
-                source_name=provider,
-                source_path=candidate.path,
-                raw_id=f"{revision.revision_sha256}:{payload_index}",
-                config=config,
-                full_corpus=True,
-                compact_values=False,
-                admitted_artifact_kind=admitted_artifact_kind,
-            )
-            for unit in units:
+            observed_units: Iterable[tuple[str, list[JSONValue]]]
+            if provider is Provider.GEMINI_CLI and admitted_artifact_kind is not None:
+                if not isinstance(payload, dict):
+                    raise SourceInferenceError("admitted checkpoint contains a non-object record")
+                observed_units = ((admitted_artifact_kind, [payload]),)
+            else:
+                units = extract_schema_units_from_payload(
+                    [payload] if config.sample_granularity == "record" else payload,
+                    source_name=provider,
+                    source_path=candidate.path,
+                    raw_id=f"{revision.revision_sha256}:{payload_index}",
+                    config=config,
+                    full_corpus=True,
+                    compact_values=False,
+                    admitted_artifact_kind=admitted_artifact_kind,
+                )
+                observed_units = ((unit.artifact_kind, list(unit.schema_samples)) for unit in units)
+            for artifact_kind, samples in observed_units:
                 if spool is None:
-                    record_counts[declared_source_id] += len(unit.schema_samples)
-                total_records += len(unit.schema_samples)
-                append(declared_source_id, unit.artifact_kind, unit.schema_samples, effective_update, source_byte_count)
+                    record_counts[declared_source_id] += len(samples)
+                total_records += len(samples)
+                append(declared_source_id, artifact_kind, samples, effective_update, source_byte_count)
         while pending_records:
             flush(next(iter(pending_records)))
     except BaseException:
@@ -1874,7 +1898,17 @@ def infer_sources(
         statistics_started = time.monotonic_ns()
         final: list[_CandidateDescriptor] = []
         final_misses: list[_CandidateDescriptor] = []
-        for descriptor in descriptors:
+        for statistics_checked, descriptor in enumerate(descriptors):
+            report(
+                "statistics_cache",
+                records=preliminary_records,
+                input_bytes=sum(input_bytes_by_candidate.values()),
+                extra={
+                    "checked_candidates": statistics_checked,
+                    "reused_candidates": phase_hits["statistics"],
+                    "reprocess_candidates": len(final_misses),
+                },
+            )
             candidate = descriptor.candidate
             try:
                 final_digest, final_byte_count = _stable_file_digest(candidate.path)
@@ -2039,6 +2073,7 @@ def infer_sources(
             ] = False
 
         evidence_by_element: dict[str, SchemaEvidenceAccumulator] = {}
+        folded_contributions = 0
         for descriptor in sorted(
             selected_by_candidate,
             key=lambda item: (
@@ -2050,6 +2085,12 @@ def infer_sources(
         ):
             selected_contributions = selected_by_candidate[descriptor]
             for contribution_descriptor in descriptor.contributions:
+                report(
+                    "fold",
+                    records=preliminary_records,
+                    input_bytes=sum(input_bytes_by_candidate.values()),
+                    extra={"folded_contributions": folded_contributions, "total_contributions": len(unique)},
+                )
                 cached_contribution = _cached_contribution(
                     cache,
                     descriptor.candidate,
@@ -2064,6 +2105,7 @@ def infer_sources(
                 )
                 if current is None:
                     continue
+                folded_contributions += 1
                 for kind, payload in cached_contribution.evidence_by_element.items():
                     if not current:
                         payload = _historical_payload(payload)

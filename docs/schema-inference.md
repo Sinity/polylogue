@@ -25,7 +25,9 @@ JSONL and NDJSON records are streamed. JSON export arrays and supported ZIP
 members are observed by logical session. Export evidence is spooled to private
 SQLite files with bounded active contributions. Single-object JSON documents
 above 32 MiB require a streaming adapter and are reported as unsupported. Provider-native identifiers distinguish
-sessions, including Claude Code subagents. Current revisions contribute value
+sessions, including Claude Code subagents. Gemini CLI checkpoint streams retain
+raw headers, turns, and update records; complete checkpoints retain document
+granularity. Current revisions contribute value
 statistics; historical revisions retain structural evidence. Exact duplicates
 and repeated export captures do not add current source-record weight.
 
@@ -45,7 +47,8 @@ source read. Changed inputs are read again. The cache contains no transcript
 bodies, but field names and reduced evidence still require private storage.
 
 Change the affected revision in `polylogue/schemas/source_recipe.py` when
-admission, identity, structure, or statistical meaning changes. Performance and
+the meaning of admitted identities, structures, or statistics changes. Newly
+supported inputs can reuse existing admitted contributions. Performance and
 presentation edits preserve these revisions. The implementation fingerprint is
 recorded separately for provenance; normalization parameters are part of each
 contract.
