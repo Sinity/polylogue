@@ -111,6 +111,7 @@ class SourceInferenceResult:
     producer_version_counts: dict[str, int]
     producer_version_missing_sources: int
     producer_version_conflicting_sources: int
+    input_manifest_digest: str
 
     def provenance(self) -> dict[str, object]:
         """Return aggregate-only source provenance safe for package metadata."""
@@ -124,6 +125,7 @@ class SourceInferenceResult:
             "producer_version_counts": dict(sorted(self.producer_version_counts.items())),
             "producer_version_missing_sources": self.producer_version_missing_sources,
             "producer_version_conflicting_sources": self.producer_version_conflicting_sources,
+            "source_input_manifest_digest": self.input_manifest_digest,
         }
 
 
@@ -326,7 +328,7 @@ def _collect_payload_evidence(
     from polylogue.schemas.generation.evidence import collect_source_evidence, merge_evidence
 
     config = resolve_provider_config(Provider.from_string(candidate.provider))
-    evidence_rows: dict[str, list[object]] = {}
+    evidence_rows: dict[str, object] = {}
     record_count = 0
     producer_versions: set[str] = set()
     logical_source_id = candidate.logical_source_id
@@ -348,22 +350,22 @@ def _collect_payload_evidence(
             full_corpus=True,
         )
         for unit in units:
-            evidence_rows.setdefault(unit.artifact_kind, []).append(
-                collect_source_evidence(
-                    SourceObservation(
-                        logical_source_id=logical_source_id,
-                        revision_sha256=revision.revision_sha256,
-                        subject=candidate.provider,
-                        element_kind=unit.artifact_kind,
-                        records=unit.schema_samples,
-                    ),
-                    dynamic_paths=dynamic_paths_by_element.get(unit.artifact_kind, ()),
-                )
+            contribution = collect_source_evidence(
+                SourceObservation(
+                    logical_source_id=logical_source_id,
+                    revision_sha256=revision.revision_sha256,
+                    subject=candidate.provider,
+                    element_kind=unit.artifact_kind,
+                    records=unit.schema_samples,
+                ),
+                dynamic_paths=dynamic_paths_by_element.get(unit.artifact_kind, ()),
             )
+            prior = evidence_rows.get(unit.artifact_kind)
+            evidence_rows[unit.artifact_kind] = contribution if prior is None else merge_evidence((prior, contribution))
             record_count += len(unit.schema_samples)
     payloads: dict[str, dict[str, object]] = {}
-    for element_kind, rows in sorted(evidence_rows.items()):
-        payload = merge_evidence(rows).to_json()
+    for element_kind, row in sorted(evidence_rows.items()):
+        payload = row.to_json()
         if not isinstance(payload, dict):
             raise SourceInferenceError("source evidence must serialize to a JSON object")
         payloads[element_kind] = payload
@@ -444,6 +446,12 @@ def _collect_candidate(
             else "decode_failed"
         )
         return _CollectedCandidate(candidate, revision, SourceTerminal(outcome, byte_count, reason=reason))
+    try:
+        after_digest, _after_bytes = _stable_file_digest(candidate.path)
+    except (OSError, SourceInferenceError):
+        return _CollectedCandidate(candidate, revision, SourceTerminal("changed_during_read", byte_count))
+    if after_digest != revision.revision_sha256:
+        return _CollectedCandidate(candidate, revision, SourceTerminal("changed_during_read", byte_count))
     if not evidence_by_element:
         return _CollectedCandidate(
             candidate, revision, SourceTerminal("unsupported", byte_count, reason="no_schema_units")
@@ -629,7 +637,26 @@ def infer_sources(
     returns the reduced projection supplied by the statistics owner.
     """
     started = time.monotonic_ns()
-    candidates = inventory_schema_sources(inputs)
+    discovered = inventory_schema_sources(inputs)
+    # Equal immutable revisions are re-acquisitions of the same source
+    # material. Select one deterministic physical representative before any
+    # denominator-bearing evidence is collected.
+    selected_by_revision: dict[str, _SourceCandidate] = {}
+    for candidate in discovered:
+        try:
+            digest, _byte_count = _stable_file_digest(candidate.path)
+        except (OSError, SourceInferenceError):
+            continue
+        previous = selected_by_revision.get(digest)
+        if previous is None or (candidate.logical_source_id, str(candidate.path)) < (
+            previous.logical_source_id,
+            str(previous.path),
+        ):
+            selected_by_revision[digest] = candidate
+    candidates = tuple(
+        candidate
+        for _digest, candidate in sorted(selected_by_revision.items(), key=lambda item: item[1].logical_source_id)
+    )
     inventory_ms = (time.monotonic_ns() - started) / 1_000_000
     terminal_counts: Counter[str] = Counter()
     input_bytes = 0
@@ -774,6 +801,17 @@ def infer_sources(
         producer_version_counts=dict(sorted(producer_version_counts.items())),
         producer_version_missing_sources=producer_version_missing_sources,
         producer_version_conflicting_sources=producer_version_conflicting_sources,
+        input_manifest_digest=hash_payload(
+            {
+                "recipe": _RECIPE_VERSION,
+                "inputs": [
+                    {"provider": candidate.provider, "revision": revision_sha256}
+                    for candidate, (revision_sha256, _byte_count) in sorted(
+                        revisions.items(), key=lambda item: (item[0].provider, item[1][0])
+                    )
+                ],
+            }
+        ),
     )
 
 
