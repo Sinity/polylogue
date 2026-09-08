@@ -13,7 +13,6 @@ from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.field_stats.evidence import (
     deserialize_field_stats,
     finalize_field_stats,
-    merge_field_stats,
     merge_field_stats_into,
     serialize_field_stats,
 )
@@ -336,29 +335,10 @@ def merge_evidence(evidence: Iterable[SchemaEvidence]) -> SchemaEvidence:
     ordered = tuple(
         sorted(evidence, key=lambda item: json.dumps(item.to_json(), sort_keys=True, separators=(",", ":")))
     )
-    normalizations = {item.normalization_paths for item in ordered}
-    if len(normalizations) > 1:
-        raise ValueError("cannot merge evidence collected under different dynamic-key normalization")
-    current_structure = merge_observed_structure_schemas(item.current_structure for item in ordered)
-    historical_structure = merge_observed_structure_schemas(item.historical_structure for item in ordered)
-    current_record_count = sum(item.current_record_count for item in ordered)
-    fields = merge_field_stats((item.field_stats for item in ordered), total_samples=current_record_count)
-    shape_hashes = sorted({digest for item in ordered for digest in item.shape_hashes})
-    unretained_shape_observation_lower_bound = sum(
-        item.unretained_shape_observation_lower_bound for item in ordered
-    ) + max(0, len(shape_hashes) - _SHAPE_HASH_CAP)
-    return SchemaEvidence(
-        current_structure=current_structure,
-        historical_structure=historical_structure,
-        fields={path: serialize_field_stats(field) for path, field in sorted(fields.items())},
-        normalization_paths=next(iter(normalizations), ()),
-        current_source_count=sum(item.current_source_count for item in ordered),
-        current_record_count=current_record_count,
-        historical_source_count=sum(item.historical_source_count for item in ordered),
-        historical_record_count=sum(item.historical_record_count for item in ordered),
-        shape_hashes=tuple(shape_hashes[:_SHAPE_HASH_CAP]),
-        unretained_shape_observation_lower_bound=unretained_shape_observation_lower_bound,
-    )
+    accumulator = SchemaEvidenceAccumulator()
+    for item in ordered:
+        accumulator.add(item)
+    return accumulator.finish()
 
 
 __all__ = [
