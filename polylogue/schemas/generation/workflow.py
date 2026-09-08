@@ -15,6 +15,7 @@ from polylogue.schemas.generation.archive_workload_profile import (
     write_archive_workload_profile,
 )
 from polylogue.schemas.generation.cluster_support import _artifact_priority
+from polylogue.schemas.generation.dynamic_keys import canonicalize_structure_schema, retain_exact_structure_witnesses
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.models import GenerationProgressCallback, GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.provider_bundle import _build_provider_bundle
@@ -166,11 +167,22 @@ def build_provider_bundle_from_sources(
         if preferred_anchor in emitted
         else max(emitted, key=lambda kind: (_artifact_priority(kind), kind))
     )
-    family = hash_payload({"anchor": anchor, "structure": evidence_by_kind[anchor].structure})
+    family = hash_payload(
+        {"anchor": anchor, "structure": canonicalize_structure_schema(evidence_by_kind[anchor].structure)}
+    )
     version = allocate_package_versions(prior_catalog, [(anchor, family)])[0]
     now = datetime.now(tz=timezone.utc).isoformat()
     prior = next((item for item in prior_catalog.packages if item.version == version), None) if prior_catalog else None
     first_seen = prior.first_seen if prior is not None else now
+    retained_witnesses = {}
+    for kind, evidence in evidence_by_kind.items():
+        prior_element = prior.element(kind) if prior is not None else None
+        retained = retain_exact_structure_witnesses(
+            prior_element.exact_structure_ids if prior_element is not None else (), evidence.shape_hashes
+        )
+        retained_witnesses[kind] = retained
+        emitted[kind]["x-polylogue-exact-structure-ids"] = list(retained.exact_structure_ids)
+        emitted[kind]["x-polylogue-omitted-current-structure-witness-count"] = retained.omitted_current_witness_count
     counts = {kind: evidence.current_record_count for kind, evidence in evidence_by_kind.items()}
     elements = [
         SchemaElementManifest(
@@ -182,7 +194,8 @@ def build_provider_bundle_from_sources(
             observed_artifact_count=evidence.current_source_count,
             first_seen=first_seen,
             last_seen=now,
-            exact_structure_ids=list(evidence.shape_hashes),
+            exact_structure_ids=list(retained_witnesses[kind].exact_structure_ids),
+            omitted_current_structure_witness_count=retained_witnesses[kind].omitted_current_witness_count,
         )
         for kind, evidence in sorted(evidence_by_kind.items())
     ]
