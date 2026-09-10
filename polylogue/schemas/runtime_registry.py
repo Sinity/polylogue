@@ -905,15 +905,45 @@ class SchemaRegistry:
                 prepared.append((package, merged, profile))
 
             incoming_versions = {package.version for package, _, _ in prepared}
-            historical_packages = [
-                dataclasses.replace(package, observation_status="historical")
-                for version, package in prior_packages.items()
-                if version not in incoming_versions
-            ]
+            historical_prepared: list[tuple[SchemaVersionPackage, ElementSchemaMap, Mapping[str, object] | None]] = []
+            for version, prior in prior_packages.items():
+                if version in incoming_versions:
+                    continue
+                historical_schemas: ElementSchemaMap = {}
+                for element in prior.elements:
+                    if element.schema_file is None:
+                        continue
+                    value = self._read_local_element_schema_file(provider_token, prior.version, element.schema_file)
+                    if value is None:
+                        raise ValueError(f"Existing package {provider_token}/{prior.version} is incomplete")
+                    historical_schemas[element.element_kind] = value
+                profile = (
+                    self._snapshot_json(
+                        self._provider_dir(provider_token), f"versions/{prior.version}/{prior.workload_profile_file}"
+                    )
+                    if prior.workload_profile_file is not None
+                    else None
+                )
+                if prior.workload_profile_file is not None and profile is None:
+                    raise ValueError(f"Existing package {provider_token}/{prior.version} is incomplete")
+                historical_package, synchronized_schemas = self._retain_element_structure_witnesses(
+                    prior,
+                    schemas={},
+                    merged=dict(historical_schemas),
+                    prior=prior,
+                    prior_schemas=historical_schemas,
+                )
+                historical_prepared.append(
+                    (
+                        dataclasses.replace(historical_package, observation_status="historical"),
+                        synchronized_schemas,
+                        profile,
+                    )
+                )
             final_catalog = dataclasses.replace(
                 catalog,
                 packages=sorted(
-                    [package for package, _, _ in prepared] + historical_packages,
+                    [package for package, _, _ in prepared] + [package for package, _, _ in historical_prepared],
                     key=lambda package: _version_sort_key(package.version),
                 ),
             )
@@ -931,9 +961,8 @@ class SchemaRegistry:
                 staged_registry = type(self)(storage_root=staging_root)
                 for package, schemas, profile in prepared:
                     staged_registry.write_package(package, element_schemas=schemas, workload_profile=profile)
-                for package in historical_packages:
-                    manifest_path = staged_registry._package_manifest_path(provider_token, package.version)
-                    manifest_path.write_text(json.dumps(package.to_dict(), indent=2), encoding="utf-8")
+                for package, schemas, profile in historical_prepared:
+                    staged_registry.write_package(package, element_schemas=schemas, workload_profile=profile)
                 staged_registry.save_package_catalog(final_catalog)
                 if cluster_manifest is not None:
                     (staged_provider / "manifest.json").write_text(
