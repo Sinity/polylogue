@@ -47,6 +47,7 @@ from polylogue.storage.source_sessions import (
     session_ids_for_source_paths,
 )
 from polylogue.storage.sqlite.connection_profile import (
+    open_connection,
     open_daemon_connection,
     open_isolated_write_connection,
     open_readonly_connection,
@@ -95,8 +96,18 @@ class FtsSurfaceRepairResult:
         return self.success
 
 
-def _open_archive_insight_write_connection(db_path: Path) -> sqlite3.Connection:
-    conn = open_daemon_connection(db_path, timeout=_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS / 1000)
+def _open_archive_insight_write_connection(db_path: Path, *, archive_root: Path) -> sqlite3.Connection:
+    """Open an archive writer bound to the root admitted by its caller.
+
+    ``db_path`` may be an active index generation outside the durable archive
+    root.  The caller therefore supplies the admitted root rather than
+    deriving it from the generation path.
+    """
+    conn = open_daemon_connection(
+        db_path,
+        timeout=_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS / 1000,
+        archive_root=archive_root,
+    )
     try:
         conn.execute(f"PRAGMA busy_timeout = {_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS}")
     except BaseException:
@@ -200,7 +211,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         try:
             from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
 
-            result = FtsConvergenceOwner(database).run_once_sync(
+            result = FtsConvergenceOwner(database, archive_root=db_path.parent).run_once_sync(
                 reason=FtsRunReason.PERIODIC,
                 partition_keys=tuple(keys) if keys else None,
             )
@@ -537,10 +548,9 @@ def make_derived_stage(db_path: Path) -> ConvergenceStage:
         if archive_db is not None:
             return _archive_insights_execute(archive_db, path, archive_root=db_path.parent)
         from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
-        from polylogue.storage.sqlite.connection import open_connection
 
         try:
-            with open_connection(db_path) as conn:
+            with open_connection(db_path, archive_root=db_path.parent) as conn:
                 session_ids = _session_ids_for_source_path(conn, path) or _session_ids_missing_profiles(conn)
                 hot_ids = _hot_insight_session_ids(conn, session_ids)
                 if hot_ids:
@@ -608,10 +618,9 @@ def make_derived_stage(db_path: Path) -> ConvergenceStage:
         if archive_db is not None:
             return _archive_insights_execute_many(archive_db, paths, archive_root=db_path.parent)
         from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
-        from polylogue.storage.sqlite.connection import open_connection
 
         try:
-            with open_connection(db_path) as conn:
+            with open_connection(db_path, archive_root=db_path.parent) as conn:
                 by_path = _session_ids_for_source_paths(conn, paths)
                 session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
                 if not session_ids:
@@ -675,10 +684,9 @@ def make_derived_stage(db_path: Path) -> ConvergenceStage:
         if archive_db is not None:
             return _archive_insights_execute_sessions(archive_db, session_ids, archive_root=db_path.parent)
         from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
-        from polylogue.storage.sqlite.connection import open_connection
 
         try:
-            with open_connection(db_path) as conn:
+            with open_connection(db_path, archive_root=db_path.parent) as conn:
                 ids = _existing_session_ids(conn, tuple(dict.fromkeys(session_ids)))
                 if not ids:
                     return True
@@ -1190,7 +1198,7 @@ def make_fts_readiness_stage(db_path: Path) -> ConvergenceStage:
         if not database.exists():
             return True
         try:
-            conn = _open_archive_insight_write_connection(database)
+            conn = _open_archive_insight_write_connection(database, archive_root=db_path.parent)
             try:
                 _record_fts_freshness_after_insights(conn)
                 conn.commit()
@@ -1886,8 +1894,8 @@ def _archive_fts_check(db_path: Path, path: Path) -> bool:
     return bool(_archive_fts_check_many(db_path, (path,)))
 
 
-def _archive_fts_execute(db_path: Path, path: Path) -> bool:
-    return _archive_fts_execute_many(db_path, (path,))
+def _archive_fts_execute(db_path: Path, path: Path, *, archive_root: Path) -> bool:
+    return _archive_fts_execute_many(db_path, (path,), archive_root=archive_root)
 
 
 def _archive_session_ids_for_source_paths(db_path: Path, paths: Sequence[Path]) -> dict[Path, list[str]]:
@@ -1924,7 +1932,7 @@ def _archive_fts_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
     return stale
 
 
-def _archive_fts_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
+def _archive_fts_execute_many(db_path: Path, paths: Sequence[Path], *, archive_root: Path) -> bool:
     if not paths:
         return True
     sessions_by_path = _archive_session_ids_for_source_paths(db_path, paths)
@@ -1938,7 +1946,7 @@ def _archive_fts_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
     stale = _archive_fts_check_sessions(db_path, candidates)
     if not stale:
         return True
-    return _archive_fts_execute_sessions(db_path, tuple(stale))
+    return _archive_fts_execute_sessions(db_path, tuple(stale), archive_root=archive_root)
 
 
 def _archive_fts_check_sessions(db_path: Path, session_ids: Sequence[str]) -> set[str]:
@@ -1958,9 +1966,9 @@ def _archive_fts_check_sessions(db_path: Path, session_ids: Sequence[str]) -> se
         return set(session_ids)
 
 
-def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> bool:
+def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str], *, archive_root: Path) -> bool:
     try:
-        conn = _open_archive_insight_write_connection(db_path)
+        conn = _open_archive_insight_write_connection(db_path, archive_root=archive_root)
         try:
             ids = _archive_existing_session_ids(conn, session_ids)
             if not ids:
@@ -1979,11 +1987,11 @@ def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> 
         return False
 
 
-def repair_messages_fts_surface_result(db_path: Path) -> FtsSurfaceRepairResult:
+def repair_messages_fts_surface_result(db_path: Path, *, archive_root: Path) -> FtsSurfaceRepairResult:
     """Repair the whole archive ``messages_fts`` surface after global drift."""
     archive_db = _active_archive_index_path(db_path) or db_path
     try:
-        conn = _open_archive_insight_write_connection(archive_db)
+        conn = _open_archive_insight_write_connection(archive_db, archive_root=archive_root)
         try:
             from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
             from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
@@ -2018,21 +2026,21 @@ def repair_messages_fts_surface_result(db_path: Path) -> FtsSurfaceRepairResult:
         return FtsSurfaceRepairResult(success=False, detail=f"{type(exc).__name__}: {exc}")
 
 
-def repair_messages_fts_surface(db_path: Path) -> bool:
+def repair_messages_fts_surface(db_path: Path, *, archive_root: Path) -> bool:
     """Compatibility boolean for callers that only need repair success."""
-    return bool(repair_messages_fts_surface_result(db_path))
+    return bool(repair_messages_fts_surface_result(db_path, archive_root=archive_root))
 
 
-def repair_fts_surface_result(db_path: Path, surface: str) -> FtsSurfaceRepairResult:
+def repair_fts_surface_result(db_path: Path, surface: str, *, archive_root: Path) -> FtsSurfaceRepairResult:
     """Repair a named archive FTS surface from daemon convergence debt."""
     if surface == "messages_fts":
-        return repair_messages_fts_surface_result(db_path)
+        return repair_messages_fts_surface_result(db_path, archive_root=archive_root)
     if surface != "session_work_events_fts":
         logger.warning("fts: unsupported archive FTS surface debt surface=%s", surface)
         return FtsSurfaceRepairResult(success=False, detail=f"unsupported FTS surface: {surface}")
     archive_db = _active_archive_index_path(db_path) or db_path
     try:
-        conn = _open_archive_insight_write_connection(archive_db)
+        conn = _open_archive_insight_write_connection(archive_db, archive_root=archive_root)
         try:
             from polylogue.storage.fts.dangling_repair import (
                 configure_bounded_repair_connection,
@@ -2063,9 +2071,9 @@ def repair_fts_surface_result(db_path: Path, surface: str) -> FtsSurfaceRepairRe
         return FtsSurfaceRepairResult(success=False, detail=f"{type(exc).__name__}: {exc}")
 
 
-def repair_fts_surface(db_path: Path, surface: str) -> bool:
+def repair_fts_surface(db_path: Path, surface: str, *, archive_root: Path) -> bool:
     """Compatibility boolean for named archive FTS-surface repair."""
-    return bool(repair_fts_surface_result(db_path, surface))
+    return bool(repair_fts_surface_result(db_path, surface, archive_root=archive_root))
 
 
 def _archive_pending_embedding_sessions(
@@ -2508,9 +2516,9 @@ def _archive_insights_check(db_path: Path, path: Path, *, archive_root: Path | N
         return True
 
 
-def _archive_insights_execute(db_path: Path, path: Path, *, archive_root: Path | None = None) -> StageExecuteReturn:
+def _archive_insights_execute(db_path: Path, path: Path, *, archive_root: Path) -> StageExecuteReturn:
     try:
-        conn = _open_archive_insight_write_connection(db_path)
+        conn = _open_archive_insight_write_connection(db_path, archive_root=archive_root)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
             if not session_ids:
@@ -2553,11 +2561,9 @@ def _archive_insights_check_many(
         return set(paths)
 
 
-def _archive_insights_execute_many(
-    db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None
-) -> StageExecuteReturn:
+def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path], *, archive_root: Path) -> StageExecuteReturn:
     try:
-        conn = _open_archive_insight_write_connection(db_path)
+        conn = _open_archive_insight_write_connection(db_path, archive_root=archive_root)
         try:
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths, archive_root=archive_root)
             session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
@@ -2595,14 +2601,12 @@ def _archive_insights_check_sessions(db_path: Path, session_ids: Sequence[str]) 
 
 
 def _archive_insights_execute_sessions(
-    db_path: Path, session_ids: Sequence[str], *, archive_root: Path | None = None
+    db_path: Path, session_ids: Sequence[str], *, archive_root: Path
 ) -> StageExecuteReturn:
     try:
-        conn = _open_archive_insight_write_connection(db_path)
+        conn = _open_archive_insight_write_connection(db_path, archive_root=archive_root)
         try:
             ids = _archive_existing_session_ids(conn, session_ids)
-            if archive_root is None:
-                return _archive_insights_execute_ids(conn, ids)
             return _archive_insights_execute_ids(conn, ids, archive_root=archive_root)
         finally:
             conn.close()
@@ -2641,7 +2645,7 @@ def _archive_insights_execute_ids(
     if archive_root is not None:
         user_db = archive_root / "user.db"
         if user_db.exists():
-            marker_conn = _open_archive_insight_write_connection(user_db)
+            marker_conn = _open_archive_insight_write_connection(user_db, archive_root=archive_root)
     try:
         if marker_conn is None:
             counts = rebuild_session_insights_sync(

@@ -21,10 +21,16 @@ from polylogue.schemas.validation.requests import (
     ArtifactObservationQuery,
     SchemaVerificationRequest,
 )
+from polylogue.storage.archive_identity import ArchiveLocation
 
 
-def run_schema_verification(request: SchemaVerificationRequest, *, db_path: Path) -> SchemaVerificationReport:
-    return verify_raw_corpus(db_path=db_path, request=request)
+def run_schema_verification(
+    request: SchemaVerificationRequest,
+    *,
+    db_path: Path,
+    archive_location: ArchiveLocation | None = None,
+) -> SchemaVerificationReport:
+    return verify_raw_corpus(db_path=db_path, request=request, archive_location=archive_location)
 
 
 def run_artifact_coverage(request: ArtifactCoverageRequest, *, db_path: Path) -> ArtifactCoverageResult:

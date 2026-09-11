@@ -52,8 +52,9 @@ class FtsOwnerResult:
 class FtsConvergenceOwner:
     """Own every recurring daemon route that may publish FTS readiness."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, archive_root: Path) -> None:
         self._db_path = db_path
+        self._archive_root = archive_root
 
     def run_once_sync(
         self,
@@ -78,7 +79,7 @@ class FtsConvergenceOwner:
                     exact=False,
                     detail=f"unsupported FTS surface(s): {', '.join(unsupported)}",
                 )
-            with open_daemon_connection(self._db_path, timeout=30.0) as conn:
+            with open_daemon_connection(self._db_path, timeout=30.0, archive_root=self._archive_root) as conn:
                 result = FtsDerivationAdapter().converge(conn, keys=partition_keys)
                 # The readiness projection is an exact archive-wide audit;
                 # a partition-scoped pass cannot claim it and must not pay

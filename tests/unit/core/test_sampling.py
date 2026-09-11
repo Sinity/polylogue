@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import sqlite3
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -77,10 +76,10 @@ def _insert_raw_session(
     Returns the generated ``raw_id``. The native ``raw_sessions`` row carries
     the 32-byte ``blob_hash`` digest (BLOB) and millisecond timestamps (#1743).
     """
-    from polylogue.storage.blob_store import get_blob_store
+    from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite.connection import open_connection
 
-    blob_store = get_blob_store()
+    blob_store = BlobStore(db_path.parent / "blob")
     hash_hex, blob_size = blob_store.write_from_bytes(raw_content)
     raw_id = f"raw-{hash_hex[:16]}"
     acquired_at_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
@@ -203,34 +202,17 @@ class TestLoadSamplesFromDb:
         result = load_samples_from_db("chatgpt", db_path=db)
         assert result == []
 
-    def test_missing_source_db_tier_logs_warning_distinct_from_zero_rows(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """polylogue-es7b: a missing sibling ``source.db`` tier file previously
-        yielded the exact same empty result as a genuine zero-row scan,
-        silently. ``index.db`` exists here (unlike ``test_nonexistent_db_returns_empty``,
-        whose outer ``db_path.exists()`` check in ``load_samples_from_db``
-        short-circuits before ever reaching ``_iter_schema_units_from_db``),
-        so this reaches the tier-file check inside
-        ``polylogue.schemas.sampling_db._iter_schema_units_from_db`` and must
-        warn instead of returning silently.
-        """
+    def test_missing_source_db_tier_refuses_to_report_a_clean_empty_population(self, tmp_path: Path) -> None:
+        """Absent selected evidence is not equivalent to a completed zero-row scan."""
+        from polylogue.schemas.sampling_db import SchemaArchiveEvidenceError
+
         db = _archive_index_db(tmp_path)
         (db.parent / "source.db").unlink()
         assert db.exists()
         assert not (db.parent / "source.db").exists()
 
-        with caplog.at_level(logging.WARNING, logger="polylogue.schemas.sampling_db"):
-            result = load_samples_from_db("chatgpt", db_path=db)
-
-        assert result == []
-        assert any(
-            record.levelno == logging.WARNING
-            and "tier=source.db" in record.message
-            and str(db.parent / "source.db") in record.message
-            and "provider=chatgpt" in record.message
-            for record in caplog.records
-        ), [record.message for record in caplog.records]
+        with pytest.raises(SchemaArchiveEvidenceError, match="selected archive source evidence"):
+            load_samples_from_db("chatgpt", db_path=db)
 
     def test_nonexistent_db_with_default_path(self) -> None:
         # When db_path=None and default doesn't exist, should return []
@@ -560,7 +542,7 @@ class TestLoadSamplesFromDb:
         codex-session -- polylogue-el374): the second occurrence must be
         skipped without opening its raw content a second time.
         """
-        from polylogue.storage.blob_store import get_blob_store
+        from polylogue.storage.blob_store import BlobStore
         from polylogue.storage.sqlite.connection import open_connection
 
         db = _archive_index_db(tmp_path)
@@ -575,7 +557,7 @@ class TestLoadSamplesFromDb:
             )
             + b"\n"
         )
-        blob_store = get_blob_store()
+        blob_store = BlobStore(db.parent / "blob")
         hash_hex, blob_size = blob_store.write_from_bytes(raw_content)
         acquired_at_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
         first_raw_id = "raw-dup-first"
@@ -732,7 +714,7 @@ class TestLoadSamplesFromDb:
 
     def test_hermes_sqlite_schema_sampling_keeps_blob_namespace_pristine(self, tmp_path: Path) -> None:
         """Schema sampling decodes retained SQLite blobs through an immutable URI."""
-        from polylogue.storage.blob_store import get_blob_store
+        from polylogue.storage.blob_store import BlobStore
 
         db = _archive_index_db(tmp_path)
         sqlite_path = tmp_path / "state.db"
@@ -783,7 +765,8 @@ class TestLoadSamplesFromDb:
                 terminal_recorder=lambda **outcome: outcomes.append(outcome),
             )
         )
-        verification = get_blob_store().verify_all()
+        blob_store = BlobStore(db.parent / "blob")
+        verification = blob_store.verify_all()
 
         assert units == []
         assert outcomes == [
@@ -797,7 +780,7 @@ class TestLoadSamplesFromDb:
         ]
         assert verification.passed, verification.failures
         assert verification.checked == 1
-        blob_path = get_blob_store().blob_path(hashlib.sha256(content).hexdigest())
+        blob_path = blob_store.blob_path(hashlib.sha256(content).hexdigest())
         assert not blob_path.with_name(blob_path.name + "-wal").exists()
         assert not blob_path.with_name(blob_path.name + "-shm").exists()
 

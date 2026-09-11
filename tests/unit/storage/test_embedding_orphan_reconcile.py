@@ -24,6 +24,7 @@ import pytest
 from polylogue.core.enums import Origin
 from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
 from polylogue.storage.embeddings.reconcile import (
+    EmbeddingReconcileMutationAuthority,
     inspect_embedding_orphans,
     reconcile_embedding_orphans,
 )
@@ -756,6 +757,26 @@ def test_apply_requires_owned_writer_authority(tmp_path: Path) -> None:
             tmp_path / "embeddings.db",
             dry_run=False,
             now_ms=_NOW_MS,
+        )
+
+
+def test_apply_refuses_a_forged_mutation_authority_label(tmp_path: Path) -> None:
+    """A caller cannot turn an arbitrary label into mutation authority.
+
+    Anti-vacuity: weakening the apply boundary to only reject ``None`` lets a
+    deliberately bypassing test double enter the real reconciliation route.
+    """
+    _connect_index(tmp_path / "index.db", sessions=[], messages={})
+    embeddings_db = tmp_path / "embeddings.db"
+    _connect_embeddings(embeddings_db).close()
+
+    with pytest.raises(RuntimeError, match="unrecognized mutation authority"):
+        reconcile_embedding_orphans(
+            tmp_path / "index.db",
+            embeddings_db,
+            dry_run=False,
+            now_ms=_NOW_MS,
+            mutation_authority=cast(EmbeddingReconcileMutationAuthority, "test-double-bypass"),
         )
 
 

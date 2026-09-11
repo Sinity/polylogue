@@ -18,6 +18,7 @@ from polylogue.storage.runtime import ArtifactObservationRecord
 
 if TYPE_CHECKING:
     from polylogue.schemas.source_inference import SchemaSourceInput
+    from polylogue.storage.archive_identity import ArchiveLocation
 
 JSONPrimitive: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONPrimitive | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
@@ -84,6 +85,7 @@ class SchemaInferRequest:
     source_inputs: tuple[SchemaSourceInput, ...] = ()
     source_cache_path: Path | None = None
     source_workers: int = 2
+    archive_location: ArchiveLocation | None = None
 
 
 @dataclass(frozen=True)
@@ -368,6 +370,7 @@ class SchemaCommitRequest:
     provider: str
     output_dir: Path
     db_path: Path | None = None
+    archive_location: ArchiveLocation | None = None
     max_samples: int | None = None
     privacy_config: JSONDocument | None = None
     full_corpus: bool = True

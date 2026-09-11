@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
     open_connection,
     open_daemon_connection,
@@ -68,6 +70,49 @@ def test_a_leased_write_open_succeeds(db_path: Path) -> None:
             conn.commit()
     with closing(sqlite3.connect(db_path)) as conn:
         assert conn.execute("SELECT count(*) FROM t").fetchone()[0] == 1
+
+
+def test_archive_insight_writer_refuses_a_different_archive_root(tmp_path: Path) -> None:
+    """A generation path cannot turn one archive's lease into another's writer.
+
+    Anti-vacuity: omitting the explicit ``archive_root`` from the convergence
+    writer lets this open succeed because the factory has no root to compare.
+    """
+    from polylogue.daemon.convergence_stages import _open_archive_insight_write_connection
+
+    owner_root = tmp_path / "owner"
+    target_root = tmp_path / "target"
+    owner_root.mkdir()
+    target_root.mkdir()
+    target_db = target_root / "index.db"
+    initialize_archive_database(target_db, ArchiveTier.INDEX)
+
+    with (
+        write_lease("test.owner", archive_root=owner_root),
+        pytest.raises(UnleasedWriteError, match="outside the archive"),
+    ):
+        _open_archive_insight_write_connection(target_db, archive_root=target_root)
+
+
+def test_checkpoint_writer_refuses_a_different_archive_root(tmp_path: Path) -> None:
+    """The periodic checkpoint route carries the root it was admitted for.
+
+    Anti-vacuity: dropping ``archive_root=archive_root`` from
+    ``checkpoint_archive_wals`` reopens the target database under this lease.
+    """
+    from polylogue.storage.sqlite.wal_checkpoint import checkpoint_archive_wals
+
+    owner_root = tmp_path / "owner"
+    target_root = tmp_path / "target"
+    owner_root.mkdir()
+    target_root.mkdir()
+    initialize_archive_database(target_root / "index.db", ArchiveTier.INDEX)
+
+    with (
+        write_lease("test.owner", archive_root=owner_root),
+        pytest.raises(UnleasedWriteError, match="outside the archive"),
+    ):
+        checkpoint_archive_wals(target_root, reason="test", warn_bytes=0)
 
 
 def test_enforcement_is_off_by_default_so_one_shot_writers_are_unaffected(db_path: Path) -> None:

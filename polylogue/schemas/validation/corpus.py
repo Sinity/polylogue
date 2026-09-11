@@ -13,7 +13,8 @@ from polylogue.core.common import format_malformed_jsonl_error as _format_malfor
 from polylogue.core.enums import Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.schemas.validator import SchemaValidator
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
@@ -238,23 +239,20 @@ def verify_raw_corpus(
     *,
     db_path: Path,
     request: SchemaVerificationRequest,
+    archive_location: ArchiveLocation | None = None,
 ) -> SchemaVerificationReport:
     """Run schema verification over the ``raw_sessions`` corpus.
 
-    ``db_path`` is the active ``index.db``; the raw acquisition rows live in
-    the sibling ``source.db`` of the same archive. The corpus is read
-    (and, when ``quarantine_malformed`` is set, updated) on ``source.db``.
+    ``db_path`` is the active ``index.db``. Durable source and blob evidence
+    come from its explicit archive location, never from an ambient default.
     """
     bounded_limit, bounded_offset = bounded_window(request.record_limit, request.record_offset)
-    source_db_path = db_path.parent / "source.db"
+    from polylogue.schemas.sampling_db import SchemaArchiveEvidenceError, _schema_archive_location
+
+    location = _schema_archive_location(db_path=db_path, archive_location=archive_location)
+    source_db_path = location.configured_tier("source").configured_path
     if not source_db_path.exists():
-        return SchemaVerificationReport(
-            providers={},
-            max_samples=request.max_samples,
-            total_records=0,
-            record_limit=bounded_limit,
-            record_offset=bounded_offset,
-        )
+        raise SchemaArchiveEvidenceError(f"selected archive source evidence is unavailable: {source_db_path}")
 
     stats_by_provider: dict[str, ProviderSchemaVerification] = {}
     total_records = 0
@@ -270,7 +268,7 @@ def verify_raw_corpus(
             record_limit=request.record_limit,
             record_offset=request.record_offset,
         )
-        blob_store = get_blob_store()
+        blob_store = BlobStore(location.configured_root / "blob")
         for row in rows:
             raw_id, raw_provider, stored_payload_provider, source_path = _row_payload_data(row)
             candidate_provider = str(stored_payload_provider or raw_provider)

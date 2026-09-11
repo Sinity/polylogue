@@ -136,6 +136,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         result = generate_provider_schema(
             request.provider,
             db_path=request.db_path,
+            archive_location=request.archive_location,
             max_samples=request.max_samples,
             privacy_config=_privacy_config(request.privacy_config),
             full_corpus=request.full_corpus,
@@ -194,6 +195,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
     samples = load_samples_from_db(
         config.db_source_name,
         db_path=request.db_path,
+        archive_location=request.archive_location,
         max_samples=request.max_samples or request.cluster_sample_limit,
     )
     if not samples:

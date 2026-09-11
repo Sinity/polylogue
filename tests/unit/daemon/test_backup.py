@@ -302,8 +302,8 @@ def test_backup_verifier_refuses_artifact_source_fingerprint_mismatch(
 
     original_backup = backup_mod._backup_sqlite
 
-    def copy_with_wrong_fingerprint(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
-        size, fingerprint = original_backup(src, dst)
+    def copy_with_wrong_fingerprint(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[int, dict[str, object]]:
+        size, fingerprint = original_backup(src, dst, archive_root_path=archive_root_path)
         if src.name == "user.db":
             fingerprint = backup_mod._sqlite_source_fingerprint(other_db)
         return size, fingerprint
