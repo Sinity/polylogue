@@ -34,6 +34,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.raw_retention import RawFrontierBlockedPaths
+from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -171,6 +172,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
         ("source.db", ArchiveTier.SOURCE),
         ("index.db", ArchiveTier.INDEX),
         ("user.db", ArchiveTier.USER),
+        ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
         initialize_archive_database(tmp_path / filename, tier)
@@ -200,13 +202,14 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     assert storage["schema_mismatches"] == []
     assert storage["archive_schema_ready"] is True
     assert storage["archive_ready"] is True
-    assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "ops"]
+    assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "audit", "ops"]
     tiers = cast(list[dict[str, object]], storage["tiers"])
     assert {tier["name"]: tier["user_version"] for tier in tiers} == {
         "source": SOURCE_SCHEMA_VERSION,
         "index": INDEX_SCHEMA_VERSION,
         "embeddings": EMBEDDINGS_SCHEMA_VERSION,
         "user": USER_SCHEMA_VERSION,
+        "audit": AUDIT_SCHEMA_VERSION,
         "ops": 1,
     }
     assert {tier["name"]: tier["version_status"] for tier in tiers} == {
@@ -214,6 +217,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
         "index": "ok",
         "embeddings": "ok",
         "user": "ok",
+        "audit": "ok",
         "ops": "ok",
     }
 
@@ -224,6 +228,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
         ("index.db", ArchiveTier.INDEX),
         ("embeddings.db", ArchiveTier.EMBEDDINGS),
         ("user.db", ArchiveTier.USER),
+        ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
         initialize_archive_database(tmp_path / filename, tier)
@@ -278,7 +283,7 @@ def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None
         result = CliRunner().invoke(main, ["status"])
 
     assert result.exit_code == 1
-    assert "Storage: archive_file_set (source, index); missing embeddings, user, ops" in result.output
+    assert "Storage: archive_file_set (source, index); missing embeddings, user, audit, ops" in result.output
 
 
 def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None:
@@ -287,6 +292,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
         ("index.db", ArchiveTier.INDEX),
         ("embeddings.db", ArchiveTier.EMBEDDINGS),
         ("user.db", ArchiveTier.USER),
+        ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
         initialize_archive_database(tmp_path / filename, tier)
@@ -302,7 +308,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
 
     assert result.exit_code == 1
     assert (
-        "Storage: archive_file_set (source, index, embeddings, user, ops); final split complete; schema mismatch index"
+        "Storage: archive_file_set (source, index, embeddings, user, audit, ops); final split complete; schema mismatch index"
         in result.output
     )
 
@@ -340,8 +346,9 @@ def test_drain_convergence_debt_migrates_retired_insights_stage(
         retried = daemon_cli._drain_convergence_debt_once(db)
         debt_after = cursor.list_convergence_debt()
 
-    assert retried == 1
-    assert debt_after == []
+    assert retried == 0
+    assert len(debt_after) == 1
+    assert debt_after[0].stage == "derived"
     assert cursor.get_record(source) is None
 
 
@@ -356,7 +363,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     db = tmp_path / "index.db"
     cursor = CursorStore(db)
     cursor.record_convergence_debt(
-        stage="derived",
+        stage="convergence",
         subject_type="session_id",
         subject_id="conv-1",
         error="initial failure",
@@ -468,12 +475,16 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
+    async def noop_embedding_debt(_db: Path) -> None:
+        return None
+
     with (
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
             return_value=SimpleNamespace(run_sync=fake_run_sync),
         ),
+        patch.object(daemon_cli, "_converge_embedding_debt_off_writer", noop_embedding_debt),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
@@ -1270,7 +1281,11 @@ def test_raw_materialization_fts_failure_records_durable_debt(
         ) -> None:
             calls.append((stage, subject_type, subject_id, error))
 
-    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda _db: True)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_raw_materialization_fts_needs_repair",
+        lambda _db, *, archive_root: True,
+    )
     monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: False)
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
@@ -1309,7 +1324,11 @@ def test_raw_materialization_fts_success_clears_prior_debt(
         def record_convergence_debt(self, **_kwargs: object) -> None:
             raise AssertionError("successful FTS repair must not record debt")
 
-    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda _db: True)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_raw_materialization_fts_needs_repair",
+        lambda _db, *, archive_root: True,
+    )
     monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: True)
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
@@ -1338,7 +1357,11 @@ def test_raw_materialization_fts_exception_becomes_explicit_debt(
         def record_convergence_debt(self, *, error: str | None = None, **_kwargs: object) -> None:
             errors.append(error)
 
-    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda _db: True)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_raw_materialization_fts_needs_repair",
+        lambda _db, *, archive_root: True,
+    )
     monkeypatch.setattr(
         "polylogue.daemon.convergence_stages.repair_fts_surface",
         lambda *_args: (_ for _ in ()).throw(RuntimeError("injected FTS failure")),
@@ -1989,12 +2012,16 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise RuntimeError("unexpected convergence retry failure")
 
+    async def noop_embedding_debt(_db: Path) -> None:
+        return None
+
     with (
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
             return_value=SimpleNamespace(run_sync=fake_run_sync),
         ),
+        patch.object(daemon_cli, "_converge_embedding_debt_off_writer", noop_embedding_debt),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
@@ -4146,6 +4173,11 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         def server_close(self) -> None:
             self.close_called = True
 
+    class APIBlockingServer(BlockingServer):
+        execution_kernel: BoundedComputeAdapter
+        session_profile_callback: None
+        operation_runtime: SimpleNamespace
+
     class FakeConverger:
         pass
 
@@ -4162,7 +4194,20 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         await asyncio.Event().wait()
 
     browser_server = BlockingServer()
-    api_server = BlockingServer()
+    api_server = APIBlockingServer()
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+
+    api_server.execution_kernel = BoundedComputeAdapter(
+        max_workers=1,
+        queue_units=0,
+        thread_name_prefix="test-daemon-api",
+    )
+    api_server.session_profile_callback = None
+
+    async def shutdown_operation_runtime() -> None:
+        return None
+
+    api_server.operation_runtime = SimpleNamespace(shutdown=shutdown_operation_runtime)
     interrupted_cleanup_calls = 0
 
     def mark_interrupted_cleanup() -> None:
@@ -4185,6 +4230,9 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
             )
         )
         while not (browser_server.ready.is_set() and api_server.ready.is_set()):
+            if task.done():
+                await task
+                raise AssertionError("daemon exited before server readiness")
             await asyncio.sleep(0.01)
         if received_signal_name is not None:
             lifecycle = daemon_cli._daemon_lifecycle
@@ -4220,7 +4268,11 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
         patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=api_server),
     ):
-        asyncio.run(exercise())
+        reset_daemon_compute_adapter()
+        try:
+            asyncio.run(exercise())
+        finally:
+            reset_daemon_compute_adapter()
 
     assert browser_server.shutdown_called is True
     assert browser_server.close_called is True
