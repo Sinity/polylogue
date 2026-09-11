@@ -50,6 +50,7 @@ def prepare_ingest_inputs(
     """
     check_stop()
     mode = path.lstat().st_mode
+    paths: tuple[Path, ...]
     if stat.S_ISREG(mode):
         paths = (path,)
         root = None

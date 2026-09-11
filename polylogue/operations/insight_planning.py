@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -56,6 +57,19 @@ class AcceptedInsightActuator:
         return RecoveryDisposition("unknown", "operator-blocking", "insight recovery requires exact output bindings")
 
 
+def _required_index_connection(archive: ArchiveStore) -> sqlite3.Connection:
+    """Return the pinned index handle required by insight planning.
+
+    Acquire-only archive handles deliberately have no derived-tier connection.
+    Planning a derived insight manifest against one would be semantically
+    invalid, rather than a recoverable empty result.
+    """
+    connection = archive.index_connection
+    if connection is None:
+        raise RuntimeError("insight planning requires a pinned index-tier connection")
+    return connection
+
+
 def prepare_insight_manifest(
     archive: ArchiveStore,
     session_ids: Sequence[str] | None,
@@ -70,13 +84,14 @@ def prepare_insight_manifest(
     accepted execution consumes these exact identifiers, never a new scan.
     """
     scope_kind: InsightScopeKind = "full" if session_ids is None else "explicit"
+    index_connection = _required_index_connection(archive)
     targets: list[AcceptedInsightTarget] = []
     maximum = MAX_INSIGHT_ACCEPTED_PARTS * MAX_INSIGHT_PART_TARGETS
     if session_ids is None:
         cursor = ""
         while True:
             check_stop()
-            rows = archive.index_connection.execute(
+            rows = index_connection.execute(
                 "SELECT session_id, disposition FROM ("
                 "SELECT session_id, 'required' AS disposition FROM sessions "
                 "UNION ALL SELECT p.session_id, 'excess' AS disposition FROM session_profiles p "
@@ -190,6 +205,7 @@ def insight_terminal_view_counts(
     archive: ArchiveStore, targets: Sequence[AcceptedInsightTarget], *, check_stop: Callable[[], None]
 ) -> tuple[int, int]:
     """Observe shared views once; page totals must not double-count roots."""
+    index_connection = _required_index_connection(archive)
     session_ids = tuple(
         target.target_ref.removeprefix("session:") for target in targets if target.disposition == "required"
     )
@@ -199,9 +215,7 @@ def insight_terminal_view_counts(
     for offset in range(0, len(session_ids), MAX_INSIGHT_PART_TARGETS):
         check_stop()
         roots.update(
-            thread_root_ids_sync(
-                archive.index_connection, session_ids[offset : offset + MAX_INSIGHT_PART_TARGETS]
-            ).values()
+            thread_root_ids_sync(index_connection, session_ids[offset : offset + MAX_INSIGHT_PART_TARGETS]).values()
         )
     ordered_roots = tuple(sorted(roots))
     threads = 0
@@ -210,10 +224,10 @@ def insight_terminal_view_counts(
         page = ordered_roots[offset : offset + MAX_INSIGHT_PART_TARGETS]
         placeholders = ",".join("?" for _ in page)
         threads += int(
-            archive.index_connection.execute(
+            index_connection.execute(
                 f"SELECT COUNT(*) FROM threads WHERE thread_id IN ({placeholders})", page
             ).fetchone()[0]
         )
     # Tag rollups retain the existing archive-global public count semantics.
-    tags = int(archive.index_connection.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0])
+    tags = int(index_connection.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0])
     return threads, tags
