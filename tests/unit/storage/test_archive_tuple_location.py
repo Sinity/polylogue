@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.archive_tuple_location import (
     ArchiveTupleAllocator,
@@ -153,5 +154,5 @@ def test_current_index_version_does_not_hide_undeclared_schema_objects(tmp_path:
         conn.execute("CREATE TABLE undeclared_schema_object (id INTEGER)")
         conn.commit()
     with sqlite3.connect(index_path) as conn:
-        with pytest.raises(RuntimeError, match="semantic manifest mismatch"):
+        with pytest.raises(SchemaVersionMismatchError, match="semantic manifest mismatch"):
             assert_supported_archive_layout(conn)

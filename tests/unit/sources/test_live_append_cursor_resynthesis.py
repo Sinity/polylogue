@@ -41,7 +41,7 @@ from polylogue.sources.live.batch_support import (
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
+from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
 from tests.infra.archive_templates import bootstrap_archive_root
 
 
@@ -318,12 +318,16 @@ def test_source_migration_adds_legacy_append_resynthesis_receipts(tmp_path: Path
         conn.execute("PRAGMA user_version = 39")
         conn.commit()
 
-        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+        with pytest.raises(MigrationError, match="verified backup manifest"):
+            migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
 
-        assert result.applied_versions == (40,)
-        assert conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_legacy_append_resynthesis_receipts'"
-        ).fetchone() == (1,)
+        assert conn.execute("PRAGMA user_version").fetchone() == (39,)
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_legacy_append_resynthesis_receipts'"
+            ).fetchone()
+            is None
+        )
 
 
 def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(

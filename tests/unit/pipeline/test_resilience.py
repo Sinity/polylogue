@@ -743,8 +743,9 @@ def test_ingest_worker_reuses_schema_resolution_and_walks_drift(
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
+        sidecar_resolver: object | None = None,
     ) -> Sequence[ParsedSession]:
-        del source_path
+        del sidecar_resolver, source_path
         observed["parse_provider"] = provider
         observed["parse_schema_resolution"] = schema_resolution
         observed["parse_fallback_id"] = fallback_id
