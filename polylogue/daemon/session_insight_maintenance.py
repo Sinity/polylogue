@@ -15,7 +15,6 @@ from pathlib import Path
 from polylogue.daemon.convergence import (
     SelectedSessionTarget,
     SessionProfileConvergenceOwner,
-    make_session_profile_frame,
 )
 from polylogue.daemon.derivation import DerivationFrame
 from polylogue.operations.insight_acceptance import (
@@ -25,6 +24,7 @@ from polylogue.operations.insight_acceptance import (
     SessionInsightPartReceipt,
     SessionInsightTargetReceipt,
 )
+from polylogue.operations.session_profile_convergence import make_session_profile_frame
 
 SessionProfileFrameFactory = Callable[[tuple[str, ...]], DerivationFrame]
 StopRequested = Callable[[], str | None]

@@ -1926,12 +1926,17 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
     db = tmp_path / "index.db"
     db.touch()
     calls: list[str] = []
+    profile_scopes: list[tuple[str, ...] | None] = []
     drained = asyncio.Event()
 
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         calls.append("fts" if _actor == "maintenance.fts_convergence" else "drain")
         drained.set()
         return 0
+
+    async def fake_session_profiles(scope: tuple[str, ...] | None) -> object:
+        profile_scopes.append(scope)
+        return SimpleNamespace()
 
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
@@ -1942,9 +1947,16 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
             lambda: SimpleNamespace(run_sync=fake_run_sync),
         )
         monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
-        task = asyncio.create_task(daemon_cli._periodic_convergence_check((), catch_up_complete=catch_up_complete))
+        task = asyncio.create_task(
+            daemon_cli._periodic_convergence_check(
+                (),
+                catch_up_complete=catch_up_complete,
+                session_profile_callback=fake_session_profiles,
+            )
+        )
         await asyncio.sleep(0)
         assert calls == []
+        assert profile_scopes == []
         catch_up_complete.set()
         await asyncio.wait_for(drained.wait(), timeout=1)
         task.cancel()
@@ -1954,6 +1966,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
     asyncio.run(exercise())
 
     assert calls == ["drain", "fts"]
+    assert profile_scopes == [None]
 
 
 def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -> None:
@@ -3553,6 +3566,8 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     events: list[str] = []
     lifecycle_payloads: list[dict[str, object]] = []
     watcher_coordinators: list[object] = []
+    watcher_profile_callbacks: list[object] = []
+    periodic_profile_callbacks: list[object] = []
     ok_schema = HealthAlert(
         check_name="schema_version",
         tier=HealthTier.FAST,
@@ -3572,6 +3587,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         def __init__(self, *_args: object, **kwargs: object) -> None:
             self.catch_up_complete = asyncio.Event()
             watcher_coordinators.append(kwargs["write_coordinator"])
+            watcher_profile_callbacks.append(kwargs["session_profile_callback"])
 
         async def run(self) -> None:
             events.append("watcher")
@@ -3617,6 +3633,11 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     class FakeAPIServer:
         def __init__(self) -> None:
             self.stopped = threading.Event()
+            self.session_profile_callback = object()
+            self.operation_runtime = SimpleNamespace(shutdown=self._shutdown_operation_runtime)
+
+        async def _shutdown_operation_runtime(self) -> None:
+            events.append("operation-runtime-shutdown")
 
         def serve_forever(self, _poll_interval: float) -> None:
             self.stopped.wait(timeout=2.0)
@@ -3679,11 +3700,12 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
             )
         )
         stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")))
-        stack.enter_context(
-            patch.object(
-                daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: fake_loop("convergence")
-            )
-        )
+
+        def fake_periodic_convergence(_sources: tuple[WatchSource, ...], **kwargs: object) -> object:
+            periodic_profile_callbacks.append(kwargs["session_profile_callback"])
+            return fake_loop("convergence")
+
+        stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", fake_periodic_convergence))
         stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")))
@@ -3746,6 +3768,8 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     assert len(watcher_coordinators) == 1
     bridge = api_server_factory.call_args.kwargs["write_bridge"]
     assert bridge._coordinator is watcher_coordinators[0]
+    assert watcher_profile_callbacks == [api_server.session_profile_callback]
+    assert periodic_profile_callbacks == [api_server.session_profile_callback]
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:

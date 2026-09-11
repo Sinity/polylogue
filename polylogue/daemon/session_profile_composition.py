@@ -9,13 +9,15 @@ from pathlib import Path
 from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
-    make_session_profile_derivation,
-    make_session_profile_frame,
 )
 from polylogue.daemon.derivation import DerivationReport
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance, make_session_insight_maintenance
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+from polylogue.operations.session_profile_convergence import (
+    make_session_profile_derivation,
+    make_session_profile_frame,
+)
 
 SessionProfileCallback = Callable[[Sequence[str] | None], Awaitable[DerivationReport]]
 

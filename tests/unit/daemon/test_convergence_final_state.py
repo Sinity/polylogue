@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,9 +24,12 @@ import pytest
 
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_default_convergence_stages
+from polylogue.daemon.execution import BoundedComputeAdapter
+from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.live.watcher import WatchSource
+from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 
 
 def _write_claude_code_session(path: Path, session_id: str, n_messages: int) -> None:
@@ -136,3 +140,73 @@ def test_convergence_produces_consistent_final_archive_state(
             if table_exists:
                 (debt_count,) = conn.execute("SELECT COUNT(*) FROM live_convergence_debt").fetchone()
                 assert debt_count == 0, f"Expected no convergence debt, found {debt_count} pending items"
+
+
+@pytest.mark.asyncio
+async def test_fresh_configured_source_catch_up_recovers_profiles_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The normal watcher route catches up a fresh root before a restarted sweep repairs profiles.
+
+    The first daemon instance uses its configured source root and the real
+    catch-up implementation to establish durable session material. A fresh
+    shared session-profile composition then receives the normal no-hint scope
+    used by periodic maintenance after restart. No manual ingest receipt or
+    reindex route participates.
+
+    Anti-vacuity: bypass configured-source catch-up, retain only an in-memory
+    changed-session list, or replace the restart sweep with a live-source
+    lookup and the persisted session has no recoverable profile.
+    """
+    archive_root = tmp_path / "archive"
+    corpus_root = tmp_path / "configured-source"
+    source = corpus_root / "fresh-session.jsonl"
+    session_id = "aaaa0000-0000-0000-0000-000000000001"
+    _write_claude_code_session(source, session_id, n_messages=2)
+    # The production quiet predicate defers files still being written. This
+    # synthetic startup input is deliberately old enough to be a catch-up
+    # candidate, while the restart sweep receives a controlled later clock.
+    os.utime(source, (1.0, 1.0))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
+
+    polylogue = _MinimalPolylogue(archive_root, archive_root / "index.db")
+    watcher = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="configured", root=corpus_root),),
+        cursor=CursorStore(archive_root / "ops.db"),
+    )
+    try:
+        await watcher._catch_up([corpus_root])
+    finally:
+        watcher.stop()
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (f"claude-code:{session_id}",)).fetchone()
+        assert conn.execute("SELECT 1 FROM session_profiles").fetchone() is None
+
+    # This is a new process-equivalent owner: it has no watcher state and can
+    # only recover from durable source/index evidence through the no-hint pass.
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        profiles = compose_session_profile_callback(
+            archive_root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 100.0,
+        )
+        report = await profiles(None)
+        assert report.failed == 0
+        assert report.pending == 0
+        assert report.cursor.position("session_profile").swept
+    finally:
+        compute.shutdown(wait=True)
+        assert await coordinator.shutdown(timeout=1.0)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute(
+            "SELECT 1 FROM session_profiles WHERE session_id = ?", (f"claude-code:{session_id}",)
+        ).fetchone()
