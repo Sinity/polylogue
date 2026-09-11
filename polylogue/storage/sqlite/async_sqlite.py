@@ -391,6 +391,11 @@ async def _get_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Con
                 pool.put_nowait(conn)
         return
 
+    # This fallback is the writable connection used when no transaction or
+    # bulk handle is active.  Keep it behind the same archive-bound lease as
+    # the explicit transaction factories; otherwise an async caller can open
+    # a second writer while the daemon coordinator is holding the gate.
+    require_write_lease(f"async connection({backend._db_path})", archive_root=backend._source_db_path.parent)
     async with aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT) as conn:
         os.chmod(backend._db_path, 0o600)
         await configure_connection(conn)
