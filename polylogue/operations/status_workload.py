@@ -13,8 +13,10 @@ import sqlite3
 from collections import Counter
 from datetime import UTC, datetime
 
+from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.raw_failure_evidence import raw_failure_outcome_code, validated_raw_failure_evidence_kind
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle_from_connection
+from polylogue.storage.tier_access import capture_sqlite_read
 
 _WORKLOAD_THROUGHPUT_WINDOW_MS = 5 * 60 * 1000
 _WORKLOAD_HEARTBEAT_STALE_MS = 90 * 1000
@@ -73,6 +75,23 @@ def ops_workload_status_from_connection(
     _require_reader_schema(schema)
     if conn is None:
         return {"available": False, "reason": "missing_ops_tier"}
+    result = capture_sqlite_read(
+        lambda: _ops_workload_status_from_present_connection(conn, now_ms=now_ms, schema=schema)
+    )
+    if isinstance(result, Measured):
+        return result.value
+    if not isinstance(result, Unavailable):
+        raise AssertionError("ops workload reader produced an unsupported evidence state")
+    return {"available": False, "reason": f"ops workload status unavailable: {result.detail or result.reason}"}
+
+
+def _ops_workload_status_from_present_connection(
+    conn: sqlite3.Connection,
+    *,
+    now_ms: int,
+    schema: str,
+) -> dict[str, object]:
+    """Read workload facts after the storage seam captured query availability."""
     if not _table_exists(conn, schema, "ingest_attempts"):
         return {"available": False, "reason": "missing_ingest_attempts"}
     if not _table_exists(conn, schema, "convergence_debt"):
@@ -83,10 +102,7 @@ def ops_workload_status_from_connection(
             "available": False,
             "reason": "convergence debt status unavailable: missing required column(s): " + ", ".join(missing),
         }
-    try:
-        return _ops_workload_status_from_ready_connection(conn, now_ms=now_ms, schema=schema)
-    except sqlite3.Error as exc:
-        return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
+    return _ops_workload_status_from_ready_connection(conn, now_ms=now_ms, schema=schema)
 
 
 def _ops_workload_status_from_ready_connection(
@@ -193,7 +209,27 @@ def convergence_status_from_connection(
         "family_summaries": [],
         "recent": [],
     }
-    if conn is None or not _table_exists(conn, schema, "convergence_debt"):
+    if conn is None:
+        return unavailable
+    result = capture_sqlite_read(
+        lambda: _convergence_status_from_present_connection(conn, now_ms=now_ms, schema=schema, unavailable=unavailable)
+    )
+    if isinstance(result, Measured):
+        return result.value
+    if not isinstance(result, Unavailable):
+        raise AssertionError("convergence reader produced an unsupported evidence state")
+    return {**unavailable, "error": f"convergence debt status unavailable: {result.detail or result.reason}"}
+
+
+def _convergence_status_from_present_connection(
+    conn: sqlite3.Connection,
+    *,
+    now_ms: int,
+    schema: str,
+    unavailable: dict[str, object],
+) -> dict[str, object]:
+    """Read convergence facts after the storage seam captured query availability."""
+    if not _table_exists(conn, schema, "convergence_debt"):
         return unavailable
     missing = _missing_convergence_debt_columns(conn, schema)
     if missing:
@@ -201,16 +237,13 @@ def convergence_status_from_connection(
             **unavailable,
             "error": "convergence debt status unavailable: missing required column(s): " + ", ".join(missing),
         }
-    try:
-        rows = conn.execute(
-            f"""
-            SELECT stage, target_type, target_id, status, attempts, updated_at_ms, last_error, next_retry_at
-            FROM {schema}.convergence_debt
-            ORDER BY updated_at_ms DESC, priority DESC, debt_id DESC
-            """
-        ).fetchall()
-    except sqlite3.Error as exc:
-        return {**unavailable, "error": f"convergence debt status unavailable: {exc}"}
+    rows = conn.execute(
+        f"""
+        SELECT stage, target_type, target_id, status, attempts, updated_at_ms, last_error, next_retry_at
+        FROM {schema}.convergence_debt
+        ORDER BY updated_at_ms DESC, priority DESC, debt_id DESC
+        """
+    ).fetchall()
     if not rows:
         return {**unavailable, "available": True, "error": None}
     statuses = {str(row[3]) for row in rows}

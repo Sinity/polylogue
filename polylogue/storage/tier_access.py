@@ -12,10 +12,11 @@ result behind its own ``except sqlite3``.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from polylogue.core.evidence import Evidence, Measured, Unavailable
 from polylogue.storage.archive_readiness import ArchiveTierProbe, probe_archive_tier
@@ -26,9 +27,12 @@ __all__ = [
     "TierHandle",
     "TierRefusal",
     "acquire_tier_reader",
+    "capture_sqlite_read",
     "open_tier_reader",
     "tier_evidence",
 ]
+
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +54,14 @@ class TierRefusal:
     version_status: str
     reason: str
     detail: str | None = None
+
+
+def capture_sqlite_read(read: Callable[[], _T]) -> Evidence[_T]:
+    """Run one supplied reader and retain a failed query as typed evidence."""
+    try:
+        return Measured(read())
+    except sqlite3.Error as exc:
+        return Unavailable(reason="sqlite_read_failed", detail=str(exc))
 
 
 def acquire_tier_reader(tier: ArchiveTier, path: Path) -> TierHandle | TierRefusal:
@@ -83,17 +95,18 @@ def acquire_tier_reader(tier: ArchiveTier, path: Path) -> TierHandle | TierRefus
             reason="tier_unreadable",
             detail=f"{path} could not be opened for a version probe",
         )
-    try:
-        connection = open_readonly_connection(path)
-    except sqlite3.Error as exc:
+    opened = capture_sqlite_read(lambda: open_readonly_connection(path))
+    if isinstance(opened, Unavailable):
         return TierRefusal(
             tier=tier,
             path=path,
             version_status=probe.version_status,
             reason="tier_unreadable",
-            detail=f"{type(exc).__name__}: {exc}",
+            detail=opened.detail,
         )
-    return TierHandle(tier=tier, path=path, connection=connection, probe=probe)
+    if not isinstance(opened, Measured):
+        raise AssertionError("sqlite tier read produced an unsupported evidence state")
+    return TierHandle(tier=tier, path=path, connection=opened.value, probe=probe)
 
 
 @contextmanager
