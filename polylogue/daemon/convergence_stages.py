@@ -123,7 +123,7 @@ class _FtsRepairNeeds:
 # ── Stage: FTS ─────────────────────────────────────────────────────
 
 
-def make_fts_stage(db_path: Path) -> ConvergenceStage:
+def make_fts_stage(db_path: Path, *, archive_root: Path | None = None) -> ConvergenceStage:
     """Converge the FTS domain through its session-partition adapter.
 
     The stage is only an adapter for the generic source/debt scheduler. FTS
@@ -206,7 +206,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         try:
             from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
 
-            result = FtsConvergenceOwner(database).run_once_sync(
+            result = FtsConvergenceOwner(database, archive_root=archive_root or db_path.parent).run_once_sync(
                 reason=FtsRunReason.PERIODIC,
                 partition_keys=tuple(keys) if keys else None,
             )
@@ -1045,7 +1045,7 @@ def make_default_convergence_stages(
         (
             make_raw_parse_recovery_stage(db_path, archive_root=archive_root()),
             make_raw_authority_verdict_cache_stage(db_path),
-            make_fts_stage(db_path),
+            make_fts_stage(db_path, archive_root=archive_root()),
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
             make_delegation_work_evidence_stage(db_path),

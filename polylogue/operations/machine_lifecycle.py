@@ -5,6 +5,20 @@ from __future__ import annotations
 from polylogue.operations.audit import AuditRepository, MachineRequestBinding
 from polylogue.operations.machine_receipts import encode_machine_receipt
 
+_RICH_HISTORICAL_RECEIPT_OPERATIONS = frozenset({"ingest", "maintenance.insights.rebuild"})
+
+
+def _operation_requires_rich_historical_receipt(operation_name: object) -> bool:
+    """Whether recovery needs a closed domain receipt rather than terminal audit facts.
+
+    Ingest and insight rebuild replies carry bounded, domain-specific results
+    that cannot be reconstructed from generic operation counters. Ordinary
+    mutations have their terminal effect recorded by ``operation_runs`` and
+    the final audit event, so they must not be demoted merely because they do
+    not opt into a rich receipt.
+    """
+    return operation_name in _RICH_HISTORICAL_RECEIPT_OPERATIONS
+
 
 def _audit_int(value: object, *, field: str) -> int:
     """Reject malformed audit scalars rather than silently coercing receipt facts."""
@@ -77,9 +91,15 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
                 outcome = "failed"
         outcomes.append(outcome)
         historical = audit.historical_machine_receipt(str(operation_id)) if outcome == "completed" else None
-        # A completed run without the closed terminal event is legacy evidence,
-        # not permission to read live source/index state and invent one.
-        if outcome == "completed" and historical is None:
+        # Rich-result operations cannot reconstruct their terminal response
+        # from live source/index state. Ordinary mutation effects are already
+        # closed by the completed run and final audit event above.
+        if (
+            outcome == "completed"
+            and historical is None
+            and run is not None
+            and _operation_requires_rich_historical_receipt(run["operation_name"])
+        ):
             outcome = "indeterminate"
             outcomes[-1] = outcome
         attempted.append(

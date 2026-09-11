@@ -25,6 +25,7 @@ from polylogue.operations.audit import (
     token_sha256,
 )
 from polylogue.operations.bindings import OperationBinding
+from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import (
     InsightCertifiedCountsHistorical,
     InsightPartHistoricalReceipt,
@@ -348,10 +349,61 @@ def test_machine_batch_reserves_unstarted_suffix_and_never_replays_effects(
     recovered_operation = recovered.get_operation(operation_id)
     assert recovered_operation is not None
     assert recovered_operation["status"] == "completed"
+    state = machine_request_state(recovered, recovered_request)
+    assert state["outcome"] == "cancelled"
+    assert state["completed_chunks"] == 1
+    assert state["not_attempted"] == [1]
+    assert state["parts"] == [{"ordinal": 0, "operation_id": operation_id, "outcome": "completed", "receipt": None}]
     with recovered.bind_machine_request(binding, transition="accept_execution_batch"):
         with pytest.raises(MachineRequestRecoveredError):
             recovered.accept_execution_batch(refs, _principal())
     assert actuator.calls == 1
+
+
+@pytest.mark.parametrize("operation_name", ("ingest", "maintenance.insights.rebuild"))
+def test_rich_receipt_operation_without_terminal_receipt_stays_indeterminate(
+    tmp_path: Path, operation_name: str
+) -> None:
+    """Removing the rich-receipt guard makes historical ingest/insight replies look completed."""
+    audit = _audit(tmp_path)
+    actuator = _Actuator(operation=operation_name)
+    executor = OperationExecutor(audit=audit)
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:receipt-fixture",
+        archive_identity_digest="identity:receipt-fixture",
+        parameter_digest=f"params:{operation_name}",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    assert authorization.authorization_id is not None
+    binding = MachineRequestBinding(
+        "identity:receipt-fixture",
+        f"request:{operation_name}",
+        "actor:test",
+        "f" * 64,
+        operation_name,
+    )
+    with audit.bind_machine_request(binding, transition="accept_execution_batch"):
+        audit.accept_execution_batch((str(authorization.authorization_id),), _principal())
+    with audit.bind_machine_request(binding, transition="consume_authorization_and_start", part=0):
+        executor.execute_bound(_binding(actuator), preview, authorization, object())
+
+    record = audit.machine_request(binding)
+    assert record is not None
+    state = machine_request_state(audit, record)
+    assert state["outcome"] == "indeterminate"
+    assert state["effect"] == "indeterminate"
+    assert state["completed_chunks"] == 1
+    assert state["parts"] == [
+        {
+            "ordinal": 0,
+            "operation_id": audit.machine_parts(binding)[0]["operation_id"],
+            "outcome": "indeterminate",
+            "receipt": None,
+        }
+    ]
 
 
 def test_compound_preview_and_authorization_recovery_retains_exact_refs(tmp_path: Path) -> None:
