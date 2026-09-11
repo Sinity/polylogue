@@ -15,9 +15,11 @@ fixed and changes only a value the output depends on.
 
 from __future__ import annotations
 
+import itertools
 import sqlite3
 from collections.abc import Sequence
 from contextlib import closing
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -315,7 +317,11 @@ def test_a_value_change_makes_the_thread_and_tag_families_stale(archive_root: Pa
     mutated = _status(index_db)
     assert mutated.stale_profile_row_count == 1
     assert mutated.stale_thread_count == 1
-    assert mutated.stale_tag_rollup_count == 1
+    # Every rollup partition the session contributes to goes stale with it, and
+    # this session contributes two: its explicit tag and its ``origin:`` auto
+    # tag. Stating the count as the converged total keeps the law about "all of
+    # them" rather than about how many tags the fixture happens to carry.
+    assert mutated.stale_tag_rollup_count == converged.tag_rollup_count
     assert mutated.stale_latency_profile_row_count == 1
 
 
@@ -337,15 +343,18 @@ def test_a_converged_archive_reports_no_family_stale(archive_root: Path) -> None
 
 
 def _clean_rebuild(tmp_path: Path, sessions: Sequence[tuple[str, Sequence[tuple[str, str]], str | None]]) -> Path:
-    """A second archive built from scratch to the same intended end state."""
-    root = tmp_path / "control"
-    root.mkdir()
-    initialize_active_archive_root(root)
-    index_db = _index_db(root)
-    for name, messages, parent in sessions:
-        _seed(index_db, name, messages=messages, parent=parent)
-    _converge_to_fixpoint(index_db)
-    return index_db
+    """A second archive built from scratch to the same intended end state.
+
+    The name/messages/parent shape the lineage tests are written in, over the
+    one control builder in :func:`_rebuilt_archive`; a second copy of "seed
+    these sessions and converge" could drift from the mutation path it is the
+    control for.
+    """
+    return _rebuilt_archive(
+        tmp_path,
+        "control",
+        [_SessionSpec(name, tuple(messages), parent=parent) for name, messages, parent in sessions],
+    )
 
 
 def test_incremental_append_converges_to_the_clean_rebuild(archive_root: Path, tmp_path: Path) -> None:
@@ -460,3 +469,515 @@ def test_a_second_pass_over_unchanged_inputs_publishes_nothing(archive_root: Pat
     assert _pending(index_db) == []
     _converge_to_fixpoint(index_db)
     assert _semantic_relations(index_db) == settled
+
+
+# ── The red law, over every output-affecting value the binding must carry ─────
+
+
+def _mutate_model_name(index_db: Path, session_id: str) -> None:
+    """Change one message's model, holding every identity and count fixed."""
+    with write_lease("test.model"), closing(_write_connection(index_db)) as conn:
+        before = conn.execute(
+            "SELECT count(*), max(occurred_at_ms), max(position) FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        changed = conn.execute(
+            "UPDATE messages SET model_name = 'model-after' WHERE session_id = ? AND model_name IS NOT NULL",
+            (session_id,),
+        ).rowcount
+        after = conn.execute(
+            "SELECT count(*), max(occurred_at_ms), max(position) FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        conn.commit()
+    assert changed > 0, "the mutation must change a row to be a mutation at all"
+    assert tuple(before) == tuple(after), "the mutation must not move a count, a timestamp, or a partition key"
+
+
+def _mutate_output_tokens(index_db: Path, session_id: str) -> None:
+    """Change one message's token measurement, holding identity and counts fixed."""
+    with write_lease("test.tokens"), closing(_write_connection(index_db)) as conn:
+        before = conn.execute(
+            "SELECT count(*), max(occurred_at_ms), max(position), sum(word_count) FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        changed = conn.execute(
+            "UPDATE messages SET output_tokens = COALESCE(output_tokens, 0) + 4096 WHERE session_id = ? AND position = 1",
+            (session_id,),
+        ).rowcount
+        after = conn.execute(
+            "SELECT count(*), max(occurred_at_ms), max(position), sum(word_count) FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        conn.commit()
+    assert changed == 1
+    assert tuple(before) == tuple(after), "the mutation must not move a count, a timestamp, or a partition key"
+
+
+def _priced_session(index_db: Path, name: str) -> str:
+    """A session whose assistant turn carries a model and a usage measurement.
+
+    ``model_name`` and the token columns are exactly the values ``pipeline/ids.py``
+    excludes from the message content hash ("owned by usage/cost derivation"), so
+    a binding that leaned on that hash could not see either of them move.
+    """
+    builder = SessionBuilder(index_db, name)
+    builder = builder.created_at(f"{_SEEDED_DAY}T00:00:00+00:00").updated_at(f"{_SEEDED_DAY}T01:00:00+00:00")
+    builder.add_message(role="user", text="ask", timestamp=f"{_SEEDED_DAY}T00:00:00+00:00")
+    builder.add_message(
+        role="assistant",
+        text="answer",
+        timestamp=f"{_SEEDED_DAY}T00:01:00+00:00",
+        model_name="model-before",
+        input_tokens=120,
+        output_tokens=48,
+    )
+    builder.save()
+    return builder.native_session_id()
+
+
+def test_a_model_name_change_makes_the_partition_stale(archive_root: Path) -> None:
+    """The measured defect's sibling: a model name moves no identity at all.
+
+    Red against a binding over the message content hash alone — ``model_name``
+    is a hashed ParsedMessage field, but the stored ``messages.model_name`` can
+    be corrected by a usage/cost derivation without a re-parse, and the profile
+    reads it. Red against any sort-key or updated-at predicate outright.
+    """
+    index_db = _index_db(archive_root)
+    session_id = _priced_session(index_db, "modelled")
+    _converge_to_fixpoint(index_db)
+    assert _pending(index_db) == []
+
+    _mutate_model_name(index_db, session_id)
+
+    assert _pending(index_db) == [session_id]
+    _converge_to_fixpoint(index_db)
+    with closing(_read_connection(index_db)) as conn:
+        stored = conn.execute(
+            "SELECT primary_model_name FROM session_profiles WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    assert stored[0] == "model-after", "convergence must republish the value that moved"
+
+
+def test_a_token_count_change_makes_the_partition_stale(archive_root: Path) -> None:
+    """Usage measurements are excluded from the content hash and read by the profile.
+
+    ``pipeline/ids.py`` excludes ``output_tokens`` from ``ParsedMessage``'s
+    semantic hash by design, so a binding that used ``messages.content_hash``
+    as its whole message projection would report VALID here. The explicit token
+    columns in ``SESSION_INPUT_PROJECTION_COLUMNS`` are what makes it STALE.
+    """
+    index_db = _index_db(archive_root)
+    session_id = _priced_session(index_db, "metered")
+    _converge_to_fixpoint(index_db)
+    assert _pending(index_db) == []
+
+    _mutate_output_tokens(index_db, session_id)
+
+    assert _pending(index_db) == [session_id]
+
+
+def test_expected_row_counts_cannot_certify_a_stale_partition(archive_root: Path) -> None:
+    """Work-event and phase readiness may not rest on the profile's own declaration.
+
+    ``expected_work_event_inference_count`` sums ``session_profiles.work_event_count``
+    and compares it to the stored work-event rows: both sides come from the
+    partition being judged, so a profile that is wrong about its inputs is
+    wrong on both and the comparison agrees with itself. Red before the
+    readiness gates took the value-complete inspection as their authority —
+    the two equalities below still hold after the mutation, and the readiness
+    flags must still be False.
+    """
+    from polylogue.storage.derived.derived_status import _session_insight_metrics
+
+    index_db = _index_db(archive_root)
+    session_id = _priced_session(index_db, "accounted")
+    _converge_to_fixpoint(index_db)
+
+    converged = _session_insight_metrics(_status(index_db))
+    assert converged["work_event_rows_ready"] is True
+    assert converged["phase_rows_ready"] is True
+
+    _mutate_role(index_db, session_id)
+
+    status = _status(index_db)
+    assert status.work_event_inference_count == status.expected_work_event_inference_count
+    assert status.phase_count == status.expected_phase_count
+    assert status.stale_profile_row_count == 1
+
+    mutated = _session_insight_metrics(status)
+    assert mutated["work_event_rows_ready"] is False
+    assert mutated["phase_rows_ready"] is False
+    assert mutated["profile_rows_ready"] is False
+
+
+def test_stale_work_event_and_phase_counts_are_reported_rather_than_defaulted(archive_root: Path) -> None:
+    """Anti-vacuity for the two counts the readiness gates compare to zero.
+
+    Both were snapshot fields no status descriptor emitted, so they read zero
+    on every archive and their ``== 0`` conjuncts could not fail. Red if either
+    stops being derived from the inspection's non-valid key set.
+    """
+    index_db = _index_db(archive_root)
+    session_id = _priced_session(index_db, "counted")
+    _converge_to_fixpoint(index_db)
+
+    converged = _status(index_db)
+    assert converged.stale_work_event_inference_count == 0
+    assert converged.stale_phase_inference_count == 0
+    assert converged.work_event_inference_count > 0, "the archive must have work-event rows to report stale"
+    assert converged.phase_count > 0, "the archive must have phase rows to report stale"
+
+    _mutate_role(index_db, session_id)
+
+    mutated = _status(index_db)
+    assert mutated.stale_work_event_inference_count == converged.work_event_inference_count
+    assert mutated.stale_phase_inference_count == converged.phase_count
+
+
+# ── Faults: a frame that moved, and a crash on either side of publication ─────
+
+
+def test_a_publication_whose_inputs_moved_is_refused_rather_than_stamped(archive_root: Path) -> None:
+    """Publication revalidates the binding it was computed against.
+
+    This is the revalidation edge. Delete it — stamp the binding the caller
+    brought — and the profile certifies itself against inputs it never read:
+    the partition would report VALID while its rows describe the pre-mutation
+    session. Red exactly then.
+    """
+    index_db = _index_db(archive_root)
+    session_id = _priced_session(index_db, "raced")
+    _converge_to_fixpoint(index_db)
+
+    with closing(_read_connection(index_db)) as conn:
+        stale_frame = session_input_bindings(conn, (session_id,))[session_id]
+
+    _mutate_role(index_db, session_id)
+
+    with write_lease("test.race"), closing(_write_connection(index_db)) as conn:
+        accepted = publish_session_profile(conn, session_id, input_binding=stale_frame)
+
+    assert accepted is False, "a frame whose inputs moved may not be published"
+    assert _pending(index_db) == [session_id], "the key stays pending for the next pass"
+
+
+def test_a_crash_between_the_rows_and_the_binding_leaves_the_key_pending(archive_root: Path) -> None:
+    """A partition that cannot say what it was built from is never valid.
+
+    The crash-after-rows, before-stamp window: the rows are current, the
+    binding column is not yet written. Inspection must call that STALE rather
+    than trust the rows, and the next pass must converge it without help.
+    """
+    index_db = _index_db(archive_root)
+    session_id = _priced_session(index_db, "half-stamped")
+    _converge_to_fixpoint(index_db)
+    settled = _semantic_relations(index_db)
+
+    with write_lease("test.crash"), closing(_write_connection(index_db)) as conn:
+        conn.execute("UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = ?", (session_id,))
+        conn.commit()
+
+    assert _pending(index_db) == [session_id]
+    _converge_to_fixpoint(index_db)
+    assert _semantic_relations(index_db) == settled
+
+
+def test_a_crash_before_publication_leaves_the_output_untouched(archive_root: Path) -> None:
+    """Computing a replacement writes nothing; only publication does.
+
+    Red if ``compute`` ever acquired a side effect on the output relations: the
+    relations after a computed-but-unpublished key would differ from the ones
+    before it.
+    """
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+
+    index_db = _index_db(archive_root)
+    session_id = _priced_session(index_db, "computed-only")
+    _converge_to_fixpoint(index_db)
+    settled = _semantic_relations(index_db)
+
+    adapter = SessionProfileDerivation(
+        lambda: _read_connection(index_db),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda frame: (session_id,),
+    )
+    replacement = adapter.compute(object(), session_id)
+
+    assert replacement.key == session_id
+    assert _semantic_relations(index_db) == settled
+    assert _pending(index_db) == []
+
+
+# ── The differential: the projection entries are load-bearing ─────────────────
+
+
+def test_the_partition_input_columns_are_projected_or_declared_excluded(archive_root: Path) -> None:
+    """Every column of the two input relations is classified, one way or the other.
+
+    Completeness is the property the binding exists for, and an unclassified
+    column is the one way to lose it silently: added to ``sessions`` or
+    ``messages``, read by the profile, absent from both the projection and the
+    exclusion table, and the binding reports VALID after the output moved.
+
+    Red the moment a column is added to either relation without a decision.
+    """
+    from polylogue.storage.derived.session.input_binding import (
+        SESSION_INPUT_EXCLUDED_COLUMNS,
+        SESSION_INPUT_PROJECTION_COLUMNS,
+        SESSION_ROW_EXCLUDED_COLUMNS,
+        SESSION_ROW_PROJECTION_COLUMNS,
+    )
+
+    index_db = _index_db(archive_root)
+    _seed(index_db, "classified", messages=[("user", "one")])
+
+    cases = (
+        ("sessions", SESSION_ROW_PROJECTION_COLUMNS, SESSION_ROW_EXCLUDED_COLUMNS),
+        ("messages", SESSION_INPUT_PROJECTION_COLUMNS, SESSION_INPUT_EXCLUDED_COLUMNS),
+    )
+    with closing(_read_connection(index_db)) as conn:
+        for relation, projected, excluded in cases:
+            # ``table_xinfo`` rather than ``table_info``: generated columns are
+            # hidden from the latter, and ``sort_key_ms`` is both generated and
+            # projected.
+            columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_xinfo({relation})")}
+            assert not (set(projected) - columns), f"{relation}: projected column that does not exist"
+            unclassified = sorted(columns - set(projected) - set(excluded))
+            assert not unclassified, f"{relation}: columns neither projected nor declared excluded: {unclassified}"
+            assert not (set(excluded) & set(projected)), f"{relation}: a column cannot be both"
+            assert all(reason.strip() for reason in excluded.values()), f"{relation}: an exclusion needs a reason"
+
+
+def test_dropping_a_projection_column_stops_the_binding_from_seeing_its_defect(
+    archive_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The differential over the dependency projection itself.
+
+    Each declared column is there because some output-affecting mutation is
+    invisible without it. Removing ``role`` — the column the measured defect
+    was found on — and the role mutation stops moving the binding, which is
+    precisely the pre-fix behaviour. This is the test that would go red if a
+    future edit dropped a column from the projection believing it inert.
+    """
+    from polylogue.storage.derived.session import input_binding
+
+    index_db = _index_db(archive_root)
+    session_id = _seed(index_db, "differential", messages=[("user", "before"), ("assistant", "after")])
+    _converge_to_fixpoint(index_db)
+
+    with closing(_read_connection(index_db)) as conn:
+        full_before = session_input_bindings(conn, (session_id,))[session_id]
+    _mutate_role(index_db, session_id)
+    with closing(_read_connection(index_db)) as conn:
+        full_after = session_input_bindings(conn, (session_id,))[session_id]
+    assert full_before != full_after, "the projection as declared must see the role change"
+
+    monkeypatch.setattr(
+        input_binding,
+        "SESSION_INPUT_PROJECTION_COLUMNS",
+        tuple(column for column in input_binding.SESSION_INPUT_PROJECTION_COLUMNS if column != "role"),
+    )
+    with closing(_read_connection(index_db)) as conn:
+        narrowed_after = session_input_bindings(conn, (session_id,))[session_id]
+    with write_lease("test.restore"), closing(_write_connection(index_db)) as conn:
+        conn.execute("UPDATE messages SET role = 'user' WHERE session_id = ? AND position = 0", (session_id,))
+        conn.commit()
+    with closing(_read_connection(index_db)) as conn:
+        narrowed_before = session_input_bindings(conn, (session_id,))[session_id]
+
+    assert narrowed_before == narrowed_after, "without the column the binding cannot see the mutation"
+
+
+# ── Convergence equality over the remaining mutation kinds ────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionSpec:
+    """One intended session, as both the mutation path and the control build it."""
+
+    name: str
+    messages: tuple[tuple[str, str], ...]
+    parent: str | None = None
+    day: str = _SEEDED_DAY
+    repository_url: str | None = None
+
+
+def _seed_spec(index_db: Path, spec: _SessionSpec) -> str:
+    """Write one spec through the real writer, replacing any session of that name."""
+    builder = SessionBuilder(index_db, spec.name)
+    builder = builder.created_at(f"{spec.day}T00:00:00+00:00").updated_at(f"{spec.day}T01:00:00+00:00")
+    if spec.repository_url is not None:
+        builder = builder.git_repository_url(spec.repository_url)
+    if spec.parent is not None:
+        builder = builder.parent_session(f"ext-{spec.parent}").branch_type("fork")
+    for index, (role, text) in enumerate(spec.messages):
+        builder.add_message(role=role, text=text, timestamp=f"{spec.day}T00:{index:02d}:00+00:00")
+    builder.save()
+    return builder.native_session_id()
+
+
+def _rebuilt_archive(tmp_path: Path, name: str, specs: Sequence[_SessionSpec]) -> Path:
+    """A second archive built from scratch to the same intended end state."""
+    root = tmp_path / name
+    root.mkdir()
+    initialize_active_archive_root(root)
+    control = _index_db(root)
+    for spec in specs:
+        _seed_spec(control, spec)
+    _converge_to_fixpoint(control)
+    return control
+
+
+def _tag_rollup_keys(index_db: Path) -> list[tuple[str, str, str]]:
+    with closing(_read_connection(index_db)) as conn:
+        rows = conn.execute("SELECT tag, bucket_day, source_name FROM session_tag_rollups ORDER BY 1, 2, 3").fetchall()
+    return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+
+
+def test_a_tag_change_converges_to_the_clean_rebuild(archive_root: Path, tmp_path: Path) -> None:
+    """A repository that appears adds an auto tag, and with it a rollup partition.
+
+    The tag arm of the red law, driven from the authoritative input rather than
+    from the output: ``git_repository_url`` is in the session-row projection, an
+    auto tag is derived from it, and the tag rollup is a query-time projection
+    of the profile that carries it. Red if the binding covered messages alone,
+    or if the rollup's currency were read off its own ``materialized_at`` — a
+    column the view emits as the literal ``'query-time'`` on every row.
+    """
+    index_db = _index_db(archive_root)
+    plain = _SessionSpec("tagged", (("user", "start"), ("assistant", "reply")))
+    tagged = replace(plain, repository_url="https://example.invalid/demo.git")
+
+    _seed_spec(index_db, plain)
+    _converge_to_fixpoint(index_db)
+    before = _tag_rollup_keys(index_db)
+    assert not any(tag.startswith("repo:") for tag, _, _ in before)
+
+    _seed_spec(index_db, tagged)
+    assert _pending(index_db), "a tag-moving input change must make the partition pending"
+    _converge_to_fixpoint(index_db)
+
+    after = _tag_rollup_keys(index_db)
+    assert [key for key in after if key not in before] == [("repo:demo", _SEEDED_DAY, "unknown-export")]
+
+    control = _rebuilt_archive(tmp_path, "tag-control", [tagged])
+    assert _semantic_relations(index_db) == _semantic_relations(control)
+    assert after == _tag_rollup_keys(control)
+
+
+def test_a_provider_day_move_retires_the_old_partition(archive_root: Path, tmp_path: Path) -> None:
+    """A session that moves to another day leaves no row on the day it left.
+
+    The provider/day rollup's partition key is (source, canonical day), and the
+    day is derived from values in the session-row and message projections. Red
+    if convergence only added the new bucket: the old one would survive as a
+    rollup partition no session contributes to, which no per-session freshness
+    check can see.
+    """
+    index_db = _index_db(archive_root)
+    first_day = _SessionSpec("moved", (("user", "one"), ("assistant", "two")), day="2026-01-01")
+    second_day = replace(first_day, day="2026-01-02")
+
+    _seed_spec(index_db, first_day)
+    _converge_to_fixpoint(index_db)
+    assert {day for _, day, _ in _tag_rollup_keys(index_db)} == {"2026-01-01"}
+
+    _seed_spec(index_db, second_day)
+    assert _pending(index_db), "a day move must make the partition pending"
+    _converge_to_fixpoint(index_db)
+
+    assert {day for _, day, _ in _tag_rollup_keys(index_db)} == {"2026-01-02"}
+    control = _rebuilt_archive(tmp_path, "day-control", [second_day])
+    assert _semantic_relations(index_db) == _semantic_relations(control)
+
+
+def test_a_zero_output_partition_matches_the_clean_rebuild(archive_root: Path, tmp_path: Path) -> None:
+    """Valid-empty is a converged state the control archive reaches too.
+
+    Red if a message-less session were treated as work never performed: the
+    mutated archive would still hold a pending key while the control held none,
+    and the two relations would differ by the empty partition's own rows.
+    """
+    index_db = _index_db(archive_root)
+    empty = _SessionSpec("silent", ())
+    kept = _SessionSpec("spoken", (("user", "hello"),))
+
+    _seed_spec(index_db, empty)
+    _seed_spec(index_db, kept)
+    _converge_to_fixpoint(index_db)
+
+    assert _pending(index_db) == []
+    control = _rebuilt_archive(tmp_path, "empty-control", [kept, empty])
+    assert _semantic_relations(index_db) == _semantic_relations(control)
+
+
+def test_event_order_permutations_converge_to_the_same_relation(archive_root: Path, tmp_path: Path) -> None:
+    """The property: independent writes may arrive in any order.
+
+    Each permutation writes the same three sessions and converges after every
+    write, so discovery, inspection and publication all see a different archive
+    each time. Red if any step carried state across keys — a batch-scoped
+    timestamp folded into a semantic column, an accumulator reused between
+    sessions, a partition retired by arrival order rather than by membership.
+    """
+    specs = (
+        _SessionSpec("alpha", (("user", "a1"),)),
+        _SessionSpec("beta", (("user", "b1"), ("assistant", "b2"))),
+        _SessionSpec("gamma", (("user", "g1"),), repository_url="https://example.invalid/gamma.git"),
+    )
+
+    index_db = _index_db(archive_root)
+    for spec in specs:
+        _seed_spec(index_db, spec)
+        _converge_to_fixpoint(index_db)
+    reference = _semantic_relations(index_db)
+    reference_rollups = _tag_rollup_keys(index_db)
+
+    for index, order in enumerate(itertools.permutations(specs)):
+        root = tmp_path / f"order-{index}"
+        root.mkdir()
+        initialize_active_archive_root(root)
+        permuted = _index_db(root)
+        for spec in order:
+            _seed_spec(permuted, spec)
+            _converge_to_fixpoint(permuted)
+        assert _semantic_relations(permuted) == reference, f"order {[spec.name for spec in order]} diverged"
+        assert _tag_rollup_keys(permuted) == reference_rollups
+
+
+def test_deleting_every_scheduling_hint_reconstructs_the_same_pending_set(archive_root: Path) -> None:
+    """The domain-side half of the kernel's deleted-hint law.
+
+    ``derived_refresh_guard``, ``fts_freshness_state`` and
+    ``delegation_refresh_scope`` are the index tier's disposable refresh hints.
+    Emptying all of them must not change which session partitions are pending,
+    because required membership is the ``sessions`` relation itself and validity
+    is re-derived from the inputs. Red if any of them became authority.
+    """
+    index_db = _index_db(archive_root)
+    converged = _seed(index_db, "settled", messages=[("user", "one")])
+    mutated = _seed(index_db, "moved", messages=[("user", "one"), ("assistant", "two")])
+    _converge_to_fixpoint(index_db)
+    _mutate_role(index_db, mutated)
+    before = _pending(index_db)
+    assert before == [mutated], "the mutated partition is the pending one before the hints are dropped"
+
+    with write_lease("test.hints"), closing(_write_connection(index_db)) as conn:
+        for relation in (
+            "derived_refresh_guard",
+            "fts_freshness_state",
+            "delegation_refresh_scope",
+        ):
+            conn.execute(f"DELETE FROM {relation}")
+        conn.commit()
+
+    assert _pending(index_db) == before
+    _converge_to_fixpoint(index_db)
+    assert _pending(index_db) == []
+    with closing(_read_connection(index_db)) as conn:
+        profiled = sorted(str(row[0]) for row in conn.execute("SELECT session_id FROM session_profiles"))
+    assert profiled == sorted((converged, mutated))
