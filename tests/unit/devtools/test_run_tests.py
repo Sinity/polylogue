@@ -36,8 +36,7 @@ def _write_passing_evidence(root: Path, run: VerifyRun) -> None:
     (events / "gw0.jsonl").write_text(
         json.dumps({"event": "collection_finished", "updated_at": "2026-01-01T00:00:00Z"}) + "\n", encoding="utf-8"
     )
-    report = root / run_tests.PYTEST_REPORT_PATH
-    report.parent.mkdir(parents=True, exist_ok=True)
+    report = step_dir / "pytest-report.json"
     report.write_text(json.dumps({"tests": [{"nodeid": "test_ok", "outcome": "passed"}]}), encoding="utf-8")
 
 
@@ -225,7 +224,8 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
         (events / "gw0.jsonl").write_text(
             json.dumps({"event": "collection_finished", "updated_at": "2026-01-01T00:00:00Z"}) + "\n", encoding="utf-8"
         )
-        report = run_tests.ROOT / run_tests.PYTEST_REPORT_PATH
+        report_arg = next(arg for arg in cmd if arg.startswith("--polylogue-report-file="))
+        report = Path(report_arg.split("=", 1)[1])
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text(json.dumps({"tests": [{"nodeid": "test_ok", "outcome": "passed"}]}), encoding="utf-8")
         return SlotOutcome(returncode=0, slot="held")
@@ -378,8 +378,7 @@ def test_main_records_rewritten_focused_exit_and_why_surfaces_the_failure(
             json.dumps({"event": "collection_finished", "updated_at": "2026-01-01T00:00:00Z"}) + "\n",
             encoding="utf-8",
         )
-        report = tmp_path / run_tests.PYTEST_REPORT_PATH
-        report.parent.mkdir(parents=True, exist_ok=True)
+        report = artifacts.step_dir / "pytest-report.json"
         report.write_text(json.dumps({"tests": []}), encoding="utf-8")
         return 0, 0.01, {"diagnosis": "pytest_passed"}
 
