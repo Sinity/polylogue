@@ -13,10 +13,13 @@ authority, and never durable.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import cast
 
-from polylogue.daemon.convergence import DaemonConverger
+import pytest
+
+from polylogue.daemon.convergence import DaemonConverger, SessionProfileConvergenceOwner
 from polylogue.daemon.derivation import (
     BaseDerivation,
     Budget,
@@ -24,6 +27,8 @@ from polylogue.daemon.derivation import (
     DerivationKey,
     Replacement,
 )
+from polylogue.daemon.execution import BoundedComputeAdapter
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 
 FRAME = DerivationFrame(archive_root="/archive", source_revision="r1")
 
@@ -97,6 +102,38 @@ def test_the_facade_routes_only_publication_through_the_owner_admission() -> Non
 
     assert converger.converge_derivations(FRAME, publisher=publisher).done == 2
     assert admissions == ["strings", "strings"]
+
+
+@pytest.mark.asyncio
+async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() -> None:
+    """A targeted earlier id cannot inherit an archive sweep's page cursor.
+
+    Anti-vacuity: pass ``resume=True`` through an incremental scope and the
+    archive pass below leaves its cursor after ``a``; the targeted repair of
+    ``a`` is then skipped despite the output relation reporting it missing.
+    """
+    adapter = StringStatusDerivation(("a", "b"))
+    adapter.domain = "session_profile"
+    converger = DaemonConverger([], derivations=[adapter])
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        converger,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    try:
+        archive = DerivationFrame(archive_root="/archive", source_revision="r1")
+        assert (await owner.converge(archive, budget=Budget(page=1, compute=1))).done == 1
+        assert adapter.output == {"a": "b0"}
+
+        adapter.output.pop("a")
+        targeted = DerivationFrame(archive_root="/archive", source_revision="r2", scope=("a",))
+        assert (await owner.converge(targeted, budget=Budget(page=1, compute=1))).done == 1
+        assert adapter.output == {"a": "b0"}
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
 
 
 def test_the_facade_reconstructs_the_pending_set_on_every_call() -> None:

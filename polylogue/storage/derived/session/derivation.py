@@ -583,9 +583,21 @@ class SessionProfileDerivation:
         from polylogue.storage.derived.session.rebuild import prepare_session_insight_partition
 
         generation = self._generation_binding() if self._generation_binding is not None else None
+        expected_generation = f"index-generation:{generation}" if generation is not None else None
+        source_revision = getattr(frame, "source_revision", None)
+        if (
+            expected_generation is not None
+            and isinstance(source_revision, str)
+            and source_revision.startswith("index-generation:")
+            and source_revision != expected_generation
+        ):
+            raise RuntimeError("session profile frame names a retired index generation")
         conn = self._read_connection()
         try:
             conn.row_factory = sqlite3.Row
+            # One read transaction pins every session/message/attachment/event
+            # query in this preparation to the same observed generation.
+            conn.execute("BEGIN")
             prepared = prepare_session_insight_partition(conn, key)
         finally:
             conn.close()

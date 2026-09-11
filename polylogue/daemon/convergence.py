@@ -166,6 +166,28 @@ def make_session_profile_derivation(
     )
 
 
+def make_session_profile_frame(
+    index_db_path: Path,
+    *,
+    archive_root: Path,
+    scope: Sequence[str] | None,
+) -> DerivationFrame:
+    """Describe one bounded session pass at the current index generation.
+
+    The physical generation is observed from the active anchor, not invented
+    from raw-ingest hints.  The adapter opens its own one-connection read
+    transaction against that generation and binds each computed key to the
+    exact values it consumed; publication rejects if the anchor promotes in
+    between.  ``scope=None`` is the restart-safe archive sweep.
+    """
+    return DerivationFrame(
+        archive_root=str(archive_root),
+        source_revision=f"index-generation:{index_db_path.resolve()}",
+        recipe_versions={"session_profile": "session-profile"},
+        scope=None if scope is None else tuple(dict.fromkeys(str(session_id) for session_id in scope)),
+    )
+
+
 def _stage_false_error(stage_name: str, *, scope: str) -> str:
     if scope == "stage":
         return f"stage {stage_name} returned False"
