@@ -87,6 +87,7 @@ from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
     from polylogue.config import Config
+    from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.parse_prefetch import DaemonParseStage
     from polylogue.daemon.session_profile_composition import SessionProfileCallback
@@ -2125,7 +2126,7 @@ def _close_raw_materialization_fts(index_db: Path, *, ops_db_path: Path) -> None
     if not needs_repair:
         return
     try:
-        repaired = repair_fts_surface(index_db, "messages_fts")
+        repaired = repair_fts_surface(index_db, "messages_fts", archive_root=ops_db_path.parent)
     except Exception as exc:
         # Preserve the original raw-materialization outcome. A stale
         # freshness row plus explicit debt keeps readiness negative and makes
@@ -3056,7 +3057,7 @@ async def _run_daemon_services_under_active_writer_lease(
     supervisor.start("health_check", _periodic_health_check)
     supervisor.start("schema_preflight_recheck", _periodic_schema_preflight_recheck)
 
-    api_server: ThreadingHTTPServer | None = None
+    api_server: DaemonAPIHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
     uds_server: Any | None = None
     uds_server_task: asyncio.Task[None] | None = None
