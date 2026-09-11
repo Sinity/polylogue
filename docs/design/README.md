@@ -19,7 +19,8 @@ domain models rather than plans:
 | [Project memory](project-memory.md) · [Second brain](second-brain.md) · [Time machine](time-machine.md) · [Archive storytelling](archive-storytelling.md) · [Whole product](whole-product.md) | Vision statements for future planning |
 | [Query-action workflows](../product/workflows.md) | Standing selection, cardinality, and executable-evidence guide |
 | [Incident 14:32 proof world](incident-1432-proof-world.md) | Shared deterministic adversarial corpus for the still-open proof-world work (polylogue-212.11) |
-| [Prefix-blob reclamation](prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes; consent-gated durable-tier reclamation (polylogue-vzn6) |
+| [Retained inputs and safe supersession](retained-inputs-and-supersession.md) | What the archive retains per observation and when retained bytes may be retired: material-law retention, scope-bearing identity, value-not-object supersession (polylogue-0qbdh) |
+| [Prefix-blob reclamation](prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes; consent-gated durable-tier reclamation (polylogue-vzn6). Its production proposal is superseded — see [Retained inputs and safe supersession](retained-inputs-and-supersession.md) |
 | [Derived-artifact freshness](derived-artifact-freshness.md) | Source-digest and verify-or-refuse law for derived state (polylogue-ntwtk) |
 | [Convergence simplification inventory](convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign — what phases (b)-(d) remove and why (polylogue-m6tp) |
 | [Daemon core](daemon-core.md) | The resident daemon: ownership, write serialization, ingest shape, convergence, service lifecycle, status cost, with rehearsal measurements (polylogue-bp12n) |
