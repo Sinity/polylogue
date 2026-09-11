@@ -3770,9 +3770,7 @@ def _raw_materialization_candidate_ids(
     archive_root = _pinned_archive_root or _raw_materialization_archive_root(cast(Config, config))
     source_db = archive_root / "source.db"
     index_db = (
-        _raw_materialization_index_path(cast(Config, config), archive_root)
-        if config is not None
-        else archive_root / "index.db"
+        _raw_materialization_index_path(config, archive_root) if config is not None else archive_root / "index.db"
     )
     if _pinned_index_connection is None and (not source_db.exists() or not index_db.exists()):
         return RawMaterializationCandidates([], 0, 0)
@@ -4916,9 +4914,7 @@ def raw_materialization_replay_backlog(
     archive_root = _pinned_archive_root or _raw_materialization_archive_root(cast(Config, config))
     source_db = archive_root / "source.db"
     index_db = (
-        _raw_materialization_index_path(cast(Config, config), archive_root)
-        if config is not None
-        else archive_root / "index.db"
+        _raw_materialization_index_path(config, archive_root) if config is not None else archive_root / "index.db"
     )
     if _pinned_index_connection is None and (not source_db.exists() or not index_db.exists()):
         return _unavailable_raw_materialization_backlog("source_or_index_tier_missing")

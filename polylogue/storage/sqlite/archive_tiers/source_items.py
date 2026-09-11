@@ -241,7 +241,7 @@ def publish_source_generation(
             raise ValueError("enumerated manifest requires every frozen input blob")
     if input_blob_hashes is not None and (
         set(input_blob_hashes) != set(coordinates)
-        or any(not isinstance(value, bytes) or len(value) != 32 for value in input_blob_hashes.values())
+        or any(type(value) is not bytes or len(value) != 32 for value in input_blob_hashes.values())
     ):
         raise ValueError("input_blob_hashes must bind every coordinate to a SHA-256 blob")
     origin_value = require_vocabulary(origin, Origin, field="origin") if origin is not None else None
@@ -470,7 +470,7 @@ def record_source_item_raw_member(
     """
     if not conn.in_transaction:
         raise ValueError("raw membership requires the raw admission transaction")
-    if not record_coordinate.strip() or not raw_id or not isinstance(raw_blob_hash, bytes) or len(raw_blob_hash) != 32:
+    if not record_coordinate.strip() or not raw_id or type(raw_blob_hash) is not bytes or len(raw_blob_hash) != 32:
         raise ValueError("raw membership requires a coordinate, raw id and SHA-256 blob")
     item = conn.execute(
         "SELECT enumeration_fingerprint, enumerated_at_ms FROM source_items "

@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 
 from polylogue.archive.revision_authority import (
     HistoricalRawRevisionStream,
@@ -242,22 +242,26 @@ def prepare_ingest_byte_authority(
     candidates = tuple(_raw_revision_candidates(read_archive, logical_key))
     if reason := _within_budget(candidates, budget):
         return Deferred(logical_key, tuple(dict.fromkeys(accepted_generation_raw_ids)), reason)
-    plan = plan_revision_replay(candidates)
+    plan = plan_revision_replay(list(candidates))
     requested = tuple(dict.fromkeys(accepted_generation_raw_ids))
     if plan.accepted_raw_ids and set(requested).issubset(plan.accepted_raw_ids):
         return AlreadyClassified(logical_key, plan)
     fulls = [candidate for candidate in candidates if candidate.kind is RawRevisionKind.FULL]
     blob_store = BlobStore(Path(read_archive.archive_root) / "blob")
-    streams = tuple(
-        HistoricalRawRevisionStream(
-            raw_id=candidate.raw_id,
-            payload_size=candidate.blob_size,
-            open_payload=lambda blob_hash=_raw_binding(read_archive, candidate.raw_id).blob_hash: blob_store.open(
-                blob_hash
-            ),
+    streams: list[HistoricalRawRevisionStream] = []
+    for candidate in fulls:
+        blob_hash = _raw_binding(read_archive, candidate.raw_id).blob_hash
+
+        def open_payload(blob_hash: str = blob_hash) -> BinaryIO:
+            return blob_store.open(blob_hash)
+
+        streams.append(
+            HistoricalRawRevisionStream(
+                raw_id=candidate.raw_id,
+                payload_size=candidate.blob_size,
+                open_payload=open_payload,
+            )
         )
-        for candidate in fulls
-    )
     decisions = {decision.raw_id: decision for decision in classify_historical_full_revision_streams(streams)}
     baseline = next((decision.raw_id for decision in decisions.values() if decision.relation == "baseline"), None)
     generation: dict[str, int] = {}

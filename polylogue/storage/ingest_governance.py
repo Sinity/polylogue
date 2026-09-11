@@ -400,9 +400,7 @@ def _membership_revision(
         provider_updated_at=session.updated_at,
         observed_at_ms=observed_at_ms,
         browser_snapshot_fidelity=browser_snapshot_fidelity,
-        provider_message_ids=frozenset(
-            message.provider_message_id for message in session.messages if message.provider_message_id is not None
-        ),
+        provider_message_ids=frozenset(message.provider_message_id for message in session.messages),
         provider_attachment_ids=frozenset(attachment.provider_attachment_id for attachment in session.attachments),
     )
 
