@@ -50,6 +50,7 @@ from .parsers.base import (
 )
 from .parsers.claude import code_parser as claude_code_parser
 from .parsers.claude.code_parser import apply_tool_result_sidecars
+from .sidecar_evidence import SidecarResolver
 
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
@@ -613,8 +614,8 @@ def _grouped_records_spec(
     )
 
 
-def _join_claude_code_sidecars(payloads: PayloadSequence, source_path: str | None) -> SidecarJoinResult | None:
-    """Join ``tool-results/`` sidecar content for a Claude Code JSONL payload, if any.
+def _default_sidecar_resolver() -> SidecarResolver:
+    """Acquisition-time resolution, the routing default.
 
     Deferred import: ``polylogue.sources.live`` (package ``__init__``) pulls in
     ``batch.py``/``watcher.py``, which import back ``from
@@ -623,21 +624,34 @@ def _join_claude_code_sidecars(payloads: PayloadSequence, source_path: str | Non
     this only at parse time (long after both modules are fully loaded) avoids
     it without restructuring either package.
 
+    A derivation route must pass its own ``RetainedSidecarResolver``: this one
+    reads the source tree, which is the input during acquisition and gone
+    during a later reparse (polylogue-cq1ql).
+    """
+    from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
+
+    return FilesystemSidecarResolver()
+
+
+def _join_claude_code_sidecars(
+    payloads: PayloadSequence,
+    source_path: str | None,
+    resolver: SidecarResolver,
+) -> SidecarJoinResult | None:
+    """Join ``tool-results/`` sidecar content for a Claude Code JSONL payload, if any.
+
     Returns ``None`` (a no-op for ``parse_code``/``parse_code_stream``) when
-    there is no ``source_path`` to derive a directory from; the join itself is
-    cheap when the directory doesn't exist (a single ``is_dir()`` stat).
+    there is no ``source_path`` to derive a scope coordinate from, and an
+    empty result when ``resolver`` has no evidence for that scope.
     """
     if source_path is None:
         return None
-    from polylogue.sources.live.tool_result_sidecars import (
-        join_tool_result_sidecars_session_scoped,
-        resolve_tool_results_dir,
-    )
+    from polylogue.sources.live.tool_result_sidecars import join_tool_result_sidecars_session_scoped
 
-    tool_results_dir = resolve_tool_results_dir(source_path)
-    if tool_results_dir is None:
+    scope = resolver.claude_code_scope(source_path)
+    if not scope.available:
         return None
-    return join_tool_result_sidecars_session_scoped(payloads, tool_results_dir, source_path)
+    return join_tool_result_sidecars_session_scoped(payloads, scope, source_path)
 
 
 # Declared precedence over title EVIDENCE, most authoritative tier first.
@@ -932,6 +946,7 @@ def _claude_code_multiway_parse(
     fallback_id: str,
     *,
     source_path: str | None = None,
+    sidecar_resolver: SidecarResolver | None = None,
 ) -> Iterator[ParsedSession]:
     """Walk a Claude Code record stream exactly once, routing every record to
     a per-session ``_SessionAccumulator`` keyed by its own ``sessionId``, and
@@ -977,24 +992,25 @@ def _claude_code_multiway_parse(
     contiguous run, which under-joined a session split across more than one
     run. Session-scoped (``join_session_scoped``): a subagent transcript
     only matches sidecars it owns; the root/parent transcript builds a
-    session-wide union index from sibling files on disk.
+    session-wide union index from the scope's sibling transcripts.
+
+    The scope is resolved once, before the walk, through ``sidecar_resolver``
+    (polylogue-cq1ql) -- the source tree during acquisition, retained bytes
+    during derivation -- so the stream itself never reaches back to a path.
     """
     is_agent_fallback = fallback_id.startswith("agent-")
 
-    tool_results_dir: Path | None = None
-    if source_path is not None:
-        from polylogue.sources.live.tool_result_sidecars import resolve_tool_results_dir
-
-        tool_results_dir = resolve_tool_results_dir(source_path)
-        if tool_results_dir is not None and not tool_results_dir.is_dir():
-            tool_results_dir = None
+    resolver = sidecar_resolver if sidecar_resolver is not None else _default_sidecar_resolver()
+    sidecar_scope = resolver.claude_code_scope(source_path) if source_path is not None else None
+    if sidecar_scope is not None and not sidecar_scope.available:
+        sidecar_scope = None
 
     def new_sidecar_accumulator() -> ToolResultIndexAccumulator:
         from polylogue.sources.live.tool_result_sidecars import ToolResultIndexAccumulator
 
         return ToolResultIndexAccumulator()
 
-    sidecar_accumulators: dict[str, ToolResultIndexAccumulator] | None = {} if tool_results_dir is not None else None
+    sidecar_accumulators: dict[str, ToolResultIndexAccumulator] | None = {} if sidecar_scope is not None else None
 
     accumulators: dict[str, claude_code_parser._SessionAccumulator] = {}
     group_order: list[str] = []
@@ -1099,11 +1115,11 @@ def _claude_code_multiway_parse(
     for group_id in group_order:
         session = claude_code_parser._finalize_code_session(accumulators[group_id])
         if sidecar_accumulators is not None:
-            # sidecar_accumulators is only set when tool_results_dir resolved, which itself
-            # only happens when source_path is not None.
-            assert tool_results_dir is not None
+            # sidecar_accumulators is only set when the scope resolved, which
+            # itself only happens when source_path is not None.
+            assert sidecar_scope is not None
             assert source_path is not None
-            join_result = sidecar_accumulators[group_id].join_session_scoped(tool_results_dir, source_path)
+            join_result = sidecar_accumulators[group_id].join_session_scoped(sidecar_scope, source_path)
             session = apply_tool_result_sidecars(session, join_result)
         yield session
 
@@ -1614,7 +1630,7 @@ def _generic_messages_session(
     )
 
 
-def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
+def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
     if spec.mode == "browser_capture":
         record = _payload_record(spec.payload)
         return [browser_capture.parse(record, spec.fallback_id)] if record is not None else []
@@ -1627,7 +1643,14 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         payloads = _payload_sequence(spec.payload)
         if payloads is None:
             return []
-        return list(_claude_code_multiway_parse(payloads, spec.fallback_id, source_path=spec.source_path))
+        return list(
+            _claude_code_multiway_parse(
+                payloads,
+                spec.fallback_id,
+                source_path=spec.source_path,
+                sidecar_resolver=resolver,
+            )
+        )
 
     if spec.provider is Provider.CHATGPT:
         record = _payload_record(spec.payload)
@@ -1653,7 +1676,7 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
             claude.parse_code(
                 payloads,
                 spec.fallback_id,
-                tool_result_sidecars=_join_claude_code_sidecars(payloads, spec.source_path),
+                tool_result_sidecars=_join_claude_code_sidecars(payloads, spec.source_path, resolver),
                 trust_fallback_id=spec.trust_fallback_id,
             )
         ]
@@ -1679,7 +1702,14 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         if record is None:
             return []
         if spec.provider is Provider.GEMINI_CLI:
-            return [local_agent.parse_gemini_cli(record, spec.fallback_id, source_path=spec.source_path)]
+            return [
+                local_agent.parse_gemini_cli(
+                    record,
+                    spec.fallback_id,
+                    source_path=spec.source_path,
+                    sidecar_resolver=resolver,
+                )
+            ]
         if spec.provider is Provider.HERMES:
             return [local_agent.parse_hermes(record, spec.fallback_id, source_path=spec.source_path)]
         return []
@@ -1812,6 +1842,7 @@ def parse_payload(
     *,
     schema_resolution: SchemaResolution | None = None,
     source_path: str | None = None,
+    sidecar_resolver: SidecarResolver | None = None,
 ) -> list[ParsedSession]:
     """Dispatch parsed payload to the appropriate provider parser.
 
@@ -1819,6 +1850,12 @@ def parse_payload(
     including a zero-message session. Production write paths must apply
     ``require_positive_conversational_evidence`` to the result themselves
     (see that function's docstring for why it is not applied here).
+
+    ``sidecar_resolver`` decides where an overflowed tool output is read from
+    (polylogue-cq1ql). It defaults to acquisition-time filesystem resolution;
+    a route that derives from retained bytes rather than from the source tree
+    must pass a ``RetainedSidecarResolver``, or a transcript whose original
+    tree is gone reparses with only its truncated previews.
     """
     lowered_specs = _lower_payload_specs(
         provider,
@@ -1828,9 +1865,10 @@ def parse_payload(
         schema_resolution=schema_resolution,
         source_path=source_path,
     )
+    resolver = sidecar_resolver if sidecar_resolver is not None else _default_sidecar_resolver()
     sessions: list[ParsedSession] = []
     for spec in lowered_specs:
-        sessions.extend(_parse_lowered_spec(spec))
+        sessions.extend(_parse_lowered_spec(spec, resolver))
     return sessions
 
 
@@ -1942,15 +1980,24 @@ def parse_stream_payload(
     fallback_id: str,
     *,
     source_path: str | None = None,
+    sidecar_resolver: SidecarResolver | None = None,
 ) -> list[ParsedSession]:
     """Parse a grouped record stream.
 
     Pure routing, same contract as ``parse_payload`` -- see
-    ``require_positive_conversational_evidence``'s docstring.
+    ``require_positive_conversational_evidence``'s docstring and
+    ``parse_payload`` for ``sidecar_resolver``.
     """
     runtime_provider = Provider.from_string(provider)
     if runtime_provider is Provider.CLAUDE_CODE:
-        return list(_claude_code_multiway_parse(payloads, fallback_id, source_path=source_path))
+        return list(
+            _claude_code_multiway_parse(
+                payloads,
+                fallback_id,
+                source_path=source_path,
+                sidecar_resolver=sidecar_resolver,
+            )
+        )
     if runtime_provider is Provider.CODEX:
         return [codex.parse_stream(payloads, fallback_id)]
     if runtime_provider is Provider.HERMES:

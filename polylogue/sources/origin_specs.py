@@ -1868,6 +1868,39 @@ def _gemini_cli_spec() -> OriginSpec:
         tool_outcome_unknown_reasons=frozenset(
             {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
         ),
+        artifact_rules=(
+            OriginArtifactRule(
+                # Same family as Claude Code's ``tool-results/`` overflow, and
+                # deliberately the same kind: an opaque tool output persisted
+                # beside the transcript, joined back to its owning block by
+                # ``sources/live/gemini_tool_output_sidecars.py``, never
+                # independent conversation content. Declaring it is what makes
+                # the bytes retained evidence rather than a live filesystem
+                # lookup at parse time (polylogue-cq1ql): without this rule the
+                # walk admits no ``tool-outputs/`` file at all, so a reparse
+                # after the source tree moves keeps only the masked envelope's
+                # first 8,000 and last 32,000 characters.
+                kind="tool_result_sidecar",
+                path_pattern=r"(?:^|/)tool-outputs/session-[^/]+/[^/]+$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="tool_output_overflow",
+                fidelity_note=(
+                    "Gemini CLI tool-output overflow content persisted verbatim under "
+                    "tool-outputs/session-<sessionId>/; never independently parsed -- "
+                    "sources/live/gemini_tool_output_sidecars.py joins it to its owning tool call by "
+                    "filename stem, with the masking envelope's 'For full output see:' pointer as the "
+                    "reverse index. A tool's own output can reproduce any document shape, so the path "
+                    "rule is the gate, not content heuristics."
+                ),
+                # Gemini CLI writes these with the extension of whatever the
+                # tool produced; the path rule admits all of them, and no
+                # suffix is projected onto the watched root because the
+                # directory shape is the whole admission evidence.
+                path_suffixes=(".txt", ".json", ".md", ".log", ""),
+                watch_suffixes=(),
+            ),
+        ),
         fidelity_notes=(
             "local_agent.py's _status_is_error guessed success-outcome set is "
             "registered as a DroppedValueVocabulary (polylogue-2qx) against "

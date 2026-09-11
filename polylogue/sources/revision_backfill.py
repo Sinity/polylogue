@@ -64,6 +64,7 @@ from polylogue.sources.dispatch import (
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.artifacts.inspection import artifact_observation_id
@@ -2941,7 +2942,11 @@ def census_parse_worker(
             if is_stream_record_provider(source_path, str(provider)):
                 with publisher.open(blob_hash) as stream_payload:
                     sessions = _parse_stream(
-                        provider, stream_payload, source_path, fallback_id_override=fallback_id_override
+                        provider,
+                        stream_payload,
+                        source_path,
+                        fallback_id_override=fallback_id_override,
+                        archive_root=Path(blob_root_str).parent,
                     )
                 return raw_id, sessions, None
             _require_bounded_provider(provider, source_path)
@@ -2962,7 +2967,11 @@ def census_parse_worker(
         if is_stream:
             with publisher.open(blob_hash) as stream_payload:
                 sessions = _parse_stream(
-                    provider, stream_payload, source_path, fallback_id_override=fallback_id_override
+                    provider,
+                    stream_payload,
+                    source_path,
+                    fallback_id_override=fallback_id_override,
+                    archive_root=Path(blob_root_str).parent,
                 )
         else:
             payload_path = None
@@ -3392,7 +3401,13 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         if is_stream_record_provider(source_path, str(provider)):
             with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
                 return normalize_replay(
-                    _parse_stream(provider, payload, stream_path, fallback_id_override=fallback_id_override)
+                    _parse_stream(
+                        provider,
+                        payload,
+                        stream_path,
+                        fallback_id_override=fallback_id_override,
+                        archive_root=archive.archive_root,
+                    )
                 )
         _require_bounded_provider(provider, source_path)
         _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
@@ -3410,7 +3425,13 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     if is_stream_record_provider(source_path, str(provider)):
         with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
             return normalize_replay(
-                _parse_stream(stream_provider, payload, stream_path, fallback_id_override=fallback_id_override)
+                _parse_stream(
+                    stream_provider,
+                    payload,
+                    stream_path,
+                    fallback_id_override=fallback_id_override,
+                    archive_root=archive.archive_root,
+                )
             )
     _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
     payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
@@ -4364,6 +4385,7 @@ def _parse_one_raw(
         from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 
         declared_path_session_evidence = jsonl_session_artifact(payload, provider=provider) is not None
+    sidecar_resolver = _retained_sidecar_resolver(archive_root)
     if is_stream_record_provider(source_path, str(provider)):
         records = list(_iter_json_stream(BytesIO(payload), source_name))
         if not declared_path_session_evidence and _is_declared_non_session_artifact(
@@ -4375,6 +4397,7 @@ def _parse_one_raw(
             records,
             fallback_id,
             source_path=source_path,
+            sidecar_resolver=sidecar_resolver,
         )
     records = list(_iter_json_stream(BytesIO(payload), source_name))
     if not declared_path_session_evidence and _is_declared_non_session_artifact(
@@ -4386,6 +4409,7 @@ def _parse_one_raw(
         records,
         fallback_id,
         source_path=source_path,
+        sidecar_resolver=sidecar_resolver,
     )
 
 
@@ -4415,17 +4439,41 @@ def _sqlite_payload_path(
         temp_path.unlink(missing_ok=True)
 
 
+def _retained_sidecar_resolver(archive_root: Path | None) -> SidecarResolver | None:
+    """Resolve overflowed tool outputs from retained bytes during replay.
+
+    polylogue-cq1ql: replay reads a retained blob, not the file it came from,
+    so the sidecar join must read the archive too -- ``None`` (no archive root
+    in scope) keeps the routing default, which is acquisition-time filesystem
+    resolution. Every replay entry point that already carries an archive root
+    passes it, so a session replays to the same full text, outcome and
+    ownership after the original tree is gone.
+    """
+    if archive_root is None:
+        return None
+    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+    return RetainedSidecarResolver(archive_root)
+
+
 def _parse_stream(
     provider: Provider,
     payload: BinaryIO,
     source_path: str,
     *,
     fallback_id_override: str | None = None,
+    archive_root: Path | None = None,
 ) -> list[ParsedSession]:
     # polylogue-9ykn: see ``_parse_one``'s comment -- the same positive-
     # conversational-evidence gate applies to the streaming replay path.
     return require_positive_conversational_evidence(
-        _parse_stream_raw(provider, payload, source_path, fallback_id_override=fallback_id_override),
+        _parse_stream_raw(
+            provider,
+            payload,
+            source_path,
+            fallback_id_override=fallback_id_override,
+            archive_root=archive_root,
+        ),
         provider=provider,
         source_path=source_path,
     )
@@ -4437,6 +4485,7 @@ def _parse_stream_raw(
     source_path: str,
     *,
     fallback_id_override: str | None = None,
+    archive_root: Path | None = None,
 ) -> list[ParsedSession]:
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
@@ -4446,6 +4495,7 @@ def _parse_stream_raw(
         stream,
         fallback_id,
         source_path=source_path,
+        sidecar_resolver=_retained_sidecar_resolver(archive_root),
     )
 
 

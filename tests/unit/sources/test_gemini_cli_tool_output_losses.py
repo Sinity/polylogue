@@ -30,8 +30,10 @@ from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live.gemini_tool_output_sidecars import (
     join_gemini_tool_output_sidecars,
     resolve_tool_outputs_dir,
+    tool_output_files_from_directory,
 )
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 
 _MASK = (
     "<tool_output_masked>\n"
@@ -178,7 +180,27 @@ def test_masked_output_is_kept_when_result_display_holds_no_more() -> None:
 # polylogue-rlw4h
 
 
-def _sidecar_corpus(tmp_path: Path, *, filename: str, tool_id: str = "run_shell_command_1773524726450_0") -> Path:
+def _dir_scope(tool_outputs_dir: Path) -> RetainedSidecarScope:
+    """The scope an acquisition-time resolver reports for one directory.
+
+    The join reads retained evidence rather than a path (polylogue-cq1ql);
+    these directory-shaped cases build the scope the filesystem resolver
+    would hand it.
+    """
+    return RetainedSidecarScope(
+        scope_key=str(tool_outputs_dir),
+        files=tool_output_files_from_directory(tool_outputs_dir),
+        available=tool_outputs_dir.is_dir(),
+    )
+
+
+def _sidecar_corpus(
+    tmp_path: Path,
+    *,
+    filename: str,
+    tool_id: str = "run_shell_command_1773524726450_0",
+    cite_sidecar: bool = True,
+) -> Path:
     project = tmp_path / "polylogue"
     chats = project / "chats"
     chats.mkdir(parents=True)
@@ -199,7 +221,16 @@ def _sidecar_corpus(tmp_path: Path, *, filename: str, tool_id: str = "run_shell_
                         "toolCalls": [
                             _tool_call(
                                 tool_id,
-                                output=_MASK.format(path=str(outputs / filename)),
+                                # ``cite_sidecar=False`` is the genuinely
+                                # unclaimed case: the transcript keeps a small
+                                # inline output and never names a persisted
+                                # file, so nothing in it can own the sidecar
+                                # sitting in the directory.
+                                output=(
+                                    _MASK.format(path=str(outputs / filename))
+                                    if cite_sidecar
+                                    else "short inline output"
+                                ),
                                 result_display="short display",
                             )
                         ],
@@ -253,12 +284,16 @@ def test_sidecar_with_no_citing_tool_call_is_declared_debt(tmp_path: Path) -> No
     Anti-vacuity: dropping the debt branch leaves zero sidecar events and this
     unpacking raises.
     """
-    snapshot = _sidecar_corpus(tmp_path, filename="grep_search_9999999999999_7_zzz.txt")
+    snapshot = _sidecar_corpus(
+        tmp_path,
+        filename="grep_search_9999999999999_7_zzz.txt",
+        cite_sidecar=False,
+    )
 
     payload = json.loads(snapshot.read_text(encoding="utf-8"))
     outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
     assert outputs is not None
-    result = join_gemini_tool_output_sidecars(payload, outputs)
+    result = join_gemini_tool_output_sidecars(payload, _dir_scope(outputs))
 
     assert not result.matched
     [debt] = result.debt
@@ -272,7 +307,7 @@ def test_absent_tool_outputs_directory_is_not_an_error(tmp_path: Path) -> None:
     Anti-vacuity: removing the ``is_dir`` guard raises ``FileNotFoundError``
     here instead of returning an empty join.
     """
-    result = join_gemini_tool_output_sidecars(_session([]), tmp_path / "nope")
+    result = join_gemini_tool_output_sidecars(_session([]), _dir_scope(tmp_path / "nope"))
     assert not result.matched and not result.debt
 
 

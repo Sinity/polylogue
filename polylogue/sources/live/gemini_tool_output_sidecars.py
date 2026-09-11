@@ -33,6 +33,13 @@ anywhere and is reported as debt.
 Read-only: this module performs no acquisition-tier writes. The parser
 (``sources/parsers/local_agent.py:apply_gemini_tool_output_sidecars``) decides
 what to do with the result.
+
+**Retained-input resolution (polylogue-cq1ql).** Like its Claude Code sibling,
+the join reads a
+:class:`~polylogue.sources.sidecar_evidence.RetainedSidecarScope` rather than
+the directory: acquisition resolves that scope from the source tree and
+retains the bytes as ``tool_result_sidecar`` raw artifacts (declared by the
+gemini-cli ``OriginSpec``), derivation resolves it from those retained bytes.
 """
 
 from __future__ import annotations
@@ -40,11 +47,13 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.sources.live.tool_result_sidecars import SidecarDebt, SidecarJoinResult, SidecarMatch
+from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope
 
 # The envelope's pointer line, and the bare path as it also appears inside the
 # retained head/tail excerpt. Both spellings resolve to the same basename.
@@ -147,36 +156,35 @@ def _tool_id_for_stem(stem: str, by_tool_id: dict[str, tuple[int, bool]]) -> str
     return max(candidates, key=len)
 
 
-def join_gemini_tool_output_sidecars(payload: JSONDocument, tool_outputs_dir: Path) -> SidecarJoinResult:
-    """Join ``tool-outputs/session-<id>/*`` files to the tool calls that produced them.
+def join_gemini_tool_output_sidecars(payload: JSONDocument, scope: RetainedSidecarScope) -> SidecarJoinResult:
+    """Join ``scope``'s ``tool-outputs/session-<id>/*`` files to the tool calls that produced them.
 
     Read-only. Returns matches carrying the sidecar's full text, ready for the
     parser to attach to the owning ``tool_result`` block, and typed debt for
-    files no tool call in this session's transcript claims.
+    files no tool call in this session's transcript claims. A pointer the
+    transcript cites with no retained file is the explicit
+    ``expected_sidecar_not_retained`` outcome -- the directory is
+    session-exclusive, so there is no sibling that could own it instead.
     """
-    if not tool_outputs_dir.is_dir():
+    if not scope.available:
         return SidecarJoinResult()
 
     by_tool_id, by_pointer_name = _tool_output_index(payload)
 
     matched: list[SidecarMatch] = []
     debt: list[SidecarDebt] = []
-    for entry in sorted(tool_outputs_dir.iterdir()):
-        if not entry.is_file():
-            continue
-        try:
-            stat_result = entry.stat()
-            byte_size = stat_result.st_size
-            file_mtime_ms: int | None = int(stat_result.st_mtime * 1000)
-        except OSError:
-            byte_size, file_mtime_ms = 0, None
+    present: set[str] = set()
+    for entry in sorted(scope.files, key=lambda candidate: candidate.filename):
+        present.add(entry.filename)
+        byte_size = entry.byte_size
+        file_mtime_ms = entry.file_mtime_ms
 
-        stem = entry.name.rsplit(".", 1)[0]
-        tool_id = _tool_id_for_stem(stem, by_tool_id) or by_pointer_name.get(entry.name, by_pointer_name.get(stem))
+        stem = entry.filename.rsplit(".", 1)[0]
+        tool_id = _tool_id_for_stem(stem, by_tool_id) or by_pointer_name.get(entry.filename, by_pointer_name.get(stem))
         if tool_id is None or tool_id not in by_tool_id:
             debt.append(
                 SidecarDebt(
-                    filename=entry.name,
+                    filename=entry.filename,
                     byte_size=byte_size,
                     reason="no_owning_tool_call",
                     file_mtime_ms=file_mtime_ms,
@@ -185,11 +193,11 @@ def join_gemini_tool_output_sidecars(payload: JSONDocument, tool_outputs_dir: Pa
             continue
 
         try:
-            full_text = entry.read_text(encoding="utf-8", errors="replace")
+            full_text = entry.read_text()
         except OSError as exc:
             debt.append(
                 SidecarDebt(
-                    filename=entry.name,
+                    filename=entry.filename,
                     byte_size=byte_size,
                     reason=f"read_error:{type(exc).__name__}",
                     file_mtime_ms=file_mtime_ms,
@@ -201,7 +209,7 @@ def join_gemini_tool_output_sidecars(payload: JSONDocument, tool_outputs_dir: Pa
         matched.append(
             SidecarMatch(
                 tool_use_id=tool_id,
-                filename=entry.name,
+                filename=entry.filename,
                 byte_size=len(full_text.encode("utf-8")),
                 content_hash=hash_text(full_text),
                 was_truncated=masked or len(full_text) > inline_len,
@@ -209,11 +217,65 @@ def join_gemini_tool_output_sidecars(payload: JSONDocument, tool_outputs_dir: Pa
                 file_mtime_ms=file_mtime_ms,
             )
         )
+
+    matched_ids = {match.tool_use_id for match in matched}
+    for expected_name, expected_tool_id in sorted(by_pointer_name.items()):
+        if expected_name in present or expected_tool_id in matched_ids:
+            # One envelope's head and tail can cite two spellings of the same
+            # persisted output, only one of which Gemini CLI wrote (see the
+            # module docstring). A pointer whose tool call already resolved is
+            # not a missing sidecar.
+            continue
+        debt.append(
+            SidecarDebt(
+                filename=expected_name,
+                byte_size=0,
+                reason="expected_sidecar_not_retained",
+                file_mtime_ms=None,
+            )
+        )
     return SidecarJoinResult(matched=tuple(matched), debt=tuple(debt))
+
+
+def tool_output_files_from_directory(tool_outputs_dir: Path) -> tuple[RetainedSidecarFile, ...]:
+    """Read one ``tool-outputs/session-<id>/`` directory into scope files.
+
+    The single filesystem enumeration in the Gemini CLI sidecar path, used by
+    the acquisition-time resolver. Derivation never calls it.
+    """
+    if not tool_outputs_dir.is_dir():
+        return ()
+    files: list[RetainedSidecarFile] = []
+    for entry in sorted(tool_outputs_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        try:
+            stat_result = entry.stat()
+            byte_size = stat_result.st_size
+            file_mtime_ms: int | None = int(stat_result.st_mtime * 1000)
+        except OSError:
+            byte_size, file_mtime_ms = 0, None
+        files.append(
+            RetainedSidecarFile(
+                filename=entry.name,
+                byte_size=byte_size,
+                file_mtime_ms=file_mtime_ms,
+                read_text=_read_text_from_path(entry),
+            )
+        )
+    return tuple(files)
+
+
+def _read_text_from_path(path: Path) -> Callable[[], str]:
+    def read() -> str:
+        return path.read_text(encoding="utf-8", errors="replace")
+
+    return read
 
 
 __all__ = [
     "is_masked_tool_output",
     "join_gemini_tool_output_sidecars",
     "resolve_tool_outputs_dir",
+    "tool_output_files_from_directory",
 ]
