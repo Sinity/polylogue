@@ -16,6 +16,7 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import _AppendPlan, encode_cursor_hash_authority
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -528,6 +529,33 @@ def test_failed_retry_scan_requeues_only_due_failures(tmp_path: Path, frozen_clo
     asyncio.run(run_scan())
 
     assert watcher._pending_paths == {due}
+
+
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.watcher", "polylogue.sources.live.cursor")
+def test_failed_retry_scan_reads_ops_without_daemon_write_lease(tmp_path: Path, frozen_clock: FrozenClock) -> None:
+    """Retry scheduling only observes cursor state after catch-up releases its writer gate.
+
+    Anti-vacuity: opening the ops tier with the write profile makes this raise
+    ``UnleasedWriteError`` once the ordinary daemon arms enforcement.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "waiting.jsonl"
+    path.write_text('{"role":"user","content":"waiting"}\n')
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
+        (WatchSource(name="test", root=root),),
+    )
+    watcher._cursor.mark_failed(path)
+    future = (frozen_clock.now() + timedelta(seconds=60)).isoformat()
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE ingest_cursor SET next_retry_at = ? WHERE source_path = ?", (future, str(path)))
+        conn.commit()
+
+    with arm_write_lease_enforcement():
+        watcher._schedule_failed_retry_scan()
+
+    assert watcher._pending_paths == set()
 
 
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.watcher", "polylogue.sources.live.cursor")
