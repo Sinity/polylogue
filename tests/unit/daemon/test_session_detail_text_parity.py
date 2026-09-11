@@ -4,7 +4,7 @@ The daemon's two session-detail fast paths must compute an identical
 ``message.text`` field for the same message:
 
 - DB-backed: ``daemon/http.py:_do_get_session`` -> ``Polylogue.get_session()``
-  -> ``api/archive.py:_archive_message_to_domain``.
+  -> ``archive/hydration.py:archive_message_to_domain``.
 - Archive-backed: ``daemon/http.py:_do_archive_get_session`` ->
   ``daemon/http.py:_archive_message_payload``.
 

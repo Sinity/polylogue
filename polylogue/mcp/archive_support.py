@@ -13,7 +13,6 @@ from polylogue.archive.query.spec import (
     parse_query_date,
     resolve_default_root_filter,
 )
-from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.logging import get_logger
 from polylogue.operations.authority import authority_for_reader
 from polylogue.storage.archive_identity import archive_file_set_root
@@ -164,19 +163,19 @@ def _archive_text_query(spec: SessionQuerySpec) -> str | None:
 
 
 def archive_summary_payload(summary: ArchiveSessionSummary) -> MCPSessionSummaryPayload:
-    """Project an archive session summary into the generic MCP summary shape."""
-    from polylogue.mcp.payloads import MCPSessionSummaryPayload
+    """Project an archive session summary into the generic MCP summary shape.
 
-    session_id = summary.session_id
-    return MCPSessionSummaryPayload(
-        id=session_id,
-        origin=summary.origin,
-        title=summary.display_label or summary.title or "(untitled)",
+    The row is hydrated once by the canonical owner and then masked by the
+    shared summary envelope builder, so MCP list/search rows carry the same
+    title provenance (``title_source``/``title_ref``) that MCP get/resolve_ref
+    already returned through ``SessionSummaryEnvelope``.
+    """
+    from polylogue.archive.hydration import archive_summary_to_domain
+    from polylogue.surfaces.payloads import session_summary_envelope_from_summary
+
+    return session_summary_envelope_from_summary(
+        archive_summary_to_domain(summary),
         message_count=summary.message_count,
-        target_ref=TargetRefPayload.session(session_id),
-        anchor=reader_anchor("session", session_id),
-        created_at=parse_archive_datetime(summary.created_at),
-        updated_at=parse_archive_datetime(summary.updated_at),
     )
 
 
@@ -708,8 +707,9 @@ def archive_message_page_payload(
     The row projection is enough for the MCP reader payload and makes a
     one-message request remain one-message work, even for very large sessions.
     """
+    from polylogue.archive.hydration import MESSAGE_QUERY_ROW_RICHER_OPERATION
     from polylogue.mcp.payloads import MCPMessagesListPayload
-    from polylogue.surfaces.payloads import message_render_envelope_from_archive_row
+    from polylogue.surfaces.payloads import message_render_envelope_from_message_query_row
 
     started_at = monotonic()
     resolved_session_id = archive.resolve_session_id(session_id)
@@ -748,7 +748,7 @@ def archive_message_page_payload(
     )
     messages = []
     for row in rows:
-        message = message_render_envelope_from_archive_row(row, session_id=resolved_session_id)
+        message = message_render_envelope_from_message_query_row(row, session_id=resolved_session_id)
         messages.append(
             _bounded_message_payload(
                 message,
@@ -778,6 +778,7 @@ def archive_message_page_payload(
         next_offset=next_offset,
         suggested_tail_offset=suggested_tail_offset,
         offset_note=offset_note,
+        projection_note=MESSAGE_QUERY_ROW_RICHER_OPERATION,
         authority=authority_for_reader(archive, server_identity="direct", started_at=started_at),
         outcome=decide_outcome(matched=total),
     )

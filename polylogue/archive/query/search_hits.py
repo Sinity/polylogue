@@ -380,13 +380,14 @@ async def search_hits_for_plan(
 
 
 def _archive_summary_to_domain(summary: object) -> SessionSummary:
-    from polylogue.archive.query.archive_execution import _summary_to_domain
+    """Accept an already-hydrated summary or route a raw row through hydration."""
+    from polylogue.archive.hydration import archive_summary_to_domain
     from polylogue.archive.session.domain_models import SessionSummary as _SessionSummary
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 
     if isinstance(summary, _SessionSummary):
         return summary
-    return _summary_to_domain(cast("ArchiveSessionSummary", summary))
+    return archive_summary_to_domain(cast("ArchiveSessionSummary", summary))
 
 
 __all__ = [

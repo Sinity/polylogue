@@ -45,7 +45,6 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_VISIBILITY,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
-    ARCHIVE_BLOCK_ROW_COLUMNS,
     ArchiveBlockRow,
     archive_block_row,
     archive_block_row_select_sql,
@@ -810,22 +809,17 @@ def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["A
     return "DESC" if direction == "desc" else "ASC"
 
 
-# The query read model is the shared compact block projection minus the
-# unknown-outcome reason, which this route does not select (polylogue-blpir
-# owns closing that gap).
-_ARCHIVE_BLOCK_QUERY_COLUMNS: tuple[str, ...] = tuple(
-    name for name in ARCHIVE_BLOCK_ROW_COLUMNS if name != "tool_result_outcome_unknown_reason"
-)
-
-
 def _fetch_blocks_for_messages(
     conn: sqlite3.Connection, message_ids: tuple[str, ...]
 ) -> dict[str, list[ArchiveBlockRow]]:
     """Fetch and hydrate every block for ``message_ids``, keyed by message_id.
 
-    Shared by ``query_messages`` and ``query_session_messages`` -- see
-    ``_ARCHIVE_BLOCK_QUERY_COLUMNS`` docstring above for why this used to be
-    two independently-maintained copies of the same query.
+    Shared by ``query_messages`` and ``query_session_messages``, and it selects
+    the whole declared block projection. It used to drop
+    ``tool_result_outcome_unknown_reason``, so a bounded message page reported
+    ``tool_outcome='unknown'`` with no reason while the composed read carried
+    both -- the keystone outcome silently losing half its evidence on one route
+    (polylogue-blpir).
     """
 
     blocks_by_message: dict[str, list[ArchiveBlockRow]] = {message_id: [] for message_id in message_ids}
@@ -834,7 +828,7 @@ def _fetch_blocks_for_messages(
     block_placeholders = ", ".join("?" for _ in message_ids)
     block_rows = conn.execute(
         f"""
-        SELECT {archive_block_row_select_sql(_ARCHIVE_BLOCK_QUERY_COLUMNS)}
+        SELECT {archive_block_row_select_sql()}
         FROM blocks
         WHERE message_id IN ({block_placeholders})
         ORDER BY message_id, position, block_id
@@ -842,7 +836,7 @@ def _fetch_blocks_for_messages(
         message_ids,
     ).fetchall()
     for block in block_rows:
-        blocks_by_message[str(block["message_id"])].append(archive_block_row(block, _ARCHIVE_BLOCK_QUERY_COLUMNS))
+        blocks_by_message[str(block["message_id"])].append(archive_block_row(block))
     return blocks_by_message
 
 

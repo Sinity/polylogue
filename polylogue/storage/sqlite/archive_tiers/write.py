@@ -342,6 +342,10 @@ class ArchiveSessionEnvelope:
     branch_type: str | None = None
     title_source: str | None = None
     title_ref: str | None = None
+    # See ``ArchiveSessionSummary.display_name`` (polylogue-cgfy): the full-read
+    # envelope carries it too, so a detail read and a summary read cannot
+    # disagree about a session's provider-assigned name.
+    display_name: str | None = None
     instructions_text: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -390,7 +394,7 @@ def archive_message_display_text(blocks: Iterable[ArchiveBlockRow]) -> str:
 
     Single source of truth for the ``message.text`` field the daemon's two
     session-detail routes each used to compute independently (polylogue-6o9b):
-    the DB-backed route (``api/archive.py:_archive_message_to_domain``,
+    the DB-backed route (``archive/hydration.py:archive_message_to_domain``,
     reached via ``Polylogue.get_session()``) and the archive-backed route
     (``daemon/http.py:_archive_message_payload``) both read the same
     ``ArchiveMessageRow.blocks`` and must produce byte-identical text for
@@ -1577,6 +1581,7 @@ def read_archive_session_envelope(
         branch_type=session["branch_type"],
         title_source=session["title_source"],
         title_ref=session["title_ref"],
+        display_name=session["display_name"],
         instructions_text=session["instructions_text"],
         created_at=_iso_from_ms(session["created_at_ms"]),
         updated_at=_iso_from_ms(session["updated_at_ms"]),
@@ -1759,13 +1764,12 @@ def read_archive_session_page(
         window = full.messages[offset : offset + limit] if limit > 0 else ()
         return replace(full, messages=window, total_message_count=len(full.messages))
 
+    # The same declared projection the unbounded read uses: a hand-written
+    # column list here silently produced a narrower page envelope than the
+    # full read for the same session (polylogue-blpir).
     session = conn.execute(
-        """
-        SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
-               parent_session_id, root_session_id, branch_type,
-               title_source, title_ref, instructions_text,
-               created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref,
-               reported_cost_usd
+        f"""
+        SELECT {archive_session_envelope_select_sql()}
         FROM sessions
         WHERE session_id = ?
         """,
@@ -1834,6 +1838,7 @@ def read_archive_session_page(
         branch_type=session["branch_type"],
         title_source=session["title_source"],
         title_ref=session["title_ref"],
+        display_name=session["display_name"],
         instructions_text=session["instructions_text"],
         created_at=_iso_from_ms(session["created_at_ms"]),
         updated_at=_iso_from_ms(session["updated_at_ms"]),

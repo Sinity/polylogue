@@ -16,25 +16,19 @@ import builtins
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, TypeVar
 
-from polylogue.archive.message.messages import MessageCollection
-from polylogue.archive.message.roles import Role
-from polylogue.archive.message.types import MessageType
+from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
 from polylogue.archive.query.filter_kwargs import (
     plan_filter_kwargs,
 )
 from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import MaterialOrigin, Origin, TitleSource
-from polylogue.core.timestamps import parse_archive_datetime
-from polylogue.core.types import SessionId
 
 _AttachableT = TypeVar("_AttachableT", Session, SessionSummary)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from polylogue.archive.message.models import Message
     from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.archive.query.plan import SessionQueryPlan
     from polylogue.config import Config
@@ -43,7 +37,6 @@ if TYPE_CHECKING:
         ArchiveSessionSummary,
         ArchiveStore,
     )
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
 
 
 def _session_seed_scored(
@@ -96,128 +89,6 @@ def _session_seed_hits(
     pool = max(limit + plan.offset, limit) * 3
     scored = _session_seed_scored(plan, config=config, archive_root=archive_root, pool=pool)
     return archive.semantic_summaries(scored, limit=pool, offset=0, **plan_filter_kwargs(plan))
-
-
-def _coerce_title_source(value: str | None) -> TitleSource | None:
-    return TitleSource(value) if value is not None else None
-
-
-def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
-    from polylogue.archive.session.branch_type import BranchType
-
-    return SessionSummary(
-        id=SessionId(summary.session_id),
-        origin=Origin.from_string(summary.origin),
-        title=summary.title,
-        display_label=summary.display_label,
-        title_source=_coerce_title_source(summary.title_source),
-        title_ref=summary.title_ref,
-        created_at=parse_archive_datetime(summary.created_at),
-        updated_at=parse_archive_datetime(summary.updated_at),
-        working_directories=tuple(summary.working_directories),
-        git_branch=summary.git_branch,
-        git_repository_url=summary.git_repository_url,
-        provider_project_ref=summary.provider_project_ref,
-        message_count=summary.message_count,
-        tags_m2m=summary.tags,
-        parent_id=SessionId(summary.parent_id) if summary.parent_id else None,
-        branch_type=BranchType(summary.branch_type) if summary.branch_type else None,
-        terminal_state=summary.terminal_state,
-        total_cost_usd=summary.total_cost_usd,
-        cost_provenance=summary.cost_provenance,
-    )
-
-
-def _maybe_parse_json_object(value: str | None) -> dict[str, object] | None:
-    """Decode a stored JSON object column back into a mapping for domain blocks."""
-    if not value:
-        return None
-    import json
-
-    try:
-        parsed = json.loads(value)
-    except (ValueError, TypeError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message:
-    from polylogue.archive.message.models import Message
-
-    text = "\n\n".join(block.text for block in message.blocks if block.text) or None
-    content_blocks: list[dict[str, object]] = [
-        {
-            key: value
-            for key, value in {
-                "id": block.block_id,
-                "type": block.block_type,
-                "text": block.text,
-                "tool_name": block.tool_name,
-                "tool_id": block.tool_id,
-                "semantic_type": block.semantic_type,
-                "tool_input": _maybe_parse_json_object(block.tool_input),
-                "metadata": _maybe_parse_json_object(block.metadata),
-                "tool_result_is_error": block.tool_result_is_error,
-                "tool_result_exit_code": block.tool_result_exit_code,
-                "tool_outcome": str(block.tool_outcome) if block.tool_outcome is not None else None,
-                "tool_result_outcome_unknown_reason": block.tool_result_outcome_unknown_reason,
-            }.items()
-            if value is not None
-        }
-        for block in message.blocks
-    ]
-    return Message(
-        id=message.message_id,
-        role=Role.normalize(message.role),
-        text=text,
-        timestamp=parse_archive_datetime(message.occurred_at),
-        origin=origin,
-        blocks=content_blocks,
-        message_type=MessageType.normalize(message.message_type),
-        material_origin=MaterialOrigin.normalize(message.material_origin),
-        has_tool_use=message.has_tool_use,
-        has_thinking=message.has_thinking,
-        has_paste=message.has_paste,
-        paste_boundary_state=message.paste_boundary_state,
-        duration_ms=message.duration_ms,
-        # variant_index is creation order, NOT display state (polylogue-9qq7):
-        # for a regenerated/edited turn, index 0 is the first attempt, not
-        # necessarily the accepted one. is_active_path is the provider's
-        # "currently accepted sibling" signal and is authoritative for
-        # mainline selection; ArchiveMessageRow.is_active_path is always a
-        # concrete bool (schema default), never a guess.
-        branch_index=message.variant_index,
-        is_active_path=message.is_active_path,
-        position=message.position,
-        is_active_leaf=message.is_active_leaf,
-        parent_id=message.parent_message_id,
-        stop_reason=message.stop_reason,
-    )
-
-
-def _session_to_session(session: ArchiveSessionEnvelope, *, display_label: str | None = None) -> Session:
-    from polylogue.archive.session.branch_type import BranchType
-
-    origin = Origin.from_string(session.origin)
-    messages = [_message_to_domain(message, origin=origin) for message in session.messages]
-    timestamps = [message.timestamp for message in messages if message.timestamp is not None]
-    return Session(
-        id=SessionId(session.session_id),
-        origin=origin,
-        title=session.title if session.title_source in {"origin", "heuristic"} else None,
-        display_label=display_label,
-        title_source=_coerce_title_source(session.title_source),
-        title_ref=session.title_ref,
-        messages=MessageCollection(messages=messages),
-        created_at=min(timestamps) if timestamps else None,
-        updated_at=max(timestamps) if timestamps else None,
-        working_directories=tuple(session.working_directories),
-        git_branch=session.git_branch,
-        git_repository_url=session.git_repository_url,
-        provider_project_ref=session.provider_project_ref,
-        parent_id=SessionId(session.parent_session_id) if session.parent_session_id else None,
-        branch_type=BranchType(session.branch_type) if session.branch_type else None,
-    )
 
 
 def _plan_text_query(plan: SessionQueryPlan) -> str | None:
@@ -439,7 +310,7 @@ async def list_summaries_archive(
             default_limit=default_limit,
         )
         summaries = _attach_units_to_domain(
-            [_summary_to_domain(summary) for summary in archive_rows],
+            [archive_summary_to_domain(summary) for summary in archive_rows],
             archive,
             with_units,
             with_unit_fields,
@@ -494,7 +365,9 @@ async def list_archive(
         )
         sessions = _attach_units_to_domain(
             [
-                _session_to_session(archive.read_session(summary.session_id), display_label=summary.display_label)
+                archive_envelope_to_session(
+                    archive.read_session(summary.session_id), display_label=summary.display_label
+                )
                 for summary in archive_rows
             ],
             archive,
