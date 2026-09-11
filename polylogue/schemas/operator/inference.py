@@ -161,7 +161,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         manifest = source_bundle.manifest
         if manifest is None:
             raise AssertionError("source schema generation did not produce a cluster manifest")
-        manifest_path = registry.save_cluster_manifest(manifest)
+        manifest_path = registry.save_cluster_manifest(manifest) if request.persist_cluster_manifest else None
         corpus_specs, corpus_scenarios = _build_inferred_outputs(
             provider=request.provider,
             package_version=package_version,
@@ -212,7 +212,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         )
 
     manifest = registry.cluster_samples(request.provider, samples)
-    manifest_path = registry.save_cluster_manifest(manifest)
+    manifest_path = registry.save_cluster_manifest(manifest) if request.persist_cluster_manifest else None
     corpus_specs, corpus_scenarios = _build_inferred_outputs(
         provider=request.provider,
         package_version=package_version,

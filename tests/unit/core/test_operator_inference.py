@@ -381,4 +381,5 @@ def test_source_backed_cluster_uses_declared_evidence_without_archive_sampling(
 
     assert result.generation.success
     assert result.manifest is not None
+    assert result.manifest_path is not None and result.manifest_path.exists()
     assert result.manifest.artifact_counts == result.generation.artifact_counts

@@ -86,6 +86,10 @@ class SchemaInferRequest:
     source_cache_path: Path | None = None
     source_workers: int = 2
     archive_location: ArchiveLocation | None = None
+    # Direct operator inference owns the promotion lifecycle and retains its
+    # cluster manifest. Read-only callers, including devtools previews, must
+    # opt out explicitly so a successful preview has no registry side effect.
+    persist_cluster_manifest: bool = True
 
 
 @dataclass(frozen=True)

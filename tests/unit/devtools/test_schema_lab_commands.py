@@ -206,9 +206,48 @@ def test_schema_generate_forwards_generation_request(
             privacy_config=None,
             cluster=False,
             full_corpus=False,
+            persist_cluster_manifest=False,
         )
     ]
     assert "Generated schema package set for chatgpt" in capsys.readouterr().out
+
+
+def test_schema_generate_cluster_preview_keeps_declared_source_manifest_in_memory(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The preview route may cluster a declared fixture but must not publish it.
+
+    Anti-vacuity: clustered source inference normally persists this manifest
+    for promotion. Calling the actual devtools entry point proves its explicit
+    request policy prevents that otherwise-live write.
+    """
+    source = Path(__file__).parents[2] / "fixtures" / "origin-capability" / "codex-session.jsonl"
+    manifest_path = workspace_env["data_root"] / "polylogue" / "schemas" / "codex" / "manifest.json"
+
+    assert (
+        schema_generate.main(
+            [
+                "--provider",
+                "codex",
+                "--source",
+                f"codex={source}",
+                "--source-cache",
+                str(tmp_path / "source-cache.sqlite3"),
+                "--source-workers",
+                "1",
+                "--cluster",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)["result"]
+    assert payload["manifest"]["provider"] == "codex"
+    assert payload["manifest_path"] is None
+    assert not manifest_path.exists()
 
 
 def test_schema_generate_writes_aggregate_progress_receipt(
