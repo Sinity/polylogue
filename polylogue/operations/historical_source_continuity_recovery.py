@@ -49,7 +49,7 @@ from polylogue.storage.blob_ref_liveness import (
     classify_blob_ref_liveness,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection, open_sealed_staging_connection
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
     DurableChangeTrain,
@@ -936,7 +936,9 @@ def prepare_historical_source_continuity_recovery(
         post_source=post_backup_manifest.parent / "source.db",
     )
     try:
-        with _immutable_read_connection(pre_backup_manifest.parent / "source.db") as connection:
+        with open_sealed_staging_connection(
+            pre_backup_manifest.parent / "source.db", validate_schema=False
+        ) as connection:
             prior = classify_blob_ref_liveness(connection)
     except sqlite3.Error as exc:
         raise HistoricalSourceContinuityRecoveryError("cannot recompute historical liveness candidates") from exc
