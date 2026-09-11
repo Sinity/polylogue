@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 import subprocess
@@ -10,6 +11,15 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.daemon.convergence import (
+    DaemonConverger,
+    SessionProfileConvergenceOwner,
+    make_session_profile_derivation,
+    make_session_profile_frame,
+)
+from polylogue.daemon.derivation import Budget
+from polylogue.daemon.execution import BoundedComputeAdapter
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from tests.infra.convergence_harness import (
     converge_session_profiles,
     raw_authority_facts,
@@ -139,3 +149,70 @@ def test_fresh_no_hint_owner_retires_an_excess_profile_before_reporting_complete
             is None
         )
     assert raw_authority_facts(recovered.source_db) == raw_before
+
+
+@pytest.mark.asyncio
+async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(tmp_path: Path) -> None:
+    """The production quiet predicate and owner preserve archive-sweep fairness.
+
+    Anti-vacuity: bypass ``make_session_profile_derivation``'s real
+    source-path hot check, retain a scoped frame's cursor, or resume the
+    archive sweep from its beginning and this cannot show a hot earlier
+    session deferred, then repaired by its callback, while the cold sibling
+    still receives the next no-hint page.
+    """
+    recovered = seed_partial_convergence_archive(tmp_path / "recovered", target_hot=True)
+    # The hot predicate receives an injected clock.  It is deliberately based
+    # on the fixture file metadata rather than the ambient test process clock.
+    observed_now = recovered.target_source.stat().st_mtime + 1.0
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    adapter = make_session_profile_derivation(
+        recovered.index_db,
+        archive_root=recovered.root,
+        now=lambda: observed_now,
+    )
+    converger = DaemonConverger((), derivations=[adapter])
+    owner = SessionProfileConvergenceOwner(
+        converger,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    archive_frame = make_session_profile_frame(recovered.index_db, archive_root=recovered.root, scope=None)
+    try:
+        first = await owner.converge(archive_frame, budget=Budget(page=1, compute=1))
+        assert first.pending == 1
+        assert first.done == 0
+        assert session_materialization_facts(recovered.index_db, session_id=recovered.target_session_id).profile is None
+        assert (
+            session_materialization_facts(recovered.index_db, session_id=recovered.unrelated_session_id).profile is None
+        )
+        assert converger._derivation_cursor.position("session_profile").page_cursor == recovered.target_session_id
+
+        recovered.make_target_quiet()
+        targeted = await owner.converge(
+            make_session_profile_frame(
+                recovered.index_db,
+                archive_root=recovered.root,
+                scope=(recovered.target_session_id,),
+            ),
+            budget=Budget(page=1, compute=1),
+        )
+        assert targeted.done == 1
+        assert targeted.pending == 0
+        assert (
+            session_materialization_facts(recovered.index_db, session_id=recovered.target_session_id).profile
+            is not None
+        )
+        assert converger._derivation_cursor.position("session_profile").page_cursor == recovered.target_session_id
+
+        resumed = await owner.converge(archive_frame, budget=Budget(page=1, compute=1))
+        assert resumed.done == 1
+        assert resumed.pending == 0
+        assert (
+            session_materialization_facts(recovered.index_db, session_id=recovered.unrelated_session_id).profile
+            is not None
+        )
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
