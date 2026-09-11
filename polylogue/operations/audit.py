@@ -277,8 +277,9 @@ def _context_sha256(context: Mapping[str, object]) -> str:
 
 def _replay_plan_payload(plan: MutationPlan) -> dict[str, object]:
     """Persist only the plan fields the audit replay path consumes."""
+    from polylogue.operations.machine_plan_context import replay_context
 
-    return {
+    payload = {
         "operation": plan.operation,
         "destructive_class": plan.destructive_class,
         "target_refs": list(plan.target_refs),
@@ -298,11 +299,24 @@ def _replay_plan_payload(plan: MutationPlan) -> dict[str, object]:
         "prepared_at_ms": plan.prepared_at_ms,
         "expires_at_ms": plan.expires_at_ms,
     }
+    semantic_context = replay_context(plan.operation, plan.context)
+    if semantic_context is not None:
+        payload["replay_context"] = semantic_context
+    return payload
 
 
 def _plan_from_payload(raw: object) -> MutationPlan:
     value = cast(dict[str, object], raw)
     raw_context = value.get("context")
+    if value.get("replay_context") is not None:
+        from polylogue.operations.machine_plan_context import context_from_replay
+
+        restored_context = context_from_replay(str(value["operation"]), value["replay_context"])
+        if _context_sha256(restored_context) != value.get("context_sha256"):
+            raise ValueError("machine replay context differs from its authored digest")
+        if raw_context is not None and raw_context != restored_context:
+            raise ValueError("stored plan context differs from its replay semantics")
+        raw_context = restored_context
     if raw_context is None:
         context_digest = value.get("context_sha256")
         if not isinstance(context_digest, str) or len(context_digest) != 64:

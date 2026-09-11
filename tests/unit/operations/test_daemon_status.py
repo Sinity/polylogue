@@ -113,7 +113,11 @@ def test_direct_status_keeps_source_ops_and_embeddings_on_the_pinned_snapshot(tm
 
     assert payload["raw_parse_failures"] == 1
     assert payload["raw_failure_lifecycle_state"] == "blocked"
-    assert payload["embedding_status"]["embedded_sessions"] == 1
+    # A bare session status row is not proof of an eligible, current vector:
+    # the canonical session classifier also requires its message/derivation
+    # evidence. The status rollup itself remains pinned at the pre-write row.
+    assert payload["embedding_status"]["embedded_sessions"] == 0
+    assert payload["embedding_status"]["embedded_messages"] == 1
     assert payload["schema_drift"]["origins"][0]["total"] == 1
     readiness = payload["raw_materialization_readiness"]
     assert readiness["raw_authority_parser_census"]["available"] is True

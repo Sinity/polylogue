@@ -213,7 +213,12 @@ def test_uds_refuses_when_kernel_peer_credentials_cannot_be_read(
         refused = stack.client.request_json(
             "POST",
             "/api/operation",
-            {"protocol": DAEMON_OPERATION_PROTOCOL, "operation": "completion", "payload": {"kind": "field"}},
+            {
+                "protocol": DAEMON_OPERATION_PROTOCOL,
+                "request_id": "unavailable-peer-credentials",
+                "operation": "completion",
+                "payload": {"kind": "field"},
+            },
             accepted_statuses=frozenset({401}),
         )
     assert refused is not None

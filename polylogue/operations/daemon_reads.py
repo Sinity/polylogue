@@ -153,6 +153,7 @@ def _query_payload(
     dependencies: DaemonReadDependencies,
 ) -> dict[str, object]:
     from polylogue.api.archive import _archive_count_sessions_for_spec, _archive_list_summaries_for_spec
+    from polylogue.archive.hydration import archive_summary_to_domain
     from polylogue.archive.query.expression import compile_expression_into
     from polylogue.archive.query.spec import (
         DEFAULT_SESSION_LIST_LIMIT,
@@ -188,7 +189,9 @@ def _query_payload(
     return {
         "outcome": outcome.to_dict(),
         "items": [
-            session_list_envelope_from_summary(summary, message_count=summary.message_count).model_dump(mode="json")
+            session_list_envelope_from_summary(
+                archive_summary_to_domain(summary), message_count=summary.message_count
+            ).model_dump(mode="json")
             for summary in summaries
         ],
         "total": total,
