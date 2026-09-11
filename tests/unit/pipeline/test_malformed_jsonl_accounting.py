@@ -89,6 +89,7 @@ def _context(record: RawSessionRecord, *, mode: ValidationMode, tmp_path: Path) 
         raw_record=record,
         raw_source=tmp_path / "unused",
         archive_root=tmp_path / "archive",
+        blob_root=tmp_path / "blobs",
         validation_mode=mode,
         measure_serialized_size=False,
         source_name=record.source_name or "",

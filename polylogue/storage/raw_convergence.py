@@ -604,7 +604,7 @@ def _stageable_quarantined_census_cohort(
             )
             sessions = [
                 _normalized_session(session, fallback_timestamp=fallback_timestamp)
-                for session in _parse_one(provider, payload, str(candidate["source_path"]))
+                for session in _parse_one(provider, payload, str(candidate["source_path"]), archive_root=archive_root)
             ]
         except Exception as exc:
             logger.warning(
@@ -1031,7 +1031,7 @@ def _inspect_quarantined_accepted_raw(
         from polylogue.pipeline.services.ingest_worker import _normalized_session
         from polylogue.sources.revision_backfill import _parse_one
 
-        sessions = _parse_one(provider, payload, str(raw["source_path"]))
+        sessions = _parse_one(provider, payload, str(raw["source_path"]), archive_root=archive_root)
         fallback_timestamp = (
             datetime.fromtimestamp(int(raw["file_mtime_ms"]) / 1000, UTC).isoformat()
             if raw["file_mtime_ms"] is not None
@@ -1490,7 +1490,7 @@ def _verify_browser_origin_copy_forward_source_stage(
             raise ValueError("provider identity changed")
         from polylogue.sources.revision_backfill import _parse_one
 
-        sessions = _parse_one(provider, payload, item.source_path)
+        sessions = _parse_one(provider, payload, item.source_path, archive_root=archive_root)
     except Exception as exc:
         raise RuntimeError(f"browser parser evidence changed before copy-forward stage for {item.raw_id}") from exc
     if len(sessions) != 1 or str(make_session_id(provider, sessions[0].provider_session_id)) != item.session_id:
@@ -1653,7 +1653,7 @@ def _canonical_browser_origin_head_is_exact(
             return False
         from polylogue.sources.revision_backfill import _parse_one
 
-        sessions = _parse_one(provider, payload, str(raw["source_path"]))
+        sessions = _parse_one(provider, payload, str(raw["source_path"]), archive_root=archive_root)
     except Exception as exc:
         logger.warning(
             "semantic canonical browser head normalization failed",
@@ -1837,7 +1837,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
             return None
         from polylogue.sources.revision_backfill import _parse_one
 
-        sessions = _parse_one(provider, payload, str(raw["source_path"]))
+        sessions = _parse_one(provider, payload, str(raw["source_path"]), archive_root=archive_root)
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     membership = memberships[0]
@@ -2122,7 +2122,7 @@ def _inspect_browser_capture_origin_mismatch(
             return _browser_origin_ineligible(raw_id, "complete browser envelope has no canonical provider identity")
         from polylogue.sources.revision_backfill import _parse_one
 
-        sessions = _parse_one(provider, payload, source_path)
+        sessions = _parse_one(provider, payload, source_path, archive_root=archive_root)
     except Exception as exc:
         logger.warning(
             "browser capture origin repair normalization failed",
@@ -3101,7 +3101,7 @@ def _browser_canonical_authority_conflict_witness(
             return ineligible("retained envelope has no canonical provider identity")
         from polylogue.sources.revision_backfill import _parse_one
 
-        sessions = _parse_one(provider, payload, source_path)
+        sessions = _parse_one(provider, payload, source_path, archive_root=archive_root)
         if len(sessions) != 1:
             return ineligible(f"retained envelope normalized to {len(sessions)} sessions, expected 1")
         session = sessions[0]

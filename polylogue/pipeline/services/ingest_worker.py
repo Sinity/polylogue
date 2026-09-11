@@ -122,6 +122,7 @@ class _IngestContext:
     raw_record: RawSessionRecord
     raw_source: Path
     archive_root: Path
+    blob_root: Path
     validation_mode: ValidationMode
     measure_serialized_size: bool
     source_name: str
@@ -621,8 +622,15 @@ def _parse_plan_sessions(
         parse_stream_payload,
         require_positive_conversational_evidence,
     )
+    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
 
     fallback_id = _fallback_id(context.raw_record.source_path, context.raw_record.raw_id)
+    # polylogue-cq1ql: this is a derivation route -- the payload is the
+    # retained blob, not the file it was acquired from, and the original
+    # source tree may be long gone. Overflowed tool outputs resolve from what
+    # the archive retained for the same ownership scope, never from a sibling
+    # read of the recorded path.
+    sidecar_resolver = RetainedSidecarResolver(context.archive_root, blob_root=context.blob_root)
     if plan.mode == "stream":
         assert plan.stream_name is not None
         stream_name = plan.stream_name
@@ -640,6 +648,7 @@ def _parse_plan_sessions(
                 counted_stream(),
                 fallback_id,
                 source_path=context.raw_record.source_path,
+                sidecar_resolver=sidecar_resolver,
             )
             if valid_record_count == 0:
                 raise ValueError(f"no valid JSON records in {stream_name}")
@@ -659,6 +668,7 @@ def _parse_plan_sessions(
             fallback_id,
             schema_resolution=plan.schema_resolution,
             source_path=context.raw_record.source_path,
+            sidecar_resolver=sidecar_resolver,
         ),
         provider=plan.provider,
         source_path=context.raw_record.source_path,
@@ -920,6 +930,7 @@ def ingest_record(
         raw_record=raw_record,
         raw_source=raw_source,
         archive_root=archive_root,
+        blob_root=resolved_blob_root,
         validation_mode=validation_mode,
         measure_serialized_size=measure_serialized_size,
         source_name=raw_record.source_name or raw_record.source_path or "",

@@ -14,19 +14,36 @@ from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.core.enums import BlockType, Provider
+from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 from polylogue.sources.live.tool_result_sidecars import (
     SidecarDebt,
     SidecarMatch,
     join_tool_result_sidecars,
     join_tool_result_sidecars_session_scoped,
     resolve_sibling_transcript_paths,
+    sidecar_files_from_directory,
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.claude.code_parser import apply_tool_result_sidecars, parse_code
 from polylogue.sources.revision_backfill import _parse_one
+from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
 _TRUNCATED_NEEDLE = "zz_sentinel_needle_only_in_full_output"
+
+
+def _dir_scope(tool_results_dir: Path) -> RetainedSidecarScope:
+    """The scope an acquisition-time resolver reports for one directory.
+
+    The join no longer enumerates a path (polylogue-cq1ql); these
+    single-transcript cases still exercise the directory shape, so they build
+    the scope the filesystem resolver would.
+    """
+    return RetainedSidecarScope(
+        scope_key=str(tool_results_dir),
+        files=sidecar_files_from_directory(tool_results_dir),
+        available=tool_results_dir.is_dir(),
+    )
 
 
 def _write_sidecar(tool_results_dir: Path, name: str, text: str) -> None:
@@ -74,7 +91,7 @@ def test_join_tool_result_sidecars_classifies_truncated_full_mirror_and_debt(tmp
         _record("m-bbb", "toolu_BBB", "The file /x.py has been updated successfully."),
     ]
 
-    result = join_tool_result_sidecars(payload, tool_results_dir)
+    result = join_tool_result_sidecars(payload, _dir_scope(tool_results_dir))
 
     matched_by_id = {match.tool_use_id: match for match in result.matched}
     assert set(matched_by_id) == {"toolu_AAA", "toolu_BBB"}
@@ -96,7 +113,7 @@ def test_join_tool_result_sidecars_classifies_truncated_full_mirror_and_debt(tmp
 
 
 def test_join_tool_result_sidecars_returns_empty_result_when_dir_absent(tmp_path: Path) -> None:
-    result = join_tool_result_sidecars([], tmp_path / "does-not-exist")
+    result = join_tool_result_sidecars([], _dir_scope(tmp_path / "does-not-exist"))
     assert result.matched == ()
     assert result.debt == ()
 
@@ -113,7 +130,7 @@ def test_apply_tool_result_sidecars_replaces_truncated_block_text_only(tmp_path:
         _record("m-bbb", "toolu_BBB", "The file /x.py has been updated successfully."),
     ]
 
-    join_result = join_tool_result_sidecars(payload, tool_results_dir)
+    join_result = join_tool_result_sidecars(payload, _dir_scope(tool_results_dir))
 
     baseline = parse_code(payload, "fallback-sidecar")
     acquired = parse_code(payload, "fallback-sidecar", tool_result_sidecars=join_result)
@@ -201,7 +218,7 @@ def test_apply_tool_result_sidecars_sets_event_timestamp_from_file_mtime(tmp_pat
     os.utime(tool_results_dir / "orphan123.txt", (fixed_epoch_s, fixed_epoch_s))
 
     payload = [_record("m-aaa", "toolu_AAA", "small full text")]
-    join_result = join_tool_result_sidecars(payload, tool_results_dir)
+    join_result = join_tool_result_sidecars(payload, _dir_scope(tool_results_dir))
     acquired = parse_code(payload, "fallback-sidecar", tool_result_sidecars=join_result)
 
     sidecar_events = [event for event in acquired.session_events if event.event_type == "claude_tool_result_sidecar"]
@@ -262,8 +279,13 @@ def test_session_scoped_join_resolves_sibling_owned_file_without_duplicating_deb
     _write_transcript(parent_path, parent_payload)
     _write_transcript(subagent_path, subagent_payload)
 
-    parent_result = join_tool_result_sidecars_session_scoped(parent_payload, tool_results_dir, parent_path)
-    subagent_result = join_tool_result_sidecars_session_scoped(subagent_payload, tool_results_dir, subagent_path)
+    resolver = FilesystemSidecarResolver()
+    parent_result = join_tool_result_sidecars_session_scoped(
+        parent_payload, resolver.claude_code_scope(parent_path), parent_path
+    )
+    subagent_result = join_tool_result_sidecars_session_scoped(
+        subagent_payload, resolver.claude_code_scope(subagent_path), subagent_path
+    )
 
     parent_matched_ids = {match.tool_use_id for match in parent_result.matched}
     subagent_matched_ids = {match.tool_use_id for match in subagent_result.matched}
@@ -299,7 +321,9 @@ def test_session_scoped_join_never_emits_debt_for_subagent_meta_companion_files(
     tool_results_dir = session_dir / "tool-results"
     _write_sidecar(tool_results_dir, "toolu_OWNED_ELSEWHERE.txt", "owned by a sibling, not this meta file")
 
-    result = join_tool_result_sidecars_session_scoped([], tool_results_dir, meta_path)
+    result = join_tool_result_sidecars_session_scoped(
+        [], FilesystemSidecarResolver().claude_code_scope(meta_path), meta_path
+    )
 
     assert result.matched == ()
     assert result.debt == ()

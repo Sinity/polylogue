@@ -15,10 +15,10 @@ from polylogue.core.timestamps import format_timestamp
 from polylogue.sources.live.gemini_tool_output_sidecars import (
     is_masked_tool_output,
     join_gemini_tool_output_sidecars,
-    resolve_tool_outputs_dir,
 )
 from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
 from polylogue.sources.parsers.hermes_tool_outcome import tool_result_outcome as hermes_tool_result_outcome
+from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
@@ -163,6 +163,7 @@ def parse_gemini_cli(
     fallback_id: str,
     *,
     source_path: str | Path | None = None,
+    sidecar_resolver: SidecarResolver | None = None,
 ) -> ParsedSession:
     session_id = _string(payload.get("sessionId")) or fallback_id
     chat_id = gemini_cli_chat_identity(payload, session_id)
@@ -203,15 +204,18 @@ def parse_gemini_cli(
             directory for directory in _list(payload.get("directories")) if isinstance(directory, str) and directory
         ],
     )
-    # The sidecar directory on disk is named for the wire ``sessionId``
+    # The sidecar scope is named for the wire ``sessionId``
     # (``tool-outputs/session-<sessionId>/``), which all of a process's chats
-    # share -- not for the composed chat identity.
-    tool_outputs_dir = resolve_tool_outputs_dir(source_path, session_id)
-    if tool_outputs_dir is not None:
-        session = apply_gemini_tool_output_sidecars(
-            session,
-            join_gemini_tool_output_sidecars(payload, tool_outputs_dir),
-        )
+    # share -- not for the composed chat identity. ``sidecar_resolver`` decides
+    # whether those bytes come from the source tree (acquisition) or from what
+    # the archive retained (derivation); see ``dispatch.parse_payload``.
+    if sidecar_resolver is not None:
+        scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
+        if scope.available:
+            session = apply_gemini_tool_output_sidecars(
+                session,
+                join_gemini_tool_output_sidecars(payload, scope),
+            )
     return session
 
 
