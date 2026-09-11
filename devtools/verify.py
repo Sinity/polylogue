@@ -525,6 +525,8 @@ def _run(
     pytest_step = label.startswith("pytest")
     artifacts = run.start_step(label=label, cmd=command)
     env = _subprocess_env()
+    hypothesis_profile: str | None = None
+    hypothesis_profile_source: str | None = None
     completed: subprocess.CompletedProcess[Any]
     rerun: dict[str, Any] | None = None
     executable_result = executable_gate_result(command, gate=label, env=env)

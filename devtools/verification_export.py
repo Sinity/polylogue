@@ -27,10 +27,11 @@ def _receipt(root: Path, run_ref: str) -> tuple[Path, dict[str, Any]]:
 def normalized_export(root: Path, run_ref: str) -> dict[str, Any]:
     """Normalize one existing receipt without reading testmon or other caches."""
     path, receipt = _receipt(root, run_ref)
-    steps = receipt.get("steps") if isinstance(receipt.get("steps"), list) else []
-    pytest_steps = [
-        step for step in steps if isinstance(step, Mapping) and str(step.get("name", "")).startswith("pytest")
-    ]
+    raw_steps: object = receipt.get("steps")
+    steps: list[Mapping[str, Any]] = (
+        [step for step in raw_steps if isinstance(step, Mapping)] if isinstance(raw_steps, list) else []
+    )
+    pytest_steps = [step for step in steps if str(step.get("name", "")).startswith("pytest")]
     profile = next((step.get("hypothesis_profile") for step in pytest_steps if step.get("hypothesis_profile")), None)
     commands = [list(step.get("cmd", ())) for step in pytest_steps if isinstance(step.get("cmd"), list)]
     initial_sha = receipt.get("git_head")
@@ -70,7 +71,6 @@ def normalized_export(root: Path, run_ref: str) -> dict[str, Any]:
                 "runner": step.get("runner"),
             }
             for step in steps
-            if isinstance(step, Mapping)
         ],
         "coverage": receipt.get("pytest_aggregate", {}),
     }

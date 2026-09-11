@@ -13,6 +13,7 @@ from devtools import run_tests
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
+    SUITE_COST_PLUGIN_NAME,
     TESTMON_RETENTION_PLUGIN_NAME,
     devtools_plugin_args,
     managed_plugin_args,
@@ -68,7 +69,7 @@ def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
     devtools_start = cmd.index(focused_plugins[0])
     assert [*focused_plugins] == cmd[devtools_start : devtools_start + len(focused_plugins)]
     managed_start = devtools_start + len(focused_plugins)
-    assert cmd[managed_start : managed_start + 2] == ["-p", run_tests.SUITE_COST_PLUGIN_NAME]
+    assert cmd[managed_start : managed_start + 2] == ["-p", SUITE_COST_PLUGIN_NAME]
     managed_start += 2
     serial_plugins = managed_plugin_args(testmon=False, xdist=False)
     assert [*serial_plugins] == cmd[managed_start : managed_start + len(serial_plugins)]

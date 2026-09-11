@@ -231,43 +231,52 @@ def test_parser_retains_quota_windows_and_native_spawn_identity_through_storage(
 def test_projection_uses_stored_edges_and_excludes_inherited_calls() -> None:
     """Inherited launch calls and human prose must not create extra children or task evidence."""
     from polylogue.analysis.orchestration_evidence import build_session_orchestration
-    from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyNode
+    from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyEdgeKind, TopologyNode
+    from polylogue.archive.message.messages import MessageCollection
     from polylogue.archive.message.models import Message
     from polylogue.archive.session.domain_models import Session
+    from polylogue.core.enums import Origin
+    from polylogue.core.types import SessionId
 
     session = Session(
-        id="codex-session:parent",
-        origin="codex-session",
-        messages=[
-            Message(
-                id="codex-session:ancestor:n:m1",
-                role="assistant",
-                blocks=[
-                    {
-                        "type": "tool_use",
-                        "tool_name": "Agent",
-                        "tool_input": {"model": "inherited"},
-                    }
-                ],
-            ),
-            Message(
-                id="codex-session:parent:n:m2",
-                role="assistant",
-                blocks=[
-                    {
-                        "type": "tool_use",
-                        "tool_name": "exec_command",
-                        "tool_input": {"cmd": "bd create --title example-title"},
-                    }
-                ],
-            ),
-        ],
+        id=SessionId("codex-session:parent"),
+        origin=Origin.CODEX_SESSION,
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="codex-session:ancestor:n:m1",
+                    role=Role.ASSISTANT,
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "Agent",
+                            "tool_input": {"model": "inherited"},
+                        }
+                    ],
+                ),
+                Message(
+                    id="codex-session:parent:n:m2",
+                    role=Role.ASSISTANT,
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "exec_command",
+                            "tool_input": {"cmd": "bd create --title example-title"},
+                        }
+                    ],
+                ),
+            ]
+        ),
     )
     topology = SessionTopology(
         target_id=session.id,
         root_id=session.id,
-        nodes=[TopologyNode(session_id=session.id), TopologyNode(session_id="codex-session:child")],
-        edges=[TopologyEdge(parent_id=session.id, child_id="codex-session:child", kind="subagent")],
+        nodes=(TopologyNode(session_id=session.id), TopologyNode(session_id=SessionId("codex-session:child"))),
+        edges=(
+            TopologyEdge(
+                parent_id=session.id, child_id=SessionId("codex-session:child"), kind=TopologyEdgeKind.SUBAGENT
+            ),
+        ),
     )
     evidence = build_session_orchestration(session, topology)
     assert [row["session_id"] for row in evidence.children] == ["codex-session:child"]
