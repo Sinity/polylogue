@@ -1298,12 +1298,32 @@ class LiveWatcher:
         async with self._batch_lock:
             if not self._pending_paths:
                 return False
-            paths = list(self._pending_paths)
+            # Keep the handoff immutable.  ``admit_paths`` may consume an
+            # authority refusal and narrow the local batch, but an outer
+            # retryable failure must restore the complete snapshot that was
+            # removed from the queue.  Paths enqueued after this lock is
+            # released remain in ``_pending_paths`` and are merged by the
+            # requeue helper below.
+            snapshot_paths = tuple(self._pending_paths)
+            paths = list(snapshot_paths)
             self._pending_paths.clear()
-            forced_paths = self._forced_reparse_paths.intersection(paths)
+            forced_paths = frozenset(self._forced_reparse_paths.intersection(snapshot_paths))
             self._forced_reparse_paths.difference_update(paths)
 
         ingested_paths: list[Path] = []
+
+        async def requeue(
+            retry_paths: Iterable[Path],
+            retry_forced_paths: Iterable[Path],
+        ) -> None:
+            """Restore uncommitted work without disturbing concurrent enqueue."""
+            paths_to_requeue = tuple(retry_paths)
+            if not paths_to_requeue:
+                return
+            paths_to_requeue_set = set(paths_to_requeue)
+            async with self._batch_lock:
+                self._pending_paths.update(paths_to_requeue)
+                self._forced_reparse_paths.update(path for path in retry_forced_paths if path in paths_to_requeue_set)
 
         async def flush_batch() -> None:
             nonlocal paths
@@ -1343,6 +1363,12 @@ class LiveWatcher:
                     raise
                 logger.warning("live.watcher: changed-file batch deferred, archive write lost a lock race: %s", exc)
                 self._defer_unaccounted_failed_retries(needed)
+                # ``_ingest_files`` is allowed to catch per-record failures,
+                # but a transient archive lock aborts this batch before its
+                # needed paths are durably accounted for.  Requeue only the
+                # paths that reached ingestion; the outer handlers below use
+                # the complete immutable snapshot for coordination failures.
+                await requeue(needed, forced_paths)
                 return
             if metrics is not None:
                 _log_ingest_metrics("live.watcher: changed-file batch", metrics)
@@ -1364,26 +1390,20 @@ class LiveWatcher:
             await self._converge_embeddings_off_writer(ingested_paths)
         except WriteHoldBudgetError as exc:
             logger.warning("live.watcher: changed-file batch ended at its declared writer-hold bound: %s", exc)
-            async with self._batch_lock:
-                self._pending_paths.update(paths)
-                self._forced_reparse_paths.update(forced_paths)
+            await requeue(snapshot_paths, forced_paths)
         except CursorAuthorityBlockedError as exc:
             logger.warning("live.watcher: changed-file batch refused by cursor authority: %s", exc)
             # Authority denial must leave both durable cursor state and the
             # in-memory work queue intact.  Otherwise the source is invisible
             # until a later catch-up scan instead of retrying on the next
             # authorized debounce flush.
-            async with self._batch_lock:
-                self._pending_paths.update(paths)
-                self._forced_reparse_paths.update(forced_paths)
+            await requeue(snapshot_paths, forced_paths)
             return True
         except sqlite3.OperationalError as exc:
             if not is_transient_sqlite_lock(exc):
                 raise
-            logger.warning("live.watcher: archive busy; requeueing %d changed file(s)", len(paths))
-            async with self._batch_lock:
-                self._pending_paths.update(paths)
-                self._forced_reparse_paths.update(forced_paths)
+            logger.warning("live.watcher: archive busy; requeueing %d changed file(s)", len(snapshot_paths))
+            await requeue(snapshot_paths, forced_paths)
             await asyncio.sleep(self._debounce_s)
         return True
 
