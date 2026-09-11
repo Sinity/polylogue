@@ -31,7 +31,6 @@ from polylogue.sources.tool_result_reasons import unknown_reason
 from .base import (
     AdmissionLedger,
     AdmissionUnit,
-    ParseAccounting,
     ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
@@ -2010,11 +2009,21 @@ def _response_inner_record(item: object) -> dict[str, object] | None:
     return inner if inner is not None and not _is_message(inner) else None
 
 
-def _code_mode_exec_envelopes(records: Iterable[object]) -> dict[int, _CodexExecEnvelope]:
+def _codex_lookahead(
+    records: Iterable[object],
+) -> tuple[dict[int, _CodexExecEnvelope], set[tuple[str, str]]]:
+    """Build the bounded indexes needed before materializing Codex records.
+
+    Code-mode calls need their later output and execution evidence, while
+    ``event_msg`` messages need the response-message signatures for duplicate
+    suppression.  Both facts are derived from the same replay so a streamed
+    source needs one lookahead traversal, rather than one traversal per fact.
+    """
     call_occurrences: dict[str, list[tuple[int, _CodexExecEnvelope]]] = defaultdict(list)
     output_occurrences: dict[str, list[tuple[int, dict[str, object]]]] = defaultdict(list)
     envelopes_by_call: dict[int, _CodexExecEnvelope] = {}
     output_index_by_call: dict[int, int] = {}
+    response_signatures: set[tuple[str, str]] = set()
     # ``event_msg`` -> ``payload.item`` records the operations the code-mode
     # program actually performed. Nothing links them to the transport call by
     # id -- an item is keyed ``exec-<uuid>`` and shares no space with
@@ -2023,6 +2032,14 @@ def _code_mode_exec_envelopes(records: Iterable[object]) -> dict[int, _CodexExec
     open_call_index: int | None = None
     last_call_index: int | None = None
     for index, item in enumerate(records, start=1):
+        record = _dict_record(item)
+        if record is not None:
+            message_record = _message_record(record)
+            if message_record is not None:
+                raw_role = _effective_role(message_record)
+                if raw_role and raw_role != "unknown":
+                    text = extract_codex_text(_effective_content(message_record))
+                    response_signatures.add(_message_signature(Role.normalize(raw_role), text))
         inner = _response_inner_record(item)
         if inner is None:
             continue
@@ -2117,7 +2134,7 @@ def _code_mode_exec_envelopes(records: Iterable[object]) -> dict[int, _CodexExec
         resolved_output_index = output_index_by_call.get(call_index)
         if resolved_output_index is not None:
             envelopes_by_record[resolved_output_index] = resolved
-    return envelopes_by_record
+    return envelopes_by_record, response_signatures
 
 
 def _match_code_mode_items(
@@ -2772,23 +2789,6 @@ def _message_signature(role: Role | str, text: str | None) -> tuple[str, str]:
     return (role_value, " ".join((text or "").split()))
 
 
-def _response_message_signatures(records: Iterable[object]) -> set[tuple[str, str]]:
-    signatures: set[tuple[str, str]] = set()
-    for item in records:
-        record = _dict_record(item)
-        if record is None:
-            continue
-        message_record = _message_record(record)
-        if message_record is None:
-            continue
-        raw_role = _effective_role(message_record)
-        if not raw_role or raw_role == "unknown":
-            continue
-        text = extract_codex_text(_effective_content(message_record))
-        signatures.add(_message_signature(Role.normalize(raw_role), text))
-    return signatures
-
-
 def _codex_event_message(
     record: dict[str, object],
     *,
@@ -2953,12 +2953,8 @@ def _session_stream_supported(payload: Sequence[object], *, for_schema: bool) ->
     return has_session_header or has_direct_record or has_envelope_record
 
 
-def _codex_admission_accounting(
-    records: Iterable[object],
-    ledger: AdmissionLedger | None = None,
-) -> ParseAccounting:
-    """Account for every outer record after the complete stream is decoded."""
-    supported_types = {
+_CODEX_SUPPORTED_OUTER_RECORD_TYPES = frozenset(
+    {
         "session_meta",
         "response_item",
         "event_msg",
@@ -2966,23 +2962,28 @@ def _codex_admission_accounting(
         "turn_context",
         "world_state",
     }
-    buffered = list(records)
-    ledger = ledger or AdmissionLedger()
-    ledger.expect(AdmissionUnit.OUTER_RECORD, len(buffered))
-    for index, item in enumerate(buffered):
-        record = _dict_record(item)
-        record_type = _record_type(record) if record is not None else None
-        supported = record is not None and (
-            _is_state(record)
-            or record_type in supported_types
-            or _is_direct_message(record)
-            or _session_meta_record(record) is not None
-        )
-        if supported:
-            ledger.materialized(AdmissionUnit.OUTER_RECORD, index, record_type or "direct")
-        else:
-            ledger.unknown(AdmissionUnit.OUTER_RECORD, index, record_type or "unsupported")
-    return ledger.close()
+)
+
+
+def _account_codex_outer_record(
+    ledger: AdmissionLedger,
+    *,
+    index: int,
+    record: dict[str, object] | None,
+) -> None:
+    """Settle one source record as the materializing pass consumes it."""
+    ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
+    record_type = _record_type(record) if record is not None else None
+    supported = record is not None and (
+        _is_state(record)
+        or record_type in _CODEX_SUPPORTED_OUTER_RECORD_TYPES
+        or _is_direct_message(record)
+        or _session_meta_record(record) is not None
+    )
+    if supported:
+        ledger.materialized(AdmissionUnit.OUTER_RECORD, index, record_type or "direct")
+    else:
+        ledger.unknown(AdmissionUnit.OUTER_RECORD, index, record_type or "unsupported")
 
 
 def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: bool = False) -> ParsedSession:
@@ -3007,8 +3008,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                 pickle.dump(item, spool, protocol=pickle.HIGHEST_PROTOCOL)
             return _parse_records(_PickleRecordReplay(spool), fallback_id, _reiterable=True)
 
-    code_mode_envelopes = _code_mode_exec_envelopes(records)
-    response_signatures = _response_message_signatures(records)
+    code_mode_envelopes, response_signatures = _codex_lookahead(records)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     session_id = fallback_id
@@ -3071,6 +3071,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
 
     for idx, item in enumerate(records, start=1):
         record = _dict_record(item)
+        _account_codex_outer_record(admission, index=idx - 1, record=record)
         if record is None:
             continue
 
@@ -3716,7 +3717,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
         messages[-1].provider_message_id if messages and messages[-1].provider_message_id else None
     )
     messages = mark_last_occurrence_as_active_leaf(messages)
-    unit_accounting = _codex_admission_accounting(records, admission)
+    unit_accounting = admission.close()
 
     return ParsedSession(
         source_name=Provider.CODEX,

@@ -60,7 +60,7 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             text="tool result",
             timestamp="2026-01-01T00:00:02Z",
             message_type="tool_result",
-            blocks=[{"type": "tool_result", "text": "tool result"}],
+            blocks=[{"type": "tool_result", "text": "tool result", "is_error": False}],
         ),
         make_message(
             "msg-user",
