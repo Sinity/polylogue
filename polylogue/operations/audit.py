@@ -33,6 +33,7 @@ from polylogue.operations.mutation_transaction import (
     validate_mutation_plan_integrity,
 )
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
+from polylogue.storage.sqlite.audit_continuity import AuditContinuityPendingError as AuditContinuityPendingError
 from polylogue.storage.sqlite.audit_leaf import (
     AuditLeafError,
     assert_verified_audit_leaf,
@@ -216,10 +217,14 @@ def _continuity_mutation(kind: str) -> Callable[[_F], _F]:
             if self._machine_binding is not None and self._machine_binding[1] == kind:
                 binding = self._machine_binding[0]
                 prior = self.machine_request(binding)
-                if prior is not None:
+                if prior is not None and self._machine_part is None:
                     raise MachineRequestRecoveredError(prior)
                 payload["machine_request"] = binding.to_dict()
-                if self._before_machine_prepare is not None:
+                if self._machine_part is not None:
+                    payload["machine_part"] = self._machine_part
+                if self._machine_deadline_unix_ms is not None:
+                    payload["accepted_deadline_unix_ms"] = self._machine_deadline_unix_ms
+                if prior is None and self._before_machine_prepare is not None:
                     self._before_machine_prepare()
             mutation = AuditMutation(
                 kind=kind,
@@ -472,11 +477,20 @@ class AuditRepository:
         self._coordinated_connection: sqlite3.Connection | None = None
         self._coordinated_mutation: AuditMutation | None = None
         self._machine_binding: tuple[MachineRequestBinding, str] | None = None
+        self._machine_part: int | None = None
+        self._machine_deadline_unix_ms: int | None = None
         self._before_machine_prepare = before_machine_prepare
         self._on_commit = on_commit
 
     @contextmanager
-    def bind_machine_request(self, binding: MachineRequestBinding, *, transition: str) -> Iterator[None]:
+    def bind_machine_request(
+        self,
+        binding: MachineRequestBinding,
+        *,
+        transition: str,
+        part: int | None = None,
+        deadline_unix_ms: int | None = None,
+    ) -> Iterator[None]:
         """Bind exactly one domain transition in its existing continuity transaction."""
 
         if transition not in {
@@ -484,15 +498,25 @@ class AuditRepository:
             "issue_authorization",
             "consume_authorization_and_start",
             "cancel_preview",
+            "create_preview_batch",
+            "issue_authorization_batch",
+            "cancel_preview_batch",
+            "accept_execution_batch",
         }:
             raise ValueError("machine request must bind a declared audit authority transition")
         if self._machine_binding is not None:
             raise RuntimeError("machine request binding scopes cannot overlap")
+        if part is not None and (transition != "consume_authorization_and_start" or not 0 <= part < 40):
+            raise ValueError("machine part must name a bounded execution ordinal")
         self._machine_binding = (binding, transition)
+        self._machine_part = part
+        self._machine_deadline_unix_ms = deadline_unix_ms
         try:
             yield
         finally:
             self._machine_binding = None
+            self._machine_part = None
+            self._machine_deadline_unix_ms = None
 
     def machine_request(self, binding: MachineRequestBinding) -> dict[str, object] | None:
         """Recover the immutable domain reference and reject conflicting reuse."""
@@ -508,6 +532,22 @@ class AuditRepository:
         if any(record[key] != value for key, value in binding.to_dict().items()):
             raise MachineRequestConflictError("request id is bound to another principal or intent")
         return record
+
+    def machine_request_for_principal(
+        self, archive_identity: str, request_id: str, principal_ref: str
+    ) -> dict[str, object] | None:
+        """Resolve a control reference only in the authenticated current archive."""
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM machine_requests WHERE archive_identity = ? AND request_id = ? AND principal_ref = ?",
+                (archive_identity, request_id, principal_ref),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    @contextmanager
+    def settled_machine_read(self) -> Iterator[None]:
+        with self._continuity.settled_read():
+            yield
 
     def preview_for_principal(self, preview_ref: str, principal: MutationPrincipal) -> MutationPreview:
         with self._connection() as conn:
@@ -563,6 +603,23 @@ class AuditRepository:
         if raw is None:
             return
         binding = MachineRequestBinding(**cast(dict[str, str], raw))
+        if "machine_part" in mutation.payload:
+            changed = conn.execute(
+                """UPDATE machine_request_parts SET operation_id = ?
+                WHERE archive_identity = ? AND request_id = ? AND ordinal = ? AND operation_id IS NULL""",
+                (result, binding.archive_identity, binding.request_id, mutation.payload["machine_part"]),
+            ).rowcount
+            if changed != 1:
+                raise MachineRequestConflictError("machine execution part has already started or is missing")
+            return
+        if mutation.kind in {
+            "create_preview_batch",
+            "issue_authorization_batch",
+            "cancel_preview_batch",
+            "accept_execution_batch",
+        }:
+            AuditRepository._bind_machine_batch(conn, mutation, binding, result)
+            return
         plan = cast(
             dict[str, object],
             mutation.payload.get("plan") or cast(dict[str, object], mutation.payload["preview"])["plan"],
@@ -595,6 +652,102 @@ class AuditRepository:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (*binding.to_dict().values(), kinds[mutation.kind], artifact, mutation.created_at_ms),
         )
+
+    @staticmethod
+    def _bind_machine_batch(
+        conn: sqlite3.Connection, mutation: AuditMutation, binding: MachineRequestBinding, result: object
+    ) -> None:
+        refs = cast(list[str], result)
+        if not refs or len(refs) > 40:
+            raise ValueError("machine authority batch must contain between 1 and 40 parts")
+        kind = {
+            "create_preview_batch": "preview-batch",
+            "issue_authorization_batch": "authorization-batch",
+            "cancel_preview_batch": "cancelled-preview-batch",
+            "accept_execution_batch": "execution-batch",
+        }[mutation.kind]
+        conn.execute(
+            """INSERT INTO machine_requests(
+                archive_identity, request_id, principal_ref, fingerprint, operation_name,
+                artifact_kind, artifact_ref, accepted_at_ms, part_count, accepted_deadline_unix_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                *binding.to_dict().values(),
+                kind,
+                refs[0],
+                mutation.created_at_ms,
+                len(refs),
+                mutation.payload.get("accepted_deadline_unix_ms"),
+            ),
+        )
+        for ordinal, ref in enumerate(refs):
+            if kind in {"preview-batch", "cancelled-preview-batch"}:
+                preview_ref, authorization_ref = ref, None
+            else:
+                row = conn.execute(
+                    "SELECT preview_id FROM operation_authorizations WHERE authorization_id = ?", (ref,)
+                ).fetchone()
+                if row is None:
+                    raise AuthorizationMismatchError("batch authorization is missing")
+                preview_ref = str(row[0])
+                # Authorization creation does not reserve execution. Only an
+                # accepted execution owns the one-shot authority permanently.
+                authorization_ref = ref if kind == "execution-batch" else None
+            row = conn.execute(
+                "SELECT principal_actor_ref, archive_identity_digest FROM operation_previews WHERE preview_id = ?",
+                (preview_ref,),
+            ).fetchone()
+            if row is None or row[0] != binding.principal_ref or row[1] != binding.archive_identity:
+                raise MachineRequestConflictError("batch authority differs from authenticated archive intent")
+            conn.execute(
+                """INSERT INTO machine_request_parts(
+                    archive_identity, request_id, ordinal, artifact_ref, preview_ref, authorization_ref
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (binding.archive_identity, binding.request_id, ordinal, ref, preview_ref, authorization_ref),
+            )
+
+    def machine_parts(self, binding: MachineRequestBinding) -> list[dict[str, object]]:
+        if self.machine_request(binding) is None:
+            return []
+        with self._connection() as conn:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM machine_request_parts WHERE archive_identity = ? AND request_id = ? ORDER BY ordinal",
+                    (binding.archive_identity, binding.request_id),
+                )
+            ]
+
+    def machine_preview_summary(self, binding: MachineRequestBinding) -> dict[str, object]:
+        """Reconstruct a preview response from ordered normalized authority rows."""
+        parts = self.machine_parts(binding)
+        ids: list[str] = []
+        expiries: list[int] = []
+        refs = [str(part["preview_ref"]) for part in parts]
+        with self._connection() as conn:
+            for ref in refs:
+                row = conn.execute(
+                    "SELECT expires_at_ms FROM operation_previews WHERE preview_id = ?", (ref,)
+                ).fetchone()
+                if row is None:
+                    raise ValueError("machine preview authority is missing")
+                expiries.append(int(row[0]))
+                ids.extend(
+                    str(row[0]).removeprefix("session:")
+                    for row in conn.execute(
+                        "SELECT target_ref FROM operation_preview_targets WHERE preview_id = ? ORDER BY ordinal",
+                        (ref,),
+                    )
+                )
+        return {
+            "status": "prepared",
+            "operation": "delete",
+            "preview_ref": refs[0],
+            "preview_refs": refs,
+            "session_ids": ids,
+            "session_count": len(ids),
+            "expires_at_ms": min(expiries),
+        }
 
     @classmethod
     def for_archive_root(cls, archive_root: Path, *, attempt_owner_id: str | None = None) -> AuditRepository:
@@ -645,6 +798,53 @@ class AuditRepository:
         """Encode exact typed replay inputs before source.db prepares a command."""
 
         values = dict(kwargs)
+        if kind in {"create_preview_batch", "issue_authorization_batch", "cancel_preview_batch"}:
+            items, principal = cast(tuple[object, ...], args[0]), cast(MutationPrincipal, args[1])
+            if not 1 <= len(items) <= 40:
+                raise ValueError("authority batch must contain between 1 and 40 parts")
+            child_kind = {
+                "create_preview_batch": "create_preview",
+                "issue_authorization_batch": "issue_authorization",
+                "cancel_preview_batch": "cancel_preview",
+            }[kind]
+            commands = []
+            authorizations = cast(tuple[MutationAuthorization, ...], args[2]) if len(args) > 2 else ()
+            if authorizations and len(authorizations) != len(items):
+                raise ValueError("authorization batch differs from preview batch")
+            for ordinal, item in enumerate(items):
+                if child_kind == "cancel_preview":
+                    child_args = (item,)
+                elif child_kind == "create_preview":
+                    child_args = (item, principal)
+                else:
+                    child_args = (item, principal, authorizations[ordinal])
+                commands.append(
+                    AuditMutation(
+                        kind=child_kind,
+                        mutation_id=f"audit-part:{secrets.token_urlsafe(18)}",
+                        created_at_ms=int(time.time() * 1000),
+                        payload=self._continuity_payload(child_kind, child_args, {}),
+                    ).command()
+                )
+            return {"commands": commands}
+        if kind == "accept_execution_batch":
+            refs, principal = cast(tuple[str, ...], args[0]), cast(MutationPrincipal, args[1])
+            if not 1 <= len(refs) <= 40 or len(set(refs)) != len(refs):
+                raise ValueError("execution batch must contain between 1 and 40 distinct authorizations")
+            return {
+                "authorization_refs": list(refs),
+                "principal": _principal_payload(principal),
+                "now_ms": int(time.time() * 1000),
+            }
+        if kind == "stop_machine_batch":
+            reason = str(args[1])
+            if reason not in {"cancelled", "deadline", "refused", "indeterminate"}:
+                raise ValueError("unknown machine stop reason")
+            return {
+                "binding": cast(MachineRequestBinding, args[0]).to_dict(),
+                "reason": reason,
+                "now_ms": int(time.time() * 1000),
+            }
         if kind == "ensure_archive_authority":
             archive_instance_id = cast(str | None, values.get("archive_instance_id"))
             return {
@@ -766,6 +966,18 @@ class AuditRepository:
         self._coordinated_connection = conn
         self._coordinated_mutation = mutation
         try:
+            if mutation.kind in {"create_preview_batch", "issue_authorization_batch", "cancel_preview_batch"}:
+                return self._apply_authority_batch()
+            if mutation.kind == "accept_execution_batch":
+                return cast(Any, self.accept_execution_batch).__wrapped__(
+                    self,
+                    tuple(cast(list[str], payload["authorization_refs"])),
+                    _principal_from_payload(payload["principal"]),
+                )
+            if mutation.kind == "stop_machine_batch":
+                return cast(Any, self.stop_machine_batch).__wrapped__(
+                    self, MachineRequestBinding(**cast(dict[str, str], payload["binding"])), str(payload["reason"])
+                )
             if mutation.kind == "ensure_archive_authority":
                 return cast(Any, self.ensure_archive_authority).__wrapped__(
                     self,
@@ -855,6 +1067,102 @@ class AuditRepository:
 
         if self._coordinated_connection is None:
             conn.execute("BEGIN IMMEDIATE")
+
+    def _apply_authority_batch(self) -> list[str]:
+        outer, conn = self._coordinated_mutation, self._coordinated_connection
+        if outer is None or conn is None:
+            raise RuntimeError("authority batches require source-WAL continuity")
+        results: list[str] = []
+        try:
+            for command in cast(list[dict[str, object]], outer.payload["commands"]):
+                result = self._replay_domain_mutation(conn, AuditMutation.from_command(command))
+                if outer.kind == "cancel_preview_batch":
+                    result = cast(dict[str, object], cast(dict[str, object], command["payload"])["preview"])[
+                        "preview_ref"
+                    ]
+                if not isinstance(result, str):
+                    raise TokenExpiredError("authority batch includes an expired preview")
+                results.append(result)
+            return results
+        finally:
+            self._coordinated_mutation, self._coordinated_connection = outer, conn
+
+    @_continuity_mutation("create_preview_batch")
+    def create_preview_batch(self, plans: tuple[MutationPlan, ...], principal: MutationPrincipal) -> list[str]:
+        """Publish a bounded ordered preview set in one continuity transition."""
+        return self._apply_authority_batch()
+
+    @_continuity_mutation("issue_authorization_batch")
+    def issue_authorization_batch(
+        self,
+        previews: tuple[MutationPreview, ...],
+        principal: MutationPrincipal,
+        authorizations: tuple[MutationAuthorization, ...],
+    ) -> list[str]:
+        """Publish exact one-shot references without retaining bearer tokens."""
+        return self._apply_authority_batch()
+
+    @_continuity_mutation("accept_execution_batch")
+    def accept_execution_batch(self, refs: tuple[str, ...], principal: MutationPrincipal) -> list[str]:
+        """Reserve ordered authority; a domain run is created only before its effect."""
+        now_ms = int(cast(int, self._command_value("now_ms", int(time.time() * 1000))))
+        with self._connection() as conn:
+            for ref in refs:
+                row = conn.execute(
+                    """SELECT a.actor_ref, a.surface, a.state, a.expires_at_ms, p.state
+                    FROM operation_authorizations a JOIN operation_previews p ON p.preview_id = a.preview_id
+                    WHERE a.authorization_id = ?""",
+                    (ref,),
+                ).fetchone()
+                if row is None or row[0] != principal.actor_ref or row[1] != principal.surface:
+                    raise AuthorizationMismatchError("execution authority belongs to another principal")
+                if row[2] != "active" or row[4] != "prepared":
+                    raise TokenConsumedError("execution authority is no longer active")
+                if int(row[3]) <= now_ms:
+                    raise TokenExpiredError("execution authority is expired")
+                capabilities = {
+                    str(r[0])
+                    for r in conn.execute(
+                        "SELECT capability FROM operation_authorization_capabilities WHERE authorization_id = ?", (ref,)
+                    )
+                }
+                if not capabilities.issubset(principal.capabilities):
+                    raise AuthorizationMismatchError("execution principal lacks reserved capabilities")
+                if conn.execute("SELECT 1 FROM machine_request_parts WHERE authorization_ref = ?", (ref,)).fetchone():
+                    raise TokenConsumedError("execution authority is already reserved")
+        return list(refs)
+
+    @_continuity_mutation("cancel_preview_batch")
+    def cancel_preview_batch(self, previews: tuple[MutationPreview, ...], principal: MutationPrincipal) -> list[str]:
+        """Cancel an exact ordered preview set without consuming its authority."""
+        return self._apply_authority_batch()
+
+    @_continuity_mutation("stop_machine_batch")
+    def stop_machine_batch(self, binding: MachineRequestBinding, reason: str) -> None:
+        """Fence unstarted parts without hiding or revoking an attempted effect."""
+        if self.machine_request(binding) is None:
+            raise ValueError("machine request is unknown")
+        with self._connection() as conn:
+            self._begin(conn)
+            conn.execute(
+                """UPDATE machine_requests SET stop_reason = COALESCE(stop_reason, ?),
+                    stopped_at_ms = COALESCE(stopped_at_ms, ?)
+                WHERE archive_identity = ? AND request_id = ?""",
+                (
+                    reason,
+                    self._command_value("now_ms", int(time.time() * 1000)),
+                    binding.archive_identity,
+                    binding.request_id,
+                ),
+            )
+            conn.execute(
+                """UPDATE operation_authorizations SET state = 'revoked'
+                WHERE state = 'active' AND authorization_id IN (
+                    SELECT authorization_ref FROM machine_request_parts
+                    WHERE archive_identity = ? AND request_id = ? AND operation_id IS NULL
+                )""",
+                (binding.archive_identity, binding.request_id),
+            )
 
     @_continuity_mutation("ensure_archive_authority")
     def ensure_archive_authority(self, *, now_ms: int, archive_instance_id: str | None = None) -> str:
@@ -1213,6 +1521,26 @@ class AuditRepository:
             ).fetchone()
             if row is None or str(row[1]) != preview.preview_ref:
                 raise AuthorizationMismatchError("authorization token does not match preview")
+            reservation = conn.execute(
+                """SELECT p.archive_identity, p.request_id, p.ordinal, p.operation_id, r.stop_reason
+                FROM machine_request_parts p JOIN machine_requests r
+                    ON r.archive_identity = p.archive_identity AND r.request_id = p.request_id
+                WHERE p.authorization_ref = ?""",
+                (str(row[0]),),
+            ).fetchone()
+            command = {} if self._coordinated_mutation is None else self._coordinated_mutation.payload
+            if reservation is None and "machine_part" in command:
+                raise TokenConsumedError("authorization is not reserved to this machine part")
+            if reservation is not None:
+                bound = command.get("machine_request")
+                if (
+                    not isinstance(bound, dict)
+                    or (bound.get("archive_identity"), bound.get("request_id"), command.get("machine_part"))
+                    != (reservation[0], reservation[1], reservation[2])
+                    or reservation[3] is not None
+                    or reservation[4] is not None
+                ):
+                    raise TokenConsumedError("authorization is reserved to an accepted machine request")
             if str(row[6]) != "active":
                 raise TokenConsumedError("authorization token is already consumed or revoked")
             if int(row[7]) <= now_ms:

@@ -142,11 +142,20 @@ _TABLE_EVIDENCE: dict[str, tuple[str, str, str, str, str, str, str]] = {
     "machine_requests": (
         "operations/audit.py machine-request binding writer",
         "operations/audit.py machine-request lookup and recovery readers",
-        "archive/principal/request/fingerprint acceptance authority",
+        "archive/principal/request/fingerprint/deadline acceptance authority",
         "irreplaceable; append-only acceptance evidence, backup required",
-        "machine request identity bound to its durable domain artifact reference",
+        "machine request identity, deadline, and stop state bound to its durable domain artifact reference",
         "machine_requests row count",
         "duplicate-request recovery and conflicting-identity refusal",
+    ),
+    "machine_request_parts": (
+        "operations/audit.py batch machine-request binding writer",
+        "operations/audit.py machine-part lookup and recovery readers",
+        "ordered request-part artifact and one-shot authorization authority",
+        "irreplaceable; append-only request-part evidence, backup required",
+        "ordinal part identity binds preview, execution authorization, and operation references",
+        "machine_request_parts row count",
+        "batch replay ordering and permanent authorization-reference uniqueness",
     ),
     "audit_continuity_head": (
         "storage/sqlite/audit_continuity.py",

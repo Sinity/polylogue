@@ -56,6 +56,10 @@ class AuditContinuityError(RuntimeError):
     """Audit and source durable control state cannot prove one continuity head."""
 
 
+class AuditContinuityPendingError(AuditContinuityError):
+    """A reader cannot acknowledge an in-flight or unreconciled transition."""
+
+
 @dataclass(frozen=True, slots=True)
 class AuditMutation:
     """One typed audit command with generated identity and replay inputs."""
@@ -213,6 +217,23 @@ class AuditContinuityCoordinator:
 
         with self._execution_lock:
             self._reconcile_serialized(apply)
+
+    @contextmanager
+    def settled_read(self) -> Iterator[None]:
+        """Observe audit receipts only after the source control head agrees.
+
+        This never repairs state or waits behind a writer. The resident owner
+        notifies waiters after promotion, allowing bounded control requests.
+        """
+        if not self._execution_lock.acquire(blocking=False):
+            raise AuditContinuityPendingError("audit continuity transition is in flight")
+        try:
+            if not self.is_available() or self._pending() is not None:
+                raise AuditContinuityPendingError("audit continuity requires owner reconciliation")
+            self._assert_committed_head_matches_audit()
+            yield
+        finally:
+            self._execution_lock.release()
 
     def _reconcile_serialized(self, apply: Callable[[sqlite3.Connection, AuditMutation], object]) -> None:
         """Recover continuity without racing an in-flight writer."""

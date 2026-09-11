@@ -276,6 +276,105 @@ def test_machine_request_and_domain_run_replay_atomically(
         assert "synthetic-private-token" not in "\n".join(conn.iterdump())
 
 
+@pytest.mark.parametrize("crash_phase", ["after_source_prepare", "after_audit_commit", None])
+def test_machine_batch_reserves_unstarted_suffix_and_never_replays_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_phase: str | None,
+) -> None:
+    """Eagerly creating suffix runs or omitting legacy-token reservation checks makes this red."""
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit)
+    previews = tuple(
+        executor.prepare_bound(
+            _binding(actuator),
+            object(),
+            _principal(),
+            archive_instance_id="archive:fixture",
+            archive_identity_digest="identity:fixture",
+            parameter_digest=f"params:{i}",
+        )
+        for i in range(2)
+    )
+    authorizations = tuple(executor.authorize_bound(_binding(actuator), preview, _principal()) for preview in previews)
+    refs = tuple(str(auth.authorization_id) for auth in authorizations)
+    binding = MachineRequestBinding("identity:fixture", "request:batch", "actor:test", "c" * 64, "mutation.fixture")
+    original_phase = AuditContinuityCoordinator._phase
+
+    def crash(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "accept_execution_batch" and phase == crash_phase:
+            raise RuntimeError("synthetic batch crash")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", crash)
+    with audit.bind_machine_request(binding, transition="accept_execution_batch", deadline_unix_ms=9999999999999):
+        if crash_phase:
+            with pytest.raises(RuntimeError, match="synthetic batch crash"):
+                audit.accept_execution_batch(refs, _principal())
+        else:
+            audit.accept_execution_batch(refs, _principal())
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+    audit.reconcile_continuity()
+    parts = audit.machine_parts(binding)
+    assert [part["authorization_ref"] for part in parts] == list(refs)
+    assert all(part["operation_id"] is None for part in parts)
+    assert actuator.calls == 0
+    with pytest.raises(TokenConsumedError, match="reserved"):
+        audit.consume_authorization_and_start(previews[1], authorizations[1])
+    with audit.bind_machine_request(binding, transition="consume_authorization_and_start", part=0):
+        receipt = executor.execute_bound(_binding(actuator), previews[0], authorizations[0], object())
+    assert receipt.affected_count == 1 and actuator.calls == 1
+    parts = audit.machine_parts(binding)
+    assert parts[0]["operation_id"] is not None and parts[1]["operation_id"] is None
+    audit.stop_machine_batch(binding, "cancelled")
+    with audit.bind_machine_request(binding, transition="consume_authorization_and_start", part=1):
+        with pytest.raises(TokenConsumedError, match="reserved"):
+            audit.consume_authorization_and_start(previews[1], authorizations[1])
+    recovered = AuditRepository.for_archive_root(tmp_path)
+    recovered.reconcile_continuity()
+    assert recovered.machine_request(binding)["stop_reason"] == "cancelled"
+    assert recovered.machine_request(binding)["accepted_deadline_unix_ms"] == 9999999999999
+    assert recovered.machine_parts(binding) == parts
+    assert recovered.get_operation(str(parts[0]["operation_id"]))["status"] == "completed"
+    with recovered.bind_machine_request(binding, transition="accept_execution_batch"):
+        with pytest.raises(MachineRequestRecoveredError):
+            recovered.accept_execution_batch(refs, _principal())
+    assert actuator.calls == 1
+
+
+def test_compound_preview_and_authorization_recovery_retains_exact_refs(tmp_path: Path) -> None:
+    """Losing any part reference or reserving at authorization creation breaks the next acceptance."""
+    audit = _audit(tmp_path)
+    executor = OperationExecutor()
+    actuator = _Actuator()
+    previews = tuple(
+        executor.prepare_bound(
+            _binding(actuator),
+            object(),
+            _principal(),
+            archive_instance_id="archive:fixture",
+            archive_identity_digest="identity:fixture",
+            parameter_digest=f"params:{i}",
+        )
+        for i in range(2)
+    )
+    binding = MachineRequestBinding("identity:fixture", "request:previews", "actor:test", "d" * 64, "mutation.preview")
+    with audit.bind_machine_request(binding, transition="create_preview_batch"):
+        refs = audit.create_preview_batch(tuple(preview.plan for preview in previews), _principal())
+    assert [part["artifact_ref"] for part in audit.machine_parts(binding)] == refs
+    previews = tuple(replace(preview, preview_ref=ref) for preview, ref in zip(previews, refs, strict=True))
+    authorizations = tuple(executor.authorize_bound(_binding(actuator), preview, _principal()) for preview in previews)
+    auth_binding = replace(binding, request_id="request:authorizations", operation_name="mutation.authorize")
+    with audit.bind_machine_request(auth_binding, transition="issue_authorization_batch"):
+        auth_refs = audit.issue_authorization_batch(previews, _principal(), authorizations)
+    assert [part["artifact_ref"] for part in audit.machine_parts(auth_binding)] == auth_refs
+    execute_binding = replace(binding, request_id="request:execute", operation_name="mutation.execute")
+    with audit.bind_machine_request(execute_binding, transition="accept_execution_batch"):
+        audit.accept_execution_batch(tuple(auth_refs), _principal())
+    assert [part["authorization_ref"] for part in audit.machine_parts(execute_binding)] == auth_refs
+
+
 def test_authenticated_authorization_reference_survives_restart_and_is_one_shot(tmp_path: Path) -> None:
     """Dropping principal/capability checks or consuming a second time must fail."""
 

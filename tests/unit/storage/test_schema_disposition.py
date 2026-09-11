@@ -27,7 +27,7 @@ def test_archive_tier_schema_assembly_publishes_complete_disposition() -> None:
 def test_audit_disposition_covers_canonical_ddl_exactly_once() -> None:
     rows = audit_column_dispositions()
     assert_complete_audit_disposition(rows)
-    assert len(rows) == len(canonical_audit_columns()) == 142
+    assert len(rows) == len(canonical_audit_columns()) == 153
     assert len({row.ref for row in rows}) == len(rows)
     assert {row.disposition for row in rows} == {"KEEP"}
     for row in rows:

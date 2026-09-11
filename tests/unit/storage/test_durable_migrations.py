@@ -352,6 +352,8 @@ def _create_audit_v2(path: Path) -> None:
         # Start from the canonical DDL so this fixture remains representative
         # of the current authority journal, then remove only the v3 rider.
         conn.executescript(AUDIT_DDL)
+        conn.execute("DROP INDEX IF EXISTS idx_machine_request_parts_authorization")
+        conn.execute("DROP TABLE IF EXISTS machine_request_parts")
         conn.execute("DROP INDEX IF EXISTS idx_machine_requests_artifact")
         conn.execute("DROP TABLE IF EXISTS machine_requests")
         conn.execute("PRAGMA user_version = 2")
@@ -399,6 +401,12 @@ def test_audit_tier_v2_migrates_to_current_with_verified_backup_and_fresh_ddl_pa
         assert conn.execute(
             "SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'idx_machine_requests_artifact'"
         ).fetchone() == ("idx_machine_requests_artifact",)
+        assert conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'machine_request_parts'"
+        ).fetchone() == ("machine_request_parts",)
+        assert conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'idx_machine_request_parts_authorization'"
+        ).fetchone() == ("idx_machine_request_parts_authorization",)
 
         fresh_db = tmp_path / "fresh-audit-v3.db"
         initialize_archive_database(fresh_db, ArchiveTier.AUDIT)
