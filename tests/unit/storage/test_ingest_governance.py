@@ -97,6 +97,8 @@ def test_prepared_census_reuses_projection_and_does_not_terminalize_parse(
         (raw_id,) = _write_raws(archive, 1)
     sessions = {raw_id: _session("one", "two")}
     with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
+        _provider, blob_hash, _path, _kind, _size = reader.raw_revision_descriptor(raw_id)
+        assert reader.blob_path_for_hash(blob_hash) == tmp_path / "blob" / blob_hash[:2] / blob_hash[2:]
         prepared = prepare_raw_census(
             reader,
             raw_id,
@@ -271,7 +273,7 @@ def test_read_only_compute_defers_attachment_publication_until_writer_revalidati
         assert not stale.published
         assert stale.reprepare_required
         assert not stale_staged_path.exists()
-        assert writer._conn.execute("SELECT COUNT(*) FROM attachments").fetchone() == (0,)
+        assert writer._conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
         assert writer._ensure_source_conn().execute(
             "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'"
         ).fetchone() == (0,)
@@ -292,7 +294,7 @@ def test_read_only_compute_defers_attachment_publication_until_writer_revalidati
         assert result.published
         assert result.session_id == "codex-session:prepared-membership"
         assert not fresh_staged_path.exists()
-        assert writer._conn.execute("SELECT COUNT(*) FROM attachments").fetchone() == (1,)
+        assert writer._conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 1
         assert writer._ensure_source_conn().execute(
             "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'"
         ).fetchone() == (1,)
@@ -388,4 +390,4 @@ def test_precomputed_attachment_is_preserved_without_compute_publication(tmp_pat
         assert prepared.prepared_attachment_blobs[0].prepared_blob is None
     with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
         assert publish_ingest_cohort(writer, prepared).published
-        assert writer._conn.execute("SELECT lower(hex(blob_hash)) FROM attachments").fetchone() == (hash_hex,)
+        assert writer._conn.execute("SELECT lower(hex(blob_hash)) FROM attachments").fetchone()[0] == hash_hex

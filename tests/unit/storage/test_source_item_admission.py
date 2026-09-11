@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Origin, Provider
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -19,6 +20,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     plan_raw_admission,
 )
 from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
+from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
 
 _PAYLOAD = b'{"synthetic":"source-item"}\n'
 _BLOB_HASH = hashlib.sha256(_PAYLOAD).digest()
@@ -111,4 +113,31 @@ def test_retired_raw_membership_cannot_be_readmitted(tmp_path: Path) -> None:
         _BLOB_HASH,
     )
     conn.rollback()
+    conn.close()
+
+
+def test_record_retry_preserves_a_later_canonical_revision_binding(tmp_path: Path) -> None:
+    """An exact admitted edge prevents replay of the original pending envelope."""
+    conn, _generation, item_id, plan = _archive(tmp_path)
+    with conn:
+        conn.execute("BEGIN")
+        execute_source_item_admission(conn, plan, _member(item_id))
+    bind_source_raw_revision(
+        conn,
+        plan.raw_id,
+        RawRevisionEnvelope(
+            logical_source_key="claude-code-session:parsed-session",
+            kind=RawRevisionKind.FULL,
+            source_revision="parsed-revision",
+            acquisition_generation=0,
+        ),
+    )
+    with conn:
+        conn.execute("BEGIN")
+        result = execute_source_item_admission(conn, plan, _member(item_id))
+    assert result.raw_id == plan.raw_id
+    assert conn.execute("SELECT logical_source_key, source_revision FROM raw_sessions").fetchone() == (
+        "claude-code-session:parsed-session",
+        "parsed-revision",
+    )
     conn.close()

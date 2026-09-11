@@ -248,6 +248,7 @@ class RawRevisionGovernanceHost(Protocol):
     """
 
     _conn: sqlite3.Connection
+    archive_root: Path
     _blob_publisher: ArchiveBlobPublisher | None
     _inactive_candidate_durable_read_only: bool
     _pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]]
@@ -1875,14 +1876,7 @@ def open_raw_revision_material(
 ) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
     """Open a retained revision for bounded streaming consumption."""
     provider, blob_hash, source_path, kind, _blob_size = raw_revision_descriptor(store, raw_id)
-    publisher = store._blob_publisher
-    if publisher is not None:
-        payload_store: Any = publisher
-    else:
-        archive_root = getattr(store, "archive_root", None)
-        if archive_root is None:
-            raise RuntimeError("read-only retained material requires an explicit archive root")
-        payload_store = BlobStore(Path(archive_root) / "blob")
+    payload_store = _retained_blob_store(store)
     with payload_store.open(blob_hash) as payload:
         yield provider, payload, source_path, kind
 
@@ -1895,15 +1889,12 @@ def raw_revision_material(
     Use ``open_raw_revision_material`` for potentially large blobs.
     """
     provider, blob_hash, source_path, kind, _blob_size = raw_revision_descriptor(store, raw_id)
-    publisher = store._blob_publisher
-    if publisher is not None:
-        payload_store: Any = publisher
-    else:
-        archive_root = getattr(store, "archive_root", None)
-        if archive_root is None:
-            raise RuntimeError("read-only retained material requires an explicit archive root")
-        payload_store = BlobStore(Path(archive_root) / "blob")
+    payload_store = _retained_blob_store(store)
     return provider, payload_store.read_all(blob_hash), source_path, kind
+
+
+def _retained_blob_store(store: RawRevisionGovernanceHost) -> BlobStore:
+    return store._blob_publisher or BlobStore(store.archive_root / "blob")
 
 
 def blob_path_for_hash(store: RawRevisionGovernanceHost, blob_hash: str) -> Path | None:
@@ -1915,8 +1906,7 @@ def blob_path_for_hash(store: RawRevisionGovernanceHost, blob_hash: str) -> Path
     disk so callers fall back to a bounded temp-file spill instead of
     trusting an unverified path.
     """
-    assert store._blob_publisher is not None
-    path = store._blob_publisher.blob_path(blob_hash)
+    path = _retained_blob_store(store).blob_path(blob_hash)
     return path if path.exists() else None
 
 
