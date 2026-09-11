@@ -13,15 +13,18 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import BlockType, Origin, Provider, Role
-from polylogue.core.types import MessageId, SessionId
+from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.hydrators import message_from_record
-from polylogue.storage.runtime import BlockRecord, MessageRecord
+from polylogue.storage import hydrators
+from polylogue.storage.hydrators import message_from_record, session_from_records, session_summary_from_record
+from polylogue.storage.runtime import BlockRecord, MessageRecord, SessionRecord
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import (
     BLOCKS_SPEC,
     MESSAGES_SPEC,
+    SESSION_WORKING_DIRS_SPEC,
     SESSIONS_SPEC,
     _raw_column,
 )
@@ -153,13 +156,14 @@ def test_an_added_column_reaches_write_read_and_domain_from_one_declaration() ->
     assert extended.domain_kwargs(_DomainSource(**kwargs))["review_state"] == "accepted"
 
 
-def test_declared_projection_names_every_record_field_for_messages_and_blocks() -> None:
-    """Message and block record models read only fields the declaration projects.
+def test_declared_projection_names_every_record_field_for_the_core_tables() -> None:
+    """Session, message and block record models read only projected fields.
 
     Red when a record field has no ``record_name`` anywhere in its table's
     declaration: reads would leave it at its default with nothing to notice.
     """
     for spec, model, derived in (
+        (SESSIONS_SPEC, SessionRecord, set()),
         (MESSAGES_SPEC, MessageRecord, {"blocks"}),
         (BLOCKS_SPEC, BlockRecord, set()),
     ):
@@ -188,7 +192,45 @@ def test_the_declaration_owns_the_session_upsert_policy() -> None:
     rendered = SESSIONS_SPEC.conflict_update_sql()
     assert "title = COALESCE(excluded.title, sessions.title)" in rendered
     assert "pending_drafts_json = excluded.pending_drafts_json" in rendered
-    assert rendered.count("?") == 7
+
+    # The statement's bound values are named by the columns that read them, in
+    # placeholder order. Red when a conflict expression gains or loses a
+    # placeholder without declaring it: the write would bind the timestamp
+    # ratchet's parameters against the wrong conditions.
+    assert SESSIONS_SPEC.conflict_update_param_names == (
+        "producer_created",
+        "force_replace",
+        "producer_updated",
+        "producer_created",
+        "producer_created",
+        "producer_updated",
+        "producer_updated_or_merge_append",
+    )
+    assert len(SESSIONS_SPEC.conflict_update_param_names) == rendered.count("?")
+
+
+def test_every_declared_conflict_policy_names_its_bound_values() -> None:
+    """No table renders an upsert parameter it does not declare a name for.
+
+    Red when a spec adds a placeholder to a conflict expression without saying
+    which value fills it: the caller would have to re-derive the order by hand,
+    which is the restatement the declaration replaced.
+    """
+    for name, spec in archive_tiers_specs.TABLE_SPECS.items():
+        # Raises when a column's placeholder count and declared names disagree.
+        assert len(spec.conflict_update_param_names) == spec.conflict_update_sql().count("?"), name
+
+    # The check is not vacuous: a policy that gains a placeholder without
+    # naming its value is rejected rather than silently mis-bound.
+    undeclared = replace(
+        SESSIONS_SPEC,
+        all_columns=tuple(
+            replace(column, conflict_params=()) if column.name == "created_at_ms" else column
+            for column in SESSIONS_SPEC.all_columns
+        ),
+    )
+    with pytest.raises(ValueError, match="sessions.created_at_ms"):
+        _ = undeclared.conflict_update_param_names
 
 
 @pytest.mark.asyncio
@@ -461,3 +503,175 @@ def test_a_wrong_extractor_corrupts_the_production_write(tmp_path: Path) -> None
 
     assert honest["input_tokens"] == 11
     assert corrupt["input_tokens"] == 22
+
+
+def _session_row_values(spec: TableColumnSpec, **overrides: object) -> dict[str, object]:
+    """Every bound sessions column, defaulted, with the named overrides applied."""
+    values: dict[str, object] = dict.fromkeys((column.name for column in spec.insert_columns), None)
+    values.update({column.name: 0 for column in spec.insert_columns if column.name.endswith("_count")})
+    values.update(
+        {
+            "native_id": "spec-owned-session",
+            "origin": Origin.CLAUDE_CODE_SESSION.value,
+            "session_kind": "standard",
+            "content_hash": bytes(32),
+            "created_at_ms": 1_772_000_000_000,
+            "updated_at_ms": 1_772_000_100_000,
+        }
+    )
+    values.update(overrides)
+    return values
+
+
+def test_an_added_session_column_reaches_write_read_and_domain_from_one_declaration() -> None:
+    """A new sessions column needs the declaration, not a hydrator edit too.
+
+    Red if the DDL, the INSERT, the bound tuple, the record projection, the
+    record kwargs or the domain kwargs stops deriving from the sessions
+    declaration: the column would then need a coordinated edit in the mapper
+    and in both session hydrators before it appeared.
+    """
+    extended = _with_extra_column(
+        SESSIONS_SPEC,
+        _raw_column(
+            "review_state",
+            "review_state TEXT",
+            record_name="review_state",
+            domain_name="review_state",
+        ),
+    )
+    assert "review_state" in extended.insert_column_names
+
+    values = _session_row_values(extended, review_state="accepted", git_branch="feature/rows")
+    projection = extended.record_select_column_names("sessions")
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute(f"CREATE TABLE sessions (\n    {extended.ddl_body}\n)")
+        connection.execute(f"CREATE TABLE session_working_dirs (\n    {SESSION_WORKING_DIRS_SPEC.ddl_body}\n)")
+        connection.execute(
+            f"INSERT INTO sessions ({extended.insert_column_names}) VALUES ({extended.insert_placeholder_string})",
+            extended.extract_tuple(values),
+        )
+        connection.execute(
+            "INSERT INTO session_working_dirs (session_id, position, path) "
+            "VALUES ('claude-code-session:spec-owned-session', 0, '/realm/project/polylogue')"
+        )
+        row = connection.execute(f"SELECT {projection} FROM sessions").fetchone()
+    finally:
+        connection.close()
+
+    kwargs = extended.row_to_record_kwargs(row)
+    assert kwargs["review_state"] == "accepted"
+    assert kwargs["git_branch"] == "feature/rows"
+    # The declared JSON decoding runs on the way to the record, so the record
+    # model's validators receive structure rather than stored text.
+    assert kwargs["metadata"] == {}
+
+    domain = extended.domain_kwargs(_DomainSource(**kwargs))
+    assert domain["review_state"] == "accepted"
+    assert domain["git_branch"] == "feature/rows"
+    # The declared domain transforms run too: the correlated working-directory
+    # projection becomes the domain tuple, and the stored text becomes a datetime.
+    assert domain["working_directories"] == ("/realm/project/polylogue",)
+    assert domain["created_at"] is not None
+
+
+def test_one_session_declaration_feeds_both_domain_models() -> None:
+    """Session and SessionSummary are projected from one declaration.
+
+    The summary carries a subset of the row (no reported cost); the subset is
+    read off the model's own fields. Red when either hydrator restates the
+    mapping, because the shared fields would stop agreeing.
+    """
+    record = SessionRecord(
+        session_id=SessionId("claude-code-session:two-models"),
+        native_id="two-models",
+        origin=Origin.CLAUDE_CODE_SESSION,
+        content_hash=ContentHash("deadbeef"),
+        title="Two models",
+        display_name="two models",
+        git_branch="main",
+        provider_project_ref="proj",
+        reported_cost_usd=1.25,
+        working_directories_json='["/realm/project/polylogue"]',
+    )
+
+    summary = session_summary_from_record(record, tags=("a",), message_count=3)
+    session = session_from_records(record, [], [])
+
+    for model in (summary, session):
+        assert str(model.id) == "claude-code-session:two-models"
+        assert model.title == "Two models"
+        assert model.display_name == "two models"
+        assert model.git_branch == "main"
+        assert model.provider_project_ref == "proj"
+        assert model.working_directories == ("/realm/project/polylogue",)
+        assert model.metadata == {}
+
+    assert session.reported_cost_usd == 1.25
+    assert "reported_cost_usd" not in SessionSummary.model_fields
+    assert summary.message_count == 3
+    assert summary.tags_m2m == ("a",)
+
+
+def test_a_dropped_session_domain_name_starves_both_hydrated_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Removing one column's domain projection is observable on both hydrators.
+
+    The controlled mutation drops ``git_branch``'s ``domain_name``. Red would
+    mean a hydrator re-derives the field from the record itself -- the
+    per-family mapping this bead deletes.
+    """
+    record = SessionRecord(
+        session_id=SessionId("claude-code-session:domain-mutation"),
+        native_id="domain-mutation",
+        origin=Origin.CLAUDE_CODE_SESSION,
+        content_hash=ContentHash("deadbeef"),
+        git_branch="main",
+    )
+    assert session_summary_from_record(record).git_branch == "main"
+    assert session_from_records(record, [], []).git_branch == "main"
+
+    mutated = replace(
+        SESSIONS_SPEC,
+        all_columns=tuple(
+            replace(column, domain_name=None) if column.name == "git_branch" else column
+            for column in SESSIONS_SPEC.all_columns
+        ),
+    )
+    monkeypatch.setattr(hydrators, "SESSIONS_SPEC", mutated)
+
+    assert session_summary_from_record(record).git_branch is None
+    assert session_from_records(record, [], []).git_branch is None
+
+
+@pytest.mark.asyncio
+async def test_session_declaration_owns_the_async_route_to_the_domain_model(tmp_path: Path) -> None:
+    """The production async read reaches the domain through the declaration.
+
+    Red when the projection, the record mapping or the domain mapping stops
+    coming from the sessions declaration: the hydrated session would lose a
+    field the row carries.
+    """
+    db_path = tmp_path / "index.db"
+    backend = SQLiteBackend(db_path=db_path)
+    try:
+        session_id = await ingest_session(_parsed_session("async-domain-route"), backend)
+        async with backend.connection() as conn:
+            record = await sessions_reads.get_session(conn, session_id)
+    finally:
+        await backend.close()
+
+    assert record is not None
+    summary = session_summary_from_record(record)
+    session = session_from_records(record, [], [])
+
+    assert str(summary.id) == session_id
+    assert summary.title == "Row plumbing"
+    assert summary.git_branch == "feature/rows"
+    assert summary.origin is Origin.CLAUDE_CODE_SESSION
+    assert summary.created_at is not None
+    assert session.git_branch == "feature/rows"
+    assert session.created_at == summary.created_at
+    assert session.updated_at == summary.updated_at

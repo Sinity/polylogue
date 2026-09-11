@@ -30,7 +30,7 @@ from polylogue.storage.runtime import (
     SessionEventRecord,
     SessionRecord,
 )
-from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC, SESSIONS_SPEC
 
 
 def _parse_json_blob(raw: object) -> object | None:
@@ -49,16 +49,6 @@ def _parse_json_blob(raw: object) -> object | None:
         return loads(raw)
     except (json.JSONDecodeError, ValueError):
         return raw
-
-
-def _working_directories_from_record(record: SessionRecord) -> tuple[str, ...]:
-    raw = record.working_directories_json
-    if not raw:
-        return ()
-    parsed = _parse_json_blob(raw)
-    if not isinstance(parsed, list):
-        return ()
-    return tuple(item for item in parsed if isinstance(item, str) and item)
 
 
 def attachment_from_record(record: AttachmentRecord) -> Attachment:
@@ -148,22 +138,15 @@ def session_summary_from_record(
     tags: tuple[str, ...] = (),
     message_count: int | None = None,
 ) -> SessionSummary:
-    """Hydrate a SessionSummary domain model from a SessionRecord."""
+    """Hydrate a SessionSummary domain model from a SessionRecord.
+
+    The row-derived fields come from the sessions declaration, restricted to
+    the names this model declares -- a summary deliberately carries a subset
+    of the row (no reported cost), and that subset is read off the model
+    rather than restated here.
+    """
     return SessionSummary(
-        id=record.session_id,
-        origin=record.origin,
-        title=record.title,
-        session_kind=record.session_kind,
-        created_at=parse_timestamp(record.created_at),
-        updated_at=parse_timestamp(record.updated_at),
-        metadata=record.metadata or {},
-        working_directories=_working_directories_from_record(record),
-        git_branch=record.git_branch,
-        git_repository_url=record.git_repository_url,
-        provider_project_ref=record.provider_project_ref,
-        display_name=record.display_name,
-        parent_id=record.parent_session_id,
-        branch_type=record.branch_type,
+        **SESSIONS_SPEC.domain_kwargs(record, accepted=SessionSummary.model_fields),
         message_count=message_count,
         tags_m2m=tags,
     )
@@ -206,24 +189,10 @@ def session_from_records(
     ]
 
     return Session(
-        id=session.session_id,
-        origin=conv_origin,
-        title=session.title,
-        session_kind=session.session_kind,
+        **SESSIONS_SPEC.domain_kwargs(session, accepted=Session.model_fields),
         messages=MessageCollection(messages=rich_messages),
-        created_at=parse_timestamp(session.created_at),
-        updated_at=parse_timestamp(session.updated_at),
-        metadata=session.metadata or {},
-        working_directories=_working_directories_from_record(session),
-        git_branch=session.git_branch,
-        git_repository_url=session.git_repository_url,
-        provider_project_ref=session.provider_project_ref,
-        display_name=session.display_name,
         session_events=tuple(session_event_from_record(event) for event in (session_events or [])),
-        parent_id=session.parent_session_id,
-        branch_type=session.branch_type,
         tags_m2m=tags,
-        reported_cost_usd=session.reported_cost_usd,
     )
 
 

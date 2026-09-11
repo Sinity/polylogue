@@ -10,7 +10,7 @@ domain fields stay with the typed models.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Container, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +25,8 @@ class ColumnSpec:
     extract_placeholder: SQL expression for INSERT VALUES (?, json_extract(...), NULL, etc)
     conflict_update: right-hand side this column contributes to an upsert's
         DO UPDATE SET, or None when a conflict must keep the stored value
+    conflict_params: names of the bound values ``conflict_update``'s
+        placeholders consume, in placeholder order
     """
 
     name: str
@@ -38,6 +40,7 @@ class ColumnSpec:
     domain_name: str | None = None
     domain_transform: Callable[[Any], Any] | None = None
     conflict_update: str | None = None
+    conflict_params: tuple[str, ...] = ()
 
     @property
     def ddl_definition(self) -> str:
@@ -124,6 +127,30 @@ class TableColumnSpec:
         separator = ",\n" + indent
         return separator.join(f"{col.name} = {col.conflict_update}" for col in self.conflict_update_columns)
 
+    @property
+    def conflict_update_param_names(self) -> tuple[str, ...]:
+        """Bound-value names the rendered ``DO UPDATE SET`` consumes, in order.
+
+        Each column declares the values its own conflict expression reads, so
+        the caller supplies them by name; the statement's parameter order is
+        the declaration's, never a separately maintained tuple.
+        """
+        names: list[str] = []
+        for col in self.conflict_update_columns:
+            assert col.conflict_update is not None
+            placeholders = col.conflict_update.count("?")
+            if len(col.conflict_params) != placeholders:
+                raise ValueError(
+                    f"{self.table_name}.{col.name} conflict policy takes {placeholders} bound value(s) "
+                    f"but declares {len(col.conflict_params)}"
+                )
+            names.extend(col.conflict_params)
+        return tuple(names)
+
+    def conflict_update_tuple(self, values: Mapping[str, Any]) -> tuple[Any, ...]:
+        """Bind the upsert's conflict parameters from a name→value mapping."""
+        return tuple(values[name] for name in self.conflict_update_param_names)
+
     def extract_tuple(self, source_obj: Any) -> tuple[Any, ...]:
         """Extract a tuple of values from a source object in insert-column order.
 
@@ -153,11 +180,20 @@ class TableColumnSpec:
             result[col.record_name] = value
         return result
 
-    def domain_kwargs(self, record: Any) -> dict[str, Any]:
-        """Project a runtime record into domain-model constructor kwargs."""
+    def domain_kwargs(self, record: Any, *, accepted: Container[str] | None = None) -> dict[str, Any]:
+        """Project a runtime record into domain-model constructor kwargs.
+
+        ``accepted`` restricts the projection to the domain names a target
+        model declares (pass its ``model_fields``); one storage declaration
+        then feeds several domain models that carry different subsets of the
+        same row without any of them restating the mapping. Omitting it
+        projects every declared domain field.
+        """
         result: dict[str, Any] = {}
         for col in self.record_columns:
             if col.domain_name is None or col.record_name is None:
+                continue
+            if accepted is not None and col.domain_name not in accepted:
                 continue
             value = getattr(record, col.record_name)
             if col.domain_transform is not None:

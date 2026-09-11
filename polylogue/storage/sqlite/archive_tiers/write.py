@@ -930,13 +930,14 @@ def write_parsed_session_to_archive(
                 """,
                 (
                     *sessions_spec.extract_tuple(session_row_values),
-                    producer_created,
-                    force_replace,
-                    producer_updated,
-                    producer_created,
-                    producer_created,
-                    producer_updated,
-                    producer_updated or merge_append,
+                    *sessions_spec.conflict_update_tuple(
+                        {
+                            "producer_created": producer_created,
+                            "producer_updated": producer_updated,
+                            "force_replace": force_replace,
+                            "producer_updated_or_merge_append": producer_updated or merge_append,
+                        }
+                    ),
                 ),
             )
             add_timing("index.session_upsert", t0)
