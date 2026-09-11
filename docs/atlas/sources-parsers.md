@@ -55,4 +55,4 @@ fixture. Follow the parsed object into
 contract from a surface serializer. The provider guides under
 `docs/providers/` explain format-specific caveats.
 
-verified: 1527b9513167968e77c29512522645f82c69ad63 2026-09-11
+verified: 83ffd21c3 2026-09-11

@@ -69,4 +69,4 @@ cancellation coverage, then `devtools gate doc-commands` and the generated
 surface check. Use `devtools why` to inspect a managed verification refusal or
 failure before interpreting a receipt.
 
-verified: 1527b9513167968e77c29512522645f82c69ad63 2026-09-11
+verified: 83ffd21c3 2026-09-11
