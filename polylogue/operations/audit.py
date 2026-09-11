@@ -32,6 +32,7 @@ from polylogue.operations.mutation_transaction import (
     TokenExpiredError,
     validate_mutation_plan_integrity,
 )
+from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceManifest
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityPendingError as AuditContinuityPendingError
 from polylogue.storage.sqlite.audit_leaf import (
@@ -502,6 +503,7 @@ class AuditRepository:
             "issue_authorization_batch",
             "cancel_preview_batch",
             "accept_execution_batch",
+            "accept_ingest",
         }:
             raise ValueError("machine request must bind a declared audit authority transition")
         if self._machine_binding is not None:
@@ -603,6 +605,21 @@ class AuditRepository:
         if raw is None:
             return
         binding = MachineRequestBinding(**cast(dict[str, str], raw))
+        if mutation.kind == "accept_ingest":
+            manifest = FrozenSourceManifest.from_dict(mutation.payload["manifest"])
+            conn.execute(
+                """INSERT INTO machine_requests(
+                    archive_identity, request_id, principal_ref, fingerprint, operation_name,
+                    artifact_kind, artifact_ref, accepted_at_ms, accepted_deadline_unix_ms
+                ) VALUES (?, ?, ?, ?, ?, 'source-generation', ?, ?, ?)""",
+                (
+                    *binding.to_dict().values(),
+                    manifest.source_generation_id,
+                    mutation.created_at_ms,
+                    mutation.payload.get("accepted_deadline_unix_ms"),
+                ),
+            )
+            return
         if "machine_part" in mutation.payload:
             changed = conn.execute(
                 """UPDATE machine_request_parts SET operation_id = ?
@@ -798,6 +815,14 @@ class AuditRepository:
         """Encode exact typed replay inputs before source.db prepares a command."""
 
         values = dict(kwargs)
+        if kind == "accept_ingest":
+            manifest, principal = cast(FrozenSourceManifest, args[0]), cast(MutationPrincipal, args[1])
+            if self._machine_binding is None or self._machine_binding[1] != kind:
+                raise ValueError("ingest acceptance requires an authenticated machine binding")
+            binding = self._machine_binding[0]
+            if binding.principal_ref != principal.actor_ref or "archive.ingest" not in principal.capabilities:
+                raise AuthorizationMismatchError("ingest acceptance principal lacks bound authority")
+            return {"manifest": manifest.to_dict(), "principal": _principal_payload(principal)}
         if kind in {"create_preview_batch", "issue_authorization_batch", "cancel_preview_batch"}:
             items, principal = cast(tuple[object, ...], args[0]), cast(MutationPrincipal, args[1])
             if not 1 <= len(items) <= 40:
@@ -968,6 +993,10 @@ class AuditRepository:
         try:
             if mutation.kind in {"create_preview_batch", "issue_authorization_batch", "cancel_preview_batch"}:
                 return self._apply_authority_batch()
+            if mutation.kind == "accept_ingest":
+                # The source-WAL prepare has already accepted this denominator.
+                # Replaying the audit reference cannot reauthorize or acquire.
+                return FrozenSourceManifest.from_dict(payload["manifest"]).source_generation_id
             if mutation.kind == "accept_execution_batch":
                 return cast(Any, self.accept_execution_batch).__wrapped__(
                     self,
@@ -1101,6 +1130,11 @@ class AuditRepository:
     ) -> list[str]:
         """Publish exact one-shot references without retaining bearer tokens."""
         return self._apply_authority_batch()
+
+    @_continuity_mutation("accept_ingest")
+    def accept_ingest(self, manifest: FrozenSourceManifest, principal: MutationPrincipal) -> str:
+        """Bind retained physical inputs; source preparation owns acceptance."""
+        return manifest.source_generation_id
 
     @_continuity_mutation("accept_execution_batch")
     def accept_execution_batch(self, refs: tuple[str, ...], principal: MutationPrincipal) -> list[str]:

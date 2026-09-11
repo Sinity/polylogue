@@ -63,6 +63,8 @@ BLOB_OWNERS: tuple[BlobOwner, ...] = (
     BlobOwner("source", "raw_hook_events", blob_column="blob_hash"),
     # Linked materials retain their bytes independently of session parsing.
     BlobOwner("source", "material_observations", blob_column="blob_hash"),
+    # Frozen inputs remain live before any decoder has admitted a raw record.
+    BlobOwner("source", "source_items", blob_column="blob_hash"),
     BlobOwner("index", "attachments", blob_column="blob_hash"),
     BlobOwner("source", "raw_sessions", ref_type="raw_payload", referent_column="raw_id"),
     BlobOwner("source", "raw_sessions", ref_type="attachment", referent_column="raw_id"),
@@ -82,7 +84,7 @@ BLOB_OWNERS: tuple[BlobOwner, ...] = (
 
 # A source owner introduced by an additive migration must not make older
 # archives unreadable to backup/GC before that migration is applied.
-_OPTIONAL_OWNER_TABLES = frozenset({"material_observations"})
+_OPTIONAL_OWNER_TABLES = frozenset({"material_observations", "source_items"})
 
 
 def validated_blob_ref_liveness_joins() -> tuple[tuple[str, str, str], ...]:
@@ -412,10 +414,10 @@ def project_live_blob_hashes(
                 generation_filter = ""
                 params: tuple[object, ...] = ()
                 if source_generation_id is not None and owner.table == "raw_sessions":
-                    generation_filter = (
-                        " WHERE EXISTS (SELECT 1 FROM source_items si "
-                        "WHERE si.source_generation_id = ? AND si.raw_id = raw_sessions.raw_id)"
-                    )
+                    predicate, params = _generation_raw_predicate(source_conn, "raw_sessions", source_generation_id)
+                    generation_filter = " WHERE " + predicate
+                elif source_generation_id is not None and owner.table == "source_items":
+                    generation_filter = " WHERE source_generation_id = ?"
                     params = (source_generation_id,)
                 for row in conn.execute(
                     f"SELECT DISTINCT {owner.blob_column} FROM {owner.table}{generation_filter}", params
@@ -436,11 +438,9 @@ def project_live_blob_hashes(
                 generation_filter = ""
                 params = (owner.ref_type,)
                 if source_generation_id is not None and owner.table == "raw_sessions":
-                    generation_filter = (
-                        " AND EXISTS (SELECT 1 FROM source_items si "
-                        "WHERE si.source_generation_id = ? AND si.raw_id = owner.raw_id)"
-                    )
-                    params += (source_generation_id,)
+                    predicate, generation_params = _generation_raw_predicate(source_conn, "owner", source_generation_id)
+                    generation_filter = " AND " + predicate
+                    params += generation_params
                 for row in source_conn.execute(
                     f"""SELECT DISTINCT ref.blob_hash FROM blob_refs AS ref WHERE ref.ref_type = ? AND EXISTS (
                     SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id{generation_filter})""",
@@ -474,6 +474,19 @@ def project_live_blob_hashes(
     return BlobLivenessProjection(
         frozenset(hashes),
         owner_hashes=tuple((owner, frozenset(values)) for owner, values in sorted(owner_hashes.items())),
+    )
+
+
+def _generation_raw_predicate(conn: sqlite3.Connection, alias: str, generation: str) -> tuple[str, tuple[object, ...]]:
+    if not _table_exists(conn, "source_items"):
+        return "0", ()
+    legacy = f"EXISTS (SELECT 1 FROM source_items si WHERE si.source_generation_id = ? AND si.raw_id = {alias}.raw_id)"
+    if not _table_exists(conn, "source_item_raw_members"):
+        return legacy, (generation,)
+    return (
+        f"({legacy} OR EXISTS (SELECT 1 FROM source_item_raw_members sm "
+        f"WHERE sm.source_generation_id = ? AND sm.raw_id = {alias}.raw_id))",
+        (generation, generation),
     )
 
 

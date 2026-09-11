@@ -9,9 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
+from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput, FrozenSourceManifest
 from polylogue.storage.sqlite.audit_continuity import (
     AUDIT_CONTINUITY_GENESIS_HEAD_SHA256,
     AuditContinuityCoordinator,
@@ -47,6 +49,58 @@ def _apply(conn: sqlite3.Connection, mutation: AuditMutation) -> str:
         (f"archive:{mutation.mutation_id}", mutation.created_at_ms),
     )
     return mutation.mutation_id
+
+
+def test_ingest_prepare_retains_manifest_and_wal_when_audit_apply_fails(tmp_path: Path) -> None:
+    """Generic abort would orphan accepted input and erase its recoverable binding."""
+    initialize_active_archive_root(tmp_path)
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    blob_hash, _ = publisher.write_from_bytes(b"synthetic retained input")
+    publisher.flush()
+    receipt_id = publisher.receipt_id(blob_hash)
+    assert receipt_id is not None
+    manifest = FrozenSourceManifest(
+        "ingest-generation",
+        "d" * 64,
+        (FrozenSourceInput("input.json", "/synthetic/input.json", blob_hash, receipt_id),),
+    )
+    mutation = AuditMutation("accept_ingest", "ingest-request", 1, {"manifest": manifest.to_dict()})
+
+    def fail_apply(_conn: sqlite3.Connection, _mutation: AuditMutation) -> str:
+        raise sqlite3.OperationalError("injected audit failure")
+
+    coordinator = AuditContinuityCoordinator(tmp_path)
+    with pytest.raises(sqlite3.OperationalError, match="injected audit failure"):
+        coordinator.execute(mutation, fail_apply)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert (
+            source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone()[0] == "ingest-request"
+        )
+        assert source.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 1
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+    coordinator.reconcile(_apply)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone()[0] is None
+        assert source.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 1
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+
+
+def test_ingest_prepare_missing_receipt_rolls_back_manifest_and_wal(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    manifest = FrozenSourceManifest(
+        "ingest-generation",
+        "d" * 64,
+        (FrozenSourceInput("input.json", "/synthetic/input.json", "a" * 64, "missing"),),
+    )
+    with pytest.raises(ValueError, match="reservation is missing"):
+        AuditContinuityCoordinator(tmp_path).execute(
+            AuditMutation("accept_ingest", "ingest-request", 1, {"manifest": manifest.to_dict()}),
+            _apply,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone()[0] is None
+        assert source.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 0
 
 
 def test_same_inode_stale_audit_copy_is_rejected(tmp_path: Path) -> None:

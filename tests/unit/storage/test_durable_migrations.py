@@ -2471,6 +2471,85 @@ def test_historical_source_projection_matches_every_supported_train_target(
         assert parity.matches, parity
 
 
+def test_source_tier_v42_migration_043_preserves_members_and_matches_fresh_ddl(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    """v42 source rows survive the enumeration/member schema transition."""
+    db_path = workspace_env["archive_root"] / "source.db"
+    db_path.unlink(missing_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SOURCE_DDL)
+        reset_source_fixture_to_version(conn, SOURCE_SCHEMA_VERSION - 1)
+        conn.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION - 1}")
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('v42-raw', 'codex-session', '/v42.json', ?, 4, 1)
+            """,
+            (b"r" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO source_generations (
+                source_generation_id, manifest_digest, addressing_mode, item_count, created_at_ms
+            ) VALUES ('v42-generation', ?, 'fixture', 1, 1)
+            """,
+            ("0" * 64,),
+        )
+        conn.execute(
+            """
+            INSERT INTO source_items (
+                source_generation_id, source_item_id, logical_coordinate, addressing_mode,
+                origin, disposition, outcome_code, stage, raw_id, observed_at_ms, updated_at_ms
+            ) VALUES ('v42-generation', 'v42-item', 'fixture:0', 'fixture', 'codex-session',
+                      'admitted', 'success', 'fixture', 'v42-raw', 1, 1)
+            """
+        )
+        conn.commit()
+
+    manifest = _verified_backup_manifest(tmp_path / "source-v42-backup")
+    with sqlite3.connect(db_path) as migrated:
+        migrated.execute("PRAGMA foreign_keys = ON")
+        result = migrate_archive_tier(migrated, ArchiveTier.SOURCE, backup_manifest=manifest)
+        assert result.from_version == SOURCE_SCHEMA_VERSION - 1
+        assert result.applied_versions == (SOURCE_SCHEMA_VERSION,)
+        assert migrated.execute("SELECT raw_id FROM source_items").fetchone() == ("v42-raw",)
+        assert migrated.execute(
+            "SELECT enumeration_fingerprint, enumerated_record_count, enumeration_digest, enumerated_at_ms "
+            "FROM source_items"
+        ).fetchone() == (None, None, None, None)
+
+        migrated.executemany(
+            """
+            INSERT INTO source_item_raw_members (
+                source_generation_id, source_item_id, record_coordinate, raw_id, raw_blob_hash
+            ) VALUES ('v42-generation', 'v42-item', ?, 'v42-raw', ?)
+            """,
+            [("record:0", b"a" * 32), ("record:1", b"b" * 32)],
+        )
+        assert migrated.execute("SELECT COUNT(*) FROM source_item_raw_members WHERE raw_id = 'v42-raw'").fetchone() == (
+            2,
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            migrated.execute(
+                "INSERT INTO source_item_raw_members VALUES ('v42-generation', 'v42-item', 'record:0', 'v42-raw', ?)",
+                (b"c" * 32,),
+            )
+
+        with sqlite3.connect(":memory:") as fresh:
+            fresh.executescript(SOURCE_DDL)
+            fresh.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+            parity = migration_runner.prove_durable_fresh_ddl_parity(
+                ArchiveTier.SOURCE,
+                SOURCE_SCHEMA_VERSION,
+                migrated_connection=migrated,
+                fresh_connection=fresh,
+                evidence_ref="test:source-v43:enumeration-membership-parity",
+            )
+        assert parity.matches, parity
+
+
 def test_historical_source_projection_rejects_a_missing_replaced_index(
     workspace_env: dict[str, Path], tmp_path: Path
 ) -> None:

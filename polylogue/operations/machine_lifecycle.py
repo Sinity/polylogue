@@ -21,6 +21,10 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
     parts = audit.machine_parts(binding)
     kind = str(record["artifact_kind"])
     state: dict[str, object] = {"reference": record, "sequence": 1, "outcome": "completed"}
+    if kind == "source-generation":
+        # Acceptance binds retained input, not acquisition or parse completion.
+        # The source-domain receipt projection owns its eventual terminal state.
+        return {**state, "outcome": "accepted", "effect": "indeterminate"}
     if kind not in {"operation", "execution-batch"}:
         refs = [part["artifact_ref"] for part in parts] or [record["artifact_ref"]]
         state["artifact_refs"] = refs

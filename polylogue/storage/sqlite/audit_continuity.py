@@ -205,7 +205,8 @@ class AuditContinuityCoordinator:
             # handler runs. Clear this exact source WAL entry only when the
             # audit head still proves no commit happened, so validation rejects
             # cannot wedge every later audit mutation.
-            self._abort_prepared(prepared)
+            if mutation.kind != "accept_ingest":
+                self._abort_prepared(prepared)
             raise
         self._phase("after_audit_commit", mutation)
         self._promote(prepared)
@@ -505,6 +506,17 @@ class AuditContinuityCoordinator:
             prepared = prepared_audit_continuity_command(
                 mutation, prior_generation=int(row[0]), prior_head_sha256=str(row[1])
             )
+            if mutation.kind == "accept_ingest":
+                from polylogue.storage.sqlite.archive_tiers.source_items import (
+                    FrozenSourceManifest,
+                    prepare_frozen_source_manifest,
+                )
+
+                prepare_frozen_source_manifest(
+                    conn,
+                    FrozenSourceManifest.from_dict(mutation.payload.get("manifest")),
+                    prepared_at_ms=mutation.created_at_ms,
+                )
             payload_json = _canonical_json(prepared)
             conn.execute(
                 """
@@ -618,6 +630,11 @@ class AuditContinuityCoordinator:
         """Discard a rejected WAL command after proving its audit transaction rolled back."""
 
         mutation = AuditMutation.from_command(prepared["command"])
+        if mutation.kind == "accept_ingest":
+            # Source prepare already committed both retained input authority
+            # and this accepted identity. Erasing the WAL would lose the only
+            # recoverable audit binding while leaving that durable work behind.
+            return
         prior = (cast(int, prepared["prior_generation"]), str(prepared["prior_head_sha256"]))
         target = (cast(int, prepared["next_generation"]), str(prepared["next_head_sha256"]))
         with open_verified_audit_connection(self.audit_path) as audit:

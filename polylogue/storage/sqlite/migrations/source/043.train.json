@@ -1,0 +1,102 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": "backup-profile:source-tier",
+  "current_version": 42,
+  "declared_at_ms": 0,
+  "drop_constraints": [
+    {
+      "after_rider_ids": [],
+      "consent_ref": "polylogue-bp12n.3",
+      "copy_forward_proof_ref": "proof:source-v43:enumeration-membership",
+      "object_ref": "view:source_item_reconciliation"
+    }
+  ],
+  "failure": null,
+  "fresh_ddl_parity": null,
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "manifest_sha256": "adafaee45e8a2b784b275d92278b2c68c35502e3ce58bcbb904a3d0d1b91d2d9",
+  "migration": {
+    "owner_ref": "polylogue-bp12n.3",
+    "path": "043_source_item_enumeration.sql",
+    "requires_backup": true,
+    "slot": 43,
+    "sql_sha256": "b7c74c012a9bf6347223dbc5d23c804feb2e33ae09e6fe15114adb044161d2c1",
+    "target_version": 43,
+    "tier": "source"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "polylogue-bp12n.3",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:source-v43:enumeration-membership"
+      ],
+      "owner_ref": "polylogue-bp12n.3",
+      "rider_id": "rider:source-item-enumeration",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:source-v43:enumeration-membership",
+          "consumer_id": "source-generation-publish",
+          "production_ref": "polylogue.storage.sqlite.archive_tiers.source_items:publish_source_generation",
+          "roles": [
+            "write"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:source-v43:enumeration-membership",
+          "consumer_id": "source-generation-census",
+          "production_ref": "polylogue.storage.sqlite.archive_tiers.source_items:source_generation_census",
+          "roles": [
+            "read"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:source-v43:enumeration-membership",
+          "consumer_id": "source-item-raw-member",
+          "production_ref": "polylogue.storage.sqlite.archive_tiers.source_items:record_source_item_raw_member",
+          "roles": [
+            "read",
+            "write"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:source-v43:enumeration-membership",
+          "consumer_id": "source-item-enumeration-completion",
+          "production_ref": "polylogue.storage.sqlite.archive_tiers.source_items:complete_source_item_enumeration",
+          "roles": [
+            "read",
+            "write"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "column:source_items.enumeration_fingerprint",
+        "column:source_items.enumerated_record_count",
+        "column:source_items.enumeration_digest",
+        "column:source_items.enumerated_at_ms",
+        "table:source_item_raw_members",
+        "index:idx_source_item_raw_members_raw",
+        "view:source_item_reconciliation"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "slot": 43,
+  "source_continuity_evidence": null,
+  "state": "declared",
+  "target_version": 43,
+  "tier": "source",
+  "train_id": "train:source:v43"
+}

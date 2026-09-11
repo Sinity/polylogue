@@ -241,8 +241,13 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
             columns_above.extend(found)
 
     seen: set[str] = set()
+    # A later migration may replace a view introduced by an earlier
+    # migration.  Drop that current definition before removing columns it
+    # references, then restore the latest historical definition below the
+    # requested fixture version.
+    replaced_views = {name for kind, name in above if kind == "view" and name in below}
     for kind, name in above:
-        if kind == "view" and name not in below and name not in seen:
+        if kind == "view" and (name not in below or name in replaced_views) and name not in seen:
             seen.add(name)
             conn.execute(f"DROP VIEW IF EXISTS {name}")
     for kind, name in above:
@@ -265,7 +270,45 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
             continue
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column in existing:
-            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+            try:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+            except sqlite3.OperationalError:
+                # The SQLite build used by the managed harness cannot drop
+                # the trailing STRICT column from this commented table. Keep
+                # the historical fixture exact and retain any seeded rows.
+                if (table, column) != ("raw_container_coordinates", "addressing_mode"):
+                    raise
+                conn.executescript(
+                    """
+                    CREATE TABLE raw_container_coordinates__fixture (
+                        raw_id TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+                        coordinate_format TEXT NOT NULL CHECK(coordinate_format = 'zip-v2'),
+                        entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal >= 0),
+                        split_index INTEGER NOT NULL CHECK(split_index >= 0)
+                    ) STRICT;
+                    INSERT INTO raw_container_coordinates__fixture
+                        SELECT raw_id, coordinate_format, entry_ordinal, split_index
+                        FROM raw_container_coordinates;
+                    DROP TABLE raw_container_coordinates;
+                    ALTER TABLE raw_container_coordinates__fixture RENAME TO raw_container_coordinates;
+                    """
+                )
+    view_definition_pattern = re.compile(
+        r"CREATE VIEW (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*) AS\s+.*?;",
+        re.I | re.S,
+    )
+    for view_name in sorted(replaced_views):
+        historical_sql: str | None = None
+        for path in sorted(migrations.glob("*.sql")):
+            slot = int(path.name.split("_", 1)[0])
+            if slot > version:
+                continue
+            for match in view_definition_pattern.finditer(path.read_text(encoding="utf-8")):
+                if match.group(1) == view_name:
+                    historical_sql = match.group(0)
+        if historical_sql is None:
+            raise AssertionError(f"no historical definition found for replaced source view: {view_name}")
+        conn.executescript(historical_sql)
     _restore_retired_source_objects(conn, version)
 
 
