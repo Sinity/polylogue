@@ -373,11 +373,19 @@ def test_receipt_root_identity_is_authenticated(tmp_path: Path) -> None:
         store.load_receipt(receipt_path.stem)
 
 
-def _meta_row(conn: sqlite3.Connection, address: bytes, *, model: str, recipe: bytes) -> None:
+def _meta_row(
+    conn: sqlite3.Connection,
+    address: bytes,
+    *,
+    model: str,
+    recipe: bytes,
+    dimension: int = 1024,
+    output_contract: bytes = b"\x07" * 32,
+) -> None:
     conn.execute(
         "INSERT INTO message_embeddings_meta (vector_derivation_hash, model, dimension, embedded_at_ms, "
-        "recipe_hash, output_contract_hash) VALUES (?, ?, 1024, 0, ?, ?)",
-        (address, model, recipe, b"\x07" * 32),
+        "recipe_hash, output_contract_hash) VALUES (?, ?, ?, 0, ?, ?)",
+        (address, model, dimension, recipe, output_contract),
     )
 
 
@@ -407,6 +415,42 @@ def test_membership_accepts_mixed_recipe_labels_but_not_mixed_models(tmp_path: P
         _meta_row(conn, b"\x02" * 32, model="voyage-4-lite", recipe=b"\x0a" * 32)
     with pytest.raises(EmbeddingGenerationError, match="mixed vector contracts"):
         store.replace(mixed_models)
+
+
+@pytest.mark.parametrize("axis", ["model", "dimension", "output_contract"], ids=["model", "dimension", "output"])
+def test_membership_rejects_each_mixed_vector_contract_axis_independently(tmp_path: Path, axis: str) -> None:
+    """Only recipe labels may vary while one vector contract is admitted."""
+    store = EmbeddingGenerationStore(tmp_path)
+    candidate = tmp_path / f"mixed-{axis}.db"
+    initialize_archive_database(candidate, ArchiveTier.EMBEDDINGS)
+    first_model, first_dimension, first_output = "voyage-4", 1024, b"\x07" * 32
+    second_model, second_dimension, second_output = "voyage-4", 1024, b"\x07" * 32
+    if axis == "model":
+        second_model = "voyage-4-lite"
+    elif axis == "dimension":
+        second_dimension = 768
+    else:
+        second_output = b"\x08" * 32
+    with sqlite3.connect(candidate) as conn:
+        _meta_row(
+            conn,
+            b"\x01" * 32,
+            model=first_model,
+            recipe=b"\x0a" * 32,
+            dimension=first_dimension,
+            output_contract=first_output,
+        )
+        _meta_row(
+            conn,
+            b"\x02" * 32,
+            model=second_model,
+            recipe=b"\x0a" * 32,
+            dimension=second_dimension,
+            output_contract=second_output,
+        )
+
+    with pytest.raises(EmbeddingGenerationError, match="mixed vector contracts"):
+        store.replace(candidate)
 
 
 # ── Pointer replacement during lease-free computation (polylogue-c0l7n) ─────
