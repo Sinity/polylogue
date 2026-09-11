@@ -166,7 +166,7 @@
 
       withoutSphinxDocs =
         package:
-        package.overrideAttrs (old: {
+        package.overridePythonAttrs (old: {
           doCheck = false;
           doInstallCheck = false;
           nativeBuildInputs = builtins.filter (
@@ -189,16 +189,16 @@
       # tooling it does not execute.
       wraptNoDocs = withoutSphinxDocs pythonPackages.wrapt;
 
-      deprecatedNoDocs = (withoutSphinxDocs pythonPackages.deprecated).overrideAttrs (old: {
+      deprecatedNoDocs = (withoutSphinxDocs pythonPackages.deprecated).overridePythonAttrs (old: {
         propagatedBuildInputs = builtins.map (
           input: if (input.pname or (input.name or "")) == "wrapt" then wraptNoDocs else input
         ) old.propagatedBuildInputs;
       });
 
-      opentelemetryApiNoDocs = pythonPackages.opentelemetry-api.overrideAttrs (old: {
-        propagatedBuildInputs = builtins.map (
+      opentelemetryApiNoDocs = pythonPackages.opentelemetry-api.overridePythonAttrs (old: {
+        dependencies = builtins.map (
           input: if (input.pname or (input.name or "")) == "deprecated" then deprecatedNoDocs else input
-        ) old.propagatedBuildInputs;
+        ) old.dependencies;
       });
 
       mcp-sdk = mkPinnedPythonPackage {
