@@ -243,6 +243,17 @@ def codex_path() -> Path:
     return Path.home() / ".codex" / "sessions"
 
 
+def codex_memories_path() -> Path:
+    """Codex memory-document directory (polylogue-rovf5).
+
+    Sibling of ``codex_path()``, not nested under it: Codex keeps the
+    harness-authored Markdown it maintains between sessions in
+    ``~/.codex/memories/``. Declared as its own root so the Codex session
+    and state roots never have to admit ``.md`` globally.
+    """
+    return Path.home() / ".codex" / "memories"
+
+
 def gemini_cli_path() -> Path:
     """Gemini CLI local session workspace directory."""
     return Path.home() / ".gemini" / "tmp"

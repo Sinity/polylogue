@@ -51,20 +51,39 @@ class SessionIndexEntry:
         )
 
 
-def parse_sessions_index(index_path: Path) -> dict[str, SessionIndexEntry]:
-    if not index_path.exists():
+def parse_sessions_index_bytes(payload: bytes) -> dict[str, SessionIndexEntry]:
+    """Parse one ``sessions-index.json`` document from its own bytes.
+
+    The retained-evidence route (``sources/retained_assembly.py``) reads the
+    acquired blob rather than the original file, so the document parser must
+    not require a live path.
+    """
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        logger.debug("Failed to decode sessions-index.json payload: %s", exc)
         return {}
     try:
-        data = json.loads(index_path.read_text(encoding="utf-8"))
         entries: dict[str, SessionIndexEntry] = {}
         for entry in _session_index_entries(data):
             session_id = _session_index_text(entry, "sessionId")
             if session_id:
                 entries[session_id] = SessionIndexEntry.from_dict(entry)
         return entries
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+    except (KeyError, TypeError) as exc:
         logger.debug("Failed to parse sessions-index.json: %s", exc)
         return {}
+
+
+def parse_sessions_index(index_path: Path) -> dict[str, SessionIndexEntry]:
+    if not index_path.exists():
+        return {}
+    try:
+        payload = index_path.read_bytes()
+    except OSError as exc:
+        logger.debug("Failed to read sessions-index.json: %s", exc)
+        return {}
+    return parse_sessions_index_bytes(payload)
 
 
 def find_sessions_index(session_path: Path) -> Path | None:
@@ -207,4 +226,5 @@ __all__ = [
     "enrich_session_from_index",
     "find_sessions_index",
     "parse_sessions_index",
+    "parse_sessions_index_bytes",
 ]

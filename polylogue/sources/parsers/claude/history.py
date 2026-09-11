@@ -59,6 +59,21 @@ class HistoryEntry:
         return bool(self.pastes)
 
 
+def parse_history_jsonl_bytes(payload: bytes, *, origin: str = "<retained>") -> Iterator[HistoryEntry]:
+    """Yield typed ``HistoryEntry`` rows from history-sidecar bytes.
+
+    The retained-evidence route reads the acquired blob, so this parser never
+    requires the original file to still exist. ``origin`` only labels debug
+    logs.
+    """
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        logger.debug("history.jsonl decode failed (%s): %s", origin, exc)
+        return
+    yield from _history_entries_from_text(text, origin=origin)
+
+
 def parse_history_jsonl(path: Path) -> Iterator[HistoryEntry]:
     """Yield typed ``HistoryEntry`` rows from a Claude Code history sidecar.
 
@@ -75,18 +90,22 @@ def parse_history_jsonl(path: Path) -> Iterator[HistoryEntry]:
     except UnicodeDecodeError as exc:
         logger.debug("history.jsonl decode failed (%s): %s", path, exc)
         return
+    yield from _history_entries_from_text(text, origin=str(path))
+
+
+def _history_entries_from_text(text: str, *, origin: str) -> Iterator[HistoryEntry]:
     for line_no, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         if not line:
             continue
         try:
-            payload = json.loads(line)
+            row = json.loads(line)
         except json.JSONDecodeError as exc:
-            logger.debug("history.jsonl malformed line %d in %s: %s", line_no, path, exc)
+            logger.debug("history.jsonl malformed line %d in %s: %s", line_no, origin, exc)
             continue
-        if not isinstance(payload, dict):
+        if not isinstance(row, dict):
             continue
-        yield _entry_from_row(payload)
+        yield _entry_from_row(row)
 
 
 def _entry_from_row(row: dict[str, object]) -> HistoryEntry:
@@ -119,6 +138,11 @@ def _entry_from_row(row: dict[str, object]) -> HistoryEntry:
     )
 
 
+def build_session_paste_index_bytes(payload: bytes, *, origin: str = "<retained>") -> dict[str, list[HistoryEntry]]:
+    """Return ``{sessionId: [paste-bearing entries]}`` from history bytes."""
+    return _index_paste_entries(parse_history_jsonl_bytes(payload, origin=origin))
+
+
 def build_session_paste_index(history_path: Path) -> dict[str, list[HistoryEntry]]:
     """Return ``{sessionId: [entries with paste evidence]}`` for fast lookup.
 
@@ -127,8 +151,12 @@ def build_session_paste_index(history_path: Path) -> dict[str, list[HistoryEntry
     back to an archived session by the strong-identity path and would
     inflate memory for nothing.
     """
+    return _index_paste_entries(parse_history_jsonl(history_path))
+
+
+def _index_paste_entries(entries: Iterator[HistoryEntry]) -> dict[str, list[HistoryEntry]]:
     index: dict[str, list[HistoryEntry]] = {}
-    for entry in parse_history_jsonl(history_path):
+    for entry in entries:
         if not entry.session_id or not entry.has_paste:
             continue
         index.setdefault(entry.session_id, []).append(entry)
@@ -138,6 +166,8 @@ def build_session_paste_index(history_path: Path) -> dict[str, list[HistoryEntry
 __all__ = [
     "HistoryEntry",
     "HistoryPaste",
+    "build_session_paste_index_bytes",
+    "parse_history_jsonl_bytes",
     "build_session_paste_index",
     "parse_history_jsonl",
 ]

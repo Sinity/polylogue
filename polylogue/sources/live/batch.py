@@ -173,6 +173,7 @@ from polylogue.sources.origin_specs import (
     artifact_rule_for_path,
     database_capability_for_provider,
     frontier_kind_for_origin,
+    path_declaration_refuses_session,
     recognize_source_class,
 )
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
@@ -3083,7 +3084,15 @@ class LiveBatchProcessor:
                         )
                     )
                     session_evidence = False
-                    if artifact_classification is not None and not source_only:
+                    # A ``raw-only`` declaration is terminal: decoded shape may
+                    # outrank a ``fact`` location, but never a family whose
+                    # declaration states that content cannot decide it
+                    # (polylogue-omsw, polylogue-ximhz).
+                    if (
+                        artifact_classification is not None
+                        and not source_only
+                        and not path_declaration_refuses_session(provider, record.source_path)
+                    ):
                         session_evidence = (
                             _blob_jsonl_has_session_evidence(
                                 blob_store,

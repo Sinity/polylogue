@@ -725,3 +725,38 @@ class TestZipBundleEndToEndBlobAcquisition:
         blob_hash, size = sidecar_data["chatgpt_asset_blobs"]["file_0000000000ac6243a75c01ca3ff57b84"]
         assert attachment.precomputed_blob == (blob_hash, size)
         assert store.read_all(blob_hash) == image_bytes
+
+
+# ---------------------------------------------------------------------------
+# polylogue-ximhz: the asset maps must be rebuildable from retained bytes,
+# scoped to the export they were acquired from.
+#
+# Anti-vacuity: make ``chatgpt_export_scope`` return a constant and
+# ``test_two_exports_are_two_scopes`` goes red; the full production-route
+# proofs (attachment name, payload and no cross-binding with every original
+# file deleted) are in
+# ``tests/unit/pipeline/test_ingest_worker_assembly.py``.
+# ---------------------------------------------------------------------------
+
+
+def test_two_exports_are_two_scopes() -> None:
+    """One export's retained maps never address another export's members."""
+    from polylogue.sources.retained_assembly import chatgpt_export_scope
+
+    zip_scope = chatgpt_export_scope("/archive/exports/first.zip:conversations.json")
+    other_zip_scope = chatgpt_export_scope("/archive/exports/second.zip:conversations.json")
+    dir_scope = chatgpt_export_scope("/archive/exports/extracted/conversations.json")
+
+    assert zip_scope == "/archive/exports/first.zip:"
+    assert other_zip_scope == "/archive/exports/second.zip:"
+    assert dir_scope == "/archive/exports/extracted/"
+    assert len({zip_scope, other_zip_scope, dir_scope}) == 3
+
+
+def test_retained_asset_member_names_still_carry_their_provider_id() -> None:
+    """The retained member coordinate is what the attachment join resolves."""
+    from polylogue.sources.assembly_chatgpt import _member_asset_id
+
+    assert _member_asset_id("file-ABCdef123.dat") == "file-ABCdef123"
+    assert _member_asset_id("file-ABCdef123.png") == "file-ABCdef123"
+    assert _member_asset_id("conversations.json") is None
