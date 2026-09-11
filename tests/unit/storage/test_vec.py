@@ -87,14 +87,14 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
     """Mutation: resolve the active index instead of the supplied path and this fails."""
 
     embeddings_path = tmp_path / "pinned-embeddings.db"
-    index_path = tmp_path / "pinned-index.db"
+    pinned_index_path = tmp_path / "pinned-index.db"
     embeddings = sqlite3.connect(embeddings_path)
     embeddings.execute("PRAGMA journal_mode = WAL")
     embeddings.execute("CREATE TABLE snapshot_probe (value INTEGER NOT NULL)")
     embeddings.execute("INSERT INTO snapshot_probe VALUES (1)")
     embeddings.commit()
     embeddings.close()
-    index = sqlite3.connect(index_path)
+    index = sqlite3.connect(pinned_index_path)
     try:
         index.execute("PRAGMA journal_mode = WAL")
         index.executescript(
@@ -142,14 +142,15 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
     ) -> None:
         # A TEMP setup executescript would implicitly commit, admitting these
         # later writes into the allegedly pinned semantic snapshot.
-        assert index_path is not None
+        assert index_path is None
         with sqlite3.connect(embeddings_path) as writer:
             writer.execute("UPDATE snapshot_probe SET value = 2")
-        with sqlite3.connect(index_path) as writer:
+        assert attach_index is False
+        assert register_identity is False
+        with sqlite3.connect(pinned_index_path) as writer:
             writer.execute("UPDATE messages SET role = 'system'")
         configure_projection(
             connection,
-            index_path=index_path,
             model=model,
             attach_index=attach_index,
             register_identity=register_identity,
@@ -159,7 +160,7 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
 
     connection = open_vector_read_snapshot(
         embeddings_path=embeddings_path,
-        index_path=index_path,
+        index_path=pinned_index_path,
         model="voyage-4",
     )
     try:
