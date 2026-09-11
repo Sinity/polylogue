@@ -82,7 +82,7 @@ class TestDeleteChokePoint:
             if operation.endswith(".preview"):
                 return {"status": "prepared", "preview_ref": "preview:1", "session_ids": ["s1"]}
             if operation.endswith(".authorize"):
-                return {"status": "authorized", "authorization_token": "token-1"}
+                return {"status": "authorized", "authorization_ref": "authorization:1"}
             return {"status": "deleted", "affected_count": 1}
 
         with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served):
@@ -125,7 +125,7 @@ class TestDeleteChokePoint:
                     "preview_refs": ["preview:1", "preview:2"],
                     "session_ids": ["s1", "s2"],
                 }
-            return {"status": "authorized", "authorization_token": "token-1"}
+            return {"status": "authorized", "authorization_ref": "authorization:1"}
 
         with (
             patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),

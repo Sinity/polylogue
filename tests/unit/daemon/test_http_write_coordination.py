@@ -8,6 +8,7 @@ import json
 import sqlite3
 import threading
 from collections.abc import Awaitable, Callable, Iterator
+from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
@@ -174,7 +175,7 @@ def _prepare_authorize(client: _DeleteDaemonClient, session_ids: tuple[str, ...]
     assert preview["session_ids"] == list(session_ids)
     authorization = _delete_operation(client, "authorize", {"preview_ref": preview["preview_ref"]})
     assert authorization is not None
-    return str(authorization["authorization_token"])
+    return str(authorization["authorization_ref"])
 
 
 def _assert_session_exists(archive_root: Path, session_id: str, *, expected: bool) -> None:
@@ -197,8 +198,8 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
     archive_root.mkdir()
     success_id, replay_id, substitute_id, stale_a, stale_b, expiry_id = _seed_delete_authority_archive(archive_root, 6)
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        success_token = _prepare_authorize(client, (success_id,))
-        result = _delete_operation(client, "execute", {"authorization_token": success_token})
+        success_ref = _prepare_authorize(client, (success_id,))
+        result = _delete_operation(client, "execute", {"authorization_ref": success_ref})
         assert result == {"status": "deleted", "operation": "delete", "session_count": 1, "affected_count": 1}
         _assert_session_exists(archive_root, success_id, expected=False)
 
@@ -206,43 +207,43 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
             _delete_operation(client, "execute", {"session_ids": [replay_id]})
         _assert_session_exists(archive_root, replay_id, expected=True)
 
-        replay_token = _prepare_authorize(client, (replay_id,))
-        _delete_operation(client, "execute", {"authorization_token": replay_token})
+        replay_ref = _prepare_authorize(client, (replay_id,))
+        _delete_operation(client, "execute", {"authorization_ref": replay_ref})
         with pytest.raises(DaemonResponseError):
-            _delete_operation(client, "execute", {"authorization_token": replay_token})
+            _delete_operation(client, "execute", {"authorization_ref": replay_ref})
         _assert_session_exists(archive_root, substitute_id, expected=True)
 
-        substitute_token = _prepare_authorize(client, (substitute_id,))
+        substitute_ref = _prepare_authorize(client, (substitute_id,))
         with pytest.raises(DaemonResponseError):
-            _delete_operation(client, "execute", {"authorization_token": substitute_token, "session_ids": [stale_a]})
+            _delete_operation(client, "execute", {"authorization_ref": substitute_ref, "session_ids": [stale_a]})
         _assert_session_exists(archive_root, substitute_id, expected=True)
-        _delete_operation(client, "execute", {"authorization_token": substitute_token})
+        _delete_operation(client, "execute", {"authorization_ref": substitute_ref})
 
-        stale_token = _prepare_authorize(client, (stale_a, stale_b))
+        stale_ref = _prepare_authorize(client, (stale_a, stale_b))
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             archive.delete_sessions((stale_a,))
         with pytest.raises(DaemonResponseError) as stale_error:
-            _delete_operation(client, "execute", {"authorization_token": stale_token})
+            _delete_operation(client, "execute", {"authorization_ref": stale_ref})
         assert stale_error.value.status == HTTPStatus.CONFLICT
         assert stale_error.value.code == "delete_authorization_denied"
         assert stale_error.value.detail == "selection_changed_after_authorization"
         _assert_session_exists(archive_root, stale_b, expected=True)
 
-        expiry_token = _prepare_authorize(client, (expiry_id,))
+        expiry_ref = _prepare_authorize(client, (expiry_id,))
         with pytest.raises(DeleteAuthorizationError):
             consume_cli_delete(
                 archive_root,
-                expiry_token,
+                expiry_ref,
                 MutationPrincipal("daemon:bearer:other", frozenset({"archive.delete_session"}), "cli", "write"),
             )
         _assert_session_exists(archive_root, expiry_id, expected=True)
         with sqlite3.connect(archive_root / "audit.db") as conn:
             conn.execute(
-                "UPDATE operation_authorizations SET issued_at_ms = 0, expires_at_ms = 1 WHERE token_sha256 = ?",
-                (hashlib.sha256(expiry_token.encode()).hexdigest(),),
+                "UPDATE operation_authorizations SET issued_at_ms = 0, expires_at_ms = 1 WHERE authorization_id = ?",
+                (expiry_ref,),
             )
         with pytest.raises(DaemonResponseError):
-            _delete_operation(client, "execute", {"authorization_token": expiry_token})
+            _delete_operation(client, "execute", {"authorization_ref": expiry_ref})
         _assert_session_exists(archive_root, expiry_id, expected=True)
 
     expected_actor = f"daemon:bearer:{hashlib.sha256(b'delete-authority-token').hexdigest()}"
@@ -347,7 +348,7 @@ def test_cli_delete_real_daemon_route_cancels_an_unconfirmed_preview(
         assert preview is not None
         preview_ref = str(preview["preview_ref"])
         cancelled = _delete_operation(client, "cancel", {"preview_ref": preview_ref})
-        assert cancelled == {"status": "cancelled", "preview_ref": preview_ref}
+        assert cancelled == {"status": "cancelled", "preview_ref": preview_ref, "preview_refs": [preview_ref]}
         with pytest.raises(DaemonResponseError) as authorization_error:
             _delete_operation(client, "authorize", {"preview_ref": preview_ref})
 
@@ -380,7 +381,7 @@ def test_cli_delete_real_daemon_route_cancels_an_expired_preview(
 
         cancelled = _delete_operation(client, "cancel", {"preview_ref": preview_ref})
 
-    assert cancelled == {"status": "cancelled", "preview_ref": preview_ref}
+    assert cancelled == {"status": "cancelled", "preview_ref": preview_ref, "preview_refs": [preview_ref]}
     _assert_session_exists(archive_root, session_id, expected=True)
     with sqlite3.connect(archive_root / "audit.db") as conn:
         assert conn.execute("SELECT state FROM operation_previews WHERE preview_id = ?", (preview_ref,)).fetchone() == (
@@ -395,11 +396,11 @@ def _operation_handler(timeline: list[str], body: bytes, *, content_length: int 
     object.__setattr__(
         handler,
         "headers",
-        {
-            "Content-Type": "application/json",
-            "Content-Length": str(len(body) if content_length is None else content_length),
-        },
+        Message(),
     )
+    headers = handler.headers
+    headers["Content-Type"] = "application/json"
+    headers["Content-Length"] = str(len(body) if content_length is None else content_length)
     object.__setattr__(handler, "rfile", BytesIO(body))
     return handler
 
@@ -550,10 +551,10 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
         assert len(preview_refs) == 3
         authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
         assert authorization is not None
-        tokens = authorization["authorization_tokens"]
+        tokens = authorization["authorization_refs"]
         assert isinstance(tokens, list)
         assert len(tokens) == 3
-        result = _delete_operation(client, "execute", {"authorization_tokens": tokens})
+        result = _delete_operation(client, "execute", {"authorization_refs": tokens})
 
     assert result == {"status": "deleted", "operation": "delete", "session_count": 513, "affected_count": 513}
     with sqlite3.connect(archive_root / "index.db") as conn:
@@ -578,7 +579,7 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
         assert isinstance(preview_refs, list)
         authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
         assert authorization is not None
-        tokens = authorization["authorization_tokens"]
+        tokens = authorization["authorization_refs"]
         assert isinstance(tokens, list)
 
         def consume_with_failure(root: Path, token: str, principal: MutationPrincipal) -> object:
@@ -593,7 +594,7 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
             side_effect=consume_with_failure,
         ):
             with pytest.raises(DaemonResponseError) as error:
-                _delete_operation(client, "execute", {"authorization_tokens": tokens})
+                _delete_operation(client, "execute", {"authorization_refs": tokens})
 
     assert getattr(error.value, "code", None) == "delete_partially_applied"
     assert getattr(error.value, "completed_chunks", None) == 2
