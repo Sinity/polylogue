@@ -40,7 +40,9 @@ from polylogue.core.enums import (
     TopologyEdgeStatus,
     WebConstructType,
 )
+from polylogue.core.errors import DatabaseError
 from polylogue.core.json import loads
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -107,6 +109,68 @@ def _optional_bool_value(value: object) -> bool | None:
     return None if value is None else bool(value)
 
 
+def _decode_json_column(value: object, column: str) -> object:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, (str, bytes, bytearray)):
+        raise DatabaseError(f"Corrupt JSON in {column}: expected JSON text, got {type(value).__name__}")
+    try:
+        return loads(value)
+    except (JSONDecodeError, ValueError) as exc:
+        raise DatabaseError(f"Corrupt JSON in {column}: {exc} (value starts: {value[:80]!r})") from exc
+
+
+def _json_document_decoder(column: str) -> Callable[[object], dict[str, object] | None]:
+    """Decode a persisted JSON-object column into a record document.
+
+    The record model's validators type the decoded structure; they cannot
+    parse the stored text themselves, so this is the one mechanical step
+    between the column and the typed owner. A payload that will not decode is
+    a corrupt row, reported against the column that carries it.
+    """
+
+    def decode(value: object) -> dict[str, object] | None:
+        decoded = _decode_json_column(value, column)
+        return decoded if isinstance(decoded, dict) else None
+
+    return decode
+
+
+def _json_document_list_decoder(column: str) -> Callable[[object], list[dict[str, object]] | None]:
+    """Decode a persisted JSON-array-of-objects column into record documents."""
+
+    def decode(value: object) -> list[dict[str, object]] | None:
+        decoded = _decode_json_column(value, column)
+        if not isinstance(decoded, list):
+            return None
+        documents = [dict(item) for item in decoded if isinstance(item, dict)]
+        return documents or None
+
+    return decode
+
+
+def _domain_timestamp(value: object) -> datetime | None:
+    """Lift a record's stored timestamp text into the domain's ``datetime``."""
+    if value is None or isinstance(value, (str, int, float)):
+        return parse_timestamp(value)
+    return None
+
+
+def _domain_document(value: object) -> dict[str, object]:
+    """Project an optional record document as the domain's always-present map."""
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _domain_text_tuple(value: object) -> tuple[str, ...]:
+    """Project a stored JSON array of strings as an ordered domain tuple."""
+    decoded = _decoded_json_value(value)
+    if not isinstance(decoded, list):
+        return ()
+    return tuple(item for item in decoded if isinstance(item, str) and item)
+
+
 _DEFERRED_WRITE = "deferred"
 
 
@@ -122,6 +186,7 @@ def _raw_column(
     deferred_write: bool = False,
     insert_literal: str | None = None,
     conflict_update: str | None = None,
+    conflict_params: tuple[str, ...] = (),
 ) -> ColumnSpec:
     """Declare a stored column and, where it has one, its record projection.
 
@@ -132,7 +197,8 @@ def _raw_column(
     a SQL literal the INSERT emits in place of a bound value.
     ``conflict_update`` is the column's right-hand side in an upsert's
     ``DO UPDATE SET``; a column without one keeps its stored value on
-    conflict.
+    conflict, and ``conflict_params`` names the bound values its placeholders
+    consume so the caller supplies them by name rather than by position.
     """
     if insert_literal is not None:
         placeholder = insert_literal
@@ -151,6 +217,7 @@ def _raw_column(
         domain_transform=domain_transform,
         extract_placeholder=placeholder,
         conflict_update=conflict_update,
+        conflict_params=conflict_params,
     )
 
 
@@ -672,17 +739,20 @@ SESSIONS_SPEC = _make_table_spec(
             "session_id",
             """session_id              TEXT GENERATED ALWAYS AS (origin || ':' || native_id) STORED UNIQUE""",
             record_name="session_id",
+            domain_name="id",
         ),
         _raw_column("native_id", """native_id               TEXT NOT NULL""", record_name="native_id"),
         _raw_column(
             "origin",
             f"""origin                  TEXT NOT NULL CHECK ({check("origin", Origin)})""",
             record_name="origin",
+            domain_name="origin",
         ),
         _raw_column(
             "parent_session_id",
             """parent_session_id       TEXT REFERENCES sessions(session_id) ON DELETE SET NULL""",
             record_name="parent_session_id",
+            domain_name="parent_id",
             deferred_write=True,
         ),
         _raw_column(
@@ -710,6 +780,7 @@ SESSIONS_SPEC = _make_table_spec(
             "branch_type",
             f"""branch_type             TEXT CHECK ({nullable_check("branch_type", BranchType)})""",
             record_name="branch_type",
+            domain_name="branch_type",
             conflict_update="excluded.branch_type",
         ),
         _raw_column(
@@ -725,12 +796,14 @@ SESSIONS_SPEC = _make_table_spec(
             "title",
             """title                   TEXT""",
             record_name="title",
+            domain_name="title",
             conflict_update="COALESCE(excluded.title, sessions.title)",
         ),
         _raw_column(
             "session_kind",
             f"""session_kind            TEXT NOT NULL DEFAULT 'standard' CHECK ({check("session_kind", SessionKind)})""",
             record_name="session_kind",
+            domain_name="session_kind",
             conflict_update="excluded.session_kind",
         ),
         _raw_column(
@@ -764,6 +837,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- not its content.
     display_name            TEXT""",
             record_name="display_name",
+            domain_name="display_name",
             conflict_update="COALESCE(excluded.display_name, sessions.display_name)",
         ),
         _raw_column(
@@ -779,7 +853,8 @@ SESSIONS_SPEC = _make_table_spec(
     -- and polylogue-nuec were fixed for, on a third axis (mutable session
     -- state rather than acquisition state or provider-remeasurement).
     pending_drafts_json      TEXT CHECK ({json_array_check("pending_drafts_json", nullable=True)})""",
-            record_name="pending_drafts_json",
+            record_name="pending_drafts",
+            record_transform=_json_document_list_decoder("pending_drafts_json"),
             # Plain overwrite, unlike display_name: a draft is current mutable
             # state, so a reprocess that finds no non-blank pendingInputs
             # (submitted, or cleared) must clear the stored value.
@@ -789,18 +864,21 @@ SESSIONS_SPEC = _make_table_spec(
             "git_branch",
             """git_branch              TEXT""",
             record_name="git_branch",
+            domain_name="git_branch",
             conflict_update="excluded.git_branch",
         ),
         _raw_column(
             "git_repository_url",
             """git_repository_url      TEXT""",
             record_name="git_repository_url",
+            domain_name="git_repository_url",
             conflict_update="excluded.git_repository_url",
         ),
         _raw_column(
             "provider_project_ref",
             """provider_project_ref    TEXT""",
             record_name="provider_project_ref",
+            domain_name="provider_project_ref",
             conflict_update="excluded.provider_project_ref",
         ),
         _raw_column("commit_hash", """commit_hash             TEXT""", conflict_update="excluded.commit_hash"),
@@ -828,6 +906,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- a token source.
     reported_cost_usd       REAL CHECK(reported_cost_usd IS NULL OR reported_cost_usd >= 0)""",
             record_name="reported_cost_usd",
+            domain_name="reported_cost_usd",
             conflict_update="excluded.reported_cost_usd",
         ),
         _raw_column(
@@ -883,28 +962,30 @@ SESSIONS_SPEC = _make_table_spec(
             "created_at_ms",
             """created_at_ms           INTEGER""",
             record_name="created_at",
+            domain_name="created_at",
+            domain_transform=_domain_timestamp,
             select_expression="datetime({alias}.created_at_ms / 1000, 'unixepoch')",
             # A durable observed fact, so it ratchets: a valid producer
             # timestamp outranks a previously-derived value, and a derived
-            # observation never overwrites stored producer authority. The
-            # bound parameter is ``producer_created``.
+            # observation never overwrites stored producer authority.
             conflict_update="""CASE
                         WHEN ? AND excluded.created_at_ms IS NOT NULL THEN excluded.created_at_ms
                         WHEN sessions.created_at_ms IS NULL THEN excluded.created_at_ms
                         ELSE sessions.created_at_ms
                     END""",
+            conflict_params=("producer_created",),
         ),
         _raw_column(
             "updated_at_ms",
             """updated_at_ms           INTEGER""",
             record_name="updated_at",
+            domain_name="updated_at",
+            domain_transform=_domain_timestamp,
             select_expression="datetime({alias}.updated_at_ms / 1000, 'unixepoch')",
             # Force replacement may replace known evidence with a newer producer
             # value, but an incoming NULL is omission, never a command to erase
             # an established timestamp. The interval stays closed even when only
-            # one producer endpoint is supplied. Bound parameters, in order:
-            # ``force_replace``, ``producer_updated``, ``producer_created``,
-            # ``producer_created``, ``producer_updated or merge_append``.
+            # one producer endpoint is supplied.
             conflict_update="""CASE
                         WHEN ? AND (? OR ?) AND excluded.updated_at_ms IS NOT NULL THEN
                             CASE
@@ -921,6 +1002,14 @@ SESSIONS_SPEC = _make_table_spec(
                         WHEN ? THEN MAX(sessions.updated_at_ms, excluded.updated_at_ms)
                         ELSE sessions.updated_at_ms
                     END""",
+            conflict_params=(
+                "force_replace",
+                "producer_updated",
+                "producer_created",
+                "producer_created",
+                "producer_updated",
+                "producer_updated_or_merge_append",
+            ),
         ),
         _raw_column(
             "sort_key_ms",
@@ -930,12 +1019,21 @@ SESSIONS_SPEC = _make_table_spec(
         ),
     ),
     record_only_columns=(
-        ColumnSpec("metadata", record_name="metadata", select_expression="'{{}}'"),
+        ColumnSpec(
+            "metadata",
+            record_name="metadata",
+            select_expression="'{{}}'",
+            record_transform=_json_document_decoder("metadata"),
+            domain_name="metadata",
+            domain_transform=_domain_document,
+        ),
         ColumnSpec("version", record_name="version", select_expression="1"),
         ColumnSpec(
             "working_directories_json",
             record_name="working_directories_json",
             select_expression="(SELECT json_group_array(path) FROM session_working_dirs swd WHERE swd.session_id = {alias}.session_id ORDER BY position)",
+            domain_name="working_directories",
+            domain_transform=_domain_text_tuple,
         ),
     ),
     table_constraints=("""PRIMARY KEY(origin, native_id)""",),

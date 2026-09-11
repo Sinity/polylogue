@@ -6,7 +6,6 @@ import sqlite3
 from datetime import datetime, timezone
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
-from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import (
     ArtifactSupportStatus,
     Origin,
@@ -29,8 +28,6 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC, SESSIONS_SPEC
 from polylogue.storage.sqlite.queries.mappers_support import (
-    _json_object,
-    _json_object_list,
     _parse_json,
     _row_get,
     _row_int,
@@ -40,16 +37,10 @@ from polylogue.storage.sqlite.queries.mappers_support import (
 
 
 def _row_to_session(row: sqlite3.Row) -> SessionRecord:
-    values = SESSIONS_SPEC.row_to_record_kwargs(row)
-    parent_session_id = _row_text(row, "parent_session_id")
-    branch_type = _row_text(row, "branch_type")
-    values["parent_session_id"] = SessionId(parent_session_id) if parent_session_id is not None else None
-    values["branch_type"] = BranchType(branch_type) if branch_type is not None else None
-    values["metadata"] = _json_object(_parse_json(row["metadata"], field="metadata", record_id=row["session_id"]))
-    values["pending_drafts"] = _json_object_list(
-        _parse_json(_row_get(row, "pending_drafts_json"), field="pending_drafts_json", record_id=row["session_id"])
-    )
-    return SessionRecord(**values)
+    # Every mechanical step -- which columns project, their record names, the
+    # JSON payload decoding -- is declared on SESSIONS_SPEC; typing and
+    # validation stay with SessionRecord.
+    return SessionRecord(**SESSIONS_SPEC.row_to_record_kwargs(row))
 
 
 def _row_to_message(row: sqlite3.Row) -> MessageRecord:

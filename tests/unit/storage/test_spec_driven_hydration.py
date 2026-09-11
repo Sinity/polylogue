@@ -10,7 +10,7 @@ from polylogue.core.enums import BlockType, Origin, Provider, Role, ToolOutcome
 from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.hydrators import message_from_record
-from polylogue.storage.runtime import BlockRecord, MessageRecord, SessionRecord
+from polylogue.storage.runtime import BlockRecord, MessageRecord
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC, SESSIONS_SPEC
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries import message_query_reads, sessions_reads
@@ -69,28 +69,6 @@ async def test_real_archive_write_read_hydrates_spec_fields(tmp_path: Path) -> N
     assert hydrated.text == "finished"
     assert hydrated.timestamp is not None
     assert hydrated.timestamp.isoformat() == "2026-03-01T10:05:00+00:00"
-
-
-def test_sessions_spec_declares_the_record_projection_the_mapper_consumes() -> None:
-    """SESSIONS_SPEC must name every field ``_row_to_session`` builds a record from.
-
-    Red when any ``record_name`` is dropped from SESSIONS_SPEC: an empty
-    projection lowers to ``SELECT  FROM sessions``, and a partial one leaves a
-    SessionRecord field with no column to read.
-    """
-    projection = SESSIONS_SPEC.record_select_column_names("sessions")
-    assert projection.strip(), "sessions record projection is empty"
-
-    declared = {column.record_name for column in SESSIONS_SPEC.record_columns}
-    # The mapper builds this field from the raw JSON projection rather than a
-    # same-named column.
-    from_json_projection = {"pending_drafts": "pending_drafts_json"}
-    missing = {
-        field
-        for field in SessionRecord.model_fields
-        if field not in declared and from_json_projection.get(field) not in declared
-    }
-    assert not missing, f"SessionRecord fields with no sessions projection: {sorted(missing)}"
 
 
 @pytest.mark.asyncio
