@@ -26,7 +26,6 @@ import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -131,6 +130,17 @@ def _init_blocks_db(path: Path, *, fts_rows: int = 0, block_rows: int = 0) -> No
         conn.commit()
     finally:
         conn.close()
+
+
+def _patch_fts_readiness(monkeypatch: pytest.MonkeyPatch, payload: dict[str, object]) -> None:
+    """Stub the published FTS ledger consumed by the health probe.
+
+    Health no longer performs an archive-wide row census itself; that work is
+    owned by the convergence stage and exposed through ``fts_readiness_info``.
+    Tests therefore provide the ledger verdict directly instead of patching
+    the probe's historical ``sqlite3.connect`` call.
+    """
+    monkeypatch.setattr("polylogue.daemon.fts_status.fts_readiness_info", lambda _dbf, *, exact=False: payload)
 
 
 @dataclass(frozen=True)
@@ -351,10 +361,21 @@ def test_schema_version_critical_when_archive_version_differs(
 
 def test_fts_readiness_ok(
     workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_blocks_db(dbf)
+    _patch_fts_readiness(
+        monkeypatch,
+        {
+            "session_work_events_ready": True,
+            "surfaces": {
+                "messages_fts": {"ready": True},
+                "session_work_events_fts": {"ready": True},
+            },
+        },
+    )
     alert = _check_fts_readiness_medium()
     assert alert.severity == HealthSeverity.OK
     assert "up to date" in alert.message
@@ -362,10 +383,29 @@ def test_fts_readiness_ok(
 
 def test_fts_readiness_error_when_large_gap(
     workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_blocks_db(dbf, block_rows=100, fts_rows=0)
+    _patch_fts_readiness(
+        monkeypatch,
+        {
+            "session_work_events_ready": True,
+            "surfaces": {
+                "messages_fts": {
+                    "ready": False,
+                    "source_exists": True,
+                    "exists": True,
+                    "triggers_present": True,
+                    "freshness_known": True,
+                    "freshness_recorded_state": "stale",
+                    "missing_rows": 100,
+                },
+                "session_work_events_fts": {"ready": True},
+            },
+        },
+    )
     alert = _check_fts_readiness_medium()
     assert alert.severity == HealthSeverity.ERROR
     assert alert.consecutive_failures == 1
@@ -381,35 +421,24 @@ def test_fts_readiness_counts_docsize_not_virtual_table(
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_blocks_db(dbf, block_rows=3, fts_rows=3)
 
-    original_connect = sqlite3.connect
-    queries: list[str] = []
+    calls: list[bool] = []
 
-    class GuardedConnection:
-        def __init__(self, inner: sqlite3.Connection) -> None:
-            self._inner = inner
+    def ledger(_dbf: Path, *, exact: bool = False) -> dict[str, object]:
+        calls.append(exact)
+        return {
+            "session_work_events_ready": True,
+            "surfaces": {
+                "messages_fts": {"ready": True},
+                "session_work_events_fts": {"ready": True},
+            },
+        }
 
-        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
-            normalized = " ".join(sql.split()).lower()
-            queries.append(normalized)
-            if "count(*) from messages_fts" in normalized and "messages_fts_docsize" not in normalized:
-                raise AssertionError("health status must not COUNT(*) the FTS5 virtual table")
-            return self._inner.execute(sql, *args, **kwargs)
-
-        def close(self) -> None:
-            self._inner.close()
-
-        def __getattr__(self, name: str) -> Any:
-            return getattr(self._inner, name)
-
-    def guarded_connect(path: str) -> GuardedConnection:
-        return GuardedConnection(original_connect(path))
-
-    monkeypatch.setattr("polylogue.daemon.health.sqlite3.connect", guarded_connect)
+    monkeypatch.setattr("polylogue.daemon.fts_status.fts_readiness_info", ledger)
 
     alert = _check_fts_readiness_medium()
 
     assert alert.severity == HealthSeverity.OK
-    assert any("messages_fts_docsize" in query for query in queries)
+    assert calls == [False]
 
 
 def test_fts_readiness_does_not_accept_stats_when_messages_drift(
@@ -419,44 +448,60 @@ def test_fts_readiness_does_not_accept_stats_when_messages_drift(
     dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_blocks_db(dbf, block_rows=999, fts_rows=3)
-    original_connect = sqlite3.connect
-    queries: list[str] = []
+    calls: list[bool] = []
 
-    class GuardedConnection:
-        def __init__(self, inner: sqlite3.Connection) -> None:
-            self._inner = inner
+    def ledger(_dbf: Path, *, exact: bool = False) -> dict[str, object]:
+        calls.append(exact)
+        return {
+            "session_work_events_ready": True,
+            "surfaces": {
+                "messages_fts": {
+                    "ready": False,
+                    "source_exists": True,
+                    "exists": True,
+                    "triggers_present": True,
+                    "freshness_known": True,
+                    "freshness_recorded_state": "stale",
+                    "missing_rows": 996,
+                },
+                "session_work_events_fts": {"ready": True},
+            },
+        }
 
-        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
-            normalized = " ".join(sql.split()).lower()
-            queries.append(normalized)
-            if normalized == "select count(*) from messages":
-                raise AssertionError("health status must not route FTS readiness through messages")
-            return self._inner.execute(sql, *args, **kwargs)
-
-        def close(self) -> None:
-            self._inner.close()
-
-        def __getattr__(self, name: str) -> Any:
-            return getattr(self._inner, name)
-
-    def guarded_connect(path: str) -> GuardedConnection:
-        return GuardedConnection(original_connect(path))
-
-    monkeypatch.setattr("polylogue.daemon.health.sqlite3.connect", guarded_connect)
+    monkeypatch.setattr("polylogue.daemon.fts_status.fts_readiness_info", ledger)
 
     alert = _check_fts_readiness_medium()
 
     assert alert.severity == HealthSeverity.ERROR
     assert "missing row" in alert.message
-    assert all("sum(message_count)" not in query for query in queries)
+    assert calls == [False]
 
 
 def test_fts_readiness_flags_stale_extra_rows(
     workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dbf = index_db_path()
     dbf.parent.mkdir(parents=True, exist_ok=True)
     _init_blocks_db(dbf, block_rows=3, fts_rows=5)
+    _patch_fts_readiness(
+        monkeypatch,
+        {
+            "session_work_events_ready": True,
+            "surfaces": {
+                "messages_fts": {
+                    "ready": False,
+                    "source_exists": True,
+                    "exists": True,
+                    "triggers_present": True,
+                    "freshness_known": True,
+                    "freshness_recorded_state": "stale",
+                    "excess_rows": 2,
+                },
+                "session_work_events_fts": {"ready": True},
+            },
+        },
+    )
     alert = _check_fts_readiness_medium()
 
     assert alert.severity == HealthSeverity.ERROR
@@ -858,9 +903,9 @@ def test_db_integrity_ok_degraded_and_recovery(
     # Create a valid empty DB so the real PRAGMA integrity_check executes.
     sqlite3.connect(str(dbf)).close()
 
-    # Phase 1: simulate integrity failure by patching sqlite3.connect to
-    # return a connection whose integrity_check yields errors.
-    real_connect = sqlite3.connect
+    # Phase 1: simulate integrity failure by patching the canonical read-only
+    # connection factory to return a connection whose integrity_check yields
+    # errors.  The health probe deliberately bypasses writable sqlite opens.
 
     class _BadConn:
         def execute(self, sql: str) -> object:
@@ -875,14 +920,16 @@ def test_db_integrity_ok_degraded_and_recovery(
 
         def close(self) -> None: ...
 
-    monkeypatch.setattr("polylogue.daemon.health.sqlite3.connect", lambda *a, **kw: _BadConn())
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection as real_open
+
+    monkeypatch.setattr(health_module, "open_readonly_connection", lambda *a, **kw: _BadConn())
     bad = _check_db_integrity_expensive()
     assert bad.severity == HealthSeverity.CRITICAL
     assert bad.consecutive_failures == 1
     assert "integrity errors" in bad.message
 
-    # Phase 2: recovery — restore real connect, counter resets.
-    monkeypatch.setattr("polylogue.daemon.health.sqlite3.connect", real_connect)
+    # Phase 2: recovery — restore the real read-only factory, counter resets.
+    monkeypatch.setattr(health_module, "open_readonly_connection", real_open)
     good = _check_db_integrity_expensive()
     assert good.severity == HealthSeverity.OK
     assert good.consecutive_failures == 0
