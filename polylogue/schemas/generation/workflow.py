@@ -27,6 +27,7 @@ from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.registry import ClusterManifest, SchemaRegistry
 from polylogue.schemas.runtime_registry import ElementSchemaMap, canonical_schema_provider
 from polylogue.schemas.source_inference import SchemaSourceInput, infer_sources
+from polylogue.storage.archive_identity import ArchiveLocation
 
 
 def _package_schemas(bundle: _ProviderBundle) -> dict[str, ElementSchemaMap]:
@@ -70,6 +71,7 @@ def generate_provider_schema(
     privacy_config: SchemaPrivacyConfig | None = None,
     full_corpus: bool = False,
     progress_callback: GenerationProgressCallback | None = None,
+    archive_location: ArchiveLocation | None = None,
 ) -> GenerationResult:
     """Generate the default inferred schema for a provider."""
     return _build_provider_bundle(
@@ -79,6 +81,7 @@ def generate_provider_schema(
         privacy_config=privacy_config,
         full_corpus=full_corpus,
         progress_callback=progress_callback,
+        archive_location=archive_location,
     ).result
 
 
@@ -256,6 +259,7 @@ def generate_all_schemas(
     privacy_config: SchemaPrivacyConfig | None = None,
     include_archive_workload_profile: bool = False,
     full_corpus: bool = False,
+    archive_location: ArchiveLocation | None = None,
 ) -> list[GenerationResult]:
     """Generate versioned schemas for all providers."""
     if db_path is None:
@@ -272,6 +276,7 @@ def generate_all_schemas(
             max_samples=max_samples,
             privacy_config=privacy_config,
             full_corpus=full_corpus,
+            archive_location=archive_location,
         )
         results.append(bundle.result)
         persist_generated_provider_bundle(output_dir, provider, bundle)

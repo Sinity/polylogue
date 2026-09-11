@@ -101,6 +101,8 @@ def _run_blob_store_check(config: Config, *, full: bool = False) -> JSONDocument
 
 
 def _run_schema_verification(options: CheckCommandOptions, config: Config) -> SchemaVerificationReport:
+    from polylogue.storage.archive_identity import ArchiveLocation
+
     report = run_schema_verification(
         SchemaVerificationRequest(
             providers=_provider_filter(options.schema_providers),
@@ -111,6 +113,7 @@ def _run_schema_verification(options: CheckCommandOptions, config: Config) -> Sc
             progress_callback=make_schema_progress_callback(),
         ),
         db_path=config.db_path,
+        archive_location=ArchiveLocation.resolve(config.archive_root),
     )
     print(file=sys.stderr)
     return report

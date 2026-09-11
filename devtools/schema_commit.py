@@ -23,6 +23,7 @@ from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.source_inference import parse_schema_source_input
+from polylogue.storage.archive_identity import ArchiveLocation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "polylogue" / "schemas" / "providers"
@@ -105,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
                 provider=str(args.provider),
                 output_dir=output_dir,
                 db_path=config.db_path,
+                archive_location=ArchiveLocation.resolve(config.archive_root),
                 max_samples=args.max_samples,
                 privacy_config=privacy_config,
                 full_corpus=bool(args.full_corpus),
