@@ -11,6 +11,7 @@ The daemon is the intended live write owner. It holds process-lifetime rebuild e
 - HTTP and UDS mutation routes receive a bridge to that coordinator rather than opening an independent writer path (`polylogue/daemon/cli.py:3042-3085`; `polylogue/daemon/write_coordinator.py:665-729`).
 - Startup recovers embedding lifecycle before publishing API sockets, then performs FTS and lineage readiness and blob-publication reconciliation before catch-up (`polylogue/daemon/cli.py:3042-3122`).
 - Periodic owners cover raw materialization, insights, convergence debt, FTS, WAL, embeddings, status, judgments, blob GC/publication reconciliation, secret scans, and acquisition (`polylogue/daemon/cli.py:3138-3174`).
+- Archive-bound FTS, derived-readiness, and checkpoint writers receive the selected archive root even when the active index generation is stored elsewhere, so a generation path cannot borrow another archive's admission (`polylogue/daemon/convergence_stages.py:99-110`; `polylogue/daemon/cli.py:316-325`; `polylogue/storage/sqlite/wal_checkpoint.py:153-187`).
 
 ## Current converger
 
@@ -87,4 +88,4 @@ Two of its properties do hold for embeddings (polylogue-c0l7n). `embed_archive_s
 - The repository contract compresses convergence to FTS, embeddings, and insights. The current default converger also includes raw parse recovery, raw-authority caching, Claude workflow, delegation evidence, FTS readiness, standing queries, and optional Sinex publication (`polylogue/daemon/convergence_stages.py:1227-1260`).
 - Operationally, the daemon is runtime-masked and inactive, so the documented live-owner posture is not the machine’s current state. This discrepancy is external runtime state, not represented in repository files.
 
-verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11
+verified: 1527b9513167968e77c29512522645f82c69ad63 2026-09-11

@@ -36,6 +36,7 @@ must not reverse a public origin into a guessed provider
   user metadata does not alter import identity.
 - All ordinary ingest, replay, and reindex paths share the parsed-session
   write choke point.
+- Batch ingest keeps source membership and precedence checks read-only; its index publication and later source receipt consumption each use the selected archive root as their write authority (`polylogue/pipeline/services/ingest_batch/_core.py:157-184`; `polylogue/pipeline/services/ingest_batch/_core.py:1958-1968`; `polylogue/pipeline/services/ingest_batch/_core.py:2016-2033`).
 
 ## Gotchas
 
@@ -54,4 +55,4 @@ fixture. Follow the parsed object into
 contract from a surface serializer. The provider guides under
 `docs/providers/` explain format-specific caveats.
 
-verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11
+verified: 1527b9513167968e77c29512522645f82c69ad63 2026-09-11
