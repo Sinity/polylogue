@@ -177,7 +177,8 @@ def source_generation_receipt(
             index_generation_binding=binding,
             items=(),
         )
-    if int(generation[0]) > _MAX_SOURCE_ITEMS:
+    item_count = _int_cell(generation[0])
+    if item_count is not None and item_count > _MAX_SOURCE_ITEMS:
         raise ValueError(f"source generation receipt exceeds {_MAX_SOURCE_ITEMS} item limit")
 
     item_rows = source_conn.execute(
@@ -257,9 +258,12 @@ def source_generation_receipt(
             if raw.complete and raw.logicals and raw.parsed_at_ms is None
         }
     )
-    enumeration_complete = len(item_rows) == int(generation[0]) and all(item.enumeration_complete for item in items)
+    enumeration_complete = (
+        item_count is not None and len(item_rows) == item_count and all(item.enumeration_complete for item in items)
+    )
     complete = (
-        len(item_rows) == int(generation[0])
+        item_count is not None
+        and len(item_rows) == item_count
         and enumeration_complete
         and not retired_coordinates
         and not unresolved
@@ -288,9 +292,15 @@ def _enumeration_complete(item: tuple[object, ...], members: list[tuple[object, 
     fingerprint, record_count, digest, enumerated_at_ms = item[2:]
     if fingerprint is None or record_count is None or digest is None or enumerated_at_ms is None:
         return False
-    if int(record_count) != len(members):
+    record_count_value = _int_cell(record_count)
+    if record_count_value is None or _int_cell(enumerated_at_ms) is None or record_count_value != len(members):
         return False
-    payload = [(str(row[0]), bytes(row[2]).hex()) for row in members]
+    payload: list[tuple[str, str]] = []
+    for row in members:
+        blob_hash = _bytes_cell(row[2])
+        if blob_hash is None:
+            return False
+        payload.append((str(row[0]), blob_hash.hex()))
     actual = hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
     return str(digest) == actual
 
@@ -347,7 +357,7 @@ def _raw_receipt(
             index_conn,
             raw_id=raw_id,
             raw_source_revision=None if raw[5] is None else str(raw[5]),
-            raw_acquisition_generation=None if raw[6] is None else int(raw[6]),
+            raw_acquisition_generation=_int_cell(raw[6]),
             logical_key=logical_key,
             membership=memberships_by_key.get(logical_key),
             parser_complete=parser_complete,
@@ -356,7 +366,7 @@ def _raw_receipt(
     )
     return SourceGenerationRawReceipt(
         raw_id=raw_id,
-        parsed_at_ms=None if raw[2] is None else int(raw[2]),
+        parsed_at_ms=_int_cell(raw[2]),
         parser_complete=parser_complete,
         parser_blockers=parser_blockers,
         logicals=logicals,
@@ -395,18 +405,21 @@ def _parser_census_state(
         """,
         (raw_id,),
     ).fetchone()
+    membership_count = _int_cell(membership_census[2]) if membership_census is not None else None
+    source_index = _int_cell(raw[1])
     parser_confirmed_non_session = (
         membership_census is not None
         and str(membership_census[0]) == RAW_AUTHORITY_PARSER_FINGERPRINT
         and str(membership_census[1]) == "non_session"
-        and int(membership_census[2]) == 0
+        and membership_count == 0
     )
     byte_governed_fragment = (
-        int(raw[1]) < 0
+        source_index is not None
+        and source_index < 0
         and membership_census is not None
         and str(membership_census[0]) == RAW_AUTHORITY_PARSER_FINGERPRINT
         and str(membership_census[1]) == "failed"
-        and int(membership_census[2]) == 0
+        and membership_count == 0
         and str(membership_census[3]) == BYTE_AUTHORITY_CENSUS_DETAIL
     )
     expected_membership_census = (
@@ -416,7 +429,7 @@ def _parser_census_state(
             membership_census is not None
             and str(membership_census[0]) == RAW_AUTHORITY_PARSER_FINGERPRINT
             and str(membership_census[1]) == "complete"
-            and int(membership_census[2]) == len(memberships)
+            and membership_count == len(memberships)
         )
     )
     complete = (
@@ -462,11 +475,11 @@ def _logical_receipt(
         )
     expected_session_id = archive_session_id(origin, native_id)
     source_revision = raw_source_revision if membership is None else str(membership[2])
-    acquisition_generation = raw_acquisition_generation if membership is None else int(membership[4])
+    acquisition_generation = raw_acquisition_generation if membership is None else _int_cell(membership[4])
     membership_application_decision = _membership_application_decision(
         None if membership is None or membership[5] is None else str(membership[5])
     )
-    membership_content_hash = None if membership is None else bytes(membership[3])
+    membership_content_hash = None if membership is None else _bytes_cell(membership[3])
     head = index_conn.execute(
         """
         SELECT session_id, accepted_raw_id, accepted_source_revision, accepted_content_hash,
@@ -512,7 +525,13 @@ def _logical_receipt(
             head=current_head,
             applications=applications,
         )
-        if current_head is not None
+        if (
+            current_head is not None
+            and _bytes_cell(current_head[3]) is not None
+            and _int_cell(current_head[5]) is not None
+            and _int_cell(current_head[6]) is not None
+            and (membership is None or membership_content_hash is not None)
+        )
         else ()
     )
     if not application_ids:
@@ -524,7 +543,7 @@ def _logical_receipt(
     if not parser_complete:
         blockers.append(SourceGenerationBlocker.PARSER_CENSUS_MISMATCH)
 
-    session_rows = ()
+    session_rows: list[tuple[object, ...]] = []
     if current_head is not None:
         session_rows = index_conn.execute(
             """
@@ -576,16 +595,22 @@ def _current_or_prefix_applications(
     """
     head_raw_id = str(head[1])
     head_identity = (*head[1:6], head[6])
+    head_content_hash = _bytes_cell(head[3])
+    head_frontier = _int_cell(head[5])
+    head_generation = _int_cell(head[6])
     raw_is_prefix = _raw_is_predecessor(source_conn, raw_id=raw_id, accepted_raw_id=head_raw_id)
     valid: list[str] = []
     for application in applications:
         decision = str(application[3])
         application_identity = (*application[4:9], application[2])
+        application_generation = _int_cell(application[2])
+        application_content_hash = _bytes_cell(application[6])
         source_event_matches = (
             source_revision is not None
             and acquisition_generation is not None
+            and application_generation is not None
             and str(application[1]) == source_revision
-            and int(application[2]) == acquisition_generation
+            and application_generation == acquisition_generation
         )
         decision_matches = decision in {
             "selected_baseline",
@@ -593,7 +618,17 @@ def _current_or_prefix_applications(
             "reparse_reaffirmation",
             "superseded",
         } and (membership_application_decision is None or decision == membership_application_decision)
-        names_current_head = decision_matches and source_event_matches and application_identity == head_identity
+        application_frontier = _int_cell(application[8])
+        names_current_head = (
+            decision_matches
+            and source_event_matches
+            and head_content_hash is not None
+            and head_frontier is not None
+            and head_generation is not None
+            and application_content_hash is not None
+            and application_frontier is not None
+            and application_identity == head_identity
+        )
         accepted_self_prefix = (
             decision_matches
             and decision in {"selected_baseline", "applied_append", "reparse_reaffirmation"}
@@ -601,8 +636,9 @@ def _current_or_prefix_applications(
             and str(application[5]) == source_revision
             and source_event_matches
             and raw_is_prefix
+            and application_content_hash is not None
             and (
-                bytes(application[6]) == membership_content_hash
+                application_content_hash == membership_content_hash
                 if membership_content_hash is not None
                 else _byte_prefix_metadata_is_exact(
                     source_conn,
@@ -677,22 +713,42 @@ def _byte_prefix_metadata_is_exact(
         """,
         (accepted_raw_id,),
     ).fetchone()
+    candidate_source_index = _int_cell(candidate[0]) if candidate is not None else None
+    candidate_append_end = _int_cell(candidate[3]) if candidate is not None else None
+    candidate_generation = _int_cell(candidate[4]) if candidate is not None else None
+    current_generation = _int_cell(current[1]) if current is not None else None
+    application_end = _int_cell(application[8])
+    application_content_hash = _bytes_cell(application[6])
     return (
         candidate is not None
         and current is not None
-        and int(candidate[0]) < 0
+        and candidate_source_index is not None
+        and candidate_source_index < 0
         and candidate[1] is not None
         and candidate[2] is not None
-        and candidate[3] is not None
-        and int(candidate[4]) == acquisition_generation
+        and candidate_append_end is not None
+        and candidate_generation == acquisition_generation
         and current[0] == candidate[2]
-        and int(current[1]) >= acquisition_generation
+        and current_generation is not None
+        and current_generation >= acquisition_generation
         and str(application[4]) == raw_id
         and str(application[5]) == source_revision
-        and application[6] is not None
+        and application_content_hash is not None
         and str(application[7]) == "byte"
-        and int(application[8]) == int(candidate[3])
+        and application_end == candidate_append_end
     )
+
+
+def _int_cell(value: object) -> int | None:
+    """Accept only SQLite integer cells, excluding Python's bool subtype."""
+
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _bytes_cell(value: object) -> bytes | None:
+    """Accept only SQLite BLOB cells; do not coerce text or numeric values."""
+
+    return value if isinstance(value, bytes) else None
 
 
 __all__ = [
