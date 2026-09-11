@@ -682,17 +682,36 @@ def test_a_page_larger_than_its_limit_is_refused() -> None:
 
 
 def test_a_page_may_be_returned_as_a_pair_by_a_foreign_ring() -> None:
-    """Storage may not import this ring, so the page contract is structural."""
+    """Storage may not import this ring, so the page contract is structural.
 
-    class PairPaging(BaseDerivation):
+    This adapter inherits nothing from the kernel -- no base class, no enum, no
+    page type -- exactly as a ``polylogue/storage`` adapter must. Anti-vacuity:
+    require a ``KeyPage`` instance in ``_as_page`` and a domain that cannot
+    import this module can no longer page at all.
+    """
+
+    class PairPaging:
         domain = "pairs"
         prerequisites: tuple[str, ...] = ()
 
         def __init__(self) -> None:
             self.output: dict[str, str] = {}
 
-        def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int):
+        def required_page(
+            self, frame: DerivationFrame, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
             return (("a", "b"), None) if cursor is None else ((), None)
+
+        def excess_page(
+            self, frame: DerivationFrame, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
+            return ((), None)
+
+        def prerequisite_keys(self, frame: DerivationFrame, key: str) -> Iterable[tuple[str, str]]:
+            return ()
+
+        def quiet(self, frame: DerivationFrame, key: str) -> bool:
+            return False
 
         def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, str]:
             return {key: ("valid" if key in self.output else "missing") for key in keys}

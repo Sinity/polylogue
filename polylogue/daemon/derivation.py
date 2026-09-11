@@ -45,7 +45,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from polylogue.logging import get_logger
 
@@ -65,6 +65,7 @@ __all__ = [
     "KeyOutcome",
     "KeyPage",
     "KeyStatus",
+    "LegacyDerivationAdapter",
     "Outcome",
     "PageLike",
     "PassCursor",
@@ -441,19 +442,95 @@ class DerivationAdapter(Protocol):
         ...
 
 
+class LegacyDerivationAdapter(Protocol):
+    """The pre-paging vocabulary: one call hands over the whole key space.
+
+    Accepted so a storage-ring adapter can move to ``required_page`` in its own
+    change rather than in this one. That is not politeness: the session-profile
+    adapter lives inside the derived schema closure, where any edit moves the
+    schema identity and obliges the archive to reconverge -- a price a dormant
+    contract change must not charge.
+
+    The kernel pages this ordinally, so the *kernel* still holds one page at a
+    time. The adapter goes on materializing its own key space, and that cost is
+    the adapter's to remove when it migrates.
+    """
+
+    @property
+    def domain(self) -> str: ...
+
+    @property
+    def prerequisites(self) -> tuple[str, ...]: ...
+
+    def required(self, frame: DerivationFrame) -> Iterable[str]: ...
+
+    def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus | str]: ...
+
+    def compute(self, frame: DerivationFrame, key: str) -> ReplacementLike: ...
+
+    def publish(self, frame: DerivationFrame, replacement: Any) -> bool: ...
+
+
+class _LegacyPaging:
+    """Adapts the pre-paging vocabulary onto the page contract."""
+
+    def __init__(self, adapter: LegacyDerivationAdapter) -> None:
+        self._adapter = adapter
+
+    @property
+    def domain(self) -> str:
+        return self._adapter.domain
+
+    @property
+    def prerequisites(self) -> tuple[str, ...]:
+        return self._adapter.prerequisites
+
+    def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+        return _page_from_iterable(self._adapter.required(frame), cursor=cursor, limit=limit)
+
+    def excess_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+        excess = getattr(self._adapter, "excess_candidates", None)
+        return _page_from_iterable(excess(frame) if excess is not None else (), cursor=cursor, limit=limit)
+
+    def prerequisite_keys(self, frame: DerivationFrame, key: str) -> Iterable[DerivationKey | tuple[str, str]]:
+        bindings = getattr(self._adapter, "prerequisite_keys", None)
+        return bindings(frame, key) if bindings is not None else ()
+
+    def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus | str]:
+        return self._adapter.inspect(frame, keys)
+
+    def compute(self, frame: DerivationFrame, key: str) -> ReplacementLike:
+        return self._adapter.compute(frame, key)
+
+    def publish(self, frame: DerivationFrame, replacement: Any) -> bool:
+        return self._adapter.publish(frame, replacement)
+
+    def quiet(self, frame: DerivationFrame, key: str) -> bool:
+        policy = getattr(self._adapter, "quiet", None)
+        return bool(policy(frame, key)) if policy is not None else False
+
+
 class DerivationRegistry:
     """The declared derivations and the order their dependencies imply."""
 
-    def __init__(self, adapters: Iterable[DerivationAdapter] = ()) -> None:
+    def __init__(self, adapters: Iterable[DerivationAdapter | LegacyDerivationAdapter] = ()) -> None:
         self._adapters: dict[str, DerivationAdapter] = {}
         for adapter in adapters:
             self.register(adapter)
 
-    def register(self, adapter: DerivationAdapter) -> None:
+    def register(self, adapter: DerivationAdapter | LegacyDerivationAdapter) -> None:
         domain = adapter.domain
         if domain in self._adapters:
             raise ValueError(f"derivation domain {domain!r} is already registered")
-        self._adapters[domain] = adapter
+        # Which vocabulary the object speaks is a property of the object, not a
+        # flag anyone sets: an adapter that pages is used directly, one that
+        # does not is paged here.
+        paged: DerivationAdapter = (
+            cast("DerivationAdapter", adapter)
+            if callable(getattr(adapter, "required_page", None))
+            else _LegacyPaging(cast("LegacyDerivationAdapter", adapter))
+        )
+        self._adapters[domain] = paged
 
     def __contains__(self, domain: object) -> bool:
         return domain in self._adapters
