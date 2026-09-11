@@ -15,7 +15,7 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
 from functools import wraps
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from polylogue.operations.machine_receipts import (
     MachineHistoricalReceipt,
@@ -45,6 +45,9 @@ from polylogue.storage.sqlite.audit_leaf import (
     assert_verified_audit_leaf,
     open_verified_audit_connection,
 )
+
+if TYPE_CHECKING:
+    from polylogue.operations.insight_acceptance import AcceptedInsightPart
 
 AuditTargetState = Literal[
     "pending",
@@ -920,7 +923,6 @@ class AuditRepository:
         """Reload the exact immutable insights manifest already sealed to a request."""
 
         from polylogue.operations.insight_acceptance import (
-            AcceptedInsightPart,
             accepted_part_from_plan,
             insight_manifest_digest,
         )
@@ -931,11 +933,13 @@ class AuditRepository:
         if record is None or record.get("artifact_kind") != "execution-batch":
             raise ValueError("insight manifest is not sealed")
         raw_parts = self.machine_parts(binding)
-        if int(record.get("part_count", -1)) != len(raw_parts) or not raw_parts:
+        part_count = record.get("part_count")
+        if type(part_count) is not int or part_count != len(raw_parts) or not raw_parts:
             raise AuthorizationMismatchError("sealed insight manifest has incomplete machine parts")
         parts: list[AcceptedInsightPart] = []
         for ordinal, raw in enumerate(raw_parts):
-            if int(raw["ordinal"]) != ordinal or raw["authorization_ref"] is None:
+            raw_ordinal = raw["ordinal"]
+            if type(raw_ordinal) is not int or raw_ordinal != ordinal or raw["authorization_ref"] is None:
                 raise AuthorizationMismatchError("sealed insight manifest part is incomplete")
             preview = self.preview_for_principal(str(raw["preview_ref"]), principal)
             if (
@@ -1062,7 +1066,9 @@ class AuditRepository:
                 raise ValueError("ingest runtime authority requires both plan and authorization")
             payload: dict[str, object] = {"manifest": manifest.to_dict(), "principal": _principal_payload(principal)}
             if plan is None:
+                assert authorization is None
                 return payload
+            assert authorization is not None
             validate_mutation_plan_integrity(plan)
             from polylogue.operations.ingest_acceptance import ingest_context, ingest_plan
 
@@ -1121,11 +1127,12 @@ class AuditRepository:
                 "issue_authorization_batch": "issue_authorization",
                 "cancel_preview_batch": "cancel_preview",
             }[kind]
-            commands = []
+            commands: list[dict[str, object]] = []
             authorizations = cast(tuple[MutationAuthorization, ...], args[2]) if len(args) > 2 else ()
             if authorizations and len(authorizations) != len(items):
                 raise ValueError("authorization batch differs from preview batch")
             for ordinal, item in enumerate(items):
+                child_args: tuple[object, ...]
                 if child_kind == "cancel_preview":
                     child_args = (item,)
                 elif child_kind == "create_preview":
@@ -1151,7 +1158,7 @@ class AuditRepository:
                 "now_ms": int(time.time() * 1000),
             }
         if kind == "seal_insight_execution":
-            head_preview_ref, page_count, manifest_digest, raw_principal = cast(tuple[object, ...], args)
+            head_preview_ref, page_count, manifest_digest, raw_principal = args
             principal = cast(MutationPrincipal, raw_principal)
             if (
                 not isinstance(head_preview_ref, str)
@@ -1509,7 +1516,7 @@ class AuditRepository:
         principal = _principal_from_payload(payload["principal"])
         authorization = _authorization_from_payload(payload["authorization"])
         digest = _StoredAuthorizationDigest(cast(str, payload["authorization_token_sha256"]))
-        self.create_preview.__wrapped__(self, plan, principal)
+        self._create_preview_without_continuity(plan, principal)
         self._persist_authorization(
             digest, preview, principal, authorization, issued_at_ms=cast(int, payload["issued_at_ms"])
         )
@@ -1585,7 +1592,7 @@ class AuditRepository:
         principal: MutationPrincipal,
         *,
         expected_archive_identity: str,
-    ) -> tuple[object, ...]:
+    ) -> tuple[AcceptedInsightPart, ...]:
         """Reconstruct and verify an ordered bounded preview chain from audit rows."""
 
         from polylogue.operations.insight_acceptance import (
@@ -1597,7 +1604,7 @@ class AuditRepository:
         if not 1 <= page_count <= MAX_INSIGHT_ACCEPTED_PARTS:
             raise ValueError("insight manifest page count exceeds the bounded authority budget")
         cursor = head_preview_ref
-        reverse: list[object] = []
+        reverse: list[AcceptedInsightPart] = []
         seen: set[str] = set()
         with self._connection() as conn:
             for expected_ordinal in range(page_count - 1, -1, -1):
@@ -1625,21 +1632,18 @@ class AuditRepository:
         if cursor:
             raise AuthorizationMismatchError("insight manifest chain has an unexpected predecessor")
         parts = tuple(reversed(reverse))
-        from polylogue.operations.insight_acceptance import AcceptedInsightPart
-
-        typed_parts = cast(tuple[AcceptedInsightPart, ...], parts)
-        first = typed_parts[0]
+        first = parts[0]
         if any(
             part.scope_kind != first.scope_kind
             or part.index_generation != first.index_generation
             or part.recipe_version != first.recipe_version
             or part.manifest_digest != manifest_digest
-            for part in typed_parts
+            for part in parts
         ):
             raise AuthorizationMismatchError("insight manifest pages disagree on immutable acceptance facts")
-        if insight_manifest_digest(typed_parts) != manifest_digest:
+        if insight_manifest_digest(parts) != manifest_digest:
             raise AuthorizationMismatchError("insight manifest digest does not match its exact page chain")
-        return cast(tuple[object, ...], typed_parts)
+        return parts
 
     def _insight_bound_archive_identity(self) -> str:
         """Resolve the authenticated request archive in live and replayed seals."""
@@ -1796,7 +1800,16 @@ class AuditRepository:
         resume its page chain without silently minting a replacement preview.
         """
 
-        return cast(Any, self.create_preview).__wrapped__(self, plan, principal)
+        return self._create_preview_without_continuity(plan, principal)
+
+    def _create_preview_without_continuity(self, plan: MutationPlan, principal: MutationPrincipal) -> str:
+        """Reuse preview persistence while the outer continuity command is active."""
+
+        raw = getattr(self.create_preview, "__wrapped__", None)
+        if not callable(raw):
+            raise RuntimeError("create preview lost its continuity implementation")
+        create_preview = cast(Callable[[AuditRepository, MutationPlan, MutationPrincipal], str], raw)
+        return create_preview(self, plan, principal)
 
     def issue_authorization(
         self,

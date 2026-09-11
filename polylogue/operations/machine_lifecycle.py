@@ -6,6 +6,14 @@ from polylogue.operations.audit import AuditRepository, MachineRequestBinding
 from polylogue.operations.machine_receipts import encode_machine_receipt
 
 
+def _audit_int(value: object, *, field: str) -> int:
+    """Reject malformed audit scalars rather than silently coercing receipt facts."""
+
+    if type(value) is not int:
+        raise ValueError(f"audit {field} is not an integer")
+    return value
+
+
 def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> dict[str, object]:
     binding = MachineRequestBinding(
         **{
@@ -47,18 +55,18 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
     unattempted: list[int] = []
     outcomes: list[str] = []
     for part in parts:
-        ordinal, operation_id = int(part["ordinal"]), part["operation_id"]
+        ordinal, operation_id = _audit_int(part["ordinal"], field="part ordinal"), part["operation_id"]
         if operation_id is None:
             unattempted.append(ordinal)
             continue
         run = audit.get_operation(str(operation_id))
         events = audit.list_events(str(operation_id))
-        sequence += 1 + (int(events[-1]["sequence"]) if events else 0)
+        sequence += 1 + (_audit_int(events[-1]["sequence"], field="event sequence") if events else 0)
         if run is None:
             outcome = "indeterminate"
         else:
-            affected += int(run["affected_count"])
-            if int(run["unknown_count"]):
+            affected += _audit_int(run["affected_count"], field="affected count")
+            if _audit_int(run["unknown_count"], field="unknown count"):
                 outcome = "indeterminate"
             elif run["status"] == "completed":
                 completed += 1
