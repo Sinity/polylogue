@@ -2477,6 +2477,9 @@ def test_source_tier_v42_migration_043_preserves_members_and_matches_fresh_ddl(
     """v42 source rows survive the enumeration/member schema transition."""
     db_path = workspace_env["archive_root"] / "source.db"
     db_path.unlink(missing_ok=True)
+    raw_blob_hash, raw_blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(
+        b"synthetic-v43-raw"
+    )
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SOURCE_DDL)
         reset_source_fixture_to_version(conn, SOURCE_SCHEMA_VERSION - 1)
@@ -2485,9 +2488,9 @@ def test_source_tier_v42_migration_043_preserves_members_and_matches_fresh_ddl(
             """
             INSERT INTO raw_sessions (
                 raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms
-            ) VALUES ('v42-raw', 'codex-session', '/v42.json', ?, 4, 1)
+            ) VALUES ('v42-raw', 'codex-session', '/v42.json', ?, ?, 1)
             """,
-            (b"r" * 32,),
+            (bytes.fromhex(raw_blob_hash), raw_blob_size),
         )
         conn.execute(
             """
