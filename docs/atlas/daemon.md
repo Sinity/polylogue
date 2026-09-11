@@ -87,4 +87,4 @@ Two of its properties do hold for embeddings (polylogue-c0l7n). `embed_archive_s
 - The repository contract compresses convergence to FTS, embeddings, and insights. The current default converger also includes raw parse recovery, raw-authority caching, Claude workflow, delegation evidence, FTS readiness, standing queries, and optional Sinex publication (`polylogue/daemon/convergence_stages.py:1227-1260`).
 - Operationally, the daemon is runtime-masked and inactive, so the documented live-owner posture is not the machine’s current state. This discrepancy is external runtime state, not represented in repository files.
 
-verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11
+verified: 250a4ba83aef7172987dd8f2cdfed0f93edcd69f 2026-09-11

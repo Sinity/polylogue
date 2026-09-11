@@ -89,4 +89,4 @@ not rotted.
 - Tests use synthetic fixtures and managed `devtools test` commands; ambient
   personal archives never enter tracked files.
 
-verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11
+verified: 250a4ba83aef7172987dd8f2cdfed0f93edcd69f 2026-09-11
