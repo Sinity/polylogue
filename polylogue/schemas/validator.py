@@ -146,18 +146,75 @@ def _schema_for_property(schema: object, key: str, value: object) -> object:
         return _schema_branch_for_value(properties[key], value)
     pattern_properties = schema.get("patternProperties")
     if isinstance(pattern_properties, Mapping):
+        matches: list[Mapping[str, object]] = []
         for pattern, pattern_schema in pattern_properties.items():
             if isinstance(pattern, str):
                 try:
-                    matches = compile_pattern(pattern).search(key)
+                    pattern_match = compile_pattern(pattern).search(key)
                 except Exception:
-                    matches = None
-                if matches:
-                    return _schema_branch_for_value(pattern_schema, value)
+                    pattern_match = None
+                if pattern_match:
+                    selected = _schema_branch_for_value(pattern_schema, value)
+                    if isinstance(selected, Mapping):
+                        matches.append(selected)
+        if matches:
+            return _merge_pattern_observation_schemas(matches)
     additional_properties = schema.get("additionalProperties")
     if isinstance(additional_properties, Mapping):
         return _schema_branch_for_value(additional_properties, value)
     return None
+
+
+def _merge_pattern_observation_schemas(schemas: Iterable[Mapping[str, object]]) -> ValidationSchema:
+    """Union declared observation fields from every matching pattern schema.
+
+    JSON Schema applies *all* matching ``patternProperties`` schemas.  Drift
+    observation therefore cannot pick the first match: a field declared by a
+    later matching pattern would otherwise be reported as unexpected, with
+    the result depending on mapping insertion order.
+    """
+    property_schemas: dict[str, list[Mapping[str, object]]] = {}
+    nested_patterns: dict[str, list[Mapping[str, object]]] = {}
+    additional_schemas: list[Mapping[str, object]] = []
+    additional_forbidden = False
+    dynamic_containers: list[bool] = []
+    for schema in schemas:
+        properties = schema.get("properties")
+        if isinstance(properties, Mapping):
+            for name, property_schema in properties.items():
+                if isinstance(name, str) and isinstance(property_schema, Mapping):
+                    property_schemas.setdefault(name, []).append(property_schema)
+        pattern_properties = schema.get("patternProperties")
+        if isinstance(pattern_properties, Mapping):
+            for pattern, pattern_schema in pattern_properties.items():
+                if isinstance(pattern, str) and isinstance(pattern_schema, Mapping):
+                    nested_patterns.setdefault(pattern, []).append(pattern_schema)
+        additional = schema.get("additionalProperties", True)
+        if additional is False:
+            additional_forbidden = True
+        elif isinstance(additional, Mapping):
+            additional_schemas.append(additional)
+        dynamic_containers.append(bool(schema.get("x-polylogue-dynamic-keys")))
+
+    merged: dict[str, object] = {
+        "type": "object",
+        "properties": {
+            name: _merge_pattern_observation_schemas(values) if len(values) > 1 else values[0]
+            for name, values in property_schemas.items()
+        },
+    }
+    if nested_patterns:
+        merged["patternProperties"] = {
+            pattern: _merge_pattern_observation_schemas(values) if len(values) > 1 else values[0]
+            for pattern, values in nested_patterns.items()
+        }
+    if additional_forbidden:
+        merged["additionalProperties"] = False
+    elif additional_schemas:
+        merged["additionalProperties"] = _merge_pattern_observation_schemas(additional_schemas)
+    if dynamic_containers and all(dynamic_containers):
+        merged["x-polylogue-dynamic-keys"] = True
+    return merged
 
 
 def _has_matching_pattern_property(schema: Mapping[str, object], key: str) -> bool:

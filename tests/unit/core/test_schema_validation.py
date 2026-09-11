@@ -384,6 +384,43 @@ def test_additional_properties_schema_still_detects_nested_drift() -> None:
     assert any("mapping.static-key.extra" in warning for warning in result.drift_warnings)
 
 
+@pytest.mark.parametrize(
+    "patterns",
+    [
+        {
+            "^x": {"type": "object", "properties": {"a": {"type": "string"}}},
+            ".*": {"type": "object", "properties": {"b": {"type": "string"}}},
+        },
+        {
+            ".*": {"type": "object", "properties": {"b": {"type": "string"}}},
+            "^x": {"type": "object", "properties": {"a": {"type": "string"}}},
+        },
+    ],
+)
+def test_all_matching_pattern_properties_contribute_observation_schema(
+    patterns: dict[str, dict[str, object]],
+) -> None:
+    """Every matching pattern declares fields, independent of insertion order.
+
+    Anti-vacuity: selecting only the first matching pattern reports the field
+    declared by the other pattern as unexpected; reversing these patterns
+    changes which valid field is falsely reported.
+    """
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "patternProperties": patterns,
+            "additionalProperties": False,
+        },
+        strict=True,
+    )
+
+    result = validator.validate({"x1": {"a": "ok", "b": "ok"}})
+
+    assert result.is_valid
+    assert not result.has_drift
+
+
 def test_validate_non_strict_mode_skips_drift_detection() -> None:
     """Non-strict validation should ignore unexpected-field drift."""
     validator = SchemaValidator(
