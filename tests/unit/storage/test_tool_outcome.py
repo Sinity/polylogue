@@ -71,37 +71,42 @@ def test_structured_outcome_round_trips_for_each_provider_wire(provider: Provide
 def test_sidecar_execution_evidence_derives_result_outcome(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "sidecar.db")
     try:
+        session = parse_code(
+            [
+                {
+                    "type": "assistant",
+                    "uuid": "use",
+                    "sessionId": "sidecar-outcome",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": "call-1", "name": "run", "input": {}}],
+                    },
+                },
+                {
+                    "type": "user",
+                    "uuid": "result",
+                    "sessionId": "sidecar-outcome",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": "call-1", "content": "failed"}],
+                    },
+                    "toolUseResult": {"exitCode": 2},
+                },
+            ],
+            "sidecar-outcome",
+        )
+        result_block = next(
+            block for message in session.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+        )
+        assert result_block.outcome_unknown_reason == ToolResultUnknownReason.NOT_REPORTED.value
+        assert any(
+            event.event_type == "claude_tool_execution_result"
+            and event.payload == {"tool_use_id": "call-1", "exit_code": 2}
+            for event in session.session_events
+        )
         session_id = write_parsed_session_to_archive(
             conn,
-            ParsedSession(
-                source_name=Provider.CLAUDE_CODE,
-                provider_session_id="sidecar-outcome",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id="use",
-                        role=Role.ASSISTANT,
-                        blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_id="call-1")],
-                    ),
-                    ParsedMessage(
-                        provider_message_id="result",
-                        role=Role.TOOL,
-                        blocks=[
-                            ParsedContentBlock(
-                                type=BlockType.TOOL_RESULT,
-                                outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
-                                tool_id="call-1",
-                                text="failed",
-                            )
-                        ],
-                    ),
-                ],
-                session_events=[
-                    ParsedSessionEvent(
-                        event_type="claude_tool_execution_result",
-                        payload={"tool_use_id": "call-1", "exit_code": 2},
-                    )
-                ],
-            ),
+            session,
         )
         outcomes = conn.execute(
             """
@@ -115,6 +120,29 @@ def test_sidecar_execution_evidence_derives_result_outcome(tmp_path: Path) -> No
             (ToolOutcome.ERROR.value, None),
             (ToolOutcome.ERROR.value, 2),
         ]
+    finally:
+        conn.close()
+
+
+def test_sidecar_execution_evidence_refuses_conflicting_direct_verdict(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "sidecar-conflict.db")
+    try:
+        session = _session(
+            Provider.CLAUDE_CODE,
+            ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="reported ok", is_error=False),
+        ).model_copy(
+            update={
+                "session_events": [
+                    ParsedSessionEvent(
+                        event_type="claude_tool_execution_result",
+                        payload={"tool_use_id": "call-1", "exit_code": 2},
+                    )
+                ]
+            }
+        )
+        with pytest.raises(ValueError, match="conflicting result evidence"):
+            write_parsed_session_to_archive(conn, session)
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     finally:
         conn.close()
 
