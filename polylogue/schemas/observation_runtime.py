@@ -8,7 +8,7 @@ from itertools import islice
 from pathlib import Path
 from typing import TypeAlias, cast
 
-from polylogue.archive.artifact_taxonomy import classify_artifact
+from polylogue.archive.artifact_taxonomy import classify_artifact, strong_path_classification
 from polylogue.archive.raw_payload import ReplayableRecordSamples, extract_payload_samples, record_bucket_key
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document
@@ -102,6 +102,35 @@ def _eligible_artifact_kind(
     return artifact.cohort if artifact.schema_eligible else None
 
 
+def _observable_artifact_kind(
+    payload: SchemaClusterPayload,
+    *,
+    context: _ObservationContext,
+) -> str | None:
+    """Return the element kind for session or declared structured sidecars.
+
+    Session admission and schema observation are deliberately separate.  A
+    path-declared ``fact``/``raw-only`` artifact is not a session, but its JSON
+    object shape is still useful schema evidence (and must not disappear from
+    the denominator merely because ``schema_eligible`` is false).  Unknown or
+    content-only metadata remains non-observable and therefore keeps the
+    existing fail-closed behavior.
+    """
+    artifact = classify_artifact(
+        payload,
+        provider=context.source_name,
+        source_path=context.source_path,
+    )
+    if artifact.schema_eligible:
+        return artifact.cohort
+    if context.source_path is None:
+        return None
+    declared = strong_path_classification(context.source_path, provider=context.source_name)
+    if declared is None or declared.parse_as_session:
+        return None
+    return artifact.cohort if artifact.cohort == declared.kind.value else declared.kind.value
+
+
 def _extract_record_observation(
     normalized_payload: JSONValue,
     *,
@@ -110,7 +139,7 @@ def _extract_record_observation(
     compact_values: bool,
     admitted_artifact_kind: str | None,
 ) -> _ObservedSchemaUnit | None:
-    artifact_kind = admitted_artifact_kind or _eligible_artifact_kind(normalized_payload, context=context)
+    artifact_kind = admitted_artifact_kind or _observable_artifact_kind(normalized_payload, context=context)
     if artifact_kind is None:
         return None
 
@@ -120,6 +149,12 @@ def _extract_record_observation(
         max_samples=context.effective_max_samples,
         record_type_key=config.record_type_key,
     )
+    # Structured sidecars are often ordinary metadata objects without the
+    # record-envelope keys used by session streams.  Their path declaration is
+    # already a strong admission contract, so retain one object for shape
+    # observation even when the generic record sampler would reject it.
+    if not samples and admitted_artifact_kind is None and isinstance(normalized_payload, dict):
+        samples = [json_document(normalized_payload)]
     if compact_values:
         samples = _compact_schema_samples(samples)
     if not samples:
@@ -151,7 +186,7 @@ def _extract_document_observations(
     documents = _compact_schema_samples(extracted_documents) if compact_values else extracted_documents
     units: list[_ObservedSchemaUnit] = []
     for sample in documents:
-        artifact_kind = _eligible_artifact_kind(sample, context=context)
+        artifact_kind = _observable_artifact_kind(sample, context=context)
         if artifact_kind is None:
             continue
         units.append(

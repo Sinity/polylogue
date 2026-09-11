@@ -65,3 +65,22 @@ class TestExtractSchemaUnitsFromPayload:
         assert len(units) == 2
         assert {unit.session_id for unit in units} == {"conv-1", "conv-2"}
         assert all(unit.artifact_kind == "session_document" for unit in units)
+
+    def test_declared_sidecar_is_observed_without_session_admission(self) -> None:
+        config = ProviderConfig(
+            name=Provider.CLAUDE_CODE,
+            description="Claude Code",
+            sample_granularity="record",
+            record_type_key="type",
+        )
+        payload = {"agent_id": "agent-1", "new_field": {"enabled": True}}
+        units = extract_schema_units_from_payload(
+            payload,
+            source_name=Provider.CLAUDE_CODE,
+            source_path="/tmp/subagents/run/agent-1.meta.json",
+            raw_id="raw-sidecar",
+            config=config,
+        )
+        assert len(units) == 1
+        assert units[0].artifact_kind == "agent_sidecar_meta"
+        assert units[0].schema_samples[0]["new_field"] == {"enabled": True}
