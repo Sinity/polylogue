@@ -9,6 +9,7 @@ receipt proves the reuse the copy existed to provide.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import click
@@ -72,11 +73,17 @@ def preserve_command(copy_path: Path, root: Path | None, immutable: bool, output
 def restore_command(copy_path: Path, root: Path | None, model: str | None, output_format: str) -> None:
     """Import the preserved vectors the rebuilt archive is about to ask for."""
     from polylogue.maintenance.embedding_preservation import recomputed_vector_hashes, restore_embedding_vectors
+    from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
 
     embeddings_db, index_db = _tier_paths(root)
     resolved = _resolved_model(model)
     wanted = recomputed_vector_hashes(index_db, model=resolved)
-    receipt = restore_embedding_vectors(embeddings_db, copy_path, set(wanted.values()))
+    archive_root_path = (root if root is not None else archive_root()).absolute()
+    # Restoration mutates the rebuilt embeddings tier and must be the explicit
+    # offline owner of the archive for the whole destination-binding and
+    # restore window. The preserved source is opened read-only by the library.
+    with acquire_durable_archive_ownership(archive_root_path, owner_id=f"embedding-restore:{os.getpid()}"):
+        receipt = restore_embedding_vectors(embeddings_db, copy_path, set(wanted.values()))
     if output_format == "json":
         click.echo(
             json.dumps(

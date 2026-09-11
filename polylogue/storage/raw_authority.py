@@ -2079,6 +2079,10 @@ def resolve_raw_authority_blocker(
     """Explicitly acknowledge current evidence and reopen replanning."""
     if not resolution.strip():
         raise ValueError("raw authority blocker resolution must be non-empty")
+    # Resolution tombstones the durable source ledger and therefore must be
+    # admitted by the daemon coordinator on live paths.  Offline callers keep
+    # the existing permissive one-shot behavior when lease enforcement is off.
+    require_write_lease("raw authority blocker resolution", archive_root=archive_root)
     source_db = archive_root / "source.db"
     with closing(sqlite3.connect(source_db)) as conn:
         conn.row_factory = sqlite3.Row
@@ -2211,6 +2215,10 @@ def auto_resolve_stale_plan_blockers(archive_root: Path) -> int:
     resolved by a concurrent caller between listing and resolving) are
     logged and skipped rather than aborting the whole batch.
     """
+    # Although the initial census is read-only, this operation may tombstone
+    # every matching blocker.  Guard the public door so an unadmitted caller
+    # cannot hide the lease failure inside the per-blocker best-effort loop.
+    require_write_lease("automatic stale-plan blocker resolution", archive_root=archive_root)
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return 0

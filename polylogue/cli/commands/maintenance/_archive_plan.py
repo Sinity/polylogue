@@ -93,10 +93,7 @@ def archive_init_command(replace_existing: bool, yes: bool, output_format: str) 
     then creates fresh source, index, embeddings, user, and ops databases.
     Ingest and read surfaces populate and consume the archive.
     """
-    from polylogue.storage.sqlite.archive_tiers.archive_init import (
-        ArchiveInitBlockedError,
-        initialize_archive_tier_files_from_plan,
-    )
+    from polylogue.storage.sqlite.archive_tiers.archive_init import initialize_archive_tier_files_from_plan
     from polylogue.storage.sqlite.archive_tiers.archive_plan import build_archive_init_plan
 
     plan = build_archive_init_plan(
@@ -117,7 +114,7 @@ def archive_init_command(replace_existing: bool, yes: bool, output_format: str) 
 
     try:
         result = initialize_archive_tier_files_from_plan(plan)
-    except ArchiveInitBlockedError as exc:
+    except RuntimeError as exc:
         if output_format == "json":
             payload = _archive_plan_payload(plan)
             payload["executed"] = False

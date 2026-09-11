@@ -5178,6 +5178,13 @@ class LiveBatchProcessor:
     def _compact_superseded_raw_snapshots(self, paths: list[Path]) -> None:
         if not paths or _source_tier_acquisition_required():
             return
+        from polylogue.storage.sqlite.write_lease import require_write_lease
+
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        # The watcher invokes this through ``_run_sync`` and its shared
+        # DaemonWriteCoordinator. Keep the door guarded as well so a direct
+        # or test-double invocation cannot bypass process-wide enforcement.
+        require_write_lease("live raw snapshot compaction", archive_root=archive_root)
         from polylogue.storage.index_generation import ActiveWriterLease
         from polylogue.storage.raw_retention import (
             RawRetentionSafetyError,
@@ -5185,7 +5192,6 @@ class LiveBatchProcessor:
             compact_paths_superseded_raw_snapshots,
         )
 
-        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
         if not source_db.exists():
             return
