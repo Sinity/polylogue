@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import queue
 import socket
 import sqlite3
 import threading
@@ -24,7 +25,7 @@ from polylogue.daemon.http import (
     DaemonAPIHTTPServer,
 )
 from polylogue.daemon.web_auth import WebCredentialScope
-from polylogue.daemon_client import DaemonClient
+from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
 from tests.infra.daemon_operations import running_daemon_operations
 
 
@@ -116,9 +117,14 @@ def _seed_delete_authority_archive(root: Path, count: int) -> tuple[str, ...]:
 
 
 @contextlib.contextmanager
-def _delete_authority_daemon(monkeypatch: pytest.MonkeyPatch, archive_root: Path) -> Iterator[_DeleteDaemonClient]:
+def _delete_authority_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+    archive_root: Path,
+    *,
+    server_error_sink: queue.SimpleQueue[str] | None = None,
+) -> Iterator[_DeleteDaemonClient]:
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
-    with running_daemon_operations(archive_root) as stack:
+    with running_daemon_operations(archive_root, server_error_sink=server_error_sink) as stack:
         stack.server.auth_token = "delete-authority-token"
         stack.client.auth_token = "delete-authority-token"
         client = cast(_DeleteDaemonClient, stack.client)
@@ -290,13 +296,21 @@ def test_matched_session_mutation_runs_under_the_daemon_authority(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     session_ids = _seed_delete_authority_archive(archive_root, 2)
+    server_errors: queue.SimpleQueue[str] = queue.SimpleQueue()
 
-    with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        envelope = client.operation_to_completion(
-            operation,
-            {"session_ids": list(session_ids), payload_key: values},
-            archive_root=str(archive_root),
-        )
+    with _delete_authority_daemon(monkeypatch, archive_root, server_error_sink=server_errors) as client:
+        try:
+            envelope = client.operation_to_completion(
+                operation,
+                {"session_ids": list(session_ids), payload_key: values},
+                archive_root=str(archive_root),
+            )
+        except DaemonMutationIndeterminateError as exc:
+            try:
+                server_error = server_errors.get(timeout=1)
+            except queue.Empty:
+                raise exc from None
+            pytest.fail(f"machine operation handler failed:\n{server_error}")
 
     assert envelope is not None
     assert envelope.get("error") is None, envelope
