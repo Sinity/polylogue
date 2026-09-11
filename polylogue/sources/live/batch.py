@@ -4459,10 +4459,11 @@ class LiveBatchProcessor:
         head_raw_id = replay_plan.accepted_chain[-1]
         head = next(candidate for candidate in candidates if candidate.raw_id == head_raw_id)
         reconstructed_head = head_raw_id in inferred
-        if head.kind is not RawRevisionKind.FULL and not reconstructed_head:
+        append_head = head.kind is RawRevisionKind.APPEND
+        if head.kind is not RawRevisionKind.FULL and not append_head and not reconstructed_head:
             return None
         reconstructed_prefix_proof: tuple[str, os.stat_result] | None = None
-        if reconstructed_head:
+        if append_head or reconstructed_head:
             if head.append_end_offset is None:
                 return None
 
@@ -4494,7 +4495,26 @@ class LiveBatchProcessor:
                         if raw_id in inferred:
                             blob_start = candidate.blob_size - (source_end - source_start)
                         elif candidate.blob_size != source_end - source_start:
-                            return None
+                            # Older Codex append captures prepended the
+                            # session_meta record to each retained delta.  A
+                            # byte-proven append head from that legacy shape
+                            # is still usable, but only when the retained
+                            # blob's exact header length and marker account for
+                            # the extra bytes.
+                            header_size = codex_legacy_header_size(str(path))
+                            if header_size is None or candidate.blob_size != (source_end - source_start) + header_size:
+                                return None
+                            blob_hash = blob_hash_by_raw_id.get(raw_id)
+                            if blob_hash is None:
+                                return None
+                            blob_path = source_db.parent / "blob" / blob_hash[:2] / blob_hash[2:]
+                            try:
+                                with blob_path.open("rb") as blob_handle:
+                                    if not blob_handle.read(header_size).startswith(b'{"type":"session_meta"'):
+                                        return None
+                            except OSError:
+                                return None
+                            blob_start = header_size
                     else:
                         return None
                     if blob_start < 0:
@@ -4601,7 +4621,7 @@ class LiveBatchProcessor:
         blob_hash_hex = blob_hash_by_raw_id.get(head_raw_id)
         if blob_hash_hex is None or len(blob_hash_hex) != 64:
             return None
-        if reconstructed_head:
+        if append_head or reconstructed_head:
             if head.append_end_offset is None or reconstructed_prefix_proof is None:
                 return None
             byte_offset = head.append_end_offset
@@ -4633,7 +4653,7 @@ class LiveBatchProcessor:
             # byte; the full-head branch has proved nothing, so a rewrite
             # preserving `head.blob_size` would be adopted as authority.
             # Require the live prefix to reproduce the retained blob digest.
-            if not reconstructed_head and file_prefix_sha256(path, byte_offset) != blob_hash_hex:
+            if not append_head and not reconstructed_head and file_prefix_sha256(path, byte_offset) != blob_hash_hex:
                 return None
             composed_tail_hash = claude_semantic_frontier_for_prefix(path, byte_offset)
             if composed_tail_hash is None:
