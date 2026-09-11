@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import tempfile
 from collections.abc import Collection, Mapping
 from pathlib import Path
@@ -60,6 +61,27 @@ def test_declared_claude_jsonl_source_reaches_evidence_schema_emission(tmp_path:
     source_receipt = result.phase_receipt.get("source")
     assert isinstance(source_receipt, dict)
     assert source_receipt["source_terminal_outcomes"] == {"included": 1}
+
+
+def test_declared_codex_database_observes_table_and_column_shape(tmp_path: Path) -> None:
+    """Database structure is schema evidence even though rows are not sessions."""
+    path = tmp_path / "state_5.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            "CREATE TABLE threads (id TEXT, title TEXT, added_column INTEGER);"
+            "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT);"
+        )
+    candidate = _SourceCandidate("codex", tmp_path, path, "codex-state")
+    collected = _collect_candidate(candidate)
+    assert collected.terminal.outcome == "included"
+    assert len(collected.contributions) == 1
+    evidence = SchemaEvidence.from_json(collected.contributions[0].evidence_by_element["database_schema"])
+    properties = evidence.structure["properties"]
+    assert isinstance(properties, dict)
+    tables = properties["tables"]
+    assert isinstance(tables, dict)
+    assert "added_column" in json.dumps(evidence.structure)
+    assert "title" in json.dumps(evidence.structure)
 
 
 def test_declared_json_array_accepts_fractional_values_and_one_file_source(tmp_path: Path) -> None:
