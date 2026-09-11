@@ -14,12 +14,11 @@ import pytest
 from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
-    make_session_profile_derivation,
-    make_session_profile_frame,
 )
 from polylogue.daemon.derivation import Budget
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+from polylogue.operations.session_profile_convergence import make_session_profile_derivation, make_session_profile_frame
 from tests.infra.convergence_harness import (
     converge_session_profiles,
     raw_authority_facts,

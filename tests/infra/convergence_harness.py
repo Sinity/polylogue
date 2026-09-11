@@ -34,14 +34,13 @@ from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
     SessionState,
-    make_session_profile_derivation,
-    make_session_profile_frame,
 )
 from polylogue.daemon.convergence_stages import make_fts_stage
 from polylogue.daemon.derivation import DerivationReport
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
+from polylogue.operations.session_profile_convergence import make_session_profile_derivation, make_session_profile_frame
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload

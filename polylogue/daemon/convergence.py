@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -24,7 +23,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypeGuard, cast, runtime_checkable
 
 from polylogue.daemon.derivation import (
     Budget,
@@ -73,6 +72,7 @@ class SelectedSessionOutcome:
     reason: str | None = None
 
 
+@runtime_checkable
 class _SelectedSessionFacts(Protocol):
     session_present: bool
     status: str
@@ -81,6 +81,13 @@ class _SelectedSessionFacts(Protocol):
     profiles: int
     work_events: int
     phases: int
+
+
+@runtime_checkable
+class _PublicationCommitKnown(Protocol):
+    """Failure contract for an adapter that knows whether its index write committed."""
+
+    index_family_committed: bool
 
 
 class _SelectedSessionAdapter(Protocol):
@@ -100,7 +107,6 @@ class _SelectedSessionAdapter(Protocol):
 if TYPE_CHECKING:
     from polylogue.daemon.execution import BoundedComputeAdapter
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
-    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
 
 
 class _DerivationAdmission:
@@ -292,12 +298,43 @@ def _selected_session_facts(
     frame: DerivationFrame,
     session_id: str,
 ) -> _SelectedSessionFacts:
-    from polylogue.storage.derived.session.derivation import SessionProfilePartFacts
+    facts: object = adapter.selected_part_facts(frame, session_id)
+    if not _is_selected_session_facts(facts):
+        raise TypeError("sealed-part facts carry invalid field types")
+    return facts
 
-    facts = adapter.selected_part_facts(frame, session_id)
-    if not isinstance(facts, SessionProfilePartFacts):
-        raise TypeError(f"sealed-part facts must be SessionProfilePartFacts, got {type(facts).__name__}")
-    return cast("_SelectedSessionFacts", facts)
+
+def _is_selected_session_facts(value: object) -> TypeGuard[_SelectedSessionFacts]:
+    """Validate the complete storage-to-owner selected-part fact interface."""
+    if not isinstance(value, _SelectedSessionFacts):
+        return False
+    session_present: object = value.session_present
+    status: object = value.status
+    input_binding: object = value.input_binding
+    output_binding: object = value.output_binding
+    profiles: object = value.profiles
+    work_events: object = value.work_events
+    phases: object = value.phases
+    return (
+        isinstance(session_present, bool)
+        and isinstance(status, str)
+        and isinstance(input_binding, str | None)
+        and isinstance(output_binding, str | None)
+        and isinstance(profiles, int)
+        and not isinstance(profiles, bool)
+        and isinstance(work_events, int)
+        and not isinstance(work_events, bool)
+        and isinstance(phases, int)
+        and not isinstance(phases, bool)
+    )
+
+
+def _publication_commit_known(exc: BaseException) -> bool | None:
+    """Return the adapter's explicit committed-publication fact, if supplied."""
+    if not isinstance(exc, _PublicationCommitKnown):
+        return None
+    committed: object = exc.index_family_committed
+    return committed if isinstance(committed, bool) else None
 
 
 def _selected_counts(facts: _SelectedSessionFacts) -> SelectedSessionCounts:
@@ -539,9 +576,7 @@ def _converge_selected_session_parts_sync(
             try:
                 accepted = admission("session_profile", partial(adapter.publish, frame, replacement))
             except Exception as exc:
-                from polylogue.storage.derived.session.derivation import SessionProfileMarkerLoweringError
-
-                if isinstance(exc, SessionProfileMarkerLoweringError):
+                if (index_family_committed := _publication_commit_known(exc)) is not None:
                     # Index and user tiers deliberately do not share a
                     # transaction. A marker failure can therefore follow an
                     # already-committed index replacement. Preserve that
@@ -556,7 +591,7 @@ def _converge_selected_session_parts_sync(
                                 "unknown",
                                 None,
                                 input_binding=prepared_binding,
-                                publication_known_committed=exc.index_family_committed,
+                                publication_known_committed=index_family_committed,
                                 reason=f"marker lowering and post-failure certification: {facts_exc}",
                             )
                         )
@@ -567,7 +602,7 @@ def _converge_selected_session_parts_sync(
                                 "failed",
                                 after_marker_failure,
                                 input_binding=prepared_binding,
-                                publication_known_committed=exc.index_family_committed,
+                                publication_known_committed=index_family_committed,
                                 reason="marker lowering failed after index publication",
                             )
                         )
@@ -652,124 +687,6 @@ def _converge_selected_session_parts_sync(
                 break
             before = after
     return tuple(outcomes)
-
-
-def make_session_profile_derivation(
-    index_db_path: Path,
-    *,
-    archive_root: Path,
-    materializer_version: int | None = None,
-    now: Callable[[], float],
-) -> SessionProfileDerivation:
-    """Build the one daemon-owned adapter for one active index generation.
-
-    The protocol composition layer calls this once for its active generation
-    and registers the returned adapter exactly once with ``DaemonConverger``.
-    The frame's scope is either the bounded durable changes from live ingest or
-    ``None`` for an archive-wide no-hint sweep.
-    """
-    from polylogue.storage.archive_identity import resolve_active_index_path
-    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
-    from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
-    from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
-
-    if materializer_version is None:
-        materializer_version = SESSION_INSIGHT_MATERIALIZER_VERSION
-
-    def active_index_path() -> Path:
-        # ``root/index.db`` can be a pointer stub.  Consult the configured
-        # root's canonical active-index authority for every compute/write
-        # boundary so a promoted generation is never treated as the old path.
-        return resolve_active_index_path(archive_root)
-
-    def active_generation_path() -> Path:
-        """Pin connections and replacements to the anchor's current target.
-
-        The archive-root ``index.db`` may be the canonical promotion symlink.
-        Resolving it here names the physical generation that SQLite opens, so
-        the storage adapter can compare its prepared and publication handles
-        without mistaking the stable anchor pathname for a generation.
-        """
-        return active_index_path().resolve()
-
-    def read_connection() -> sqlite3.Connection:
-        return open_readonly_connection(active_generation_path(), timeout_class="background-read")
-
-    def write_connection() -> sqlite3.Connection:
-        return open_daemon_connection(active_generation_path(), archive_root=archive_root)
-
-    def generation_binding() -> str:
-        return str(active_generation_path())
-
-    def quiet_key(frame: object, session_id: str) -> bool:
-        # Check one key at a time inside the compute pass.  This preserves hot
-        # source deferral without materializing an archive-wide quiet set for a
-        # no-hint sweep, and keeps clock authority injected by composition.
-        from polylogue.daemon.convergence_stages import _archive_hot_insight_session_ids
-
-        conn = read_connection()
-        try:
-            return session_id in _archive_hot_insight_session_ids(
-                conn,
-                (session_id,),
-                now=now(),
-                archive_root=archive_root,
-            )
-        finally:
-            conn.close()
-
-    user_db = archive_root / "user.db"
-
-    def marker_read_connection() -> sqlite3.Connection:
-        return open_readonly_connection(user_db, timeout_class="background-read")
-
-    def marker_write_connection() -> sqlite3.Connection:
-        return open_daemon_connection(user_db, archive_root=archive_root)
-
-    def scope(frame: object) -> Sequence[str] | None:
-        value = getattr(frame, "scope", None)
-        if value is None:
-            return None
-        if not isinstance(value, tuple):
-            raise TypeError("session profile frame scope must be a tuple of session ids or None")
-        return tuple(str(item) for item in value)
-
-    return SessionProfileDerivation(
-        read_connection,
-        write_connection,
-        materializer_version=materializer_version,
-        session_scope=scope,
-        quiet_key=quiet_key,
-        marker_read_connection=marker_read_connection if user_db.exists() else None,
-        marker_write_connection=marker_write_connection if user_db.exists() else None,
-        generation_binding=generation_binding,
-    )
-
-
-def make_session_profile_frame(
-    index_db_path: Path,
-    *,
-    archive_root: Path,
-    scope: Sequence[str] | None,
-) -> DerivationFrame:
-    """Describe one bounded session pass at the current index generation.
-
-    The physical generation is observed from the active anchor, not invented
-    from raw-ingest hints.  The adapter opens its own one-connection read
-    transaction against that generation and binds each computed key to the
-    exact values it consumed; publication rejects if the anchor promotes in
-    between.  ``scope=None`` is the restart-safe archive sweep.
-    """
-    from polylogue.storage.archive_identity import resolve_active_index_path
-    from polylogue.storage.derived.session.derivation import SESSION_PROFILE_DOMAIN, SESSION_PROFILE_RECIPE_VERSION
-
-    del index_db_path
-    return DerivationFrame(
-        archive_root=str(archive_root),
-        source_revision=f"index-generation:{resolve_active_index_path(archive_root).resolve()}",
-        recipe_versions={SESSION_PROFILE_DOMAIN: SESSION_PROFILE_RECIPE_VERSION},
-        scope=None if scope is None else tuple(dict.fromkeys(str(session_id) for session_id in scope)),
-    )
 
 
 def _stage_false_error(stage_name: str, *, scope: str) -> str:

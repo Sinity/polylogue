@@ -78,6 +78,28 @@ def test_admission_is_bounded_by_units_and_bytes() -> None:
         adapter.shutdown(wait=True)
 
 
+def test_failed_completion_observes_released_reservation() -> None:
+    """An errored public future is not done while its admission is retained.
+
+    Anti-vacuity: completing the future before ``_release`` makes the snapshot
+    after ``result`` nondeterministically retain this task's unit.
+    """
+
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0, queue_bytes=4)
+
+    def fail() -> None:
+        raise RuntimeError("compute failed")
+
+    try:
+        submitted = adapter.submit(fail, estimated_bytes=4)
+        with pytest.raises(RuntimeError, match="compute failed"):
+            submitted.future.result(timeout=2)
+        assert adapter.snapshot().used_units == 0
+        assert adapter.snapshot().used_bytes == 0
+    finally:
+        adapter.shutdown(wait=True)
+
+
 def test_cancellation_interrupts_registered_connection_and_releases_capacity() -> None:
     """Anti-vacuity: deleting interrupt or the release path leaks capacity."""
 

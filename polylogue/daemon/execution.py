@@ -522,16 +522,22 @@ class BoundedComputeAdapter:
 
         def run() -> None:
             token = _CURRENT_CANCELLATION.set(task.cancellation)
+            result: object | None = None
+            failure: BaseException | None = None
             try:
                 if task.cancellation.cancelled:
-                    task.future.set_exception(DaemonOperationCancelled("operation cancelled before compute started"))
+                    failure = DaemonOperationCancelled("operation cancelled before compute started")
                 else:
-                    task.future.set_result(task.function())
+                    result = task.function()
             except BaseException as exc:
-                task.future.set_exception(exc)
+                failure = exc
             finally:
                 _CURRENT_CANCELLATION.reset(token)
                 self._release(task, active=True)
+            if failure is not None:
+                task.future.set_exception(failure)
+            else:
+                task.future.set_result(result)
 
         try:
             self.executor.submit(run)

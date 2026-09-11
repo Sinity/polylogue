@@ -18,11 +18,10 @@ from polylogue.daemon.convergence import (
     DaemonConverger,
     SelectedSessionTarget,
     SessionProfileConvergenceOwner,
-    make_session_profile_derivation,
-    make_session_profile_frame,
 )
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+from polylogue.operations.session_profile_convergence import make_session_profile_derivation, make_session_profile_frame
 from polylogue.storage.derived.session import derivation as session_derivation
 from polylogue.storage.derived.session.derivation import SessionProfilePartFacts, SessionProfileReplacement
 from tests.infra.convergence_harness import (
