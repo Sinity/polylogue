@@ -12,8 +12,8 @@ import pytest
 
 from polylogue.daemon.uds import MachineOperationHandler
 from polylogue.daemon_client import DaemonClient, DaemonOperationRejectedError
-from polylogue.operations.mutation_actuators import SessionDeleteActuator
-from polylogue.operations.mutation_transaction import MAX_MUTATION_PLAN_TARGETS
+from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
+from polylogue.operations.mutation_transaction import MAX_MUTATION_PLAN_TARGETS, MutationPlan, MutationReceipt
 from tests.infra.daemon_operations import running_daemon_operations
 from tests.infra.storage_records import SessionBuilder
 
@@ -71,9 +71,10 @@ def test_one_uds_operation_request_returns_canonical_read_without_health_probe(
 def test_machine_listener_uses_the_independent_operation_handler(tmp_path: Path) -> None:
     """Mutation: delegate machine requests through the browser handler and this fails."""
 
-    with running_daemon_operations(
-        tmp_path / "archive", seed_archive=lambda root: _seed_sessions(root, count=1)
-    ) as stack:
+    def seed(root: Path) -> None:
+        _seed_sessions(root, count=1)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
         assert stack.server.RequestHandlerClass is MachineOperationHandler
         assert MachineOperationHandler.__bases__[0].__name__ == "BaseHTTPRequestHandler"
         envelope = stack.client.operation("status", {}, archive_root=str(stack.archive_root))
@@ -131,6 +132,7 @@ def test_changed_intent_cannot_reuse_a_durable_request_id(tmp_path: Path) -> Non
             archive_root=str(stack.archive_root),
             request_id="stable-preview-intent",
         )
+        assert first is not None
         assert first["outcome"] == "completed"
         changed = stack.client.operation(
             "mutation.session.delete.preview",
@@ -150,10 +152,10 @@ def test_operation_route_bounds_the_real_canonical_envelope(tmp_path: Path, monk
 
     import polylogue.daemon.uds as uds
 
-    with running_daemon_operations(
-        tmp_path / "archive",
-        seed_archive=lambda root: _seed_sessions(root, count=8),
-    ) as stack:
+    def seed(root: Path) -> None:
+        _seed_sessions(root, count=8)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
         unbounded = stack.client.operation("cli.query", {"params": {"limit": 8}}, archive_root=str(stack.archive_root))
         assert unbounded is not None and unbounded["outcome"] == "completed"
         assert len(json.dumps(unbounded, separators=(",", ":")).encode()) > 4096
@@ -246,11 +248,11 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
     release_apply = threading.Event()
     original_apply = SessionDeleteActuator.apply
 
-    def blocked_apply(self: SessionDeleteActuator, *args: object, **kwargs: object) -> object:
+    def blocked_apply(self: SessionDeleteActuator, plan: MutationPlan, args: SessionDeleteArgs) -> MutationReceipt:
         entered_apply.set()
         if not release_apply.wait(timeout=5):
             raise TimeoutError("test did not release the admitted delete actuator")
-        return original_apply(self, *args, **kwargs)
+        return original_apply(self, plan, args)
 
     monkeypatch.setattr(SessionDeleteActuator, "apply", blocked_apply)
     with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:

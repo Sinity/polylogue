@@ -12,7 +12,6 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import click
@@ -68,7 +67,7 @@ class TestDeclaredMutationAuthority:
             return {"written": True}
 
         with pytest.raises(OperationUnavailableError):
-            OperationKernel(lambda _request: None, direct).execute(OperationRequest(operation, {}))
+            OperationKernel(lambda _request: None).execute(OperationRequest(operation, {}))
         assert executed is False
 
 
@@ -226,7 +225,7 @@ class TestUserMutationRefusal:
     """The matched-page tag/metadata route has no offline write path."""
 
     def test_absent_daemon_refuses_the_tag_write(self, tmp_path: Path) -> None:
-        archive: Any = MagicMock()
+        archive = MagicMock()
         env = _env()
         with (
             patch(

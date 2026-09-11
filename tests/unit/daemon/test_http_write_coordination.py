@@ -12,6 +12,7 @@ from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Protocol, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -21,7 +22,18 @@ from polylogue.daemon.http import (
     DaemonAPIHTTPServer,
 )
 from polylogue.daemon.web_auth import WebCredentialScope
+from polylogue.daemon_client import DaemonClient
 from tests.infra.daemon_operations import running_daemon_operations
+
+
+class _DeleteDaemonClient(DaemonClient):
+    archive_root: Path
+
+
+class _OperationReplayServer(Protocol):
+    operation_ids_seen: set[str]
+    operation_results: dict[str, tuple[str, int, dict[str, object]]]
+    operation_ids_lock: threading.Lock
 
 
 class _RecordingBridge:
@@ -51,13 +63,13 @@ def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
         return True
 
     handler = object.__new__(DaemonAPIHandler)
-    handler.server = SimpleNamespace(write_bridge=_RecordingBridge(timeline))  # type: ignore[assignment]
+    object.__setattr__(handler, "server", SimpleNamespace(write_bridge=_RecordingBridge(timeline)))
     handler.path = "/" + "/".join(path)
-    handler._parse_path = lambda: (path, {})  # type: ignore[method-assign]
-    handler._check_host_admission = allow_host  # type: ignore[method-assign]
-    handler._check_auth = allow_auth  # type: ignore[method-assign]
-    handler._check_cross_origin = lambda: True  # type: ignore[method-assign]
-    handler._send_error = lambda *_args: timeline.append("error")  # type: ignore[method-assign]
+    object.__setattr__(handler, "_parse_path", lambda: (path, {}))
+    object.__setattr__(handler, "_check_host_admission", allow_host)
+    object.__setattr__(handler, "_check_auth", allow_auth)
+    object.__setattr__(handler, "_check_cross_origin", lambda: True)
+    object.__setattr__(handler, "_send_error", lambda *_args: timeline.append("error"))
     return handler
 
 
@@ -108,38 +120,38 @@ def _seed_delete_authority_archive(root: Path, count: int) -> tuple[str, ...]:
 
 
 @contextlib.contextmanager
-def _delete_authority_daemon(monkeypatch: pytest.MonkeyPatch, archive_root: Path) -> Iterator[object]:
+def _delete_authority_daemon(monkeypatch: pytest.MonkeyPatch, archive_root: Path) -> Iterator[_DeleteDaemonClient]:
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     with running_daemon_operations(archive_root) as stack:
         stack.server.auth_token = "delete-authority-token"
         stack.client.auth_token = "delete-authority-token"
-        stack.client.archive_root = archive_root
+        client = cast(_DeleteDaemonClient, stack.client)
+        object.__setattr__(client, "archive_root", archive_root)
         # These routes delete hundreds of sessions through a real daemon. The
         # client budget bounds one request, not the test: at two seconds it
         # measured how loaded the host was. A genuine hang is still caught by
         # the suite-wide pytest timeout.
-        stack.client.timeout_s = 60.0
-        yield stack.client
+        client.timeout_s = 60.0
+        yield client
 
 
-def _delete_operation(client: object, step: str, body: dict[str, object]) -> dict[str, object]:
+def _delete_operation(client: _DeleteDaemonClient, step: str, body: dict[str, object]) -> dict[str, object]:
     """Drive one delete-lifecycle step over the declared operation envelope.
 
     ``step`` is the lifecycle stage — ``preview``, ``authorize``, ``cancel``
     or ``execute``. A typed envelope error is re-raised in the shape the
     surrounding assertions read.
     """
-    from polylogue.daemon_client import DaemonClient, DaemonResponseError
+    from polylogue.daemon_client import DaemonResponseError
 
-    assert isinstance(client, DaemonClient)
     operation = f"mutation.session.delete.{step}"
     if step == "execute":
-        envelope = client.operation(operation, body)  # type: ignore[attr-defined]
+        envelope = client.operation(operation, body)
     else:
-        envelope = client.operation_to_completion(  # type: ignore[attr-defined]
+        envelope = client.operation_to_completion(
             operation,
             body,
-            archive_root=str(client.archive_root),  # type: ignore[attr-defined]
+            archive_root=str(client.archive_root),
         )
     assert envelope is not None, f"daemon did not answer {step}"
     error = envelope.get("error")
@@ -156,7 +168,7 @@ def _delete_operation(client: object, step: str, body: dict[str, object]) -> dic
     return result
 
 
-def _prepare_authorize(client: object, session_ids: tuple[str, ...]) -> str:
+def _prepare_authorize(client: _DeleteDaemonClient, session_ids: tuple[str, ...]) -> str:
     preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
     assert preview is not None
     assert preview["session_ids"] == list(session_ids)
@@ -287,7 +299,7 @@ def test_matched_session_mutation_runs_under_the_daemon_authority(
     session_ids = _seed_delete_authority_archive(archive_root, 2)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        envelope = client.operation_to_completion(  # type: ignore[attr-defined]
+        envelope = client.operation_to_completion(
             operation,
             {"session_ids": list(session_ids), payload_key: values},
             archive_root=str(archive_root),
@@ -308,7 +320,7 @@ def test_matched_session_mutation_refuses_a_malformed_selection(
     _seed_delete_authority_archive(archive_root, 1)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        envelope = client.operation_to_completion(  # type: ignore[attr-defined]
+        envelope = client.operation_to_completion(
             "mutation.session.tag",
             {"session_ids": [], "tags": ["triage"]},
             archive_root=str(archive_root),
@@ -380,11 +392,15 @@ def _operation_handler(timeline: list[str], body: bytes, *, content_length: int 
     """Build a real handler for ``POST /api/operation`` over a fake socket."""
 
     handler = _handler(["api", "operation"], timeline)
-    handler.headers = {  # type: ignore[assignment]
-        "Content-Type": "application/json",
-        "Content-Length": str(len(body) if content_length is None else content_length),
-    }
-    handler.rfile = BytesIO(body)
+    object.__setattr__(
+        handler,
+        "headers",
+        {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body) if content_length is None else content_length),
+        },
+    )
+    object.__setattr__(handler, "rfile", BytesIO(body))
     return handler
 
 
@@ -427,15 +443,15 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_
 
     oversize_timeline: list[str] = []
     oversize = _operation_handler(oversize_timeline, b"", content_length=MAX_DECLARED_OPERATION_BODY_BYTES + 1)
-    oversize.rfile = _ExplodingBody()  # type: ignore[assignment]
+    object.__setattr__(oversize, "rfile", _ExplodingBody())
     oversize._do_post_impl()
     assert oversize_timeline == ["error"]
 
     large_timeline: list[str] = []
     large_body = _preview_operation_body([f"codex-session:{index}" for index in range(257)])
     large = _operation_handler(large_timeline, large_body)
-    large._sync_run = lambda _operation: {"status": "prepared"}  # type: ignore[assignment]
-    large._send_json = lambda *_args, **_kwargs: large_timeline.append("response")  # type: ignore[method-assign]
+    object.__setattr__(large, "_sync_run", lambda _operation: {"status": "prepared"})
+    object.__setattr__(large, "_send_json", lambda *_args, **_kwargs: large_timeline.append("response"))
     large._do_post_impl()
     assert large_timeline == ["enter:http.cli.delete.prepare", "exit:http.cli.delete.prepare", "response"]
 
@@ -449,9 +465,9 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_
             return slow_body
 
     slow = _operation_handler(slow_timeline, b"", content_length=len(slow_body))
-    slow.rfile = _SlowBody()  # type: ignore[assignment]
-    slow._sync_run = lambda _operation: {"status": "prepared"}  # type: ignore[assignment]
-    slow._send_json = lambda *_args, **_kwargs: slow_timeline.append("response")  # type: ignore[method-assign]
+    object.__setattr__(slow, "rfile", _SlowBody())
+    object.__setattr__(slow, "_sync_run", lambda _operation: {"status": "prepared"})
+    object.__setattr__(slow, "_send_json", lambda *_args, **_kwargs: slow_timeline.append("response"))
     slow._do_post_impl()
     assert slow_timeline == [
         "body-read",
@@ -488,11 +504,12 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
     body = json.dumps(conflicting.to_dict()).encode()
     handler = _operation_handler([], body)
     accepted_payload: dict[str, object] = {"protocol": DAEMON_OPERATION_PROTOCOL, "request_id": request_id}
-    handler.server.operation_ids_seen = {request_id}
-    handler.server.operation_results = {request_id: (original.fingerprint, 200, accepted_payload)}
-    handler.server.operation_ids_lock = threading.Lock()
+    replay_server = cast(_OperationReplayServer, handler.server)
+    replay_server.operation_ids_seen = {request_id}
+    replay_server.operation_results = {request_id: (original.fingerprint, 200, accepted_payload)}
+    replay_server.operation_ids_lock = threading.Lock()
     responses: list[tuple[HTTPStatus, object]] = []
-    handler._send_json = lambda status, payload, **_kwargs: responses.append((status, payload))  # type: ignore[method-assign]
+    object.__setattr__(handler, "_send_json", lambda status, payload, **_kwargs: responses.append((status, payload)))
 
     failure: list[BaseException] = []
 
@@ -515,7 +532,7 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
         "code": "duplicate_request_id_conflict",
         "detail": "request_id was already used for a different request",
     }
-    assert handler.server.operation_results[request_id] == (original.fingerprint, 200, accepted_payload)
+    assert replay_server.operation_results[request_id] == (original.fingerprint, 200, accepted_payload)
 
 
 def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap(
@@ -547,7 +564,8 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from polylogue.daemon_client import DaemonResponseError
-    from polylogue.operations.delete_authorization import DeleteAuthorizationError, consume_cli_delete
+    from polylogue.operations.delete_authorization import DeleteBatchPartialError, consume_cli_delete
+    from polylogue.operations.mutation_transaction import MutationPrincipal
 
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
@@ -563,13 +581,12 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
         tokens = authorization["authorization_tokens"]
         assert isinstance(tokens, list)
 
-        def consume_with_failure(root: Path, token: str, principal: object) -> object:
+        def consume_with_failure(root: Path, token: str, principal: MutationPrincipal) -> object:
             if tokens.index(token) < 2:
-                return consume_cli_delete(root, token, principal)  # type: ignore[arg-type]
-            error = DeleteAuthorizationError("selection_changed_after_authorization")
-            error.completed_chunks = 2  # type: ignore[attr-defined]
-            error.affected_count = 512  # type: ignore[attr-defined]
-            raise error
+                return consume_cli_delete(root, token, principal)
+            raise DeleteBatchPartialError(
+                "selection_changed_after_authorization", completed_chunks=2, affected_count=512
+            )
 
         with patch(
             "polylogue.operations.delete_authorization.consume_cli_delete",
@@ -745,9 +762,9 @@ def test_cli_delete_preserves_audit_finalization_failure_after_effect(tmp_path: 
 
 def test_no_auth_cli_principal_ignores_attacker_selected_bearer_text() -> None:
     handler = _handler(["api", "cli", "delete", "prepare"], [])
-    handler.headers = {"Authorization": "Bearer attacker-selected"}  # type: ignore[assignment]
+    object.__setattr__(handler, "headers", {"Authorization": "Bearer attacker-selected"})
 
-    principal = handler._cli_delete_principal()
+    principal = handler._cli_mutation_principal("archive.delete_session")
 
     assert principal.actor_ref == "daemon:unauthenticated-loopback"
     assert principal.role_label == "daemon-loopback-no-auth"
@@ -828,8 +845,8 @@ def test_coordinated_mutation_uses_control_admission_without_the_read_timeout() 
     async def mutation(_polylogue: object) -> str:
         return "persisted"
 
-    handler._run_archive_query = run_direct  # type: ignore[assignment]
-    handler.server = SimpleNamespace(execution_kernel=kernel)  # type: ignore[assignment]
+    object.__setattr__(handler, "_run_archive_query", run_direct)
+    object.__setattr__(handler, "server", SimpleNamespace(execution_kernel=kernel))
 
     try:
         assert handler._sync_run(mutation) == "persisted"

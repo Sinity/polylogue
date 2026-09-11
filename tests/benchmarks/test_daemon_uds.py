@@ -50,10 +50,10 @@ def bench_daemon_uds_stack(
     monkeypatch.delenv("POLYLOGUE_NO_DAEMON", raising=False)
     monkeypatch.delenv("POLYLOGUE_DAEMON", raising=False)
 
-    with running_daemon_operations(
-        bench_daemon_uds_archive_root,
-        seed_archive=lambda root: seed_benchmark_archive(root / "index.db", target_messages=1000),
-    ) as stack:
+    def seed(root: Path) -> None:
+        seed_benchmark_archive(root / "index.db", target_messages=1000)
+
+    with running_daemon_operations(bench_daemon_uds_archive_root, seed_archive=seed) as stack:
         yield stack
 
 
