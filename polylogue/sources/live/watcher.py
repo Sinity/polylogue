@@ -2486,11 +2486,14 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
 
 
 def _cursor_db_path(polylogue: ArchiveRootOwner) -> Path:
-    """Use the archive ops tier for daemon cursor state."""
-    backend = getattr(polylogue, "backend", None)
-    db_path = getattr(backend, "db_path", None)
-    if isinstance(db_path, Path):
-        return db_path
+    """Use the archive ops tier without opening a lazy archive backend.
+
+    A watcher only requires the ``ArchiveRootOwner`` contract.  Reading the
+    richer ``Polylogue.backend`` property here forces SQLite bootstrap during
+    daemon startup, after its admission has been released.  Cursor creation
+    already receives the ops path explicitly and initialization is admitted by
+    the watcher before its first mutable cursor operation.
+    """
     return Path(polylogue.archive_root) / "ops.db"
 
 
