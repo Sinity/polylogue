@@ -104,28 +104,32 @@ def _select_retained(
     One row per coordinate: an older observation of the same coordinate is
     still archived and readable, it is simply not the current value.
     """
+    # The coordinate predicate is expressed on ``raw_artifacts`` so
+    # ``idx_raw_artifacts_source_identity`` (origin, source_path, source_index)
+    # serves both the exact-path and the export-prefix form; ``raw_sessions``
+    # is joined only for the retained bytes and the receipt order.
     sql = f"""
         SELECT
             r.raw_id,
-            r.source_path,
+            a.source_path,
             lower(hex(r.blob_hash)),
             r.blob_size,
             COALESCE(({_RECEIPT_ORDER.format(column="acquired_at_ms")}), r.acquired_at_ms),
             COALESCE(({_RECEIPT_ORDER.format(column="rowid")}), r.rowid)
-        FROM raw_sessions AS r
-        JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
-        WHERE r.origin = ?
+        FROM raw_artifacts AS a
+        JOIN raw_sessions AS r ON r.raw_id = a.raw_id
+        WHERE a.origin = ?
+          AND ({where})
           AND a.artifact_kind = ?
           AND r.blob_hash IS NOT NULL
           AND r.parse_error IS NULL
-          AND ({where})
         ORDER BY 5 DESC, 6 DESC, r.raw_id DESC
     """
     # A read failure here is infrastructure state, not an answer: it
     # propagates so the ingesting pass records a retryable outcome instead of
     # resolving to "no evidence" and writing a session that silently lost its
     # provider metadata.
-    rows = source_conn.execute(sql, [origin.value, artifact_kind.value, *parameters]).fetchall()
+    rows = source_conn.execute(sql, [origin.value, *parameters, artifact_kind.value]).fetchall()
     newest: dict[str, RetainedArtifact] = {}
     for raw_id, source_path, blob_hash, blob_size, _observed, _order in rows:
         path = str(source_path)
@@ -181,7 +185,7 @@ def retained_claude_code_sidecars(
         source_conn,
         origin=Origin.CLAUDE_CODE_SESSION,
         artifact_kind=ArtifactKind.SESSION_INDEX,
-        where="r.source_path = ?",
+        where="a.source_path = ?",
         parameters=[index_path],
     )
     artifact = indexes.get(index_path)
@@ -198,7 +202,7 @@ def retained_claude_code_sidecars(
         source_conn,
         origin=Origin.CLAUDE_CODE_SESSION,
         artifact_kind=ArtifactKind.PROMPT_HISTORY_LOG,
-        where="r.source_path = ?",
+        where="a.source_path = ?",
         parameters=[history_path],
     )
     artifact = histories.get(history_path)
@@ -257,7 +261,7 @@ def retained_chatgpt_sidecars(
         source_conn,
         origin=Origin.CHATGPT_EXPORT,
         artifact_kind=ArtifactKind.EXPORT_ASSET_INDEX,
-        where="r.source_path LIKE ? ESCAPE '\\'",
+        where="a.source_path LIKE ? ESCAPE '\\'",
         parameters=[_like_prefix(scope)],
     )
     for path, artifact in sorted(indexes.items()):
@@ -283,7 +287,7 @@ def retained_chatgpt_sidecars(
         source_conn,
         origin=Origin.CHATGPT_EXPORT,
         artifact_kind=ArtifactKind.EXPORT_ASSET,
-        where="r.source_path LIKE ? ESCAPE '\\'",
+        where="a.source_path LIKE ? ESCAPE '\\'",
         parameters=[_like_prefix(scope)],
     )
     for path, artifact in sorted(assets.items()):
