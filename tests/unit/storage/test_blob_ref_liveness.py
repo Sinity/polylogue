@@ -224,24 +224,26 @@ def test_sealed_classifier_matches_writable_oracle_for_ambiguous_unknown_and_una
         )
 
     sealed_path = tmp_path / "sealed-source.db"
-    with sqlite3.connect(source_path) as source, sqlite3.connect(sealed_path) as sealed:
-        source.backup(sealed)
+    with sqlite3.connect(source_path) as source, sqlite3.connect(sealed_path) as sealed_target:
+        source.backup(sealed_target)
 
     with sqlite3.connect(source_path) as writable_connection:
-        writable = classify_blob_ref_liveness(writable_connection)
+        writable_classification = classify_blob_ref_liveness(writable_connection)
     with open_sealed_staging_connection(sealed_path, validate_schema=False) as sealed_connection:
-        sealed = classify_blob_ref_liveness(sealed_connection)
+        sealed_classification = classify_blob_ref_liveness(sealed_connection)
 
-    assert sealed.to_dict(include_candidates=True) == writable.to_dict(include_candidates=True)
-    assert sealed.candidate_count == writable.candidate_count
-    assert sealed.candidates == writable.candidates
-    assert digest_blob_ref_liveness_candidates(sealed.candidates) == digest_blob_ref_liveness_candidates(
-        writable.candidates
+    assert sealed_classification.to_dict(include_candidates=True) == writable_classification.to_dict(
+        include_candidates=True
     )
-    assert sealed.unknown_ref_types == ("future_type",)
-    assert sealed.unavailable_ref_types == ("sidecar",)
-    assert sealed.rekeyable_hook_payload_count == 1
-    assert all(candidate.ref_id != ambiguous_ref_id for candidate in sealed.candidates)
+    assert sealed_classification.candidate_count == writable_classification.candidate_count
+    assert sealed_classification.candidates == writable_classification.candidates
+    assert digest_blob_ref_liveness_candidates(sealed_classification.candidates) == digest_blob_ref_liveness_candidates(
+        writable_classification.candidates
+    )
+    assert sealed_classification.unknown_ref_types == ("future_type",)
+    assert sealed_classification.unavailable_ref_types == ("sidecar",)
+    assert sealed_classification.rekeyable_hook_payload_count == 1
+    assert all(candidate.ref_id != ambiguous_ref_id for candidate in sealed_classification.candidates)
 
 
 def test_dry_run_is_read_only_and_reports_attachment_parent_join(tmp_path: Path) -> None:
