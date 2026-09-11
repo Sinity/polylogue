@@ -68,6 +68,9 @@ DEFAULT_QUIET_WINDOW_MS = 5 * 60 * 1000  # 5 minutes
 DEFAULT_SAMPLE_SIZE = 30
 DEFAULT_MAX_COUNT = 500
 EmbeddingReconcileMutationAuthority = Literal["daemon-coordinator", "offline-exclusive"]
+_MUTATION_AUTHORITIES: frozenset[EmbeddingReconcileMutationAuthority] = frozenset(
+    {"daemon-coordinator", "offline-exclusive"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,10 +274,13 @@ def _reconcile_embedding_orphans(
         else index_path.with_name("embeddings.db")
     )
     resolved_now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    if not dry_run and mutation_authority is None:
-        raise RuntimeError(
-            "embedding orphan reconciliation apply requires daemon-coordinator or offline-exclusive authority"
-        )
+    if not dry_run:
+        if mutation_authority is None:
+            raise RuntimeError(
+                "embedding orphan reconciliation apply requires daemon-coordinator or offline-exclusive authority"
+            )
+        if mutation_authority not in _MUTATION_AUTHORITIES:
+            raise RuntimeError("embedding orphan reconciliation apply received an unrecognized mutation authority")
 
     if not embeddings_path.exists():
         return EmbeddingOrphanReconcileReport(
