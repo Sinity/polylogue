@@ -25,6 +25,7 @@ from polylogue.schemas.sampling_sessions import (
     _iter_samples_from_sessions,
     _iter_schema_units_from_sessions,
 )
+from polylogue.storage.archive_identity import ArchiveLocation
 
 
 def iter_schema_units(
@@ -35,6 +36,7 @@ def iter_schema_units(
     full_corpus: bool = False,
     terminal_recorder: ObservationTerminalRecorder | None = None,
     allow_session_dir_fallback: bool = False,
+    archive_location: ArchiveLocation | None = None,
 ) -> Iterator[SchemaUnit]:
     """Yield schema units for a provider from DB, with optional session fallback.
 
@@ -82,6 +84,7 @@ def iter_schema_units(
             max_samples=max_samples,
             full_corpus=full_corpus,
             terminal_recorder=_observing_terminal_recorder,
+            archive_location=archive_location,
         ):
             yielded_any = True
             yield unit
@@ -116,6 +119,8 @@ def load_samples_from_db(
     source_name: str | Provider,
     db_path: Path | None = None,
     max_samples: int | None = None,
+    *,
+    archive_location: ArchiveLocation | None = None,
 ) -> list[JSONDocument]:
     """Load raw samples from the polylogue database."""
     source_name = Provider.from_string(source_name)
@@ -126,9 +131,11 @@ def load_samples_from_db(
 
     config = resolve_provider_config(source_name)
     if max_samples is None:
-        return list(_iter_samples_from_db(source_name, db_path=db_path, config=config))
+        return list(
+            _iter_samples_from_db(source_name, db_path=db_path, config=config, archive_location=archive_location)
+        )
     return collect_limited_samples(
-        lambda: _iter_samples_from_db(source_name, db_path=db_path, config=config),
+        lambda: _iter_samples_from_db(source_name, db_path=db_path, config=config, archive_location=archive_location),
         limit=max_samples,
         stratify=config.sample_granularity == "record",
         record_type_key=config.record_type_key,

@@ -37,7 +37,8 @@ from polylogue.schemas.observation_models import (
     ObservationTerminalRecorder,
     ObservationTerminalStatus,
 )
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.connection_profile import connection_context
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
@@ -45,6 +46,29 @@ from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 logger = get_logger(__name__)
 
 SchemaSample: TypeAlias = JSONDocument
+
+
+class SchemaArchiveEvidenceError(RuntimeError):
+    """The selected archive does not identify usable raw evidence."""
+
+
+def _schema_archive_location(*, db_path: Path, archive_location: ArchiveLocation | None) -> ArchiveLocation:
+    """Bind raw evidence to the archive that selected ``db_path``.
+
+    An active index generation may be outside the durable archive root.  Its
+    parent therefore is not evidence for the source tier or blob root.  Old
+    direct callers remain supported only when their ``db_path`` is the active
+    index of the parent archive root; otherwise they must provide the already
+    resolved location explicitly.
+    """
+    location = archive_location or ArchiveLocation.resolve(db_path.parent)
+    selected_index = db_path.resolve(strict=False)
+    if location.active_index_path.resolve(strict=False) != selected_index:
+        raise SchemaArchiveEvidenceError(
+            "selected index is not the active index of the supplied archive location; "
+            "provide the selected ArchiveLocation instead of inferring durable evidence from the index parent"
+        )
+    return location
 
 
 def _blob_hash_hex(blob_hash: object) -> str:
@@ -263,12 +287,15 @@ def _iter_schema_units_from_db(
     full_corpus: bool = False,
     terminal_recorder: ObservationTerminalRecorder | None = None,
     logical_heads_only: bool = False,
+    archive_location: ArchiveLocation | None = None,
 ) -> Iterator[SchemaUnit]:
     """Yield clusterable schema units from raw_sessions.
 
     Raw acquisition rows live in the ``source.db`` tier (#1743). Given an
-    ``index.db`` path, the sibling ``source.db`` of the same archive root holds
-    ``raw_sessions``; it is opened read-write but only read here.
+    ``index.db`` path and its selected :class:`ArchiveLocation`, the durable
+    ``source.db`` and blob root are read from that location.  A legacy caller
+    without a location is accepted only for a conventional index under its
+    archive root; an external index generation must carry its location.
 
     ``logical_heads_only`` (default ``False``, opt-in): restrict the sampled
     rows to one per logical source -- the latest revision per
@@ -284,20 +311,13 @@ def _iter_schema_units_from_db(
     session population.
     """
     source_name = Provider.from_string(source_name)
-    source_db_path = db_path.parent / "source.db"
+    location = _schema_archive_location(db_path=db_path, archive_location=archive_location)
+    source_db_path = location.configured_tier("source").configured_path
     if not source_db_path.exists():
-        # polylogue-es7b: a missing sibling tier file yields the same empty
-        # generator as "genuinely zero matching rows for this provider" --
-        # log so callers/operators can tell the two apart instead of silently
-        # reading zero schema units as a clean, exhaustive result.
-        logger.warning(
-            "schema sampling missing tier=source.db path=%s; yielding zero schema units for provider=%s "
-            "(this is a missing tier file, not a genuine zero-row result)",
-            source_db_path,
-            source_name,
+        raise SchemaArchiveEvidenceError(
+            f"selected archive source evidence is unavailable: {source_db_path} (provider={source_name})"
         )
-        return
-    blob_store = get_blob_store()
+    blob_store = BlobStore(location.configured_root / "blob")
     query_provider = config.db_source_name or source_name
     origins = _sample_origins_for_provider(Provider.from_string(query_provider), config)
     placeholders = ",".join("?" for _ in origins)
@@ -490,6 +510,7 @@ def _iter_samples_from_db(
     config: ProviderConfig,
     with_conv_ids: Literal[False] = False,
     logical_heads_only: bool = False,
+    archive_location: ArchiveLocation | None = None,
 ) -> Iterator[SchemaSample]: ...
 
 
@@ -501,6 +522,7 @@ def _iter_samples_from_db(
     config: ProviderConfig,
     with_conv_ids: Literal[True],
     logical_heads_only: bool = False,
+    archive_location: ArchiveLocation | None = None,
 ) -> Iterator[tuple[SchemaSample, str | None]]: ...
 
 
@@ -511,6 +533,7 @@ def _iter_samples_from_db(
     config: ProviderConfig,
     with_conv_ids: bool = False,
     logical_heads_only: bool = False,
+    archive_location: ArchiveLocation | None = None,
 ) -> Iterator[SchemaSample | tuple[SchemaSample, str | None]]:
     """Yield individual sample dicts from the database.
 
@@ -521,7 +544,11 @@ def _iter_samples_from_db(
     """
     source_name = Provider.from_string(source_name)
     for unit in _iter_schema_units_from_db(
-        source_name, db_path=db_path, config=config, logical_heads_only=logical_heads_only
+        source_name,
+        db_path=db_path,
+        config=config,
+        logical_heads_only=logical_heads_only,
+        archive_location=archive_location,
     ):
         for sample in unit.schema_samples:
             if with_conv_ids:
