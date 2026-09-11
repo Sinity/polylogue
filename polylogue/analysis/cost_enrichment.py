@@ -43,10 +43,10 @@ def enrich_session_cost_insight(
     never downgraded: when the session carries no cost evidence the
     re-derived estimate would be ``unavailable``, so the stored estimate is kept.
     """
-    from polylogue.api.archive import _archive_session_to_session
+    from polylogue.archive.hydration import archive_envelope_to_session
 
     try:
-        session = _archive_session_to_session(archive.read_session(insight.session_id))
+        session = archive_envelope_to_session(archive.read_session(insight.session_id))
     except KeyError:
         return insight
     estimate = estimate_session_cost(session)
