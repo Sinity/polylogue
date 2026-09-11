@@ -17,6 +17,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,7 @@ from polylogue.core.raw_failure_evidence import (
 )
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
+from polylogue.daemon.write_coordinator import daemon_write_lease_active
 from polylogue.logging import get_logger
 from polylogue.operations.raw_authority_verdict_cache import (
     RawAuthorityVerdictCacheWork,
@@ -53,7 +55,7 @@ from polylogue.storage.sqlite.connection_profile import (
 if TYPE_CHECKING:
     from polylogue.sinex.service import PublicationService
     from polylogue.sinex.transport import SinexTransport
-    from polylogue.storage.embeddings.materialization import PendingSession
+    from polylogue.storage.embeddings.materialization import EmbeddingWriteAdmission, PendingSession
 
 logger = get_logger(__name__)
 
@@ -244,6 +246,16 @@ def make_embed_stage(db_path: Path, *, defer: Callable[[], bool] | None = None) 
     def _deferred() -> bool:
         if defer is not None and defer():
             logger.debug("embed: deferred to convergence debt (source catch-up in progress)")
+            return True
+        if daemon_write_lease_active():
+            # This stage is reached from callers that already hold the daemon's
+            # single writer gate (live ingest, debt retry). Calling the
+            # embedding provider from there would keep every unrelated archive
+            # writer queued behind one network round trip, so the work is
+            # deferred to convergence debt and the lease-free embedding owner
+            # -- which runs prepare/publish as separate short admitted
+            # operations -- performs it (polylogue-c0l7n).
+            logger.debug("embed: deferred to the lease-free embedding owner (writer gate held)")
             return True
         return False
 
@@ -2113,7 +2125,13 @@ def _archive_embed_check(db_path: Path, path: Path, *, archive_root: Path | None
         return True
 
 
-def _archive_embed_execute(db_path: Path, path: Path, *, archive_root: Path | None = None) -> StageExecuteReturn:
+def _archive_embed_execute(
+    db_path: Path,
+    path: Path,
+    *,
+    archive_root: Path | None = None,
+    admit: EmbeddingWriteAdmission | None = None,
+) -> StageExecuteReturn:
     try:
         conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
         try:
@@ -2123,7 +2141,7 @@ def _archive_embed_execute(db_path: Path, path: Path, *, archive_root: Path | No
             conn.close()
         if not pending:
             return True
-        result = _embed_archive_sessions_sync(db_path, pending, archive_root=archive_root)
+        result = _embed_archive_sessions_sync(db_path, pending, archive_root=archive_root, admit=admit)
         if not bool(result):
             return result
         return not _archive_embedding_debt_remaining(db_path, session_ids, archive_root=archive_root)
@@ -2151,7 +2169,11 @@ def _archive_embed_check_many(db_path: Path, paths: Sequence[Path], *, archive_r
 
 
 def _archive_embed_execute_many(
-    db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None
+    db_path: Path,
+    paths: Sequence[Path],
+    *,
+    archive_root: Path | None = None,
+    admit: EmbeddingWriteAdmission | None = None,
 ) -> StageExecuteReturn:
     try:
         conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
@@ -2163,7 +2185,7 @@ def _archive_embed_execute_many(
             conn.close()
         if not pending:
             return True
-        result = _embed_archive_sessions_sync(db_path, pending, archive_root=archive_root)
+        result = _embed_archive_sessions_sync(db_path, pending, archive_root=archive_root, admit=admit)
         if not bool(result):
             return result
         return not _archive_embedding_debt_remaining(db_path, session_ids, archive_root=archive_root)
@@ -2193,7 +2215,11 @@ def _archive_embed_check_sessions(
 
 
 def _archive_embed_execute_sessions(
-    db_path: Path, session_ids: Sequence[str], *, archive_root: Path | None = None
+    db_path: Path,
+    session_ids: Sequence[str],
+    *,
+    archive_root: Path | None = None,
+    admit: EmbeddingWriteAdmission | None = None,
 ) -> StageExecuteReturn:
     ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not ids:
@@ -2205,10 +2231,49 @@ def _archive_embed_execute_sessions(
         conn.close()
     if not pending:
         return True
-    result = _embed_archive_sessions_sync(db_path, pending, archive_root=archive_root)
+    result = _embed_archive_sessions_sync(db_path, pending, archive_root=archive_root, admit=admit)
     if not bool(result):
         return result
     return not _archive_embedding_debt_remaining(db_path, ids, archive_root=archive_root)
+
+
+def run_archive_embedding_convergence(
+    db_path: Path,
+    *,
+    paths: Sequence[Path] = (),
+    session_ids: Sequence[str] = (),
+    admit: EmbeddingWriteAdmission | None = None,
+) -> StageExecuteReturn:
+    """Converge archive embeddings for these subjects without writer authority.
+
+    This is the route the embedding owner runs from a compute worker: the
+    caller holds neither the daemon writer gate nor the embedding generation
+    lock, and every write below -- configuration reconciliation, attempt
+    reservation, each published window, the catch-up receipt -- is admitted
+    individually through ``admit``. The convergence stage of the same name
+    defers to this owner rather than calling the provider under a held lease.
+    """
+    if not _embedding_config_enabled():
+        return True
+    archive_db = _active_archive_index_path(db_path)
+    if archive_db is None:
+        return True
+    archive_root = db_path.parent
+    from polylogue.storage.embeddings.materialization import inline_embedding_admission
+
+    admit_phase = inline_embedding_admission if admit is None else admit
+    # Configuration reconciliation stays its own short writer operation: it
+    # bulk-marks needs_reindex, so it must not straddle the provider call.
+    admit_phase(
+        "embedding.config_reconcile",
+        partial(_reconcile_archive_embedding_config_change, archive_db, archive_root=archive_root),
+    )
+    results: list[StageExecuteReturn] = []
+    if paths:
+        results.append(_archive_embed_execute_many(archive_db, paths, archive_root=archive_root, admit=admit))
+    if session_ids:
+        results.append(_archive_embed_execute_sessions(archive_db, session_ids, archive_root=archive_root, admit=admit))
+    return all(bool(result) for result in results)
 
 
 def _archive_embedding_debt_remaining(
@@ -2228,9 +2293,24 @@ def _archive_embedding_debt_remaining(
 
 
 def _embed_archive_sessions_sync(
-    db_path: Path, sessions: Sequence[PendingSession | str], *, archive_root: Path | None = None
+    db_path: Path,
+    sessions: Sequence[PendingSession | str],
+    *,
+    archive_root: Path | None = None,
+    admit: EmbeddingWriteAdmission | None = None,
 ) -> StageExecuteReturn:
-    from polylogue.storage.embeddings.materialization import embed_archive_session_sync
+    """Embed one bounded window of archive sessions.
+
+    ``admit`` is the writer-admission seam: when the caller runs this pass off
+    the writer (the lease-free embedding owner), every receipt and publication
+    write below is admitted individually so the provider call in between holds
+    no writer authority. A caller that is already the sole writer passes
+    nothing and keeps the direct route.
+    """
+    from polylogue.storage.embeddings.materialization import (
+        embed_archive_session_sync,
+        inline_embedding_admission,
+    )
     from polylogue.storage.search_providers import create_vector_provider
     from polylogue.storage.search_providers.sqlite_vec_support import (
         ESTIMATED_TOKENS_PER_MESSAGE,
@@ -2275,11 +2355,16 @@ def _embed_archive_sessions_sync(
             return False
     from polylogue.daemon.embedding_backlog import _upsert_archive_embedding_catchup_run
 
+    admit_phase = inline_embedding_admission if admit is None else admit
     started_at_ms = int(time.time() * 1000)
-    run_id = _upsert_archive_embedding_catchup_run(
-        ops_db,
-        status=OperationStatus.RUNNING,
-        started_at_ms=started_at_ms,
+    run_id = admit_phase(
+        "embedding.catchup_receipt",
+        partial(
+            _upsert_archive_embedding_catchup_run,
+            ops_db,
+            status=OperationStatus.RUNNING,
+            started_at_ms=started_at_ms,
+        ),
     )
     started_at = time.monotonic()
     for session in sessions:
@@ -2301,6 +2386,7 @@ def _embed_archive_sessions_sync(
             session_id,
             embeddings_db_path=embeddings_db,
             stop_after_seconds=max(0.0, _DAEMON_EMBED_STOP_AFTER_SECONDS - (time.monotonic() - started_at)),
+            admit=admit,
         )
         processed += 1
         if outcome.status == "deferred":
@@ -2326,11 +2412,33 @@ def _embed_archive_sessions_sync(
             logger.warning("embed: archive %s failed: %s", outcome.session_id, outcome.error)
             if errors >= _DAEMON_EMBED_MAX_ERRORS:
                 break
-        _upsert_archive_embedding_catchup_run(
+        admit_phase(
+            "embedding.catchup_receipt",
+            partial(
+                _upsert_archive_embedding_catchup_run,
+                ops_db,
+                run_id=run_id,
+                status=OperationStatus.RUNNING,
+                started_at_ms=started_at_ms,
+                scanned_sessions=processed,
+                embedded_sessions=embedded,
+                skipped_sessions=skipped,
+                error_count=errors,
+                embedded_messages=_DAEMON_EMBED_MAX_MESSAGES - message_budget,
+                estimated_cost_usd=cumulative_cost,
+                error_message=error_message,
+            ),
+        )
+    logger.info("embed: archive %d done, %d errors", embedded, errors)
+    admit_phase(
+        "embedding.catchup_receipt",
+        partial(
+            _upsert_archive_embedding_catchup_run,
             ops_db,
             run_id=run_id,
-            status=OperationStatus.RUNNING,
+            status=OperationStatus.FAILED if errors else OperationStatus.COMPLETED,
             started_at_ms=started_at_ms,
+            finished_at_ms=int(time.time() * 1000),
             scanned_sessions=processed,
             embedded_sessions=embedded,
             skipped_sessions=skipped,
@@ -2338,21 +2446,7 @@ def _embed_archive_sessions_sync(
             embedded_messages=_DAEMON_EMBED_MAX_MESSAGES - message_budget,
             estimated_cost_usd=cumulative_cost,
             error_message=error_message,
-        )
-    logger.info("embed: archive %d done, %d errors", embedded, errors)
-    _upsert_archive_embedding_catchup_run(
-        ops_db,
-        run_id=run_id,
-        status=OperationStatus.FAILED if errors else OperationStatus.COMPLETED,
-        started_at_ms=started_at_ms,
-        finished_at_ms=int(time.time() * 1000),
-        scanned_sessions=processed,
-        embedded_sessions=embedded,
-        skipped_sessions=skipped,
-        error_count=errors,
-        embedded_messages=_DAEMON_EMBED_MAX_MESSAGES - message_budget,
-        estimated_cost_usd=cumulative_cost,
-        error_message=error_message,
+        ),
     )
     if errors:
         return False
@@ -2600,4 +2694,5 @@ __all__ = [
     "make_raw_parse_recovery_stage",
     "make_sinex_publication_stage",
     "make_standing_query_stage",
+    "run_archive_embedding_convergence",
 ]

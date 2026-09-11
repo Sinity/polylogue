@@ -28,6 +28,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -157,3 +158,106 @@ def test_embedding_success_write_clears_reindex_when_model_matches_current_confi
     assert final_row["needs_reindex"] == 0
 
     conn.close()
+
+
+# ── Drift during lease-free computation (polylogue-c0l7n) ───────────────────
+#
+# The provider call now runs with no writer lease and no generation lock, so
+# the window in which the session's source can move under an in-flight embed
+# pass is real and open by design. Publication must therefore refuse a session
+# whose inputs moved, rather than land vectors computed from an older session.
+
+_DRIFT_TEXT = "The prose this attempt was computed from."
+_REPLACEMENT_TEXT = "Different prose, written while the provider was working."
+
+
+def _write_single_message_session(root: Path, *, native_id: str, text: str) -> str:
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+    from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    with ArchiveStore(root) as archive:
+        return write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=native_id,
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text=text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    )
+                ],
+            ),
+        )
+
+
+def test_source_mutation_during_provider_call_is_refused_not_published(tmp_path: Path) -> None:
+    """A session edited while its vectors were being computed stays unpublished.
+
+    Anti-vacuity: delete the source-hash/message-count revalidation in
+    ``_finalize_archive_embedding_attempt`` and this pass reports ``embedded``
+    while ``embedding_status`` claims freshness for a session whose prose has
+    already changed.
+    """
+    from polylogue.config import load_polylogue_config
+    from polylogue.storage.embeddings.materialization import embed_archive_session_sync
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    root = tmp_path / "archive"
+    session_id = _write_single_message_session(root, native_id="drift-source", text=_DRIFT_TEXT)
+    index_db = root / "index.db"
+    embeddings_db = root / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+    probe = sqlite3.connect(embeddings_db)
+    loaded, error = try_load_sqlite_vec(probe)
+    probe.close()
+    if not loaded:
+        pytest.skip(str(error) if error else "sqlite-vec extension is unavailable")
+
+    configured_model = load_polylogue_config().embedding_model
+
+    class _MutatingProvider:
+        model = configured_model
+        dimension = 1024
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            # Exactly the window this change opens: no writer lease, no
+            # generation lock, so an unrelated writer really can land here.
+            self.calls += 1
+            with sqlite3.connect(index_db) as conn:
+                conn.execute("UPDATE blocks SET text = ? WHERE session_id = ?", (_REPLACEMENT_TEXT, session_id))
+                conn.commit()
+            return [[0.25] * self.dimension for _ in texts]
+
+    provider = _MutatingProvider()
+    outcome = embed_archive_session_sync(index_db, cast(Any, provider), session_id)
+
+    assert provider.calls == 1
+    assert outcome.status == "error"
+    assert outcome.error is not None
+    assert "source or recipe changed" in outcome.error
+
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.row_factory = sqlite3.Row
+        status = conn.execute(
+            "SELECT needs_reindex FROM embedding_status WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        state = conn.execute(
+            "SELECT attempt_state FROM embedding_derivation_state WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    assert status is not None
+    assert status["needs_reindex"] == 1, "a refused publication must not leave a fresh-status receipt"
+    assert state is not None
+    assert state["attempt_state"] == "pending", "the superseded attempt must be re-reserved for retry"
