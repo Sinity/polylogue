@@ -55,12 +55,12 @@ def test_session_storage_dedupes_records_by_session_id() -> None:
     ]
 
 
-def test_default_convergence_stages_retry_bounded_false_results(tmp_path: Path) -> None:
+def test_default_convergence_stages_leave_session_profiles_to_the_typed_owner(tmp_path: Path) -> None:
     stages_by_name = {stage.name: stage for stage in make_default_convergence_stages(tmp_path / "index.db")}
 
     assert stages_by_name["fts"].false_means_pending is True
     assert stages_by_name["embed"].false_means_pending is True
-    assert stages_by_name["derived"].false_means_pending is True
+    assert "derived" not in stages_by_name
 
 
 def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_readiness(
