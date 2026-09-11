@@ -385,7 +385,7 @@ def test_schema_promote_forwards_cluster_request(
         SchemaPromoteRequest(
             provider="chatgpt",
             cluster_id="cluster-1",
-            db_path=tmp_path / "archive.db",
+            db_path=tmp_path / "index.db",
             with_samples=True,
             max_samples=7,
         )
