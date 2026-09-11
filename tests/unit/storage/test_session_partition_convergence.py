@@ -30,6 +30,7 @@ from polylogue.storage.derived.session.derivation import (
     publish_session_profile,
 )
 from polylogue.storage.derived.session.input_binding import session_input_bindings
+from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -478,20 +479,32 @@ def _mutate_model_name(index_db: Path, session_id: str) -> None:
     """Change one message's model, holding every identity and count fixed."""
     with write_lease("test.model"), closing(_write_connection(index_db)) as conn:
         before = conn.execute(
-            "SELECT count(*), max(occurred_at_ms), max(position) FROM messages WHERE session_id = ?",
+            """
+            SELECT message_id, occurred_at_ms, position
+            FROM messages
+            WHERE session_id = ?
+            ORDER BY position
+            """,
             (session_id,),
-        ).fetchone()
+        ).fetchall()
         changed = conn.execute(
             "UPDATE messages SET model_name = 'model-after' WHERE session_id = ? AND model_name IS NOT NULL",
             (session_id,),
         ).rowcount
         after = conn.execute(
-            "SELECT count(*), max(occurred_at_ms), max(position) FROM messages WHERE session_id = ?",
+            """
+            SELECT message_id, occurred_at_ms, position
+            FROM messages
+            WHERE session_id = ?
+            ORDER BY position
+            """,
             (session_id,),
-        ).fetchone()
+        ).fetchall()
         conn.commit()
     assert changed > 0, "the mutation must change a row to be a mutation at all"
-    assert tuple(before) == tuple(after), "the mutation must not move a count, a timestamp, or a partition key"
+    assert [tuple(row) for row in before] == [tuple(row) for row in after], (
+        "the mutation must not move an id, timestamp, count, or partition key"
+    )
 
 
 def _mutate_output_tokens(index_db: Path, session_id: str) -> None:
@@ -558,6 +571,50 @@ def test_a_model_name_change_makes_the_partition_stale(archive_root: Path) -> No
             "SELECT primary_model_name FROM session_profiles WHERE session_id = ?", (session_id,)
         ).fetchone()
     assert stored[0] == "model-after", "convergence must republish the value that moved"
+
+
+def test_rebuild_reconciles_model_usage_after_a_fixed_id_model_correction(archive_root: Path) -> None:
+    """A renamed message removes only its unsupported usage row on rebuild.
+
+    Anti-vacuity: remove ``_reconcile_session_model_usage_rows`` from the
+    rebuild refresh and ``model-before`` survives beside ``model-after``. The
+    provider-event row proves reconciliation does not infer that messages are
+    the sole source of a model's usage.
+    """
+    index_db = _index_db(archive_root)
+    session_id = _priced_session(index_db, "model-usage-reconciliation")
+    with write_lease("test.provider-usage"), closing(_write_connection(index_db)) as conn:
+        conn.execute(
+            """
+            INSERT INTO session_provider_usage_events (
+                session_id, position, provider_event_type, model_name,
+                last_input_tokens, last_output_tokens
+            ) VALUES (?, 99, 'token_count', 'provider-event-model', 17, 9)
+            """,
+            (session_id,),
+        )
+        rebuild_session_insights_sync(conn, session_ids=[session_id])
+
+    _mutate_model_name(index_db, session_id)
+    assert _pending(index_db) == [session_id]
+
+    with write_lease("test.rebuild"), closing(_write_connection(index_db)) as conn:
+        rebuild_session_insights_sync(conn, session_ids=[session_id])
+        usage_rows = conn.execute(
+            """
+            SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+            FROM session_model_usage
+            WHERE session_id = ?
+            ORDER BY model_name
+            """,
+            (session_id,),
+        ).fetchall()
+
+    assert [tuple(row) for row in usage_rows] == [
+        ("model-after", 120, 48, 0, 0),
+        ("provider-event-model", 17, 9, 0, 0),
+    ]
+    assert _pending(index_db) == []
 
 
 def test_a_token_count_change_makes_the_partition_stale(archive_root: Path) -> None:
