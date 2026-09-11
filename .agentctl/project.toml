@@ -74,7 +74,8 @@ exec = ["devtools", "verify", "--quick"]
 pool = "normal"
 result = "json"
 cache = "tree+environment"
-timeout_seconds = 900
+# Measured spread: 60-75 s idle and 4-8 min under load; 900 s was exceeded in a landing wave.
+timeout_seconds = 2400
 
 [operations.seeded_archive_cache_gc]
 description = "Preview or apply bounded GC for the reusable seeded-archive fixture cache"
