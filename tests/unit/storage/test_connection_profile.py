@@ -274,3 +274,63 @@ def test_populated_durable_tier_at_version_zero_still_reports_skew(tmp_path: Pat
 
     with pytest.raises(SchemaSkew, match="source schema skew"):
         connection_profile.open_readonly_connection(db_path)
+
+
+def test_sealed_staging_connection_allows_only_in_memory_temp_writes(tmp_path: Path) -> None:
+    """The historical exception stages rows without relaxing the main image."""
+    db_path = tmp_path / "source.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE evidence (value TEXT)")
+        connection.execute("INSERT INTO evidence VALUES ('selected')")
+    before = db_path.read_bytes()
+    before_files = {path.name for path in tmp_path.iterdir()}
+
+    connection = connection_profile.open_sealed_staging_connection(db_path, validate_schema=False)
+    try:
+        assert connection.execute("PRAGMA query_only").fetchone() == (0,)
+        assert connection.execute("PRAGMA temp_store").fetchone() == (2,)
+        assert connection.execute("SELECT value FROM evidence").fetchone() == ("selected",)
+        connection.execute("CREATE TEMP TABLE stage (value TEXT)")
+        connection.execute("INSERT INTO stage VALUES ('staged')")
+        connection.execute("CREATE INDEX stage_value ON stage(value)")
+        assert connection.execute("SELECT value FROM temp.stage").fetchone() == ("staged",)
+        connection.execute("REINDEX stage_value")
+
+        denied = (
+            "INSERT INTO main.evidence VALUES ('blocked')",
+            "ATTACH DATABASE 'other.db' AS other",
+            "DETACH DATABASE main",
+            "PRAGMA query_only = ON",
+            "PRAGMA temp_store = FILE",
+            "VACUUM",
+            "CREATE VIRTUAL TABLE virtual_stage USING fts5(value)",
+            "CREATE TEMP TRIGGER stage_trigger AFTER INSERT ON stage BEGIN SELECT 1; END",
+            "SELECT random()",
+        )
+        for statement in denied:
+            with pytest.raises(sqlite3.DatabaseError):
+                connection.execute(statement)
+    finally:
+        connection.close()
+
+    assert db_path.read_bytes() == before
+    assert {path.name for path in tmp_path.iterdir()} == before_files
+
+
+def test_sealed_staging_profile_is_not_an_ordinary_read_profile() -> None:
+    profile = connection_profile.SEALED_STAGING_CONNECTION_PROFILE
+    assert profile.immutable is True
+    assert profile.generation_identity == "sealed"
+    assert profile.temp_store == "MEMORY"
+    assert profile.query_only is False
+    assert profile not in connection_profile.READ_PROFILES.values()
+
+
+def test_ordinary_immutable_reader_still_rejects_temp_staging(tmp_path: Path) -> None:
+    db_path = tmp_path / "source.db"
+    sqlite3.connect(db_path).close()
+
+    with connection_profile.open_readonly_connection(db_path, immutable=True, validate_schema=False) as connection:
+        assert connection.execute("PRAGMA query_only").fetchone() == (1,)
+        with pytest.raises(sqlite3.OperationalError, match="readonly database"):
+            connection.execute("CREATE TEMP TABLE forbidden (value TEXT)")

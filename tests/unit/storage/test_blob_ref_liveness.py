@@ -22,6 +22,7 @@ from polylogue.storage.blob_liveness import BlobOwner
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessStagedPlan,
     classify_blob_ref_liveness,
+    digest_blob_ref_liveness_candidates,
     stage_blob_ref_liveness,
 )
 from polylogue.storage.blob_store import BlobStore
@@ -29,6 +30,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash, deterministic_raw_session_id
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_sealed_staging_connection
 from polylogue.storage.sqlite.durable_change_train import DurableSourceContinuitySemanticError
 from polylogue.storage.sqlite.migration_runner import (
     DurableChangeTrainError,
@@ -153,6 +155,95 @@ def test_classifier_proves_each_source_ref_type_with_actual_referent_join(tmp_pa
         ("sidecar", "history_sidecars", "sidecar_id"),
     }
     assert classification.safe_to_apply is True
+
+
+def test_sealed_classifier_matches_writable_oracle_for_ambiguous_unknown_and_unavailable_refs(
+    tmp_path: Path,
+) -> None:
+    """The sealed TEMP reader must preserve the complete classifier result."""
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    source_path = archive_root / "source.db"
+    with sqlite3.connect(source_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY);
+            CREATE TABLE raw_hook_events (
+                hook_event_id TEXT PRIMARY KEY, origin TEXT NOT NULL, native_id TEXT,
+                source_path TEXT, event_type TEXT, payload_json TEXT, observed_at_ms INTEGER,
+                blob_hash BLOB
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL, ref_id TEXT NOT NULL, ref_type TEXT NOT NULL,
+                source_path TEXT, size_bytes INTEGER NOT NULL, acquired_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (blob_hash, ref_type, ref_id)
+            );
+            INSERT INTO raw_sessions VALUES ('raw-live');
+            """
+        )
+    ambiguous_blob = b"a" * 32
+    ambiguous_source = "/ambiguous-hooks.jsonl"
+    ambiguous_ref_id = deterministic_raw_session_id("codex-session", ambiguous_source, 0, ambiguous_blob, "same-native")
+    with sqlite3.connect(source_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (b"l" * 32, "raw-live", "raw_payload", "/live", 1, 1),
+                (b"r" * 32, "raw-gone", "raw_payload", "/gone", 2, 2),
+                (b"a" * 32, "raw-gone-attachment", "attachment", "/attachment", 3, 3),
+                (b"s" * 32, "sidecar-gone", "sidecar", "/sidecar", 4, 4),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'future_type', '/future', 9, 9)
+            """,
+            (b"u" * 32, "future-ref"),
+        )
+        connection.executemany(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms, blob_hash
+            ) VALUES (?, 'codex-session', 'same-native', ?, 'PostToolUse', '{}', 1, ?)
+            """,
+            (
+                ("ambiguous-hook-a", ambiguous_source, ambiguous_blob),
+                ("ambiguous-hook-b", ambiguous_source, ambiguous_blob),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, 7, 7)
+            """,
+            (ambiguous_blob, ambiguous_ref_id, ambiguous_source),
+        )
+
+    sealed_path = tmp_path / "sealed-source.db"
+    with sqlite3.connect(source_path) as source, sqlite3.connect(sealed_path) as sealed_target:
+        source.backup(sealed_target)
+
+    with sqlite3.connect(source_path) as writable_connection:
+        writable_classification = classify_blob_ref_liveness(writable_connection)
+    with open_sealed_staging_connection(sealed_path, validate_schema=False) as sealed_connection:
+        sealed_classification = classify_blob_ref_liveness(sealed_connection)
+
+    assert sealed_classification.to_dict(include_candidates=True) == writable_classification.to_dict(
+        include_candidates=True
+    )
+    assert sealed_classification.candidate_count == writable_classification.candidate_count
+    assert sealed_classification.candidates == writable_classification.candidates
+    assert digest_blob_ref_liveness_candidates(sealed_classification.candidates) == digest_blob_ref_liveness_candidates(
+        writable_classification.candidates
+    )
+    assert sealed_classification.unknown_ref_types == ("future_type",)
+    assert sealed_classification.unavailable_ref_types == ("sidecar",)
+    assert sealed_classification.rekeyable_hook_payload_count == 1
+    assert all(candidate.ref_id != ambiguous_ref_id for candidate in sealed_classification.candidates)
 
 
 def test_dry_run_is_read_only_and_reports_attachment_parent_join(tmp_path: Path) -> None:
