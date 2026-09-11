@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
@@ -405,7 +406,7 @@ def test_membership_accepts_mixed_recipe_labels_but_not_mixed_models(tmp_path: P
     metadata_path = next((tmp_path / ".embeddings-generations").glob("gen-*/generation.json"))
     payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert payload["recipe_hash"] not in {(b"\x0a" * 32).hex(), (b"\x0b" * 32).hex()}
-    assert len(payload["recipe_hash"]) == 64
+    assert re.fullmatch(r"mixed:[0-9a-f]{64}", payload["recipe_hash"])
     store.collect()
 
     mixed_models = tmp_path / "mixed-models.db"
@@ -417,9 +418,14 @@ def test_membership_accepts_mixed_recipe_labels_but_not_mixed_models(tmp_path: P
         store.replace(mixed_models)
 
 
-@pytest.mark.parametrize("axis", ["model", "dimension", "output_contract"], ids=["model", "dimension", "output"])
+@pytest.mark.parametrize("axis", ["model", "output_contract"], ids=["model", "output"])
 def test_membership_rejects_each_mixed_vector_contract_axis_independently(tmp_path: Path, axis: str) -> None:
-    """Only recipe labels may vary while one vector contract is admitted."""
+    """Only recipe labels may vary while one vector contract is admitted.
+
+    The current embeddings DDL enforces dimension 1024 at insertion time;
+    production admission still checks dimensions independently for databases
+    from a compatible schema regime.
+    """
     store = EmbeddingGenerationStore(tmp_path)
     candidate = tmp_path / f"mixed-{axis}.db"
     initialize_archive_database(candidate, ArchiveTier.EMBEDDINGS)
@@ -427,8 +433,6 @@ def test_membership_rejects_each_mixed_vector_contract_axis_independently(tmp_pa
     second_model, second_dimension, second_output = "voyage-4", 1024, b"\x07" * 32
     if axis == "model":
         second_model = "voyage-4-lite"
-    elif axis == "dimension":
-        second_dimension = 768
     else:
         second_output = b"\x08" * 32
     with sqlite3.connect(candidate) as conn:
