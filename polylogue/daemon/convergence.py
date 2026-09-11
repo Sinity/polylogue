@@ -15,6 +15,7 @@ so we skip unchanged files entirely.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sqlite3
 import threading
 import time
@@ -108,7 +109,17 @@ class SessionProfileConvergenceOwner:
             ),
             admission_class="incremental-background",
         )
-        return await asyncio.wrap_future(submitted.future, loop=loop)  # type: ignore[arg-type]
+        operation = asyncio.wrap_future(submitted.future, loop=loop)  # type: ignore[arg-type]
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            # A caller may stop awaiting this sweep, but cannot let a compute
+            # worker that already owns a bridged publication outlive owner
+            # shutdown.  Settle it before propagating cancellation so the
+            # composition layer can drain the coordinator safely.
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(operation)
+            raise
 
 
 def make_session_profile_derivation(
@@ -124,17 +135,24 @@ def make_session_profile_derivation(
     The frame's scope is either the bounded durable changes from live ingest or
     ``None`` for an archive-wide no-hint sweep.
     """
+    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.derived.session.derivation import SessionProfileDerivation
     from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 
+    def active_index_path() -> Path:
+        # ``root/index.db`` can be a pointer stub.  Consult the configured
+        # root's canonical active-index authority for every compute/write
+        # boundary so a promoted generation is never treated as the old path.
+        return resolve_active_index_path(archive_root)
+
     def read_connection() -> sqlite3.Connection:
-        return open_readonly_connection(index_db_path.resolve(), timeout_class="background-read")
+        return open_readonly_connection(active_index_path(), timeout_class="background-read")
 
     def write_connection() -> sqlite3.Connection:
-        return open_daemon_connection(index_db_path.resolve(), archive_root=archive_root)
+        return open_daemon_connection(active_index_path(), archive_root=archive_root)
 
     def generation_binding() -> str:
-        return str(index_db_path.resolve())
+        return str(active_index_path())
 
     user_db = archive_root / "user.db"
 
@@ -180,9 +198,12 @@ def make_session_profile_frame(
     exact values it consumed; publication rejects if the anchor promotes in
     between.  ``scope=None`` is the restart-safe archive sweep.
     """
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
+    del index_db_path
     return DerivationFrame(
         archive_root=str(archive_root),
-        source_revision=f"index-generation:{index_db_path.resolve()}",
+        source_revision=f"index-generation:{resolve_active_index_path(archive_root)}",
         recipe_versions={"session_profile": "session-profile"},
         scope=None if scope is None else tuple(dict.fromkeys(str(session_id) for session_id in scope)),
     )

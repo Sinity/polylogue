@@ -14,6 +14,8 @@ authority, and never durable.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import cast
 
@@ -164,6 +166,57 @@ async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() 
         assert (await owner.converge(targeted, budget=Budget(page=1, compute=1))).done == 1
         assert adapter.output == {"a": "b0"}
     finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_session_owner_cancellation_waits_for_an_admitted_publication() -> None:
+    """Cancellation cannot abandon a worker holding the bridged writer gate.
+
+    Anti-vacuity: return immediately from ``CancelledError`` and this task
+    finishes while the publisher below is still active, allowing composition
+    shutdown to treat the writer as drained when it is not.
+    """
+
+    class BlockingDerivation(StringStatusDerivation):
+        domain = "session_profile"
+
+        def __init__(self) -> None:
+            super().__init__(("a",))
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            self.started.set()
+            assert self.release.wait(timeout=2.0)
+            return super().publish(frame, replacement)
+
+    adapter = BlockingDerivation()
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger([], derivations=[adapter]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    task = asyncio.create_task(owner.converge(DerivationFrame(archive_root="/archive", source_revision="r1")))
+    try:
+        assert await asyncio.to_thread(adapter.started.wait, 1.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert coordinator.snapshot().active_actor == "derivation.session_profile"
+
+        adapter.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert coordinator.snapshot().active_actor is None
+    finally:
+        adapter.release.set()
+        if not task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)
 
