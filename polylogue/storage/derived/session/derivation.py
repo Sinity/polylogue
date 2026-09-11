@@ -35,6 +35,7 @@ from polylogue.storage.sqlite.write_lease import write_lease
 __all__ = [
     "SESSION_PARTITION_INSPECT_CHUNK",
     "SESSION_PROFILE_DOMAIN",
+    "SessionProfileMarkerLoweringError",
     "SessionProfilePartFacts",
     "SessionProfileDerivation",
     "SessionProfileReplacement",
@@ -55,6 +56,20 @@ SESSION_PROFILE_RECIPE_VERSION = SESSION_INPUT_RECIPE_VERSION
 _VALID = "valid"
 _MISSING = "missing"
 _STALE = "stale"
+
+
+class SessionProfileMarkerLoweringError(RuntimeError):
+    """A user-tier marker publication failed after a known index outcome.
+
+    ``index_family_committed`` records an index-tier replacement committed by
+    *this* invocation.  A valid existing profile with a missing marker may
+    still need user-tier recovery, but a failed recovery attempt has not
+    committed a new index replacement and must not claim one.
+    """
+
+    def __init__(self, *, index_family_committed: bool) -> None:
+        super().__init__("session profile marker lowering failed after index publication")
+        self.index_family_committed = index_family_committed
 
 
 def _marker_assertion_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
@@ -603,6 +618,10 @@ class SessionProfileDerivation:
         conn = self._read_connection()
         marker_ids: tuple[str, ...] = ()
         try:
+            # A read transaction freezes every field in this receipt to one
+            # index snapshot.  Without it a concurrent replacement can mix a
+            # profile from one commit with sibling counts from another.
+            conn.execute("BEGIN")
             session_present = (
                 conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is not None
             )
@@ -722,6 +741,7 @@ class SessionProfileDerivation:
             ):
                 return False
             conn = self._write_connection()
+            index_family_committed = False
             try:
                 if (
                     replacement.generation_binding is not None
@@ -747,10 +767,18 @@ class SessionProfileDerivation:
                             else lambda: self._generation_binding() == replacement.generation_binding
                         ),
                     )
+                    index_family_committed = published
             finally:
                 conn.close()
             if published and self._marker_write_connection is not None:
-                _lower_prepared_markers(self._marker_write_connection, replacement.payload)
+                try:
+                    _lower_prepared_markers(self._marker_write_connection, replacement.payload)
+                except Exception as exc:
+                    # The index transaction has already committed and cannot
+                    # share atomicity with user assertions.  Preserve that
+                    # fact for the owner; normal inspection will rediscover
+                    # the missing marker lowering for a later idempotent pass.
+                    raise SessionProfileMarkerLoweringError(index_family_committed=index_family_committed) from exc
             return published
 
 

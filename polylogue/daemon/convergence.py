@@ -541,6 +541,39 @@ def _converge_selected_session_parts_sync(
                     lambda replacement=replacement: adapter.publish(frame, replacement),
                 )
             except Exception as exc:
+                from polylogue.storage.derived.session.derivation import SessionProfileMarkerLoweringError
+
+                if isinstance(exc, SessionProfileMarkerLoweringError):
+                    # Index and user tiers deliberately do not share a
+                    # transaction. A marker failure can therefore follow an
+                    # already-committed index replacement. Preserve that
+                    # effect and certify its actual family facts; ordinary
+                    # inspection keeps the missing marker retryable.
+                    try:
+                        after_marker_failure = _selected_session_facts(adapter, frame, target.session_id)
+                    except Exception as facts_exc:
+                        outcomes.append(
+                            _selected_outcome(
+                                target,
+                                "unknown",
+                                None,
+                                input_binding=prepared_binding,
+                                publication_known_committed=exc.index_family_committed,
+                                reason=f"marker lowering and post-failure certification: {facts_exc}",
+                            )
+                        )
+                    else:
+                        outcomes.append(
+                            _selected_outcome(
+                                target,
+                                "failed",
+                                after_marker_failure,
+                                input_binding=prepared_binding,
+                                publication_known_committed=exc.index_family_committed,
+                                reason="marker lowering failed after index publication",
+                            )
+                        )
+                    break
                 outcomes.append(
                     _selected_outcome(
                         target, "failed", before, input_binding=prepared_binding, reason=f"publish: {exc}"

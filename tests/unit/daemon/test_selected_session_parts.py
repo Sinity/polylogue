@@ -23,7 +23,13 @@ from polylogue.daemon.convergence import (
 )
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-from tests.infra.convergence_harness import seed_partial_convergence_archive, session_materialization_facts
+from polylogue.storage.derived.session import derivation as session_derivation
+from tests.infra.convergence_harness import (
+    build_converged_archive,
+    rich_convergence_sources,
+    seed_partial_convergence_archive,
+    session_materialization_facts,
+)
 
 
 async def _owner_for(
@@ -104,6 +110,43 @@ async def test_selected_required_part_publishes_once_and_returns_full_uncapped_r
         assert repeat[0].output_binding == receipt.output_binding
         assert repeat[0].certified_counts == receipt.certified_counts
         assert repeat[0].publication_known_committed is False
+    finally:
+        await _shutdown(compute, coordinator)
+
+
+@pytest.mark.asyncio
+async def test_selected_required_part_certifies_nonzero_work_event_and_phase_counts(tmp_path: Path) -> None:
+    """A receipt reports actual sibling rows from the real profile family.
+
+    Anti-vacuity: infer the receipt from a profile-only row or report fixed
+    zero sibling counts and accepted maintenance cannot certify its full
+    selected partition.
+    """
+    archive = build_converged_archive(tmp_path / "archive", rich_convergence_sources(), session_order=(0,))
+    target_id = archive.session_ids[0]
+    before = session_materialization_facts(archive.root / "index.db", session_id=target_id)
+    assert before.work_events and before.phases
+    with sqlite3.connect(archive.root / "index.db") as conn:
+        for table in ("session_work_events", "session_phases", "session_latency_profiles", "session_profiles"):
+            conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (target_id,))
+        conn.commit()
+
+    owner, compute, coordinator = await _owner_for(archive.root / "index.db", archive.root)
+    frame = make_session_profile_frame(archive.root / "index.db", archive_root=archive.root, scope=(target_id,))
+    try:
+        receipt = (
+            await owner.converge_selected(
+                frame,
+                targets=(SelectedSessionTarget(target_id, "required"),),
+                expected_generation=frame.source_revision,
+                expected_recipe=frame.recipe_version("session_profile"),
+                stop_requested=lambda: None,
+            )
+        )[0]
+        assert receipt.state == "published"
+        assert receipt.certified_counts.profiles == 1
+        assert receipt.certified_counts.work_events == len(before.work_events) > 0
+        assert receipt.certified_counts.phases == len(before.phases) > 0
     finally:
         await _shutdown(compute, coordinator)
 
@@ -230,6 +273,66 @@ async def test_selected_part_rejects_stale_contract_or_stop_without_writer_work(
 
 
 @pytest.mark.asyncio
+async def test_selected_part_retries_only_the_same_binding_moved_target(tmp_path: Path) -> None:
+    """A selected binding race gets one bounded retry without widening scope.
+
+    Anti-vacuity: reuse the generic paging kernel or rediscover after a moved
+    binding and this path can publish/retry an unsealed sibling instead of
+    returning a bounded pending receipt for the accepted target.
+    """
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    adapter = make_session_profile_derivation(recovered.index_db, archive_root=recovered.root, now=lambda: 0.0)
+    original_compute = adapter.compute
+    compute_attempts = 0
+
+    def move_target_binding(frame: object, session_id: str) -> object:
+        nonlocal compute_attempts
+        replacement = original_compute(frame, session_id)
+        compute_attempts += 1
+        with sqlite3.connect(recovered.index_db) as conn:
+            conn.execute(
+                "UPDATE messages SET model_name = ? WHERE session_id = ?",
+                (f"binding-moved-{compute_attempts}", session_id),
+            )
+            conn.commit()
+        return replacement
+
+    adapter.compute = move_target_binding  # type: ignore[method-assign]
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger((), derivations=[adapter]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    frame = make_session_profile_frame(
+        recovered.index_db,
+        archive_root=recovered.root,
+        scope=(recovered.target_session_id,),
+    )
+    try:
+        receipt = (
+            await owner.converge_selected(
+                frame,
+                targets=(SelectedSessionTarget(recovered.target_session_id, "required"),),
+                expected_generation=frame.source_revision,
+                expected_recipe=frame.recipe_version("session_profile"),
+                stop_requested=lambda: None,
+            )
+        )[0]
+        assert compute_attempts == 2
+        assert receipt.state == "pending"
+        assert receipt.reason == "binding_moved"
+        assert receipt.publication_known_committed is False
+        assert session_materialization_facts(recovered.index_db, session_id=recovered.target_session_id).profile is None
+        assert (
+            session_materialization_facts(recovered.index_db, session_id=recovered.unrelated_session_id).profile is None
+        )
+    finally:
+        await _shutdown(compute, coordinator)
+
+
+@pytest.mark.asyncio
 async def test_selected_part_retains_a_committed_effect_when_post_certification_is_lost(tmp_path: Path) -> None:
     """A committed bridge result remains visible when later certification fails.
 
@@ -278,6 +381,122 @@ async def test_selected_part_retains_a_committed_effect_when_post_certification_
             session_materialization_facts(recovered.index_db, session_id=recovered.target_session_id).profile
             is not None
         )
+    finally:
+        await _shutdown(compute, coordinator)
+
+
+@pytest.mark.asyncio
+async def test_selected_marker_failure_preserves_committed_index_effect_and_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user-tier marker failure cannot erase a committed index-family fact.
+
+    Anti-vacuity: treat a post-index marker exception like a failed index
+    publication and maintenance records no effect/counts even though the
+    derived partition is already committed and marker recovery remains due.
+    """
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    with sqlite3.connect(recovered.index_db) as conn:
+        conn.execute(
+            "UPDATE blocks SET text = ? WHERE message_id = (SELECT message_id FROM messages WHERE session_id = ?)",
+            ("::finding: marker-lowering must retry", recovered.target_session_id),
+        )
+        conn.commit()
+    adapter = make_session_profile_derivation(recovered.index_db, archive_root=recovered.root, now=lambda: 0.0)
+    original_lower = session_derivation._lower_prepared_markers
+
+    def fail_after_index_commit(marker_write_connection: object, prepared: object) -> None:
+        del marker_write_connection, prepared
+        raise RuntimeError("synthetic marker-tier failure")
+
+    monkeypatch.setattr(session_derivation, "_lower_prepared_markers", fail_after_index_commit)
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger((), derivations=[adapter]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    frame = make_session_profile_frame(
+        recovered.index_db,
+        archive_root=recovered.root,
+        scope=(recovered.target_session_id,),
+    )
+    target = SelectedSessionTarget(recovered.target_session_id, "required")
+    try:
+        failed = (
+            await owner.converge_selected(
+                frame,
+                targets=(target,),
+                expected_generation=frame.source_revision,
+                expected_recipe=frame.recipe_version("session_profile"),
+                stop_requested=lambda: None,
+            )
+        )[0]
+        assert failed.state == "failed"
+        assert failed.publication_known_committed is True
+        assert failed.certified_counts.profiles == 1
+        with sqlite3.connect(recovered.index_db) as conn:
+            expected_counts = tuple(
+                int(
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (recovered.target_session_id,)
+                    ).fetchone()[0]
+                )
+                for table in ("session_profiles", "session_work_events", "session_phases")
+            )
+        assert failed.certified_counts == type(failed.certified_counts)(*expected_counts)
+        assert adapter.inspect(frame, (recovered.target_session_id,))[recovered.target_session_id] == "stale"
+
+        monkeypatch.setattr(session_derivation, "_lower_prepared_markers", original_lower)
+        recovered_marker = (
+            await owner.converge_selected(
+                frame,
+                targets=(target,),
+                expected_generation=frame.source_revision,
+                expected_recipe=frame.recipe_version("session_profile"),
+                stop_requested=lambda: None,
+            )
+        )[0]
+        assert recovered_marker.state == "published"
+        assert recovered_marker.publication_known_committed is True
+        assert adapter.inspect(frame, (recovered.target_session_id,))[recovered.target_session_id] == "valid"
+
+        # A later marker-only retry has a valid, pre-existing index family.
+        # Its failed user-tier attempt must retain exact counts but cannot
+        # claim that this invocation committed another index replacement.
+        with sqlite3.connect(recovered.root / "user.db") as conn:
+            conn.execute("DELETE FROM assertions")
+            conn.commit()
+        monkeypatch.setattr(session_derivation, "_lower_prepared_markers", fail_after_index_commit)
+        marker_only_failure = (
+            await owner.converge_selected(
+                frame,
+                targets=(target,),
+                expected_generation=frame.source_revision,
+                expected_recipe=frame.recipe_version("session_profile"),
+                stop_requested=lambda: None,
+            )
+        )[0]
+        assert marker_only_failure.state == "failed"
+        assert marker_only_failure.publication_known_committed is False
+        assert marker_only_failure.certified_counts == failed.certified_counts
+        assert adapter.inspect(frame, (recovered.target_session_id,))[recovered.target_session_id] == "stale"
+
+        monkeypatch.setattr(session_derivation, "_lower_prepared_markers", original_lower)
+        final_marker_recovery = (
+            await owner.converge_selected(
+                frame,
+                targets=(target,),
+                expected_generation=frame.source_revision,
+                expected_recipe=frame.recipe_version("session_profile"),
+                stop_requested=lambda: None,
+            )
+        )[0]
+        assert final_marker_recovery.state == "published"
+        assert final_marker_recovery.publication_known_committed is True
+        assert adapter.inspect(frame, (recovered.target_session_id,))[recovered.target_session_id] == "valid"
     finally:
         await _shutdown(compute, coordinator)
 
