@@ -494,12 +494,12 @@ def test_archive_fts_session_repair_defers_sqlite_lock(
     archive_db = tmp_path / "index.db"
     archive_db.touch()
 
-    def locked(_db_path: Path) -> sqlite3.Connection:
+    def locked(_db_path: Path, **_kwargs: object) -> sqlite3.Connection:
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(stages, "_open_archive_insight_write_connection", locked)
 
-    assert stages._archive_fts_execute_sessions(archive_db, ["codex-session:s1"]) is False
+    assert stages._archive_fts_execute_sessions(archive_db, ["codex-session:s1"], archive_root=tmp_path) is False
 
 
 def test_archive_fts_global_repair_defers_sqlite_lock(
@@ -509,12 +509,12 @@ def test_archive_fts_global_repair_defers_sqlite_lock(
     archive_db = tmp_path / "index.db"
     archive_db.touch()
 
-    def locked(_db_path: Path) -> sqlite3.Connection:
+    def locked(_db_path: Path, **_kwargs: object) -> sqlite3.Connection:
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(stages, "_open_archive_insight_write_connection", locked)
 
-    assert stages.repair_messages_fts_surface(archive_db) is False
+    assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is False
 
 
 def test_archive_fts_global_repair_scopes_bounded_mmap_to_main_tier(
@@ -547,7 +547,7 @@ def test_archive_fts_global_repair_scopes_bounded_mmap_to_main_tier(
 
     monkeypatch.setattr(dangling_repair, "configure_bounded_repair_connection", configure_and_capture)
 
-    assert stages.repair_messages_fts_surface(archive_db) is True
+    assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is True
     assert observed == {
         "main": BOUNDED_REPAIR_MMAP_SIZE_BYTES,
         "source_tier": 0,
@@ -582,7 +582,7 @@ def test_archive_fts_optional_surface_repair_uses_stale_surface_repair(
     configured: list[FakeConnection] = []
     repairs: list[FakeConnection] = []
 
-    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", lambda _db: conn)
+    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", lambda _db, **_kwargs: conn)
     monkeypatch.setattr(
         "polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection",
         lambda c: configured.append(c),
@@ -597,7 +597,7 @@ def test_archive_fts_optional_surface_repair_uses_stale_surface_repair(
         fake_repair_stale_fts_rows,
     )
 
-    assert stages.repair_fts_surface(archive_db, "session_work_events_fts") is True
+    assert stages.repair_fts_surface(archive_db, "session_work_events_fts", archive_root=tmp_path) is True
     assert configured == [conn]
     assert repairs == [conn]
     assert conn.committed is True
@@ -620,7 +620,7 @@ def test_archive_fts_global_repair_inserts_missing_rows_without_reset(tmp_path: 
         "reset_message_fts_index_sync",
         wraps=fts_lc.reset_message_fts_index_sync,
     ) as reset_surface:
-        assert stages.repair_messages_fts_surface(archive_db) is True
+        assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is True
 
     reset_surface.assert_not_called()
     with sqlite3.connect(archive_db) as conn:
@@ -634,7 +634,7 @@ def test_archive_fts_global_repair_records_exact_parity(tmp_path: Path) -> None:
     source_path = tmp_path / "codex.jsonl"
     _seed_minimal_archive(archive_db, source_path)
 
-    assert stages.repair_messages_fts_surface(archive_db) is True
+    assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is True
 
     with sqlite3.connect(archive_db) as conn:
         row = conn.execute(
@@ -678,7 +678,7 @@ def test_archive_fts_global_repair_records_real_counts_status_and_query_agree(tm
         conn.execute("DELETE FROM messages_fts")
         conn.commit()
 
-    assert stages.repair_messages_fts_surface(archive_db) is True
+    assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is True
 
     with sqlite3.connect(archive_db) as conn:
         row = conn.execute(
@@ -760,7 +760,7 @@ def test_fts_surface_debt_retries_after_real_sqlite_backpressure(
     green = verify_archive(tmp_path, checks=("fts-parity",))
     assert green.checks[0].status is OutcomeStatus.OK
 
-    retired = stages.repair_fts_surface_result(archive_db, "threads_fts")
+    retired = stages.repair_fts_surface_result(archive_db, "threads_fts", archive_root=tmp_path)
     assert retired.success is False
     assert retired.deferred is False
 
@@ -808,7 +808,7 @@ def test_archive_fts_global_repair_deletes_excess_rows_without_reset(tmp_path: P
         "reset_message_fts_index_sync",
         wraps=fts_lc.reset_message_fts_index_sync,
     ) as reset_surface:
-        assert stages.repair_messages_fts_surface(archive_db) is True
+        assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is True
 
     reset_surface.assert_not_called()
     with sqlite3.connect(archive_db) as conn:
@@ -855,7 +855,7 @@ def test_archive_insights_path_batch_does_not_fallback_to_global_missing_profile
     monkeypatch.setattr(stages, "_session_ids_missing_profiles", fail_global_scope)
 
     assert stages._archive_insights_check_many(archive_db, [source_path]) == set()
-    result = stages._archive_insights_execute_many(archive_db, [source_path])
+    result = stages._archive_insights_execute_many(archive_db, [source_path], archive_root=tmp_path)
     assert result is True
 
 
@@ -868,13 +868,13 @@ def test_archive_insights_batch_propagates_nontransient_write_failures(
     unexpected write failure.
     """
 
-    def fail_open(_db_path: Path) -> sqlite3.Connection:
+    def fail_open(_db_path: Path, **_kwargs: object) -> sqlite3.Connection:
         raise RuntimeError("write failed")
 
     monkeypatch.setattr(stages, "_open_archive_insight_write_connection", fail_open)
 
     with pytest.raises(RuntimeError, match="write failed"):
-        stages._archive_insights_execute_many(tmp_path / "index.db", [tmp_path / "source.jsonl"])
+        stages._archive_insights_execute_many(tmp_path / "index.db", [tmp_path / "source.jsonl"], archive_root=tmp_path)
 
 
 def test_derived_stage_materializes_archive_profiles_from_archive_tiers(tmp_path: Path) -> None:
@@ -943,7 +943,7 @@ def test_derived_stage_rebuilds_sync_against_configured_db(
             return self._rows
 
     @contextmanager
-    def fake_open_connection(path: Path) -> Iterator[FakeConnection]:
+    def fake_open_connection(path: Path, **_kwargs: object) -> Iterator[FakeConnection]:
         opened_paths.append(path)
         yield FakeConnection()
 
@@ -979,7 +979,7 @@ def test_derived_stage_rebuilds_sync_against_configured_db(
         "polylogue.daemon.convergence_stages._session_ids_for_source_path", lambda _conn, _path: ["conv-1"]
     )
     monkeypatch.setattr("polylogue.daemon.convergence_stages._hot_insight_session_ids", lambda _conn, _ids: set())
-    monkeypatch.setattr("polylogue.storage.sqlite.connection.open_connection", fake_open_connection)
+    monkeypatch.setattr(stages, "open_connection", fake_open_connection)
     monkeypatch.setattr("polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(stages, "_record_fts_freshness_after_insights", lambda _conn: None)
 
@@ -1846,7 +1846,7 @@ def test_archive_insights_execute_sessions_uses_write_connection_profile(
 
     monkeypatch.setattr(stages, "_archive_insights_execute_ids", fake_execute_ids)
 
-    assert stages._archive_insights_execute_sessions(db_path, [session_id]) is True
+    assert stages._archive_insights_execute_sessions(db_path, [session_id], archive_root=tmp_path) is True
     assert seen_busy_timeout == [stages._ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS]
 
 
@@ -1859,12 +1859,12 @@ def test_archive_insights_execute_sessions_defers_transient_sqlite_lock(
         session_id = _seed_index_session(conn, session_id="conv-locked", text="Message for locked insight rebuild")
         conn.commit()
 
-    def fail_locked(_conn: sqlite3.Connection, _session_ids: list[str]) -> bool:
+    def fail_locked(_conn: sqlite3.Connection, _session_ids: list[str], **_kwargs: object) -> bool:
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(stages, "_archive_insights_execute_ids", fail_locked)
 
-    assert stages._archive_insights_execute_sessions(db_path, [session_id]) is False
+    assert stages._archive_insights_execute_sessions(db_path, [session_id], archive_root=tmp_path) is False
 
 
 def test_embedding_config_enabled_with_key() -> None:

@@ -5858,7 +5858,10 @@ def _converge_raw_materialization(
             index_db,
             purpose="raw convergence planner statistics",
             timeout=60,
-            archive_root=Path(index_db).parent,
+            # ``index_db`` can be an active generation outside the archive
+            # root that owns the daemon lease.  The selected archive root is
+            # the authority binding, not the generation directory.
+            archive_root=archive_root,
         )
     ) as planner_conn:
         planner_conn.execute("PRAGMA busy_timeout = 60000")
