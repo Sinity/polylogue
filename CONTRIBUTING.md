@@ -55,10 +55,11 @@ targeting `master`.
 1. Open an issue first when the work is non-trivial, spans multiple PRs,
    or introduces architectural decisions. Skip for self-contained fixes.
 2. Create a branch from `origin/master`.
-3. Work on the branch. Git hooks enforce format and lint on commit, and
-   run `devtools verify --quick` on push.
-4. Run `devtools verify` before creating the PR. It runs the static gates and
-   the affected tests, seeding the testmon datafile if the checkout has none.
+3. Work on the branch. Git hooks enforce format and lint on commit;
+   publication uses the hosted quick gate without a duplicate local push gate.
+4. Run the checks selected by the change before creating the PR. Use a
+   targeted test or managed operation when behavioral evidence is needed; the
+   hosted quick gate is the candidate publication check.
 5. Open a pull request. The template has required sections — fill them
    all in. The PR title becomes the squash-merge subject on `master`.
 6. CI must pass. Fix failures on the branch, do not merge with red CI.
@@ -239,7 +240,7 @@ relative hook path. External task state is independent of Git hooks and branches
   `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree
   commit flows.
 - **pre-push**: none. The hosted quick gate on the pull request is the
-  static check; the corpus runs on master per landing wave.
+  publication static check. Broader suites remain explicitly selected work.
 
 ## Type Checking
 
@@ -255,19 +256,20 @@ files = ["polylogue", "tests/**/*.py", "devtools/**/*.py"]
 There is no exclude list. All new files are checked by default. The mypy gate
 runs as part of `devtools verify` and in CI.
 
-## Verification Baseline
+## Verification Choices
 
-Before creating a PR, run the local baseline. CI runs the same checks.
+Choose verification that proves the changed contract. Do not duplicate the
+hosted candidate gate locally unless the task specifically needs that evidence.
 
 ```bash
-devtools verify            # static/generated gates + affected pytest
-devtools verify --quick    # format + lint + mypy + generated checks, including committed-schema privacy (skip tests)
+devtools test <selection>  # targeted behavioral evidence when needed
+devtools verify            # affected/static verification when explicitly selected
+devtools verify --quick    # optional local static check
 devtools bench slo --include-lab  # explicit benchmark tier
 ```
 
-The quick gate runs on the pull request (hosted) and on demand with
-`devtools verify --quick`. It's a fast check, not a substitute for the
-default baseline.
+The quick gate runs on the pull request (hosted). `devtools verify --quick`
+is available on demand; it is not a second publication requirement.
 
 `devtools verify` does not replay a prior verify result. It always runs the
 static gates, then pytest over unit, property, fuzz, and integration tests,

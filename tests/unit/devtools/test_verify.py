@@ -286,16 +286,14 @@ def test_finish_step_does_not_retry_unavailable_pytest_statistics(
     assert "statistics" not in result
 
 
-def test_every_managed_pytest_run_traces_under_the_full_hypothesis_profile() -> None:
-    """Graph writers share one profile; affected runs write edges too.
-
-    Anti-vacuity: leaving a shell's HYPOTHESIS_PROFILE=ci in place lets a run
-    report green under a reduced property-test budget.
-    """
+def test_broad_managed_pytest_profile_honors_environment_then_defaults() -> None:
     env = {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"}
     verify._normalize_managed_pytest_environment(env)
-    assert env["HYPOTHESIS_PROFILE"] == "default"
+    assert env["HYPOTHESIS_PROFILE"] == "ci"
     assert "POLYLOGUE_CI" not in env
+    default: dict[str, str] = {}
+    verify._normalize_managed_pytest_environment(default)
+    assert default["HYPOTHESIS_PROFILE"] == "default"
 
 
 def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
@@ -554,6 +552,36 @@ def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.
     assert exit_code != 0
     assert metadata["diagnosis"] == "pytest_no_report"
     assert metadata["statistics"]["ordinary_eligible"] is False
+
+
+@pytest.mark.parametrize("runner", ["managed", "isolated"])
+def test_verify_pytest_step_uses_the_explicit_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, runner: str
+) -> None:
+    """CI isolation is opt-in; the normal verifier remains pool-managed."""
+    called: list[str] = []
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
+    monkeypatch.setattr(verify, "executable_gate_result", lambda *_args, **_kwargs: SimpleNamespace(ok=True))
+
+    def managed(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        called.append("managed")
+        return SimpleNamespace(returncode=0, slot="managed", receipt=None)
+
+    def isolated(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        called.append("isolated")
+        return SimpleNamespace(returncode=0, slot="isolated", receipt=None)
+
+    monkeypatch.setattr(verify, "run_pytest", managed)
+    monkeypatch.setattr(verify, "run_pytest_isolated", isolated)
+    run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
+
+    _exit_code, _elapsed, metadata = verify._run("pytest selected", ["pytest"], run=run, runner=runner)
+
+    assert called == [runner]
+    assert metadata["runner"] == runner
+    assert metadata["pytest_slot"] == runner
 
 
 def test_step_environment_is_receipt_scoped(tmp_path: Path) -> None:
@@ -905,12 +933,12 @@ def test_receipt_omits_flake_fields_when_no_test_flaked() -> None:
     assert "flaky_count" not in step
 
 
-def test_agent_job_caps_an_explicit_worker_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity: return `selection` unchanged from _capped_selection and
-    the explicit -n 32 below survives into the command.
+def test_focused_explicit_workers_are_sized_inside_the_admitted_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The command keeps intent; the slot measures the live cgroup on start.
 
-    The cap protects a shared host. Honoring it only when the caller stayed
-    silent let any explicit request claim the whole machine.
+    Anti-vacuity: restoring the old agent-identity cap would rewrite the
+    explicit request before the pool can apply its actual memory bound.
+    ``test_corpus_worker_memory_bound`` exercises that slot-side bound.
     """
 
     from devtools import agent_env, run_tests
@@ -918,8 +946,7 @@ def test_agent_job_caps_an_explicit_worker_request(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv(agent_env.AGENT_PRINCIPAL_ENV, agent_env.AGENT_PRINCIPAL)
     command = run_tests.build_pytest_cmd(["tests/unit/foo.py", "-n", "32"])
 
-    assert verify_runs.pytest_command_worker_request(command) == str(agent_env.AGENT_MAX_PYTEST_WORKERS)
-    assert "32" not in command
+    assert verify_runs.pytest_command_worker_request(command) == "32"
 
 
 def test_agent_job_leaves_a_request_within_the_cap_alone(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -953,21 +980,35 @@ def test_explicit_zero_workers_survives_the_agent_cap() -> None:
     assert agent_worker_cap(0, {}) == 0
 
 
-def test_focused_managed_runs_also_force_the_full_hypothesis_profile() -> None:
-    """Anti-vacuity: drop the HYPOTHESIS_PROFILE assignment from run_tests and
-    a shell's `ci` profile survives into a run that writes graph edges.
-
-    `devtools test` traces into the same datafile `devtools verify` selects
-    from. An edge recorded under a reduced property budget would let a later
-    selected green stand for less coverage than it claims.
-    """
+def test_focused_managed_runs_default_to_the_verify_hypothesis_profile() -> None:
 
     from devtools import run_tests
 
     env = {"HYPOTHESIS_PROFILE": "ci", "PATH": "/usr/bin"}
     run_tests._normalize_managed_pytest_environment(env)
 
-    assert env["HYPOTHESIS_PROFILE"] == "default"
+    assert env["HYPOTHESIS_PROFILE"] == "ci"
+    default: dict[str, str] = {}
+    run_tests._normalize_managed_pytest_environment(default)
+    assert default["HYPOTHESIS_PROFILE"] == "verify"
+
+
+def test_hypothesis_profile_prefers_cli_then_environment_then_default() -> None:
+    from devtools.pytest_invocation import effective_hypothesis_profile
+
+    assert effective_hypothesis_profile(
+        ["--hypothesis-profile", "cli"], {"HYPOTHESIS_PROFILE": "env"}, default="fallback"
+    ) == (
+        "cli",
+        "cli",
+    )
+    assert effective_hypothesis_profile(
+        ["--hypothesis-profile=first", "--hypothesis-profile", "final"],
+        {"HYPOTHESIS_PROFILE": "env"},
+        default="fallback",
+    ) == ("final", "cli")
+    assert effective_hypothesis_profile([], {"HYPOTHESIS_PROFILE": "env"}, default="fallback") == ("env", "environment")
+    assert effective_hypothesis_profile([], {}, default="fallback") == ("fallback", "default")
 
 
 def test_agent_tier_refusal_honors_the_json_contract(

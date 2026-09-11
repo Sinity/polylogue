@@ -76,6 +76,36 @@ async def _wait_for_http(url: str, *, process: subprocess.Popen[bytes], timeout_
     raise AssertionError(f"daemon HTTP endpoint did not become ready: {url}; last_error={last_error!r}")
 
 
+def test_http_readiness_reports_an_exited_daemon_without_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed daemon is evidence now, not a twenty-second readiness timeout."""
+
+    class Exited:
+        returncode = 23
+
+        @staticmethod
+        def poll() -> int:
+            return 23
+
+    def unexpected_read(_url: str) -> bytes:
+        raise AssertionError("an exited daemon must not be probed")
+
+    monkeypatch.setitem(_wait_for_http.__globals__, "_read_url", unexpected_read)
+    with pytest.raises(AssertionError, match="exit_code=23"):
+        asyncio.run(_wait_for_http("http://127.0.0.1:1/healthz/live", process=Exited(), timeout_s=0.05))  # type: ignore[arg-type]
+
+
+def test_http_readiness_accepts_the_first_healthy_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Running:
+        returncode = None
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    monkeypatch.setitem(_wait_for_http.__globals__, "_read_url", lambda _url: b'{"status":"ok"}')
+    asyncio.run(_wait_for_http("http://127.0.0.1:1/healthz/live", process=Running(), timeout_s=0.05))  # type: ignore[arg-type]
+
+
 def _read_url(url: str) -> bytes:
     with urlopen(url, timeout=1) as response:
         return cast(bytes, response.read())

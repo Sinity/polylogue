@@ -10,6 +10,7 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.product.workflows import TopicPackRequest, TopicPackResult
 
 if TYPE_CHECKING:
+    from polylogue.analysis.orchestration_evidence import SessionOrchestrationEvidence
     from polylogue.api import ArchiveStats, Polylogue
     from polylogue.archive.message.models import Message
     from polylogue.archive.message.roles import MessageRoleFilter
@@ -29,6 +30,9 @@ class SyncSessionQueriesMixin:
 
     def get_session(self, session_id: str) -> Session | None:
         return run_coroutine_sync(self._facade.get_session(session_id))
+
+    def get_session_orchestration(self, session_id: str) -> SessionOrchestrationEvidence | None:
+        return run_coroutine_sync(self._facade.get_session_orchestration(session_id))
 
     def get_sessions(self, session_ids: list[str]) -> list[Session]:
         return run_coroutine_sync(self._facade.get_sessions(session_ids))

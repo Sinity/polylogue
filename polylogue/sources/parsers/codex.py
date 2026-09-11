@@ -571,6 +571,11 @@ def _compact_response_payload(
                     compact_rate_limits[lane] = lane_payload
             if compact_rate_limits:
                 compact["rate_limits"] = compact_rate_limits
+    elif compact.get("type") == "collab_agent_spawn_end":
+        for key in ("new_thread_id", "new_agent_nickname", "new_agent_role"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                compact[key] = value
     elif compact.get("type") == "ghost_snapshot":
         # Codex's shadow-git snapshot (undo/diff tracking): the commit id,
         # its parent, and pre-existing untracked paths at snapshot time.
@@ -3340,6 +3345,17 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     payload=event_payload,
                 )
                 session_events.append(response_event)
+                # Usage lowering keeps numeric counters in its typed table.
+                # Quota windows have their own timeline event so that lowering
+                # the token_count row cannot discard this independent evidence.
+                if event_type == "token_count" and event_payload.get("rate_limits"):
+                    session_events.append(
+                        ParsedSessionEvent(
+                            event_type="rate_limits",
+                            timestamp=response_event.timestamp,
+                            payload={"source_index": idx, "rate_limits": event_payload["rate_limits"]},
+                        )
+                    )
                 # `task_complete.last_agent_message` is the turn's final
                 # assistant text repeated on the completion marker. Measured
                 # over 270 real rollout files, all 1,565 occurrences were

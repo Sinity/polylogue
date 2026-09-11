@@ -41,7 +41,7 @@ def test_receipt_records_tier_construction_and_write_bytes(tmp_path: Path) -> No
     assert payload["peak_scratch_apparent_bytes"] > 0
 
 
-def test_aggregate_sums_workers_and_takes_wall_clock_as_the_longest(tmp_path: Path) -> None:
+def test_aggregate_uses_controller_elapsed_without_summing_parallel_peaks(tmp_path: Path) -> None:
     for index, (tests, write_bytes, duration) in enumerate(((10, 400, 5.0), (30, 600, 9.0))):
         (tmp_path / f"gw{index}.json").write_text(
             json.dumps(
@@ -65,9 +65,29 @@ def test_aggregate_sums_workers_and_takes_wall_clock_as_the_longest(tmp_path: Pa
     assert aggregate["write_bytes_per_test"] == 25.0
     # Workers run concurrently: summing their durations would misreport the run.
     assert aggregate["wall_clock_s"] == 9.0
+    assert aggregate["controller_duration_s"] is None
+    assert aggregate["worker_active_s"] == 14.0
     assert aggregate["tier_init"] == {"ops.ddl_fresh": 2, "ops.prototype_hit": 40}
     assert aggregate["archive_tier_initializations"] == 42
     assert aggregate["peak_scratch_apparent_bytes"] == 200
+
+
+def test_controller_receipt_covers_collection_and_worker_warmup(tmp_path: Path) -> None:
+    (tmp_path / "master.json").write_text(
+        json.dumps(
+            {"worker_id": "master", "role": "controller", "tests": 0, "duration_s": 12.0, "io": {}, "tier_init": {}}
+        )
+    )
+    (tmp_path / "gw0.json").write_text(
+        json.dumps({"worker_id": "gw0", "role": "worker", "tests": 2, "duration_s": 8.0, "io": {}, "tier_init": {}})
+    )
+
+    aggregate = suite_cost.aggregate_suite_cost(tmp_path)
+
+    assert aggregate["workers"] == 1
+    assert aggregate["wall_clock_s"] == 12.0
+    assert aggregate["controller_duration_s"] == 12.0
+    assert aggregate["worker_active_s"] == 8.0
 
 
 @pytest.mark.parametrize(
@@ -114,10 +134,9 @@ def test_plugin_writes_one_receipt_per_worker_under_xdist(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    # The controller writes nothing: counting it would report three workers
-    # sharing the run's write bytes when only two built anything.
+    # The controller writes an elapsed receipt but is never counted as a worker.
     names = sorted(path.name for path in receipts.glob("*.json"))
-    assert names == ["gw0.json", "gw1.json"]
+    assert names == ["gw0.json", "gw1.json", "master.json"]
     aggregate = suite_cost.aggregate_suite_cost(receipts)
     assert aggregate["workers"] == 2
     assert aggregate["tests"] == 4

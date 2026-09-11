@@ -56,6 +56,7 @@ __all__ = [
     "holds_pytest_slot",
     "main",
     "remove_temp_tree",
+    "run_pytest_isolated",
     "run_pytest",
 ]
 
@@ -698,6 +699,37 @@ def run_pytest(
             outcome = _submit(argv, cwd=cwd, env=contained, root=root, on_exit=dispose)
         keep = outcome.returncode != 0
         return outcome
+    finally:
+        dispose()
+
+
+def run_pytest_isolated(
+    command: Sequence[str],
+    *,
+    cwd: str,
+    env: Mapping[str, str],
+    root: Path,
+    stdout: IO[Any] | None = None,
+) -> SlotOutcome:
+    """Run through the managed containment/receipt harness without agentctl.
+
+    CI has no local AgentCTL runtime. It must opt into this mode explicitly;
+    workstation callers use :func:`run_pytest` and fail closed if admission is
+    unavailable.
+    """
+    argv, contained, scratch = contained_pytest_run(command, env=env, root=root)
+    basetemp = scratch.with_name(scratch.name.removesuffix(".tmpdir"))
+    keep = False
+
+    def dispose() -> None:
+        if not keep:
+            remove_temp_tree(scratch)
+            remove_temp_tree(basetemp)
+
+    try:
+        returncode, receipt = _run_held(argv, cwd=cwd, env=contained, stdout=stdout, on_exit=dispose)
+        keep = returncode != 0
+        return SlotOutcome(returncode=returncode, slot="isolated", receipt=receipt)
     finally:
         dispose()
 

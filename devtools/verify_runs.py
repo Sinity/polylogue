@@ -410,6 +410,7 @@ class VerifyRun:
                 "exit_code": int(exit_code),
                 "status": "success" if exit_code == 0 else "failed",
                 "final_git_head": final_git_head,
+                "final_git_dirty": git_dirty(self.root),
             }
         )
         if diagnosis is not None:
@@ -437,12 +438,15 @@ def pytest_step_run_id(run_id: str, step_id: str) -> str:
     return f"{run_id}-s{index}" if index.isdigit() else f"{run_id}-{step_id}"
 
 
-def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
+def env_for_pytest_step(
+    env: dict[str, str], *, run: VerifyRun, artifacts: PytestStepArtifacts, testmon: bool = True
+) -> dict[str, str]:
     updated = dict(env)
     # testmon opens the datafile directly; without its directory the session
     # dies in an internal error rather than a test result.
     datafile = run.root / TESTMON_DATA_RELPATH
-    datafile.parent.mkdir(parents=True, exist_ok=True)
+    if testmon:
+        datafile.parent.mkdir(parents=True, exist_ok=True)
     # Every managed run records its own archive-construction and write cost,
     # beside the artifacts the rest of the receipt is read from. Set by the
     # step rather than inherited, because the queue reduces the submitting
@@ -459,9 +463,11 @@ def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: Pytes
             "POLYLOGUE_PYTEST_EVENTS_PATH": str(artifacts.events_merged_path),
             "POLYLOGUE_PYTEST_SELECTION_PATH": str(artifacts.selection_path),
             "POLYLOGUE_PYTEST_SUMMARY_PATH": str(artifacts.summary_path),
-            "TESTMON_DATAFILE": str(datafile),
+            **({"TESTMON_DATAFILE": str(datafile)} if testmon else {}),
         }
     )
+    if not testmon:
+        updated.pop("TESTMON_DATAFILE", None)
     return updated
 
 

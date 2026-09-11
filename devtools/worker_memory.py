@@ -206,10 +206,24 @@ def resize_worker_argument(
     or when the count already fits. A run with ``-n 0`` asked for no xdist at
     all and is left alone.
     """
+    index: int | None = None
+    requested_text: str | None = None
+    inline = False
+    for candidate, argument in enumerate(argv):
+        if argument in {"-n", "--numprocesses"} and candidate + 1 < len(argv):
+            index, requested_text = candidate + 1, argv[candidate + 1]
+            break
+        if argument.startswith("--numprocesses="):
+            index, requested_text, inline = candidate, argument.split("=", 1)[1], True
+            break
+        if argument.startswith("-n") and len(argument) > 2:
+            index, requested_text, inline = candidate, argument[2:].removeprefix("="), True
+            break
     try:
-        index = argv.index("-n")
-        requested = int(argv[index + 1])
-    except (ValueError, IndexError):
+        requested = int(requested_text) if requested_text is not None else None
+    except ValueError:
+        return argv, None
+    if requested is None or index is None:
         return argv, None
     if requested <= 1:
         return argv, None
@@ -219,5 +233,11 @@ def resize_worker_argument(
     if not basis.get("narrowed"):
         return argv, basis
     resized = list(argv)
-    resized[index + 1] = str(workers)
+    resized[index] = (
+        f"{argv[index].split('=', 1)[0]}={workers}"
+        if inline and argv[index].startswith("--numprocesses=")
+        else f"-n{workers}"
+        if inline
+        else str(workers)
+    )
     return resized, basis
