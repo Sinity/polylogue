@@ -518,6 +518,7 @@ class SessionProfileDerivation:
         session_scope: Callable[[object], Sequence[str] | None],
         page_size: int = 200,
         quiet_keys: Callable[[object], frozenset[str]] | None = None,
+        quiet_key: Callable[[object, str], bool] | None = None,
         marker_read_connection: Callable[[], sqlite3.Connection] | None = None,
         marker_write_connection: Callable[[], sqlite3.Connection] | None = None,
         generation_binding: Callable[[], str] | None = None,
@@ -528,6 +529,7 @@ class SessionProfileDerivation:
         self._session_scope = session_scope
         self._page_size = page_size
         self._quiet_keys = quiet_keys
+        self._quiet_key = quiet_key
         self._marker_read_connection = marker_read_connection
         self._marker_write_connection = marker_write_connection
         self._generation_binding = generation_binding
@@ -576,7 +578,14 @@ class SessionProfileDerivation:
             conn.close()
 
     def quiet(self, frame: object, key: str) -> bool:
+        if self._quiet_key is not None:
+            return self._quiet_key(frame, key)
         return key in self._quiet_keys(frame) if self._quiet_keys is not None else False
+
+    def prerequisite_keys(self, frame: object, key: str) -> tuple[()]:
+        """Session profiles have no derivation-kernel prerequisite domain."""
+        del frame, key
+        return ()
 
     def compute(self, frame: object, key: str) -> SessionProfileReplacement:
         """Prepare the complete replacement from a lease-free read frame."""

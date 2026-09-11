@@ -78,8 +78,28 @@ class SessionProfileConvergenceOwner:
         self._converger = converger
         self._compute_adapter = compute_adapter
         self._write_bridge = write_bridge
+        # The kernel retains a process-local pagination cursor.  One owner may
+        # receive a periodic no-hint sweep and a watcher-targeted pass at once;
+        # serialize their scheduling without extending any writer hold.
+        self._converge_lock = asyncio.Lock()
 
     async def converge(
+        self,
+        frame: DerivationFrame,
+        *,
+        budget: Budget | int | None = None,
+        deadline_s: float | None = None,
+        resume: bool = True,
+    ) -> DerivationReport:
+        async with self._converge_lock:
+            return await self._converge_serialized(
+                frame,
+                budget=budget,
+                deadline_s=deadline_s,
+                resume=resume,
+            )
+
+    async def _converge_serialized(
         self,
         frame: DerivationFrame,
         *,
@@ -127,6 +147,7 @@ def make_session_profile_derivation(
     *,
     archive_root: Path,
     materializer_version: int,
+    now: Callable[[], float],
 ) -> DerivationAdapter:
     """Build the one daemon-owned adapter for one active index generation.
 
@@ -154,6 +175,23 @@ def make_session_profile_derivation(
     def generation_binding() -> str:
         return str(active_index_path())
 
+    def quiet_key(frame: object, session_id: str) -> bool:
+        # Check one key at a time inside the compute pass.  This preserves hot
+        # source deferral without materializing an archive-wide quiet set for a
+        # no-hint sweep, and keeps clock authority injected by composition.
+        from polylogue.daemon.convergence_stages import _archive_hot_insight_session_ids
+
+        conn = read_connection()
+        try:
+            return session_id in _archive_hot_insight_session_ids(
+                conn,
+                (session_id,),
+                now=now(),
+                archive_root=archive_root,
+            )
+        finally:
+            conn.close()
+
     user_db = archive_root / "user.db"
 
     def marker_read_connection() -> sqlite3.Connection:
@@ -177,6 +215,7 @@ def make_session_profile_derivation(
             write_connection,
             materializer_version=materializer_version,
             session_scope=scope,
+            quiet_key=quiet_key,
             marker_read_connection=marker_read_connection if user_db.exists() else None,
             marker_write_connection=marker_write_connection if user_db.exists() else None,
             generation_binding=generation_binding,

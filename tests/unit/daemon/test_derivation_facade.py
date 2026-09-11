@@ -221,6 +221,61 @@ async def test_session_owner_cancellation_waits_for_an_admitted_publication() ->
         await coordinator.shutdown(timeout=1.0)
 
 
+@pytest.mark.asyncio
+async def test_session_owner_serializes_a_sweep_and_targeted_callback() -> None:
+    """Concurrent owner callers cannot race one mutable kernel cursor.
+
+    Anti-vacuity: remove the owner-local coroutine lock and the targeted
+    callback reaches its publisher while the blocked sweep still owns the
+    same converger, reintroducing scope/cursor races without a writer hold.
+    """
+
+    class ScopedDerivation(StringStatusDerivation):
+        domain = "session_profile"
+
+        def __init__(self) -> None:
+            super().__init__(("a", "b"))
+            self.a_started = threading.Event()
+            self.release_a = threading.Event()
+
+        def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
+            scope = frame.scope
+            return ("a", "b") if scope is None else iter(cast(tuple[str, ...], scope))
+
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            if replacement.payload == "a":
+                self.a_started.set()
+                assert self.release_a.wait(timeout=2.0)
+            return super().publish(frame, replacement)
+
+    adapter = ScopedDerivation()
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=2)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger([], derivations=[adapter]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    sweep = asyncio.create_task(
+        owner.converge(DerivationFrame(archive_root="/archive", source_revision="sweep", scope=("a",)))
+    )
+    try:
+        assert await asyncio.to_thread(adapter.a_started.wait, 1.0)
+        targeted = asyncio.create_task(
+            owner.converge(DerivationFrame(archive_root="/archive", source_revision="target", scope=("b",)))
+        )
+        await asyncio.sleep(0)
+        assert adapter.output == {}
+        adapter.release_a.set()
+        assert (await sweep).done == 1
+        assert (await targeted).done == 1
+        assert adapter.output == {"a": "b0", "b": "b0"}
+    finally:
+        adapter.release_a.set()
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
 def test_the_facade_reconstructs_the_pending_set_on_every_call() -> None:
     """A restart loses nothing because the facade stores nothing.
 
