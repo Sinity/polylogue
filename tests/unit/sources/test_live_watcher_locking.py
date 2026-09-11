@@ -171,6 +171,49 @@ async def test_flush_pending_requeues_when_archive_is_busy(
 
 
 @pytest.mark.asyncio
+async def test_flush_pending_requeues_forced_and_concurrent_paths_after_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    source = root / "session.jsonl"
+    concurrent = root / "concurrent.jsonl"
+    source.write_text('{"role":"user","content":"a"}\n')
+    concurrent.write_text('{"role":"user","content":"b"}\n')
+    watcher = _make_watcher(tmp_path, root, debounce_s=0)
+    watcher._pending_paths.add(source)
+    watcher._forced_reparse_paths.add(source)
+    monkeypatch.setattr(watcher, "_ensure_pending_scheduled", lambda: None)
+    calls: list[list[Path]] = []
+
+    async def ingest(
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+    ) -> None:
+        del queued_file_count, skipped_file_count
+        calls.append(paths)
+        if len(calls) == 1:
+            # This models a filesystem event arriving while the snapshot is
+            # in flight.  The retry must merge it with the failed snapshot.
+            watcher._enqueue(concurrent)
+            raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(watcher, "_ingest_files", ingest)
+
+    assert await watcher._flush_pending() is True
+    assert watcher._pending_paths == {source, concurrent}
+    assert watcher._forced_reparse_paths == {source}
+
+    assert await watcher._flush_pending() is True
+    assert {source, concurrent} == set(calls[1])
+    assert not watcher._pending_paths
+    assert not watcher._forced_reparse_paths
+
+
+@pytest.mark.asyncio
 async def test_flush_pending_reraises_unexpected_sqlite_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -195,6 +238,7 @@ async def test_flush_pending_reraises_unexpected_sqlite_errors(
 
     with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
         await watcher._flush_pending()
+    assert not watcher._pending_paths
 
 
 @pytest.mark.asyncio
