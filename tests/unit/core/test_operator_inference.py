@@ -10,6 +10,7 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.schemas.operator import inference as operator_inference
 from polylogue.schemas.operator.inference import (
     _privacy_config,
     audit_schemas,
@@ -117,6 +118,8 @@ def _seed_chatgpt_raw_with_planted_field(workspace_env: dict[str, Path], *, valu
 
 def test_promote_cluster_with_samples_honors_privacy_config_through_the_real_operator_route(
     workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """polylogue-f47j, completed: verifies the fix is reachable from the
     actual production caller, not just the library function.
@@ -135,48 +138,36 @@ def test_promote_cluster_with_samples_honors_privacy_config_through_the_real_ope
     not a heuristic that would have redacted it anyway.
     """
     index_db = _seed_chatgpt_raw_with_planted_field(workspace_env, values=["us-east", "eu-west"])
-    inferred = infer_schema(SchemaInferRequest(provider="chatgpt", db_path=index_db, cluster=True))
-    assert inferred.manifest is not None
-    cluster_id = inferred.manifest.clusters[0].cluster_id
 
-    baseline = promote_schema_cluster(
-        SchemaPromoteRequest(
-            provider="chatgpt",
-            cluster_id=cluster_id,
-            db_path=index_db,
-            with_samples=True,
-            max_samples=100,
+    def promote_in_isolated_registry(name: str, privacy_config: JSONDocument | None = None) -> JSONDocument:
+        registry = SchemaRegistry(storage_root=tmp_path / name)
+        monkeypatch.setattr(operator_inference, "schema_registry", lambda: registry)
+        inferred = infer_schema(SchemaInferRequest(provider="chatgpt", db_path=index_db, cluster=True))
+        assert inferred.manifest is not None
+        promoted = promote_schema_cluster(
+            SchemaPromoteRequest(
+                provider="chatgpt",
+                cluster_id=inferred.manifest.clusters[0].cluster_id,
+                db_path=index_db,
+                with_samples=True,
+                max_samples=100,
+                privacy_config=privacy_config,
+            )
         )
-    )
-    assert baseline.schema is not None
-    baseline_properties = baseline.schema["properties"]
+        assert promoted.schema is not None
+        return promoted.schema
+
+    baseline_properties = promote_in_isolated_registry("baseline")["properties"]
     assert isinstance(baseline_properties, dict)
     assert baseline_properties["region_code"].get("x-polylogue-values") == ["us-east", "eu-west"]
 
-    # Reset the cluster's promotion state so it can be promoted a second
-    # time in this same test -- promote_cluster refuses to re-promote an
-    # already-promoted cluster, and this is the same cluster on purpose (the
-    # point is to compare identical input with and without privacy_config).
-    registry = SchemaRegistry()
-    manifest = registry.load_cluster_manifest("chatgpt")
-    assert manifest is not None
-    for cluster in manifest.clusters:
-        if cluster.cluster_id == cluster_id:
-            cluster.promoted_package_version = None
-    registry.save_cluster_manifest(manifest)
-
-    protected = promote_schema_cluster(
-        SchemaPromoteRequest(
-            provider="chatgpt",
-            cluster_id=cluster_id,
-            db_path=index_db,
-            with_samples=True,
-            max_samples=100,
-            privacy_config={"field_overrides": {"$.region_code": "deny"}},
-        )
-    )
-    assert protected.schema is not None
-    protected_properties = protected.schema["properties"]
+    # Each comparison path gets its own promoted package history and fresh
+    # manifest. Re-promoting one cluster after clearing only its manifest
+    # marker would create v4 then v5 for the same family, which the runtime
+    # correctly refuses as an incoherent package catalog.
+    protected_properties = promote_in_isolated_registry("protected", {"field_overrides": {"$.region_code": "deny"}})[
+        "properties"
+    ]
     assert isinstance(protected_properties, dict)
     assert "x-polylogue-values" not in protected_properties["region_code"]
 
