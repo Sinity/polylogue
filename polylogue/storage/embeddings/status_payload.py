@@ -815,10 +815,6 @@ def _archive_embedding_status_payload(
     _embeddings_schema: str = "embeddings",
     _ops_schema: str = "ops_tier",
 ) -> EmbeddingStatusPayload | None:
-    if _pinned_connection is None:
-        index_db = _archive_index_path(db_path)
-        if index_db is None:
-            return None
     recipe = EmbeddingRecipe.current(
         model=settings.configured_model or "",
         dimensions=settings.configured_dimension or 0,
@@ -829,11 +825,13 @@ def _archive_embedding_status_payload(
     metadata_timeout_ms = METADATA_SUMMARY_TIMEOUT_MS if owns_connection else None
     candidate_prose_timeout_ms = DETAIL_CANDIDATE_PROSE_TIMEOUT_MS if owns_connection else None
     # Status payloads degrade rather than refuse when the index tier is skewed.
-    conn = (
-        open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0, validate_schema=False)
-        if _pinned_connection is None
-        else _pinned_connection
-    )
+    if _pinned_connection is None:
+        index_db = _archive_index_path(db_path)
+        if index_db is None:
+            return None
+        conn = open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0, validate_schema=False)
+    else:
+        conn = _pinned_connection
     if owns_connection:
         conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}")
     try:

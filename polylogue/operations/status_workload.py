@@ -233,9 +233,9 @@ def convergence_status_from_connection(
     return {
         "available": True,
         "error": None,
-        "failed_count": sum(item["failed_count"] for item in stage_summaries),
-        "deferred_count": sum(item["deferred_count"] for item in stage_summaries),
-        "retry_due_count": sum(item["retry_due_count"] for item in stage_summaries),
+        "failed_count": sum(failed_by_stage.values()),
+        "deferred_count": sum(deferred_by_stage.values()),
+        "retry_due_count": sum(retry_due_by_stage.values()),
         "stage_summaries": stage_summaries,
         "family_summaries": [
             {

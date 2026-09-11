@@ -9,8 +9,12 @@ stdlib-light keeps the daemon health path independent from the CLI surface.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.ops_write import SchemaDriftOriginSummary
 
 # polylogue-da1: format-drift sentinel window. Windowed since a date, not
 # lifetime, so an archive with years of clean history does not permanently
@@ -30,7 +34,7 @@ def _drift_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 
 
 def _schema_drift_status_from_summaries(
-    summaries: object,
+    summaries: Iterable[SchemaDriftOriginSummary],
     *,
     since_ms: int,
     window_ms: int,
