@@ -172,18 +172,33 @@ class _DocstringStripper(ast.NodeTransformer):
 class _SchemaDdlFingerprintStripper(ast.NodeTransformer):
     """Normalize SQL source literals before hashing the transitive closure.
 
-    The index DDL module is imported by the lowering closure.  Its large SQL
-    literals contain maintenance comments and formatting, which are already
-    absent from the SQLite semantic manifest.  Keep the source closure honest
-    for real SQL changes while making those representational edits agree with
-    the manifest used by derived identity.
+    Schema DDL is spread across the archive-tier declaration and its imported
+    FTS/runtime-index fragments. Their SQL literals contain maintenance
+    comments and formatting, which are already absent from the SQLite
+    semantic manifest. Keep the source closure honest for real SQL changes
+    while making those representational edits agree with the manifest used by
+    derived identity.
+
+    The ``*_DDL`` convention covers archive declarations and trigger lists.
+    These explicit SQL names are DDL fragments too, even though their names
+    also support non-DDL query constants in the same modules.
     """
 
     _in_ddl = False
+    _DDL_SQL_NAMES = frozenset(
+        {
+            "FTS_MESSAGES_TABLE_SQL",
+            "FTS_MESSAGES_IDENTITY_TABLE_SQL",
+            "_FTS_BULK_GUARD_NOT_SET",
+            "_TRIGRAM_BULK_GUARD_NOT_SET",
+            "_RUNTIME_INDEX_SQL",
+            "_DEFERRED_SECONDARY_INDEX_SQL",
+        }
+    )
 
     def visit_Assign(self, node: ast.Assign) -> ast.Assign:
         if any(
-            isinstance(target, ast.Name) and (target.id == "INDEX_DDL" or target.id.endswith("_DDL"))
+            isinstance(target, ast.Name) and (target.id.endswith("_DDL") or target.id in self._DDL_SQL_NAMES)
             for target in node.targets
         ):
             previous = self._in_ddl
@@ -320,7 +335,7 @@ def _semantic_source_paths(
 
 
 #: Bump when the normalization below changes; it is part of the disk memo key.
-_FINGERPRINT_ALGORITHM_VERSION = 3
+_FINGERPRINT_ALGORITHM_VERSION = 4
 
 
 def _fingerprint_memo_path(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> Path | None:
@@ -377,11 +392,7 @@ def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], n
             and _fingerprint_path_label(Path(path_string)) == "polylogue/sources/origin_specs.py"
         ):
             normalized = _ProjectionFingerprintStripper().visit(normalized)
-        if (
-            Path(path_string).name == "index.py"
-            and _fingerprint_path_label(Path(path_string)) == "polylogue/storage/sqlite/archive_tiers/index.py"
-        ):
-            normalized = _SchemaDdlFingerprintStripper().visit(normalized)
+        normalized = _SchemaDdlFingerprintStripper().visit(normalized)
         fragments.append(
             {
                 "path": _fingerprint_path_label(Path(path_string)),

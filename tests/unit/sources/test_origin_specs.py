@@ -941,6 +941,92 @@ def test_index_ddl_formatting_is_normalized_in_the_production_source_hash_route(
     )
 
 
+def test_imported_fts_ddl_formatting_is_normalized_but_semantics_move_the_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Imported FTS DDL follows the same production lowering closure rule."""
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    index_path = tmp_path / "polylogue" / "storage" / "sqlite" / "archive_tiers" / "index.py"
+    fts_path = tmp_path / "polylogue" / "storage" / "fts" / "sql.py"
+    index_path.parent.mkdir(parents=True)
+    fts_path.parent.mkdir(parents=True)
+    index_path.write_text(
+        "from polylogue.storage.fts.sql import BLOCKS_FTS_TRIGGER_DDL\n"
+        "INDEX_DDL = 'CREATE TABLE x (id INTEGER);' + ';'.join(BLOCKS_FTS_TRIGGER_DDL)\n",
+        encoding="utf-8",
+    )
+    fts_path.write_text(
+        "BLOCKS_FTS_TRIGGER_DDL = [\n"
+        '    """CREATE TRIGGER x /* maintenance note */ AFTER INSERT ON blocks\n'
+        '    BEGIN SELECT 1; END"""\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        origin_specs_module,
+        "_LOWERING_FINGERPRINT_PATHS",
+        ("polylogue/storage/sqlite/archive_tiers/index.py",),
+    )
+    origin_specs_module._semantic_source_closure.cache_clear()
+    origin_specs_module._local_import_paths.cache_clear()
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    first = origin_specs_module.lowering_fingerprint()
+    fts_path.write_text(
+        'BLOCKS_FTS_TRIGGER_DDL = [\n    """ CREATE  TRIGGER x AFTER INSERT ON blocks BEGIN SELECT 1; END """\n]\n',
+        encoding="utf-8",
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() == first
+
+    fts_path.write_text(
+        fts_path.read_text(encoding="utf-8").replace("AFTER INSERT", "AFTER UPDATE"),
+        encoding="utf-8",
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() != first
+
+
+def test_runtime_index_ddl_formatting_is_normalized_but_semantics_move_the_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Runtime indexes are DDL contributors despite their ``*_SQL`` name."""
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    path = tmp_path / "polylogue" / "storage" / "sqlite" / "runtime_indexes.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '_RUNTIME_INDEX_SQL = (\n    """CREATE INDEX idx_x /* maintenance note */ ON blocks (session_id)""",\n)\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        origin_specs_module,
+        "_LOWERING_FINGERPRINT_PATHS",
+        ("polylogue/storage/sqlite/runtime_indexes.py",),
+    )
+    origin_specs_module._semantic_source_closure.cache_clear()
+    origin_specs_module._local_import_paths.cache_clear()
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    first = origin_specs_module.lowering_fingerprint()
+    path.write_text(
+        '_RUNTIME_INDEX_SQL = ("CREATE  INDEX idx_x ON blocks(session_id)",)\n',
+        encoding="utf-8",
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() == first
+
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("session_id", "message_id"),
+        encoding="utf-8",
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() != first
+
+
 class TestSemanticSourceClosureMemo:
     """Closure membership is walked once per process; content freshness is not memoized.
 
