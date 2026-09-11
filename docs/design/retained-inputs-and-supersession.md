@@ -67,7 +67,12 @@ the retirement rule in §5.
 - Whether the source-generation/item/attachment substrate becomes the general
   observation ledger for every origin, or stays an import-time structure.
   This decision needs only the scope and presence facts in §3, which that
-  substrate can carry but does not uniquely own.
+  substrate can carry but does not uniquely own. Worth knowing before that
+  choice: `source_generations`, `source_items`, `source_attachments`,
+  `material_observations` and `material_evidence_links` are all **absent from
+  the live `source.db`** — they exist in the current DDL but that tier
+  predates them and carries no rows through them, so there is no deployed
+  behaviour to preserve and no migration cost to weigh.
 
 ## 3. The chosen representation
 
@@ -273,8 +278,9 @@ S6's rule that an incomplete observation never asserts absence.
 The live source tier holds 550,458 receipt rows against 43,124 raw rows —
 12.8 per raw. `raw_authority_census_plans` and
 `raw_authority_census_post_plans` contribute 104,472 each. Owner:
-**polylogue-gen6d**. This decision constrains it only by R6: compacting
-receipts must not lose the provenance a retirement decision depends on.
+**polylogue-gen6d**. This decision constrains it only through §5's third
+condition: compacting receipts must not lose the provenance that a retirement
+decision, or an audit of one, depends on.
 
 ## 7. Measurement record
 
@@ -323,6 +329,14 @@ replays 1,096,453 bytes, because replay parses the accepted chain's content
 once regardless of how many superseded snapshots sit beside it. Storage, not
 convergence work, is the axis the representation moves.
 
+Reproduction: the census and experiment scripts are read-only and live under
+`/realm/tmp/work/0qbdh/` (`census_retained_inputs.py`,
+`measure_representations.py`, `probe_cold_decline.py`,
+`probe_live_shape.py`). They are deliberately not committed — they import the
+project's own classifiers rather than reimplementing them, and they are
+evidence for this decision rather than a product surface. Each runs through
+`agentctl job start polylogue scratch`.
+
 ## 8. Production-route regressions required before rehearsal
 
 Each must fail on the defect it pins, through ordinary acquisition and
@@ -336,6 +350,7 @@ convergence — not through a mocked join helper.
 | V4 | An object omitted from a newer export of the same scope stays readable | Restoring the whole-table replace makes it disappear | polylogue-ox0.1 |
 | V5 | Full tool text, outcome and ownership reproduce with the original sidecar tree removed | Deleting the retained sidecar bytes, not the original path, is what turns it red | polylogue-cq1ql's named selectors |
 | V6 | An incomplete observation supersedes nothing | Treating a `missing` declared table as an empty table makes a retained object disappear | polylogue-2fr8s / polylogue-d5202 |
+| V7 | Widening continuity recovery does not weaken rewrite detection: a divergent or truncated observation still refuses continuity and starts a new baseline (S2, S3) | Accepting a non-prefix observation as a continuation makes it green | Extend `tests/unit/storage/test_raw_revision_authority.py` alongside whatever fixes D1 |
 
 ## 9. Anti-goals
 
