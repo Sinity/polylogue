@@ -19,9 +19,11 @@ from typing import cast
 
 import pytest
 
+from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind
 from polylogue.archive.message.roles import Role
 from polylogue.archive.raw_payload.decode import JSONValue
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.pipeline.services.ingest_worker import _IngestContext, _ParsePlan, _validate_parse_plan
 from polylogue.schemas import ValidationResult
 from polylogue.schemas.drift_sentinel import FIELD_CHANGED, NEW_FIELD, UNSEEN_SHAPE
 from polylogue.schemas.packages import SchemaResolution
@@ -130,6 +132,7 @@ def _rig_ingest(
         *,
         schema_resolution: SchemaResolution | None = None,
         source_path: str | None = None,
+        **_kwargs: object,
     ) -> Sequence[ParsedSession]:
         return [
             ParsedSession(
@@ -235,3 +238,125 @@ def test_exact_match_with_no_drift_records_no_schema_drift_observation(
     assert result.error is None
     assert result.sessions
     assert result.schema_drift is None
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [
+            {"type": "record", "payload": {"known": "ok", "new_provider_field": "accepted"}},
+            {"type": "record", "payload": {"known": 7}},
+        ],
+        [
+            {"type": "record", "payload": {"known": 7}},
+            {"type": "record", "payload": {"known": "ok", "new_provider_field": "accepted"}},
+        ],
+    ],
+)
+def test_validation_plan_keeps_later_type_failure_over_permissive_new_field(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    records: list[dict[str, object]],
+) -> None:
+    """The production validation-plan route is order-independent.
+
+    The injected resolution isolates package selection, while the real
+    ``SchemaValidator`` walks both records.  Before this regression, the
+    first benign ``new_field`` observation prevented the later type failure
+    from reaching both advisory telemetry and strict rejection.
+    """
+    resolution = SchemaResolution(
+        provider="chatgpt",
+        package_version="v1",
+        element_kind="session_record_stream",
+        exact_structure_id="shape-1",
+        bundle_scope=None,
+        reason="exact_structure",
+    )
+    schema = {
+        "type": "object",
+        "x-polylogue-sample-granularity": "record",
+        "properties": {
+            "type": {"type": "string"},
+            "payload": {
+                "type": "object",
+                "properties": {"known": {"type": "string"}},
+                "required": ["known"],
+                "additionalProperties": True,
+            },
+        },
+        "required": ["type", "payload"],
+        "additionalProperties": False,
+    }
+
+    def _validate_selected_schema(
+        cls: type[SchemaValidator],
+        provider: str | Provider,
+        payload: object,
+        *,
+        source_path: str | None = None,
+        schema_resolution: SchemaResolution | None = None,
+        schema_resolution_is_explicit: bool = True,
+        strict: bool = True,
+        max_samples: int | None = None,
+    ) -> PayloadValidation:
+        del provider, source_path
+        validator = cls(schema, strict=strict, provider=Provider.CHATGPT)
+        samples = tuple(validator.validation_samples(payload, max_samples=max_samples))
+        return PayloadValidation(
+            validator=validator,
+            samples=samples,
+            results=tuple(validator.validate(sample, include_drift=True) for sample in samples),
+            schema_resolution=schema_resolution,
+            schema_resolution_is_explicit=schema_resolution_is_explicit,
+        )
+
+    monkeypatch.setattr(SchemaValidator, "validate_payload", classmethod(_validate_selected_schema))
+
+    record = RawSessionRecord(
+        raw_id="drift-plan",
+        source_name="chatgpt",
+        source_path="/exports/drift-plan.json",
+        source_index=None,
+        blob_size=0,
+        acquired_at="2026-09-11T00:00:00+00:00",
+    )
+    artifact = ArtifactClassification(
+        provider=Provider.CHATGPT,
+        kind=ArtifactKind.SESSION_DOCUMENT,
+        parse_as_session=True,
+        schema_eligible=True,
+        default_priority=100,
+        reason="schema-drift plan regression",
+    )
+    plan = _ParsePlan(
+        provider=Provider.CHATGPT,
+        payload_provider="chatgpt",
+        artifact=artifact,
+        mode="payload",
+        schema_payload=records,
+        schema_resolution=resolution,
+        payload=records,
+    )
+
+    def _context(mode: ValidationMode) -> _IngestContext:
+        return _IngestContext(
+            raw_record=record,
+            raw_source=tmp_path / "unused",
+            archive_root=tmp_path / "archive",
+            blob_root=tmp_path / "blobs",
+            validation_mode=mode,
+            measure_serialized_size=False,
+            source_name="chatgpt",
+            fallback_timestamp=None,
+        )
+
+    advisory = _validate_parse_plan(_context(ValidationMode.ADVISORY), plan)
+    strict = _validate_parse_plan(_context(ValidationMode.STRICT), plan)
+
+    assert advisory.status is ValidationStatus.PASSED
+    assert advisory.schema_drift is not None
+    assert advisory.schema_drift.classification == FIELD_CHANGED
+    assert strict.status is ValidationStatus.FAILED
+    assert strict.schema_drift is not None
+    assert strict.schema_drift.classification == FIELD_CHANGED

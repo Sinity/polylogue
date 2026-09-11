@@ -21,7 +21,7 @@ from pathlib import Path
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, Provider, ToolResultUnknownReason
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.live_ingest import write_index_session
@@ -86,6 +86,13 @@ def _tool_result(
     is_error: bool | None = None,
     exit_code: int | None = None,
 ) -> ParsedContentBlock:
+    # This corpus creates a wire-shape result, not a parser assertion that the
+    # prose means success.  Its ordinary synthetic records carry no structural
+    # outcome; retain that fact explicitly.  The one error fixture below has
+    # its own real marker and therefore must not receive an unknown reason.
+    outcome_unknown_reason = (
+        ToolResultUnknownReason.NOT_REPORTED.value if is_error is None and exit_code is None else None
+    )
     return ParsedContentBlock(
         type=BlockType.TOOL_RESULT,
         tool_name=tool,
@@ -93,6 +100,7 @@ def _tool_result(
         text=text,
         is_error=is_error,
         exit_code=exit_code,
+        outcome_unknown_reason=outcome_unknown_reason,
     )
 
 
