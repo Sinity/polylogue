@@ -57,6 +57,11 @@ def _count(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) 
     return int(row[0] or 0) if row is not None else 0
 
 
+def _missing_convergence_debt_columns(conn: sqlite3.Connection, schema: str) -> list[str]:
+    columns = {str(row[1]) for row in conn.execute(f"PRAGMA {schema}.table_info(convergence_debt)").fetchall()}
+    return sorted(_REQUIRED_CONVERGENCE_DEBT_COLUMNS - columns)
+
+
 def ops_workload_status_from_connection(
     conn: sqlite3.Connection | None,
     *,
@@ -72,6 +77,26 @@ def ops_workload_status_from_connection(
         return {"available": False, "reason": "missing_ingest_attempts"}
     if not _table_exists(conn, schema, "convergence_debt"):
         return {"available": False, "reason": "missing_convergence_debt"}
+    missing = _missing_convergence_debt_columns(conn, schema)
+    if missing:
+        return {
+            "available": False,
+            "reason": "convergence debt status unavailable: missing required column(s): " + ", ".join(missing),
+        }
+    try:
+        return _ops_workload_status_from_ready_connection(conn, now_ms=now_ms, schema=schema)
+    except sqlite3.Error as exc:
+        return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
+
+
+def _ops_workload_status_from_ready_connection(
+    conn: sqlite3.Connection,
+    *,
+    now_ms: int,
+    schema: str,
+) -> dict[str, object]:
+    """Read workload facts after the independent debt schema has been validated."""
+
     running_rows = conn.execute(
         f"""
         SELECT phase, origin, started_at_ms, heartbeat_at_ms, parsed_raw_count, materialized_count
@@ -170,17 +195,22 @@ def convergence_status_from_connection(
     }
     if conn is None or not _table_exists(conn, schema, "convergence_debt"):
         return unavailable
-    columns = {str(row[1]) for row in conn.execute(f"PRAGMA {schema}.table_info(convergence_debt)").fetchall()}
-    missing = sorted(_REQUIRED_CONVERGENCE_DEBT_COLUMNS - columns)
+    missing = _missing_convergence_debt_columns(conn, schema)
     if missing:
-        return {**unavailable, "error": "convergence_debt is missing required column(s): " + ", ".join(missing)}
-    rows = conn.execute(
-        f"""
-        SELECT stage, target_type, target_id, status, attempts, updated_at_ms, last_error, next_retry_at
-        FROM {schema}.convergence_debt
-        ORDER BY updated_at_ms DESC, priority DESC, debt_id DESC
-        """
-    ).fetchall()
+        return {
+            **unavailable,
+            "error": "convergence debt status unavailable: missing required column(s): " + ", ".join(missing),
+        }
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT stage, target_type, target_id, status, attempts, updated_at_ms, last_error, next_retry_at
+            FROM {schema}.convergence_debt
+            ORDER BY updated_at_ms DESC, priority DESC, debt_id DESC
+            """
+        ).fetchall()
+    except sqlite3.Error as exc:
+        return {**unavailable, "error": f"convergence debt status unavailable: {exc}"}
     if not rows:
         return {**unavailable, "available": True, "error": None}
     statuses = {str(row[3]) for row in rows}

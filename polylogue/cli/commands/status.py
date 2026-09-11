@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -219,7 +220,17 @@ def status_command(
                 daemon_url=daemon_url,
                 include_archive_readiness=exact_archive_readiness,
             )
-        except OperationKernelError:
+        except (OperationKernelError, sqlite3.Error):
+            # A missing or preflight-invalid archive has no snapshot to hand
+            # to the canonical reader.  Keep the retired direct-status
+            # aggregate out of this route, but retain its bounded first-run
+            # diagnostic so a normal status command remains actionable.
+            from polylogue.cli.commands.status_diagnostics import diagnose_first_run
+
+            diagnostic = diagnose_first_run(daemon_alive=False)
+            if diagnostic.kind in {"no_archive", "schema_mismatch", "locked_db", "stale_pidfile", "no_sources"}:
+                _show_direct_status_diagnostic(env, diagnostic, output_format=output_format)
+                return
             obs.attributes["daemon_reachable"] = True
             obs.daemon_path = "daemon"
             if output_format == "json":
@@ -396,7 +407,7 @@ def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False
         snapshot_state="pinned" if source == "direct" else None,
         require_fresh_snapshot=source == "daemon",
     )
-    payload = normalized if full else _compact_status_payload(normalized, source=source)
+    payload = {"source": source, **normalized} if full else _compact_status_payload(normalized, source=source)
     env.ui.console.print(json.dumps(payload, indent=2, default=str))
     return _status_ok(normalized, require_fresh_snapshot=source == "daemon")
 
@@ -468,6 +479,10 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
         if key in status:
             payload[key] = status[key]
 
+    for compact_key, canonical_key in (("sessions", "total_sessions"), ("messages", "total_messages")):
+        if compact_key not in payload and canonical_key in status:
+            payload[compact_key] = status[canonical_key]
+
     status_snapshot = status.get("status_snapshot")
     if isinstance(status_snapshot, dict):
         payload["status_snapshot"] = status_snapshot
@@ -512,11 +527,12 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     if isinstance(sinex_publication, dict):
         payload["sinex_publication"] = sinex_publication
 
+    raw_materialization_source = status.get("raw_materialization_readiness")
     raw_materialization = _compact_mapping_without(
-        status.get("raw_materialization_readiness"),
+        raw_materialization_source,
         {"sampled_rows"},
     )
-    if raw_materialization:
+    if isinstance(raw_materialization_source, dict):
         payload["raw_materialization_readiness"] = raw_materialization
 
     raw_frontier_integrity = _compact_mapping_without(
@@ -708,6 +724,26 @@ def _show_daemon_status_unavailable(env: AppEnv, *, compact: bool = False) -> No
     env.ui.console.print("  Status snapshot: [yellow]unavailable[/yellow]")
     if not compact:
         env.ui.console.print("  [dim]/api/status did not answer within the bounded CLI timeout.[/dim]")
+
+
+def _show_direct_status_diagnostic(env: AppEnv, diagnostic: Any, *, output_format: str | None) -> None:
+    """Render a bounded first-run diagnostic when no snapshot can be opened."""
+
+    from polylogue.cli.commands.status_diagnostics import diagnostic_payload
+
+    payload = {
+        "ok": False,
+        "source": "direct",
+        "daemon_liveness": False,
+        "diagnostic": diagnostic_payload(diagnostic),
+    }
+    if output_format == "json":
+        env.ui.console.print(json.dumps(payload, indent=2))
+        return
+    env.ui.console.print("\n[bold yellow]Daemon: not running[/bold yellow]")
+    env.ui.console.print(f"  {diagnostic.headline}")
+    if diagnostic.detail:
+        env.ui.console.print(f"  {diagnostic.detail}")
 
 
 def _render_ingest_workload(env: AppEnv, workload: dict[str, Any]) -> None:
