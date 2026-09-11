@@ -47,8 +47,14 @@ from polylogue.schemas.source_recipe import (
 )
 from polylogue.sources.decoder_zip import ZipBombError, ZipEntryValidator, open_bounded_zip_entry
 from polylogue.sources.live.watcher import WatchSource, default_sources
-from polylogue.sources.origin_specs import _fingerprint_sources, artifact_suffixes_for_provider, recognize_source_class
+from polylogue.sources.origin_specs import (
+    _fingerprint_sources,
+    artifact_suffixes_for_provider,
+    recognize_source_class,
+)
 from polylogue.sources.source_walk import _iter_source_entries
+from polylogue.sources.sqlite_export import looks_like_logical_export_path, open_logical_source
+from polylogue.sources.sqlite_snapshot import declared_database_member
 
 SourceOutcome = Literal[
     "included",
@@ -595,8 +601,15 @@ def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
             byte_count,
             reason=f"source_class_{recognition.source_class}",
         )
-    if candidate.path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
-        return SourceTerminal("unsupported", byte_count, reason="sqlite_value_inference_not_supported")
+    if candidate.path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} or looks_like_logical_export_path(
+        candidate.path
+    ):
+        # Declared database members have a format-specific schema adapter
+        # (logical table/column observation below).  Unknown members retain
+        # the previous explicit unsupported outcome.
+        binding = declared_database_member(candidate.path)
+        if binding is None or binding.member.disposition == "out-of-scope":
+            return SourceTerminal("unsupported", byte_count, reason="sqlite_value_inference_not_supported")
     return None
 
 
@@ -614,6 +627,7 @@ def _terminal_reason_code(terminal: SourceTerminal) -> str | None:
         "invalid_zip",
         "no_schema_units",
         "no_schema_zip_members",
+        "no_schema_database",
         "partial_trailing_record",
         "too_large_unstreamable_document",
         "unreadable_source",
@@ -1137,6 +1151,23 @@ def _collect_candidate(
         revision_sha256=digest,
         byte_count=byte_count,
     )
+    if candidate.path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} or looks_like_logical_export_path(
+        candidate.path
+    ):
+        collected = _collect_database_schema_candidate(
+            candidate,
+            revision,
+            dynamic_paths_by_element=dynamic_paths_by_element,
+            include_statistics=include_statistics,
+            metadata_only=metadata_only,
+        )
+        try:
+            after_digest, _after_bytes = _stable_file_digest(candidate.path)
+        except (OSError, SourceInferenceError):
+            return _CollectedCandidate(candidate, revision, SourceTerminal("changed_during_read", byte_count))
+        if after_digest != revision.revision_sha256:
+            return _CollectedCandidate(candidate, revision, SourceTerminal("changed_during_read", byte_count))
+        return collected
     if candidate.path.suffix.lower() == ".zip":
         collected = _collect_zip_candidate(
             candidate,
@@ -1192,6 +1223,121 @@ def _collect_candidate(
         producer_versions,
         producer_version_unrecognized,
         spool_path,
+    )
+
+
+def _collect_database_schema_candidate(
+    candidate: _SourceCandidate,
+    revision: SourceRevision,
+    *,
+    dynamic_paths_by_element: dict[str, tuple[str, ...]],
+    include_statistics: bool,
+    metadata_only: bool,
+) -> _CollectedCandidate:
+    """Observe declared SQLite member structure without retaining row values.
+
+    Logical exports and live snapshots are both opened through the same
+    read-only adapter.  One bounded structural record captures table names,
+    declared column types, and the OriginSpec disposition/consumer; this makes table or
+    column drift visible while keeping private database rows out of schema
+    evidence.  Out-of-scope members are rejected by preflight and therefore
+    retain their explicit non-applicability outcome.
+    """
+    binding = declared_database_member(candidate.path)
+    if binding is None or binding.member.disposition == "out-of-scope":
+        terminal = SourceTerminal("unsupported", revision.byte_count, reason="sqlite_value_inference_not_supported")
+        return _CollectedCandidate(candidate, revision, terminal)
+
+    element_kind = "database_schema"
+    member = binding.member
+    records: list[JSONDocument] = []
+    try:
+        with open_logical_source(candidate.path, immutable=True) as conn:
+            conn.row_factory = sqlite3.Row
+            table_rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+            actual_tables = {str(row[0]) for row in table_rows}
+            table_names = sorted(actual_tables | set(member.logical_tables))
+            table_shapes: dict[str, JSONDocument] = {}
+            for table in table_names:
+                quoted = '"' + table.replace('"', '""') + '"'
+                columns: list[JSONDocument] = []
+                if table in actual_tables:
+                    for row in conn.execute(f"PRAGMA table_info({quoted})").fetchall():
+                        columns.append(
+                            {
+                                "name": str(row[1]),
+                                "declared_type": str(row[2] or ""),
+                                "not_null": bool(row[3]),
+                                "primary_key_position": int(row[5] or 0),
+                            }
+                        )
+                column_map: dict[str, JSONValue] = {}
+                for column in columns:
+                    name = column.get("name")
+                    if isinstance(name, str):
+                        column_map[name] = {key: value for key, value in column.items() if key != "name"}
+                table_shapes[table] = {
+                    "declared": table in member.logical_tables,
+                    "present": table in actual_tables,
+                    "columns": column_map,
+                }
+            records.append(
+                {
+                    "source_member": member.filename,
+                    "member_kind": member.kind,
+                    "retention": member.disposition,
+                    "consumer": member.consumer or "durable_raw_only",
+                    "tables": cast(JSONValue, table_shapes),
+                }
+            )
+    except Exception as exc:
+        return _CollectedCandidate(
+            candidate,
+            revision,
+            SourceTerminal("decode_failed", revision.byte_count, reason=f"sqlite_schema:{type(exc).__name__}"),
+        )
+
+    if not records:
+        return _CollectedCandidate(
+            candidate,
+            revision,
+            SourceTerminal("unsupported", revision.byte_count, reason="no_schema_database"),
+        )
+
+    if metadata_only:
+        return _CollectedCandidate(
+            candidate,
+            revision,
+            SourceTerminal("included", revision.byte_count, len(records)),
+        )
+    from polylogue.schemas.generation.evidence import collect_source_evidence
+
+    evidence = collect_source_evidence(
+        SourceObservation(
+            logical_source_id=candidate.logical_source_id,
+            revision_sha256=revision.revision_sha256,
+            subject=candidate.provider,
+            element_kind=element_kind,
+            records=records,
+        ),
+        dynamic_paths=dynamic_paths_by_element.get(element_kind, ()),
+        include_statistics=include_statistics,
+    )
+    return _CollectedCandidate(
+        candidate,
+        revision,
+        SourceTerminal("included", revision.byte_count, len(records)),
+        (
+            _SourceContribution(
+                logical_source_id=candidate.logical_source_id,
+                revision_sha256=revision.revision_sha256,
+                evidence_by_element={element_kind: evidence.to_json()},
+                record_count=len(records),
+                declared_updated_at=None,
+            ),
+        ),
     )
 
 
