@@ -424,6 +424,10 @@ class ArchiveWriteOutcome:
     stale_skipped: bool = False
 
 
+class PreparedSessionWriteRefusedError(RuntimeError):
+    """A pinned prepared write no longer describes the admitted archive state."""
+
+
 def _repair_stale_session_observations(
     conn: sqlite3.Connection,
     session_id: str,
@@ -492,6 +496,45 @@ class PreparedSessionRows:
     session_content_hash: bytes
     message_rows: tuple[tuple[object, ...], ...]
     block_rows: tuple[tuple[object, ...], ...]
+    position_offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedMessageContext:
+    """The writer-visible result of normalizing and slicing one input session.
+
+    This deliberately retains the complete-input duplicate set separately from
+    the surviving-tail duplicate set.  Session events refer to the former,
+    while rows and coordinates use the latter.
+    """
+
+    effective_session: ParsedSession
+    messages: tuple[ParsedMessage, ...]
+    event_duplicate_native_ids: frozenset[str]
+    duplicate_native_ids: frozenset[str]
+    effective_session_kind: SessionKind
+    hook_parent_native_id: str | None
+    parent_session_id: str | None
+    branch_point_message_id: str | None
+    branch_point_content_address: bytes | None
+    lineage_inheritance: str | None
+    inherited_source_message_ids: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSessionWrite:
+    """An exact prepared lowering for one normalized pending replay write.
+
+    ``input_content_hash`` and ``rows.session_content_hash`` cover the
+    timestamp-normalized pending input before lineage slicing.  The aggregate
+    chain hash is intentionally outside this carrier.
+    """
+
+    session_id: str
+    input_content_hash: bytes
+    merge_append: bool
+    context: PreparedMessageContext
+    rows: PreparedSessionRows
 
 
 @dataclass(frozen=True, slots=True)
@@ -520,14 +563,192 @@ class PreparedSessionShardRows:
 PreparedRows = PreparedSessionRows | PreparedSessionShardRows
 
 
-def prepare_session_rows(session: ParsedSession) -> PreparedSessionRows:
+def _prepared_message_context(
+    conn: sqlite3.Connection,
+    session: ParsedSession,
+    *,
+    origin: Origin,
+    session_id: str,
+    native_id: str,
+    merge_append: bool,
+    signature_cache: dict[str, list[tuple[str, str]]] | None,
+    source_conn: sqlite3.Connection | None,
+) -> PreparedMessageContext:
+    """Canonical normalization-before-lineage-slicing context for one write."""
+    messages = _derive_tool_outcomes(_normalized_messages(session.messages), session.session_events, origin=origin)
+    event_duplicate_native_ids = _duplicate_message_native_ids(messages)
+    effective_session = session
+    hook_parent_claim = _authoritative_parent_claim(
+        conn,
+        source_conn,
+        origin=origin.value,
+        child_session_id=session_id,
+        child_native_id=native_id,
+        child_provider_values=(),
+        parent_candidate=None,
+    )
+    hook_parent_provider_id = hook_parent_claim.parent_native_id if hook_parent_claim is not None else None
+    effective_session_kind = session.session_kind
+    if hook_parent_provider_id is not None and session.parent_session_provider_id is None:
+        effective_session_kind = SessionKind.SUBAGENT
+    parent_session_id: str | None = None
+    branch_point_message_id: str | None = None
+    branch_point_content_address: bytes | None = None
+    lineage_inheritance: str | None = None
+    inherited_source_message_ids: dict[str, str] = {}
+    if not merge_append:
+        lineage_session = session
+        if hook_parent_provider_id is not None:
+            lineage_session = session.model_copy(update={"parent_session_provider_id": hook_parent_provider_id})
+        parent_session_id = _existing_parent_session_id(conn, lineage_session, origin.value)
+        acompact = _is_claude_code_acompact_session(session)
+        force_spawned_fresh = False
+        if parent_session_id is not None and messages:
+            parent_composed: list[tuple[str, str]] | None = None
+            cycle_walk = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=parent_session_id)
+            force_spawned_fresh = cycle_walk.outcome != "acyclic"
+            if acompact:
+                parent_composed = _composed_db_signatures(conn, parent_session_id, cache=signature_cache)
+                membership = _acompact_content_membership_ratio(
+                    parent_composed, _parsed_acompact_prefix_signatures(messages)
+                )
+                if membership is not None:
+                    if membership < _ACOMPACT_PARENT_MEMBERSHIP_THRESHOLD:
+                        effective_session = session.model_copy(update={"branch_type": BranchType.SIDECHAIN})
+                        lineage_inheritance = "spawned-fresh"
+                        force_spawned_fresh = True
+                    elif session.branch_type is BranchType.SIDECHAIN:
+                        effective_session = session.model_copy(update={"branch_type": BranchType.CONTINUATION})
+                elif session.branch_type is BranchType.SIDECHAIN:
+                    lineage_inheritance = "spawned-fresh"
+                    force_spawned_fresh = True
+            if not force_spawned_fresh:
+                (
+                    branch_point_message_id,
+                    lineage_inheritance,
+                    messages,
+                    inherited_source_message_ids,
+                ) = _extract_prefix_tail(
+                    conn,
+                    parent_session_id,
+                    messages,
+                    cache=signature_cache,
+                    parent_composed=parent_composed,
+                )
+            if branch_point_message_id is not None:
+                branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
+    return PreparedMessageContext(
+        effective_session=effective_session,
+        messages=tuple(messages),
+        event_duplicate_native_ids=event_duplicate_native_ids,
+        duplicate_native_ids=_duplicate_message_native_ids(messages),
+        effective_session_kind=effective_session_kind,
+        hook_parent_native_id=hook_parent_provider_id,
+        parent_session_id=parent_session_id,
+        branch_point_message_id=branch_point_message_id,
+        branch_point_content_address=branch_point_content_address,
+        lineage_inheritance=lineage_inheritance,
+        inherited_source_message_ids=tuple(inherited_source_message_ids.items()),
+    )
+
+
+def prepared_lineage_bindings(
+    conn: sqlite3.Connection,
+    session: ParsedSession,
+    *,
+    source_conn: sqlite3.Connection | None = None,
+) -> tuple[str | None, str | None]:
+    """Return the hook and resolved-parent claims a prepared write depends on."""
+    origin = origin_from_provider(session.source_name)
+    native_id = _stored_session_native_id(session.provider_session_id)
+    session_id = archive_session_id(origin.value, native_id)
+    claim = _authoritative_parent_claim(
+        conn,
+        source_conn,
+        origin=origin.value,
+        child_session_id=session_id,
+        child_native_id=native_id,
+        child_provider_values=(),
+        parent_candidate=None,
+    )
+    hook_parent_native_id = claim.parent_native_id if claim is not None else None
+    lineage_session = (
+        session.model_copy(update={"parent_session_provider_id": hook_parent_native_id})
+        if hook_parent_native_id is not None
+        else session
+    )
+    return hook_parent_native_id, _existing_parent_session_id(conn, lineage_session, origin.value)
+
+
+def prepare_session_write(
+    conn: sqlite3.Connection,
+    session: ParsedSession,
+    *,
+    merge_append: bool,
+    fallback_timestamp: str | None = None,
+    source_conn: sqlite3.Connection | None = None,
+    signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+) -> PreparedSessionWrite:
+    """Prepare the canonical pending write while its lineage evidence is pinned."""
+    from polylogue.core.timestamp_authority import normalize_session_timestamps
+    from polylogue.pipeline.ids import session_content_hash as _session_content_hash
+
+    normalized = normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp)
+    origin = origin_from_provider(normalized.source_name)
+    native_id = _stored_session_native_id(normalized.provider_session_id)
+    session_id = archive_session_id(origin.value, native_id)
+    context = _prepared_message_context(
+        conn,
+        normalized,
+        origin=origin,
+        session_id=session_id,
+        native_id=native_id,
+        merge_append=merge_append,
+        signature_cache=signature_cache,
+        source_conn=source_conn,
+    )
+    position_offset = _next_message_position(conn, session_id) if merge_append else 0
+    rows = PreparedSessionRows(
+        session_id=session_id,
+        session_content_hash=bytes.fromhex(_session_content_hash(normalized)),
+        message_rows=tuple(
+            _build_message_rows(
+                session_id,
+                list(context.messages),
+                position_offset=position_offset,
+                duplicate_native_ids=context.duplicate_native_ids,
+            )
+        ),
+        block_rows=tuple(
+            _build_block_rows(
+                session_id,
+                list(context.messages),
+                position_offset=position_offset,
+                duplicate_native_ids=context.duplicate_native_ids,
+            )
+        ),
+        position_offset=position_offset,
+    )
+    return PreparedSessionWrite(
+        session_id=session_id,
+        input_content_hash=rows.session_content_hash,
+        merge_append=merge_append,
+        context=context,
+        rows=rows,
+    )
+
+
+def prepare_session_rows(session: ParsedSession, *, position_offset: int = 0) -> PreparedSessionRows:
     """Build ``PreparedSessionRows`` for ``session``'s full-replace write.
 
     Pure function: normalizes messages exactly as ``write_parsed_session_to_
     archive`` does for a non-merge-append, non-lineage-sliced write (see
     ``_normalized_messages``), then reuses the same row-tuple builders the
     writer itself calls (``_build_message_rows``/``_build_block_rows``) at
-    ``position_offset=0`` -- the offset every full-replace write uses. No
+    ``position_offset=0`` -- the offset every full-replace write uses. A
+    byte-replay preparation can supply its pinned append offset, so the
+    admitted writer need not rebuild per-message/block tuples for a composed
+    tail. No
     SQLite connection, network call, or filesystem access; safe to call from
     any thread, including a parse-prefetch worker running well before (and
     concurrently with) any writer hold.
@@ -538,13 +759,18 @@ def prepare_session_rows(session: ParsedSession) -> PreparedSessionRows:
     session_id = archive_session_id(origin.value, session.provider_session_id)
     messages = _derive_tool_outcomes(_normalized_messages(session.messages), session.session_events, origin=origin)
     duplicate_native_ids = _duplicate_message_native_ids(messages)
-    message_rows = _build_message_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
-    block_rows = _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
+    message_rows = _build_message_rows(
+        session_id, messages, position_offset=position_offset, duplicate_native_ids=duplicate_native_ids
+    )
+    block_rows = _build_block_rows(
+        session_id, messages, position_offset=position_offset, duplicate_native_ids=duplicate_native_ids
+    )
     return PreparedSessionRows(
         session_id=session_id,
         session_content_hash=bytes.fromhex(_compute_session_content_hash(session)),
         message_rows=tuple(message_rows),
         block_rows=tuple(block_rows),
+        position_offset=position_offset,
     )
 
 
@@ -595,6 +821,8 @@ def write_parsed_session_to_archive(
     fresh_build_batch: set[str] | None = None,
     defer_fts_rebuild: bool = False,
     prepared: PreparedRows | None = None,
+    prepared_required: bool = False,
+    prepared_write: PreparedSessionWrite | None = None,
     source_conn: sqlite3.Connection | None = None,
     write_outcome: list[ArchiveWriteOutcome] | None = None,
     unit_accounting: ParseAccounting | None = None,
@@ -680,7 +908,6 @@ def write_parsed_session_to_archive(
     # own-signatures so the batch cache never serves pre-write rows for it.
     if signature_cache is not None:
         signature_cache.pop(session_id, None)
-    messages = _derive_tool_outcomes(_normalized_messages(session.messages), session.session_events, origin=origin)
     # polylogue-m3p9: providers that carry no session-level created_at/updated_at
     # (Codex, many Claude Code sessions, ...) previously left
     # sessions.created_at_ms/updated_at_ms permanently NULL for 79% of the live
@@ -731,99 +958,46 @@ def write_parsed_session_to_archive(
             if write_outcome is not None:
                 write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, stale_skipped=True))
             return session_id
-    event_duplicate_message_native_ids = _duplicate_message_native_ids(messages)
-    # Lineage normalization (#2467): when this is a prefix-sharing child whose
-    # parent is already in the archive, drop the inherited prefix and keep only
-    # the divergent tail. All downstream writes (messages, blocks, counts,
-    # attachments, events) then operate on the tail, so each real message is
-    # stored exactly once. Only applies to full-replace writes; merge-append is
-    # an incremental extend of the same session.
-    branch_point_message_id: str | None = None
-    branch_point_content_address: bytes | None = None
-    lineage_inheritance: str | None = None
-    parent_session_id: str | None = None
-    inherited_source_message_ids: dict[str, str] = {}
-    # This runs before the session's blocks are written and exists to supply a
-    # parent the parser did not name, so it offers no ``parent_candidate``: a
-    # claim that only confirms a named parent has nothing to add this early,
-    # and its ``tool_use_id`` join would read the outgoing block rows.
-    hook_parent_claim = _authoritative_parent_claim(
-        conn,
-        source_conn,
-        origin=origin.value,
-        child_session_id=session_id,
-        child_native_id=native_id,
-        child_provider_values=(),
-        parent_candidate=None,
+    input_content_hash = (
+        bytes.fromhex(content_hash) if content_hash is not None else _hash_bytes("session", origin.value, native_id)
     )
-    hook_parent_provider_id = hook_parent_claim.parent_native_id if hook_parent_claim is not None else None
-    effective_session_kind = session.session_kind
-    if hook_parent_provider_id is not None and session.parent_session_provider_id is None:
-        effective_session_kind = SessionKind.SUBAGENT
-    if not merge_append:
-        lineage_session = session
-        if hook_parent_provider_id is not None:
-            lineage_session = session.model_copy(update={"parent_session_provider_id": hook_parent_provider_id})
-        parent_session_id = _existing_parent_session_id(conn, lineage_session, origin.value)
-        acompact = _is_claude_code_acompact_session(session)
-        force_spawned_fresh = False
-        if parent_session_id is not None and messages:
-            parent_composed: list[tuple[str, str]] | None = None
-            # Link quarantine happens after the session/link rows are written,
-            # but prefix normalization happens here. Classify the proposed edge
-            # against the current projection before deleting the copied prefix.
-            # The graph resolver remains the authority that persists quarantine
-            # evidence; this early check preserves the full child transcript for
-            # both proven cycles and indeterminate over-budget walks.
-            cycle_walk = _would_create_cycle(
-                conn,
-                child_id=session_id,
-                proposed_parent_id=parent_session_id,
-            )
-            force_spawned_fresh = cycle_walk.outcome != "acyclic"
-            if acompact:
-                parent_composed = _composed_db_signatures(conn, parent_session_id, cache=signature_cache)
-                membership = _acompact_content_membership_ratio(
-                    parent_composed,
-                    _parsed_acompact_prefix_signatures(messages),
-                )
-                if membership is not None:
-                    if membership < _ACOMPACT_PARENT_MEMBERSHIP_THRESHOLD:
-                        session = session.model_copy(update={"branch_type": BranchType.SIDECHAIN})
-                        lineage_inheritance = "spawned-fresh"
-                        force_spawned_fresh = True
-                    elif session.branch_type is BranchType.SIDECHAIN:
-                        # Parent content is authoritative over a conservative
-                        # fresh-head parser hint when both are available.
-                        session = session.model_copy(update={"branch_type": BranchType.CONTINUATION})
-                elif session.branch_type is BranchType.SIDECHAIN:
-                    lineage_inheritance = "spawned-fresh"
-                    force_spawned_fresh = True
-            if not force_spawned_fresh:
-                (
-                    branch_point_message_id,
-                    lineage_inheritance,
-                    messages,
-                    inherited_source_message_ids,
-                ) = _extract_prefix_tail(
-                    conn,
-                    parent_session_id,
-                    messages,
-                    cache=signature_cache,
-                    parent_composed=parent_composed,
-                )
-            if branch_point_message_id is not None:
-                branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
-    duplicate_message_native_ids = _duplicate_message_native_ids(messages)
+    if prepared_write is not None:
+        if (
+            prepared_write.session_id != session_id
+            or prepared_write.input_content_hash != input_content_hash
+            or prepared_write.merge_append != merge_append
+            or prepared_write.rows.session_content_hash != input_content_hash
+        ):
+            raise PreparedSessionWriteRefusedError("prepared replay write is stale or has a different pending input")
+        context = prepared_write.context
+    else:
+        context = _prepared_message_context(
+            conn,
+            session,
+            origin=origin,
+            session_id=session_id,
+            native_id=native_id,
+            merge_append=merge_append,
+            signature_cache=signature_cache,
+            source_conn=source_conn,
+        )
+    session = context.effective_session
+    messages = list(context.messages)
+    event_duplicate_message_native_ids = context.event_duplicate_native_ids
+    duplicate_message_native_ids = context.duplicate_native_ids
+    effective_session_kind = context.effective_session_kind
+    parent_session_id = context.parent_session_id
+    branch_point_message_id = context.branch_point_message_id
+    branch_point_content_address = context.branch_point_content_address
+    lineage_inheritance = context.lineage_inheritance
+    inherited_source_message_ids = dict(context.inherited_source_message_ids)
     active_leaf_message_id = _active_leaf_message_id(
         session_id,
         messages,
         session.active_leaf_message_provider_id,
         duplicate_native_ids=duplicate_message_native_ids,
     )
-    session_content_hash = (
-        bytes.fromhex(content_hash) if content_hash is not None else _hash_bytes("session", origin.value, native_id)
-    )
+    session_content_hash = input_content_hash
     # polylogue-623q: only reuse rows prepared off this thread when NONE of
     # the conditions that would make them wrong hold -- see ``prepared``'s
     # docstring above. ``lineage_inheritance == "prefix-sharing"`` is the
@@ -831,13 +1005,19 @@ def write_parsed_session_to_archive(
     # from what ``prepare_session_rows`` saw (it returns ``messages``
     # unchanged in every other case, including "spawned-fresh" and no-parent).
     prepared_rows_to_use: PreparedRows | None = None
-    if (
+    if prepared_write is not None:
+        prepared_rows_to_use = prepared_write.rows
+    elif (
         prepared is not None
         and not merge_append
         and lineage_inheritance != "prefix-sharing"
         and prepared.session_content_hash == session_content_hash
     ):
         prepared_rows_to_use = prepared
+    if prepared_required and (
+        prepared_write is None and (prepared is None or (not merge_append and prepared_rows_to_use is None))
+    ):
+        raise PreparedSessionWriteRefusedError("prepared replay lowering is stale or unavailable")
     add_timing("index.prepare", t0)
     session_counts = _session_count_values(messages)
 
@@ -975,6 +1155,22 @@ def write_parsed_session_to_archive(
                     (active_leaf_message_id, session_id),
                 )
                 add_timing("index.merge_prepare", t0)
+                if prepared_write is not None:
+                    if prepared_write.rows.position_offset != position_offset:
+                        raise PreparedSessionWriteRefusedError(
+                            "prepared replay append lowering no longer matches its pinned frontier"
+                        )
+                    prepared_rows_to_use = prepared_write.rows
+                elif (
+                    isinstance(prepared, PreparedSessionRows)
+                    and prepared.session_content_hash == session_content_hash
+                    and prepared.position_offset == position_offset
+                ):
+                    prepared_rows_to_use = prepared
+                elif prepared_required:
+                    raise PreparedSessionWriteRefusedError(
+                        "prepared replay append lowering no longer matches its pinned frontier"
+                    )
             else:
                 stale_attachment_ids = session_attachment_ids(conn, session_id)
                 projection_carry_forward = _replace_full_session_messages_and_blocks(
@@ -1002,6 +1198,11 @@ def write_parsed_session_to_archive(
                     messages,
                     position_offset=position_offset,
                     duplicate_native_ids=duplicate_message_native_ids,
+                    rows=(
+                        list(prepared_rows_to_use.message_rows)
+                        if isinstance(prepared_rows_to_use, PreparedSessionRows)
+                        else None
+                    ),
                 )
                 add_timing("index.messages", t0)
                 t0 = time.perf_counter()
@@ -1011,6 +1212,11 @@ def write_parsed_session_to_archive(
                     messages,
                     position_offset=position_offset,
                     duplicate_native_ids=duplicate_message_native_ids,
+                    rows=(
+                        list(prepared_rows_to_use.block_rows)
+                        if isinstance(prepared_rows_to_use, PreparedSessionRows)
+                        else None
+                    ),
                 )
                 add_timing("index.blocks", t0)
                 t0 = time.perf_counter()

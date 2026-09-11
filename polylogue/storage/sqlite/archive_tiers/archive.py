@@ -309,6 +309,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionWorkEvent,
     PreparedRows,
     PreparedSessionShardRows,
+    PreparedSessionWrite,
     bind_session_shard,
     read_archive_session_envelope,
     read_archive_session_page,
@@ -1982,6 +1983,13 @@ class ArchiveStore:
         defer_fts: bool = False,
         skip_already_applied: bool = False,
         prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
+        prepared_required_raw_ids: frozenset[str] = frozenset(),
+        preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[int, tuple[bytes | None, int, str]]] | None = None,
+        preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
+        prepared_aggregate_session: ParsedSession | None = None,
+        prepared_pending_session: ParsedSession | None = None,
+        prepared_write: PreparedSessionWrite | None = None,
+        prepared_aggregate_content_hash: bytes | None = None,
     ) -> tuple[str, tuple[str, ...]]:
         self._require_writable("apply source.db revision replay")
         return apply_raw_revision_replay(
@@ -1997,6 +2005,13 @@ class ArchiveStore:
             defer_fts=defer_fts,
             skip_already_applied=skip_already_applied,
             prepared_by_raw_id=prepared_by_raw_id,
+            prepared_required_raw_ids=prepared_required_raw_ids,
+            preacquired_attachment_blobs_by_raw_id=preacquired_attachment_blobs_by_raw_id,
+            preacquired_attachment_refs_by_raw_id=preacquired_attachment_refs_by_raw_id,
+            prepared_aggregate_session=prepared_aggregate_session,
+            prepared_pending_session=prepared_pending_session,
+            prepared_write=prepared_write,
+            prepared_aggregate_content_hash=prepared_aggregate_content_hash,
         )
 
     def apply_raw_membership_classification(

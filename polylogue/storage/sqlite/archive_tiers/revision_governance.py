@@ -191,6 +191,8 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
     PreparedRows,
+    PreparedSessionWrite,
+    PreparedSessionWriteRefusedError,
     _event_summary,
     _json_dumps,
     _next_session_event_position,
@@ -373,6 +375,8 @@ def _write_parsed_precedence_result(
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
     prepared: PreparedRows | None = None,
+    prepared_required: bool = False,
+    prepared_write: PreparedSessionWrite | None = None,
 ) -> ArchiveRawParsedWriteResult:
     session = normalize_session_timestamps(session, fallback_timestamp=raw_revision_file_mtime(store, raw_id))
     session_id = str(make_session_id(session.source_name, session.provider_session_id))
@@ -427,6 +431,8 @@ def _write_parsed_precedence_result(
                 bulk_build=bulk_build,
                 defer_fts_rebuild=defer_fts_rebuild,
                 prepared=prepared,
+                prepared_required=prepared_required,
+                prepared_write=prepared_write,
                 write_outcome=writer_outcomes,
             )
         except BaseException:
@@ -2892,6 +2898,13 @@ def apply_raw_revision_replay(
     defer_fts: bool = False,
     skip_already_applied: bool = False,
     prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
+    prepared_required_raw_ids: frozenset[str] = frozenset(),
+    preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[int, tuple[bytes | None, int, str]]] | None = None,
+    preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
+    prepared_aggregate_session: ParsedSession | None = None,
+    prepared_pending_session: ParsedSession | None = None,
+    prepared_write: PreparedSessionWrite | None = None,
+    prepared_aggregate_content_hash: bytes | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     """Apply a proven chain and atomically receipt its exact index state.
 
@@ -2969,19 +2982,33 @@ def apply_raw_revision_replay(
     from polylogue.sources.dispatch import merge_parsed_session_chunks
 
     candidates = {item.raw_id: item for item in _raw_revision_candidates(store, plan.logical_source_key)}
-    aggregate_sessions = merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids)
+    aggregate_sessions = (
+        [prepared_aggregate_session]
+        if prepared_aggregate_session is not None
+        else merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids)
+    )
     if len(aggregate_sessions) != 1:
         raise RuntimeError("one logical revision chain did not compose to exactly one session")
-    aggregate_content_hash = bytes.fromhex(session_content_hash(aggregate_sessions[0]))
+    aggregate_content_hash = (
+        prepared_aggregate_content_hash
+        if prepared_aggregate_content_hash is not None
+        else bytes.fromhex(session_content_hash(aggregate_sessions[0]))
+    )
+    if prepared_aggregate_content_hash is not None and len(prepared_aggregate_content_hash) != 32:
+        raise PreparedSessionWriteRefusedError("prepared aggregate content hash is invalid")
     attachments_by_raw_id: dict[str, dict[int, tuple[bytes | None, int, str]]] = {}
     attachment_refs_by_raw_id: dict[str, tuple[ArchiveSourceBlobRef, ...]] = {}
     for raw_id in plan.accepted_raw_ids:
-        _provider, _blob_hash, source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
-        acquired, refs = store._preacquire_attachment_blobs(
-            parsed_by_raw_id[raw_id],
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-        )
+        if preacquired_attachment_blobs_by_raw_id is not None:
+            acquired = dict(preacquired_attachment_blobs_by_raw_id.get(raw_id, {}))
+            refs = tuple((preacquired_attachment_refs_by_raw_id or {}).get(raw_id, ()))
+        else:
+            _provider, _blob_hash, source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
+            acquired, refs = store._preacquire_attachment_blobs(
+                parsed_by_raw_id[raw_id],
+                source_path=source_path,
+                acquired_at_ms=acquired_at_ms,
+            )
         attachments_by_raw_id[raw_id] = acquired
         attachment_refs_by_raw_id[raw_id] = refs
     if store._blob_publisher is not None:
@@ -3082,7 +3109,11 @@ def apply_raw_revision_replay(
             # ``claude_parse_coverage``, a complete-input summary) landed as
             # its own row, so the index described the stream schedule rather
             # than the session.
-            composed_sessions = merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in pending_raw_ids)
+            composed_sessions = (
+                [prepared_pending_session]
+                if prepared_pending_session is not None
+                else merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in pending_raw_ids)
+            )
             if len(composed_sessions) != 1:
                 raise RuntimeError("one logical revision chain did not compose to exactly one session")
             composed_session = composed_sessions[0]
@@ -3097,10 +3128,9 @@ def apply_raw_revision_replay(
             # the head row is about to advertise.
             tip_raw_id = pending_raw_ids[-1]
             full_replace = already_indexed_upto < 0
-            # polylogue-fpid: prepared rows are built for one chunk's own
-            # content and only a full replace accepts them, so they are
-            # consulted only when that chunk is the whole composed write. A
-            # stale or missing entry always falls back to an inline build.
+            # Legacy prepared rows only describe a single full-replace chunk.
+            # PreparedSessionWrite instead describes the exact composed pending
+            # write and is valid for multi-raw and append replay.
             resolved_prepared: PreparedRows | None = None
             if full_replace and len(pending_raw_ids) == 1 and prepared_by_raw_id is not None:
                 prepared_candidate = prepared_by_raw_id.get(tip_raw_id)
@@ -3124,6 +3154,8 @@ def apply_raw_revision_replay(
                 bulk_build=bulk_build,
                 defer_fts_rebuild=not bulk_build,
                 prepared=resolved_prepared,
+                prepared_required=tip_raw_id in prepared_required_raw_ids or prepared_write is not None,
+                prepared_write=prepared_write,
             )
             if stage_timings_s is not None:
                 key = f"{stage_timing_prefix}.index_parsed_write"
@@ -4028,6 +4060,8 @@ def _index_parsed_for_retained_raw(
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
     prepared: PreparedRows | None = None,
+    prepared_required: bool = False,
+    prepared_write: PreparedSessionWrite | None = None,
 ) -> ArchiveRawParsedWriteResult:
     provider = Provider.from_string(session.source_name)
     # Retained replay no longer has the parser's RawSessionData descriptor;
@@ -4049,7 +4083,13 @@ def _index_parsed_for_retained_raw(
             bulk_build=bulk_build,
             defer_fts_rebuild=defer_fts_rebuild,
             prepared=prepared,
+            prepared_required=prepared_required,
+            prepared_write=prepared_write,
         )
+    except PreparedSessionWriteRefusedError:
+        # A required prepared carrier moving is a retryable admission refusal,
+        # never parser-failure evidence for retained durable bytes.
+        raise
     except Exception as exc:
         if not _is_frozen_candidate(store):
             if isinstance(exc, RawCASFrontierError):
