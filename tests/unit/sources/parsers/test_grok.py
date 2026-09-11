@@ -192,8 +192,13 @@ def test_parse_conversation_reordered_idless_responses_keep_revision_identity() 
     forward = grok.parse_conversation(payload, "grok-order")
     reordered = grok.parse_conversation(reversed_payload, "grok-order")
 
-    assert (
-        session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
+    forward_projection = session_revision_projection(forward)
+    reordered_projection = session_revision_projection(reordered)
+    assert forward_projection.message_contents == reordered_projection.message_contents
+    assert all(
+        message.parent_message_provider_id is None and message.parent_message_position is None
+        for session in (forward, reordered)
+        for message in session.messages
     )
 
 
