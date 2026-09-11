@@ -29,34 +29,12 @@ def _drift_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
-def schema_drift_status(active_root: Path, *, now_ms: int, window_ms: int = SCHEMA_DRIFT_WINDOW_MS) -> dict[str, Any]:
-    """Derive windowed format-drift rates per origin from ops.db (read-only).
-
-    Reads ``schema_drift_samples`` (populated at ingest time -- see
-    ``polylogue.schemas.drift_sentinel``) and returns one entry per origin
-    with a sample in the window. Returns ``available: False`` when the ops
-    tier or table is absent, matching ``_ops_workload_status``'s contract
-    so a synthetic/mid-bootstrap archive degrades quietly.
-    """
-    ops_db = active_root / "ops.db"
-    if not ops_db.exists():
-        return {"available": False, "reason": "missing_ops_tier"}
-    try:
-        conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
-    except sqlite3.Error as exc:
-        return {"available": False, "reason": str(exc)}
-    try:
-        if not _drift_table_exists(conn, "schema_drift_samples"):
-            return {"available": False, "reason": "missing_schema_drift_samples"}
-        from polylogue.storage.sqlite.archive_tiers.ops_write import summarize_schema_drift_since
-
-        since_ms = now_ms - window_ms
-        summaries = summarize_schema_drift_since(conn, since_ms=since_ms)
-    except sqlite3.Error as exc:
-        return {"available": False, "reason": str(exc)}
-    finally:
-        conn.close()
-
+def _schema_drift_status_from_summaries(
+    summaries: object,
+    *,
+    since_ms: int,
+    window_ms: int,
+) -> dict[str, Any]:
     origins = []
     for summary in summaries:
         risky_rate = summary.risky_rate
@@ -85,3 +63,64 @@ def schema_drift_status(active_root: Path, *, now_ms: int, window_ms: int = SCHE
         "window_days": window_ms // (24 * 60 * 60 * 1000),
         "origins": origins,
     }
+
+
+def schema_drift_status_from_connection(
+    conn: sqlite3.Connection | None,
+    *,
+    now_ms: int,
+    window_ms: int = SCHEMA_DRIFT_WINDOW_MS,
+    schema: str = "ops_tier",
+) -> dict[str, Any]:
+    """Project format drift from a supplied, already-pinned ops reader."""
+
+    if conn is None:
+        return {"available": False, "reason": "missing_ops_tier"}
+    if schema not in {"main", "ops_tier"}:
+        raise ValueError(f"unsupported schema-drift reader schema: {schema!r}")
+    if (
+        conn.execute(
+            f"SELECT 1 FROM {schema}.sqlite_schema WHERE type = 'table' AND name = 'schema_drift_samples'"
+        ).fetchone()
+        is None
+    ):
+        return {"available": False, "reason": "missing_schema_drift_samples"}
+    from polylogue.storage.sqlite.archive_tiers.ops_write import summarize_schema_drift_since
+
+    since_ms = now_ms - window_ms
+    return _schema_drift_status_from_summaries(
+        summarize_schema_drift_since(conn, since_ms=since_ms, schema=schema),
+        since_ms=since_ms,
+        window_ms=window_ms,
+    )
+
+
+def schema_drift_status(active_root: Path, *, now_ms: int, window_ms: int = SCHEMA_DRIFT_WINDOW_MS) -> dict[str, Any]:
+    """Derive windowed format-drift rates per origin from ops.db (read-only).
+
+    Reads ``schema_drift_samples`` (populated at ingest time -- see
+    ``polylogue.schemas.drift_sentinel``) and returns one entry per origin
+    with a sample in the window. Returns ``available: False`` when the ops
+    tier or table is absent, matching ``_ops_workload_status``'s contract
+    so a synthetic/mid-bootstrap archive degrades quietly.
+    """
+    ops_db = active_root / "ops.db"
+    if not ops_db.exists():
+        return {"available": False, "reason": "missing_ops_tier"}
+    try:
+        conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        return {"available": False, "reason": str(exc)}
+    try:
+        if not _drift_table_exists(conn, "schema_drift_samples"):
+            return {"available": False, "reason": "missing_schema_drift_samples"}
+        from polylogue.storage.sqlite.archive_tiers.ops_write import summarize_schema_drift_since
+
+        since_ms = now_ms - window_ms
+        summaries = summarize_schema_drift_since(conn, since_ms=since_ms)
+    except sqlite3.Error as exc:
+        return {"available": False, "reason": str(exc)}
+    finally:
+        conn.close()
+
+    return _schema_drift_status_from_summaries(summaries, since_ms=since_ms, window_ms=window_ms)

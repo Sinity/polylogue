@@ -104,23 +104,41 @@ def _lifecycle(
     return "unexplained"
 
 
-def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> RawFailureLifecycleSnapshot:
-    """Read and classify every failed raw without opening a write connection."""
-    if not source_db.exists():
+def read_raw_failure_lifecycle(
+    source_db: Path | None,
+    *,
+    sample_limit: int = 10,
+    _connection: sqlite3.Connection | None = None,
+) -> RawFailureLifecycleSnapshot:
+    """Read and classify every failed raw without opening a write connection.
+
+    ``_connection`` is the supplied-reader seam used by the operation status
+    boundary.  It is deliberately private to retain the ordinary path API;
+    use :func:`read_raw_failure_lifecycle_from_connection` at that boundary.
+    """
+    if _connection is None and (source_db is None or not source_db.exists()):
         return RawFailureLifecycleSnapshot(False, reason=f"source.db not found: {source_db}")
+    owns_connection = _connection is None
+    if _connection is None:
+        assert source_db is not None
+        try:
+            conn = open_readonly_connection(source_db)
+        except SchemaSkewError as exc:
+            # Admission classifies raws by a schema contract it must therefore
+            # hold. A skewed tier yields an explicit unavailable verdict, never a
+            # classification derived from a shape this runtime cannot read.
+            logger.warning("source.db schema is not served by this runtime", exc_info=exc)
+            return RawFailureLifecycleSnapshot(False, reason=f"source.db schema skew: {exc}")
+        except (OSError, sqlite3.Error) as exc:
+            logger.warning("could not open source.db read-only", exc_info=exc)
+            return RawFailureLifecycleSnapshot(False, reason=f"could not open source.db read-only: {exc}")
+    else:
+        conn = _connection
     try:
-        conn = open_readonly_connection(source_db)
-    except SchemaSkewError as exc:
-        # Admission classifies raws by a schema contract it must therefore
-        # hold. A skewed tier yields an explicit unavailable verdict, never a
-        # classification derived from a shape this runtime cannot read.
-        logger.warning("source.db schema is not served by this runtime", exc_info=exc)
-        return RawFailureLifecycleSnapshot(False, reason=f"source.db schema skew: {exc}")
-    except (OSError, sqlite3.Error) as exc:
-        logger.warning("could not open source.db read-only", exc_info=exc)
-        return RawFailureLifecycleSnapshot(False, reason=f"could not open source.db read-only: {exc}")
-    try:
-        conn.execute("BEGIN")
+        # Operation readers arrive inside the already-forced snapshot.  The
+        # ordinary path still establishes the historical transaction here.
+        if owns_connection:
+            conn.execute("BEGIN")
         raw_table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_sessions'"
         ).fetchone()
@@ -246,7 +264,8 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
         logger.warning("could not read raw failure lifecycle", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not read raw failure lifecycle: {exc}")
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
     by_origin: Counter[str] = Counter()
     by_artifact_kind: Counter[str] = Counter()
@@ -301,4 +320,19 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
     )
 
 
-__all__ = ["RawFailureLifecycleSnapshot", "RawFailureLifecycleState", "read_raw_failure_lifecycle"]
+def read_raw_failure_lifecycle_from_connection(
+    conn: sqlite3.Connection,
+    *,
+    sample_limit: int = 10,
+) -> RawFailureLifecycleSnapshot:
+    """Apply the canonical lifecycle classifier to an operation-owned reader."""
+
+    return read_raw_failure_lifecycle(None, sample_limit=sample_limit, _connection=conn)
+
+
+__all__ = [
+    "RawFailureLifecycleSnapshot",
+    "RawFailureLifecycleState",
+    "read_raw_failure_lifecycle",
+    "read_raw_failure_lifecycle_from_connection",
+]

@@ -592,7 +592,7 @@ def normalize_raw_frontier_status_payload(
             frontier,
             required_keys=set(template),
         )
-    trusted_snapshot = snapshot_state in {"fresh", "live"}
+    trusted_snapshot = snapshot_state in {"fresh", "live", "pinned"}
     stale_or_minimal = snapshot_state is not None and not trusted_snapshot
 
     reason: str | None = None

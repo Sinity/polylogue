@@ -549,12 +549,15 @@ def test_daemon_normalizer_requires_freshness_but_live_direct_status_does_not() 
 
     daemon = normalize_raw_frontier_status_payload(payload, require_fresh_snapshot=True)
     direct = normalize_raw_frontier_status_payload(payload, snapshot_state="live")
+    pinned = normalize_raw_frontier_status_payload(payload, snapshot_state="pinned")
 
     assert daemon["ok"] is False
     assert daemon["raw_frontier_integrity"]["overall_status"] == "unknown"
     assert "freshness provenance" in daemon["raw_frontier_integrity"]["broken_head_reason"]
     assert direct["ok"] is True
     assert direct["raw_frontier_integrity"]["overall_status"] == "healthy"
+    assert pinned["ok"] is True
+    assert pinned["raw_frontier_integrity"]["overall_status"] == "healthy"
 
 
 def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:

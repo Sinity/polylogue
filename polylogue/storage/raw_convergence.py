@@ -15,7 +15,7 @@ import re
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -3740,13 +3740,15 @@ def _failed_validation_overrides_parse_predicate(*, raw_alias: str) -> str:
 
 
 def _raw_materialization_candidate_ids(
-    config: Config,
+    config: Config | None,
     *,
     raw_artifact_id: str | None = None,
     provider: str | None = None,
     source_family: str | None = None,
     source_root: Path | None = None,
     excluded_source_paths: Sequence[str] = (),
+    _pinned_index_connection: sqlite3.Connection | None = None,
+    _pinned_archive_root: Path | None = None,
 ) -> RawMaterializationCandidates:
     """Return replayable raw ids plus missing-blob debt count.
 
@@ -3763,10 +3765,16 @@ def _raw_materialization_candidate_ids(
     missing blobs, and source-path/native-id aliases remain excluded or counted
     as debt instead of being blindly retried.
     """
-    archive_root = _raw_materialization_archive_root(config)
+    if _pinned_archive_root is None and config is None:
+        raise ValueError("raw materialization candidates require config or an explicit pinned archive root")
+    archive_root = _pinned_archive_root or _raw_materialization_archive_root(cast(Config, config))
     source_db = archive_root / "source.db"
-    index_db = _raw_materialization_index_path(config, archive_root)
-    if not source_db.exists() or not index_db.exists():
+    index_db = (
+        _raw_materialization_index_path(cast(Config, config), archive_root)
+        if config is not None
+        else archive_root / "index.db"
+    )
+    if _pinned_index_connection is None and (not source_db.exists() or not index_db.exists()):
         return RawMaterializationCandidates([], 0, 0)
     blob_store = BlobStore(archive_root / "blob")
     raw_ids: list[str] = []
@@ -3789,15 +3797,22 @@ def _raw_materialization_candidate_ids(
     expanded_origins: dict[str, str] = {}
     expanded_source_paths: dict[str, str] = {}
     authority_components: tuple[tuple[str, ...], ...] = ()
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    read_context = (
+        closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True))
+        if _pinned_index_connection is None
+        else nullcontext(_pinned_index_connection)
+    )
+    index_schema = "index_tier" if _pinned_index_connection is None else "main"
+    with read_context as conn:
         conn.row_factory = sqlite3.Row
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
+        if _pinned_index_connection is None:
+            conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
         materialized_aliases = {
             (str(row[0]), str(row[1]))
             for row in conn.execute(
-                """
+                f"""
                 SELECT DISTINCT s.origin, s.native_id
-                FROM index_tier.sessions AS s
+                FROM {index_schema}.sessions AS s
                 JOIN raw_sessions AS existing_raw ON existing_raw.raw_id = s.raw_id
                 WHERE s.native_id IS NOT NULL
                 """
@@ -3842,14 +3857,14 @@ def _raw_materialization_candidate_ids(
                    ) AS failure_artifact_kind,
                    EXISTS (
                        SELECT 1
-                       FROM index_tier.raw_revision_applications AS a
+                       FROM {index_schema}.raw_revision_applications AS a
                        WHERE a.raw_id = r.raw_id
                          AND a.decision = 'deferred'
                          AND a.detail = 'ordinary_replay:incomparable_existing_index_state'
                    ) AS adoption_deferred,
                    EXISTS (
                        SELECT 1
-                       FROM index_tier.raw_revision_applications AS a
+                       FROM {index_schema}.raw_revision_applications AS a
                        WHERE a.raw_id = r.raw_id
                          AND a.decision IN (
                            'selected_baseline', 'applied_append', 'superseded', 'ambiguous'
@@ -3907,8 +3922,8 @@ def _raw_materialization_candidate_ids(
                          AND c.detail = ?
                    )) AS byte_authority_pending
             FROM raw_sessions AS r
-            LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
-            LEFT JOIN index_tier.sessions AS s_by_native
+            LEFT JOIN {index_schema}.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
+            LEFT JOIN {index_schema}.sessions AS s_by_native
               ON r.native_id IS NOT NULL
              AND s_by_native.origin = {effective_origin}
              AND s_by_native.native_id = r.native_id
@@ -4091,6 +4106,20 @@ def _raw_materialization_candidate_ids(
         byte_authority_fragment_raw_ids=tuple(sorted(byte_authority_fragment_raw_ids)),
         byte_authority_quarantined_raw_ids=tuple(sorted(byte_authority_quarantined_raw_ids)),
         byte_authority_pending_raw_ids=tuple(sorted(byte_authority_pending_raw_ids)),
+    )
+
+
+def raw_materialization_candidate_ids_from_pinned_index(
+    index_conn: sqlite3.Connection,
+    *,
+    archive_root: Path,
+) -> RawMaterializationCandidates:
+    """Select replay candidates through a supplied index/source snapshot."""
+
+    return _raw_materialization_candidate_ids(
+        None,
+        _pinned_index_connection=index_conn,
+        _pinned_archive_root=archive_root,
     )
 
 
@@ -4868,10 +4897,12 @@ def _unavailable_raw_materialization_backlog(reason: str) -> dict[str, object]:
 
 
 def raw_materialization_replay_backlog(
-    config: Config,
+    config: Config | None,
     *,
     limit: int = 10,
     _candidates: RawMaterializationCandidates | None = None,
+    _pinned_index_connection: sqlite3.Connection | None = None,
+    _pinned_archive_root: Path | None = None,
 ) -> dict[str, object]:
     """Return a read-only weighted backlog for raw source-to-index replay.
 
@@ -4880,18 +4911,36 @@ def raw_materialization_replay_backlog(
     It does not parse raw blobs or mutate the archive.
     """
 
-    archive_root = _raw_materialization_archive_root(config)
+    if _pinned_archive_root is None and config is None:
+        raise ValueError("raw materialization backlog requires config or an explicit pinned archive root")
+    archive_root = _pinned_archive_root or _raw_materialization_archive_root(cast(Config, config))
     source_db = archive_root / "source.db"
-    index_db = _raw_materialization_index_path(config, archive_root)
-    if not source_db.exists() or not index_db.exists():
+    index_db = (
+        _raw_materialization_index_path(cast(Config, config), archive_root)
+        if config is not None
+        else archive_root / "index.db"
+    )
+    if _pinned_index_connection is None and (not source_db.exists() or not index_db.exists()):
         return _unavailable_raw_materialization_backlog("source_or_index_tier_missing")
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as source_conn:
-        source_ready = source_conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_sessions'"
+    source_ready = (
+        _pinned_index_connection.execute(
+            "SELECT 1 FROM source_tier.sqlite_schema WHERE type = 'table' AND name = 'raw_sessions'"
         ).fetchone()
+        if _pinned_index_connection is not None
+        else None
+    )
+    if _pinned_index_connection is None:
+        with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as source_conn:
+            source_ready = source_conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_sessions'"
+            ).fetchone()
     if source_ready is None:
         return _unavailable_raw_materialization_backlog("source_tier_uninitialized")
-    candidates = _candidates or _raw_materialization_candidate_ids(config)
+    candidates = _candidates or _raw_materialization_candidate_ids(
+        config,
+        _pinned_index_connection=_pinned_index_connection,
+        _pinned_archive_root=_pinned_archive_root,
+    )
     raw_ids_by_size = sorted(
         candidates.raw_ids,
         key=lambda raw_id: (-candidates.raw_blob_bytes.get(raw_id, 0), raw_id),
@@ -4982,6 +5031,22 @@ def raw_materialization_replay_backlog(
             limit=limit,
         ),
     }
+
+
+def raw_materialization_replay_backlog_from_pinned_index(
+    index_conn: sqlite3.Connection,
+    *,
+    archive_root: Path,
+    limit: int = 10,
+) -> dict[str, object]:
+    """Return the canonical replay backlog over a pinned index/source reader."""
+
+    return raw_materialization_replay_backlog(
+        None,
+        limit=limit,
+        _pinned_index_connection=index_conn,
+        _pinned_archive_root=archive_root,
+    )
 
 
 def _raw_materialized_by_source_path_native(materialized_aliases: set[tuple[str, str]], row: sqlite3.Row) -> bool:

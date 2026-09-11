@@ -11,6 +11,7 @@ import json
 import shlex
 import sqlite3
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -34,7 +35,7 @@ from polylogue.storage.search_providers.sqlite_vec_support import (
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
-    from polylogue.config import Config
+    from polylogue.config import Config, PolylogueConfig
 
 DETAIL_QUERY_TIMEOUT_MS = 2_000
 DETAIL_CANDIDATE_PROSE_TIMEOUT_MS = 10_000
@@ -117,12 +118,12 @@ class EmbeddingFailureDetailPayload(TypedDict):
 
 
 class EmbeddingStatusPayload(TypedDict):
-    config_enabled: bool
-    has_voyage_api_key: bool
-    daemon_stage_enabled: bool
-    configured_model: str
-    configured_dimension: int
-    monthly_cost_cap_usd: float
+    config_enabled: bool | None
+    has_voyage_api_key: bool | None
+    daemon_stage_enabled: bool | None
+    configured_model: str | None
+    configured_dimension: int | None
+    monthly_cost_cap_usd: float | None
     status: str
     total_sessions: int
     embedded_sessions: int
@@ -153,6 +154,51 @@ class EmbeddingStatusPayload(TypedDict):
     latest_catchup_run: EmbeddingCatchupRunPayload | None
     latest_material_catchup_run: EmbeddingCatchupRunPayload | None
     next_action: EmbeddingNextActionPayload
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingStatusSettings:
+    """Explicit configuration facts available to an embedding-status read.
+
+    A legacy :class:`Config` deliberately omits convergence-enable and cost
+    settings.  ``None`` therefore means the supplied configuration did not
+    observe that fact; it is not a disabled or unbounded default.
+    """
+
+    config_enabled: bool | None
+    has_voyage_api_key: bool | None
+    configured_model: str | None
+    configured_dimension: int | None
+    monthly_cost_cap_usd: float | None
+
+
+def embedding_status_settings_from_config(
+    config: Config | PolylogueConfig | None,
+) -> EmbeddingStatusSettings:
+    """Project only configuration facts already supplied by the caller."""
+
+    from polylogue.config import Config, PolylogueConfig
+
+    if config is None:
+        return EmbeddingStatusSettings(None, None, None, None, None)
+    if isinstance(config, PolylogueConfig):
+        return EmbeddingStatusSettings(
+            config_enabled=config.embedding_enabled,
+            has_voyage_api_key=bool(config.voyage_api_key),
+            configured_model=config.embedding_model,
+            configured_dimension=config.embedding_dimension,
+            monthly_cost_cap_usd=config.embedding_max_cost_usd,
+        )
+    if isinstance(config, Config):
+        index_config = config.index_config
+        return EmbeddingStatusSettings(
+            config_enabled=None,
+            has_voyage_api_key=bool(index_config and index_config.voyage_api_key),
+            configured_model=config.embedding_model,
+            configured_dimension=config.embedding_dimension,
+            monthly_cost_cap_usd=None,
+        )
+    raise TypeError(f"unsupported embedding status configuration: {type(config).__name__}")
 
 
 def _payload_int(value: object) -> int:
@@ -201,10 +247,24 @@ def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     return _payload_int(row[0])
 
 
-def _scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: int) -> int | None:
-    """Return an exact scalar count, or ``None`` when the live archive cannot answer quickly."""
+def _scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: int | None) -> int | None:
+    """Return an exact scalar count, or ``None`` when an owned reader times out.
+
+    A supplied operation reader owns its SQLite progress handler for operation
+    cancellation and deadlines. ``timeout_ms=None`` therefore installs no
+    competing handler and propagates any outer interruption unchanged.
+    """
 
     from polylogue.storage.embeddings.support import is_missing_table_error
+
+    if timeout_ms is None:
+        try:
+            row = conn.execute(sql).fetchone()
+        except sqlite3.OperationalError as exc:
+            if is_missing_table_error(exc):
+                return 0
+            raise
+        return 0 if row is None else _payload_int(row[0])
 
     deadline = time.monotonic() + (timeout_ms / 1000.0)
 
@@ -232,12 +292,20 @@ def _rows_with_timeout(
     conn: sqlite3.Connection,
     sql: str,
     *,
-    timeout_ms: int,
+    timeout_ms: int | None,
     params: tuple[object, ...] = (),
 ) -> list[sqlite3.Row | tuple[object, ...]] | None:
     """Return query rows, or ``None`` when the live archive cannot answer quickly."""
 
     from polylogue.storage.embeddings.support import is_missing_table_error
+
+    if timeout_ms is None:
+        try:
+            return list(conn.execute(sql, params).fetchall())
+        except sqlite3.OperationalError as exc:
+            if is_missing_table_error(exc):
+                return []
+            raise
 
     deadline = time.monotonic() + (timeout_ms / 1000.0)
 
@@ -264,6 +332,7 @@ def _active_failure_details(
     failure_table: str,
     *,
     include_detail: bool,
+    timeout_ms: int | None,
 ) -> list[EmbeddingFailureDetailPayload]:
     """Return bounded active lifecycle rows, never historical acknowledgements."""
 
@@ -279,7 +348,7 @@ def _active_failure_details(
         ORDER BY updated_at_ms DESC, failure_id ASC
         LIMIT ?
         """,
-        timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+        timeout_ms=timeout_ms,
         params=(EMBEDDING_FAILURE_DETAIL_LIMIT,),
     )
     if rows is None:
@@ -320,7 +389,7 @@ def _uniform_embedding_metadata_counts(
     meta_table: str,
     *,
     embedded_messages: int,
-    timeout_ms: int,
+    timeout_ms: int | None,
 ) -> tuple[dict[str, int], dict[int, int]]:
     """Return metadata counts when one model/dimension can be proved quickly."""
     if embedded_messages <= 0:
@@ -375,7 +444,11 @@ def _sqlite_stat1_index_rows(conn: sqlite3.Connection, index_name: str) -> int |
         return None
 
 
-def _candidate_prose_message_count(conn: sqlite3.Connection) -> tuple[int | None, bool]:
+def _candidate_prose_message_count(
+    conn: sqlite3.Connection,
+    *,
+    timeout_ms: int | None,
+) -> tuple[int | None, bool]:
     """Return a bounded count of authored prose candidate rows.
 
     This deliberately does not join ``blocks`` to enforce the final
@@ -397,7 +470,7 @@ def _candidate_prose_message_count(conn: sqlite3.Connection) -> tuple[int | None
         FROM {messages_ref}
         WHERE {archive_embeddable_message_where("m")}
         """,
-        timeout_ms=DETAIL_CANDIDATE_PROSE_TIMEOUT_MS,
+        timeout_ms=timeout_ms,
     )
     return exact_count, exact_count is not None
 
@@ -475,12 +548,30 @@ def _archive_embedding_session_state_exact_with_timeout(
     conn: sqlite3.Connection,
     *,
     status_table: str,
-    timeout_ms: int,
+    timeout_ms: int | None,
     recipe: EmbeddingRecipe,
 ) -> tuple[int, int, int] | None:
     """Return exact embedded/pending/blocked counts, or ``None`` when too costly."""
 
     from polylogue.storage.embeddings.support import is_missing_table_error
+
+    if timeout_ms is None:
+        try:
+            session_state = count_archive_embedding_session_state(
+                conn,
+                status_table=status_table,
+                rebuild=False,
+                recipe=recipe,
+            )
+        except sqlite3.OperationalError as exc:
+            if is_missing_table_error(exc):
+                return (0, 0, 0)
+            raise
+        return (
+            session_state.embedded_sessions,
+            session_state.pending_sessions,
+            session_state.blocked_sessions,
+        )
 
     deadline = time.monotonic() + (timeout_ms / 1000.0)
 
@@ -544,8 +635,8 @@ def _estimated_cost(message_count: int) -> float:
 
 def _next_action(
     *,
-    config_enabled: bool,
-    has_voyage_api_key: bool,
+    config_enabled: bool | None,
+    has_voyage_api_key: bool | None,
     total_sessions: int,
     embedded_sessions: int,
     pending_sessions: int,
@@ -560,11 +651,23 @@ def _next_action(
             "command": None,
             "reason": "Archive contains no sessions to embed.",
         }
+    if has_voyage_api_key is None:
+        return {
+            "code": "settings_not_observed",
+            "command": None,
+            "reason": "The supplied status configuration does not report whether a Voyage key is available.",
+        }
     if not has_voyage_api_key:
         return {
             "code": "set_voyage_key",
             "command": "polylogue ops embed enable --voyage-api-key ...",
             "reason": "Semantic retrieval needs a Voyage API key before embedding can run.",
+        }
+    if config_enabled is None:
+        return {
+            "code": "settings_not_observed",
+            "command": None,
+            "reason": "The supplied status configuration does not report whether embedding convergence is enabled.",
         }
     if failure_count > 0:
         return {
@@ -629,11 +732,7 @@ def _next_action(
 
 def _payload_from_stats(
     *,
-    config_enabled: bool,
-    has_voyage_api_key: bool,
-    configured_model: str,
-    configured_dimension: int,
-    monthly_cost_cap_usd: float,
+    settings: EmbeddingStatusSettings,
     total_sessions: int,
     stats: EmbeddingStatsSnapshot,
     latest_catchup_run: EmbeddingCatchupRunPayload | None,
@@ -662,12 +761,16 @@ def _payload_from_stats(
         candidate_prose_messages_exact=stats.candidate_prose_messages_exact,
     )
     return {
-        "config_enabled": config_enabled,
-        "has_voyage_api_key": has_voyage_api_key,
-        "daemon_stage_enabled": config_enabled and has_voyage_api_key,
-        "configured_model": configured_model,
-        "configured_dimension": configured_dimension,
-        "monthly_cost_cap_usd": monthly_cost_cap_usd,
+        "config_enabled": settings.config_enabled,
+        "has_voyage_api_key": settings.has_voyage_api_key,
+        "daemon_stage_enabled": (
+            settings.config_enabled and settings.has_voyage_api_key
+            if settings.config_enabled is not None and settings.has_voyage_api_key is not None
+            else None
+        ),
+        "configured_model": settings.configured_model,
+        "configured_dimension": settings.configured_dimension,
+        "monthly_cost_cap_usd": settings.monthly_cost_cap_usd,
         "status": status,
         "total_sessions": total_sessions,
         "embedded_sessions": embedded_sessions,
@@ -705,8 +808,8 @@ def _payload_from_stats(
         "latest_catchup_run": latest_catchup_run,
         "latest_material_catchup_run": latest_material_catchup_run,
         "next_action": _next_action(
-            config_enabled=config_enabled,
-            has_voyage_api_key=has_voyage_api_key,
+            config_enabled=settings.config_enabled,
+            has_voyage_api_key=settings.has_voyage_api_key,
             total_sessions=total_sessions,
             embedded_sessions=embedded_sessions,
             pending_sessions=pending_sessions,
@@ -721,26 +824,44 @@ def _payload_from_stats(
 def _archive_embedding_status_payload(
     db_path: Path,
     *,
-    cfg: object,
+    settings: EmbeddingStatusSettings,
     include_detail: bool,
     configured_root: Path | None = None,
+    _pinned_connection: sqlite3.Connection | None = None,
+    _embeddings_schema: str = "embeddings",
+    _ops_schema: str = "ops_tier",
 ) -> EmbeddingStatusPayload | None:
-    index_db = _archive_index_path(db_path)
-    if index_db is None:
-        return None
+    if _pinned_connection is None:
+        index_db = _archive_index_path(db_path)
+        if index_db is None:
+            return None
     recipe = EmbeddingRecipe.current(
-        model=str(getattr(cfg, "embedding_model", "")),
-        dimensions=_payload_int(getattr(cfg, "embedding_dimension", 0)),
+        model=settings.configured_model or "",
+        dimensions=settings.configured_dimension or 0,
     )
     root = configured_root if configured_root is not None else db_path.parent
+    owns_connection = _pinned_connection is None
+    detail_timeout_ms = DETAIL_QUERY_TIMEOUT_MS if owns_connection else None
+    metadata_timeout_ms = METADATA_SUMMARY_TIMEOUT_MS if owns_connection else None
+    candidate_prose_timeout_ms = DETAIL_CANDIDATE_PROSE_TIMEOUT_MS if owns_connection else None
     # Status payloads degrade rather than refuse when the index tier is skewed.
-    conn = open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0, validate_schema=False)
-    conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}")
+    conn = (
+        open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0, validate_schema=False)
+        if _pinned_connection is None
+        else _pinned_connection
+    )
+    if owns_connection:
+        conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}")
     try:
         if not _table_exists(conn, "sessions"):
             return None
         embeddings_db = root / "embeddings.db"
-        if embeddings_db.exists():
+        if _pinned_connection is not None:
+            status_table = _attached_table_name(conn, _embeddings_schema, "embedding_status")
+            meta_table = _attached_table_name(conn, _embeddings_schema, "message_embeddings_meta")
+            failure_table = _attached_table_name(conn, _embeddings_schema, "embedding_failures")
+            refs_table = _attached_table_name(conn, _embeddings_schema, "message_embedding_refs")
+        elif embeddings_db.exists():
             conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
             status_table = _attached_table_name(conn, "embeddings", "embedding_status")
             meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
@@ -779,7 +900,7 @@ def _archive_embedding_status_payload(
         exact_session_state = _archive_embedding_session_state_exact_with_timeout(
             conn,
             status_table=status_table,
-            timeout_ms=DETAIL_QUERY_TIMEOUT_MS if include_detail else METADATA_SUMMARY_TIMEOUT_MS,
+            timeout_ms=detail_timeout_ms if include_detail else metadata_timeout_ms,
             recipe=recipe,
         )
         pending_messages_exact = include_detail
@@ -808,7 +929,7 @@ def _archive_embedding_status_payload(
                 SELECT COUNT(*)
                 FROM {refs_table}
                 """,
-                timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+                timeout_ms=detail_timeout_ms,
             )
             embedded_messages = exact_embedded_messages if exact_embedded_messages is not None else 0
         elif has_meta:
@@ -818,7 +939,7 @@ def _archive_embedding_status_payload(
                 SELECT COUNT(*)
                 FROM {meta_table}
                 """,
-                timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+                timeout_ms=detail_timeout_ms,
             )
             embedded_messages = exact_embedded_messages if exact_embedded_messages is not None else 0
         else:
@@ -867,7 +988,12 @@ def _archive_embedding_status_payload(
                 else 0
             )
         )
-        failure_details = _active_failure_details(conn, failure_table, include_detail=include_detail)
+        failure_details = _active_failure_details(
+            conn,
+            failure_table,
+            include_detail=include_detail,
+            timeout_ms=detail_timeout_ms,
+        )
         pending_messages = 0
         candidate_prose_messages: int | None = None
         candidate_prose_messages_exact = False
@@ -886,7 +1012,7 @@ def _archive_embedding_status_payload(
                 GROUP BY model
                 ORDER BY COUNT(*) DESC, model ASC
                 """,
-                timeout_ms=METADATA_SUMMARY_TIMEOUT_MS,
+                timeout_ms=metadata_timeout_ms,
             )
             if model_rows is not None:
                 model_counts = {str(row[0]): _payload_int(row[1]) for row in model_rows if row[0] is not None}
@@ -898,7 +1024,7 @@ def _archive_embedding_status_payload(
                 GROUP BY dimension
                 ORDER BY COUNT(*) DESC, dimension ASC
                 """,
-                timeout_ms=METADATA_SUMMARY_TIMEOUT_MS,
+                timeout_ms=metadata_timeout_ms,
             )
             if dimension_rows is not None:
                 dimension_counts = {
@@ -909,7 +1035,7 @@ def _archive_embedding_status_payload(
                     conn,
                     meta_table,
                     embedded_messages=embedded_messages,
-                    timeout_ms=METADATA_SUMMARY_TIMEOUT_MS,
+                    timeout_ms=metadata_timeout_ms,
                 )
             bounds_rows = _rows_with_timeout(
                 conn,
@@ -917,14 +1043,17 @@ def _archive_embedding_status_payload(
                 SELECT MIN(embedded_at_ms), MAX(embedded_at_ms)
                 FROM {meta_table}
                 """,
-                timeout_ms=METADATA_SUMMARY_TIMEOUT_MS,
+                timeout_ms=metadata_timeout_ms,
             )
             if bounds_rows:
                 oldest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][0])
                 newest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][1])
         if include_detail and has_messages:
-            candidate_prose_messages, candidate_prose_messages_exact = _candidate_prose_message_count(conn)
-            configured_model = str(getattr(cfg, "embedding_model", "") or "")
+            candidate_prose_messages, candidate_prose_messages_exact = _candidate_prose_message_count(
+                conn,
+                timeout_ms=candidate_prose_timeout_ms,
+            )
+            configured_model = settings.configured_model or ""
             messages_ref = archive_embeddable_messages_relation(conn, alias="m", model=configured_model)
             status_join = f"LEFT JOIN {status_table} e ON e.session_id = m.session_id" if has_status else ""
             blocked_session_clause = (
@@ -936,7 +1065,7 @@ def _archive_embedding_status_payload(
             total_messages = _scalar_int_with_timeout(
                 conn,
                 f"SELECT COUNT(*) FROM {messages_ref}",
-                timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+                timeout_ms=detail_timeout_ms,
             )
             if total_messages is None:
                 total_messages = 0
@@ -963,7 +1092,7 @@ def _archive_embedding_status_payload(
                       )
                       {blocked_session_clause}
                     """,
-                    timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+                    timeout_ms=detail_timeout_ms,
                 )
                 if exact_pending_messages is None:
                     pending_messages = 0
@@ -986,7 +1115,7 @@ def _archive_embedding_status_payload(
                           ON em.vector_derivation_hash = r.vector_derivation_hash
                         WHERE em.vector_derivation_hash IS NULL
                         """,
-                        timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+                        timeout_ms=detail_timeout_ms,
                     )
                     if exact_missing_provenance is None:
                         missing_provenance = 0
@@ -1004,7 +1133,7 @@ def _archive_embedding_status_payload(
                         WHERE r.vector_derivation_hash != m.vector_derivation_hash
                           {blocked_session_clause}
                         """,
-                        timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
+                        timeout_ms=detail_timeout_ms,
                     )
                     if exact_stale_messages is None:
                         stale_messages = 0
@@ -1031,16 +1160,17 @@ def _archive_embedding_status_payload(
             else None,
         )
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
-    latest_catchup_run, latest_material_catchup_run = _archive_catchup_runs(root / "ops.db")
+    latest_catchup_run, latest_material_catchup_run = (
+        _archive_catchup_runs_from_connection(conn, schema=_ops_schema)
+        if _pinned_connection is not None
+        else _archive_catchup_runs(root / "ops.db")
+    )
 
     return _payload_from_stats(
-        config_enabled=bool(getattr(cfg, "embedding_enabled", False)),
-        has_voyage_api_key=bool(getattr(cfg, "voyage_api_key", None)),
-        configured_model=str(getattr(cfg, "embedding_model", "")),
-        configured_dimension=_payload_int(getattr(cfg, "embedding_dimension", 0)),
-        monthly_cost_cap_usd=float(getattr(cfg, "embedding_max_cost_usd", 0.0) or 0.0),
+        settings=settings,
         total_sessions=total_sessions,
         stats=stats,
         latest_catchup_run=latest_catchup_run,
@@ -1050,6 +1180,39 @@ def _archive_embedding_status_payload(
         terminal_failure_count=terminal_failure_count,
         retryable_failure_count=retryable_failure_count,
         blocked_sessions=blocked_sessions,
+    )
+
+
+def embedding_status_payload_from_connections(
+    index_conn: sqlite3.Connection,
+    *,
+    config: Config | PolylogueConfig | None = None,
+    settings: EmbeddingStatusSettings | None = None,
+    embeddings_schema: str = "embeddings_tier",
+    ops_schema: str = "ops_tier",
+    include_detail: bool = False,
+) -> EmbeddingStatusPayload | None:
+    """Read the canonical embedding payload from pinned attached tiers.
+
+    The caller owns ``index_conn`` and has already forced its snapshot.  This
+    adapter shares the normal payload classifier and catchup projection while
+    refusing to resolve paths, load config, or create another SQLite handle.
+    """
+
+    if embeddings_schema not in {"embeddings", "embeddings_tier"}:
+        raise ValueError(f"unsupported embedding status schema: {embeddings_schema!r}")
+    if ops_schema not in {"main", "ops_tier"}:
+        raise ValueError(f"unsupported embedding catchup schema: {ops_schema!r}")
+
+    if settings is not None and config is not None:
+        raise ValueError("embedding status accepts settings or config, not both")
+    return _archive_embedding_status_payload(
+        Path("."),
+        settings=settings or embedding_status_settings_from_config(config),
+        include_detail=include_detail,
+        _pinned_connection=index_conn,
+        _embeddings_schema=embeddings_schema,
+        _ops_schema=ops_schema,
     )
 
 
@@ -1098,15 +1261,35 @@ def _archive_catchup_runs(
     if not ops_db.exists():
         return None, None
     try:
-        from polylogue.storage.sqlite.archive_tiers.ops_write import list_embedding_catchup_runs
-
         conn = open_readonly_connection(ops_db)
         try:
-            runs = list_embedding_catchup_runs(conn)
+            return _archive_catchup_runs_from_connection(conn)
         finally:
             conn.close()
     except sqlite3.Error:
         return None, None
+
+
+def _archive_catchup_runs_from_connection(
+    conn: sqlite3.Connection,
+    *,
+    schema: str = "main",
+) -> tuple[EmbeddingCatchupRunPayload | None, EmbeddingCatchupRunPayload | None]:
+    """Read canonical catchup history from an already-pinned ops attachment."""
+
+    from polylogue.storage.sqlite.archive_tiers.ops_write import list_embedding_catchup_runs
+
+    if schema not in {"main", "ops_tier"}:
+        raise ValueError(f"unsupported embedding catchup reader schema: {schema!r}")
+    aliases = {str(row[1]) for row in conn.execute("PRAGMA database_list").fetchall()}
+    if schema not in aliases:
+        return None, None
+    table = conn.execute(
+        f"SELECT 1 FROM {schema}.sqlite_schema WHERE type = 'table' AND name = 'embedding_catchup_runs'"
+    ).fetchone()
+    if table is None:
+        return None, None
+    runs = list_embedding_catchup_runs(conn, schema=schema)
     if not runs:
         return None, None
     latest = _archive_run_payload(runs[0])
@@ -1143,18 +1326,18 @@ def embedding_status_payload(
         if archive_root is not None
         else db_path.parent
     )
+    settings = embedding_status_settings_from_config(cfg)
     archive_payload = _archive_embedding_status_payload(
-        db_path, cfg=cfg, include_detail=include_detail, configured_root=configured_root
+        db_path,
+        settings=settings,
+        include_detail=include_detail,
+        configured_root=configured_root,
     )
     if archive_payload is not None:
         return archive_payload
     if not db_path.exists():
         return _payload_from_stats(
-            config_enabled=bool(cfg.embedding_enabled),
-            has_voyage_api_key=bool(cfg.voyage_api_key),
-            configured_model=cfg.embedding_model,
-            configured_dimension=cfg.embedding_dimension,
-            monthly_cost_cap_usd=cfg.embedding_max_cost_usd,
+            settings=settings,
             total_sessions=0,
             stats=EmbeddingStatsSnapshot(),
             latest_catchup_run=None,
@@ -1181,11 +1364,7 @@ def embedding_status_payload(
         conn.close()
 
     return _payload_from_stats(
-        config_enabled=bool(cfg.embedding_enabled),
-        has_voyage_api_key=bool(cfg.voyage_api_key),
-        configured_model=cfg.embedding_model,
-        configured_dimension=cfg.embedding_dimension,
-        monthly_cost_cap_usd=cfg.embedding_max_cost_usd,
+        settings=settings,
         total_sessions=total_sessions,
         stats=embedding_stats,
         latest_catchup_run=latest_run,
