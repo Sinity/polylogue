@@ -699,6 +699,23 @@ class AuditRepository:
                     mutation.payload.get("accepted_deadline_unix_ms"),
                 ),
             )
+            operation_id = mutation.payload.get("ingest_operation_id")
+            if operation_id is not None:
+                preview_id = cast(str, mutation.payload["preview_id"])
+                authorization_id = cast(str, mutation.payload["authorization_id"])
+                conn.execute(
+                    """INSERT INTO machine_request_parts(
+                        archive_identity, request_id, ordinal, artifact_ref, preview_ref, authorization_ref, operation_id
+                    ) VALUES (?, ?, 0, ?, ?, ?, ?)""",
+                    (
+                        binding.archive_identity,
+                        binding.request_id,
+                        manifest.source_generation_id,
+                        preview_id,
+                        authorization_id,
+                        operation_id,
+                    ),
+                )
             return
         if mutation.kind == "append_insight_preview":
             if not isinstance(result, str):
@@ -1025,7 +1042,62 @@ class AuditRepository:
             binding = self._machine_binding[0]
             if binding.principal_ref != principal.actor_ref or "archive.ingest" not in principal.capabilities:
                 raise AuthorizationMismatchError("ingest acceptance principal lacks bound authority")
-            return {"manifest": manifest.to_dict(), "principal": _principal_payload(principal)}
+            plan = cast(MutationPlan | None, values.get("plan"))
+            authorization = cast(MutationAuthorization | None, values.get("authorization"))
+            if (plan is None) != (authorization is None):
+                raise ValueError("ingest runtime authority requires both plan and authorization")
+            payload: dict[str, object] = {"manifest": manifest.to_dict(), "principal": _principal_payload(principal)}
+            if plan is None:
+                return payload
+            validate_mutation_plan_integrity(plan)
+            from polylogue.operations.ingest_acceptance import ingest_context, ingest_plan
+
+            now_ms = int(time.time() * 1000)
+            canonical_plan = ingest_plan(
+                manifest,
+                archive_instance_id=plan.archive_instance_id,
+                archive_identity_digest=binding.archive_identity,
+                now_ms=plan.prepared_at_ms,
+                expires_at_ms=plan.expires_at_ms,
+            )
+            if plan != canonical_plan or dict(plan.context) != ingest_context(manifest):
+                raise AuthorizationMismatchError("ingest runtime authority differs from the frozen source manifest")
+            if (
+                authorization.token is None
+                or authorization.preview_ref != f"preview:{plan.plan_hash}"
+                or authorization.authorization_id is not None
+                or authorization.plan_hash != plan.plan_hash
+                or authorization.actor != principal.actor_ref
+                or authorization.role != (principal.role_label or "")
+                or authorization.surface != principal.surface
+                or authorization.confirmation_strength != "role_only"
+                or authorization.capabilities != plan.required_capabilities
+                or authorization.capability not in plan.required_capabilities
+                or authorization.expires_at_ms != plan.expires_at_ms
+                or now_ms >= plan.expires_at_ms
+                or not set(plan.required_capabilities).issubset(principal.capabilities)
+            ):
+                raise AuthorizationMismatchError("ingest runtime authorization differs from the fresh exact plan")
+            preview_id = f"preview:{secrets.token_urlsafe(18)}"
+            authorization_id = f"authorization:{secrets.token_urlsafe(18)}"
+            operation_id = f"operation:{secrets.token_urlsafe(18)}"
+            attempt_id = f"attempt:{secrets.token_urlsafe(18)}"
+            bound_authorization = replace(authorization, preview_ref=preview_id, authorization_id=authorization_id)
+            payload.update(
+                {
+                    "plan": _replay_plan_payload(plan),
+                    "preview_id": preview_id,
+                    "authorization_id": authorization_id,
+                    "operation_id": operation_id,
+                    "attempt_id": attempt_id,
+                    "issued_at_ms": now_ms,
+                    "now_ms": now_ms,
+                    "authorization": _authorization_payload(bound_authorization),
+                    "authorization_token_sha256": token_sha256(authorization.token),
+                    "ingest_operation_id": operation_id,
+                }
+            )
+            return payload
         if kind in {"create_preview_batch", "issue_authorization_batch", "cancel_preview_batch"}:
             items, principal = cast(tuple[object, ...], args[0]), cast(MutationPrincipal, args[1])
             if not 1 <= len(items) <= 40:
@@ -1246,7 +1318,11 @@ class AuditRepository:
             if mutation.kind == "accept_ingest":
                 # The source-WAL prepare has already accepted this denominator.
                 # Replaying the audit reference cannot reauthorize or acquire.
-                return FrozenSourceManifest.from_dict(payload["manifest"]).source_generation_id
+                manifest = FrozenSourceManifest.from_dict(payload["manifest"])
+                if "plan" not in payload:
+                    return manifest.source_generation_id
+                self._apply_ingest_runtime_payload(payload)
+                return manifest.source_generation_id
             if mutation.kind == "append_insight_preview":
                 return cast(Any, self.append_insight_preview).__wrapped__(
                     self,
@@ -1396,9 +1472,34 @@ class AuditRepository:
         return self._apply_authority_batch()
 
     @_continuity_mutation("accept_ingest")
-    def accept_ingest(self, manifest: FrozenSourceManifest, principal: MutationPrincipal) -> str:
+    def accept_ingest(
+        self,
+        manifest: FrozenSourceManifest,
+        principal: MutationPrincipal,
+        *,
+        plan: MutationPlan | None = None,
+        authorization: MutationAuthorization | None = None,
+    ) -> str:
         """Bind retained physical inputs; source preparation owns acceptance."""
+        if plan is not None:
+            if self._coordinated_mutation is None:
+                raise RuntimeError("paired ingest authority requires source-WAL coordination")
+            self._apply_ingest_runtime_payload(self._coordinated_mutation.payload)
         return manifest.source_generation_id
+
+    def _apply_ingest_runtime_payload(self, payload: Mapping[str, object]) -> None:
+        """Apply the one frozen paired-ingest authority in normal and replay paths."""
+
+        plan = _plan_from_payload(payload["plan"])
+        preview = MutationPreview(cast(str, payload["preview_id"]), plan)
+        principal = _principal_from_payload(payload["principal"])
+        authorization = _authorization_from_payload(payload["authorization"])
+        digest = _StoredAuthorizationDigest(cast(str, payload["authorization_token_sha256"]))
+        self.create_preview.__wrapped__(self, plan, principal)
+        self._persist_authorization(
+            digest, preview, principal, authorization, issued_at_ms=cast(int, payload["issued_at_ms"])
+        )
+        self._consume_authorization(digest, preview, authorization)
 
     @_continuity_mutation("accept_execution_batch")
     def accept_execution_batch(self, refs: tuple[str, ...], principal: MutationPrincipal) -> list[str]:

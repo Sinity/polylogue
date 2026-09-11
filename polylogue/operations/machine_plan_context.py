@@ -77,11 +77,21 @@ class _InsightContext(BaseModel):
         return self
 
 
+class _IngestContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    source_generation_id: str = Field(min_length=1)
+    manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    enumeration_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    input_count: int = Field(ge=1, le=10_000)
+    recipe_version: str = Field(min_length=1)
+
+
 _CONTEXT_MODELS: dict[str, type[BaseModel]] = {
     "mutate-delete-session": _DeleteContext,
     "mutate-bulk-tag-sessions": _TagContext,
     "mutate-bulk-set-metadata": _MetadataContext,
     "mutate-rebuild-insights": _InsightContext,
+    "ingest-archive-runtime": _IngestContext,
 }
 _FORMAT = "polylogue.machine-plan-context/v1"
 
