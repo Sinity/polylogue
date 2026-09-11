@@ -1272,7 +1272,9 @@ def make_default_convergence_stages(
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
             make_delegation_work_evidence_stage(db_path),
-            make_derived_stage(db_path),
+            # Session-profile publication is no longer a generic stage.  The
+            # daemon's typed session owner runs it through the derivation
+            # kernel after ingest and from its no-hint periodic sweep.
             make_fts_readiness_stage(db_path),
             make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
         )

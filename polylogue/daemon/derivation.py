@@ -136,6 +136,10 @@ class DerivationFrame:
     archive_root: str
     source_revision: str
     recipe_versions: Mapping[str, str] = field(default_factory=dict)
+    #: Optional bounded domain-owned work scope.  It is an admission hint, not
+    #: correctness state: a ``None`` scope re-enumerates required keys from
+    #: the output domain after restart.
+    scope: object | None = None
 
     def recipe_version(self, domain: str) -> str:
         return self.recipe_versions.get(domain, "")

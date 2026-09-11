@@ -352,6 +352,12 @@ class EmbeddingConvergenceOwner(Protocol):
     async def __call__(self, index_db_path: Path, paths: Sequence[Path], /) -> bool: ...
 
 
+class SessionProfileConvergenceCallback(Protocol):
+    """Converge actual post-ingest session changes after writer release."""
+
+    async def __call__(self, session_ids: Sequence[str], /) -> object: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateSourceFile:
     """One statted source file candidate from a catch-up scan."""
@@ -407,6 +413,7 @@ class LiveWatcher:
         write_coordinator: WriteCoordinator | None = None,
         parse_stage: LiveParseStage | None = None,
         embedding_owner: EmbeddingConvergenceOwner | None = None,
+        session_profile_callback: SessionProfileConvergenceCallback | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
@@ -424,6 +431,7 @@ class LiveWatcher:
         # its short writes lives in the daemon ring, which this one may not
         # import (polylogue-c0l7n).
         self._embedding_owner = embedding_owner
+        self._session_profile_callback = session_profile_callback
         self._catch_up_event_emitter = catch_up_event_emitter
         self._event_emitter = event_emitter
         self._published_source_halts: dict[str, str] = {}
@@ -1307,6 +1315,7 @@ class LiveWatcher:
             self._forced_reparse_paths.difference_update(paths)
 
         ingested_paths: list[Path] = []
+        changed_session_ids: tuple[str, ...] = ()
 
         async def requeue(
             retry_paths: Iterable[Path],
@@ -1322,7 +1331,7 @@ class LiveWatcher:
                 self._forced_reparse_paths.update(path for path in retry_forced_paths if path in paths_to_requeue_set)
 
         async def flush_batch() -> None:
-            nonlocal paths
+            nonlocal paths, changed_session_ids
             # Filtering a changed-file batch invokes cursor reconciliation and
             # lifecycle actuators, so the source-selection proof must be
             # consumed before initialization or any stateful decision.
@@ -1367,6 +1376,7 @@ class LiveWatcher:
                 await requeue(needed, forced_paths)
                 return
             if metrics is not None:
+                changed_session_ids = metrics.changed_session_ids
                 _log_ingest_metrics("live.watcher: changed-file batch", metrics)
                 if (
                     getattr(metrics, "succeeded_file_count", 0) == 0
@@ -1384,6 +1394,7 @@ class LiveWatcher:
             # the gate nor the embedding generation lock, so an unrelated
             # archive writer proceeds while the provider works (polylogue-c0l7n).
             await self._converge_embeddings_off_writer(ingested_paths)
+            await self._converge_session_profiles_off_writer(changed_session_ids)
         except WriteHoldBudgetError as exc:
             logger.warning("live.watcher: changed-file batch ended at its declared writer-hold bound: %s", exc)
             await requeue(snapshot_paths, forced_paths)
@@ -2075,6 +2086,17 @@ class LiveWatcher:
             # so a refused or failed pass retries there rather than failing an
             # ingest batch whose source records are already durable.
             logger.warning("live.watcher: lease-free embedding convergence did not complete", exc_info=True)
+
+    async def _converge_session_profiles_off_writer(self, session_ids: Sequence[str]) -> None:
+        """Submit the bounded changed-session scope after ingest releases the gate."""
+        if self._session_profile_callback is None or not session_ids:
+            return
+        try:
+            await self._session_profile_callback(tuple(dict.fromkeys(session_ids)))
+        except Exception:
+            # Source admission is already durable.  The owner reconstructs
+            # missed work from output inspection in its periodic no-hint pass.
+            logger.warning("live.watcher: lease-free session profile convergence did not complete", exc_info=True)
 
     async def _emit_catch_up_terminal(
         self,

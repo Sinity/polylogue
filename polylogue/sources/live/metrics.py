@@ -137,6 +137,17 @@ class LiveBatchMetrics:
         """Offered bytes no bucket claimed. Zero whenever accounting is whole."""
         return self.input_bytes - self.ingested_bytes - self.failed_bytes - self.refused_bytes
 
+    @property
+    def changed_session_ids(self) -> tuple[str, ...]:
+        """Actual durable session changes, in deterministic first-touch order.
+
+        These are derived from the accepted append/full results, not offered
+        files, attempt counters, or a broad archive scan.  A post-ingest
+        derivation can therefore use them as a bounded scheduling scope while
+        its no-hint sweep remains the correctness recovery path.
+        """
+        return tuple(dict.fromkeys(session_id for _source, session_id in (*self.new_sessions, *self.updated_sessions)))
+
     def to_payload(self) -> dict[str, object]:
         read_amplification = (
             round(self.source_payload_read_bytes / self.input_bytes, 6) if self.input_bytes > 0 else 0.0
@@ -176,6 +187,7 @@ class LiveBatchMetrics:
             "ingested_session_count": self.ingested_session_count,
             "ingested_message_count": self.ingested_message_count,
             "changed_session_count": self.changed_session_count,
+            "changed_session_ids": list(self.changed_session_ids),
             "parse_time_s": self.parse_time_s,
             "convergence_time_s": self.convergence_time_s,
             "total_time_s": self.total_time_s,

@@ -17,6 +17,7 @@ contract either way.
 
 from __future__ import annotations
 
+import bisect
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ __all__ = [
     "inspect_session_profiles",
     "inspect_session_profiles_async",
     "publish_session_profile",
+    "publish_prepared_session_profile",
     "stored_session_profile_binding",
 ]
 
@@ -234,6 +236,41 @@ SESSION_PARTITION_INSPECT_CHUNK = 500
 _ARCHIVE_SESSION_IDS_SQL = "SELECT session_id FROM sessions ORDER BY session_id"
 
 
+def _session_id_page(
+    conn: sqlite3.Connection,
+    *,
+    cursor: str | None,
+    limit: int,
+) -> tuple[tuple[str, ...], str | None]:
+    rows = conn.execute(
+        "SELECT session_id FROM sessions WHERE session_id > COALESCE(?, '') ORDER BY session_id LIMIT ?",
+        (cursor, limit + 1),
+    ).fetchall()
+    keys = tuple(str(row[0]) for row in rows[:limit])
+    return keys, (keys[-1] if len(rows) > limit and keys else None)
+
+
+def _excess_page(
+    conn: sqlite3.Connection,
+    *,
+    cursor: str | None,
+    limit: int,
+) -> tuple[tuple[str, ...], str | None]:
+    rows = conn.execute(
+        """
+        SELECT sp.session_id
+        FROM session_profiles AS sp
+        LEFT JOIN sessions AS s ON s.session_id = sp.session_id
+        WHERE s.session_id IS NULL AND sp.session_id > COALESCE(?, '')
+        ORDER BY sp.session_id
+        LIMIT ?
+        """,
+        (cursor, limit + 1),
+    ).fetchall()
+    keys = tuple(str(row[0]) for row in rows[:limit])
+    return keys, (keys[-1] if len(rows) > limit and keys else None)
+
+
 def _chunked(values: Sequence[str], size: int) -> Iterator[tuple[str, ...]]:
     for start in range(0, len(values), size):
         yield tuple(values[start : start + size])
@@ -355,6 +392,32 @@ def publish_session_profile(
     return True
 
 
+def publish_prepared_session_profile(conn: sqlite3.Connection, prepared: object) -> bool:
+    """Refresh usage then atomically publish a lease-free prepared partition.
+
+    Usage refresh precedes the exact-value check.  This preserves the #4855
+    order (message evidence, reconciliation, provider evidence, repricing)
+    while refusing a bundle prepared from the previous rollup.  A later pass
+    reads that canonical rollup outside the writer and can publish it whole.
+    """
+    from polylogue.storage.derived.session.rebuild import (
+        PreparedSessionInsightPartition,
+        _refresh_provider_usage_rollup,
+        publish_prepared_session_insight_partition,
+    )
+
+    if not isinstance(prepared, PreparedSessionInsightPartition):
+        raise TypeError(f"expected PreparedSessionInsightPartition, got {type(prepared).__name__}")
+    if prepared.bundle is not None:
+        _refresh_provider_usage_rollup(conn, prepared.session_id)
+        # The canonical usage rollup is independently derived from persisted
+        # evidence.  Commit it before the prepared partition transaction: a
+        # changed rollup must survive a binding refusal so the next lease-free
+        # preparation reads the exact values that publication will verify.
+        conn.commit()
+    return publish_prepared_session_insight_partition(conn, prepared)
+
+
 #: One partition's publication is a bounded transaction over one session. A hold
 #: longer than the storage busy timeout can starve a writer that is not on the
 #: daemon's gate, so the budget names that boundary rather than a preference.
@@ -385,7 +448,7 @@ class SessionProfileDerivation:
         write_connection: Callable[[], sqlite3.Connection],
         *,
         materializer_version: int,
-        session_scope: Callable[[object], Sequence[str]],
+        session_scope: Callable[[object], Sequence[str] | None],
         page_size: int = 200,
         quiet_keys: Callable[[object], frozenset[str]] | None = None,
     ) -> None:
@@ -396,8 +459,19 @@ class SessionProfileDerivation:
         self._page_size = page_size
         self._quiet_keys = quiet_keys
 
-    def required(self, frame: object) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(self._session_scope(frame)))
+    def required_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
+        """Keyset-page archive work; bounded incremental scopes stay bounded too."""
+        scope = self._session_scope(frame)
+        if scope is None:
+            conn = self._read_connection()
+            try:
+                return _session_id_page(conn, cursor=cursor, limit=limit)
+            finally:
+                conn.close()
+        keys = tuple(sorted(dict.fromkeys(str(key) for key in scope)))
+        start = bisect.bisect(keys, cursor) if cursor is not None else 0
+        page = keys[start : start + limit]
+        return page, (page[-1] if start + len(page) < len(keys) and page else None)
 
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         conn = self._read_connection()
@@ -406,10 +480,10 @@ class SessionProfileDerivation:
         finally:
             conn.close()
 
-    def excess_candidates(self, frame: object) -> tuple[str, ...]:
+    def excess_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
         conn = self._read_connection()
         try:
-            return excess_session_profiles(conn)
+            return _excess_page(conn, cursor=cursor, limit=limit)
         finally:
             conn.close()
 
@@ -417,20 +491,15 @@ class SessionProfileDerivation:
         return key in self._quiet_keys(frame) if self._quiet_keys is not None else False
 
     def compute(self, frame: object, key: str) -> SessionProfileReplacement:
-        """Read the binding this replacement is computed against, lease-free.
+        """Prepare the complete replacement from a lease-free read frame."""
+        from polylogue.storage.derived.session.rebuild import prepare_session_insight_partition
 
-        The profile row build still happens inside ``publish`` through the
-        existing writer; moving row construction out of the lease is a separate
-        change from making staleness value-complete. What matters here is that
-        the binding read outside the lease is the one publication revalidates,
-        so a computation that raced an ingest is refused rather than published.
-        """
         conn = self._read_connection()
         try:
-            binding = session_input_bindings(conn, (key,)).get(key, "")
+            prepared = prepare_session_insight_partition(conn, key)
         finally:
             conn.close()
-        return SessionProfileReplacement(key=key, input_binding=binding, payload=key)
+        return SessionProfileReplacement(key=key, input_binding=prepared.input_binding, payload=prepared)
 
     def publish(self, frame: object, replacement: object) -> bool:
         """Typed ``object`` because the kernel's protocol admits any replacement.
@@ -443,12 +512,7 @@ class SessionProfileDerivation:
         with write_lease(f"derivation.{self.domain}", max_hold_seconds=_PUBLISH_HOLD_BUDGET_S):
             conn = self._write_connection()
             try:
-                return publish_session_profile(
-                    conn,
-                    replacement.key,
-                    input_binding=replacement.input_binding,
-                    page_size=self._page_size,
-                )
+                return publish_prepared_session_profile(conn, replacement.payload)
             finally:
                 conn.close()
 
@@ -459,5 +523,5 @@ class SessionProfileReplacement:
 
     key: str
     input_binding: str
-    payload: str
+    payload: object
     empty: bool = False

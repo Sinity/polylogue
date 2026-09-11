@@ -14,10 +14,14 @@ so we skip unchanged files entirely.
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
+import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -33,6 +37,110 @@ from polylogue.daemon.derivation import (
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+class _DerivationAdmission:
+    """Bridge one short publish from a compute worker to the daemon writer."""
+
+    def __init__(self, bridge: object, loop: asyncio.AbstractEventLoop) -> None:
+        self._bridge = bridge
+        self._loop_thread_id = threading.get_ident() if loop.is_running() else None
+
+    def __call__(self, domain: str, publish: Callable[[], bool]) -> bool:
+        if self._loop_thread_id is not None and threading.get_ident() == self._loop_thread_id:
+            raise RuntimeError("session derivation publish was invoked on the daemon event loop thread")
+        # The bridge owns the coordinator until the transaction really returns;
+        # a caller-side timeout must not admit a second archive writer.
+        return cast("bool", self._bridge.run_sync_with_timeout(f"derivation.{domain}", None, publish))
+
+
+class SessionProfileConvergenceOwner:
+    """Run the registered session domain on daemon-shared lease-free compute.
+
+    Composition supplies the already-constructed converger and its one
+    session-profile adapter.  This owner deliberately does not construct a
+    pool or a writer: it borrows the process adapter and bridges only each
+    short publication back to the daemon's coordinator.
+    """
+
+    def __init__(self, converger: DaemonConverger) -> None:
+        self._converger = converger
+
+    async def converge(
+        self,
+        frame: DerivationFrame,
+        *,
+        budget: Budget | int | None = None,
+        deadline_s: float | None = None,
+        resume: bool = True,
+    ) -> DerivationReport:
+        from polylogue.daemon.execution import daemon_compute_adapter
+        from polylogue.daemon.write_coordinator import (
+            DaemonWriteThreadBridge,
+            daemon_write_coordinator,
+            daemon_write_lease_active,
+        )
+
+        if daemon_write_lease_active():
+            raise RuntimeError("session profile convergence must start after the daemon writer lease is released")
+        loop = asyncio.get_running_loop()
+        admission = _DerivationAdmission(DaemonWriteThreadBridge(daemon_write_coordinator(), loop), loop)
+        submitted = daemon_compute_adapter().submit(
+            partial(
+                self._converger.converge_derivations,
+                frame,
+                budget=budget,
+                deadline_s=deadline_s,
+                domains=("session_profile",),
+                resume=resume,
+                publisher=admission,
+            ),
+            admission_class="incremental-background",
+        )
+        return await asyncio.wrap_future(submitted.future, loop=loop)  # type: ignore[arg-type]
+
+
+def make_session_profile_derivation(
+    index_db_path: Path,
+    *,
+    archive_root: Path,
+    materializer_version: int,
+) -> DerivationAdapter:
+    """Build the one daemon-owned adapter for one active index generation.
+
+    The protocol composition layer calls this once for its active generation
+    and registers the returned adapter exactly once with ``DaemonConverger``.
+    The frame's scope is either the bounded durable changes from live ingest or
+    ``None`` for an archive-wide no-hint sweep.
+    """
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+    from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
+
+    resolved_index = index_db_path.resolve()
+
+    def read_connection() -> sqlite3.Connection:
+        return open_readonly_connection(resolved_index, timeout_class="background-read")
+
+    def write_connection() -> sqlite3.Connection:
+        return open_daemon_connection(resolved_index, archive_root=archive_root)
+
+    def scope(frame: object) -> Sequence[str] | None:
+        value = getattr(frame, "scope", None)
+        if value is None:
+            return None
+        if not isinstance(value, tuple):
+            raise TypeError("session profile frame scope must be a tuple of session ids or None")
+        return tuple(str(item) for item in value)
+
+    return cast(
+        "DerivationAdapter",
+        SessionProfileDerivation(
+            read_connection,
+            write_connection,
+            materializer_version=materializer_version,
+            session_scope=scope,
+        ),
+    )
 
 
 def _stage_false_error(stage_name: str, *, scope: str) -> str:
@@ -203,6 +311,7 @@ class DaemonConverger:
         deadline_s: float | None = None,
         domains: Sequence[str] | None = None,
         resume: bool = True,
+        publisher: Callable[[str, Callable[[], bool]], bool] | None = None,
     ) -> DerivationReport:
         """Converge the migrated domains from their own output relations.
 
@@ -226,6 +335,7 @@ class DaemonConverger:
             deadline_s=deadline_s,
             domains=domains,
             cursor=self._derivation_cursor if resume else None,
+            publisher=publisher,
         )
         self._derivation_cursor = report.cursor
         return report
