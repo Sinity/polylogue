@@ -8,6 +8,7 @@ import math
 import os
 import secrets
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -44,6 +45,7 @@ from polylogue.storage.sqlite.audit_leaf import (
     AuditLeafError,
     assert_verified_audit_leaf,
     open_verified_audit_connection,
+    open_verified_audit_read_connection,
 )
 
 if TYPE_CHECKING:
@@ -542,6 +544,7 @@ class AuditRepository:
         self._machine_deadline_unix_ms: int | None = None
         self._before_machine_prepare = before_machine_prepare
         self._on_commit = on_commit
+        self._settled_reader = threading.local()
 
     @contextmanager
     def bind_machine_request(
@@ -615,8 +618,20 @@ class AuditRepository:
 
     @contextmanager
     def settled_machine_read(self) -> Iterator[dict[str, int]]:
+        """Read machine receipts without contending for audit's writer leaf.
+
+        Continuity first proves that source and audit agree.  Every repository
+        query nested in this scope then opens the verified WAL-aware read path;
+        a completion waiter must never turn a concurrent durable mutation into
+        a second writer acquisition.
+        """
         with self._continuity.settled_read() as versions:
-            yield versions
+            depth = getattr(self._settled_reader, "depth", 0)
+            self._settled_reader.depth = depth + 1
+            try:
+                yield versions
+            finally:
+                self._settled_reader.depth = depth
 
     def preview_for_principal(self, preview_ref: str, principal: MutationPrincipal) -> MutationPreview:
         with self._connection() as conn:
@@ -1037,6 +1052,14 @@ class AuditRepository:
         self._assert_regular_audit_leaf()
         if self._coordinated_connection is not None:
             yield self._coordinated_connection
+            return
+        if getattr(self._settled_reader, "depth", 0):
+            try:
+                with open_verified_audit_read_connection(self.path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    yield conn
+            except (AuditLeafError, sqlite3.DatabaseError) as exc:
+                raise AuditContinuityPendingError("audit machine read is unavailable") from exc
             return
         with open_verified_audit_connection(self.path) as conn:
             conn.row_factory = sqlite3.Row
