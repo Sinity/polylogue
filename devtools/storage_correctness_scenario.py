@@ -225,7 +225,7 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
                 search_failure = str(exc)
             else:
                 raise AssertionError("search should fail while a canonical messages_fts trigger is missing")
-            repaired = repair_messages_fts_surface(root / "index.db")
+            repaired = repair_messages_fts_surface(root / "index.db", archive_root=root)
             with sqlite3.connect(root / "index.db") as conn:
                 after_readiness = message_fts_readiness_sync(conn)
                 after_rows = _row_count(conn, "messages_fts")

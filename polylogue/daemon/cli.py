@@ -316,10 +316,11 @@ async def _await_parse_stage_writer_admission() -> bool:
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> object:
     """Run the single FTS convergence owner before the watcher starts."""
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
+    from polylogue.paths import archive_root
 
     return await coordinator.run_sync(
         "startup.fts_convergence",
-        FtsConvergenceOwner(_active_index_db_path()).run_once_sync,
+        FtsConvergenceOwner(_active_index_db_path(), archive_root=archive_root()).run_once_sync,
         reason=FtsRunReason.STARTUP,
     )
 
@@ -1077,10 +1078,11 @@ async def _retry_convergence_debt_once(db: Path) -> None:
 async def _run_periodic_fts_convergence_once(db: Path) -> None:
     """Run the owner-only archive-wide exact FTS audit when it is due."""
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
+    from polylogue.paths import archive_root
 
     result = await daemon_write_coordinator().run_sync(
         "maintenance.fts_convergence",
-        FtsConvergenceOwner(db).run_once_sync,
+        FtsConvergenceOwner(db, archive_root=archive_root()).run_once_sync,
         reason=FtsRunReason.PERIODIC,
     )
     if bool(getattr(result, "exact", False)):
@@ -2112,7 +2114,7 @@ def _close_raw_materialization_fts(index_db: Path, *, ops_db_path: Path) -> None
     from polylogue.daemon.convergence_stages import repair_fts_surface
 
     try:
-        needs_repair = _raw_materialization_fts_needs_repair(index_db)
+        needs_repair = _raw_materialization_fts_needs_repair(index_db, archive_root=ops_db_path.parent)
     except Exception as exc:
         _record_raw_materialization_fts_debt(
             index_db, ops_db_path=ops_db_path, error=f"FTS readiness probe failed after raw materialization: {exc}"
@@ -2121,7 +2123,7 @@ def _close_raw_materialization_fts(index_db: Path, *, ops_db_path: Path) -> None
     if not needs_repair:
         return
     try:
-        repaired = repair_fts_surface(index_db, "messages_fts")
+        repaired = repair_fts_surface(index_db, "messages_fts", archive_root=ops_db_path.parent)
     except Exception as exc:
         # Preserve the original raw-materialization outcome. A stale
         # freshness row plus explicit debt keeps readiness negative and makes
@@ -2167,12 +2169,12 @@ def _record_raw_materialization_fts_debt(index_db: Path, *, ops_db_path: Path, e
         logger.warning("raw materialization: failed to record message FTS convergence debt", exc_info=True)
 
 
-def _raw_materialization_fts_needs_repair(index_db: Path) -> bool:
+def _raw_materialization_fts_needs_repair(index_db: Path, *, archive_root: Path) -> bool:
     from polylogue.storage.fts.freshness import message_fts_recorded_readiness_sync
     from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
     from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
-    with open_daemon_connection(index_db, timeout=5.0) as conn:
+    with open_daemon_connection(index_db, timeout=5.0, archive_root=archive_root) as conn:
         recorded = message_fts_recorded_readiness_sync(conn)
         if recorded is not None:
             return not bool(recorded["ready"])
@@ -2207,8 +2209,9 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     fts_owner_result: object | None = None
     if fts_surfaces:
         from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
+        from polylogue.paths import archive_root
 
-        fts_owner_result = FtsConvergenceOwner(db).run_once_sync(
+        fts_owner_result = FtsConvergenceOwner(db, archive_root=archive_root()).run_once_sync(
             reason=FtsRunReason.DEBT_RETRY,
             surfaces=fts_surfaces,
         )
