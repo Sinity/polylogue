@@ -37,6 +37,7 @@ from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 
@@ -820,8 +821,8 @@ def _check_capture_coverage_medium() -> HealthAlert:
 
         current_ms = int(datetime.now(UTC).timestamp() * 1000)
         since_ms = current_ms - _CAPTURE_COVERAGE_WINDOW_MS
-        source_conn = sqlite3.connect(str(source_db))
-        index_conn = sqlite3.connect(str(index_db))
+        source_conn = open_readonly_connection(source_db, validate_schema=False)
+        index_conn = open_readonly_connection(index_db, validate_schema=False)
         try:
             total_misses = 0
             details: list[str] = []
@@ -1062,7 +1063,7 @@ def _check_repeated_stage_failures_medium() -> HealthAlert:
         )
 
     try:
-        conn = sqlite3.connect(str(dbf))
+        conn = open_readonly_connection(dbf, validate_schema=False)
         try:
             has_table = bool(
                 conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_ingest_attempt'").fetchone()
@@ -1535,7 +1536,7 @@ def _check_db_integrity_expensive() -> HealthAlert:
             consecutive_failures=_record_failure("db_integrity", False),
         )
     try:
-        conn = sqlite3.connect(str(dbf))
+        conn = open_readonly_connection(dbf, validate_schema=False)
         try:
             results = conn.execute("PRAGMA integrity_check").fetchall()
             ok = len(results) == 1 and results[0][0] == "ok"

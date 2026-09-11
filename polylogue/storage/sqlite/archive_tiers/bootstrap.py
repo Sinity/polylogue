@@ -777,11 +777,18 @@ def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every active archive tier under one local bootstrap owner."""
 
     from polylogue.storage.archive_tuple_location import ArchiveTupleError, is_archive_tuple_candidate_path
+    from polylogue.storage.sqlite.write_lease import require_write_lease
 
     if is_archive_tuple_candidate_path(root):
         raise ArchiveTupleError(
             "inactive archive tuple roots require typed per-tier destinations; refusing active-root bootstrap"
         )
+
+    # Active-root bootstrap creates or opens every writable tier.  It is a
+    # daemon-owned operation when process-wide lease enforcement is armed;
+    # inactive tuple destinations and scratch files use the lower-level
+    # initializer directly and remain intentionally independent of this gate.
+    require_write_lease("active archive bootstrap", archive_root=root)
 
     with _ACTIVE_ARCHIVE_BOOTSTRAP_LOCK:
         _initialize_active_archive_root(root)
