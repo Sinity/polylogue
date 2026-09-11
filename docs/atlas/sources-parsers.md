@@ -31,7 +31,7 @@ must not reverse a public origin into a guessed provider
 - Parsing preserves structured tool-result outcome and exit-code fields;
   prose is not an outcome oracle.
 - Parser inference cannot overwrite a hook-authoritative lineage edge
-  (`polylogue/storage/sqlite/archive_tiers/write.py:3890-3949`).
+  (`polylogue/storage/sqlite/archive_tiers/write.py:4410-4470`).
 - Replaying identical normalized content is idempotent by content hash;
   user metadata does not alter import identity.
 - All ordinary ingest, replay, and reindex paths share the parsed-session
@@ -54,4 +54,4 @@ fixture. Follow the parsed object into
 contract from a surface serializer. The provider guides under
 `docs/providers/` explain format-specific caveats.
 
-verified: 24be873c0 2026-08-27
+verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11
