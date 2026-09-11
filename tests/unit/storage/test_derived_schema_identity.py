@@ -6,6 +6,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from polylogue.storage.sqlite import schema_manifest
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -34,6 +35,25 @@ def test_index_identity_changes_when_a_fingerprint_input_changes(monkeypatch: py
     )
     after = derived_schema_identity(DerivedTier.INDEX)
     assert after != before
+
+
+def test_index_identity_uses_semantic_manifest_not_ddl_comments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Maintenance comments in the declared script do not force a new identity.
+
+    Anti-vacuity: hashing ``INDEX_DDL`` directly makes the prefixed comment
+    alter the identity.  The canonical manifest still renders the full
+    production schema, so this exercises the same route used by bootstrap.
+    """
+    import polylogue.storage.sqlite.archive_tiers as archive_tiers
+
+    original = archive_tiers.ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX]
+    before = derived_schema_identity(DerivedTier.INDEX)
+    monkeypatch.setitem(archive_tiers.ARCHIVE_DDL_BY_TIER, ArchiveTier.INDEX, f"-- packaging note\n{original}")
+    schema_manifest._canonical_schema_manifest.cache_clear()
+    try:
+        assert derived_schema_identity(DerivedTier.INDEX) == before
+    finally:
+        schema_manifest._canonical_schema_manifest.cache_clear()
 
 
 def test_stamped_wrong_identity_is_refused_before_index_use(tmp_path: Path) -> None:

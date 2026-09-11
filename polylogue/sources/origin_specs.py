@@ -80,6 +80,12 @@ _REPLAY_ROUTING_FINGERPRINT_PATHS: tuple[str, ...] = ("polylogue/sources/revisio
 # Logging is deliberately available to parser code for diagnostics, but its
 # implementation and configuration do not affect normalized parser output.
 _PARSER_DIAGNOSTIC_FINGERPRINT_PATHS: frozenset[str] = frozenset({"polylogue/logging.py"})
+# ``version.py`` imports this file only in an installed/package-shaped tree.
+# Hatch and Nix generate it with build-specific values, so it is provenance,
+# not parser/lowering/materializer/replay computation.  Keep ``version.py`` in
+# the closure: its implementation remains a semantic dependency when it is
+# used by one of those routes.
+_GENERATED_PROVENANCE_FINGERPRINT_PATHS: frozenset[str] = frozenset({"polylogue/_build_info.py"})
 
 
 class _ProjectionFingerprintStripper(ast.NodeTransformer):
@@ -160,6 +166,39 @@ class _DocstringStripper(ast.NodeTransformer):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
         node = cast(ast.AsyncFunctionDef, self.generic_visit(node))
         node.body = _without_leading_docstring(node.body)
+        return node
+
+
+class _SchemaDdlFingerprintStripper(ast.NodeTransformer):
+    """Normalize SQL source literals before hashing the transitive closure.
+
+    The index DDL module is imported by the lowering closure.  Its large SQL
+    literals contain maintenance comments and formatting, which are already
+    absent from the SQLite semantic manifest.  Keep the source closure honest
+    for real SQL changes while making those representational edits agree with
+    the manifest used by derived identity.
+    """
+
+    _in_ddl = False
+
+    def visit_Assign(self, node: ast.Assign) -> ast.Assign:
+        if any(
+            isinstance(target, ast.Name) and (target.id == "INDEX_DDL" or target.id.endswith("_DDL"))
+            for target in node.targets
+        ):
+            previous = self._in_ddl
+            self._in_ddl = True
+            try:
+                return cast(ast.Assign, self.generic_visit(node))
+            finally:
+                self._in_ddl = previous
+        return cast(ast.Assign, self.generic_visit(node))
+
+    def visit_Constant(self, node: ast.Constant) -> ast.Constant:
+        if self._in_ddl and isinstance(node.value, str):
+            from polylogue.storage.sqlite.archive_tiers.schema_identity import _normalize_schema_sql
+
+            return ast.copy_location(ast.Constant(_normalize_schema_sql(node.value)), node)
         return node
 
 
@@ -263,7 +302,7 @@ def _semantic_source_closure(root: Path, paths: tuple[str, ...], excluded_labels
 
 
 def _semantic_source_paths(
-    paths: tuple[str, ...], *, excluded_labels: frozenset[str] = frozenset()
+    paths: tuple[str, ...], *, excluded_labels: frozenset[str] = _GENERATED_PROVENANCE_FINGERPRINT_PATHS
 ) -> tuple[Path, ...]:
     """Return the parser-semantic import closure of ``paths``.
 
@@ -281,7 +320,7 @@ def _semantic_source_paths(
 
 
 #: Bump when the normalization below changes; it is part of the disk memo key.
-_FINGERPRINT_ALGORITHM_VERSION = 2
+_FINGERPRINT_ALGORITHM_VERSION = 3
 
 
 def _fingerprint_memo_path(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> Path | None:
@@ -338,6 +377,11 @@ def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], n
             and _fingerprint_path_label(Path(path_string)) == "polylogue/sources/origin_specs.py"
         ):
             normalized = _ProjectionFingerprintStripper().visit(normalized)
+        if (
+            Path(path_string).name == "index.py"
+            and _fingerprint_path_label(Path(path_string)) == "polylogue/storage/sqlite/archive_tiers/index.py"
+        ):
+            normalized = _SchemaDdlFingerprintStripper().visit(normalized)
         fragments.append(
             {
                 "path": _fingerprint_path_label(Path(path_string)),
@@ -351,7 +395,10 @@ def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], n
 def _fingerprint_sources(
     paths: tuple[str, ...], *, namespace: str, excluded_labels: frozenset[str] = frozenset()
 ) -> str:
-    source_paths = _semantic_source_paths(paths, excluded_labels=excluded_labels)
+    source_paths = _semantic_source_paths(
+        paths,
+        excluded_labels=excluded_labels | _GENERATED_PROVENANCE_FINGERPRINT_PATHS,
+    )
     signatures = tuple(_source_signature(path) for path in source_paths)
     return _fingerprint_sources_cached(signatures, namespace)
 
@@ -949,7 +996,10 @@ def derived_identity_source_closure() -> tuple[Path, ...]:
     just as surely as a new column. Membership follows the import graph, not
     directory boundaries, which is why callers must ask rather than assume.
     """
-    return _semantic_source_paths(_DERIVED_IDENTITY_ENTRY_PATHS)
+    return _semantic_source_paths(
+        _DERIVED_IDENTITY_ENTRY_PATHS,
+        excluded_labels=_GENERATED_PROVENANCE_FINGERPRINT_PATHS,
+    )
 
 
 def in_derived_identity_closure(path: Path | str) -> bool:

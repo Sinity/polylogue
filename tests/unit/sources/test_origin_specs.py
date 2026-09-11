@@ -860,6 +860,87 @@ def test_source_fingerprint_memoizes_on_disk_by_signature(tmp_path: Path, monkey
     assert origin_specs_module.lowering_fingerprint() != first
 
 
+def test_generated_build_provenance_is_not_a_semantic_fingerprint_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Package-only build metadata cannot invalidate parser/lowering code.
+
+    Anti-vacuity: restoring the local import edge into the source closure
+    makes the second fingerprint differ when only BUILD_COMMIT/BUILD_DIRTY
+    changes.  The real helper remains in the closure below, proving that this
+    is a narrow generated-file exclusion rather than closure-wide suppression.
+    """
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    source_dir = tmp_path / "polylogue" / "sources"
+    source_dir.mkdir(parents=True)
+    emitter = source_dir / "emitter.py"
+    emitter.write_text(
+        "from polylogue._build_info import BUILD_COMMIT\n"
+        "from polylogue.sources.helper import shape\n\n"
+        "def emit(payload):\n    return shape(payload)\n",
+        encoding="utf-8",
+    )
+    helper = source_dir / "helper.py"
+    helper.write_text("def shape(payload):\n    return payload\n", encoding="utf-8")
+    build_info = tmp_path / "polylogue" / "_build_info.py"
+    build_info.write_text('BUILD_COMMIT = "commit-a"\nBUILD_DIRTY = False\n', encoding="utf-8")
+
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+    monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
+    origin_specs_module._semantic_source_closure.cache_clear()
+    origin_specs_module._local_import_paths.cache_clear()
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    first = origin_specs_module.lowering_fingerprint()
+    members = origin_specs_module._semantic_source_paths(("polylogue/sources/emitter.py",))
+    assert build_info.resolve() not in members
+    assert helper.resolve() in members
+
+    build_info.write_text('BUILD_COMMIT = "commit-b"\nBUILD_DIRTY = True\n', encoding="utf-8")
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() == first
+
+    helper.write_text("def shape(payload):\n    return {'session': payload}\n", encoding="utf-8")
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() != first
+
+
+def test_index_ddl_formatting_is_normalized_in_the_production_source_hash_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DDL comments/formatting do not leak through the lowering source hash."""
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    path = tmp_path / "polylogue" / "storage" / "sqlite" / "archive_tiers" / "index.py"
+    path.parent.mkdir(parents=True)
+    source = 'INDEX_DDL = """CREATE TABLE x ( a TEXT /* note */ )"""\n'
+    path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    first = origin_specs_module._fingerprint_sources(
+        ("polylogue/storage/sqlite/archive_tiers/index.py",), namespace="index-ddl-format"
+    )
+    path.write_text('INDEX_DDL = """ CREATE  TABLE x(a TEXT) """\n', encoding="utf-8")
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert (
+        origin_specs_module._fingerprint_sources(
+            ("polylogue/storage/sqlite/archive_tiers/index.py",), namespace="index-ddl-format"
+        )
+        == first
+    )
+
+    path.write_text('INDEX_DDL = """CREATE TABLE x(a BLOB)"""\n', encoding="utf-8")
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert (
+        origin_specs_module._fingerprint_sources(
+            ("polylogue/storage/sqlite/archive_tiers/index.py",), namespace="index-ddl-format"
+        )
+        != first
+    )
+
+
 class TestSemanticSourceClosureMemo:
     """Closure membership is walked once per process; content freshness is not memoized.
 
