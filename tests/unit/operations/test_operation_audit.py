@@ -163,10 +163,13 @@ class _FailedReceiptActuator(_Actuator):
 
 
 def _binding(
-    actuator: _Actuator, *, target_durability: TargetDurability = "derived"
+    actuator: _Actuator,
+    *,
+    target_durability: TargetDurability = "derived",
+    operation_name: str = "mutate-fixture",
 ) -> OperationBinding[object, object]:
     spec = OperationSpec(
-        name="mutate-fixture",
+        name=operation_name,
         kind=OperationKind.MAINTENANCE,
         description="fixture",
         mutates_state=True,
@@ -367,16 +370,17 @@ def test_rich_receipt_operation_without_terminal_receipt_stays_indeterminate(
     """Removing the rich-receipt guard makes historical ingest/insight replies look completed."""
     audit = _audit(tmp_path)
     actuator = _Actuator(operation=operation_name)
+    operation_binding = _binding(actuator, operation_name=operation_name)
     executor = OperationExecutor(audit=audit)
     preview = executor.prepare_bound(
-        _binding(actuator),
+        operation_binding,
         object(),
         _principal(),
         archive_instance_id="archive:receipt-fixture",
         archive_identity_digest="identity:receipt-fixture",
         parameter_digest=f"params:{operation_name}",
     )
-    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    authorization = executor.authorize_bound(operation_binding, preview, _principal())
     assert authorization.authorization_id is not None
     binding = MachineRequestBinding(
         "identity:receipt-fixture",
@@ -388,7 +392,7 @@ def test_rich_receipt_operation_without_terminal_receipt_stays_indeterminate(
     with audit.bind_machine_request(binding, transition="accept_execution_batch"):
         audit.accept_execution_batch((str(authorization.authorization_id),), _principal())
     with audit.bind_machine_request(binding, transition="consume_authorization_and_start", part=0):
-        executor.execute_bound(_binding(actuator), preview, authorization, object())
+        executor.execute_bound(operation_binding, preview, authorization, object())
 
     record = audit.machine_request(binding)
     assert record is not None
