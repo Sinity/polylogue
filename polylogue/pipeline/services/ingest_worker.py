@@ -63,6 +63,12 @@ logger = get_logger(__name__)
 _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
 _SCHEMA_REGISTRY: SchemaRegistry | None = None
 _SCHEMA_REGISTRY_LOCK = threading.Lock()
+_SCHEMA_DRIFT_STRENGTH = {
+    "new_field": 1,
+    "known_field_unread": 2,
+    "unseen_shape": 3,
+    "field_changed": 4,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -540,13 +546,15 @@ def _validate_parse_plan(
             # only `errors`/`is_valid` below still gate STRICT failure.
             if not sample_result.is_valid:
                 collected_errors.extend(sample_result.errors[:2])
-            if drift is None:
-                drift = _classify_plan_drift(
+            drift = _stronger_schema_drift(
+                drift,
+                _classify_plan_drift(
                     context,
                     validated_plan,
                     is_valid=sample_result.is_valid,
                     drift_warnings=sample_result.drift_warnings,
-                )
+                ),
+            )
         if collected_errors and context.validation_mode is ValidationMode.STRICT:
             return _PlanValidation(
                 status=ValidationStatus.FAILED,
@@ -560,6 +568,31 @@ def _validate_parse_plan(
         schema_drift=drift,
         schema_resolution=validated_plan.schema_resolution,
     )
+
+
+def _stronger_schema_drift(
+    current: SchemaDriftObservation | None,
+    candidate: SchemaDriftObservation | None,
+) -> SchemaDriftObservation | None:
+    """Keep the most actionable sample observation for a multi-record plan.
+
+    Validation plans commonly carry a representative stream of records.  A
+    benign additive field in an early record must not hide a later type
+    failure, and reversing that stream must produce the same classification.
+    """
+    if current is None:
+        return candidate
+    if candidate is None:
+        return current
+    current_strength = _SCHEMA_DRIFT_STRENGTH[current.classification]
+    candidate_strength = _SCHEMA_DRIFT_STRENGTH[candidate.classification]
+    if candidate_strength > current_strength:
+        return candidate
+    if candidate_strength < current_strength:
+        return current
+    # Same-classification samples retain a stable representative independent
+    # of sampling order, rather than reintroducing first-record dependence.
+    return min(current, candidate, key=lambda observation: observation.unseen_key_signature)
 
 
 def _classify_plan_drift(

@@ -280,6 +280,57 @@ def test_dynamic_key_maps_do_not_emit_drift_warnings() -> None:
     assert not result.has_drift
 
 
+def test_permissive_named_fields_are_observed_through_nested_union_array_branch() -> None:
+    """Permissive admission still reports new names from the value's branch.
+
+    A provider may add fields without invalidating its schema.  The sentinel
+    needs those observations, but must follow the array branch rather than
+    treating the union wrapper itself as an object with no declared fields.
+    """
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {
+                "metadata": {
+                    "type": "object",
+                    "properties": {"known": {"type": "string"}},
+                    "additionalProperties": True,
+                },
+                "body": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"known": {"type": "string"}},
+                                "additionalProperties": True,
+                            },
+                        },
+                    ]
+                },
+            },
+            "additionalProperties": True,
+        },
+        strict=True,
+    )
+
+    result = validator.validate(
+        {
+            "root_added": "accepted",
+            "metadata": {"known": "present", "nested_added": "accepted"},
+            "body": [{"known": "present", "item_added": "accepted"}],
+        }
+    )
+
+    assert result.is_valid, result.errors
+    assert set(result.drift_warnings) == {
+        "Unexpected field: root_added",
+        "Unexpected field: metadata.nested_added",
+        "Unexpected field: body[0].item_added",
+    }
+
+
 def test_dynamic_identifier_keys_are_suppressed_in_additional_properties_maps() -> None:
     """Identifier-like additional-property keys should not count as drift."""
     validator = SchemaValidator(
