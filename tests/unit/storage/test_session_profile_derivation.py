@@ -313,6 +313,38 @@ def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
     assert _status(index_db, session_id) == "valid"
 
 
+def test_prepared_partition_refuses_a_value_binding_that_moved_before_publish(
+    archive: tuple[Path, str],
+) -> None:
+    """A prepared four-table replacement never publishes after its frame moves.
+
+    Anti-vacuity: move record construction back into ``publish`` or omit the
+    source/value binding comparison and this writes a profile whose message
+    values no longer match the prepared projection.
+    """
+    from polylogue.daemon.derivation import DerivationFrame
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+
+    index_db, session_id = archive
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+    )
+    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
+    prepared = adapter.compute(frame, session_id)
+
+    _mutate(index_db, session_id, "word_count", "word_count + 1")
+
+    assert adapter.publish(frame, prepared) is False
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        assert [
+            conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0]
+            for table in ("session_profiles", "session_work_events", "session_phases", "session_latency_profiles")
+        ] == [0, 0, 0, 0]
+
+
 def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path, str]) -> None:
     """Policy deferral leaves the profile absent and the key rediscoverable."""
     from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, Outcome, PendingReason, converge

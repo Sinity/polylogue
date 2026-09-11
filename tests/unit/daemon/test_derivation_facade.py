@@ -13,7 +13,8 @@ authority, and never durable.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import cast
 
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.derivation import (
@@ -78,6 +79,24 @@ def test_the_facade_converges_a_registered_domain_and_reports_its_order() -> Non
     report = converger.converge_derivations(FRAME)
     assert report.done == 2
     assert sorted(adapter.output) == ["a", "b"]
+
+
+def test_the_facade_routes_only_publication_through_the_owner_admission() -> None:
+    """Compute stays in the caller while each publish uses the injected bridge.
+
+    Anti-vacuity: acquire the writer around ``converge_derivations`` or ignore
+    ``publisher`` and this records no per-key publication admission.
+    """
+    adapter = StringStatusDerivation()
+    converger = DaemonConverger([], derivations=[adapter])
+    admissions: list[str] = []
+
+    def publisher(domain: str, publish: object) -> bool:
+        admissions.append(domain)
+        return bool(cast(Callable[[], bool], publish)())
+
+    assert converger.converge_derivations(FRAME, publisher=publisher).done == 2
+    assert admissions == ["strings", "strings"]
 
 
 def test_the_facade_reconstructs_the_pending_set_on_every_call() -> None:
