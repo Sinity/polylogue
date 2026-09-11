@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext
 from polylogue.operations.authority import authority_for_reader
-from polylogue.operations.operation_context import open_operation_read
+from polylogue.operations.operation_context import open_operation_read, prepare_operation_journals
 from tests.infra.archive_templates import bootstrap_archive_root
 
 pytestmark = pytest.mark.uses_real_clock("exercises the canonical query deadline/cancellation controller")
@@ -19,6 +20,7 @@ def test_operation_snapshot_pins_source_and_attached_tiers(tmp_path: Path) -> No
     """A mutation after pinning cannot change either of the two reader handles."""
 
     bootstrap_archive_root(tmp_path)
+    prepare_operation_journals(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute("CREATE TABLE synthetic_snapshot_value(value INTEGER NOT NULL) STRICT")
         source.execute("INSERT INTO synthetic_snapshot_value VALUES (1)")
@@ -37,6 +39,24 @@ def test_operation_snapshot_pins_source_and_attached_tiers(tmp_path: Path) -> No
         assert set(pinned.schema_versions) == {"source", "index", "user", "audit", "ops", "embeddings"}
     with sqlite3.connect(tmp_path / "source.db") as after:
         assert after.execute("SELECT value FROM synthetic_snapshot_value").fetchone()[0] == 2
+
+
+def test_reader_does_not_activate_journals_but_writer_startup_does(tmp_path: Path) -> None:
+    """Mutation: move journal negotiation into the readonly pin and the mode changes early."""
+    bootstrap_archive_root(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        source.execute("PRAGMA journal_mode=DELETE")
+    with open_operation_read(tmp_path) as pinned:
+        assert pinned.archive.source_connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    prepare_operation_journals(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        for tier, alias in (
+            ("index", "main"),
+            ("source", "source_tier"),
+            ("audit", "audit_tier"),
+            ("user", "user_tier"),
+        ):
+            assert pinned.archive.index_connection.execute(f"PRAGMA {alias}.journal_mode").fetchone()[0] == "wal", tier
 
 
 @pytest.mark.parametrize("tier", ["index", "source"])

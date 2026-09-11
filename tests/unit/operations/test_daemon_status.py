@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.operations.daemon_status import produce_direct_status
-from polylogue.operations.operation_context import open_operation_read
+from polylogue.operations.operation_context import open_operation_read, prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_schema_drift_sample
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -31,6 +31,7 @@ def test_direct_status_keeps_source_ops_and_embeddings_on_the_pinned_snapshot(tm
     """Mutation: reopen any status tier after pinning and these durable facts change."""
 
     bootstrap_archive_root(tmp_path)
+    prepare_operation_journals(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute(
             """

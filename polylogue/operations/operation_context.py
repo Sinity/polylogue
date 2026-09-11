@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager, ExitStack, contextmanager
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -59,6 +59,36 @@ class OperationControlRead:
     identity: ArchiveIdentity
     schema_versions: dict[str, int]
     degraded_components: tuple[str, ...]
+
+
+def prepare_operation_journals(root: Path) -> None:
+    """Establish live WAL policy under the writer before exposing readers.
+
+    Fresh/bootstrap and restored sealed tiers may use rollback journals. A
+    reader must never renegotiate those modes: pinning a rollback snapshot
+    before the first writer opens would block that writer's WAL transition.
+    Missing tiers remain missing; startup does not bootstrap or migrate here.
+    """
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE, open_isolated_write_connection
+    from polylogue.storage.sqlite.write_lease import require_write_lease
+
+    require_write_lease("machine operation journal startup", archive_root=root)
+    location = ArchiveLocation.resolve(root)
+    for tier in ArchiveTier:
+        path = location.active_index_path if tier is ArchiveTier.INDEX else root / f"{tier.value}.db"
+        if not path.is_file():
+            continue
+        with closing(
+            open_isolated_write_connection(
+                path,
+                purpose="machine operation journal startup",
+                archive_root=root,
+                profile=WRITE_CONNECTION_PROFILE,
+            )
+        ) as connection:
+            if connection.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+                raise RuntimeError(f"machine operation tier {tier.value} did not enter WAL mode")
 
 
 def observe_control_authority(root: Path) -> OperationControlRead:
