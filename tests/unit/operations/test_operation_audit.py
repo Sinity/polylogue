@@ -338,10 +338,16 @@ def test_machine_batch_reserves_unstarted_suffix_and_never_replays_effects(
             audit.consume_authorization_and_start(previews[1], authorizations[1])
     recovered = AuditRepository.for_archive_root(tmp_path)
     recovered.reconcile_continuity()
-    assert recovered.machine_request(binding)["stop_reason"] == "cancelled"
-    assert recovered.machine_request(binding)["accepted_deadline_unix_ms"] == 9999999999999
+    recovered_request = recovered.machine_request(binding)
+    assert recovered_request is not None
+    assert recovered_request["stop_reason"] == "cancelled"
+    assert recovered_request["accepted_deadline_unix_ms"] == 9999999999999
     assert recovered.machine_parts(binding) == parts
-    assert recovered.get_operation(str(parts[0]["operation_id"]))["status"] == "completed"
+    operation_id = parts[0]["operation_id"]
+    assert isinstance(operation_id, str)
+    recovered_operation = recovered.get_operation(operation_id)
+    assert recovered_operation is not None
+    assert recovered_operation["status"] == "completed"
     with recovered.bind_machine_request(binding, transition="accept_execution_batch"):
         with pytest.raises(MachineRequestRecoveredError):
             recovered.accept_execution_batch(refs, _principal())

@@ -12,6 +12,8 @@ from polylogue.operations.ingest_acceptance import IngestActuator, ingest_plan
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import (
     AuthorizationMismatchError,
+    MutationAuthorization,
+    MutationPlan,
     MutationPreview,
     MutationPrincipal,
     OperationExecutor,
@@ -23,7 +25,7 @@ from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.frozen_clock import FrozenClock
 
 
-def _authorize(plan, actuator: IngestActuator, principal: MutationPrincipal):
+def _authorize(plan: MutationPlan, actuator: IngestActuator, principal: MutationPrincipal) -> MutationAuthorization:
     return OperationExecutor(now_ms=lambda: plan.prepared_at_ms).authorize_bound(
         runtime_operation_binding(actuator), MutationPreview(f"preview:{plan.plan_hash}", plan), principal
     )

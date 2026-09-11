@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TypedDict, cast
 
 import pytest
 
@@ -18,9 +18,14 @@ from polylogue.operations.insight_acceptance import (
     MAX_INSIGHT_PART_TARGETS,
     accepted_part_from_plan,
 )
-from polylogue.operations.insight_planning import insight_page_plan, prepare_insight_manifest
+from polylogue.operations.insight_planning import InsightManifest, insight_page_plan, prepare_insight_manifest
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+
+
+class _InsightTargetContext(TypedDict):
+    target_ref: str
+    disposition: str
 
 
 def _seed_sessions(root: Path, count: int, *, profile_orphan: bool = False) -> None:
@@ -45,7 +50,7 @@ def _reader(tmp_path: Path, count: int, *, profile_orphan: bool = False) -> Iter
         yield archive
 
 
-def _prepare(archive: ArchiveStore, session_ids: list[str] | None = None):
+def _prepare(archive: ArchiveStore, session_ids: list[str] | None = None) -> InsightManifest:
     return prepare_insight_manifest(
         archive,
         session_ids,
@@ -173,7 +178,8 @@ def test_unknown_or_mutated_target_is_rejected_by_shared_plan_context(tmp_path: 
             expires_at_ms=20,
         )
 
-    mutated_targets = [dict(target) for target in plan.context["targets"]]
+    target_context = cast(list[_InsightTargetContext], plan.context["targets"])
+    mutated_targets = [dict(target) for target in target_context]
     mutated_targets[0]["target_ref"] = "session:unknown"
     mutated_context = dict(plan.context)
     mutated_context["targets"] = mutated_targets

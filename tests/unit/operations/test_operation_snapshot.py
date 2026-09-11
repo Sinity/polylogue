@@ -50,13 +50,15 @@ def test_reader_does_not_activate_journals_but_writer_startup_does(tmp_path: Pat
         assert pinned.archive.source_connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
     prepare_operation_journals(tmp_path)
     with open_operation_read(tmp_path) as pinned:
+        index = pinned.archive.index_connection
+        assert index is not None
         for tier, alias in (
             ("index", "main"),
             ("source", "source_tier"),
             ("audit", "audit_tier"),
             ("user", "user_tier"),
         ):
-            assert pinned.archive.index_connection.execute(f"PRAGMA {alias}.journal_mode").fetchone()[0] == "wal", tier
+            assert index.execute(f"PRAGMA {alias}.journal_mode").fetchone()[0] == "wal", tier
 
 
 @pytest.mark.parametrize("tier", ["index", "source"])

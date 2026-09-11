@@ -7,11 +7,12 @@ import sqlite3
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from typing import TypeVar, cast
 
 import pytest
 
 from polylogue.operations.audit import AuditRepository
-from polylogue.operations.bindings import runtime_operation_binding
+from polylogue.operations.bindings import OperationBinding, runtime_operation_binding
 from polylogue.operations.mutation_actuators import (
     BulkMetadataSetActuator,
     BulkMetadataSetArgs,
@@ -21,6 +22,8 @@ from polylogue.operations.mutation_actuators import (
     SessionDeleteArgs,
 )
 from polylogue.operations.mutation_transaction import (
+    MutationActuator,
+    MutationPreview,
     MutationPrincipal,
     OperationExecutor,
     compute_parameter_digest,
@@ -31,6 +34,38 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.storage_records import SessionBuilder
+
+ArgsT = TypeVar("ArgsT")
+
+
+def _prepare_preview(
+    executor: OperationExecutor,
+    actuator: MutationActuator[ArgsT],
+    args: ArgsT,
+    principal: MutationPrincipal,
+    *,
+    archive_instance_id: str,
+    archive_identity_digest: str,
+) -> tuple[OperationBinding[object, object], MutationPreview, MutationPrincipal]:
+    operation = runtime_operation_binding(actuator)
+    principal = replace(
+        principal,
+        capabilities=frozenset(
+            capability for policy in operation.spec.target_authority for capability in policy.required_capabilities
+        ),
+    )
+    raw = actuator.prepare(args)
+    preview = executor.prepare_bound(
+        operation,
+        args,
+        principal,
+        archive_instance_id=archive_instance_id,
+        archive_identity_digest=archive_identity_digest,
+        parameter_digest=compute_parameter_digest(raw),
+        expires_at_ms=2**62,
+        raw_plan=raw,
+    )
+    return cast(OperationBinding[object, object], operation), preview, principal
 
 
 @pytest.mark.parametrize("batch", [False, True])
@@ -53,30 +88,32 @@ def test_real_plan_replays_before_authorization_without_losing_its_hash(
     executor = OperationExecutor(now_ms=lambda: 1000)
     with ArchiveStore.open_existing(tmp_path) as archive:
         if family == "delete":
-            actuator, args = SessionDeleteActuator(), SessionDeleteArgs(archive, ids)
+            operation, preview, principal = _prepare_preview(
+                executor,
+                SessionDeleteActuator(),
+                SessionDeleteArgs(archive, ids),
+                principal,
+                archive_instance_id=instance,
+                archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
+            )
         elif family == "tag":
-            actuator, args = BulkTagActuator(), BulkTagArgs(archive, ids, ("neutral-tag",))
+            operation, preview, principal = _prepare_preview(
+                executor,
+                BulkTagActuator(),
+                BulkTagArgs(archive, ids, ("neutral-tag",)),
+                principal,
+                archive_instance_id=instance,
+                archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
+            )
         else:
-            actuator, args = BulkMetadataSetActuator(), BulkMetadataSetArgs(archive, ids, (("purpose", "fixture"),))
-        operation = runtime_operation_binding(actuator)
-        # Use the operation's declared capability rather than duplicating its vocabulary.
-        principal = replace(
-            principal,
-            capabilities=frozenset(
-                capability for policy in operation.spec.target_authority for capability in policy.required_capabilities
-            ),
-        )
-        raw = actuator.prepare(args)
-        preview = executor.prepare_bound(
-            operation,
-            args,
-            principal,
-            archive_instance_id=instance,
-            archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
-            parameter_digest=compute_parameter_digest(raw),
-            expires_at_ms=2**62,
-            raw_plan=raw,
-        )
+            operation, preview, principal = _prepare_preview(
+                executor,
+                BulkMetadataSetActuator(),
+                BulkMetadataSetArgs(archive, ids, (("purpose", "fixture"),)),
+                principal,
+                archive_instance_id=instance,
+                archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
+            )
     target_kind = "create_preview_batch" if batch else "create_preview"
     original_phase = AuditContinuityCoordinator._phase
 
@@ -117,6 +154,7 @@ def test_real_plan_replays_before_authorization_without_losing_its_hash(
         pending = json.loads(source.execute("SELECT pending_payload_json FROM audit_continuity_control").fetchone()[0])
     issued_at_ms = pending["command"]["payload"]["issued_at_ms"]
     assert isinstance(issued_at_ms, int)
+    assert authorization.token is not None
     assert authorization.token not in json.dumps(pending)
     restarted.reconcile_continuity()
     with closing(sqlite3.connect(tmp_path / "audit.db")) as connection:
