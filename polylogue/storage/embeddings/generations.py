@@ -287,6 +287,9 @@ class EmbeddingGenerationStore:
         # demanding one; per-row recipe identity stays authoritative for
         # freshness through `DerivationKey`.
         contracts: set[tuple[bytes, bytes, str, int]] = set()
+        models: set[str] = set()
+        dimensions: set[int] = set()
+        output_contracts: set[bytes] = set()
         for vector_hash, model, dimension, recipe_hash, output_contract_hash in rows:
             value = bytes(vector_hash)
             recipe_value = bytes(recipe_hash)
@@ -295,10 +298,17 @@ class EmbeddingGenerationStore:
                 raise EmbeddingGenerationError("embedding membership contains malformed vector identity")
             if len(recipe_value) != 32 or len(output_value) != 32:
                 raise EmbeddingGenerationError("embedding membership contains malformed recipe identity")
-            contracts.add((recipe_value, output_value, str(model), int(dimension)))
+            model_value = str(model)
+            dimension_value = int(dimension)
+            contracts.add((recipe_value, output_value, model_value, dimension_value))
+            models.add(model_value)
+            dimensions.add(dimension_value)
+            output_contracts.add(output_value)
             digest.update(len(value).to_bytes(8, "big"))
             digest.update(value)
         digest.update(len(rows).to_bytes(8, "big"))
+        if len(models) > 1 or len(dimensions) > 1 or len(output_contracts) > 1:
+            raise EmbeddingGenerationError("embedding membership contains mixed vector contracts")
 
         def stable(path_value: Path) -> str:
             try:

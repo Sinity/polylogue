@@ -26,6 +26,18 @@ immutability and refuses immutability against any other live-generation
 profile, so "immutable" can only ever mean a sealed generation and never "the
 caller intends not to write".
 
+Historical continuity liveness classification uses the dedicated
+`open_sealed_staging_connection` factory. It opens `mode=ro&immutable=1` with
+the bounded offline cache/time profile and `temp_store=MEMORY`, but leaves
+`query_only` off so classifier candidate tables can live in SQLite's private
+TEMP schema. A fail-closed authorizer is installed before the connection is
+returned: it permits only main/TEMP reads, the classifier's pure function
+allowlist, transactions/savepoints, read-only schema/data PRAGMAs, and TEMP
+table/index staging. Main-schema writes, ATTACH/DETACH, unsafe PRAGMA
+assignments, virtual tables, triggers, extensions, and unlisted operations are
+denied. This exception is not a general read-profile relaxation; ordinary
+readers continue to require `query_only=ON`.
+
 ## Checkpoint ownership
 
 A process that runs the recurring coordinator claims it with

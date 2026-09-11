@@ -113,6 +113,59 @@ def test_generation_records_aggregate_phase_receipt(schema_sample_db: Path) -> N
     assert isinstance(progress["units_per_s"], float)
 
 
+def test_schema_sampling_binds_external_generation_to_selected_archive_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing the explicit location would read the generation's nonexistent siblings."""
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.schemas.sampling import iter_schema_units
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+
+    def seed(root: Path, label: str) -> tuple[ArchiveLocation, Path]:
+        initialize_active_archive_root(root)
+        payload = json.dumps([{"id": label, "mapping": {}}]).encode()
+        BlobStore(root / "blob").write_from_bytes(payload)
+        with sqlite3.connect(root / "source.db") as conn:
+            write_source_raw_session(
+                conn,
+                origin=origin_from_provider("chatgpt"),
+                source_path=f"/{label}.json",
+                source_index=0,
+                payload=payload,
+                acquired_at_ms=0,
+            )
+        generation = root / ".index-generations" / label / "index.db"
+        generation.parent.mkdir(parents=True)
+        generation.write_bytes((root / "index.db").read_bytes())
+        (root / ".index-active-pointer").write_text(str(generation), encoding="utf-8")
+        return ArchiveLocation.resolve(root), generation
+
+    selected, selected_index = seed(tmp_path / "selected", "selected")
+    _ambient, _ambient_index = seed(tmp_path / "ambient", "ambient")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "ambient"))
+
+    units = list(iter_schema_units("chatgpt", db_path=selected_index, archive_location=selected))
+
+    assert [unit.source_path for unit in units] == ["/selected.json"]
+
+
+def test_schema_sampling_refuses_missing_selected_source_evidence(tmp_path: Path) -> None:
+    from polylogue.schemas.sampling import iter_schema_units
+    from polylogue.schemas.sampling_db import SchemaArchiveEvidenceError
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = tmp_path / "selected"
+    initialize_active_archive_root(root)
+    (root / "source.db").unlink()
+
+    with pytest.raises(SchemaArchiveEvidenceError, match="selected archive source evidence"):
+        list(iter_schema_units("chatgpt", db_path=root / "index.db", archive_location=ArchiveLocation.resolve(root)))
+
+
 def test_catalog_selection_preserves_latest_without_defaulting_to_rare_family() -> None:
     def package(version: str, *, scopes: int, samples: int, first_seen: str) -> SchemaVersionPackage:
         return SchemaVersionPackage(

@@ -1593,11 +1593,13 @@ def _refresh_provider_usage_rollup(conn: sqlite3.Connection, session_id: str) ->
     from polylogue.storage.sqlite.archive_tiers.write import (
         _aggregate_message_tokens_into_model_usage,
         _aggregate_provider_usage_into_model_usage,
+        _reconcile_session_model_usage_rows,
         _reprice_model_usage_rows,
     )
 
-    _aggregate_provider_usage_into_model_usage(conn, session_id)
     _aggregate_message_tokens_into_model_usage(conn, session_id)
+    _reconcile_session_model_usage_rows(conn, session_id)
+    _aggregate_provider_usage_into_model_usage(conn, session_id)
     _reprice_model_usage_rows(conn, session_id)
     row = conn.execute(
         "SELECT COUNT(*) FROM session_model_usage WHERE session_id = ?",

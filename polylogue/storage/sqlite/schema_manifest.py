@@ -18,9 +18,9 @@ from dataclasses import dataclass
 
 from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.schema_identity import _normalize_schema_sql
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-_WS = re.compile(r"\s+")
 _FTS_BULK_GUARD = re.compile(
     r"\s+(?:and|when) not exists \(select 1 from derived_refresh_guard "
     r"where guard_name = '[^']+'\)"
@@ -47,7 +47,7 @@ _INDEX_SAME_VERSION_SCHEMA_VARIANTS = (
 
 
 def _sql(value: str | None) -> str:
-    return _WS.sub(" ", (value or "").strip()).lower()
+    return _normalize_schema_sql(value)
 
 
 #: The exact table suffixes FTS5 creates to back one virtual table. Matched

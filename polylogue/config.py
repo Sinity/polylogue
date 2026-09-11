@@ -2139,6 +2139,7 @@ class ResolvedSourcePaths:
     claude_code: Path
     claude_code_todos: Path
     codex: Path
+    codex_memories: Path
     gemini_cli: Path
     hermes: Path
     antigravity: Path
@@ -2303,6 +2304,7 @@ def resolve_runtime_config(
         claude_code=bootstrap.home / ".claude" / "projects",
         claude_code_todos=bootstrap.home / ".claude" / "todos",
         codex=bootstrap.home / ".codex" / "sessions",
+        codex_memories=bootstrap.home / ".codex" / "memories",
         gemini_cli=bootstrap.home / ".gemini" / "tmp",
         hermes=_resolved_runtime_path(
             settings.hermes_root,
@@ -2319,6 +2321,7 @@ def resolve_runtime_config(
         ("claude-code", source_paths.claude_code),
         ("claude-code-todos", source_paths.claude_code_todos),
         ("codex", source_paths.codex),
+        ("codex-memories", source_paths.codex_memories),
         ("gemini-cli", source_paths.gemini_cli),
         ("hermes", source_paths.hermes),
         ("antigravity", source_paths.antigravity),

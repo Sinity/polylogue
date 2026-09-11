@@ -471,13 +471,13 @@ def _checkpoint_sqlite_for_snapshot(conn: sqlite3.Connection, path: Path) -> Non
         raise RuntimeError(f"could not quiesce {path} before backup")
 
 
-def _backup_sqlite(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
+def _backup_sqlite(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[int, dict[str, object]]:
     """Copy a checkpointed tier while excluding concurrent SQLite writers."""
     live_path = src.resolve(strict=True)
     conn = open_isolated_write_connection(
         live_path,
         purpose=f"backup snapshot({live_path})",
-        archive_root=archive_root(),
+        archive_root=archive_root_path,
     )
     try:
         for _attempt in range(_SNAPSHOT_LOCK_ATTEMPTS):
@@ -1323,15 +1323,18 @@ def backup_archive(
     # read-only.  Acquire the same process lease as daemon publications; when
     # invoked from a coordinator this is re-entrant and cannot create a second
     # ownership path.
-    with write_lease("maintenance.backup", archive_root=archive_root()):
-        result = _backup_archive(output_dir=output_dir, started=started, profile=profile)
+    root = archive_root()
+    with write_lease("maintenance.backup", archive_root=root):
+        result = _backup_archive(output_dir=output_dir, started=started, profile=profile, archive_root_path=root)
     if verify and result.ok and result.output_path is not None:
         _verify_backup_result(result)
     return result
 
 
-def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile) -> BackupResult:
-    root = archive_root()
+def _backup_archive(
+    *, output_dir: Path, started: float, profile: BackupProfile, archive_root_path: Path
+) -> BackupResult:
+    root = archive_root_path
     included_tiers = {
         tier: path
         for tier, path in _profile_archive_tiers(root, profile).items()
@@ -1365,7 +1368,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
     with source_exclusion:
         for tier, src in included_tiers.items():
             dst = backup_root / f"{tier}.db"
-            copied_size, fingerprint = _backup_sqlite(src, dst)
+            copied_size, fingerprint = _backup_sqlite(src, dst, archive_root_path=root)
             db_size += copied_size
             tier_source_fingerprints[f"{tier}.db"] = fingerprint
             backed_up_files.append(str(dst))

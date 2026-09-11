@@ -103,6 +103,36 @@ def _read_element_schema(output_dir: Path, version: str, element_kind: str = "se
         return cast("dict[str, Any]", json.load(handle))
 
 
+def test_commit_threads_selected_archive_location_to_generation(tmp_path: Path) -> None:
+    """The committing production route must not discard durable-root authority."""
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    index = archive_root / "index.db"
+    index.touch()
+    location = ArchiveLocation.resolve(archive_root)
+    observed: list[object] = []
+
+    def generate(*_args: object, **kwargs: object) -> list[GenerationResult]:
+        observed.append(kwargs.get("archive_location"))
+        return [GenerationResult(provider=_PROVIDER, schema=None, sample_count=0, error="No samples found")]
+
+    with patch("polylogue.schemas.operator.commit.generate_all_schemas", side_effect=generate):
+        result = commit_provider_schema(
+            SchemaCommitRequest(
+                provider=_PROVIDER,
+                output_dir=tmp_path / "providers",
+                db_path=index,
+                archive_location=location,
+                full_corpus=True,
+            )
+        )
+
+    assert not result.success
+    assert observed == [location]
+
+
 class TestCommitProviderSchemaWritesRealFiles:
     def test_provider_finishing_during_generation_remains_in_handoff(self, tmp_path: Path) -> None:
         """A receipt loaded before generation must not erase a later provider commit."""

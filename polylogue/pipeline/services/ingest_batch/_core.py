@@ -167,11 +167,16 @@ def _open_sync_connection(db_path: Path, *, archive_root: Path | None = None) ->
 
         initialize_active_archive_root(bound_root)
     bound_root.mkdir(parents=True, exist_ok=True)
-    # This is the index publication connection.  Route it through the
-    # canonical writer factory so daemon-owned batches cannot open a second
-    # write door outside the archive-bound coordinator lease.
+    # Index publication owns an index.db transaction only. Attaching source.db
+    # here would make that transaction lock source.db too, then the attachment
+    # publisher's durable reservation would wait behind its own writer. Source
+    # precedence reads use the explicit read-only handle below, and receipt
+    # consumption opens its own short, archive-bound source-tier transaction.
     conn = open_isolated_write_connection(
-        db_path, purpose="ingest index publication", timeout=DB_TIMEOUT, archive_root=bound_root
+        db_path,
+        purpose="ingest index publication",
+        timeout=DB_TIMEOUT,
+        archive_root=bound_root,
     )
     conn.row_factory = sqlite3.Row
     for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
@@ -637,10 +642,9 @@ class _DriveRevisionGovernanceAdapter:
     actually read by anything this adapter is used for.
     """
 
-    def __init__(self, source_conn: sqlite3.Connection, blob_publisher: ArchiveBlobPublisher) -> None:
+    def __init__(self, source_conn: sqlite3.Connection, blob_publisher: ArchiveBlobPublisher | None) -> None:
         self._source_conn = source_conn
-        self._blob_publisher: ArchiveBlobPublisher | None = blob_publisher
-        self.archive_root = blob_publisher.source_db_path.parent
+        self._blob_publisher = blob_publisher
         self._inactive_candidate_durable_read_only = False
         # Never read by bind_raw_revision/classify_raw_revision_cohort; see
         # class docstring for why this is a harmless placeholder value.

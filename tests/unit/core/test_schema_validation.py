@@ -280,6 +280,57 @@ def test_dynamic_key_maps_do_not_emit_drift_warnings() -> None:
     assert not result.has_drift
 
 
+def test_permissive_named_fields_are_observed_through_nested_union_array_branch() -> None:
+    """Permissive admission still reports new names from the value's branch.
+
+    A provider may add fields without invalidating its schema.  The sentinel
+    needs those observations, but must follow the array branch rather than
+    treating the union wrapper itself as an object with no declared fields.
+    """
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "properties": {
+                "metadata": {
+                    "type": "object",
+                    "properties": {"known": {"type": "string"}},
+                    "additionalProperties": True,
+                },
+                "body": {
+                    "anyOf": [
+                        {"type": "string"},
+                        {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"known": {"type": "string"}},
+                                "additionalProperties": True,
+                            },
+                        },
+                    ]
+                },
+            },
+            "additionalProperties": True,
+        },
+        strict=True,
+    )
+
+    result = validator.validate(
+        {
+            "root_added": "accepted",
+            "metadata": {"known": "present", "nested_added": "accepted"},
+            "body": [{"known": "present", "item_added": "accepted"}],
+        }
+    )
+
+    assert result.is_valid, result.errors
+    assert set(result.drift_warnings) == {
+        "Unexpected field: root_added",
+        "Unexpected field: metadata.nested_added",
+        "Unexpected field: body[0].item_added",
+    }
+
+
 def test_dynamic_identifier_keys_are_suppressed_in_additional_properties_maps() -> None:
     """Identifier-like additional-property keys should not count as drift."""
     validator = SchemaValidator(
@@ -331,6 +382,43 @@ def test_additional_properties_schema_still_detects_nested_drift() -> None:
     assert result.is_valid
     assert result.has_drift
     assert any("mapping.static-key.extra" in warning for warning in result.drift_warnings)
+
+
+@pytest.mark.parametrize(
+    "patterns",
+    [
+        {
+            "^x": {"type": "object", "properties": {"a": {"type": "string"}}},
+            ".*": {"type": "object", "properties": {"b": {"type": "string"}}},
+        },
+        {
+            ".*": {"type": "object", "properties": {"b": {"type": "string"}}},
+            "^x": {"type": "object", "properties": {"a": {"type": "string"}}},
+        },
+    ],
+)
+def test_all_matching_pattern_properties_contribute_observation_schema(
+    patterns: dict[str, dict[str, object]],
+) -> None:
+    """Every matching pattern declares fields, independent of insertion order.
+
+    Anti-vacuity: selecting only the first matching pattern reports the field
+    declared by the other pattern as unexpected; reversing these patterns
+    changes which valid field is falsely reported.
+    """
+    validator = SchemaValidator(
+        {
+            "type": "object",
+            "patternProperties": patterns,
+            "additionalProperties": False,
+        },
+        strict=True,
+    )
+
+    result = validator.validate({"x1": {"a": "ok", "b": "ok"}})
+
+    assert result.is_valid
+    assert not result.has_drift
 
 
 def test_validate_non_strict_mode_skips_drift_detection() -> None:
@@ -762,6 +850,49 @@ def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(
     assert stats.valid_records == 1
     assert stats.invalid_records == 0
     assert stats.decode_errors == 0
+
+
+def test_verify_raw_corpus_uses_selected_location_and_reports_missing_selected_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blob in an ambient archive must not make selected evidence look valid."""
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.schemas.validation.corpus import verify_raw_corpus
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+
+    payload = b'{"id":"selected","mapping":{}}'
+    selected_root = tmp_path / "selected"
+    ambient_root = tmp_path / "ambient"
+    for root in (selected_root, ambient_root):
+        initialize_active_archive_root(root)
+    with sqlite3.connect(selected_root / "source.db") as conn:
+        write_source_raw_session(
+            conn,
+            origin=origin_from_provider("chatgpt"),
+            source_path="/selected.json",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=0,
+        )
+    # Only the unrelated ambient store holds the selected content hash.
+    BlobStore(ambient_root / "blob").write_from_bytes(payload)
+    external_index = selected_root / ".index-generations" / "current" / "index.db"
+    external_index.parent.mkdir(parents=True)
+    external_index.write_bytes((selected_root / "index.db").read_bytes())
+    (selected_root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(ambient_root))
+
+    report = verify_raw_corpus(
+        db_path=external_index,
+        archive_location=ArchiveLocation.resolve(selected_root),
+        request=SchemaVerificationRequest(providers=["chatgpt"]),
+    )
+
+    assert report.total_records == 1
+    assert report.providers["chatgpt"].decode_errors == 1
 
 
 def test_verify_raw_corpus_filters_and_parses_by_detected_provider(

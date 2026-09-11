@@ -37,6 +37,8 @@ from polylogue.maintenance.blob_disposition import (
     referenced_blob_hashes,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _hook_envelope(event_id: str = "event-1", *, text: str = "ran a tool") -> dict[str, object]:
@@ -81,6 +83,13 @@ def _empty_source_db(path: Path) -> Path:
     return path
 
 
+def _empty_index_db(archive_root: Path) -> Path:
+    """Materialize the required derived tier through its production bootstrap."""
+    path = archive_root / "index.db"
+    initialize_archive_database(path, ArchiveTier.INDEX)
+    return path
+
+
 def _reference(source_db: Path, *blob_hashes: str) -> None:
     """Name blobs in a durable relation so liveness, not silence, decides."""
     with sqlite3.connect(source_db) as conn:
@@ -99,6 +108,7 @@ def _context(
     blob_root = tmp_path / "blob"
     blob_root.mkdir(exist_ok=True)
     source_db = _empty_source_db(tmp_path / "source.db")
+    _empty_index_db(tmp_path)
     _reference(source_db, *referenced)
     return build_disposition_context(
         archive_root=tmp_path,
@@ -405,6 +415,7 @@ def test_reclaimable_total_excludes_members_a_reference_pins(tmp_path: Path) -> 
     free_hash = _publish_blob(store, _stored_envelope_bytes(free_file))
     pinned_hash = _publish_blob(store, _stored_envelope_bytes(pinned_file))
     source_db = _empty_source_db(tmp_path / "source.db")
+    _empty_index_db(tmp_path)
     with sqlite3.connect(source_db) as conn:
         conn.execute("INSERT INTO blob_refs (blob_hash, ref_type) VALUES (?, ?)", (bytes.fromhex(pinned_hash), "raw"))
 
@@ -442,6 +453,7 @@ def test_superseded_prefix_members_are_reported_as_retained_not_reclaimable(tmp_
     short = _publish_blob(store, b'{"a": 1}\n')
     long = _publish_blob(store, b'{"a": 1}\n{"a": 2}\n')
     source_db = _empty_source_db(tmp_path / "source.db")
+    _empty_index_db(tmp_path)
     with sqlite3.connect(source_db) as conn:
         conn.executemany(
             "INSERT INTO raw_sessions (raw_id, origin, native_id, blob_hash, blob_size, source_path, "
@@ -476,6 +488,7 @@ def _source_db_with_rows(
     blob_refs: tuple[str, ...] = (),
 ) -> Path:
     """A source tier holding exactly the durable rows a test needs."""
+    _empty_index_db(path.parent)
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TABLE blob_refs (blob_hash BLOB, ref_type TEXT)")
         conn.execute(

@@ -6571,6 +6571,36 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
         )
 
 
+def _reconcile_session_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
+    """Remove usage rows unsupported by persisted message or provider evidence.
+
+    A session-insight rebuild may run after a usage/cost correction updates a
+    message's model name in place. Aggregating the corrected message then adds
+    its new model row, but the old message-only row has no source left to
+    justify it. Provider usage events are independent evidence, so rows named
+    by one remain even when no current message carries that model.
+    """
+    return conn.execute(
+        """
+        DELETE FROM session_model_usage
+        WHERE session_id = ?
+          AND NOT EXISTS (
+              SELECT 1
+              FROM messages AS m
+              WHERE m.session_id = session_model_usage.session_id
+                AND m.model_name = session_model_usage.model_name
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM session_provider_usage_events AS e
+              WHERE e.session_id = session_model_usage.session_id
+                AND TRIM(COALESCE(e.model_name, '')) = session_model_usage.model_name
+          )
+        """,
+        (session_id,),
+    ).rowcount
+
+
 def _write_repo_edges(
     conn: sqlite3.Connection,
     session_id: str,

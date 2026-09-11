@@ -22,6 +22,7 @@ from polylogue.core.json import JSONDocument
 from polylogue.schemas.operator.models import SchemaInferRequest
 from polylogue.schemas.operator.workflow import infer_schema
 from polylogue.schemas.source_inference import parse_schema_source_input
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
@@ -46,9 +47,9 @@ def _process_resources() -> JSONDocument:
     return metrics
 
 
-def _source_input_summary(index_path: Path) -> JSONDocument:
+def _source_input_summary(archive_location: ArchiveLocation) -> JSONDocument:
     """Count the source-tier input without opening raw payloads."""
-    source_path = index_path.with_name("source.db")
+    source_path = archive_location.configured_tier("source").configured_path
     if not source_path.exists():
         return {"source_db_bytes": None, "raw_row_count": None, "raw_blob_bytes": None}
     try:
@@ -109,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = get_config()
+        archive_location = ArchiveLocation.resolve(config.archive_root)
         privacy_config = build_schema_privacy_config(
             privacy=args.privacy,
             privacy_config_path=args.privacy_config,
@@ -118,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             SchemaInferRequest(
                 provider=str(args.provider),
                 db_path=config.db_path,
+                archive_location=archive_location,
                 max_samples=args.max_samples,
                 privacy_config=privacy_config,
                 cluster=bool(args.cluster),
@@ -126,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_inputs=source_inputs,
                 source_cache_path=args.source_cache,
                 source_workers=args.source_workers,
+                persist_cluster_manifest=False,
             )
         )
     except ValueError as exc:
@@ -134,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
 
     generation = result.generation
     if args.receipt is not None:
-        archive_path = get_config().db_path
+        archive_path = archive_location.active_index_path
         try:
             archive_size_bytes = archive_path.stat().st_size
         except OSError:
@@ -144,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
             "provider": str(args.provider),
             "full_corpus": bool(args.full_corpus),
             "max_samples": args.max_samples,
-            "input": {"index_size_bytes": archive_size_bytes, **_source_input_summary(archive_path)},
+            "input": {"index_size_bytes": archive_size_bytes, **_source_input_summary(archive_location)},
             "generation": generation.phase_receipt,
             "progress_events": progress_events,
             "process_final": _process_resources(),

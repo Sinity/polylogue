@@ -47,7 +47,6 @@ from .base import (
     ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
-    fill_linear_parent_chain,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
     parser_admission,
@@ -178,11 +177,6 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
 
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     messages = mark_last_occurrence_as_active_leaf(messages)
-    # bd polylogue-ksgg: Grok exports carry no native conversation/message id
-    # or parent evidence at all (see module docstring) -- a plain ordered
-    # response list. Chain each message to the previous one so this origin
-    # doesn't need a bespoke position-order fallback either.
-    messages = fill_linear_parent_chain(messages)
     updated_at = messages[-1].timestamp if messages and messages[-1].timestamp else created_at
 
     return ParsedSession(

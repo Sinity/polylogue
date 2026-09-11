@@ -28,6 +28,7 @@ from polylogue.schemas.generation.models import (
 )
 from polylogue.schemas.generation.observation_journal import ObservationJournal, RecordStreamDecodeError
 from polylogue.schemas.observation import SchemaUnit, profile_cluster_id
+from polylogue.storage.archive_identity import ArchiveLocation
 
 
 def _collect_cluster_accumulators(
@@ -39,6 +40,7 @@ def _collect_cluster_accumulators(
     journal: ObservationJournal | None = None,
     progress_callback: Callable[[JSONDocument], None] | None = None,
     allow_session_dir_fallback: bool = False,
+    archive_location: ArchiveLocation | None = None,
 ) -> tuple[dict[str, _ClusterAccumulator], Sequence[_UnitMembership], int, dict[str, int]]:
     result = collect_cluster_analysis(
         provider,
@@ -47,6 +49,7 @@ def _collect_cluster_accumulators(
         full_corpus=full_corpus,
         journal=journal,
         allow_session_dir_fallback=allow_session_dir_fallback,
+        archive_location=archive_location,
         progress_callback=progress_callback,
     )
     return result.clusters, result.memberships, result.sample_count, result.artifact_counts
@@ -61,6 +64,7 @@ def collect_cluster_analysis(
     journal: ObservationJournal | None = None,
     progress_callback: Callable[[JSONDocument], None] | None = None,
     allow_session_dir_fallback: bool = False,
+    archive_location: ArchiveLocation | None = None,
 ) -> ClusterCollectionResult:
     from polylogue.schemas.sampling import iter_schema_units
 
@@ -110,6 +114,7 @@ def collect_cluster_analysis(
         full_corpus=full_corpus,
         terminal_recorder=journal.record_terminal if journal is not None else None,
         allow_session_dir_fallback=allow_session_dir_fallback,
+        archive_location=archive_location,
     )
     if journal is None:
         retained_units = list(observed_units)

@@ -136,6 +136,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         result = generate_provider_schema(
             request.provider,
             db_path=request.db_path,
+            archive_location=request.archive_location,
             max_samples=request.max_samples,
             privacy_config=_privacy_config(request.privacy_config),
             full_corpus=request.full_corpus,
@@ -160,7 +161,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         manifest = source_bundle.manifest
         if manifest is None:
             raise AssertionError("source schema generation did not produce a cluster manifest")
-        manifest_path = registry.save_cluster_manifest(manifest)
+        manifest_path = registry.save_cluster_manifest(manifest) if request.persist_cluster_manifest else None
         corpus_specs, corpus_scenarios = _build_inferred_outputs(
             provider=request.provider,
             package_version=package_version,
@@ -194,6 +195,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
     samples = load_samples_from_db(
         config.db_source_name,
         db_path=request.db_path,
+        archive_location=request.archive_location,
         max_samples=request.max_samples or request.cluster_sample_limit,
     )
     if not samples:
@@ -210,7 +212,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         )
 
     manifest = registry.cluster_samples(request.provider, samples)
-    manifest_path = registry.save_cluster_manifest(manifest)
+    manifest_path = registry.save_cluster_manifest(manifest) if request.persist_cluster_manifest else None
     corpus_specs, corpus_scenarios = _build_inferred_outputs(
         provider=request.provider,
         package_version=package_version,

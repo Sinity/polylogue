@@ -19,6 +19,8 @@ from polylogue.archive.filter.filters import SessionFilter
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from tests.infra.storage_records import db_setup
 
@@ -29,6 +31,7 @@ def _write_codex_session(db_path: Path, *, native_id: str, title: str) -> None:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
         session = ParsedSession(
             source_name=Provider.CODEX,
             provider_session_id=native_id,

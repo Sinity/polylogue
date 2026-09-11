@@ -664,8 +664,16 @@ def iter_zip_entry_raw_data(
     context: ZipEntryReadContext,
 ) -> Iterable[RawSessionData]:
     """Yield raw records for one ZIP entry, splitting multi-session payloads."""
+    from polylogue.sources.origin_specs import path_declaration_refuses_session
+
     entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
-    if entry_provider_hint in GROUP_PROVIDERS:
+    # A ``raw-only`` member is evidence, not a session document: preserve its
+    # exact bytes rather than decoding it as a JSON payload to split. Export
+    # assets are arbitrary binary (polylogue-ximhz), so the split route's
+    # UTF-8 decode would fail the whole archive read, not just the member.
+    if entry_provider_hint in GROUP_PROVIDERS or path_declaration_refuses_session(
+        entry_provider_hint, context.entry.filename
+    ):
         yield _stream_preserved_zip_entry(zf, context, provider_hint=entry_provider_hint)
         return
 

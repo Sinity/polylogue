@@ -107,6 +107,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
             max_samples=request.max_samples,
             privacy_config=privacy_config_from_payload(request.privacy_config),
             full_corpus=request.full_corpus,
+            archive_location=request.archive_location,
         )
     generation = (
         generation_results[0]

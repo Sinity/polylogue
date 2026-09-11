@@ -86,6 +86,7 @@ _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
     "claude": "claude-ai",
     "anthropic": "claude-ai",
     "claude-code-todos": "claude-code",
+    "claude-code-history": "claude-code",
     "openai": "chatgpt",
     "google": "gemini",
     "google-gemini": "gemini",
@@ -97,6 +98,7 @@ _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
     "twitter-grok": "grok",
     "cursor": "codex",
     "codex-state": "codex",
+    "codex-memories": "codex",
 }
 
 

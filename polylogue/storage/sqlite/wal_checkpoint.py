@@ -82,6 +82,7 @@ def checkpoint_connection(conn: sqlite3.Connection, mode: str) -> tuple[int, int
 def checkpoint_wal(
     db: Path,
     *,
+    archive_root: Path | None = None,
     reason: str,
     escalation: CheckpointEscalation = "recurring",
     warn_bytes: int = WAL_WARN_BYTES,
@@ -116,7 +117,7 @@ def checkpoint_wal(
     busy = log = checkpointed = 0
     error: str | None = None
     try:
-        conn = open_daemon_connection(db, timeout=timeout_s)
+        conn = open_daemon_connection(db, timeout=timeout_s, archive_root=archive_root)
         try:
             for candidate in CHECKPOINT_ESCALATION_MODES[escalation]:
                 mode = candidate.lower()
@@ -174,6 +175,7 @@ def checkpoint_archive_wals(
         observations.append(
             checkpoint_wal(
                 db,
+                archive_root=archive_root,
                 reason=reason,
                 escalation=escalation,
                 warn_bytes=warn_bytes,

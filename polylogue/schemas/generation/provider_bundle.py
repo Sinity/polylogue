@@ -28,6 +28,7 @@ from polylogue.schemas.generation.support import GENSON_AVAILABLE
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig, resolve_provider_config
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.registry import ClusterManifest, SchemaCluster
+from polylogue.storage.archive_identity import ArchiveLocation
 
 
 def _journal_storage_bytes(journal: ObservationJournal) -> dict[str, int]:
@@ -73,6 +74,7 @@ def _build_provider_bundle(
     privacy_config: SchemaPrivacyConfig | None,
     full_corpus: bool = False,
     progress_callback: GenerationProgressCallback | None = None,
+    archive_location: ArchiveLocation | None = None,
 ) -> _ProviderBundle:
     """Generate all inferred schema versions plus the default result for a provider."""
     provider_token = Provider.from_string(provider)
@@ -147,6 +149,7 @@ def _build_provider_bundle(
                 journal=journal,
                 progress_callback=observe_progress,
                 allow_session_dir_fallback=allow_session_dir_fallback,
+                archive_location=archive_location,
             )
             complete_phase(
                 "observe_and_cluster",

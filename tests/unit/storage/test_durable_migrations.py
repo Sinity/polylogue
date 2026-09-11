@@ -2601,6 +2601,9 @@ def test_source_tier_v39_migration_040_preserves_raw_acquisition_rows(
             backup_manifest=manifest,
             target_version=SOURCE_SCHEMA_VERSION - 1,
         )
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_legacy_append_resynthesis_receipts'"
+        ).fetchone() == (1,)
         blob_hash, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(b"v40 fixture")
         conn.executescript(
             f"""

@@ -80,6 +80,12 @@ _REPLAY_ROUTING_FINGERPRINT_PATHS: tuple[str, ...] = ("polylogue/sources/revisio
 # Logging is deliberately available to parser code for diagnostics, but its
 # implementation and configuration do not affect normalized parser output.
 _PARSER_DIAGNOSTIC_FINGERPRINT_PATHS: frozenset[str] = frozenset({"polylogue/logging.py"})
+# ``version.py`` imports this file only in an installed/package-shaped tree.
+# Hatch and Nix generate it with build-specific values, so it is provenance,
+# not parser/lowering/materializer/replay computation.  Keep ``version.py`` in
+# the closure: its implementation remains a semantic dependency when it is
+# used by one of those routes.
+_GENERATED_PROVENANCE_FINGERPRINT_PATHS: frozenset[str] = frozenset({"polylogue/_build_info.py"})
 
 
 class _ProjectionFingerprintStripper(ast.NodeTransformer):
@@ -160,6 +166,54 @@ class _DocstringStripper(ast.NodeTransformer):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
         node = cast(ast.AsyncFunctionDef, self.generic_visit(node))
         node.body = _without_leading_docstring(node.body)
+        return node
+
+
+class _SchemaDdlFingerprintStripper(ast.NodeTransformer):
+    """Normalize SQL source literals before hashing the transitive closure.
+
+    Schema DDL is spread across the archive-tier declaration and its imported
+    FTS/runtime-index fragments. Their SQL literals contain maintenance
+    comments and formatting, which are already absent from the SQLite
+    semantic manifest. Keep the source closure honest for real SQL changes
+    while making those representational edits agree with the manifest used by
+    derived identity.
+
+    The ``*_DDL`` convention covers archive declarations and trigger lists.
+    These explicit SQL names are DDL fragments too, even though their names
+    also support non-DDL query constants in the same modules.
+    """
+
+    _in_ddl = False
+    _DDL_SQL_NAMES = frozenset(
+        {
+            "FTS_MESSAGES_TABLE_SQL",
+            "FTS_MESSAGES_IDENTITY_TABLE_SQL",
+            "_FTS_BULK_GUARD_NOT_SET",
+            "_TRIGRAM_BULK_GUARD_NOT_SET",
+            "_RUNTIME_INDEX_SQL",
+            "_DEFERRED_SECONDARY_INDEX_SQL",
+        }
+    )
+
+    def visit_Assign(self, node: ast.Assign) -> ast.Assign:
+        if any(
+            isinstance(target, ast.Name) and (target.id.endswith("_DDL") or target.id in self._DDL_SQL_NAMES)
+            for target in node.targets
+        ):
+            previous = self._in_ddl
+            self._in_ddl = True
+            try:
+                return cast(ast.Assign, self.generic_visit(node))
+            finally:
+                self._in_ddl = previous
+        return cast(ast.Assign, self.generic_visit(node))
+
+    def visit_Constant(self, node: ast.Constant) -> ast.Constant:
+        if self._in_ddl and isinstance(node.value, str):
+            from polylogue.storage.sqlite.archive_tiers.schema_identity import _normalize_schema_sql
+
+            return ast.copy_location(ast.Constant(_normalize_schema_sql(node.value)), node)
         return node
 
 
@@ -263,7 +317,7 @@ def _semantic_source_closure(root: Path, paths: tuple[str, ...], excluded_labels
 
 
 def _semantic_source_paths(
-    paths: tuple[str, ...], *, excluded_labels: frozenset[str] = frozenset()
+    paths: tuple[str, ...], *, excluded_labels: frozenset[str] = _GENERATED_PROVENANCE_FINGERPRINT_PATHS
 ) -> tuple[Path, ...]:
     """Return the parser-semantic import closure of ``paths``.
 
@@ -281,7 +335,7 @@ def _semantic_source_paths(
 
 
 #: Bump when the normalization below changes; it is part of the disk memo key.
-_FINGERPRINT_ALGORITHM_VERSION = 2
+_FINGERPRINT_ALGORITHM_VERSION = 4
 
 
 def _fingerprint_memo_path(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> Path | None:
@@ -338,6 +392,7 @@ def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], n
             and _fingerprint_path_label(Path(path_string)) == "polylogue/sources/origin_specs.py"
         ):
             normalized = _ProjectionFingerprintStripper().visit(normalized)
+        normalized = _SchemaDdlFingerprintStripper().visit(normalized)
         fragments.append(
             {
                 "path": _fingerprint_path_label(Path(path_string)),
@@ -351,7 +406,10 @@ def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], n
 def _fingerprint_sources(
     paths: tuple[str, ...], *, namespace: str, excluded_labels: frozenset[str] = frozenset()
 ) -> str:
-    source_paths = _semantic_source_paths(paths, excluded_labels=excluded_labels)
+    source_paths = _semantic_source_paths(
+        paths,
+        excluded_labels=excluded_labels | _GENERATED_PROVENANCE_FINGERPRINT_PATHS,
+    )
     signatures = tuple(_source_signature(path) for path in source_paths)
     return _fingerprint_sources_cached(signatures, namespace)
 
@@ -956,7 +1014,10 @@ def derived_identity_source_closure() -> tuple[Path, ...]:
     just as surely as a new column. Membership follows the import graph, not
     directory boundaries, which is why callers must ask rather than assume.
     """
-    return _semantic_source_paths(_DERIVED_IDENTITY_ENTRY_PATHS)
+    return _semantic_source_paths(
+        _DERIVED_IDENTITY_ENTRY_PATHS,
+        excluded_labels=_GENERATED_PROVENANCE_FINGERPRINT_PATHS,
+    )
 
 
 def in_derived_identity_closure(path: Path | str) -> bool:
@@ -1406,6 +1467,73 @@ def _claude_code_spec() -> OriginSpec:
                 ),
                 path_suffixes=(".json",),
             ),
+            OriginArtifactRule(
+                kind="agent_memory_document",
+                # ``~/.claude/projects/<project>/memory/**.md`` is Claude
+                # Code's own memory directory: the harness writes and
+                # rewrites these documents itself, independently of whether
+                # any session quoted one. Scoped to the ``memory/`` segment
+                # of a project directory so the rest of a project tree, and
+                # every Markdown file elsewhere under the watched root, stays
+                # outside the declaration (polylogue-rovf5).
+                path_pattern=r"(?:^|/)projects/[^/]+/memory/(?:[^/]+/)*[^/]+\.md$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="agent_memory_document",
+                fidelity_note=(
+                    "Memory documents are retained verbatim as source bytes and never parsed into a "
+                    "session or promoted to a user assertion: the harness authored them, so their "
+                    "authoredness is the harness and their session ownership stays unknown. The "
+                    "project directory in the path is the scope, so the same basename under two "
+                    "projects or two installs is two distinct retained objects. Content change is an "
+                    "ordinary newer observation of the same coordinate; disappearance retires nothing."
+                ),
+                path_suffixes=(".md",),
+                # Path-scoped: ``.md`` must not become an admitted suffix for
+                # the whole ``projects/`` root, only for ``memory/`` inside it.
+                watch_suffixes=(),
+            ),
+            OriginArtifactRule(
+                kind="session_index",
+                # ``projects/<project>/sessions-index.json`` is the assembly
+                # input that resolves a Claude Code session's curated title
+                # and branch. Declaring it makes the acquired bytes the
+                # archive's own evidence, so a reindex resolves the same
+                # title with the original tree gone (polylogue-ximhz, D3).
+                path_pattern=r"(?:^|/)projects/[^/]+/sessions-index\.json$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="session_index",
+                fidelity_note=(
+                    "Claude Code rewrites this index whole on every update, so each observation is a "
+                    "competing snapshot rather than a continuation; the newest retained observation of "
+                    "the same project directory is the current value and older ones stay archived. "
+                    "Consumed by sources/retained_assembly.py, never parsed as a session."
+                ),
+                path_suffixes=(".json",),
+                # ``.json`` is already an admitted Claude Code suffix; this
+                # rule states a location, not a new suffix family.
+                watch_suffixes=(),
+            ),
+            OriginArtifactRule(
+                kind="prompt_history_log",
+                # ``~/.claude/history.jsonl`` is global to one Claude Code
+                # install and sits two levels above the project directories,
+                # outside the sessions root. Its rows carry the paste
+                # evidence no transcript records.
+                path_pattern=r"(?:^|/)history\.jsonl$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="prompt_history_log",
+                fidelity_note=(
+                    "Prompt-history rows are retained verbatim and joined to a session by their own "
+                    "sessionId plus a bounded timestamp window (assembly_claude_code.py); an ambiguous "
+                    "row is dropped rather than fanned across candidates. The install directory is the "
+                    "scope, so two installs never share one history."
+                ),
+                path_suffixes=(".jsonl",),
+                watch_suffixes=(),
+            ),
         ),
         assembly_spec_path="polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec",
         display_description="Claude Code local sessions (lab: Anthropic)",
@@ -1466,6 +1594,21 @@ def artifact_rule_for_path(provider: Provider, source_path: str) -> OriginArtifa
             if rule.matches(source_path):
                 return rule
     return None
+
+
+def path_declaration_refuses_session(provider: Provider, source_path: str | Path) -> bool:
+    """Whether the owning artifact rule refuses session parsing outright.
+
+    ``parse_policy="raw-only"`` states that a family's bytes are evidence and
+    never a conversation, and that content shape cannot decide it: a
+    tool-result sidecar can reproduce a genuine export byte-for-byte
+    (polylogue-omsw) and a prompt-history log carries the same ``sessionId``
+    keys a transcript does (polylogue-ximhz). For those families the path rule
+    is terminal. ``fact`` and ``session`` rules keep the ordinary behaviour
+    where positive decoded session evidence may outrank a location.
+    """
+    rule = artifact_rule_for_path(provider, str(source_path))
+    return rule is not None and rule.parse_policy == "raw-only"
 
 
 def artifact_suffixes_for_provider(
@@ -1556,6 +1699,53 @@ def _chatgpt_spec() -> OriginSpec:
         stream_parser_path=None,
         assembly_paths=("polylogue/sources/dispatch.py:_lower_payload_specs",),
         assembly_spec_path="polylogue/sources/assembly_chatgpt.py:ChatGPTAssemblySpec",
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="export_asset_index",
+                # The two cross-conversation lookup tables a GDPR/Takeout
+                # export ships beside its conversation shards. Declaring them
+                # makes the acquired bytes the archive's own evidence for the
+                # attachment join instead of a live sibling-file read
+                # (polylogue-ximhz, D3).
+                path_pattern=r"(?:^|[/:])(?:library_files|conversation_asset_file_names)\.json$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="export_asset_index",
+                fidelity_note=(
+                    "Asset-name and library tables are retained verbatim and rebuilt into "
+                    "ChatGPTAssetIndex from the acquired bytes. They are scoped to their own export: "
+                    "the same asset id in two exports names two objects and never cross-binds."
+                ),
+                path_suffixes=(".json",),
+                watch_suffixes=(),
+            ),
+            OriginArtifactRule(
+                kind="export_asset",
+                # An export member whose basename carries a provider file id.
+                # One vintage names them ``file-<id>.dat``, another ships the
+                # real extension or none at all, in per-conversation
+                # subdirectories -- the id in the name is the identity, never
+                # the suffix (assembly_chatgpt.py's ``_member_asset_id``).
+                path_pattern=r"(?:^|[/:])file[-_][A-Za-z0-9]+[^/]*$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="export_asset",
+                fidelity_note=(
+                    "Asset bytes are retained once, content-addressed, under the member coordinate of "
+                    "the export they came from. The attachment join resolves a provider file id to "
+                    "those retained bytes, so a reindex reproduces the attachment identity and payload "
+                    "with the original export gone."
+                ),
+                # The measured vintages: a ``file-<id>.dat`` family, members
+                # under their real extension, and members under none. The id
+                # in the name is the claim, never the suffix, so this list
+                # documents what was observed rather than gating admission.
+                path_suffixes=(".dat", ".png", ".jpg", ".jpeg", ".webp", ".wav", ".pdf", ".json", ""),
+                # Path-scoped by id-bearing member name: no suffix family may
+                # be projected onto a whole watched root from this rule.
+                watch_suffixes=(),
+            ),
+        ),
         fixture_paths=("tests/unit/sources/test_parsers_chatgpt.py", "tests/data/golden/chatgpt-simple.md"),
         coverage_refs=("provider-package:chatgpt-export/takeout-json@v1",),
         fidelity_notes=(
@@ -1690,7 +1880,7 @@ def _codex_spec() -> OriginSpec:
         provider=Provider.CODEX,
         tightness=50,
         discovery="Codex session JSONL admission plus live Codex SQLite state.",
-        acquisition_modes=("session-jsonl", "thread-state-db", "goals-db", "memories-db"),
+        acquisition_modes=("session-jsonl", "thread-state-db", "goals-db", "memories-db", "memory-documents"),
         parser_paths=(
             "polylogue/sources/parsers/codex.py",
             "polylogue/sources/parsers/codex_state.py",
@@ -1702,6 +1892,30 @@ def _codex_spec() -> OriginSpec:
         ),
         stream_parser_path="polylogue/sources/parsers/codex.py:parse_codex_stream",
         assembly_spec_path="polylogue/sources/assembly_codex.py:CodexAssemblySpec",
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="agent_memory_document",
+                # ``~/.codex/memories/**.md``. Codex keeps its memory
+                # documents in a directory beside ``sessions/``, so the
+                # ``memories/`` segment is the declaration; ``vendor_imports``,
+                # ``skills`` and every other Markdown family under a Codex
+                # install stays outside it (polylogue-rovf5).
+                path_pattern=r"(?:^|/)memories/(?:[^/]+/)*[^/]+\.md$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="agent_memory_document",
+                fidelity_note=(
+                    "Codex memory documents are retained verbatim as source bytes and never parsed "
+                    "into a session or promoted to a user assertion. ``memories_1.sqlite`` is Codex's "
+                    "own derived memory state and remains a separate declared database member; these "
+                    "Markdown documents are the harness-authored text itself. The install root is the "
+                    "scope, so one basename under two installs is two retained objects."
+                ),
+                path_suffixes=(".md",),
+                # Path-scoped: the Codex roots must not admit ``.md`` globally.
+                watch_suffixes=(),
+            ),
+        ),
         display_description="Codex CLI local sessions (lab: OpenAI)",
         # polylogue-0jf4 acceptance criterion 1: classify each of the five
         # live ~/.codex SQLite databases. This declaration mirrors
@@ -3050,6 +3264,7 @@ __all__ = [
     "public_origin_meanings",
     "public_origin_tokens",
     "artifact_rule_for_path",
+    "path_declaration_refuses_session",
     "artifact_suffixes_for_provider",
     "recognize_source_class",
     "schema_observed_leaf_values",
