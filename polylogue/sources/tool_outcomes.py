@@ -84,7 +84,9 @@ def derive_tool_outcomes(
         blocks: list[ParsedContentBlock] = []
         for block in message.blocks:
             if block.type is BlockType.TOOL_RESULT:
-                unknown_reason = block.outcome_unknown_reason
+                unknown_reason = (
+                    None if _sidecar_resolves_not_reported(block, sidecar) else block.outcome_unknown_reason
+                )
                 _require_declared_reason(unknown_reason, origin=origin, tool_id=block.tool_id)
                 resolved_candidates = _result_candidates(
                     block, sidecar, sidecar_exit_codes, unknown_reason=unknown_reason
@@ -169,6 +171,26 @@ def _result_candidates(
     ):
         candidates.append(ToolOutcome.UNKNOWN)
     return candidates
+
+
+def _sidecar_resolves_not_reported(block: ParsedContentBlock, sidecar: dict[str, ToolOutcome]) -> bool:
+    """Return whether matching Claude evidence supersedes an absent inline verdict.
+
+    ``content[].tool_result`` is lowered before Claude Code's record-level
+    ``toolUseResult`` sidecar is appended as a session event. That ordering
+    legitimately leaves a parser-derived ``NOT_REPORTED`` reason on a block
+    whose same-call sidecar later proves a known outcome. Only that narrow
+    shape is stale: explicit block verdicts and stronger unknown reasons stay
+    authoritative and are handled by the existing conflict checks.
+    """
+    return (
+        block.tool_id is not None
+        and block.tool_id in sidecar
+        and block.tool_outcome is None
+        and block.is_error is None
+        and block.exit_code is None
+        and block.outcome_unknown_reason == ToolResultUnknownReason.NOT_REPORTED.value
+    )
 
 
 def _require_declared_reason(reason: str | None, *, origin: Origin, tool_id: str | None) -> None:
