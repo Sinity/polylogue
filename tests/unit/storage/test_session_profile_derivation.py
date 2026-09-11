@@ -345,6 +345,80 @@ def test_prepared_partition_refuses_a_value_binding_that_moved_before_publish(
         ] == [0, 0, 0, 0]
 
 
+@pytest.mark.parametrize("input_kind", ("attachment", "session_event"))
+def test_prepared_partition_refuses_related_input_that_moved_before_publish(
+    archive: tuple[Path, str],
+    input_kind: str,
+) -> None:
+    """Every related value consumed by hydration binds a prepared replacement.
+
+    Anti-vacuity: remove either related projection from ``session_input_bindings``
+    and this accepts the stale prepared family although the session runtime has
+    changed. ``root_session_id`` is already a session-row binding; no unconsumed
+    ``session_links`` relation is smuggled into this contract.
+    """
+    from polylogue.daemon.derivation import DerivationFrame
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+
+    index_db, session_id = archive
+    with write_lease("test.seed-related"), closing(_write_connection(index_db)) as conn:
+        message_id = str(
+            conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1",
+                (session_id,),
+            ).fetchone()[0]
+        )
+        if input_kind == "attachment":
+            conn.execute(
+                "INSERT INTO attachments (attachment_id, display_name, media_type, byte_count) VALUES (?, ?, ?, ?)",
+                ("related-input", "before.txt", "text/plain", 5),
+            )
+            conn.execute(
+                """
+                INSERT INTO attachment_refs
+                    (attachment_id, session_id, message_id, position, source_url, caption)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ("related-input", session_id, message_id, 0, "file://before", "before"),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO session_events
+                    (session_id, source_message_id, position, event_type, summary, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, message_id, 0, "compaction", "before", '{"state":"before"}'),
+            )
+        conn.commit()
+
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+    )
+    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
+    prepared = adapter.compute(frame, session_id)
+
+    with write_lease("test.mutate-related"), closing(_write_connection(index_db)) as conn:
+        if input_kind == "attachment":
+            conn.execute("UPDATE attachment_refs SET caption = ? WHERE attachment_id = ?", ("after", "related-input"))
+        else:
+            conn.execute(
+                "UPDATE session_events SET payload_json = ? WHERE session_id = ? AND position = 0",
+                ('{"state":"after"}', session_id),
+            )
+        conn.commit()
+
+    assert adapter.publish(frame, prepared) is False
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        assert [
+            conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0]
+            for table in ("session_profiles", "session_work_events", "session_phases", "session_latency_profiles")
+        ] == [0, 0, 0, 0]
+
+
 def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path, str]) -> None:
     """Policy deferral leaves the profile absent and the key rediscoverable."""
     from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, Outcome, PendingReason, converge

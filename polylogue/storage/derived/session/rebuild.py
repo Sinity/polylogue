@@ -12,7 +12,7 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiosqlite
@@ -844,6 +844,35 @@ def _marker_candidates_for_session(
             candidates.extend(scan_block(str(message.id), block_id, text))
             seen_block_ids.add(block_id)
     return tuple(candidates)
+
+
+def marker_candidates_for_session_sync(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> tuple[MarkerCandidate, ...]:
+    """Read exactly the marker text evidence for one session.
+
+    Marker publication is a user-tier projection, so restart inspection must
+    rediscover its deterministic candidates without trusting an ingest hint or
+    an index-side success receipt.
+    """
+    rows = conn.execute(
+        """
+        SELECT message_id, block_id, text
+        FROM blocks
+        WHERE session_id = ? AND text IS NOT NULL
+        ORDER BY message_id, position
+        """,
+        (session_id,),
+    )
+    from polylogue.markers import scan_block
+
+    return tuple(
+        candidate
+        for message_id, block_id, text in rows
+        if isinstance(text, str) and text
+        for candidate in scan_block(str(message_id), str(block_id), text)
+    )
 
 
 def build_session_insight_records(
@@ -1686,6 +1715,10 @@ def prepare_session_insight_partition(
             marker_blocks_by_session=batch.marker_blocks_by_session,
             input_content_hash_by_session={session_id: input_binding},
         )[0]
+    # Marker inspection and publication must see the identical complete text
+    # evidence.  In particular, a heavy session cannot silently omit a
+    # marker-looking non-text block that restart inspection would demand.
+    bundle = replace(bundle, marker_candidates=marker_candidates_for_session_sync(conn, session_id))
     return PreparedSessionInsightPartition(session_id, input_binding, compute_binding, bundle)
 
 

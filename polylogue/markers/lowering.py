@@ -27,19 +27,49 @@ def candidates_for_block(
     return tuple(result)
 
 
+def assertion_id_for_marker(candidate: MarkerCandidate) -> str | None:
+    """Return the stable assertion identity for one lowerable marker."""
+    if candidate.assertion_kind is None:
+        return None
+    match = candidate.match
+    digest = hashlib.sha256("\x1f".join((match.kind, match.raw_text, *candidate.evidence_refs)).encode()).hexdigest()[
+        :32
+    ]
+    return f"marker-{digest}"
+
+
 def lower_markers(
     conn: sqlite3.Connection, candidates: Iterable[MarkerCandidate], *, now_ms: int | None = None
 ) -> tuple[str, ...]:
-    """Persist candidates as private, agent-authority assertions."""
+    """Persist candidates as private, agent-authority assertions.
+
+    A marker's deterministic id makes replay idempotent, but it is not a
+    license to replace a human's assertion or judgment at that id.  Existing
+    non-agent rows and every terminal agent judgment are therefore preserved.
+    """
     ids: list[str] = []
     for candidate in candidates:
-        if candidate.assertion_kind is None:
+        assertion_id = assertion_id_for_marker(candidate)
+        if assertion_id is None:
+            continue
+        existing = conn.execute(
+            "SELECT author_kind, status FROM assertions WHERE assertion_id = ?",
+            (assertion_id,),
+        ).fetchone()
+        if existing is not None and (
+            str(existing[0]) != "agent"
+            or str(existing[1])
+            in {
+                AssertionStatus.ACCEPTED.value,
+                AssertionStatus.REJECTED.value,
+                AssertionStatus.DEFERRED.value,
+                AssertionStatus.SUPERSEDED.value,
+                AssertionStatus.DELETED.value,
+            }
+        ):
+            ids.append(assertion_id)
             continue
         match = candidate.match
-        digest = hashlib.sha256(
-            "\x1f".join((match.kind, match.raw_text, *candidate.evidence_refs)).encode()
-        ).hexdigest()[:32]
-        assertion_id = f"marker-{digest}"
         upsert_assertion(
             conn,
             assertion_id=assertion_id,
@@ -59,4 +89,4 @@ def lower_markers(
     return tuple(ids)
 
 
-__all__ = ["candidates_for_block", "lower_markers"]
+__all__ = ["assertion_id_for_marker", "candidates_for_block", "lower_markers"]

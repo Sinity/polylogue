@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from polylogue.daemon.derivation import (
     Budget,
@@ -38,16 +38,20 @@ from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 
+if TYPE_CHECKING:
+    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+
 
 class _DerivationAdmission:
     """Bridge one short publish from a compute worker to the daemon writer."""
 
-    def __init__(self, bridge: object, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, bridge: DaemonWriteThreadBridge, *, loop_thread_id: int) -> None:
         self._bridge = bridge
-        self._loop_thread_id = threading.get_ident() if loop.is_running() else None
+        self._loop_thread_id = loop_thread_id
 
     def __call__(self, domain: str, publish: Callable[[], bool]) -> bool:
-        if self._loop_thread_id is not None and threading.get_ident() == self._loop_thread_id:
+        if threading.get_ident() == self._loop_thread_id:
             raise RuntimeError("session derivation publish was invoked on the daemon event loop thread")
         # The bridge owns the coordinator until the transaction really returns;
         # a caller-side timeout must not admit a second archive writer.
@@ -63,8 +67,16 @@ class SessionProfileConvergenceOwner:
     short publication back to the daemon's coordinator.
     """
 
-    def __init__(self, converger: DaemonConverger) -> None:
+    def __init__(
+        self,
+        converger: DaemonConverger,
+        *,
+        compute_adapter: BoundedComputeAdapter,
+        write_bridge: DaemonWriteThreadBridge,
+    ) -> None:
         self._converger = converger
+        self._compute_adapter = compute_adapter
+        self._write_bridge = write_bridge
 
     async def converge(
         self,
@@ -74,25 +86,24 @@ class SessionProfileConvergenceOwner:
         deadline_s: float | None = None,
         resume: bool = True,
     ) -> DerivationReport:
-        from polylogue.daemon.execution import daemon_compute_adapter
-        from polylogue.daemon.write_coordinator import (
-            DaemonWriteThreadBridge,
-            daemon_write_coordinator,
-            daemon_write_lease_active,
-        )
+        from polylogue.daemon.write_coordinator import daemon_write_lease_active
 
         if daemon_write_lease_active():
             raise RuntimeError("session profile convergence must start after the daemon writer lease is released")
         loop = asyncio.get_running_loop()
-        admission = _DerivationAdmission(DaemonWriteThreadBridge(daemon_write_coordinator(), loop), loop)
-        submitted = daemon_compute_adapter().submit(
+        admission = _DerivationAdmission(self._write_bridge, loop_thread_id=threading.get_ident())
+        # A targeted ingest scope is not a continuation of archive keyset
+        # paging: reusing the archive cursor could skip an earlier changed id.
+        # Only no-hint archive sweeps retain their own cursor across passes.
+        pass_resume = resume if frame.scope is None else False
+        submitted = self._compute_adapter.submit(
             partial(
                 self._converger.converge_derivations,
                 frame,
                 budget=budget,
                 deadline_s=deadline_s,
                 domains=("session_profile",),
-                resume=resume,
+                resume=pass_resume,
                 publisher=admission,
             ),
             admission_class="incremental-background",
@@ -116,13 +127,22 @@ def make_session_profile_derivation(
     from polylogue.storage.derived.session.derivation import SessionProfileDerivation
     from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 
-    resolved_index = index_db_path.resolve()
-
     def read_connection() -> sqlite3.Connection:
-        return open_readonly_connection(resolved_index, timeout_class="background-read")
+        return open_readonly_connection(index_db_path.resolve(), timeout_class="background-read")
 
     def write_connection() -> sqlite3.Connection:
-        return open_daemon_connection(resolved_index, archive_root=archive_root)
+        return open_daemon_connection(index_db_path.resolve(), archive_root=archive_root)
+
+    def generation_binding() -> str:
+        return str(index_db_path.resolve())
+
+    user_db = archive_root / "user.db"
+
+    def marker_read_connection() -> sqlite3.Connection:
+        return open_readonly_connection(user_db, timeout_class="background-read")
+
+    def marker_write_connection() -> sqlite3.Connection:
+        return open_daemon_connection(user_db, archive_root=archive_root)
 
     def scope(frame: object) -> Sequence[str] | None:
         value = getattr(frame, "scope", None)
@@ -139,6 +159,9 @@ def make_session_profile_derivation(
             write_connection,
             materializer_version=materializer_version,
             session_scope=scope,
+            marker_read_connection=marker_read_connection if user_db.exists() else None,
+            marker_write_connection=marker_write_connection if user_db.exists() else None,
+            generation_binding=generation_binding,
         ),
     )
 
