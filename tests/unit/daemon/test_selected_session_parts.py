@@ -122,7 +122,7 @@ async def test_selected_required_part_certifies_nonzero_work_event_and_phase_cou
     zero sibling counts and accepted maintenance cannot certify its full
     selected partition.
     """
-    archive = build_converged_archive(tmp_path / "archive", rich_convergence_sources())
+    archive = await asyncio.to_thread(build_converged_archive, tmp_path / "archive", rich_convergence_sources())
     rich_families = tuple(
         (session_id, facts)
         for session_id in archive.session_ids
