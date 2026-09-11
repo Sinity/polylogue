@@ -25,6 +25,11 @@ from polylogue.operations.audit import (
     token_sha256,
 )
 from polylogue.operations.bindings import OperationBinding
+from polylogue.operations.machine_receipts import (
+    InsightCertifiedCountsHistorical,
+    InsightPartHistoricalReceipt,
+    InsightTargetHistoricalReceipt,
+)
 from polylogue.operations.mutation_transaction import (
     AuditFinalizationError,
     AuthorizationMismatchError,
@@ -1780,6 +1785,75 @@ def test_typed_domain_receipt_replays_after_source_prepare_crash(
     with sqlite3.connect(tmp_path / "source.db") as source:
         command = source.execute("SELECT pending_payload_json FROM audit_continuity_control").fetchone()[0]
     assert command is None
+
+
+def test_closed_historical_receipt_replays_through_source_wal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A terminal machine fact survives the only crash window before audit commit.
+
+    Anti-vacuity: removing ``historical_receipt`` from the continuity payload
+    makes the reconciled final event lack the receipt this accessor returns.
+    """
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "historical-receipt-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:historical-receipt",
+        archive_identity_digest="identity:historical-receipt",
+        parameter_digest="params:historical-receipt",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    started = executor.begin_bound(_binding(actuator), preview, authorization, object())
+    history = InsightPartHistoricalReceipt(
+        ordinal=0,
+        page_count=1,
+        manifest_digest="a" * 64,
+        index_generation="index-generation:fixture",
+        recipe_version="fixture-recipe",
+        targets=[
+            InsightTargetHistoricalReceipt(
+                target_ref="session:fixture",
+                disposition="published",
+                input_binding="input:fixture",
+                output_binding="output:fixture",
+                certified_counts=InsightCertifiedCountsHistorical(profiles=1, work_events=0, phases=0),
+                publication_known_committed=True,
+            )
+        ],
+    )
+    receipt = MutationReceipt(
+        operation=started.plan.operation,
+        plan_hash=started.plan.plan_hash,
+        status="applied",
+        target_refs=started.plan.target_refs,
+        affected_count=1,
+        detail=None,
+        receipt_ref=None,
+        applied_at="now",
+        historical_receipt=history,
+    )
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_finalize(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "finalize_attempt" and phase == "after_source_prepare":
+            raise RuntimeError("crash after historical receipt prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_finalize)
+    with pytest.raises(AuditFinalizationError, match="not reported completed"):
+        executor.finalize_bound(started, receipt=receipt)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        pending = str(source.execute("SELECT pending_payload_json FROM audit_continuity_control").fetchone()[0])
+    assert '"kind":"insight-part/v1"' in pending
+    assert '"domain_receipt"' not in pending
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+
+    AuditRepository.for_archive_root(tmp_path).reconcile_continuity()
+    replayed = AuditRepository.for_archive_root(tmp_path).historical_machine_receipt(str(started.operation_id))
+    assert replayed == history
 
 
 def test_recovery_disposition_replays_after_source_prepare_crash_at_daemon_startup(

@@ -17,6 +17,11 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
+from polylogue.operations.machine_receipts import (
+    MachineHistoricalReceipt,
+    decode_machine_receipt,
+    encode_machine_receipt,
+)
 from polylogue.operations.mutation_transaction import (
     AuthorizationMismatchError,
     MutationAuthorization,
@@ -130,13 +135,16 @@ def _run_state_for_targets(states: list[str]) -> tuple[str, str | None]:
 def _receipt_event_detail(receipt: MutationReceipt | None, *, status: str, reason: str | None) -> dict[str, object]:
     """Return bounded audit evidence without copying user-authored domain payloads."""
 
-    return {
+    detail: dict[str, object] = {
         "status": status,
         "reason": (reason or "")[:512],
         "receipt_ref": None if receipt is None else receipt.receipt_ref,
         "target_count": 0 if receipt is None else len(receipt.target_refs),
         "affected_count": 0 if receipt is None else receipt.affected_count,
     }
+    if receipt is not None and receipt.historical_receipt is not None:
+        detail["historical_receipt"] = encode_machine_receipt(receipt.historical_receipt)
+    return detail
 
 
 def token_sha256(token: str) -> str:
@@ -484,6 +492,9 @@ def _receipt_payload(receipt: MutationReceipt) -> dict[str, object]:
         "affected_count": receipt.affected_count,
         "receipt_ref": receipt.receipt_ref,
         "applied_at": receipt.applied_at,
+        "historical_receipt": (
+            None if receipt.historical_receipt is None else encode_machine_receipt(receipt.historical_receipt)
+        ),
         "operation_id": receipt.operation_id,
     }
 
@@ -499,7 +510,10 @@ def _receipt_from_payload(raw: object) -> MutationReceipt:
         detail=cast(str | None, value.get("detail")),
         receipt_ref=cast(str | None, value.get("receipt_ref")),
         applied_at=cast(str, value["applied_at"]),
-        domain_receipt=cast(dict[str, object], value.get("domain_receipt", {})),
+        domain_receipt={},
+        historical_receipt=(
+            None if value.get("historical_receipt") is None else decode_machine_receipt(value["historical_receipt"])
+        ),
         operation_id=cast(str | None, value.get("operation_id")),
     )
 
@@ -2930,6 +2944,39 @@ class AuditRepository:
                 "SELECT * FROM operation_events WHERE operation_id = ? ORDER BY sequence", (operation_id,)
             ).fetchall()
             return tuple(dict(row) for row in rows)
+
+    def historical_machine_receipt(self, operation_id: str) -> MachineHistoricalReceipt | None:
+        """Return a closed terminal receipt from audit history, never live tiers.
+
+        An absent receipt is meaningful for legacy or interrupted operations.
+        A malformed purported receipt is an audit integrity failure, not a
+        reason to reconstruct a result from source or index state.
+        """
+
+        with self._connection() as conn:
+            run = conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone()
+            if run is None or str(run[0]) != "completed":
+                return None
+            event = conn.execute(
+                """
+                SELECT detail_json FROM operation_events
+                WHERE operation_id = ? AND event_type = 'attempt_finalized' AND to_state = 'completed'
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (operation_id,),
+            ).fetchone()
+        if event is None:
+            return None
+        try:
+            detail = json.loads(str(event[0]))
+        except json.JSONDecodeError as exc:
+            raise ValueError("terminal audit event detail is malformed") from exc
+        if not isinstance(detail, dict):
+            raise ValueError("terminal audit event detail is not an object")
+        raw = detail.get("historical_receipt")
+        if raw is None:
+            return None
+        return decode_machine_receipt(raw)
 
     @staticmethod
     def _append_event(

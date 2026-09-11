@@ -349,7 +349,7 @@ def test_sealed_authority_can_start_only_through_its_reserved_machine_part(tmp_p
         targets,
     )
     digest = insight_manifest_digest((provisional,))
-    plan = _page(ordinal=0, count=1, digest=digest, previous_preview_ref=None, targets=targets)
+    plan = _page(scope_kind="explicit", ordinal=0, count=1, digest=digest, previous_preview_ref=None, targets=targets)
     binding = runtime_operation_binding(InsightsRebuildActuator())
     machine = MachineRequestBinding(
         "a" * 64, "request:sealed-start", principal.actor_ref, "f" * 64, "maintenance.insights.rebuild"

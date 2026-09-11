@@ -48,6 +48,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, runtime_checkable
 
+from polylogue.operations.machine_receipts import MachineHistoricalReceipt, encode_machine_receipt
+
 if TYPE_CHECKING:
     from polylogue.operations.audit import AuditRepository
     from polylogue.operations.bindings import OperationBinding
@@ -548,6 +550,9 @@ class MutationReceipt:
     receipt_ref: str | None
     applied_at: str
     domain_receipt: Mapping[str, object] = field(default_factory=dict)
+    # Generic domain data never becomes audit history.  This closed field is
+    # the opt-in checkpoint for machine operations only.
+    historical_receipt: MachineHistoricalReceipt | None = None
     operation_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -561,6 +566,9 @@ class MutationReceipt:
             "receipt_ref": self.receipt_ref,
             "applied_at": self.applied_at,
             "domain_receipt": dict(self.domain_receipt),
+            "historical_receipt": (
+                None if self.historical_receipt is None else encode_machine_receipt(self.historical_receipt)
+            ),
             "operation_id": self.operation_id,
         }
 

@@ -17,6 +17,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from polylogue.core.enums import OperationStatus
+from polylogue.operations.machine_receipts import IngestHistoricalReceipt
 
 DAEMON_OPERATION_PROTOCOL = "polylogue.daemon-operation/v1"
 MAX_OPERATION_BODY_BYTES = 64 * 1024
@@ -84,6 +85,16 @@ class IngestRequest(_OperationPayload):
     path: str = Field(min_length=1)
     source_path: str | None = None
     idempotency_key: str | None = None
+
+
+class InsightRebuildRequest(_OperationPayload):
+    session_ids: list[str] | None = Field(default=None, max_length=10_000)
+
+    @model_validator(mode="after")
+    def nonempty_identifiers(self) -> InsightRebuildRequest:
+        if self.session_ids is not None and any(not value for value in self.session_ids):
+            raise ValueError("session identifiers must be nonempty")
+        return self
 
 
 class DeletePreviewRequest(_OperationPayload):
@@ -249,6 +260,25 @@ class IngestResult(_OperationResult):
     source_generation_id: str = Field(min_length=1)
     outcome: DaemonOperationOutcome
     sequence: int = Field(ge=0)
+    historical_receipt: IngestHistoricalReceipt
+
+    @model_validator(mode="after")
+    def binds_terminal_receipt(self) -> IngestResult:
+        if self.outcome is not DaemonOperationOutcome.COMPLETED:
+            raise ValueError("ingest terminal result must be completed")
+        if self.source_generation_id != self.historical_receipt.source_generation_id:
+            raise ValueError("ingest result and historical receipt disagree on source generation")
+        if self.sequence != self.historical_receipt.final_sequence:
+            raise ValueError("ingest result and historical receipt disagree on terminal sequence")
+        return self
+
+
+class InsightRebuildResult(_OperationPayload):
+    profiles: int = Field(ge=0)
+    work_events: int = Field(ge=0)
+    phases: int = Field(ge=0)
+    threads: int = Field(ge=0)
+    tag_rollups: int = Field(ge=0)
 
 
 class MutationResult(_OperationPayload):
@@ -273,6 +303,7 @@ class MutationResult(_OperationPayload):
     artifact_refs: list[str] | None = None
     result: dict[str, object] | None = None
     cancellation_requested: bool | None = None
+    accepted: bool | None = None
 
     @model_validator(mode="after")
     def exact_result_family(self) -> MutationResult:
@@ -303,10 +334,16 @@ class AcceptedOperationReference(_OperationPayload):
     artifact_kind: str = Field(min_length=1)
     artifact_ref: str = Field(min_length=1)
     accepted_at_ms: int = Field(ge=0)
-    part_count: int = Field(ge=1, le=40)
+    part_count: int = Field(ge=1, le=4096)
     stop_reason: str | None
     stopped_at_ms: int | None
     accepted_deadline_unix_ms: int | None
+
+    @model_validator(mode="after")
+    def operation_part_bound(self) -> AcceptedOperationReference:
+        if self.operation_name != "maintenance.insights.rebuild" and self.part_count > 40:
+            raise ValueError("operation exceeds its forty-part acceptance bound")
+        return self
 
     def to_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")
@@ -436,6 +473,23 @@ class DaemonOperationSpec:
 
 
 DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
+    DaemonOperationSpec(
+        "maintenance.insights.rebuild",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.rebuild_insights",
+        deadline_s=300.0,
+        progress=True,
+        accepted_reference=True,
+        request_contract="maintenance.insights.rebuild.request/v1",
+        result_contract="maintenance.insights.rebuild.result/v1",
+        request_type="InsightRebuildRequest",
+        result_type="InsightRebuildResult",
+        request_model=InsightRebuildRequest,
+        result_model=InsightRebuildResult,
+        idempotent=True,
+        handler="execute_insights_rebuild_operation",
+    ),
     DaemonOperationSpec(
         "operation.status",
         DaemonAuthority.CONTROL,

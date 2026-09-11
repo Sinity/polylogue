@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.operations.audit import AuditRepository, MachineRequestBinding
+from polylogue.operations.machine_receipts import encode_machine_receipt
 
 
 def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> dict[str, object]:
@@ -22,10 +23,13 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
     kind = str(record["artifact_kind"])
     state: dict[str, object] = {"reference": record, "sequence": 1, "outcome": "completed"}
     if kind == "source-generation":
-        # Acceptance binds retained input, not acquisition or parse completion.
-        # The source-domain receipt projection owns its eventual terminal state.
+        state["source_generation_id"] = record["artifact_ref"]
+    if kind == "source-generation" and not parts:
+        # Legacy manifest-only acceptance has no historical execution receipt.
         return {**state, "outcome": "accepted", "effect": "indeterminate"}
-    if kind not in {"operation", "execution-batch"}:
+    if kind == "insight-preview-pages":
+        return {**state, "outcome": "running", "effect": "no-effect", "accepted": False}
+    if kind not in {"operation", "execution-batch", "source-generation"}:
         refs = [part["artifact_ref"] for part in parts] or [record["artifact_ref"]]
         state["artifact_refs"] = refs
         if kind == "preview-batch":
@@ -64,7 +68,20 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
             else:
                 outcome = "failed"
         outcomes.append(outcome)
-        attempted.append({"ordinal": ordinal, "operation_id": operation_id, "outcome": outcome, "receipt": run})
+        historical = audit.historical_machine_receipt(str(operation_id)) if outcome == "completed" else None
+        # A completed run without the closed terminal event is legacy evidence,
+        # not permission to read live source/index state and invent one.
+        if outcome == "completed" and historical is None:
+            outcome = "indeterminate"
+            outcomes[-1] = outcome
+        attempted.append(
+            {
+                "ordinal": ordinal,
+                "operation_id": operation_id,
+                "outcome": outcome,
+                "receipt": None if historical is None else encode_machine_receipt(historical),
+            }
+        )
     if "indeterminate" in outcomes:
         outcome = "indeterminate"
     elif "running" in outcomes:
@@ -77,6 +94,11 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
         outcome = "accepted"
     else:
         outcome = "completed"
+    result: dict[str, object] | None = None
+    if kind == "source-generation" and len(attempted) == 1 and attempted[0]["outcome"] == "completed":
+        receipt = attempted[0]["receipt"]
+        if isinstance(receipt, dict) and receipt.get("kind") == "ingest/v1":
+            result = receipt
     return {
         **state,
         "sequence": sequence,
@@ -88,5 +110,6 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
         "affected_count": affected,
         "not_attempted": unattempted,
         "parts": attempted,
+        **({"result": result} if result is not None else {}),
         "stop_reason": record.get("stop_reason"),
     }
