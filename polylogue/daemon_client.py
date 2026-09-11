@@ -219,12 +219,15 @@ class DaemonClient:
         writes = spec.authority is not DaemonAuthority.READ
         # The server owns the execution deadline. Allow its bounded response
         # to arrive afterward without mutating a client shared by other calls.
+        deadline_ms = request.deadline_ms
+        if writes and deadline_ms is None:
+            raise DaemonOperationProtocolError("write operation request has no execution deadline")
         raw = self._request_json_response(
             "POST",
             "/api/operation",
             request.to_dict(),
             mutation=writes,
-            timeout_s=(int(request.deadline_ms) / 1000 + 1.0) if writes else None,
+            timeout_s=(deadline_ms / 1000 + 1.0) if writes and deadline_ms is not None else None,
         )
         if raw is None:
             return None

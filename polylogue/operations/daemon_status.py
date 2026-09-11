@@ -49,7 +49,7 @@ def produce_direct_status(
     from polylogue.readiness.claim_guard import derive_claim_guard
     from polylogue.storage.archive_readiness import archive_readiness_status_from_connections
 
-    index_conn = archive.index_connection
+    index_conn = _required_index_connection(archive)
     source_conn = _source_connection(archive)
     ops_conn = _attached_connection(index_conn, "ops_tier")
     archive_stats = archive.stats().to_dict()
@@ -218,7 +218,7 @@ def produce_operation_status(
             "state": "pinned",
             "observed_at_ms": now_ms,
             "fields": sorted(pinned_fields),
-            "schema_versions": dict(archive.operation_schema_versions),
+            "schema_versions": dict(archive.operation_schema_versions or {}),
         },
         "runtime": {
             "state": "separately_observed",
@@ -234,6 +234,15 @@ def _source_connection(archive: ArchiveStore) -> sqlite3.Connection | None:
     if "source" in archive.operation_degraded_components:
         return None
     return archive.source_connection
+
+
+def _required_index_connection(archive: ArchiveStore) -> sqlite3.Connection:
+    """Return the pinned index handle required by status projections."""
+
+    connection = archive.index_connection
+    if connection is None:
+        raise RuntimeError("status operation requires a pinned index-tier connection")
+    return connection
 
 
 def _attached_connection(conn: sqlite3.Connection, schema: str) -> sqlite3.Connection | None:
@@ -265,7 +274,8 @@ def _archive_tiers(archive: ArchiveStore, conn: sqlite3.Connection) -> dict[str,
     for tier in ArchiveTier:
         alias = "main" if tier is ArchiveTier.INDEX else f"{tier.value}_tier"
         exists = alias in aliases
-        version = archive.operation_schema_versions.get(tier.value) if exists else None
+        versions = archive.operation_schema_versions or {}
+        version = versions.get(tier.value) if exists else None
         expected = ARCHIVE_VERSION_BY_TIER[tier]
         table_counts = {
             table: int(conn.execute(f"SELECT COUNT(*) FROM {alias}.{table}").fetchone()[0] or 0)
@@ -423,7 +433,7 @@ def _components(
     component_from_archive_surface: Any,
     component_from_raw_materialization_readiness: Any,
     component_from_raw_frontier_integrity: Any,
-) -> dict[str, dict[str, object]]:
+) -> dict[str, Mapping[str, object]]:
     from polylogue.analysis.transforms import SESSION_DIGEST_TRANSFORM_VERSION, TRANSFORM_REGISTRY
     from polylogue.readiness.capability import (
         CapabilityReadinessState,
@@ -434,7 +444,7 @@ def _components(
     )
     from polylogue.storage.sqlite.archive_tiers.user_audit import audit_user_overlay_storage
 
-    components: dict[str, dict[str, object]] = {}
+    components: dict[str, Mapping[str, object]] = {}
     surfaces = archive_readiness.get("surfaces")
     if isinstance(surfaces, Mapping):
         for name, surface in surfaces.items():

@@ -17,7 +17,9 @@ from typing import TYPE_CHECKING, Literal, cast
 from polylogue.operations.authority import authority_for_reader
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.facets import FacetBuckets
     from polylogue.archive.query.search_contract import LaneFailure
+    from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.config import Config, PolylogueConfig
     from polylogue.core.protocols import VectorProvider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -202,7 +204,7 @@ def _query_payload(
 
 
 def _search_payload(
-    spec: object,
+    spec: SessionQuerySpec,
     *,
     archive: ArchiveStore,
     serving_identity: str,
@@ -215,7 +217,6 @@ def _search_payload(
     from polylogue.archive.query.archive_execution import archive_search_hits
     from polylogue.archive.query.search_contract import LaneFailure
     from polylogue.archive.query.search_hits import project_search_hits
-    from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.core.errors import EmbeddingRetrievalNotReadyError
     from polylogue.surfaces.cursor_identity import search_cursor_request_identity
     from polylogue.surfaces.payloads import (
@@ -225,7 +226,6 @@ def _search_payload(
         search_cursor_lane_matches_request,
     )
 
-    assert isinstance(spec, SessionQuerySpec)
     request_identity = search_cursor_request_identity(
         {
             field.name: getattr(spec, field.name)
@@ -261,7 +261,9 @@ def _search_payload(
     if needs_vector and vector_provider is None and fetch_spec.retrieval_lane != "hybrid":
         raise EmbeddingRetrievalNotReadyError(
             "semantic retrieval is unavailable: no configured/constructible vector backend; configure Voyage/sqlite-vec and retry",
-            readiness_status="failed" if vector_failure.kind != "unavailable" else "disabled",
+            readiness_status=(
+                "failed" if vector_failure is not None and vector_failure.kind != "unavailable" else "disabled"
+            ),
         )
     plan = fetch_spec.to_plan(vector_provider=vector_provider)
     pairs, resolved_lane = archive_search_hits(
@@ -287,7 +289,7 @@ def _search_payload(
         total = _archive_count_sessions_for_spec(archive, fetch_spec)
     authority = authority_for_reader(
         archive,
-        server_identity=cast("Literal['daemon', 'direct']", "daemon" if serving_identity == "daemon" else "direct"),
+        server_identity="daemon" if serving_identity == "daemon" else "direct",
         started_at=monotonic(),
     ).model_copy(update={"matched": len(hit_payloads), "analyzed": total})
     return build_search_envelope(
@@ -312,11 +314,18 @@ def _query_units_payload(
     from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
     expression = str(params.get("expression") or "")
+    filter_params = {
+        key: value for key, value in params.items() if key not in {"expression", "limit", "offset", "session_filters"}
+    }
+    raw_session_filters = params.get("session_filters")
+    if raw_session_filters is not None and not isinstance(raw_session_filters, Mapping):
+        raise ValueError("session_filters must be an object")
     request = query_unit_request(
         expression=expression,
         limit=_non_negative_int(params.get("limit"), default=50) or 50,
         offset=_non_negative_int(params.get("offset"), default=0),
-        **{key: value for key, value in params.items() if key not in {"expression", "limit", "offset"}},
+        session_filters=raw_session_filters,
+        **filter_params,
     )
     transaction_request = query_units_transaction_request(
         expression=expression,
@@ -372,7 +381,7 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     )
     active = scoped if scoped_to_query else global_buckets
 
-    def buckets(value: object) -> dict[str, object]:
+    def buckets(value: FacetBuckets) -> dict[str, object]:
         return {
             "origins": dict(value.origins),
             "tags": dict(value.tags),
@@ -442,6 +451,7 @@ def _lower_cli_query_params(params: Mapping[str, object]) -> tuple[dict[str, obj
 
     normalized = dict(params)
     raw_terms = normalized.pop("query", ())
+    terms: tuple[str, ...]
     if isinstance(raw_terms, str):
         terms = (raw_terms,)
     elif isinstance(raw_terms, (list, tuple)):
@@ -462,7 +472,7 @@ def _lower_cli_query_params(params: Mapping[str, object]) -> tuple[dict[str, obj
     return normalized, _expression_from_query_terms(terms)
 
 
-def _cli_query_spec(params: Mapping[str, object]) -> object:
+def _cli_query_spec(params: Mapping[str, object]) -> SessionQuerySpec:
     """Compile the same CLI selection contract used by canonical execution."""
 
     from polylogue.archive.query.expression import compile_expression_into

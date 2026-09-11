@@ -208,7 +208,9 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         metadata = socket_path.stat()
         self._socket_identity = (metadata.st_dev, metadata.st_ino)
 
-    def process_request(self, request: socket.socket, client_address: object) -> None:
+    def process_request(self, request: socket.socket | tuple[bytes, socket.socket], client_address: object) -> None:
+        if isinstance(request, tuple):
+            request = request[1]
         if not self._connections.acquire(blocking=False):
             try:
                 request.settimeout(0.1)
@@ -222,7 +224,9 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
             self._connections.release()
             raise
 
-    def process_request_thread(self, request: socket.socket, client_address: object) -> None:
+    def process_request_thread(
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
+    ) -> None:
         try:
             super().process_request_thread(request, client_address)
         finally:

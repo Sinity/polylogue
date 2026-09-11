@@ -5588,7 +5588,10 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
 
         operation_settings = load_polylogue_config()
         if archive_root is None:
-            archive_root = operation_settings.archive_root
+            configured_archive_root = operation_settings.archive_root
+            if configured_archive_root is None:
+                raise RuntimeError("HTTP daemon requires an archive root")
+            archive_root = Path(configured_archive_root)
         self.archive_root = archive_root.resolve()
         self._owned_write_runtime: _StandaloneWriteRuntime | None = None
         if write_bridge is None:
