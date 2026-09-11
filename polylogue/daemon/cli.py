@@ -985,7 +985,7 @@ async def _periodic_convergence_check(
     *,
     catch_up_complete: asyncio.Event | None = None,
     catch_up_active: Callable[[], bool] | None = None,
-    session_profile_callback: SessionProfileCallback | None = None,
+    session_profile_callback: Callable[[tuple[str, ...] | None], Awaitable[object]] | None = None,
 ) -> None:
     """Periodically retry recorded derived convergence debt.
 

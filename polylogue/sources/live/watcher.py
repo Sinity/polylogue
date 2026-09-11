@@ -355,7 +355,7 @@ class EmbeddingConvergenceOwner(Protocol):
 class SessionProfileConvergenceCallback(Protocol):
     """Converge post-ingest changes or an archive-wide periodic sweep."""
 
-    async def __call__(self, session_ids: Sequence[str] | None, /) -> object: ...
+    def __call__(self, session_ids: Sequence[str], /) -> Awaitable[object]: ...
 
 
 @dataclass(frozen=True, slots=True)

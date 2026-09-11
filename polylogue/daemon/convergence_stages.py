@@ -206,7 +206,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         try:
             from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
 
-            result = FtsConvergenceOwner(database, archive_root=db_path.parent).run_once_sync(
+            result = FtsConvergenceOwner(database).run_once_sync(
                 reason=FtsRunReason.PERIODIC,
                 partition_keys=tuple(keys) if keys else None,
             )

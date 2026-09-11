@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
 
 from polylogue.daemon.convergence import (
     SelectedSessionTarget,
@@ -103,7 +102,7 @@ class SessionInsightMaintenance:
 
         target_refs = tuple(f"session:{session_id}" for session_id in session_ids)
         exact_session_ids = tuple(_session_id(target_ref) for target_ref in target_refs)
-        ingest_dispositions = tuple(cast(InsightTargetDisposition, "required") for _ in target_refs)
+        ingest_dispositions: tuple[InsightTargetDisposition, ...] = tuple("required" for _ in target_refs)
         frame = self._frame_factory(exact_session_ids)
         return await self._converge_targets(
             target_refs,
