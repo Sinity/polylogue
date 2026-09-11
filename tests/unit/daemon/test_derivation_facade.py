@@ -165,6 +165,44 @@ async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() 
         targeted = DerivationFrame(archive_root="/archive", source_revision="r2", scope=("a",))
         assert (await owner.converge(targeted, budget=Budget(page=1, compute=1))).done == 1
         assert adapter.output == {"a": "b0"}
+        assert converger._derivation_cursor.position("session_profile").page_cursor == "1"
+        assert (await owner.converge(archive, budget=Budget(page=1, compute=1))).done == 1
+        assert adapter.output == {"a": "b0", "b": "b0"}
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_no_hint_owner_reports_quiet_work_without_certifying_a_complete_sweep() -> None:
+    """A terminal cursor does not clear debt while a quiet key remains pending.
+
+    Anti-vacuity: clear legacy derived debt from ``cursor.swept`` alone and
+    this no-hint owner report is treated as complete despite its output
+    relation retaining ``a`` as missing.
+    """
+
+    class QuietArchiveDerivation(StringStatusDerivation):
+        domain = "session_profile"
+
+        def quiet(self, frame: DerivationFrame, key: str) -> bool:
+            del frame
+            return key == "a"
+
+    adapter = QuietArchiveDerivation(("a", "b"))
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger([], derivations=[adapter]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    try:
+        report = await owner.converge(DerivationFrame(archive_root="/archive", source_revision="no-hint"))
+        assert report.cursor.position("session_profile").swept
+        assert report.pending == 1
+        assert report.failed == 0
+        assert adapter.output == {"b": "b0"}
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)
@@ -226,8 +264,9 @@ async def test_session_owner_serializes_a_sweep_and_targeted_callback() -> None:
     """Concurrent owner callers cannot race one mutable kernel cursor.
 
     Anti-vacuity: remove the owner-local coroutine lock and the targeted
-    callback reaches its publisher while the blocked sweep still owns the
-    same converger, reintroducing scope/cursor races without a writer hold.
+    callback reaches its publisher while the blocked no-hint sweep still owns
+    the same converger. Replace the retained archive cursor with the targeted
+    terminal cursor and the final assertion loses the archive resume point.
     """
 
     class ScopedDerivation(StringStatusDerivation):
@@ -251,24 +290,36 @@ async def test_session_owner_serializes_a_sweep_and_targeted_callback() -> None:
     adapter = ScopedDerivation()
     compute = BoundedComputeAdapter(max_workers=1, queue_units=2)
     coordinator = DaemonWriteCoordinator()
+    converger = DaemonConverger([], derivations=[adapter])
     owner = SessionProfileConvergenceOwner(
-        DaemonConverger([], derivations=[adapter]),
+        converger,
         compute_adapter=compute,
         write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
     )
     sweep = asyncio.create_task(
-        owner.converge(DerivationFrame(archive_root="/archive", source_revision="sweep", scope=("a",)))
+        owner.converge(
+            DerivationFrame(archive_root="/archive", source_revision="sweep"),
+            budget=Budget(page=1, compute=1),
+        )
     )
     try:
         assert await asyncio.to_thread(adapter.a_started.wait, 1.0)
         targeted = asyncio.create_task(
-            owner.converge(DerivationFrame(archive_root="/archive", source_revision="target", scope=("b",)))
+            owner.converge(DerivationFrame(archive_root="/archive", source_revision="target", scope=("a",)))
         )
         await asyncio.sleep(0)
         assert adapter.output == {}
         adapter.release_a.set()
         assert (await sweep).done == 1
-        assert (await targeted).done == 1
+        assert (await targeted).done == 0
+        assert adapter.output == {"a": "b0"}
+        assert converger._derivation_cursor.position("session_profile").page_cursor == "1"
+        assert (
+            await owner.converge(
+                DerivationFrame(archive_root="/archive", source_revision="resume"),
+                budget=Budget(page=1, compute=1),
+            )
+        ).done == 1
         assert adapter.output == {"a": "b0", "b": "b0"}
     finally:
         adapter.release_a.set()

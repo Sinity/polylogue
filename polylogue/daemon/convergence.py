@@ -166,14 +166,24 @@ def make_session_profile_derivation(
         # boundary so a promoted generation is never treated as the old path.
         return resolve_active_index_path(archive_root)
 
+    def active_generation_path() -> Path:
+        """Pin connections and replacements to the anchor's current target.
+
+        The archive-root ``index.db`` may be the canonical promotion symlink.
+        Resolving it here names the physical generation that SQLite opens, so
+        the storage adapter can compare its prepared and publication handles
+        without mistaking the stable anchor pathname for a generation.
+        """
+        return active_index_path().resolve()
+
     def read_connection() -> sqlite3.Connection:
-        return open_readonly_connection(active_index_path(), timeout_class="background-read")
+        return open_readonly_connection(active_generation_path(), timeout_class="background-read")
 
     def write_connection() -> sqlite3.Connection:
-        return open_daemon_connection(active_index_path(), archive_root=archive_root)
+        return open_daemon_connection(active_generation_path(), archive_root=archive_root)
 
     def generation_binding() -> str:
-        return str(active_index_path())
+        return str(active_generation_path())
 
     def quiet_key(frame: object, session_id: str) -> bool:
         # Check one key at a time inside the compute pass.  This preserves hot
@@ -242,7 +252,7 @@ def make_session_profile_frame(
     del index_db_path
     return DerivationFrame(
         archive_root=str(archive_root),
-        source_revision=f"index-generation:{resolve_active_index_path(archive_root)}",
+        source_revision=f"index-generation:{resolve_active_index_path(archive_root).resolve()}",
         recipe_versions={"session_profile": "session-profile"},
         scope=None if scope is None else tuple(dict.fromkeys(str(session_id) for session_id in scope)),
     )
@@ -442,7 +452,13 @@ class DaemonConverger:
             cursor=self._derivation_cursor if resume else None,
             publisher=publisher,
         )
-        self._derivation_cursor = report.cursor
+        # A targeted ingest frame always starts fresh so an archive keyset
+        # position cannot skip an earlier changed key.  It must likewise leave
+        # the archive sweep's retained position alone: replacing it with the
+        # targeted frame's terminal cursor would discard fairness for the
+        # no-hint pass that follows.
+        if frame.scope is None:
+            self._derivation_cursor = report.cursor
         return report
 
     @property

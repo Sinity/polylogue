@@ -323,10 +323,10 @@ def ingest_composed_sources(
 def converge_session_profiles(
     index_db: Path,
     archive_root: Path,
-    session_ids: Sequence[str],
+    session_ids: Sequence[str] | None,
     *,
     now: Callable[[], float],
-) -> None:
+) -> object:
     """Converge session profiles through the typed owner and derivation kernel."""
 
     async def run() -> object:
@@ -345,7 +345,11 @@ def converge_session_profiles(
                 compute_adapter=compute,
                 write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
             )
-            frame = make_session_profile_frame(index_db, archive_root=archive_root, scope=tuple(session_ids))
+            frame = make_session_profile_frame(
+                index_db,
+                archive_root=archive_root,
+                scope=None if session_ids is None else tuple(session_ids),
+            )
             return await owner.converge(frame)
         finally:
             compute.shutdown(wait=True)
@@ -357,6 +361,9 @@ def converge_session_profiles(
             "typed session-profile convergence left pending work: "
             f"failed={getattr(report, 'failed', None)} pending={getattr(report, 'pending', None)}"
         )
+    if session_ids is None and not report.cursor.position("session_profile").swept:
+        raise AssertionError("no-hint session-profile sweep stopped before required and excess enumeration completed")
+    return report
 
 
 def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, SessionState]:
