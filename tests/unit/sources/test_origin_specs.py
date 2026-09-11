@@ -867,6 +867,173 @@ def test_source_fingerprint_memoizes_on_disk_by_signature(tmp_path: Path, monkey
     assert origin_specs_module.lowering_fingerprint() != first
 
 
+def test_generated_build_provenance_is_not_a_semantic_fingerprint_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Package-only build metadata cannot invalidate parser/lowering code.
+
+    Anti-vacuity: restoring the local import edge into the source closure
+    makes the second fingerprint differ when only BUILD_COMMIT/BUILD_DIRTY
+    changes.  The real helper remains in the closure below, proving that this
+    is a narrow generated-file exclusion rather than closure-wide suppression.
+    """
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    source_dir = tmp_path / "polylogue" / "sources"
+    source_dir.mkdir(parents=True)
+    emitter = source_dir / "emitter.py"
+    emitter.write_text(
+        "from polylogue._build_info import BUILD_COMMIT\n"
+        "from polylogue.sources.helper import shape\n\n"
+        "def emit(payload):\n    return shape(payload)\n",
+        encoding="utf-8",
+    )
+    helper = source_dir / "helper.py"
+    helper.write_text("def shape(payload):\n    return payload\n", encoding="utf-8")
+    build_info = tmp_path / "polylogue" / "_build_info.py"
+    build_info.write_text('BUILD_COMMIT = "commit-a"\nBUILD_DIRTY = False\n', encoding="utf-8")
+
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+    monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
+    origin_specs_module._semantic_source_closure.cache_clear()
+    origin_specs_module._local_import_paths.cache_clear()
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    first = origin_specs_module.lowering_fingerprint()
+    members = origin_specs_module._semantic_source_paths(("polylogue/sources/emitter.py",))
+    assert build_info.resolve() not in members
+    assert helper.resolve() in members
+
+    build_info.write_text('BUILD_COMMIT = "commit-b"\nBUILD_DIRTY = True\n', encoding="utf-8")
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() == first
+
+    helper.write_text("def shape(payload):\n    return {'session': payload}\n", encoding="utf-8")
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() != first
+
+
+def test_index_ddl_formatting_is_normalized_in_the_production_source_hash_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DDL comments/formatting do not leak through the lowering source hash."""
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    path = tmp_path / "polylogue" / "storage" / "sqlite" / "archive_tiers" / "index.py"
+    path.parent.mkdir(parents=True)
+    source = 'INDEX_DDL = """CREATE TABLE x ( a TEXT /* note */ )"""\n'
+    path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    first = origin_specs_module._fingerprint_sources(
+        ("polylogue/storage/sqlite/archive_tiers/index.py",), namespace="index-ddl-format"
+    )
+    path.write_text('INDEX_DDL = """ CREATE  TABLE x(a TEXT) """\n', encoding="utf-8")
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert (
+        origin_specs_module._fingerprint_sources(
+            ("polylogue/storage/sqlite/archive_tiers/index.py",), namespace="index-ddl-format"
+        )
+        == first
+    )
+
+    path.write_text('INDEX_DDL = """CREATE TABLE x(a BLOB)"""\n', encoding="utf-8")
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert (
+        origin_specs_module._fingerprint_sources(
+            ("polylogue/storage/sqlite/archive_tiers/index.py",), namespace="index-ddl-format"
+        )
+        != first
+    )
+
+
+def test_imported_fts_ddl_formatting_is_normalized_but_semantics_move_the_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Imported FTS DDL follows the same production lowering closure rule."""
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    index_path = tmp_path / "polylogue" / "storage" / "sqlite" / "archive_tiers" / "index.py"
+    fts_path = tmp_path / "polylogue" / "storage" / "fts" / "sql.py"
+    index_path.parent.mkdir(parents=True)
+    fts_path.parent.mkdir(parents=True)
+    index_path.write_text(
+        "from polylogue.storage.fts.sql import BLOCKS_FTS_TRIGGER_DDL\n"
+        "INDEX_DDL = 'CREATE TABLE x (id INTEGER);' + ';'.join(BLOCKS_FTS_TRIGGER_DDL)\n",
+        encoding="utf-8",
+    )
+    fts_path.write_text(
+        "BLOCKS_FTS_TRIGGER_DDL = [\n"
+        '    """CREATE TRIGGER x /* maintenance note */ AFTER INSERT ON blocks\n'
+        '    BEGIN SELECT 1; END"""\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        origin_specs_module,
+        "_LOWERING_FINGERPRINT_PATHS",
+        ("polylogue/storage/sqlite/archive_tiers/index.py",),
+    )
+    origin_specs_module._semantic_source_closure.cache_clear()
+    origin_specs_module._local_import_paths.cache_clear()
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    first = origin_specs_module.lowering_fingerprint()
+    fts_path.write_text(
+        'BLOCKS_FTS_TRIGGER_DDL = [\n    """ CREATE  TRIGGER x AFTER INSERT ON blocks BEGIN SELECT 1; END """\n]\n',
+        encoding="utf-8",
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() == first
+
+    fts_path.write_text(
+        fts_path.read_text(encoding="utf-8").replace("AFTER INSERT", "AFTER UPDATE"),
+        encoding="utf-8",
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() != first
+
+
+def test_runtime_index_ddl_formatting_is_normalized_but_semantics_move_the_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Runtime indexes are DDL contributors despite their ``*_SQL`` name."""
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    path = tmp_path / "polylogue" / "storage" / "sqlite" / "runtime_indexes.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '_RUNTIME_INDEX_SQL = (\n    """CREATE INDEX idx_x /* maintenance note */ ON blocks (session_id)""",\n)\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        origin_specs_module,
+        "_LOWERING_FINGERPRINT_PATHS",
+        ("polylogue/storage/sqlite/runtime_indexes.py",),
+    )
+    origin_specs_module._semantic_source_closure.cache_clear()
+    origin_specs_module._local_import_paths.cache_clear()
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    first = origin_specs_module.lowering_fingerprint()
+    path.write_text(
+        '_RUNTIME_INDEX_SQL = ("CREATE  INDEX idx_x ON blocks(session_id)",)\n',
+        encoding="utf-8",
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() == first
+
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("session_id", "message_id"),
+        encoding="utf-8",
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() != first
+
+
 class TestSemanticSourceClosureMemo:
     """Closure membership is walked once per process; content freshness is not memoized.
 
