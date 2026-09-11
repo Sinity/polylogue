@@ -11,7 +11,7 @@ import sqlite3
 import stat
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -24,7 +24,11 @@ from polylogue.config import Config
 from polylogue.core.json import JSONDocument, loads
 from polylogue.daemon.cli import main
 from polylogue.daemon.convergence import ConvergenceStage
+from polylogue.daemon.derivation import DerivationReport
+from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
+from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
+from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
@@ -3631,9 +3635,11 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     def fake_operation_recovery(_archive_root_path: Path) -> None:
         events.append("operation-recovery")
 
-    def recording_converger(*args: object, **kwargs: object) -> DaemonConverger:
+    def recording_converger(
+        stages: Iterable[ConvergenceStage], *, derivations: Iterable[object] = ()
+    ) -> DaemonConverger:
         events.append("converger")
-        return DaemonConverger(*args, **kwargs)
+        return DaemonConverger(stages, derivations=derivations)
 
     async def fake_loop(name: str) -> None:
         events.append(name)
@@ -3862,10 +3868,21 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
     async def noop_periodic_work(*_args: object, **_kwargs: object) -> None:
         return None
 
-    def compose_with_oracle(*args: object, **kwargs: object) -> object:
-        composed = real_compose(*args, **kwargs)
+    def compose_with_oracle(
+        root: Path,
+        *,
+        compute_adapter: BoundedComputeAdapter,
+        write_bridge: DaemonWriteThreadBridge,
+        now: Callable[[], float],
+    ) -> ComposedSessionProfiles:
+        composed = real_compose(
+            root,
+            compute_adapter=compute_adapter,
+            write_bridge=write_bridge,
+            now=now,
+        )
 
-        async def observe(scope: tuple[str, ...] | None) -> object:
+        async def observe(scope: Sequence[str] | None) -> DerivationReport:
             report = await composed(scope)
             if scope is None:
                 observed_scopes.append(scope)
