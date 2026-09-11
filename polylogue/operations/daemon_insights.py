@@ -8,7 +8,7 @@ from typing import cast
 
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.operations.audit import MachineRequestBinding
-from polylogue.operations.bindings import runtime_operation_binding
+from polylogue.operations.bindings import OperationBinding, runtime_operation_binding
 from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
 from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
 from polylogue.operations.insight_acceptance import AcceptedInsightPart, InsightAcceptance, SessionInsightPartReceipt
@@ -39,7 +39,7 @@ class InsightExecution:
         self.runtime.require_session_maintenance()
         self.audit = self.runtime.audit_for_request(request, context)
         self.executor = OperationExecutor(audit=self.audit, archive_root=context.archive_root)
-        self.operation = runtime_operation_binding(AcceptedInsightActuator())
+        self.operation: OperationBinding[object, object] = runtime_operation_binding(AcceptedInsightActuator())
         self.binding: MachineRequestBinding | None = None
         self.snapshot: PinnedOperationRead | None = None
         self.record: dict[str, object] | None = None
@@ -79,8 +79,11 @@ class InsightExecution:
                     self.record = self.audit.machine_request(self.binding)
                     if self.record is not None and self.record["artifact_kind"] == "execution-batch":
                         self.parts = self.audit.sealed_insight_parts(self.binding, self.context.principal)
-                        if self.record.get("accepted_deadline_unix_ms") is not None:
-                            self.expiry_ms = int(self.record["accepted_deadline_unix_ms"])
+                        deadline = self.record.get("accepted_deadline_unix_ms")
+                        if deadline is not None:
+                            if type(deadline) is not int:
+                                raise ValueError("accepted insight deadline is not an integer")
+                            self.expiry_ms = deadline
                         return None
                 generation, recipe = self.runtime.session_profile_plan_binding(
                     opened_index_path=pinned.archive.index_db_path
@@ -97,7 +100,8 @@ class InsightExecution:
         if manifest is None:
             return
         assert self.binding is not None
-        acceptance = InsightAcceptance(self.audit, self.binding, self.context.principal)
+        binding = self.binding
+        acceptance = InsightAcceptance(self.audit, binding, self.context.principal)
         previous: str | None = None
         for ordinal in range(len(manifest.pages)):
 
@@ -105,7 +109,7 @@ class InsightExecution:
                 self.check_stop()
                 now_ms = int(time() * 1000)
                 instance = self.audit.ensure_archive_authority(now_ms=now_ms)
-                staged = self.audit.machine_parts(self.binding)
+                staged = self.audit.machine_parts(binding)
                 if staged:
                     first = self.audit.preview_for_principal(str(staged[0]["preview_ref"]), self.context.principal)
                     now_ms = first.plan.prepared_at_ms
@@ -115,7 +119,7 @@ class InsightExecution:
                     ordinal,
                     previous_preview_ref=previous,
                     archive_instance_id=instance,
-                    archive_identity_digest=self.binding.archive_identity,
+                    archive_identity_digest=binding.archive_identity,
                     now_ms=now_ms,
                     expires_at_ms=self.expiry_ms,
                 )
@@ -134,7 +138,7 @@ class InsightExecution:
                 manifest_digest=manifest.digest,
                 deadline_unix_ms=self.expiry_ms,
             )
-            self.record = self.audit.machine_request(self.binding)
+            self.record = self.audit.machine_request(binding)
             return parts
 
         self.parts = await self.runtime.write_phase("insights.accept", seal)
@@ -174,7 +178,8 @@ class InsightExecution:
 
     async def stop(self, reason: str) -> None:
         if self.binding is not None and self.record is not None:
-            await self.runtime.write_phase("insights.stop", lambda: self.audit.stop_machine_batch(self.binding, reason))
+            binding = self.binding
+            await self.runtime.write_phase("insights.stop", lambda: self.audit.stop_machine_batch(binding, reason))
 
     async def finalize(
         self,
@@ -239,7 +244,7 @@ async def execute_insights_rebuild_operation(
             active = await execution.begin(part)
             if active is None:
 
-                def prior(part: AcceptedInsightPart = part):
+                def prior(part: AcceptedInsightPart = part) -> InsightPartHistoricalReceipt | None:
                     assert execution.binding is not None
                     with execution.audit.settled_machine_read():
                         raw = execution.audit.machine_parts(execution.binding)[part.ordinal]
@@ -265,9 +270,9 @@ async def execute_insights_rebuild_operation(
                 history = await execution.runtime.compute_phase(prior)
                 if history is None:
                     break
-                for target in history.targets:
+                for historical_target in history.targets:
                     for family in totals:
-                        totals[family] += getattr(target.certified_counts, family)
+                        totals[family] += getattr(historical_target.certified_counts, family)
                 continue
             observed = await execution.runtime.converge_insight_part(
                 request, part, stop_requested=execution.stop_reason
@@ -276,9 +281,9 @@ async def execute_insights_rebuild_operation(
             complete = not observed.remaining_unattempted_target_refs and all(
                 target.disposition in {"already_satisfied", "published"} for target in observed.targets
             )
-            for target in observed.targets:
+            for observed_target in observed.targets:
                 for family in totals:
-                    totals[family] += getattr(target.certified_counts, family)
+                    totals[family] += getattr(observed_target.certified_counts, family)
             summary = None
             if complete and part.ordinal == part.page_count - 1:
 

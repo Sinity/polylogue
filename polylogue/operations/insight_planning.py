@@ -19,6 +19,8 @@ from polylogue.operations.insight_acceptance import (
     insight_manifest_digest,
 )
 from polylogue.operations.mutation_transaction import (
+    ConfirmationStrength,
+    DestructiveClass,
     MutationPlan,
     MutationReceipt,
     MutationTarget,
@@ -43,10 +45,13 @@ class AcceptedInsightActuator:
     """Use the shared authorization policy without a legacy materializer path."""
 
     operation: str = "mutate-rebuild-insights"
-    destructive_class: str = "maintenance"
-    required_confirmation: str = "role_only"
+    destructive_class: DestructiveClass = "maintenance"
+    required_confirmation: ConfirmationStrength = "role_only"
 
-    def prepare(self, plan: MutationPlan) -> MutationPlan:
+    def prepare(self, args: object) -> MutationPlan:
+        if not isinstance(args, MutationPlan):
+            raise TypeError("accepted insight preparation requires its sealed mutation plan")
+        plan = args
         if plan.operation != self.operation:
             raise ValueError("insight page belongs to another operation")
         return plan

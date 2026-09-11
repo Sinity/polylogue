@@ -6,6 +6,8 @@ import hashlib
 from dataclasses import dataclass
 
 from polylogue.operations.mutation_transaction import (
+    ConfirmationStrength,
+    DestructiveClass,
     MutationPlan,
     MutationReceipt,
     MutationTarget,
@@ -74,8 +76,8 @@ class IngestActuator:
     now_ms: int
     expires_at_ms: int
     operation: str = INGEST_OPERATION
-    destructive_class: str = "additive"
-    required_confirmation: str = "role_only"
+    destructive_class: DestructiveClass = "additive"
+    required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, _args: object) -> MutationPlan:
         return ingest_plan(

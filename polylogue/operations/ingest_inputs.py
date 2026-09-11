@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import stat
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -109,7 +109,7 @@ def enumerate_ingest_input(
     publisher: ArchiveBlobPublisher,
     acquired_at_ms: int,
     check_stop: Callable[[], None],
-) -> Iterator[PreparedSourceRecord]:
+) -> Generator[PreparedSourceRecord, None, None]:
     """Yield canonical admission plans; only normal exhaustion closes the item."""
     item_id = source_item_id(
         source_generation_id=source_generation_id,

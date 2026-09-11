@@ -919,7 +919,9 @@ class AuditRepository:
                 )
             ]
 
-    def sealed_insight_parts(self, binding: MachineRequestBinding, principal: MutationPrincipal) -> tuple[object, ...]:
+    def sealed_insight_parts(
+        self, binding: MachineRequestBinding, principal: MutationPrincipal
+    ) -> tuple[AcceptedInsightPart, ...]:
         """Reload the exact immutable insights manifest already sealed to a request."""
 
         from polylogue.operations.insight_acceptance import (

@@ -39,6 +39,10 @@ from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.ingest_governance import (
+    CensusPublication,
+    CohortPublication,
+    PreparedIngestCohort,
+    PreparedRawCensus,
     discard_prepared_ingest_cohort,
     prepare_ingest_cohort,
     prepare_raw_census,
@@ -66,6 +70,14 @@ class IngestStoppedError(RuntimeError):
         super().__init__(reason)
 
 
+def _record_int(value: object, *, field: str) -> int:
+    """Reject malformed durable operation fields before using them as timestamps."""
+
+    if type(value) is not int:
+        raise ValueError(f"accepted ingest {field} is not an integer")
+    return value
+
+
 class IngestExecution:
     """One accepted denominator, with no worker held across phase awaits."""
 
@@ -91,7 +103,7 @@ class IngestExecution:
             deadline = self.record.get("accepted_deadline_unix_ms")
             if self.record.get("stop_reason"):
                 reason = str(self.record["stop_reason"])
-            elif deadline is not None and int(time() * 1000) >= int(deadline):
+            elif deadline is not None and int(time() * 1000) >= _record_int(deadline, field="deadline"):
                 reason = "deadline"
         if self.started_mutation is not None:
             expires_at_ms = self.started_mutation.authorization.expires_at_ms
@@ -183,10 +195,13 @@ class IngestExecution:
 
         self.record = await self.read(recover)
         if self.record is None:
+            source_path = self.request.payload.get("source_path")
+            if source_path is not None and not isinstance(source_path, str):
+                raise ValueError("ingest source path is not a string")
             manifest = await self.runtime.compute_phase(
                 lambda: prepare_ingest_inputs(
                     Path(str(self.request.payload["path"])),
-                    source_path=self.request.payload.get("source_path"),
+                    source_path=source_path,
                     source_generation_id=str(uuid4()),
                     publisher=self.publisher,
                     check_stop=self.check_stop,
@@ -198,7 +213,7 @@ class IngestExecution:
                 assert self.binding is not None
                 now_ms = int(time() * 1000)
                 deadline = self.runtime.request_deadline_unix_ms(self.request)
-                expires_at_ms = deadline if deadline is not None else now_ms + 60_000
+                expires_at_ms = deadline
                 instance = self.audit.ensure_archive_authority(now_ms=now_ms)
                 actuator = IngestActuator(manifest, instance, self.binding.archive_identity, now_ms, expires_at_ms)
                 plan = ingest_plan(
@@ -275,7 +290,7 @@ class IngestExecution:
         if item.enumeration_complete:
             return
         assert self.record is not None
-        acquired_at_ms = int(self.record["accepted_at_ms"])
+        acquired_at_ms = _record_int(self.record["accepted_at_ms"], field="accepted timestamp")
         iterator = enumerate_ingest_input(
             item,
             source_generation_id=generation.source_generation_id,
@@ -323,14 +338,18 @@ class IngestExecution:
         await self.source_write(publish)
 
     async def receipt(self, generation_id: str) -> SourceGenerationReceipt:
-        return await self.read(
-            lambda pinned: source_generation_receipt(
+        def read_receipt(pinned: PinnedOperationRead) -> SourceGenerationReceipt:
+            index_connection = pinned.archive.index_connection
+            if index_connection is None:
+                raise RuntimeError("accepted ingest requires the pinned index tier")
+            return source_generation_receipt(
                 pinned.archive.source_connection,
-                pinned.archive.index_connection,
+                index_connection,
                 source_generation_id=generation_id,
                 active_generation=pinned.identity.active_generation,
             )
-        )
+
+        return await self.read(read_receipt)
 
     async def materialize(self, generation_id: str) -> SourceGenerationReceipt:
         """Reuse canonical census and cohort publication, reconciling first."""
@@ -342,18 +361,27 @@ class IngestExecution:
         for raw_id in sorted(uncensused):
             for _attempt in range(3):
                 observed_at_ms = int(time() * 1000)
-                prepared = await self.read(
-                    lambda pinned, raw_id=raw_id, observed_at_ms=observed_at_ms: prepare_raw_census(
+
+                def prepare_census(
+                    pinned: PinnedOperationRead,
+                    *,
+                    census_raw_id: str = raw_id,
+                    census_observed_at_ms: int = observed_at_ms,
+                ) -> PreparedRawCensus:
+                    return prepare_raw_census(
                         pinned.archive,
-                        raw_id,
+                        census_raw_id,
                         parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                         parse_retained_raw=parse_retained_raw_sessions,
-                        censused_at_ms=observed_at_ms,
+                        censused_at_ms=census_observed_at_ms,
                     )
-                )
-                result = await self.archive_write(
-                    lambda archive, prepared=prepared: publish_raw_census(archive, prepared)
-                )
+
+                prepared: PreparedRawCensus = await self.read(prepare_census)
+
+                def publish_census(archive: ArchiveStore, *, census: PreparedRawCensus = prepared) -> CensusPublication:
+                    return publish_raw_census(archive, census)
+
+                result: CensusPublication = await self.archive_write(publish_census)
                 if result.published:
                     break
             else:
@@ -376,25 +404,38 @@ class IngestExecution:
             if attempts[key] > 3:
                 raise ValueError("accepted membership cohort kept changing during preparation")
             observed_at_ms = int(time() * 1000)
-            prepared_cohort = await self.read(
-                lambda pinned, key=key, observed_at_ms=observed_at_ms: prepare_ingest_cohort(
+
+            def prepare_cohort(
+                pinned: PinnedOperationRead,
+                *,
+                cohort_key: str = key,
+                cohort_observed_at_ms: int = observed_at_ms,
+            ) -> PreparedIngestCohort:
+                return prepare_ingest_cohort(
                     pinned.archive,
-                    logical_source_key=key,
+                    logical_source_key=cohort_key,
                     accepted_raw_ids=raw_ids,
                     parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                     parse_retained_raw=parse_retained_raw_sessions,
-                    acquired_at_ms=observed_at_ms,
+                    acquired_at_ms=cohort_observed_at_ms,
                 )
-            )
+
+            prepared_cohort: PreparedIngestCohort = await self.read(prepare_cohort)
             try:
                 self.check_stop()
-                publication = await self.archive_write(
-                    lambda archive, prepared_cohort=prepared_cohort: publish_ingest_cohort(archive, prepared_cohort)
-                )
+
+                def publish_cohort(
+                    archive: ArchiveStore, *, cohort: PreparedIngestCohort = prepared_cohort
+                ) -> CohortPublication:
+                    return publish_ingest_cohort(archive, cohort)
+
+                publication: CohortPublication = await self.archive_write(publish_cohort)
             finally:
-                await self.runtime.compute_phase(
-                    lambda prepared_cohort=prepared_cohort: discard_prepared_ingest_cohort(prepared_cohort)
-                )
+
+                def discard_cohort(*, cohort: PreparedIngestCohort = prepared_cohort) -> None:
+                    discard_prepared_ingest_cohort(cohort)
+
+                await self.runtime.compute_phase(discard_cohort)
             if publication.reprepare_required:
                 pending_keys.add(key)
                 pending_keys.update(publication.reprepare_logical_source_keys)
@@ -506,40 +547,41 @@ class IngestExecution:
         profile_parts: tuple[SessionInsightPartReceipt, ...],
     ) -> IngestHistoricalReceipt:
         assert self.started_mutation is not None
+        started = self.started_mutation
         history = self.historical_receipt(generation, receipt, profile_parts)
         final = MutationReceipt(
-            operation=self.started_mutation.plan.operation,
-            plan_hash=self.started_mutation.plan.plan_hash,
+            operation=started.plan.operation,
+            plan_hash=started.plan.plan_hash,
             status="applied",
-            target_refs=self.started_mutation.plan.target_refs,
+            target_refs=started.plan.target_refs,
             affected_count=1,
             detail=None,
             receipt_ref=None,
-            applied_at=self.started_mutation.plan.prepared_at,
+            applied_at=started.plan.prepared_at,
             historical_receipt=history,
         )
-        await self.runtime.write_phase(
-            "ingest.finalize", lambda: self.executor.finalize_bound(self.started_mutation, receipt=final)
-        )
+        await self.runtime.write_phase("ingest.finalize", lambda: self.executor.finalize_bound(started, receipt=final))
         self.terminalized = True
         return history
 
     async def mark_unknown(self, reason: str) -> None:
         if self.started_mutation is None or self.terminalized:
             return
+        started = self.started_mutation
         await self.runtime.write_phase(
             "ingest.unknown",
-            lambda: self.executor.finalize_bound(self.started_mutation, unknown_reason=reason[:512]),
+            lambda: self.executor.finalize_bound(started, unknown_reason=reason[:512]),
         )
         self.terminalized = True
 
     async def fence(self, reason: str) -> None:
         if self.binding is not None:
+            binding = self.binding
 
             def stop() -> None:
-                record = self.audit.machine_request(self.binding)
+                record = self.audit.machine_request(binding)
                 if record is not None:
-                    self.audit.stop_machine_batch(self.binding, reason)
+                    self.audit.stop_machine_batch(binding, reason)
 
             await self.runtime.write_phase("ingest.stop", stop)
 
