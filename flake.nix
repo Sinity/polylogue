@@ -171,7 +171,7 @@
           doInstallCheck = false;
           nativeBuildInputs = builtins.filter (
             input: !(lib.hasInfix "sphinx" (input.pname or (input.name or "")))
-          ) old.nativeBuildInputs;
+          ) (old.nativeBuildInputs or [ ]);
           postInstall = (old.postInstall or "") + ''
             mkdir -p "$doc"
           '';
@@ -189,17 +189,33 @@
       # tooling it does not execute.
       wraptNoDocs = withoutSphinxDocs pythonPackages.wrapt;
 
-      deprecatedNoDocs = (withoutSphinxDocs pythonPackages.deprecated).overridePythonAttrs (old: {
-        propagatedBuildInputs = builtins.map (
-          input: if (input.pname or (input.name or "")) == "wrapt" then wraptNoDocs else input
-        ) old.propagatedBuildInputs;
-      });
+      # Consumers may follow a different nixpkgs revision. Preserve whichever
+      # dependency arguments that revision actually declares, including their
+      # Python module metadata, rather than assuming one spelling.
+      replacePythonDependency =
+        package: dependencyName: replacement:
+        package.overridePythonAttrs (
+          old:
+          lib.genAttrs
+            (builtins.filter (field: builtins.hasAttr field old) [
+              "dependencies"
+              "propagatedBuildInputs"
+            ])
+            (
+              field:
+              builtins.map (
+                input: if (input.pname or (input.name or "")) == dependencyName then replacement else input
+              ) old.${field}
+            )
+        );
 
-      opentelemetryApiNoDocs = pythonPackages.opentelemetry-api.overridePythonAttrs (old: {
-        dependencies = builtins.map (
-          input: if (input.pname or (input.name or "")) == "deprecated" then deprecatedNoDocs else input
-        ) old.dependencies;
-      });
+      deprecatedNoDocs =
+        replacePythonDependency (withoutSphinxDocs pythonPackages.deprecated) "wrapt"
+          wraptNoDocs;
+
+      opentelemetryApiNoDocs =
+        replacePythonDependency pythonPackages.opentelemetry-api "deprecated"
+          deprecatedNoDocs;
 
       mcp-sdk = mkPinnedPythonPackage {
         pname = "mcp";
