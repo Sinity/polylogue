@@ -48,8 +48,8 @@ def _run_typed_owner_in_fresh_process(index_db: Path, archive_root: Path, sessio
 def test_typed_session_owner_survives_restart_and_leaves_unrelated_sessions_absent(tmp_path: Path) -> None:
     """Restart re-enumerates durable output rather than a legacy debt row.
 
-    Anti-vacuity: restore ``make_derived_stage`` or make the owner retain an
-    in-memory pending set and this no longer exercises the typed owner from a
+    Anti-vacuity: replace the typed owner with a generic-stage shortcut or make
+    the owner retain an in-memory pending set and this no longer exercises the typed owner from a
     fresh interpreter against its output relation. The obsolete ``derived``
     debt is not retried here: production CLI filtering owns its disposal.
     """
