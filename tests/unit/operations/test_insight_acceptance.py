@@ -9,6 +9,7 @@ from collections.abc import Callable
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -22,9 +23,10 @@ from polylogue.operations.insight_acceptance import (
     build_insight_page_context,
     insight_manifest_digest,
 )
-from polylogue.operations.mutation_actuators import InsightsRebuildActuator
+from polylogue.operations.mutation_actuators import InsightsRebuildActuator, InsightsRebuildArgs
 from polylogue.operations.mutation_transaction import (
     AuthorizationMismatchError,
+    MutationPlan,
     MutationPrincipal,
     MutationTarget,
     MutationTransactionError,
@@ -65,7 +67,7 @@ def _page(
     digest: str,
     previous_preview_ref: str | None,
     targets: tuple[AcceptedInsightTarget, ...],
-):
+) -> MutationPlan:
     return build_typed_plan(
         operation="mutate-rebuild-insights",
         operation_version=1,
@@ -220,12 +222,13 @@ def test_manifest_rejects_a_tampered_predecessor_before_reserving_authority(tmp_
     assert first_auth.authorization_id is not None
     # Generic executor entry points must not turn a staged bearer token into
     # work before the source-WAL manifest seal reserves its machine ordinal.
+    blocked_args = cast(InsightsRebuildArgs, object())
     with pytest.raises(MutationTransactionError, match="sealed accepted machine part"):
-        executor.begin_bound(binding, first_preview, first_auth, None)  # type: ignore[arg-type]
+        executor.begin_bound(binding, first_preview, first_auth, blocked_args)
     with pytest.raises(MutationTransactionError, match="sealed accepted machine part"):
-        executor.execute_bound(binding, first_preview, first_auth, None)  # type: ignore[arg-type]
+        executor.execute_bound(binding, first_preview, first_auth, blocked_args)
     with pytest.raises(MutationTransactionError, match="sealed accepted machine part"):
-        executor.execute(binding.actuator, first_preview.plan, first_auth, None)  # type: ignore[arg-type]
+        executor.execute(binding.actuator, first_preview.plan, first_auth, blocked_args)
     second_plan = _page(ordinal=1, count=2, digest=digest, previous_preview_ref="wrong", targets=targets)
     second_preview = acceptance.stage_preview(second_plan)
     second_auth = acceptance.ensure_staged_authorization(executor, binding, second_preview)
@@ -241,7 +244,9 @@ def test_manifest_rejects_a_tampered_predecessor_before_reserving_authority(tmp_
     # either one-shot authority to executable machine parts.
     staged = audit.machine_parts(machine)
     assert [part["authorization_ref"] for part in staged] == [None, None]
-    assert audit.machine_request(machine)["artifact_kind"] == "insight-preview-pages"
+    machine_request = audit.machine_request(machine)
+    assert machine_request is not None
+    assert machine_request["artifact_kind"] == "insight-preview-pages"
 
 
 def test_empty_explicit_scope_is_a_sealed_no_effect_part(tmp_path: Path) -> None:
