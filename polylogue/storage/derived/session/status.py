@@ -259,8 +259,31 @@ ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
     LEFT JOIN sessions c ON c.session_id = slp.session_id
     WHERE c.session_id IS NULL
 """
+#: Row accounting, never a freshness answer. Both sides come from
+#: ``session_profiles``, so a profile that is wrong about its own partition is
+#: wrong on both and the comparison agrees with itself. What decides whether a
+#: work-event or phase row is current is the value-complete inspection below,
+#: which recomputes the binding from ``sessions``/``messages``; these two exist
+#: only to report how many rows the built partitions declare.
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
 EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
+#: Rows belonging to a partition the value-complete inspection did not certify.
+#: The binding covers the whole partition, so a non-valid partition's work
+#: events and phases are exactly as uncertified as its profile row -- the same
+#: relation ``STALE_SESSION_LATENCY_PROFILE_COUNT_SQL`` states for the latency
+#: profile. Before this existed the two counts were snapshot fields no
+#: descriptor emitted, so they read zero on every archive and the readiness
+#: gates that compared them to zero could not fail.
+STALE_SESSION_WORK_EVENT_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM json_each(?) n
+    JOIN session_work_events swe ON swe.session_id = n.value
+"""
+STALE_SESSION_PHASE_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM json_each(?) n
+    JOIN session_phases sph ON sph.session_id = n.value
+"""
 ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_work_events swe
@@ -489,6 +512,20 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="expected_phase_inference_count",
         table_keys=("session_profiles",),
         sql=EXPECTED_PHASE_COUNT_SQL,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="stale_work_event_inference_count",
+        table_keys=("session_work_events",),
+        sql=STALE_SESSION_WORK_EVENT_COUNT_SQL,
+        requires_freshness=True,
+        requires_inspection=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="stale_phase_inference_count",
+        table_keys=("session_phases",),
+        sql=STALE_SESSION_PHASE_COUNT_SQL,
+        requires_freshness=True,
+        requires_inspection=True,
     ),
     SessionInsightCountDescriptor(
         count_key="orphan_work_event_inference_count",

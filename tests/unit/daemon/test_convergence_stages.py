@@ -1363,13 +1363,20 @@ def test_profile_canary_defers_hot_session_then_converges_when_quiet(tmp_path: P
     assert receipt.phases[3].progress_completed == 1
 
 
-def test_session_ids_missing_profiles_includes_stale(tmp_path: Path) -> None:
-    """#1620: the path-fallback debt loop must surface stale profiles, not just missing ones.
+def test_session_ids_missing_profiles_reports_only_unbuilt_sessions(tmp_path: Path) -> None:
+    """The path fallback answers "never built", which a row's absence settles.
 
-    Before the fix, sessions whose JSONL had gone quiet but whose
-    ``sessions.sort_key_ms`` drifted from the materialized
-    ``source_sort_key`` were never picked up by the daemon's debt loop —
-    ``remaining=0`` was reported indefinitely.
+    #1620 widened this scope to sort-key drift, because staleness was then
+    decided by a sort key. It no longer is: whether a built partition is
+    current is decided per session by :func:`_stale_session_profile_ids`
+    against the input values. Keeping the sort-key arm here would put an
+    identity proxy back in a second place, and it cannot see the defect the
+    family exists to catch — a role, a model name or a token count moves no
+    sort key at all.
+
+    Red if the scope query starts classifying built partitions again:
+    ``conv-stale`` carries a ``source_sort_key`` ahead of its session's and
+    must still not be reported, and ``conv-missing`` must still be.
     """
     db_path = tmp_path / "missing_profiles.sqlite"
     cutoff_safe_sort_key = 1.0  # well below now - HOT_SOURCE_GRACE_SECONDS
@@ -1421,7 +1428,7 @@ def test_session_ids_missing_profiles_includes_stale(tmp_path: Path) -> None:
 
         ids = stages._session_ids_missing_profiles(conn)
 
-    assert set(ids) == {"conv-missing", "conv-stale"}
+    assert set(ids) == {"conv-missing"}
 
 
 def test_insights_staleness_uses_sort_key_not_timestamp_text(tmp_path: Path) -> None:
