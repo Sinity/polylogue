@@ -229,6 +229,34 @@ def test_status_command_reports_operation_unavailable_as_live_daemon_snapshot() 
     assert payload["status_snapshot"]["state"] == "unavailable"
 
 
+def test_status_command_does_not_misclassify_sqlite_failure_with_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An existing archive turns unrelated SQLite failures into unavailable status."""
+    archive_root = bootstrap_archive_root(tmp_path / "archive")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    env = _make_app_env()
+    config = SimpleNamespace(archive_root=archive_root)
+    with (
+        patch("polylogue.cli.shared.helpers.load_effective_config", return_value=config),
+        patch(
+            "polylogue.cli.operation_kernel.configured_read_operation",
+            side_effect=sqlite3.OperationalError("unexpected status query failure"),
+        ),
+    ):
+        result = CliRunner().invoke(
+            status_command,
+            ["--daemon-url", "http://127.0.0.1:8766", "--json"],
+            obj=env,
+        )
+
+    assert result.exit_code == 1
+    payload = json.loads(_combined_calls(env))
+    assert "diagnostic" not in payload
+    assert payload["daemon_liveness"] is True
+    assert payload["status_snapshot"]["state"] == "unavailable"
+
+
 def test_raw_replay_backlog_plain_status_explains_containment() -> None:
     env = _make_app_env()
     reason = "raw source-to-index replay is disabled pending per-session revision authority"

@@ -60,6 +60,23 @@ def _default_daemon_url() -> str:
     return load_polylogue_config().daemon_url or _BUILTIN_DAEMON_URL
 
 
+def _archive_snapshot_is_absent(archive_root: Path | None) -> bool:
+    """Return whether the configured active index is demonstrably absent.
+
+    A status read can fail for several SQLite reasons.  Only an absent active
+    index proves there is no snapshot to read, which is the sole case that
+    should select the first-run diagnostic rather than an unavailable status.
+    """
+    if archive_root is None:
+        return False
+    from polylogue.storage.archive_identity import ArchiveLocation, ArchiveLocationError
+
+    try:
+        return not ArchiveLocation.resolve(archive_root).active_index_path.is_file()
+    except ArchiveLocationError:
+        return False
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value) if value is not None else default
@@ -221,16 +238,17 @@ def status_command(
                 include_archive_readiness=exact_archive_readiness,
             )
         except sqlite3.Error:
-            # A missing or preflight-invalid archive has no snapshot to hand
-            # to the canonical reader.  Keep the retired direct-status
-            # aggregate out of this route, but retain its bounded first-run
-            # diagnostic so a normal status command remains actionable.
+            # A missing active index has no snapshot to hand to the canonical
+            # reader. Keep the retired direct-status aggregate out of this
+            # route, but retain its bounded first-run diagnostic. Other
+            # SQLite failures are an unavailable operation, not first-run.
             from polylogue.cli.commands.status_diagnostics import diagnose_first_run
 
-            diagnostic = diagnose_first_run(daemon_alive=False)
-            if diagnostic.kind in {"no_archive", "schema_mismatch", "locked_db", "stale_pidfile", "no_sources"}:
-                _show_direct_status_diagnostic(env, diagnostic, output_format=output_format)
-                return
+            if _archive_snapshot_is_absent(observed_archive_root):
+                diagnostic = diagnose_first_run(daemon_alive=False)
+                if diagnostic.kind == "no_archive":
+                    _show_direct_status_diagnostic(env, diagnostic, output_format=output_format)
+                    return
             obs.attributes["daemon_reachable"] = True
             obs.daemon_path = "daemon"
             if output_format == "json":
