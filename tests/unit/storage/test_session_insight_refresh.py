@@ -991,11 +991,11 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     ]
 
 
-def test_derived_stage_lowers_declared_markers_to_user_assertions(tmp_path: Path) -> None:
-    """The daemon's production derived stage reaches the marker lowering seam."""
-    from polylogue.daemon.convergence_stages import _archive_insights_execute_ids
+def test_session_profile_owner_lowers_declared_markers_to_user_assertions(tmp_path: Path) -> None:
+    """The typed session-profile owner reaches the marker lowering seam."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from tests.infra.convergence_harness import converge_session_profiles
 
     archive_root = tmp_path / "marker-materialization"
     initialize_active_archive_root(archive_root)
@@ -1021,9 +1021,7 @@ def test_derived_stage_lowers_declared_markers_to_user_assertions(tmp_path: Path
         )
         conn.commit()
 
-    with open_connection(index_db) as conn:
-        result = _archive_insights_execute_ids(conn, [session_id], archive_root=archive_root)
-        assert result
+    converge_session_profiles(index_db, archive_root, (session_id,), now=lambda: 0.0)
 
     with sqlite3.connect(archive_root / "user.db") as conn:
         row = conn.execute(

@@ -20,12 +20,13 @@ from polylogue.archive.session_revision_membership import MembershipRevision, cl
 from polylogue.config import Source
 from polylogue.core.enums import Origin
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import make_derived_stage, make_fts_stage
+from polylogue.daemon.convergence_stages import make_fts_stage
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.convergence_harness import converge_session_profiles
 
 ReceiptVerdict = Literal["equivalent", "conflict", "unresolved"]
 
@@ -162,16 +163,12 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
         session_ids = tuple(
             str(row[0]) for row in connection.execute("SELECT session_id FROM sessions ORDER BY session_id")
         )
-    converger = DaemonConverger(
-        (
-            make_fts_stage(archive_root / "index.db"),
-            make_derived_stage(archive_root / "index.db"),
-        )
-    )
+    converger = DaemonConverger((make_fts_stage(archive_root / "index.db"),))
     states, _timings = converger.converge_sessions(session_ids)
     if any(not state.converged for state in states.values()):
         pending = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
         raise AssertionError(f"Claude vintage proof did not converge: {pending}")
+    converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
 
     old_payload = json.loads(old_path.read_text(encoding="utf-8"))
     new_payload = json.loads(new_path.read_text(encoding="utf-8"))
@@ -217,7 +214,7 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
         production_route=(
             "parse_sources_archive",
             "backfill_historical_revision_evidence",
-            "DaemonConverger(make_fts_stage, make_derived_stage)",
+            "DaemonConverger(make_fts_stage) + SessionProfileConvergenceOwner",
         ),
         parser_branch=(
             ("old_wire_shape", "top_level_text"),

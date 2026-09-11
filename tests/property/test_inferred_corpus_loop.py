@@ -20,7 +20,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import make_derived_stage, make_fts_stage
+from polylogue.daemon.convergence_stages import make_fts_stage
 from polylogue.maintenance.archive_verification import verify_archive
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
@@ -35,7 +35,7 @@ from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_canonical_snapshot import archive_snapshot, assert_archives_equivalent
-from tests.infra.convergence_harness import set_debt_retry_at
+from tests.infra.convergence_harness import converge_session_profiles, set_debt_retry_at
 from tests.infra.inferred_corpus import (
     assert_inferred_corpus_convergence_handoff_complete,
     build_inferred_corpus_convergence_handoff,
@@ -139,10 +139,9 @@ def _ingest_and_converge_sources(
     assert backfill.adoption_deferred == 0
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-    states, _timings = DaemonConverger(
-        (make_fts_stage(archive_root / "index.db"), make_derived_stage(archive_root / "index.db"))
-    ).converge_sessions(session_ids)
+    states, _timings = DaemonConverger((make_fts_stage(archive_root / "index.db"),)).converge_sessions(session_ids)
     assert states and all(state.converged and state.last_error is None for state in states.values())
+    converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
     with sqlite3.connect(archive_root / "index.db") as conn:
         record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
     return session_ids
@@ -244,11 +243,10 @@ def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-    converger = DaemonConverger(
-        (make_fts_stage(archive_root / "index.db"), make_derived_stage(archive_root / "index.db"))
-    )
+    converger = DaemonConverger((make_fts_stage(archive_root / "index.db"),))
     states, _timings = converger.converge_sessions(session_ids)
     assert states and all(state.converged and state.last_error is None for state in states.values())
+    converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
@@ -376,10 +374,9 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-    states, _timings = DaemonConverger(
-        (make_fts_stage(archive_root / "index.db"), make_derived_stage(archive_root / "index.db"))
-    ).converge_sessions(session_ids)
+    states, _timings = DaemonConverger((make_fts_stage(archive_root / "index.db"),)).converge_sessions(session_ids)
     assert states and all(state.converged and state.last_error is None for state in states.values())
+    converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
     with sqlite3.connect(archive_root / "index.db") as conn:
         conn.execute("ANALYZE")
 
