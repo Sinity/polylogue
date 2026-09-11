@@ -108,6 +108,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry("Library API", "library-api.md", "Async archive API, filters, and query patterns.", "reference"),
     _entry("MCP Integration", "mcp-integration.md", "Model Context Protocol server setup and usage.", "reference"),
     _entry(
+        "Session Orchestration Evidence",
+        "orchestration-evidence.md",
+        "Stored session topology, executor observations, usage, and provenance gaps through the API and MCP.",
+        "reference",
+    ),
+    _entry(
         "Agent Integration Reference",
         "agent-integration-reference.md",
         "Generated typed contract, recipes, client delivery, and cutover reconciliation reference.",
