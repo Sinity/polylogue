@@ -31,6 +31,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
+from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import (
     _AppendPlan,
@@ -178,12 +179,13 @@ def test_append_plan_declines_when_neither_cursor_nor_durable_head_exists(tmp_pa
     assert plan is None
 
 
-def test_append_plan_declines_resynthesis_for_an_append_kind_head(tmp_path: Path) -> None:
-    """An already-accepted append-kind head must not be treated as resynthesizable.
+def test_append_plan_resynthesizes_an_append_kind_head(tmp_path: Path) -> None:
+    """An accepted append head remains a usable frontier after an ops reset.
 
-    Resynthesizing from a stale 'full' baseline behind an already-accepted
-    append chain would create a second sibling append candidate at the same
-    offset and make ``plan_revision_replay`` mark the whole chain ambiguous.
+    The retained chain proves the complete prefix byte-for-byte, so planning
+    can continue from its cumulative ``append_end_offset``.  Refusing an
+    append-kind head here strands every later observation on the full-capture
+    path after a continuity lapse.
     """
     session_id = "append-head-proof"
     bootstrap_archive_root(tmp_path)
@@ -234,7 +236,79 @@ def test_append_plan_declines_resynthesis_for_an_append_kind_head(tmp_path: Path
 
     plan = processor._append_plan(source)
 
-    assert plan is None
+    assert isinstance(plan, _AppendPlan)
+    assert plan.start_offset == len(baseline) + len(first_append_delta)
+    assert plan.payload == second_append
+    assert plan.cursor_fingerprint == "append-1"
+
+
+def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) -> None:
+    """A quarantined recovery snapshot must not strand the accepted append chain."""
+    session_id = "append-lapse-recovery"
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "rollout-append-lapse-recovery.jsonl"
+    baseline = _session_meta(session_id) + _codex_message("baseline")
+    first_delta = _codex_message("first append")
+    recovery_delta = _codex_message("recovery snapshot")
+    next_delta = _codex_message("next append")
+    source.write_bytes(baseline)
+    _seed_native_session(tmp_path, session_id=session_id)
+
+    # Seed the accepted baseline, then plan and ingest one append through the
+    # same production helpers used by the watcher.
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path=str(source),
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                logical_source_key=f"codex-session:{session_id}",
+                kind=RawRevisionKind.FULL,
+                source_revision="full-0",
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.classify_raw_revision_cohort_for_live_watch(f"codex-session:{session_id}")
+    cursor = CursorStore(tmp_path / "ops.db")
+    processor = _processor(tmp_path, cursor)
+    source.write_bytes(baseline + first_delta)
+    first_plan = processor._append_plan(source)
+    assert isinstance(first_plan, _AppendPlan)
+    first_result = ingest_append_plans(processor, [first_plan])
+    assert first_result.succeeded == [first_plan]
+
+    # Simulate the continuity lapse's full recovery capture.  Its bytes are
+    # retained, but strict grown-frontier governance leaves the snapshot
+    # quarantined beside the accepted full+append chain.
+    recovery_snapshot = baseline + first_delta + recovery_delta
+    source.write_bytes(recovery_snapshot)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=recovery_snapshot,
+            source_path=str(source),
+            acquired_at_ms=2,
+            revision=RawRevisionEnvelope(
+                logical_source_key=f"codex-session:{session_id}",
+                kind=RawRevisionKind.FULL,
+                source_revision="recovery-full",
+                acquisition_generation=1,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+
+    # The disposable ops cursor is gone.  Durable resynthesis must use the
+    # accepted append head as the proved frontier and capture the next range.
+    source.write_bytes(recovery_snapshot + next_delta)
+    reset_processor = _processor(tmp_path, CursorStore(tmp_path / "ops-reset.db"))
+    resumed_plan = reset_processor._append_plan(source)
+    assert isinstance(resumed_plan, _AppendPlan)
+    assert resumed_plan.start_offset == len(baseline) + len(first_delta)
+    assert resumed_plan.payload == recovery_delta + next_delta
+    resumed_result = ingest_append_plans(reset_processor, [resumed_plan])
+    assert resumed_result.succeeded == [resumed_plan]
 
 
 def test_source_migration_adds_legacy_append_resynthesis_receipts(tmp_path: Path) -> None:
