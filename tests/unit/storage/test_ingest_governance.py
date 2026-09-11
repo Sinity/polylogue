@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeAlias
 
 import pytest
 
@@ -22,6 +24,8 @@ from polylogue.storage.sqlite.archive_tiers import revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
+ParseFunction: TypeAlias = Callable[[ArchiveStore, str], list[ParsedSession]]
+
 
 def _session(
     *texts: str,
@@ -29,6 +33,32 @@ def _session(
     attachment_bytes: bytes | None = None,
     precomputed_blob: tuple[str, int] | None = None,
 ) -> ParsedSession:
+    if attachment_bytes is not None:
+        attachments = [
+            ParsedAttachment(
+                provider_attachment_id="prepared-attachment",
+                message_provider_id="m0",
+                name="prepared.bin",
+                mime_type="application/octet-stream",
+                size_bytes=len(attachment_bytes),
+                inline_bytes=attachment_bytes,
+                precomputed_blob=precomputed_blob,
+            )
+        ]
+    elif precomputed_blob is not None:
+        attachments = [
+            ParsedAttachment(
+                provider_attachment_id="prepared-attachment",
+                message_provider_id="m0",
+                name="prepared.bin",
+                mime_type="application/octet-stream",
+                size_bytes=precomputed_blob[1],
+                inline_bytes=None,
+                precomputed_blob=precomputed_blob,
+            )
+        ]
+    else:
+        attachments = []
     return ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id=session_id,
@@ -36,25 +66,11 @@ def _session(
             ParsedMessage(provider_message_id=f"m{index}", role=Role.USER, text=text)
             for index, text in enumerate(texts)
         ],
-        attachments=(
-            [
-                ParsedAttachment(
-                    provider_attachment_id="prepared-attachment",
-                    message_provider_id="m0",
-                    name="prepared.bin",
-                    mime_type="application/octet-stream",
-                    size_bytes=len(attachment_bytes) if attachment_bytes is not None else precomputed_blob[1],
-                    inline_bytes=attachment_bytes,
-                    precomputed_blob=precomputed_blob,
-                )
-            ]
-            if attachment_bytes is not None or precomputed_blob is not None
-            else []
-        ),
+        attachments=attachments,
     )
 
 
-def _parse_from(sessions_by_raw_id: dict[str, ParsedSession]):
+def _parse_from(sessions_by_raw_id: dict[str, ParsedSession]) -> ParseFunction:
     def parse(_archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
         return [sessions_by_raw_id[raw_id]]
 
@@ -73,7 +89,7 @@ def _write_raws(archive: ArchiveStore, count: int) -> tuple[str, ...]:
     )
 
 
-def _publish_census(archive: ArchiveStore, raw_id: str, parse, *, at_ms: int) -> None:
+def _publish_census(archive: ArchiveStore, raw_id: str, parse: ParseFunction, *, at_ms: int) -> None:
     prepared = prepare_raw_census(
         archive,
         raw_id,
@@ -260,7 +276,9 @@ def test_read_only_compute_defers_attachment_publication_until_writer_revalidati
         )
         assert prepared.prepared_rows_by_raw_id
         assert prepared.prepared_attachment_blobs
-        stale_staged_path = prepared.prepared_attachment_blobs[0].prepared_blob.temporary_path
+        prepared_blob = prepared.prepared_attachment_blobs[0].prepared_blob
+        assert prepared_blob is not None
+        stale_staged_path = prepared_blob.temporary_path
         assert stale_staged_path.is_file()
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
@@ -287,7 +305,9 @@ def test_read_only_compute_defers_attachment_publication_until_writer_revalidati
             parse_retained_raw=parse,
             acquired_at_ms=4,
         )
-        fresh_staged_path = fresh.prepared_attachment_blobs[0].prepared_blob.temporary_path
+        fresh_blob = fresh.prepared_attachment_blobs[0].prepared_blob
+        assert fresh_blob is not None
+        fresh_staged_path = fresh_blob.temporary_path
         assert fresh_staged_path.is_file()
     with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
         result = publish_ingest_cohort(writer, fresh)

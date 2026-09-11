@@ -132,14 +132,28 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
     monkeypatch.setattr(runtime, "try_load_sqlite_vec", lambda connection: (True, None))
     configure_projection = runtime._configure_current_embedding_messages
 
-    def publish_after_pin(connection: sqlite3.Connection, **kwargs: object) -> None:
+    def publish_after_pin(
+        connection: sqlite3.Connection,
+        *,
+        index_path: Path | None = None,
+        model: str,
+        attach_index: bool = True,
+        register_identity: bool = True,
+    ) -> None:
         # A TEMP setup executescript would implicitly commit, admitting these
         # later writes into the allegedly pinned semantic snapshot.
+        assert index_path is not None
         with sqlite3.connect(embeddings_path) as writer:
             writer.execute("UPDATE snapshot_probe SET value = 2")
         with sqlite3.connect(index_path) as writer:
             writer.execute("UPDATE messages SET role = 'system'")
-        configure_projection(connection, **kwargs)
+        configure_projection(
+            connection,
+            index_path=index_path,
+            model=model,
+            attach_index=attach_index,
+            register_identity=register_identity,
+        )
 
     monkeypatch.setattr(runtime, "_configure_current_embedding_messages", publish_after_pin)
 

@@ -2,6 +2,7 @@
 
 import hashlib
 import sqlite3
+from typing import TypedDict
 
 import pytest
 
@@ -18,6 +19,15 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     transition_source_item,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+
+class _TransitionArgs(TypedDict):
+    source_generation_id: str
+    source_item_id: str
+    disposition: AcquisitionDisposition
+    outcome_code: IngestOutcome
+    stage: str
+    observed_at_ms: int
 
 
 def _source() -> sqlite3.Connection:
@@ -338,7 +348,7 @@ def test_stale_item_transition_cannot_overwrite_a_newer_observation() -> None:
         coordinates=("empty.json",),
         observed_at_ms=1,
     )
-    args = {
+    args: _TransitionArgs = {
         "source_generation_id": "ordered",
         "source_item_id": item,
         "disposition": AcquisitionDisposition.EMPTY,
