@@ -5,6 +5,7 @@ import contextlib
 import functools
 import hashlib
 import inspect
+import json
 import os
 import sqlite3
 import stat
@@ -1925,13 +1926,15 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
 
     db = tmp_path / "index.db"
     db.touch()
-    calls: list[str] = []
+    actors: list[str] = []
     profile_scopes: list[tuple[str, ...] | None] = []
     drained = asyncio.Event()
 
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        calls.append("fts" if _actor == "maintenance.fts_convergence" else "drain")
+        actors.append(_actor)
         drained.set()
+        if _actor == "maintenance.embedding_debt_scan":
+            return (), ()
         return 0
 
     async def fake_session_profiles(scope: tuple[str, ...] | None) -> object:
@@ -1955,7 +1958,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
             )
         )
         await asyncio.sleep(0)
-        assert calls == []
+        assert actors == []
         assert profile_scopes == []
         catch_up_complete.set()
         await asyncio.wait_for(drained.wait(), timeout=1)
@@ -1965,7 +1968,11 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
 
     asyncio.run(exercise())
 
-    assert calls == ["drain", "fts"]
+    assert actors == [
+        "maintenance.embedding_debt_scan",
+        "maintenance.convergence_debt",
+        "maintenance.fts_convergence",
+    ]
     assert profile_scopes == [None]
 
 
@@ -3634,6 +3641,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         def __init__(self) -> None:
             self.stopped = threading.Event()
             self.session_profile_callback = object()
+            self.execution_kernel = object()
             self.operation_runtime = SimpleNamespace(shutdown=self._shutdown_operation_runtime)
 
         async def _shutdown_operation_runtime(self) -> None:
@@ -3770,6 +3778,176 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     assert bridge._coordinator is watcher_coordinators[0]
     assert watcher_profile_callbacks == [api_server.session_profile_callback]
     assert periodic_profile_callbacks == [api_server.session_profile_callback]
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("drives the real filesystem watcher through a controlled daemon lifecycle")
+async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_path: Path) -> None:
+    """A real daemon lifecycle restores profiles from configured-source evidence.
+
+    Each pass enters ``run_daemon_services`` with the production watcher and
+    composition callback. The first pass catches up a physical JSONL source;
+    the second starts after a synthetic, output-only profile removal. Both
+    passes terminate only after the real periodic convergence loop invokes
+    its post-catch-up no-hint callback. No manual operation invokes the owner.
+
+    Anti-vacuity: omit the watcher callback, run the sweep before catch-up,
+    replace it with a scoped live-source call, or retain output rows across
+    restart, and the recorded ``None`` scope or repaired durable profile fails.
+    """
+    from polylogue import Polylogue as RealPolylogue
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import session_profile_composition
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.daemon.services import ServiceProfile
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    archive_root = tmp_path / "archive"
+    source_root = tmp_path / "configured-source"
+    source_root.mkdir()
+    native_session_id = "aaaa0000-0000-0000-0000-000000000001"
+    session_id = f"claude-code-session:{native_session_id}"
+    source = source_root / "fresh-session.jsonl"
+    source.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in (
+                {
+                    "parentUuid": None,
+                    "sessionId": native_session_id,
+                    "type": "user",
+                    "message": {"role": "user", "content": "synthetic startup prompt"},
+                    "uuid": "message-1",
+                    "timestamp": "2026-05-16T00:00:00.000Z",
+                    "cwd": "/workspace",
+                    "version": "1.0.6",
+                    "isSidechain": False,
+                    "userType": "external",
+                },
+                {
+                    "parentUuid": "message-1",
+                    "sessionId": native_session_id,
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": "synthetic startup reply"},
+                    "uuid": "message-2",
+                    "timestamp": "2026-05-16T00:00:01.000Z",
+                    "cwd": "/workspace",
+                    "version": "1.0.6",
+                    "isSidechain": False,
+                    "userType": "external",
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(source, (1.0, 1.0))
+
+    observed_scopes: list[tuple[str, ...] | None] = []
+    sweep_complete = asyncio.Event()
+    current_coordinator: DaemonWriteCoordinator | None = None
+    real_compose = session_profile_composition.compose_session_profile_callback
+
+    async def idle_loop(**_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    async def noop_periodic_work(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def compose_with_oracle(*args: object, **kwargs: object) -> object:
+        composed = real_compose(*args, **kwargs)
+
+        async def observe(scope: tuple[str, ...] | None) -> object:
+            report = await composed(scope)
+            if scope is None:
+                observed_scopes.append(scope)
+                sweep_complete.set()
+            return report
+
+        return session_profile_composition.ComposedSessionProfiles(observe, composed.maintenance)
+
+    def daemon_coordinator() -> DaemonWriteCoordinator:
+        assert current_coordinator is not None
+        return current_coordinator
+
+    def profile_exists() -> bool:
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            return (
+                conn.execute("SELECT 1 FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()
+                is not None
+            )
+
+    async def run_until_observed_sweep() -> None:
+        nonlocal current_coordinator
+        current_coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+        sweep_complete.clear()
+        task = asyncio.create_task(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="configured", root=source_root),),
+                debounce_s=0.01,
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                enable_api=False,
+                service_profile=ServiceProfile.PRODUCTION,
+            )
+        )
+        try:
+            await asyncio.wait_for(sweep_complete.wait(), timeout=20.0)
+            assert profile_exists()
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=10.0)
+
+    try:
+        with contextlib.ExitStack() as stack:
+            _daemon_startup_stubs(stack, daemon_cli, archive_root)
+            stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
+            stack.enter_context(patch.object(daemon_cli, "daemon_write_coordinator", daemon_coordinator))
+            stack.enter_context(
+                patch.object(session_profile_composition, "compose_session_profile_callback", compose_with_oracle)
+            )
+            stack.enter_context(patch.object(daemon_cli, "_retry_convergence_debt_once", noop_periodic_work))
+            stack.enter_context(patch.object(daemon_cli, "_run_periodic_fts_convergence_once", noop_periodic_work))
+            for attribute in (
+                "_periodic_lifecycle_heartbeat",
+                "_periodic_health_check",
+                "_periodic_wal_checkpoint",
+                "_periodic_fts_merge",
+                "_periodic_heartbeat",
+                "_periodic_db_optimize",
+                "_periodic_status_snapshot_refresh",
+                "_periodic_raw_materialization_convergence",
+                "_periodic_drive_source_catchup",
+            ):
+                stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
+            for target in (
+                "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
+                "polylogue.daemon.embedding_backlog.periodic_embedding_orphan_reconcile_check",
+                "polylogue.daemon.judgment_automation.periodic_judgment_automation_sweep",
+                "polylogue.daemon.blob_gc_periodic.periodic_blob_gc_check",
+                "polylogue.daemon.blob_gc_periodic.periodic_blob_publication_reconciliation_check",
+                "polylogue.daemon.secret_scan_sweep.periodic_secret_scan_sweep",
+            ):
+                stack.enter_context(patch(target, idle_loop))
+
+            await run_until_observed_sweep()
+            with sqlite3.connect(archive_root / "index.db") as conn:
+                assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+                for table in ("session_work_events", "session_phases", "session_latency_profiles", "session_profiles"):
+                    conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+                conn.commit()
+            assert not profile_exists()
+
+            await run_until_observed_sweep()
+    finally:
+        reset_daemon_compute_adapter()
+
+    assert observed_scopes == [None, None]
+    assert profile_exists()
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
