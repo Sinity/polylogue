@@ -760,3 +760,44 @@ def test_retained_asset_member_names_still_carry_their_provider_id() -> None:
     assert _member_asset_id("file-ABCdef123.dat") == "file-ABCdef123"
     assert _member_asset_id("file-ABCdef123.png") == "file-ABCdef123"
     assert _member_asset_id("conversations.json") is None
+
+
+def test_zip_export_retains_asset_members_and_maps_byte_exact(tmp_path: Path) -> None:
+    """A bundled export's asset bytes are acquired, not decoded as a payload.
+
+    A ChatGPT export normally arrives as a ZIP. Its asset members are
+    arbitrary binary, so the payload-splitting route's UTF-8 decode fails the
+    whole archive read rather than the one member -- the raw-only declaration
+    has to divert them to byte-preserving acquisition
+    (``source_acquisition_components.iter_zip_entry_raw_data``).
+
+    Anti-vacuity: remove the ``path_declaration_refuses_session`` branch there
+    and this test fails with the asset member missing and the archive skipped.
+    """
+    import zipfile
+
+    from polylogue.config import Source
+    from polylogue.sources.source_acquisition import iter_source_raw_data
+    from polylogue.storage.blob_store import BlobStore
+
+    root = tmp_path / "inbox"
+    root.mkdir()
+    asset_bytes = b"\x89PNG\r\n\x1a\nsynthetic"
+    archive = root / "chatgpt-export.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("conversations.json", json.dumps([]))
+        handle.writestr("library_files.json", json.dumps([{"id": "file-ABC", "name": "d.png"}]))
+        handle.writestr("conversation_asset_file_names.json", json.dumps({"file-ABC": "d.png"}))
+        handle.writestr("dalle-generations/file-ABC.webp", asset_bytes)
+
+    store = BlobStore(tmp_path / "blobs")
+    acquired = {
+        raw.source_path.rsplit(":", 1)[-1]: raw
+        for raw in iter_source_raw_data(Source(name="chatgpt", path=root), blob_store=store)
+    }
+
+    assert "dalle-generations/file-ABC.webp" in acquired
+    assert "library_files.json" in acquired
+    assert "conversation_asset_file_names.json" in acquired
+    asset = acquired["dalle-generations/file-ABC.webp"]
+    assert store.read_all(asset.blob_hash or "") == asset_bytes
