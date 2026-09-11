@@ -253,6 +253,7 @@ anything beyond localhost.
 
 ```bash
 devtools status
+# Optional local static check; the hosted candidate gate covers publication.
 devtools verify --quick
 ```
 

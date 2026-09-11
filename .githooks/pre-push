@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # No local push gate. The hosted quick gate on the pull request is the static
-# check, the corpus runs on master per landing wave, and a local gate here ran
-# against whichever working tree happened to be checked out, not the commit
-# being pushed.
+# check; broader suites are explicit workflow or operator requests, not a
+# per-wave hook, and a local gate here would run against whichever working tree
+# happened to be checked out rather than the commit being pushed.
 exit 0

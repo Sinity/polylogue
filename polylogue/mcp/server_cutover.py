@@ -947,6 +947,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
     async def get(ref: str, projection: str | None = None) -> str:
         """Resolve one exact stable object or evidence identity.
 
+        ``projection="orchestration"`` returns versioned structured launch,
+        topology, model, bead-tool, usage and rate-limit evidence with native
+        references and explicit coverage gaps. Missing measurements are null.
+
         ``projection="events"`` on a ``session:<id>`` ref returns the raw
         session-timeline evidence (``Session.session_events``) instead of the
         default session summary -- Codex ``world_state``/``agent_policy``/
@@ -994,6 +998,11 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 return await _cost_outlook_payload(hooks, plan_name=plan_name, method=projection)
             if metric_id is not None:
                 return _metric_definition_payload(hooks, metric_id)
+            if projection == "orchestration" and session_id is not None:
+                evidence = await hooks.get_polylogue().get_session_orchestration(session_id)
+                if evidence is None:
+                    return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
+                return hooks.json_payload(MCPRootPayload(root=evidence.model_dump(mode="json")))
             if projection == "events" and session_id is not None:
                 events = await hooks.get_polylogue().get_session_events(session_id)
                 if events is None:

@@ -314,6 +314,8 @@ _MANAGED_VERIFY_ENV = frozenset(
     }
 )
 
+_BROAD_PREWARM_ENV = "POLYLOGUE_BROAD_PREWARM"
+
 
 @pytest.fixture(autouse=True)
 def _close_test_opened_sqlite_connections(
@@ -757,6 +759,11 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     Building here costs the same once and nothing per worker.
     """
     config = session.config
+    # A focused explicit-parallel run should only collect what it named. The
+    # broad verifier opts in to this controller-only archive warmup; fixture
+    # locks retain their lazy fallback for every other route.
+    if os.environ.get(_BROAD_PREWARM_ENV) != "1":
+        return
     if hasattr(config, "workerinput"):
         return
     if not getattr(config.option, "numprocesses", 0):
@@ -779,6 +786,13 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     build_seeded_archive()
     for profile in NAMED_WORKLOAD_PROFILES:
         build_seeded_archive(profile.corpus_specs())
+
+
+@pytest.fixture(scope="session")
+def worker_id(request: pytest.FixtureRequest) -> str:
+    """Expose xdist's worker identity while keeping serial focused runs plugin-free."""
+    worker_input = getattr(request.config, "workerinput", {})
+    return str(worker_input.get("workerid", "master"))
 
 
 @pytest.fixture(scope="session")
