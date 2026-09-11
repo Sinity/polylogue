@@ -219,7 +219,7 @@ class AuditContinuityCoordinator:
             self._reconcile_serialized(apply)
 
     @contextmanager
-    def settled_read(self) -> Iterator[None]:
+    def settled_read(self) -> Iterator[dict[str, int]]:
         """Observe audit receipts only after the source control head agrees.
 
         This never repairs state or waits behind a writer. The resident owner
@@ -231,7 +231,14 @@ class AuditContinuityCoordinator:
             if not self.is_available() or self._pending() is not None:
                 raise AuditContinuityPendingError("audit continuity requires owner reconciliation")
             self._assert_committed_head_matches_audit()
-            yield
+            with (
+                _open_source_read_connection(self.source_path) as source,
+                open_verified_audit_read_connection(self.audit_path) as audit,
+            ):
+                yield {
+                    "source": int(source.execute("PRAGMA user_version").fetchone()[0]),
+                    "audit": int(audit.execute("PRAGMA user_version").fetchone()[0]),
+                }
         finally:
             self._execution_lock.release()
 

@@ -45,6 +45,8 @@ class SqliteVecQueryMixin:
 
         def _get_connection(self) -> sqlite3.Connection: ...
 
+        def _release_connection(self, conn: sqlite3.Connection) -> None: ...
+
     def upsert(self, session_id: str, messages: list[MessageRecord], *, origin: str | None = None) -> None:
         """Upsert embeddings while holding managed lifecycle admission.
 
@@ -52,6 +54,8 @@ class SqliteVecQueryMixin:
         table.  Callers that know the archive origin should supply it; the
         message source is the compatibility fallback for older callers.
         """
+        if getattr(self, "_snapshot_connection", None) is not None:
+            raise SqliteVecError("operation vector snapshots are read-only")
         if getattr(self, "_legacy_compatibility", False) or self.db_path.name != "embeddings.db":
             self._upsert_unlocked(session_id, messages, origin=origin)
             return
@@ -150,7 +154,7 @@ class SqliteVecQueryMixin:
             )
             conn.commit()
         finally:
-            conn.close()
+            self._release_connection(conn)
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         """Run the provider route under managed lifecycle admission."""
@@ -194,7 +198,7 @@ class SqliteVecQueryMixin:
             ).fetchall()
             return [(row["message_id"], row["distance"]) for row in rows]
         finally:
-            conn.close()
+            self._release_connection(conn)
 
     def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
         """Run the provider route under managed lifecycle admission."""
@@ -267,7 +271,7 @@ class SqliteVecQueryMixin:
             ranked = sorted(best_distance.items(), key=lambda item: (item[1], item[0]))
             return ranked[:limit]
         finally:
-            conn.close()
+            self._release_connection(conn)
 
     def count_session_embeddings(self, session_id: str) -> int:
         """Run the provider route under managed lifecycle admission."""
@@ -300,7 +304,7 @@ class SqliteVecQueryMixin:
                 raise SqliteVecError(f"session {session_id!r} has no stored embeddings: {exc}") from exc
             return int(row["count"]) if row is not None else 0
         finally:
-            conn.close()
+            self._release_connection(conn)
 
     def query_by_provider(
         self,
@@ -356,7 +360,7 @@ class SqliteVecQueryMixin:
             ).fetchall()
             return [(row["message_id"], row["distance"]) for row in rows]
         finally:
-            conn.close()
+            self._release_connection(conn)
 
     def get_embedding_stats(self) -> dict[str, int]:
         """Run the provider route under managed lifecycle admission."""
@@ -373,7 +377,7 @@ class SqliteVecQueryMixin:
                 "pending_sessions": embedding_stats.pending_sessions,
             }
         finally:
-            conn.close()
+            self._release_connection(conn)
 
 
 __all__ = ["SqliteVecQueryMixin"]

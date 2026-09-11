@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from polylogue.paths import embeddings_db_path
@@ -31,7 +32,22 @@ class SqliteVecProvider(
         model: str = DEFAULT_MODEL,
         dimension: int = DEFAULT_DIMENSION,
         archive_root: Path | None = None,
+        snapshot_connection: sqlite3.Connection | None = None,
     ) -> None:
+        if snapshot_connection is not None:
+            # This provider is an operation-scoped reader. The archive owner
+            # opened and pinned the handle; this class must neither resolve a
+            # path nor close/reopen that authority.
+            self.db_path = Path("embeddings.db")
+            self.archive_root = None
+            self._legacy_compatibility = False
+            self._snapshot_connection = snapshot_connection
+            self.voyage_key = voyage_key
+            self.model = model
+            self.dimension = dimension
+            self._vec_available = True
+            self._tables_ensured = True
+            return
         explicit_path = db_path is not None
         self.db_path = (db_path or embeddings_db_path()).absolute()
         self.archive_root = archive_root.absolute() if archive_root is not None else None
@@ -44,6 +60,25 @@ class SqliteVecProvider(
         self.dimension = dimension
         self._vec_available: bool | None = None
         self._tables_ensured: bool = False
+        self._snapshot_connection: sqlite3.Connection | None = None
+
+    @classmethod
+    def from_vector_read_snapshot(
+        cls,
+        *,
+        voyage_key: str,
+        connection: sqlite3.Connection,
+        model: str = DEFAULT_MODEL,
+        dimension: int = DEFAULT_DIMENSION,
+    ) -> SqliteVecProvider:
+        """Bind semantic reads to an archive-owned operation snapshot."""
+
+        return cls(
+            voyage_key,
+            model=model,
+            dimension=dimension,
+            snapshot_connection=connection,
+        )
 
 
 class _LegacySqliteVecProvider(SqliteVecProvider):
@@ -64,6 +99,7 @@ class _LegacySqliteVecProvider(SqliteVecProvider):
         self.dimension = dimension
         self._vec_available: bool | None = None
         self._tables_ensured = False
+        self._snapshot_connection: sqlite3.Connection | None = None
 
 
 __all__ = [

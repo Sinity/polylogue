@@ -40,11 +40,12 @@ def _envelope_for_identity(
     started_at: float | None,
     run_id: str | None,
     degraded: tuple[str, ...],
+    tier_schema_versions: dict[str, int] | None = None,
 ) -> AuthorityEnvelope:
     return build_authority_envelope(
         archive_epoch=identity.authority_identity_digest,
         generation_id=identity.active_generation,
-        tier_schema_versions=_tier_schema_versions(),
+        tier_schema_versions=_tier_schema_versions() if tier_schema_versions is None else tier_schema_versions,
         server_identity=server_identity,
         started_at=started_at,
         run_id=run_id,
@@ -111,13 +112,16 @@ def authority_for_reader(
     published after those rows were read.
     """
 
-    identity = ArchiveIdentity.resolve_pinned_index(Path(reader.archive_root), Path(reader.index_db_path))
+    identity = getattr(reader, "operation_identity", None) or ArchiveIdentity.resolve_pinned_index(
+        Path(reader.archive_root), Path(reader.index_db_path)
+    )
     return _envelope_for_identity(
         identity,
         server_identity=server_identity,
         started_at=started_at,
         run_id=run_id,
-        degraded=degraded,
+        degraded=tuple(dict.fromkeys((*degraded, *getattr(reader, "operation_degraded_components", ())))),
+        tier_schema_versions=getattr(reader, "operation_schema_versions", None),
     )
 
 

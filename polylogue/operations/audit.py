@@ -545,9 +545,9 @@ class AuditRepository:
         return None if row is None else dict(row)
 
     @contextmanager
-    def settled_machine_read(self) -> Iterator[None]:
-        with self._continuity.settled_read():
-            yield
+    def settled_machine_read(self) -> Iterator[dict[str, int]]:
+        with self._continuity.settled_read() as versions:
+            yield versions
 
     def preview_for_principal(self, preview_ref: str, principal: MutationPrincipal) -> MutationPreview:
         with self._connection() as conn:
