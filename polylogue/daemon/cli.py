@@ -13,7 +13,7 @@ import sqlite3
 import sys
 import threading
 import time
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
@@ -35,6 +35,7 @@ from polylogue.daemon.api_auth import (
     resolve_api_auth_token,
 )
 from polylogue.daemon.browser_capture import browser_capture_command
+from polylogue.daemon.execution import publish_daemon_compute_adapter
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
@@ -95,6 +96,9 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 _WHALE_RECEIPT_ROOT: Path | None = None
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
+#: Debt rows one retry tick inspects, shared by the admitted pass and the
+#: lease-free embedding pass that precedes it so both see the same window.
+_CONVERGENCE_DEBT_RETRY_LIMIT = 100
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
 # Rows per bounded writer-held pass. This is now a PURE writer-hold-duration
 # bound: small enough to keep the write coordinator responsive to live
@@ -996,10 +1000,63 @@ async def _periodic_convergence_check(
         await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
 
 
+async def _converge_ingest_embeddings_off_writer(index_db_path: Path, paths: Sequence[Path]) -> bool:
+    """The watcher's embedding owner: converge one ingest batch off the writer."""
+    from polylogue.daemon.embedding_owner import converge_archive_embeddings
+
+    return await converge_archive_embeddings(index_db_path, paths=paths)
+
+
+def _due_embedding_debt_subjects(db: Path) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+    """The ``embed``-stage debt subjects due now, read under writer ownership."""
+    from polylogue.sources.live.cursor import CursorStore
+
+    now = datetime.now(UTC)
+    cursor = CursorStore(db)
+    due = [
+        debt
+        for debt in cursor.list_convergence_debt(limit=_CONVERGENCE_DEBT_RETRY_LIMIT)
+        if debt.stage == "embed" and _debt_retry_due(debt, now=now)
+    ]
+    return (
+        tuple(dict.fromkeys(Path(debt.subject_id) for debt in due if debt.subject_type == "source_path")),
+        tuple(dict.fromkeys(debt.subject_id for debt in due if debt.subject_type == "session_id")),
+    )
+
+
+async def _converge_embedding_debt_off_writer(db: Path) -> None:
+    """Embed the recorded ``embed`` debt before the admitted debt-retry pass.
+
+    The retry pass itself runs under the writer gate, where the embedding stage
+    deliberately defers rather than calling a provider. Running the owner first
+    means the admitted pass that follows finds those subjects already converged
+    and clears their ledger rows, instead of re-deferring them forever. Only the
+    ledger read is admitted here; the provider work that follows is not.
+    """
+    from polylogue.daemon.embedding_owner import converge_archive_embeddings
+
+    try:
+        paths, session_ids = await daemon_write_coordinator().run_sync(
+            "maintenance.embedding_debt_scan",
+            _due_embedding_debt_subjects,
+            db,
+        )
+    except Exception:
+        logger.warning("embed: failed to read recorded embedding debt", exc_info=True)
+        return
+    if not paths and not session_ids:
+        return
+    try:
+        await converge_archive_embeddings(db, paths=paths, session_ids=session_ids)
+    except Exception:
+        logger.warning("embed: lease-free embedding debt retry did not complete", exc_info=True)
+
+
 async def _retry_convergence_debt_once(db: Path) -> None:
     """Run one logged derived-debt retry pass when the archive exists."""
     if not db.exists():
         return
+    await _converge_embedding_debt_off_writer(db)
     try:
         repaired = await daemon_write_coordinator().run_sync(
             "maintenance.convergence_debt",
@@ -2123,7 +2180,7 @@ def _raw_materialization_fts_needs_repair(index_db: Path) -> bool:
         return bool(readiness["exists"]) and not bool(readiness["ready"])
 
 
-def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
+def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT) -> int:
     """Retry due derived convergence debt without rereading source payloads.
 
     Debt identity is stage-scoped. A retry therefore runs only the recorded
@@ -3067,6 +3124,10 @@ async def _run_daemon_services_under_active_writer_lease(
                 api_host=api_host,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
+            # Daemon-internal lease-free work shares the capacity the API
+            # server already owns rather than standing up a second pool
+            # (polylogue-c0l7n).
+            publish_daemon_compute_adapter(api_server.execution_kernel)
             api_server_task = supervisor.start(
                 "api_server",
                 lambda: _serve_until_complete(api_server, label="api"),
@@ -3215,6 +3276,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         event_emitter=_emit_live_batch_event,
                         catch_up_event_emitter=emit_catch_up_cycle,
                         write_coordinator=write_coordinator,
+                        embedding_owner=_converge_ingest_embeddings_off_writer,
                     )
                     watcher_holder.append(watcher)
                     watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)

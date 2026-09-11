@@ -618,6 +618,45 @@ class BoundedComputeAdapter:
         self.executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
 
+#: The one compute capacity daemon-internal lease-free work is admitted
+#: through. The HTTP/UDS servers each publish the adapter they already own, so
+#: background derivation shares a published pool instead of standing up a
+#: second one; a process that publishes none (a test, a daemon started without
+#: the API) gets one small shared adapter rather than a pool per caller.
+_SHARED_COMPUTE_ADAPTER: BoundedComputeAdapter | None = None
+_SHARED_COMPUTE_LOCK = threading.Lock()
+
+
+def publish_daemon_compute_adapter(adapter: BoundedComputeAdapter) -> None:
+    """Declare the already-owned adapter as this process's shared capacity."""
+    global _SHARED_COMPUTE_ADAPTER
+    with _SHARED_COMPUTE_LOCK:
+        _SHARED_COMPUTE_ADAPTER = adapter
+
+
+def daemon_compute_adapter() -> BoundedComputeAdapter:
+    """Return the shared compute capacity, creating the fallback exactly once."""
+    global _SHARED_COMPUTE_ADAPTER
+    with _SHARED_COMPUTE_LOCK:
+        if _SHARED_COMPUTE_ADAPTER is None:
+            _SHARED_COMPUTE_ADAPTER = BoundedComputeAdapter(
+                max_workers=2,
+                queue_units=8,
+                thread_name_prefix="polylogue-derive",
+            )
+        return _SHARED_COMPUTE_ADAPTER
+
+
+def reset_daemon_compute_adapter() -> None:
+    """Drop the shared adapter so a new process scope can publish its own."""
+    global _SHARED_COMPUTE_ADAPTER
+    with _SHARED_COMPUTE_LOCK:
+        adapter = _SHARED_COMPUTE_ADAPTER
+        _SHARED_COMPUTE_ADAPTER = None
+    if adapter is not None:
+        adapter.shutdown(wait=False, cancel_futures=True)
+
+
 __all__ = [
     "ADMISSION_CLASSES",
     "BACKGROUND_CLASSES",
@@ -631,4 +670,7 @@ __all__ = [
     "DaemonBackpressureError",
     "DaemonOperationCancelled",
     "SubmittedOperation",
+    "daemon_compute_adapter",
+    "publish_daemon_compute_adapter",
+    "reset_daemon_compute_adapter",
 ]

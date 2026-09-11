@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -406,3 +407,182 @@ def test_membership_accepts_mixed_recipe_labels_but_not_mixed_models(tmp_path: P
         _meta_row(conn, b"\x02" * 32, model="voyage-4-lite", recipe=b"\x0a" * 32)
     with pytest.raises(EmbeddingGenerationError, match="mixed vector contracts"):
         store.replace(mixed_models)
+
+
+# ── Pointer replacement during lease-free computation (polylogue-c0l7n) ─────
+
+
+def test_generation_replaced_during_provider_call_rejects_the_publication(tmp_path: Path) -> None:
+    """Vectors computed against a retired generation never reach its replacement.
+
+    The provider call holds no generation lock by design, so the active pointer
+    can legitimately move while an attempt is in flight. Publication re-acquires
+    the lock and asserts the binding it reserved against, which is what stops a
+    window -- or its failure receipt -- from landing in a generation it was
+    never computed for.
+
+    Anti-vacuity: publish under the binding captured at reservation instead of
+    re-asserting a fresh one, and the replacement database below gains both the
+    vector rows and a failure row for a session it never embedded.
+    """
+    from polylogue.archive.message.roles import Role
+    from polylogue.config import load_polylogue_config
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+    from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage
+    from polylogue.storage.embeddings.materialization import embed_archive_session_sync
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+    from tests.infra.live_ingest import write_index_session
+
+    root = tmp_path / "archive"
+    text = "Prose whose generation is retired mid-flight."
+    with ArchiveStore(root) as archive:
+        session_id = write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="generation-moved",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text=text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    )
+                ],
+            ),
+        )
+    index_db = root / "index.db"
+    embeddings_db = root / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+    probe = sqlite3.connect(embeddings_db)
+    loaded, error = try_load_sqlite_vec(probe)
+    probe.close()
+    if not loaded:
+        pytest.skip(str(error) if error else "sqlite-vec extension is unavailable")
+
+    store = EmbeddingGenerationStore(root, active_path=embeddings_db)
+    configured_model = load_polylogue_config().embedding_model
+
+    class _PointerMovingProvider:
+        model = configured_model
+        dimension = 1024
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            self.calls += 1
+            replacement = root / "replacement.db"
+            initialize_archive_database(replacement, ArchiveTier.EMBEDDINGS)
+            store.replace(replacement, owner_id="replacement-owner")
+            return [[0.25] * self.dimension for _ in texts]
+
+    provider = _PointerMovingProvider()
+    outcome = embed_archive_session_sync(index_db, cast(Any, provider), session_id)
+
+    assert provider.calls == 1
+    assert outcome.status == "error"
+
+    with sqlite3.connect(embeddings_db) as conn:
+        vectors = conn.execute(
+            "SELECT COUNT(*) FROM message_embedding_refs WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+        failures = conn.execute(
+            "SELECT COUNT(*) FROM embedding_failures WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+    assert vectors == 0, "a window computed against the retired generation must not land in its replacement"
+    assert failures == 0, "the replacement generation must not inherit a failure receipt it never earned"
+
+
+def _generation_lock_is_free(archive_root: Path) -> bool:
+    """Whether the embedding generation flock is currently unheld.
+
+    ``flock`` is owned by an open file description, so a second descriptor in
+    this same process contends exactly as another process would. That makes
+    this a real observation of the lock, not a restatement of the code.
+    """
+    import fcntl
+    import os
+
+    lock_path = archive_root / ".embeddings-generations" / ".lifecycle.lock"
+    if not lock_path.exists():
+        return False
+    fd = os.open(lock_path, os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return True
+    finally:
+        os.close(fd)
+
+
+def test_generation_lock_is_free_while_the_provider_computes(tmp_path: Path) -> None:
+    """The real archive embed route releases the generation lock before embedding.
+
+    Every embedding write is still serialized by this lock; what changed is that
+    the provider round trip is no longer inside it, so a promotion, a retention
+    pass, or another session's publication is not queued behind the network.
+
+    Anti-vacuity: hold ``writer_lock`` across the provider call again (the
+    pre-split shape of ``embed_archive_session_sync``) and the probe below
+    reports the lock held. The probe returns False when the lock file is absent,
+    so a route that never took the lock at all also fails this test.
+    """
+    from polylogue.archive.message.roles import Role
+    from polylogue.config import load_polylogue_config
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+    from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage
+    from polylogue.storage.embeddings.materialization import embed_archive_session_sync
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+    from tests.infra.live_ingest import write_index_session
+
+    root = tmp_path / "archive"
+    text = "Prose embedded while the generation lock must be free."
+    with ArchiveStore(root) as archive:
+        session_id = write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="lock-free-compute",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text=text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    )
+                ],
+            ),
+        )
+    index_db = root / "index.db"
+    embeddings_db = root / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+    probe = sqlite3.connect(embeddings_db)
+    loaded, error = try_load_sqlite_vec(probe)
+    probe.close()
+    if not loaded:
+        pytest.skip(str(error) if error else "sqlite-vec extension is unavailable")
+
+    observations: list[bool] = []
+
+    class _LockObservingProvider:
+        model = load_polylogue_config().embedding_model
+        dimension = 1024
+
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            observations.append(_generation_lock_is_free(root))
+            return [[0.25] * self.dimension for _ in texts]
+
+    outcome = embed_archive_session_sync(index_db, cast(Any, _LockObservingProvider()), session_id)
+
+    assert outcome.status == "embedded"
+    assert observations == [True], "the generation lock must be released for the provider round trip"

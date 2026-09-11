@@ -2020,3 +2020,51 @@ def test_fts_health_probe_reports_ledger_drift_and_unmeasured_surfaces(
     unmeasured = _check_fts_readiness_medium()
     assert unmeasured.severity is HealthSeverity.WARNING
     assert "not published yet" in unmeasured.message
+
+
+@pytest.mark.asyncio
+async def test_embed_stage_defers_instead_of_calling_a_provider_under_the_writer_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under a held writer gate the embed stage records debt; it never embeds.
+
+    The provider call belongs to the lease-free embedding owner, and this is
+    the rule that keeps a slow round trip out of the gate for every caller that
+    reaches convergence while holding it -- live ingest and debt retry alike.
+
+    Anti-vacuity: drop the ``daemon_write_lease_active`` check in
+    ``make_embed_stage`` and ``embedded`` records a call, because the same
+    execute path runs the real archive embed route.
+    """
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    monkeypatch.setattr(stages, "_embedding_config_enabled", lambda: True)
+    monkeypatch.setattr(stages, "_active_archive_index_path", lambda db: db)
+    embedded: list[str] = []
+
+    def record_embed(*_args: object, **_kwargs: object) -> bool:
+        embedded.append("called")
+        return True
+
+    monkeypatch.setattr(stages, "_archive_embed_execute_sessions", record_embed)
+
+    stage = make_embed_stage(tmp_path / "index.db")
+    assert stage.execute_sessions is not None
+    execute_sessions = stage.execute_sessions
+
+    # Outside the gate the stage does its own work.
+    assert bool(execute_sessions(("codex-session:v1-a",))) is True
+    assert embedded == ["called"]
+
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    deferred: list[object] = []
+
+    async def under_gate() -> None:
+        deferred.append(execute_sessions(("codex-session:v1-a",)))
+
+    await asyncio.wait_for(coordinator.run("watcher.live_ingest", under_gate), timeout=5.0)
+
+    assert deferred == [False], "a held writer gate must turn the stage into a pending deferral"
+    assert embedded == ["called"], "no provider work may run while the writer gate is held"
+    assert stage.false_means_pending is True

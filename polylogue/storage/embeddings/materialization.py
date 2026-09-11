@@ -15,11 +15,12 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 import time
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import Origin
@@ -104,8 +105,14 @@ if TYPE_CHECKING:
     from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
     from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
     from polylogue.storage.runtime import MessageRecord
-    from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingFailure
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+        ArchiveEmbeddingAttempt,
+        ArchiveEmbeddingFailure,
+        ArchiveEmbeddingWrite,
+    )
 
+
+T = TypeVar("T")
 
 EmbedSingleStatus = Literal["embedded", "no_messages", "no_embeddable_messages", "not_found", "error", "deferred"]
 ARCHIVE_EMBED_MESSAGE_BATCH_SIZE = 128
@@ -1530,6 +1537,86 @@ def _read_archive_embedding_source_snapshot(
     return _archive_embedding_source_hash(rows), len(rows)
 
 
+def inline_embedding_admission(actor: str, function: Callable[[], T]) -> T:
+    """Run one embedding write phase directly: the caller is its own writer."""
+    del actor
+    return function()
+
+
+class EmbeddingWriteAdmission(Protocol):
+    """Run one short archive-embedding write phase under writer authority.
+
+    The provider call may not run while the writer lease or the embedding
+    generation lock is held, so the archive route is a sequence of *admitted*
+    phases separated by lease-free computation: reserve the attempt, embed,
+    publish each window, finalize. A caller that is already the process's sole
+    writer passes nothing and gets :func:`inline_embedding_admission`; the
+    daemon passes an adapter that admits every phase through its write
+    coordinator, so each phase's authority begins and ends inside the phase.
+    """
+
+    def __call__(self, actor: str, function: Callable[[], T], /) -> T: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _ArchiveEmbeddingInput:
+    """One message the provider still has to embed for this attempt."""
+
+    message_id: str
+    text: str
+    input_hash: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _ArchiveEmbeddingPlan:
+    """The immutable input snapshot one reserved attempt was computed from.
+
+    Everything the provider call and the publication phases need is captured
+    here while the generation lock is held, so computation reads no database
+    and publication revalidates against exactly what was reserved.
+    """
+
+    index_db_path: Path
+    embeddings_path: Path
+    binding: EmbeddingGenerationBinding
+    session_id: str
+    origin: str
+    title: str | None
+    session_message_count: int
+    model: str
+    recipe: EmbeddingRecipe
+    configured_recipe_before: EmbeddingRecipe
+    attempt: ArchiveEmbeddingAttempt
+    embeddable_message_ids: tuple[str, ...]
+    pending_count: int
+    to_embed: tuple[_ArchiveEmbeddingInput, ...]
+    now_ms: int
+    published_before_compute: int
+
+
+def _embedding_lifecycle_store(embeddings_path: Path) -> EmbeddingGenerationStore:
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+
+    return EmbeddingGenerationStore(embeddings_path.parent, active_path=embeddings_path)
+
+
+def _open_bound_embedding_connection(binding: EmbeddingGenerationBinding) -> sqlite3.Connection:
+    conn = open_isolated_write_connection(
+        Path(binding.database_path),
+        purpose="embedding materialization",
+        timeout=30.0,
+        archive_root=Path(binding.archive_root),
+    )
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    loaded, error = try_load_sqlite_vec(conn)
+    if not loaded:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+        raise RuntimeError("archive embedding materialization requires sqlite-vec") from error
+    return conn
+
+
 def embed_archive_session_sync(
     index_db_path: Path,
     vec_provider: VectorProvider,
@@ -1537,53 +1624,19 @@ def embed_archive_session_sync(
     *,
     embeddings_db_path: Path | None = None,
     stop_after_seconds: float | None = None,
+    admit: EmbeddingWriteAdmission | None = None,
 ) -> EmbedSessionOutcome:
-    """Admit and serialize the complete archive embedding write route."""
-    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
-    from polylogue.storage.sqlite.write_lease import require_write_lease
+    """Embed one archive session: admitted reservation, lease-free compute, admitted publication.
 
-    resolved_embeddings = (
-        embeddings_db_path if embeddings_db_path is not None else index_db_path.with_name("embeddings.db")
-    )
-    require_write_lease("embedding archive bootstrap", archive_root=resolved_embeddings.parent)
-    if not resolved_embeddings.exists():
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-        initialize_archive_database(resolved_embeddings, ArchiveTier.EMBEDDINGS)
-    store = EmbeddingGenerationStore(resolved_embeddings.parent, active_path=resolved_embeddings)
-    with store.writer_lock() as binding:
-        return _embed_archive_session_sync(
-            index_db_path,
-            vec_provider,
-            session_id,
-            embeddings_db_path=binding,
-            lifecycle_store=store,
-            lifecycle_binding=binding,
-            stop_after_seconds=stop_after_seconds,
-        )
-
-
-def _embed_archive_session_sync(
-    index_db_path: Path,
-    vec_provider: VectorProvider,
-    session_id: str,
-    *,
-    embeddings_db_path: Path | EmbeddingGenerationBinding | None = None,
-    lifecycle_store: EmbeddingGenerationStore | None = None,
-    lifecycle_binding: EmbeddingGenerationBinding | None = None,
-    stop_after_seconds: float | None = None,
-) -> EmbedSessionOutcome:
-    """Embed one archive session with exact-key, generation-guarded publication.
-
-    ``embeddings_db_path`` names the sibling ``embeddings.db`` explicitly for
-    callers that resolved it independently (e.g. an ``ArchiveLocation``'s
-    ``configured_root``, which may differ from ``index_db_path`` for an
-    index-only external generation or a ``.index-active-pointer`` resolved
-    active index); it defaults to ``index_db_path.with_name("embeddings.db")``
-    for callers that never diverge from the plain convention.
+    ``admit`` is the seam that keeps the provider call outside writer
+    ownership. Each phase below runs inside one ``admit`` call and acquires --
+    then releases -- both the writer authority and the embedding generation
+    lock; ``vec_provider._get_embeddings`` runs between those calls holding
+    neither, so a slow or hung provider cannot block an unrelated archive
+    writer. Publication re-reserves a fresh generation binding and refuses a
+    window whose reserved attempt no longer owns the session.
     """
-
+    admit_phase: EmbeddingWriteAdmission = inline_embedding_admission if admit is None else admit
     text_provider = cast(_EmbeddingTextProvider, vec_provider)
     if not hasattr(text_provider, "_get_embeddings"):
         return EmbedSessionOutcome(
@@ -1591,345 +1644,545 @@ def _embed_archive_session_sync(
             session_id=session_id,
             error="vector provider does not expose text embedding generation",
         )
+    resolved_embeddings = (
+        embeddings_db_path if embeddings_db_path is not None else index_db_path.with_name("embeddings.db")
+    )
 
-    embeddings_path = (
-        Path(embeddings_db_path.database_path)
-        if isinstance(embeddings_db_path, EmbeddingGenerationBinding)
-        else embeddings_db_path
-        if embeddings_db_path is not None
-        else index_db_path.with_name("embeddings.db")
-    )
-    index_conn = open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False)
-    index_conn.row_factory = sqlite3.Row
-    archive_root = Path(lifecycle_binding.archive_root) if lifecycle_binding is not None else index_db_path.parent
-    embeddings_conn = open_isolated_write_connection(
-        embeddings_path,
-        purpose="embedding materialization",
-        timeout=30.0,
-        archive_root=archive_root,
-    )
-    attempted_message_refs: tuple[str, ...] = ()
-    attempt = None
-    session: sqlite3.Row | None = None
-    embeddable: list[sqlite3.Row] = []
     try:
-        from polylogue.storage.sqlite.archive_tiers.embedding_write import (
-            ArchiveEmbeddingWrite,
-            begin_embedding_attempt,
-            finalize_embedding_attempt_success,
-            publish_embedding_attempt_window,
-            supersede_embedding_attempt,
+        prepared = admit_phase(
+            "embedding.prepare",
+            lambda: _prepare_archive_embedding_attempt(
+                index_db_path,
+                text_provider,
+                session_id,
+                embeddings_path=resolved_embeddings,
+            ),
         )
-        from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+    except Exception as exc:
+        # Reservation failed before any attempt existed -- a lifecycle refusal,
+        # a writer-hold bound, a missing tier. There is no attempt to record a
+        # receipt against, so this stays a typed outcome rather than an
+        # exception escaping a route whose contract is "returns an outcome".
+        return EmbedSessionOutcome(status="error", session_id=session_id, error=str(exc))
+    if isinstance(prepared, EmbedSessionOutcome):
+        return prepared
+    plan = prepared
 
-        loaded, error = try_load_sqlite_vec(embeddings_conn)
-        if not loaded:
-            raise RuntimeError("archive embedding materialization requires sqlite-vec") from error
-        session = index_conn.execute(
-            "SELECT session_id, origin, title, message_count FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        if session is None:
-            return EmbedSessionOutcome(status="not_found", session_id=session_id)
-
-        messages_ref = archive_embedding_messages_table_ref(index_conn, alias="m")
-        prose_expr = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
-        rows = index_conn.execute(
-            f"""
-            SELECT m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
-                   {prose_expr} AS text
-            FROM {messages_ref}
-            LEFT JOIN blocks AS b INDEXED BY idx_blocks_session_position
-              ON b.session_id = m.session_id
-             AND b.message_id = m.message_id
-             AND b.block_type = 'text'
-             AND b.text IS NOT NULL
-            WHERE m.session_id = ?
-              AND {archive_embeddable_message_where("m")}
-            GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
-                     m.position, m.variant_index
-            ORDER BY m.position, m.variant_index
-            """,
-            (session_id,),
-        ).fetchall()
-        embeddable = [
-            row
-            for row in rows
-            if _should_embed_archive_message(row["material_origin"], row["message_type"], row["role"], row["text"])
-        ]
-
-        recipe = EmbeddingRecipe.current(
-            model=str(text_provider.model),
-            dimensions=int(text_provider.dimension),
+    # ── lease-free computation ──────────────────────────────────────────
+    # Nothing below opens a write connection, holds the generation lock, or
+    # owns the daemon's writer gate until the next ``admit_phase`` call.
+    batch_size = max(1, ARCHIVE_EMBED_MESSAGE_BATCH_SIZE)
+    started_at = time.monotonic()
+    published_count = plan.published_before_compute
+    deferred = False
+    for start in range(0, len(plan.to_embed), batch_size):
+        if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
+            deferred = True
+            break
+        batch = plan.to_embed[start : start + batch_size]
+        attempted_refs = tuple(item.message_id for item in batch)
+        try:
+            vectors = text_provider._get_embeddings([item.text for item in batch], input_type="document")
+            if len(vectors) != len(batch):
+                raise _ProviderRequestError("embedding provider returned a mismatched vector count")
+        except Exception as exc:
+            provider_error = exc if isinstance(exc, _ProviderRequestError) else _ProviderRequestError(str(exc))
+            return _fail_archive_embedding_attempt(
+                plan,
+                provider_error,
+                attempted_message_refs=attempted_refs,
+                admit=admit_phase,
+            )
+        writes = tuple(
+            _archive_embedding_write(plan, item, vector) for item, vector in zip(batch, vectors, strict=True)
         )
-        # Snapshot the *configured* recipe as it stands before any provider call.
-        # The post-materialization guard below asks "did the recipe change while
-        # we worked", and it can only answer that by comparing configuration to
-        # configuration. Comparing it to ``recipe`` -- which is derived from the
-        # provider actually in use -- reports a mismatch that was already true
-        # before the work began, so any caller whose provider differs from the
-        # configured one (a catch-up run pinned to an existing generation's
-        # model, for instance) supersedes every attempt and re-queues forever.
-        configured_recipe_before = _configured_embedding_recipe()
-        # Derived directly from row["text"] -- the exact same string handed to
-        # the embedder below -- so hash validity equals vector validity by
-        # construction (polylogue-q88p). Computed once here in Python, not
-        # re-derived from stored identity, and reused for both the write and
-        # the session source-identity digest.
-        input_hash_by_message_id: dict[str, bytes] = {
-            str(row["message_id"]): EmbeddingRequestSpec(
-                recipe=recipe, input_text=str(row["text"])
-            ).vector_derivation_hash
-            for row in embeddable
-        }
-        source_hash = _archive_embedding_source_hash_from_pairs(input_hash_by_message_id.items())
-        if lifecycle_store is not None and lifecycle_binding is not None:
-            lifecycle_store.assert_binding(lifecycle_binding)
-        attempt = begin_embedding_attempt(
-            embeddings_conn,
-            session_id=session_id,
-            origin=str(session["origin"]),
-            source_hash=source_hash,
-            recipe=recipe,
+        try:
+            published = admit_phase(
+                "embedding.publish",
+                partial(_publish_archive_embedding_window, plan, writes),
+            )
+        except Exception as exc:
+            return _fail_archive_embedding_attempt(
+                plan,
+                exc,
+                attempted_message_refs=attempted_refs,
+                admit=admit_phase,
+            )
+        if not published:
+            return EmbedSessionOutcome(
+                status="error",
+                session_id=plan.session_id,
+                title=plan.title,
+                error="embedding attempt superseded",
+            )
+        published_count += len(batch)
+        if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
+            deferred = start + len(batch) < len(plan.to_embed)
+            if deferred:
+                break
+
+    if deferred:
+        return EmbedSessionOutcome(
+            status="deferred",
+            session_id=plan.session_id,
+            title=plan.title,
+            embedded_message_count=len(plan.embeddable_message_ids) - plan.pending_count + published_count,
+            deferred=True,
         )
 
-        now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        started_at = time.monotonic()
-        existing_refs = {
-            str(row[0]): bytes(row[1])
-            for row in embeddings_conn.execute(
-                """
-                SELECT r.message_id, r.vector_derivation_hash
-                FROM message_embedding_refs AS r
-                JOIN message_embeddings_meta AS em
-                  ON em.vector_derivation_hash = r.vector_derivation_hash
-                WHERE r.session_id = ?
+    try:
+        return admit_phase("embedding.finalize", lambda: _finalize_archive_embedding_attempt(plan))
+    except Exception as exc:
+        return _fail_archive_embedding_attempt(plan, exc, attempted_message_refs=(), admit=admit_phase)
+
+
+def _archive_embedding_write(
+    plan: _ArchiveEmbeddingPlan,
+    item: _ArchiveEmbeddingInput,
+    vector: list[float],
+) -> ArchiveEmbeddingWrite:
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingWrite
+
+    return ArchiveEmbeddingWrite(
+        message_id=item.message_id,
+        session_id=plan.session_id,
+        origin=plan.origin,
+        embedding=vector,
+        model=plan.model,
+        embedded_at_ms=plan.now_ms,
+        vector_derivation_hash=item.input_hash,
+        recipe_hash=plan.attempt.recipe_hash,
+        derivation_key=message_embedding_derivation_key(
+            message_id=item.message_id,
+            vector_derivation_hash=item.input_hash,
+            recipe=plan.recipe,
+        ).digest(),
+        generation=plan.attempt.generation,
+    )
+
+
+def _prepare_archive_embedding_attempt(
+    index_db_path: Path,
+    text_provider: _EmbeddingTextProvider,
+    session_id: str,
+    *,
+    embeddings_path: Path,
+) -> _ArchiveEmbeddingPlan | EmbedSessionOutcome:
+    """Reserve one attempt and snapshot its inputs, under writer authority.
+
+    Short by construction: it reads the session's embeddable messages, hashes
+    them, reserves the attempt, and republishes vectors that already exist by
+    content address. It never calls the provider, so the generation lock it
+    holds is released before any network work begins.
+    """
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationError
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+        begin_embedding_attempt,
+        publish_embedding_attempt_window,
+    )
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+    from polylogue.storage.sqlite.write_lease import require_write_lease
+
+    require_write_lease("embedding archive bootstrap", archive_root=embeddings_path.parent)
+    if not embeddings_path.exists():
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        initialize_archive_database(embeddings_path, ArchiveTier.EMBEDDINGS)
+
+    store = _embedding_lifecycle_store(embeddings_path)
+    with store.writer_lock() as binding:
+        index_conn = open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False)
+        index_conn.row_factory = sqlite3.Row
+        embeddings_conn: sqlite3.Connection | None = None
+        session: sqlite3.Row | None = None
+        attempt = None
+        try:
+            # Opened before the extension check so a tier without sqlite-vec
+            # still reaches the failure ledger below instead of failing
+            # silently with nothing recorded.
+            embeddings_conn = open_isolated_write_connection(
+                Path(binding.database_path),
+                purpose="embedding materialization",
+                timeout=30.0,
+                archive_root=Path(binding.archive_root),
+            )
+            loaded, extension_error = try_load_sqlite_vec(embeddings_conn)
+            if not loaded:
+                raise RuntimeError("archive embedding materialization requires sqlite-vec") from extension_error
+            session = index_conn.execute(
+                "SELECT session_id, origin, title, message_count FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if session is None:
+                return EmbedSessionOutcome(status="not_found", session_id=session_id)
+
+            messages_ref = archive_embedding_messages_table_ref(index_conn, alias="m")
+            prose_expr = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
+            rows = index_conn.execute(
+                f"""
+                SELECT m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
+                       {prose_expr} AS text
+                FROM {messages_ref}
+                LEFT JOIN blocks AS b INDEXED BY idx_blocks_session_position
+                  ON b.session_id = m.session_id
+                 AND b.message_id = m.message_id
+                 AND b.block_type = 'text'
+                 AND b.text IS NOT NULL
+                WHERE m.session_id = ?
+                  AND {archive_embeddable_message_where("m")}
+                GROUP BY m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
+                         m.position, m.variant_index
+                ORDER BY m.position, m.variant_index
                 """,
                 (session_id,),
             ).fetchall()
-        }
-        pending_embeddable = [
-            row
-            for row in embeddable
-            if existing_refs.get(str(row["message_id"])) != input_hash_by_message_id[str(row["message_id"])]
-        ]
-        present_hashes = _present_vector_addresses(
-            embeddings_conn,
-            (input_hash_by_message_id[str(row["message_id"])] for row in pending_embeddable),
-        )
-        reusable_writes: list[ArchiveEmbeddingWrite] = []
-        for row in pending_embeddable:
-            message_id = str(row["message_id"])
-            input_hash = input_hash_by_message_id[message_id]
-            if input_hash not in present_hashes:
-                continue
-            reusable_writes.append(
-                ArchiveEmbeddingWrite(
-                    message_id=message_id,
-                    session_id=session_id,
-                    origin=str(session["origin"]),
-                    embedding=[],
-                    model=text_provider.model,
-                    embedded_at_ms=now_ms,
-                    vector_derivation_hash=input_hash,
-                    recipe_hash=attempt.recipe_hash,
-                    derivation_key=message_embedding_derivation_key(
-                        message_id=message_id,
-                        vector_derivation_hash=input_hash,
-                        recipe=recipe,
-                    ).digest(),
-                    generation=attempt.generation,
-                )
-            )
-        if reusable_writes and not publish_embedding_attempt_window(
-            embeddings_conn,
-            attempt=attempt,
-            writes=reusable_writes,
-            completed_at_ms=now_ms,
-        ):
-            return EmbedSessionOutcome(status="error", session_id=session_id, error="embedding attempt superseded")
-        if reusable_writes and lifecycle_store is not None and lifecycle_binding is not None:
-            lifecycle_store.refresh_binding_contract(lifecycle_binding)
+            embeddable = [
+                row
+                for row in rows
+                if _should_embed_archive_message(row["material_origin"], row["message_type"], row["role"], row["text"])
+            ]
 
-        to_embed = [
-            row for row in pending_embeddable if input_hash_by_message_id[str(row["message_id"])] not in present_hashes
-        ]
-        batch_size = max(1, ARCHIVE_EMBED_MESSAGE_BATCH_SIZE)
-        deferred = False
-        published_count = len(reusable_writes)
-        for start in range(0, len(to_embed), batch_size):
-            if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
-                deferred = True
-                break
-            batch = to_embed[start : start + batch_size]
-            attempted_message_refs = tuple(str(row["message_id"]) for row in batch)
-            try:
-                vectors = text_provider._get_embeddings(
-                    [str(row["text"]) for row in batch],
-                    input_type="document",
-                )
-            except Exception as exc:
-                raise _ProviderRequestError(str(exc)) from exc
-            if len(vectors) != len(batch):
-                raise _ProviderRequestError("embedding provider returned a mismatched vector count")
-            writes: list[ArchiveEmbeddingWrite] = []
-            for row, vector in zip(batch, vectors, strict=True):
-                message_id = str(row["message_id"])
-                input_hash = input_hash_by_message_id[message_id]
-                writes.append(
-                    ArchiveEmbeddingWrite(
-                        message_id=message_id,
-                        session_id=session_id,
-                        origin=str(session["origin"]),
-                        embedding=vector,
-                        model=text_provider.model,
-                        embedded_at_ms=now_ms,
-                        vector_derivation_hash=input_hash,
-                        recipe_hash=attempt.recipe_hash,
-                        derivation_key=message_embedding_derivation_key(
-                            message_id=message_id,
-                            vector_derivation_hash=input_hash,
-                            recipe=recipe,
-                        ).digest(),
-                        generation=attempt.generation,
+            recipe = EmbeddingRecipe.current(
+                model=str(text_provider.model),
+                dimensions=int(text_provider.dimension),
+            )
+            # Snapshot the *configured* recipe as it stands before any provider
+            # call. The finalize-time guard asks "did the recipe change while we
+            # worked", and it can only answer that by comparing configuration to
+            # configuration. Comparing it to ``recipe`` -- which is derived from
+            # the provider actually in use -- reports a mismatch that was already
+            # true before the work began, so any caller whose provider differs
+            # from the configured one (a catch-up run pinned to an existing
+            # generation's model, for instance) supersedes every attempt and
+            # re-queues forever.
+            configured_recipe_before = _configured_embedding_recipe()
+            # Derived directly from row["text"] -- the exact same string handed
+            # to the embedder -- so hash validity equals vector validity by
+            # construction (polylogue-q88p). Computed once here, not re-derived
+            # from stored identity, and reused for both the write and the
+            # session source-identity digest.
+            input_hash_by_message_id: dict[str, bytes] = {
+                str(row["message_id"]): EmbeddingRequestSpec(
+                    recipe=recipe, input_text=str(row["text"])
+                ).vector_derivation_hash
+                for row in embeddable
+            }
+            source_hash = _archive_embedding_source_hash_from_pairs(input_hash_by_message_id.items())
+            store.assert_binding(binding)
+            attempt = begin_embedding_attempt(
+                embeddings_conn,
+                session_id=session_id,
+                origin=str(session["origin"]),
+                source_hash=source_hash,
+                recipe=recipe,
+            )
+
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            existing_refs = {
+                str(row[0]): bytes(row[1])
+                for row in embeddings_conn.execute(
+                    """
+                    SELECT r.message_id, r.vector_derivation_hash
+                    FROM message_embedding_refs AS r
+                    JOIN message_embeddings_meta AS em
+                      ON em.vector_derivation_hash = r.vector_derivation_hash
+                    WHERE r.session_id = ?
+                    """,
+                    (session_id,),
+                ).fetchall()
+            }
+            pending_embeddable = [
+                row
+                for row in embeddable
+                if existing_refs.get(str(row["message_id"])) != input_hash_by_message_id[str(row["message_id"])]
+            ]
+            present_hashes = _present_vector_addresses(
+                embeddings_conn,
+                (input_hash_by_message_id[str(row["message_id"])] for row in pending_embeddable),
+            )
+            plan = _ArchiveEmbeddingPlan(
+                index_db_path=index_db_path,
+                embeddings_path=embeddings_path,
+                binding=binding,
+                session_id=session_id,
+                origin=str(session["origin"]),
+                title=None if session["title"] is None else str(session["title"]),
+                session_message_count=int(session["message_count"] or 0),
+                model=str(text_provider.model),
+                recipe=recipe,
+                configured_recipe_before=configured_recipe_before,
+                attempt=attempt,
+                embeddable_message_ids=tuple(str(row["message_id"]) for row in embeddable),
+                pending_count=len(pending_embeddable),
+                to_embed=tuple(
+                    _ArchiveEmbeddingInput(
+                        message_id=str(row["message_id"]),
+                        text=str(row["text"]),
+                        input_hash=input_hash_by_message_id[str(row["message_id"])],
                     )
+                    for row in pending_embeddable
+                    if input_hash_by_message_id[str(row["message_id"])] not in present_hashes
+                ),
+                now_ms=now_ms,
+                published_before_compute=0,
+            )
+            reusable_writes = [
+                _archive_embedding_write(
+                    plan,
+                    _ArchiveEmbeddingInput(
+                        message_id=str(row["message_id"]),
+                        text="",
+                        input_hash=input_hash_by_message_id[str(row["message_id"])],
+                    ),
+                    [],
                 )
-            if not publish_embedding_attempt_window(
+                for row in pending_embeddable
+                if input_hash_by_message_id[str(row["message_id"])] in present_hashes
+            ]
+            if reusable_writes:
+                if not publish_embedding_attempt_window(
+                    embeddings_conn,
+                    attempt=attempt,
+                    writes=reusable_writes,
+                    completed_at_ms=now_ms,
+                ):
+                    return EmbedSessionOutcome(
+                        status="error",
+                        session_id=session_id,
+                        title=plan.title,
+                        error="embedding attempt superseded",
+                    )
+                store.refresh_binding_contract(binding)
+            return replace(plan, published_before_compute=len(reusable_writes))
+        except Exception as exc:
+            if isinstance(exc, EmbeddingGenerationError):
+                # A hostile pointer/root replacement invalidates the whole
+                # operation. Do not turn that failed reservation into a failure
+                # receipt in the replacement generation.
+                return EmbedSessionOutcome(status="error", session_id=session_id, error=str(exc))
+            if embeddings_conn is None:
+                return EmbedSessionOutcome(status="error", session_id=session_id, error=str(exc))
+            _record_archive_embedding_attempt_error(
                 embeddings_conn,
+                index_conn=index_conn,
+                session_id=session_id,
+                session=session,
+                model=str(text_provider.model),
+                error=exc,
+                attempted_message_refs=(),
                 attempt=attempt,
+            )
+            return EmbedSessionOutcome(status="error", session_id=session_id, error=str(exc))
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                index_conn.close()
+            if embeddings_conn is not None:
+                with contextlib.suppress(sqlite3.Error):
+                    embeddings_conn.close()
+
+
+def _publish_archive_embedding_window(
+    plan: _ArchiveEmbeddingPlan,
+    writes: Sequence[ArchiveEmbeddingWrite],
+) -> bool:
+    """Publish one computed window under a freshly reserved generation binding.
+
+    The binding is re-acquired rather than inherited: the pointer may have
+    moved while the provider was working, and ``assert_binding`` is what makes
+    publishing into a replacement generation impossible rather than merely
+    unlikely. ``publish_embedding_attempt_window`` then refuses a window whose
+    reserved attempt no longer owns the session.
+    """
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import publish_embedding_attempt_window
+
+    store = _embedding_lifecycle_store(plan.embeddings_path)
+    with store.writer_lock() as binding:
+        store.assert_binding(plan.binding)
+        conn = _open_bound_embedding_connection(binding)
+        try:
+            published = publish_embedding_attempt_window(
+                conn,
+                attempt=plan.attempt,
                 writes=writes,
-                completed_at_ms=now_ms,
+                completed_at_ms=plan.now_ms,
+            )
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        if published:
+            store.refresh_binding_contract(binding)
+        return published
+
+
+def _finalize_archive_embedding_attempt(plan: _ArchiveEmbeddingPlan) -> EmbedSessionOutcome:
+    """Revalidate the snapshot the vectors were computed from, then close the attempt."""
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+        finalize_embedding_attempt_success,
+        supersede_embedding_attempt,
+    )
+
+    store = _embedding_lifecycle_store(plan.embeddings_path)
+    with store.writer_lock() as binding:
+        store.assert_binding(plan.binding)
+        index_conn = open_readonly_connection(
+            plan.index_db_path, timeout_class="background-read", validate_schema=False
+        )
+        index_conn.row_factory = sqlite3.Row
+        try:
+            conn = _open_bound_embedding_connection(binding)
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                index_conn.close()
+            raise
+        try:
+            current_source_hash, current_message_count = _read_archive_embedding_source_snapshot(
+                index_conn, plan.session_id, model=plan.model
+            )
+            current_recipe = _configured_embedding_recipe()
+            if (
+                current_source_hash != plan.attempt.source_hash
+                or current_message_count != len(plan.embeddable_message_ids)
+                or current_recipe.recipe_hash != plan.configured_recipe_before.recipe_hash
+                or current_recipe.output_contract_hash != plan.configured_recipe_before.output_contract_hash
             ):
-                return EmbedSessionOutcome(status="error", session_id=session_id, error="embedding attempt superseded")
-            if lifecycle_store is not None and lifecycle_binding is not None:
-                lifecycle_store.refresh_binding_contract(lifecycle_binding)
-            published_count += len(batch)
-            if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
-                deferred = start + len(batch) < len(to_embed)
-                if deferred:
-                    break
-
-        if deferred:
-            embedded_count = len(embeddable) - len(pending_embeddable) + published_count
-            return EmbedSessionOutcome(
-                status="deferred",
-                session_id=session_id,
-                title=None if session["title"] is None else str(session["title"]),
-                embedded_message_count=embedded_count,
-                deferred=True,
+                supersede_embedding_attempt(
+                    conn,
+                    attempt=plan.attempt,
+                    source_hash=current_source_hash,
+                    recipe=current_recipe,
+                )
+                return EmbedSessionOutcome(
+                    status="error",
+                    session_id=plan.session_id,
+                    title=plan.title,
+                    error="embedding source or recipe changed during materialization; retry queued",
+                )
+            committed = finalize_embedding_attempt_success(
+                conn,
+                attempt=plan.attempt,
+                message_ids=list(plan.embeddable_message_ids),
+                completed_at_ms=plan.now_ms,
             )
+            if not committed:
+                return EmbedSessionOutcome(
+                    status="error",
+                    session_id=plan.session_id,
+                    title=plan.title,
+                    error="embedding attempt was superseded before publication; retry queued",
+                )
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                index_conn.close()
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        store.refresh_binding_contract(binding)
 
-        current_source_hash, current_message_count = _read_archive_embedding_source_snapshot(
-            index_conn, session_id, model=text_provider.model
-        )
-        current_recipe = _configured_embedding_recipe()
-        if (
-            current_source_hash != attempt.source_hash
-            or current_message_count != len(embeddable)
-            or current_recipe.recipe_hash != configured_recipe_before.recipe_hash
-            or current_recipe.output_contract_hash != configured_recipe_before.output_contract_hash
-        ):
-            supersede_embedding_attempt(
-                embeddings_conn,
-                attempt=attempt,
-                source_hash=current_source_hash,
-                recipe=current_recipe,
-            )
-            return EmbedSessionOutcome(
-                status="error",
-                session_id=session_id,
-                title=None if session["title"] is None else str(session["title"]),
-                error="embedding source or recipe changed during materialization; retry queued",
-            )
+    if not plan.embeddable_message_ids:
+        no_op_status: EmbedSingleStatus = "no_messages" if plan.session_message_count <= 0 else "no_embeddable_messages"
+        return EmbedSessionOutcome(status=no_op_status, session_id=plan.session_id, title=plan.title)
+    return EmbedSessionOutcome(
+        status="embedded",
+        session_id=plan.session_id,
+        title=plan.title,
+        embedded_message_count=len(plan.embeddable_message_ids),
+    )
 
-        if lifecycle_store is not None and lifecycle_binding is not None:
-            lifecycle_store.assert_binding(lifecycle_binding)
-        committed = finalize_embedding_attempt_success(
-            embeddings_conn,
-            attempt=attempt,
-            message_ids=[str(row["message_id"]) for row in embeddable],
-            completed_at_ms=now_ms,
-        )
-        if not committed:
-            return EmbedSessionOutcome(
-                status="error",
-                session_id=session_id,
-                title=None if session["title"] is None else str(session["title"]),
-                error="embedding attempt was superseded before publication; retry queued",
-            )
-        if lifecycle_store is not None and lifecycle_binding is not None:
-            lifecycle_store.refresh_binding_contract(lifecycle_binding)
-    except Exception as exc:
-        from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
 
-        # A hostile pointer/root replacement invalidates the whole operation.
-        # Do not turn that failed publication into a failure receipt in the
-        # replacement generation; the caller must retry against a fresh bind.
-        if lifecycle_store is not None and lifecycle_binding is not None:
+def _fail_archive_embedding_attempt(
+    plan: _ArchiveEmbeddingPlan,
+    error: BaseException,
+    *,
+    attempted_message_refs: Sequence[str],
+    admit: EmbeddingWriteAdmission,
+) -> EmbedSessionOutcome:
+    """Record one attempt's failure receipt through an admitted short write."""
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationError
+
+    def record() -> str | None:
+        store = _embedding_lifecycle_store(plan.embeddings_path)
+        with store.writer_lock() as binding:
+            # A hostile pointer/root replacement invalidates the whole
+            # operation. Do not turn that failed publication into a failure
+            # receipt in the replacement generation; the caller must retry
+            # against a fresh bind.
+            store.assert_binding(plan.binding)
+            conn = _open_bound_embedding_connection(binding)
             try:
-                lifecycle_store.assert_binding(lifecycle_binding)
-            except Exception as binding_exc:
-                return EmbedSessionOutcome(status="error", session_id=session_id, error=str(binding_exc))
+                _record_archive_embedding_attempt_error(
+                    conn,
+                    index_conn=None,
+                    session_id=plan.session_id,
+                    session=None,
+                    origin=plan.origin,
+                    model=plan.model,
+                    error=error,
+                    attempted_message_refs=attempted_message_refs,
+                    attempt=plan.attempt,
+                )
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.close()
+        return None
 
-        # The failure ledger must never lose a row merely because the origin
-        # lookup itself failed (polylogue-es7b) -- ``session`` already carries
-        # ``origin`` when it was fetched successfully at the top of this
-        # function; only when the failure predates that fetch (or the
-        # connection is otherwise unusable) do we fall back to a fresh,
-        # best-effort re-read, and finally to an explicit unknown sentinel so
-        # ``record_embedding_failure`` is always called.
-        if session is not None:
-            origin_value = str(session["origin"])
-        else:
-            origin_value = str(Origin.UNKNOWN_EXPORT)
+    try:
+        admit("embedding.failure", record)
+    except EmbeddingGenerationError as binding_error:
+        return EmbedSessionOutcome(status="error", session_id=plan.session_id, error=str(binding_error))
+    return EmbedSessionOutcome(status="error", session_id=plan.session_id, title=plan.title, error=str(error))
+
+
+def _record_archive_embedding_attempt_error(
+    conn: sqlite3.Connection,
+    *,
+    index_conn: sqlite3.Connection | None,
+    session_id: str,
+    session: sqlite3.Row | None,
+    model: str,
+    error: BaseException,
+    attempted_message_refs: Sequence[str],
+    attempt: ArchiveEmbeddingAttempt | None,
+    origin: str | None = None,
+) -> None:
+    """Write one embedding failure receipt, never losing the row to a lookup failure."""
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
+
+    # The failure ledger must never lose a row merely because the origin lookup
+    # itself failed (polylogue-es7b): the attempt's own origin is used when it
+    # is known, then the session row, then a best-effort re-read, and finally an
+    # explicit unknown sentinel so ``record_embedding_failure`` is always called.
+    if origin is not None:
+        origin_value = origin
+    elif session is not None:
+        origin_value = str(session["origin"])
+    else:
+        origin_value = str(Origin.UNKNOWN_EXPORT)
+        if index_conn is not None:
             with contextlib.suppress(sqlite3.Error):
                 origin_row = index_conn.execute(
                     "SELECT origin FROM sessions WHERE session_id = ?", (session_id,)
                 ).fetchone()
                 if origin_row is not None:
                     origin_value = str(origin_row["origin"])
-        if isinstance(exc, _ProviderRequestError):
-            provider = "voyage"
-            error_class = embedding_error_class(exc)
-            retryable = not is_terminal_embedding_provider_error(str(exc))
-        else:
-            provider = "local"
-            error_class = "internal_error"
-            retryable = True
-        record_embedding_failure(
-            embeddings_conn,
-            session_id=session_id,
-            origin=origin_value,
-            message_refs=attempted_message_refs,
-            provider=provider,
-            model=text_provider.model,
-            error_class=error_class,
-            error_message=str(exc),
-            retryable=retryable,
-            attempt=attempt,
-        )
-        return EmbedSessionOutcome(status="error", session_id=session_id, error=str(exc))
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            index_conn.close()
-        with contextlib.suppress(sqlite3.Error):
-            embeddings_conn.close()
-
-    assert session is not None
-    if not embeddable:
-        no_op_status: EmbedSingleStatus = (
-            "no_messages" if int(session["message_count"] or 0) <= 0 else "no_embeddable_messages"
-        )
-        return EmbedSessionOutcome(
-            status=no_op_status,
-            session_id=session_id,
-            title=None if session["title"] is None else str(session["title"]),
-        )
-    return EmbedSessionOutcome(
-        status="embedded",
+    if isinstance(error, _ProviderRequestError):
+        provider = "voyage"
+        error_class = embedding_error_class(error)
+        retryable = not is_terminal_embedding_provider_error(str(error))
+    else:
+        provider = "local"
+        error_class = "internal_error"
+        retryable = True
+    record_embedding_failure(
+        conn,
         session_id=session_id,
-        title=None if session["title"] is None else str(session["title"]),
-        embedded_message_count=len(embeddable),
+        origin=origin_value,
+        message_refs=tuple(attempted_message_refs),
+        provider=provider,
+        model=model,
+        error_class=error_class,
+        error_message=str(error),
+        retryable=retryable,
+        attempt=attempt,
     )
 
 

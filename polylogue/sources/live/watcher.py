@@ -18,7 +18,7 @@ import sqlite3
 import stat as stat_module
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -338,6 +338,20 @@ class WriteCoordinator(Protocol):
     async def run_sync(self, actor: str, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any: ...
 
 
+class EmbeddingConvergenceOwner(Protocol):
+    """Converge one batch's embeddings with the writer gate released.
+
+    The embedding stage inside a coordinated ingest defers rather than calling
+    the provider under the writer gate, so this owner is what actually performs
+    the pass: it runs on the daemon's compute capacity and admits each short
+    write back through the coordinator. ``None`` is the standalone opt-out --
+    without a coordinator there is no gate to be outside of, and the stage
+    embeds inline.
+    """
+
+    async def __call__(self, index_db_path: Path, paths: Sequence[Path], /) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateSourceFile:
     """One statted source file candidate from a catch-up scan."""
@@ -392,6 +406,7 @@ class LiveWatcher:
         catch_up_event_emitter: Callable[..., None] | None = None,
         write_coordinator: WriteCoordinator | None = None,
         parse_stage: LiveParseStage | None = None,
+        embedding_owner: EmbeddingConvergenceOwner | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
@@ -404,6 +419,11 @@ class LiveWatcher:
         self._max_workers = max_workers
         self._converger = converger
         self._write_coordinator = write_coordinator
+        # Injected rather than imported: the provider call this owner performs
+        # must run with the writer gate released, and the owner that can admit
+        # its short writes lives in the daemon ring, which this one may not
+        # import (polylogue-c0l7n).
+        self._embedding_owner = embedding_owner
         self._catch_up_event_emitter = catch_up_event_emitter
         self._event_emitter = event_emitter
         self._published_source_halts: dict[str, str] = {}
@@ -1279,6 +1299,8 @@ class LiveWatcher:
             forced_paths = self._forced_reparse_paths.intersection(paths)
             self._forced_reparse_paths.difference_update(paths)
 
+        ingested_paths: list[Path] = []
+
         async def flush_batch() -> None:
             nonlocal paths
             # Filtering a changed-file batch invokes cursor reconciliation and
@@ -1305,6 +1327,7 @@ class LiveWatcher:
                 return
 
             logger.info("live.watcher: batching %d changed file(s)", len(needed))
+            ingested_paths.extend(needed)
             try:
                 metrics = await self._ingest_files(
                     needed,
@@ -1329,6 +1352,12 @@ class LiveWatcher:
 
         try:
             await self._run_coordinated("watcher.live_batch", flush_batch)
+            # The writer gate is released here. The embedding stage deferred
+            # inside the coordinated region above rather than calling a
+            # provider under it; the owner runs that work now, holding neither
+            # the gate nor the embedding generation lock, so an unrelated
+            # archive writer proceeds while the provider works (polylogue-c0l7n).
+            await self._converge_embeddings_off_writer(ingested_paths)
         except WriteHoldBudgetError as exc:
             logger.warning("live.watcher: changed-file batch ended at its declared writer-hold bound: %s", exc)
             async with self._batch_lock:
@@ -2013,6 +2042,19 @@ class LiveWatcher:
             else:
                 metrics = await self._write_coordinator.run("watcher.live_ingest", ingest)
         return metrics
+
+    async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
+        """Converge this batch's embeddings after the ingest lease is released."""
+        if self._embedding_owner is None or not paths:
+            return
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        try:
+            await self._embedding_owner(archive_root / "index.db", tuple(paths))
+        except Exception:
+            # The deferred obligation is already recorded as convergence debt,
+            # so a refused or failed pass retries there rather than failing an
+            # ingest batch whose source records are already durable.
+            logger.warning("live.watcher: lease-free embedding convergence did not complete", exc_info=True)
 
     async def _emit_catch_up_terminal(
         self,
