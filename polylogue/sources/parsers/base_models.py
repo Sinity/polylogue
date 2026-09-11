@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_serializer, field_validator, model_validator
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
@@ -257,6 +257,21 @@ class ParsedPasteEvidence(BaseModel):
     source_marker: str | None = None
     content_hash: bytes | None = None
     observed_at_ms: int | None = None
+
+    @field_serializer("content_hash", when_used="json")
+    def _serialize_content_hash(self, value: bytes | None) -> str | None:
+        """Render the digest as hex in JSON mode.
+
+        ``content_hash`` is a raw SHA-256 digest, and pydantic's JSON
+        serializer decodes ``bytes`` as UTF-8 -- which a digest is not. The
+        semantic hash payload (``pipeline/ids.py``'s ``_hash_field_value``)
+        dumps every paste span in JSON mode, so a message carrying a
+        content-bearing paste raised ``UnicodeDecodeError`` at the write
+        boundary instead of hashing (polylogue-ximhz: reached once the
+        retained ``history.jsonl`` evidence made that span reachable on the
+        canonical ingest route). Hex is the same digest, stably encoded.
+        """
+        return value.hex() if value is not None else None
 
 
 class ParsedMessage(BaseModel):

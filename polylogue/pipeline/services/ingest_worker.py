@@ -310,6 +310,24 @@ def _build_parse_plan(
     )
 
 
+def _raw_only_path_declaration(source_path: str | None, *, provider: Provider) -> bool:
+    """Whether the owning OriginSpec rule refuses session parsing outright.
+
+    ``parse_policy="raw-only"`` states that the family's bytes are evidence
+    and never a conversation, and that content shape cannot decide it: a
+    tool-result sidecar can reproduce a genuine export byte-for-byte, and a
+    prompt-history log carries the same ``sessionId`` keys a transcript does
+    (polylogue-omsw, polylogue-ximhz). For those families the path rule is
+    terminal; a ``fact`` or ``session`` rule keeps the ordinary
+    content-may-override behaviour below.
+    """
+    if not source_path:
+        return False
+    from polylogue.sources.origin_specs import path_declaration_refuses_session
+
+    return path_declaration_refuses_session(provider, source_path)
+
+
 def _build_stream_parse_plan(
     context: _IngestContext,
     *,
@@ -358,14 +376,18 @@ def _build_stream_parse_plan(
         context.raw_record.source_path,
         provider=runtime_provider,
     )
+    path_is_terminal = _raw_only_path_declaration(context.raw_record.source_path, provider=runtime_provider)
     session_artifact = (
         jsonl_session_artifact(context.raw_source, provider=runtime_provider, jsonl_dict_only=True)
-        if path_artifact is not None and not path_artifact.parse_as_session
+        if path_artifact is not None and not path_artifact.parse_as_session and not path_is_terminal
         else None
     )
-    artifact = session_artifact or (
-        decoded_artifact if decoded_artifact.parse_as_session else path_artifact or decoded_artifact
-    )
+    if path_is_terminal and path_artifact is not None:
+        artifact = path_artifact
+    else:
+        artifact = session_artifact or (
+            decoded_artifact if decoded_artifact.parse_as_session else path_artifact or decoded_artifact
+        )
     return _build_parse_plan(
         provider=runtime_provider,
         payload_provider=str(runtime_provider),
@@ -400,6 +422,16 @@ def _build_fast_stream_parse_plan(
         provider=runtime_provider,
     )
     if path_artifact is not None and not path_artifact.parse_as_session:
+        if _raw_only_path_declaration(context.raw_record.source_path, provider=runtime_provider):
+            return _build_parse_plan(
+                provider=runtime_provider,
+                payload_provider=str(runtime_provider),
+                artifact=path_artifact,
+                source_path=context.raw_record.source_path,
+                mode="stream",
+                schema_payload_source=None,
+                stream_name=context.raw_record.source_path or context.raw_record.raw_id,
+            )
         try:
             sample_payloads, malformed_lines, malformed_detail = _sample_jsonl_payload_with_detail(
                 context.raw_source,
@@ -703,6 +735,7 @@ def _enrich_parsed_sessions(
     being the only trace.
     """
     from polylogue.sources.assembly import get_assembly_spec
+    from polylogue.sources.retained_assembly import resolve_retained_assembly_evidence
 
     spec = get_assembly_spec(plan.provider)
     if spec is None:
@@ -717,6 +750,16 @@ def _enrich_parsed_sessions(
         provider=plan.provider,
         archive_root=context.archive_root,
         parsed_sessions=parsed_sessions,
+    )
+    # polylogue-ximhz: the Claude Code session index / prompt history and the
+    # ChatGPT asset maps are retained source artifacts, so the worker resolves
+    # them from the archive under the same no-rediscovery contract the Codex
+    # lane above already keeps. An acquisition-carried key stays authoritative.
+    sidecar_data = resolve_retained_assembly_evidence(
+        sidecar_data,
+        provider=plan.provider,
+        archive_root=context.archive_root,
+        source_path=context.raw_record.source_path,
     )
     return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions], False
 

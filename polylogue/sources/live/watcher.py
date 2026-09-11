@@ -272,6 +272,10 @@ class _SourceTreeWalk:
             return False
 
 
+#: Directory names no watched root ever descends into.
+_DEFAULT_IGNORED_DIR_NAMES: frozenset[str] = frozenset({".git", "__pycache__", "node_modules", "venv", ".venv"})
+
+
 @dataclass(frozen=True, slots=True)
 class WatchSource:
     """A directory to watch for live session files."""
@@ -279,7 +283,7 @@ class WatchSource:
     name: str
     root: Path
     suffixes: tuple[str, ...] = (".jsonl",)
-    ignored_dir_names: frozenset[str] = frozenset({".git", "__pycache__", "node_modules", "venv", ".venv"})
+    ignored_dir_names: frozenset[str] = _DEFAULT_IGNORED_DIR_NAMES
     # Hook sources carry durable topology identity.  Ordinary sources retain
     # their historical name-only contract.
     source_id: str | None = None
@@ -2376,6 +2380,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         browser_capture_spool_root,
         claude_code_path,
         claude_code_todos_path,
+        codex_memories_path,
         codex_path,
         gemini_cli_path,
         hermes_sessions_path,
@@ -2399,6 +2404,18 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
             root=claude_code_todos_path(),
             suffixes=(".json",),
         ),
+        # polylogue-ximhz: ``~/.claude/history.jsonl`` is the prompt-submission
+        # log whose rows carry the paste evidence no transcript records, and it
+        # sits beside the sessions root rather than under it. Rooted at the
+        # install directory with no suffixes at all, so only the declared
+        # ``prompt_history_log`` path rule admits a file; the two large
+        # sibling trees have their own sources and are not descended twice.
+        WatchSource(
+            name="claude-code-history",
+            root=claude_code_path().parent,
+            suffixes=(),
+            ignored_dir_names=_DEFAULT_IGNORED_DIR_NAMES | frozenset({"projects", "todos"}),
+        ),
         WatchSource(name="codex", root=codex_path()),
         # polylogue-0jf4: Codex also keeps live SQLite state (thread titles,
         # spawn topology, goals, memories) as siblings of the sessions/
@@ -2413,6 +2430,18 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
             name="codex-state",
             root=codex_path().parent,
             suffixes=(".sqlite", ".db"),
+        ),
+        # polylogue-rovf5: Codex keeps harness-authored memory documents in
+        # ~/.codex/memories/, a sibling of sessions/. Rooted there rather
+        # than widening "codex-state" so no Codex root admits ``.md``
+        # globally: the source carries no suffixes at all and only the
+        # declared ``agent_memory_document`` path rule admits a file.
+        # Overlap with the shallower "codex-state" root is resolved by
+        # ``deepest_source_for_path``, which prefers this one.
+        WatchSource(
+            name="codex-memories",
+            root=codex_memories_path(),
+            suffixes=(),
         ),
         WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
         # Hermes emits four independently durable source classes under its

@@ -57,6 +57,29 @@ class ArtifactKind(StrEnum):
     # holds wherever the file sits and survives a rename.
     EXTRACTED_TRANSCRIPT_CORPUS = "extracted_transcript_corpus"
     METADATA_DOCUMENT = "metadata_document"
+    # polylogue-rovf5: a harness-maintained memory document -- the Markdown
+    # files Claude Code keeps under ``projects/<project>/memory/`` and Codex
+    # keeps under ``memories/``. These are observed harness artifacts, not
+    # user assertions: the harness wrote them, no session need ever have
+    # quoted them, and their session ownership stays unknown. They are
+    # retained as source bytes and never parsed into a session, so a
+    # transcript that happens to quote one does not become their evidence.
+    AGENT_MEMORY_DOCUMENT = "agent_memory_document"
+    # polylogue-ximhz: ``~/.claude/history.jsonl`` -- the prompt-submission
+    # log whose rows carry the paste evidence a transcript never records.
+    # Retained as bytes and joined to its sessions by session id at
+    # enrichment time; it is never a session of its own.
+    PROMPT_HISTORY_LOG = "prompt_history_log"
+    # polylogue-ximhz: an export member whose name carries a provider file
+    # id (ChatGPT ``file-<id>`` assets). The bytes are the attachment payload;
+    # the member coordinate inside its own export is the durable join back to
+    # the attachment that references the id.
+    EXPORT_ASSET = "export_asset"
+    # polylogue-ximhz: the cross-conversation lookup tables that name an
+    # export's assets (``library_files.json``,
+    # ``conversation_asset_file_names.json``). They are not conversation
+    # shards; they are the metadata the attachment join needs.
+    EXPORT_ASSET_INDEX = "export_asset_index"
     HOOK_EVENT = "hook_event"
     # polylogue-hbtj2: a raw payload whose magic bytes are a recognized
     # binary container with no dedicated, content-verified session parser
