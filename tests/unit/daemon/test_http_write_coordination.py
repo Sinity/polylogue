@@ -595,9 +595,8 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
 def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from polylogue.daemon_client import DaemonResponseError
-    from polylogue.operations.delete_authorization import DeleteBatchPartialError, consume_cli_delete
-    from polylogue.operations.mutation_transaction import MutationPrincipal
+    from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
+    from polylogue.operations.mutation_transaction import MutationPlan, MutationReceipt
 
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
@@ -613,23 +612,31 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
         tokens = authorization["authorization_refs"]
         assert isinstance(tokens, list)
 
-        def consume_with_failure(root: Path, token: str, principal: MutationPrincipal) -> object:
-            if tokens.index(token) < 2:
-                return consume_cli_delete(root, token, principal)
-            raise DeleteBatchPartialError(
-                "selection_changed_after_authorization", completed_chunks=2, affected_count=512
-            )
+        original_apply = SessionDeleteActuator.apply
+        completed_applies = 0
 
-        with patch(
-            "polylogue.operations.delete_authorization.consume_cli_delete",
-            side_effect=consume_with_failure,
-        ):
-            with pytest.raises(DaemonResponseError) as error:
-                _delete_operation(client, "execute", {"authorization_refs": tokens})
+        def fail_third_apply(
+            actuator: SessionDeleteActuator, plan: MutationPlan, args: SessionDeleteArgs
+        ) -> MutationReceipt:
+            nonlocal completed_applies
+            if completed_applies == 2:
+                raise RuntimeError("synthetic third delete chunk failure")
+            completed_applies += 1
+            return original_apply(actuator, plan, args)
 
-    assert getattr(error.value, "code", None) == "delete_partially_applied"
-    assert getattr(error.value, "completed_chunks", None) == 2
-    assert getattr(error.value, "affected_count", None) == 512
+        # The daemon executes the declared SessionDeleteActuator through the
+        # audited machine lifecycle, not the retired direct helper.  A fault
+        # after two durable effects leaves the final attempt unknown rather
+        # than inventing a retry-safe HTTP refusal.
+        with patch.object(SessionDeleteActuator, "apply", new=fail_third_apply):
+            result = _delete_operation(client, "execute", {"authorization_refs": tokens})
+
+    assert completed_applies == 2
+    assert result["outcome"] == "indeterminate"
+    assert result["effect"] == "indeterminate"
+    assert result["completed_chunks"] == 2
+    assert result["affected_count"] == 512
+    assert result["stop_reason"] == "refused"
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
