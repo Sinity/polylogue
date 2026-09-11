@@ -24,6 +24,11 @@ def test_direct_status_uses_the_pinned_archive_and_retains_legacy_sections(tmp_p
     assert payload["archive_readiness"]["checked"] is False
     assert payload["sinex_publication"]["state"] == "not_observed"
     assert payload["assertion_candidate_queue"]["state"] == "not_observed"
+    assert payload["archive_tiers"]["audit"]["table_counts"] == {
+        "operation_previews": 0,
+        "operation_authorizations": 0,
+        "operation_attempts": 0,
+    }
     assert {"archive_tiers", "convergence", "schema_drift", "raw_frontier_integrity"} <= set(payload)
 
 

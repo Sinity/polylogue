@@ -258,13 +258,7 @@ def _scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: 
     from polylogue.storage.embeddings.support import is_missing_table_error
 
     if timeout_ms is None:
-        try:
-            row = conn.execute(sql).fetchone()
-        except sqlite3.OperationalError as exc:
-            if is_missing_table_error(exc):
-                return 0
-            raise
-        return 0 if row is None else _payload_int(row[0])
+        return _scalar_int(conn, sql)
 
     deadline = time.monotonic() + (timeout_ms / 1000.0)
 
@@ -300,12 +294,7 @@ def _rows_with_timeout(
     from polylogue.storage.embeddings.support import is_missing_table_error
 
     if timeout_ms is None:
-        try:
-            return list(conn.execute(sql, params).fetchall())
-        except sqlite3.OperationalError as exc:
-            if is_missing_table_error(exc):
-                return []
-            raise
+        return list(conn.execute(sql, params).fetchall())
 
     deadline = time.monotonic() + (timeout_ms / 1000.0)
 
@@ -556,17 +545,12 @@ def _archive_embedding_session_state_exact_with_timeout(
     from polylogue.storage.embeddings.support import is_missing_table_error
 
     if timeout_ms is None:
-        try:
-            session_state = count_archive_embedding_session_state(
-                conn,
-                status_table=status_table,
-                rebuild=False,
-                recipe=recipe,
-            )
-        except sqlite3.OperationalError as exc:
-            if is_missing_table_error(exc):
-                return (0, 0, 0)
-            raise
+        session_state = count_archive_embedding_session_state(
+            conn,
+            status_table=status_table,
+            rebuild=False,
+            recipe=recipe,
+        )
         return (
             session_state.embedded_sessions,
             session_state.pending_sessions,

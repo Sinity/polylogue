@@ -26,7 +26,7 @@ _TIER_STATUS_TABLES: dict[str, tuple[str, ...]] = {
     "index": ("sessions", "messages", "blocks", "messages_fts", "session_profiles", "work_events"),
     "embeddings": ("embedding_status", "message_embeddings_meta", "embedding_failures"),
     "user": ("assertions", "settings", "annotation_schemas"),
-    "audit": ("mutation_previews", "mutation_authorizations", "mutation_attempts"),
+    "audit": ("operation_previews", "operation_authorizations", "operation_attempts"),
     "ops": ("ingest_cursor", "ingest_attempts", "convergence_debt", "schema_drift_samples", "embedding_catchup_runs"),
 }
 
