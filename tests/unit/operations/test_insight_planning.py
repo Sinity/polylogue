@@ -7,9 +7,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.operations.insight_acceptance import (
     MAX_INSIGHT_ACCEPTED_PARTS,
     MAX_INSIGHT_PART_TARGETS,
@@ -115,6 +118,19 @@ def test_explicit_alias_dedup_and_no_match_match_canonical_selection(tmp_path: P
     assert aliases.pages == canonical.pages
     assert aliases.digest == canonical.digest
     assert [target.target_ref for target in aliases.pages[0]] == ["session:codex-session:target-00000"]
+
+
+def test_source_only_archive_refuses_insight_planning_without_accepting_empty_scope(tmp_path: Path) -> None:
+    """Derived planning never turns an acquire-only archive into an empty manifest.
+
+    Anti-vacuity: replacing the explicit unavailable refusal with an empty
+    page would let the daemon accept an insight operation despite its closed
+    index tier.
+    """
+    archive = cast(ArchiveStore, SimpleNamespace(archive_root=tmp_path, index_connection=None))
+
+    with pytest.raises(ArchiveTierUnavailableError, match="index tier unavailable"):
+        _prepare(archive)
 
 
 def test_previous_preview_reference_changes_page_plan_hash_not_manifest_digest(tmp_path: Path) -> None:

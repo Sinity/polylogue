@@ -6,6 +6,7 @@ from dataclasses import asdict
 from time import monotonic, time
 from typing import cast
 
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.operations.audit import MachineRequestBinding
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
@@ -316,6 +317,32 @@ async def execute_insights_rebuild_operation(
                     lambda: execution.executor.finalize_bound(active, unknown_reason="cancelled during accepted part"),
                 )
         await execution.stop(str(exc))
+    except ArchiveTierUnavailableError as exc:
+        # This can only be a pre-acceptance refusal: insight planning needs
+        # derived state, while source-tier acquisition intentionally keeps it
+        # closed. Do not create an audit acceptance that later looks like a
+        # partially executed insight operation.
+        if active is None and execution.record is None:
+            return operation_envelope(
+                request,
+                context,
+                snapshot=execution.snapshot,
+                started_at=started_at,
+                outcome="rejected",
+                error={"code": exc.code, "detail": str(exc), "retryable": True},
+            )
+        if active is not None:
+            if active_observed is not None and active_part is not None:
+                await execution.finalize(active_part, active, active_observed, terminal_summary=None)
+            else:
+                await execution.runtime.write_phase(
+                    "insights.unknown",
+                    lambda: execution.executor.finalize_bound(
+                        active, unknown_reason="accepted part lacks a settled receipt"
+                    ),
+                )
+        await execution.stop("refused")
+        raise
     except Exception:
         if active is not None:
             if active_observed is not None and active_part is not None:

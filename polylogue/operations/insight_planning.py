@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.operations.insight_acceptance import (
     MAX_INSIGHT_ACCEPTED_PARTS,
     MAX_INSIGHT_PART_TARGETS,
@@ -66,7 +67,12 @@ def _required_index_connection(archive: ArchiveStore) -> sqlite3.Connection:
     """
     connection = archive.index_connection
     if connection is None:
-        raise RuntimeError("insight planning requires a pinned index-tier connection")
+        raise ArchiveTierUnavailableError(
+            tier="index",
+            path=str(archive.archive_root / "index.db"),
+            reason="insight planning was opened in source-tier acquisition mode",
+            guidance="wait for ordinary daemon convergence to restore derived state, then retry",
+        )
     return connection
 
 
