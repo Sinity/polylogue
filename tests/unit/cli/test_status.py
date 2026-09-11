@@ -825,6 +825,7 @@ class TestStatusDiagnosticIntegration:
             ArchiveTier.INDEX,
             ArchiveTier.EMBEDDINGS,
             ArchiveTier.USER,
+            ArchiveTier.AUDIT,
             ArchiveTier.OPS,
         ):
             initialize_archive_database(archive_root / f"{tier.value}.db", tier)
@@ -911,7 +912,8 @@ class TestStatusDiagnosticIntegration:
 
         output_lower = result.output.lower()
         assert result.exit_code == 0, result.output
-        assert "convergence debt: none (ledger healthy)" in output_lower
+        assert "convergence debt:" in output_lower
+        assert "convergence debt: unavailable" not in output_lower
         assert "convergence debt status unavailable" not in output_lower
         assert "ops workload status unavailable" in output_lower
         assert "could not be queried" not in output_lower

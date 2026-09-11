@@ -220,7 +220,7 @@ def status_command(
                 daemon_url=daemon_url,
                 include_archive_readiness=exact_archive_readiness,
             )
-        except (OperationKernelError, sqlite3.Error):
+        except sqlite3.Error:
             # A missing or preflight-invalid archive has no snapshot to hand
             # to the canonical reader.  Keep the retired direct-status
             # aggregate out of this route, but retain its bounded first-run
@@ -231,6 +231,14 @@ def status_command(
             if diagnostic.kind in {"no_archive", "schema_mismatch", "locked_db", "stale_pidfile", "no_sources"}:
                 _show_direct_status_diagnostic(env, diagnostic, output_format=output_format)
                 return
+            obs.attributes["daemon_reachable"] = True
+            obs.daemon_path = "daemon"
+            if output_format == "json":
+                _show_daemon_status_unavailable_json(env)
+            else:
+                _show_daemon_status_unavailable(env, compact=not full_payload)
+            raise click.exceptions.Exit(1) from None
+        except OperationKernelError:
             obs.attributes["daemon_reachable"] = True
             obs.daemon_path = "daemon"
             if output_format == "json":
