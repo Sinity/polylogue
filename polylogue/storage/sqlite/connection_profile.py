@@ -329,6 +329,103 @@ SEALED_READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     cancellation_supported=True,
 )
 
+# Historical continuity classification needs SQLite's connection-local TEMP
+# relations for its bounded candidate stream.  ``query_only`` rejects TEMP
+# writes as well as durable writes, so this deliberately private profile is
+# not part of ``READ_PROFILES``: the factory below is the only route that can
+# use it.  The URI's ``mode=ro&immutable=1`` still makes the authenticated
+# main database immutable; only SQLite's private TEMP schema is writable.
+SEALED_STAGING_CONNECTION_PROFILE = SQLiteConnectionProfile(
+    role="read",
+    timeout_seconds=TIMEOUT_CLASS_OFFLINE_BULK_S,
+    busy_timeout_ms=int(TIMEOUT_CLASS_OFFLINE_BULK_S * 1000),
+    cache_size_kib=READ_CACHE_SIZE_KIB,
+    mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+    temp_store="MEMORY",
+    query_only=False,
+    generation_identity="sealed",
+    immutable=True,
+    max_snapshot_age_s=None,
+    cancellation_supported=True,
+)
+
+
+# This is intentionally a small, positive allowlist.  The liveness and legacy
+# hook matcher need these aggregate/scalar functions plus the registered UDF;
+# all other function calls, including ``load_extension``, are refused.
+_SEALED_STAGING_FUNCTIONS = frozenset(
+    {
+        "coalesce",
+        "count",
+        "min",
+        "sum",
+        "polylogue_deterministic_raw_session_id",
+    }
+)
+_SEALED_STAGING_READ_PRAGMAS = frozenset(
+    {"data_version", "query_only", "schema_version", "table_info", "temp_store", "user_version"}
+)
+
+
+def _authorize_sealed_staging_operation(
+    action: int,
+    argument1: str | None,
+    argument2: str | None,
+    database: str | None,
+    _trigger: str | None,
+) -> int:
+    """Allow only liveness reads and connection-local TEMP staging.
+
+    SQLite invokes this callback while compiling each statement.  Returning
+    ``SQLITE_DENY`` by default is important: adding a new operation to the
+    classifier must explicitly earn an entry here rather than silently
+    widening an authenticated immutable reader.
+    """
+
+    if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT):
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_READ:
+        # SQLite reports COUNT(*)'s synthetic empty-column read without a
+        # database name; it still belongs to the statement's main/temp table.
+        return sqlite3.SQLITE_OK if database in {None, "main", "temp"} else sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_FUNCTION:
+        function_name = (argument2 or argument1 or "").lower()
+        return sqlite3.SQLITE_OK if function_name in _SEALED_STAGING_FUNCTIONS else sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_PRAGMA:
+        pragma_name = (argument1 or "").lower()
+        # A non-NULL second argument is a PRAGMA assignment.  Setup pragmas
+        # run before this authorizer is installed; callers get reads only.
+        if pragma_name == "table_info":
+            return sqlite3.SQLITE_OK
+        return (
+            sqlite3.SQLITE_OK
+            if argument2 is None and pragma_name in _SEALED_STAGING_READ_PRAGMAS
+            else sqlite3.SQLITE_DENY
+        )
+
+    # TEMP DML and TEMP table/index creation, deletion, and reindexing are the
+    # complete staging vocabulary.  SQLite reports its internal
+    # sqlite_temp_master updates with database="temp", so those are included
+    # by the same database check rather than by table-name exceptions.
+    temp_dml = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
+    temp_schema = {
+        sqlite3.SQLITE_CREATE_TEMP_TABLE,
+        sqlite3.SQLITE_CREATE_TEMP_INDEX,
+        sqlite3.SQLITE_DROP_TEMP_TABLE,
+        sqlite3.SQLITE_DROP_TEMP_INDEX,
+    }
+    if action in temp_dml:
+        return sqlite3.SQLITE_OK if database == "temp" else sqlite3.SQLITE_DENY
+    if action in temp_schema:
+        return sqlite3.SQLITE_OK if database == "temp" else sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_REINDEX:
+        return sqlite3.SQLITE_OK if database == "temp" else sqlite3.SQLITE_DENY
+
+    # This explicitly denies ATTACH/DETACH, all main-schema writes, virtual
+    # tables, triggers/views, unsafe PRAGMAs and every future/unlisted action.
+    return sqlite3.SQLITE_DENY
+
+
 # Named timeout classes are the only supported policy vocabulary.  Callers
 # select a role, not an arbitrary lock-wait duration.
 TIMEOUT_CLASSES: Mapping[str, float] = {
@@ -980,6 +1077,40 @@ def open_readonly_connection(
     return conn
 
 
+def open_sealed_staging_connection(
+    path: str | Path,
+    *,
+    tier: ArchiveTier | None = None,
+    validate_schema: bool = True,
+) -> sqlite3.Connection:
+    """Open an immutable source image with sealed, TEMP-only staging.
+
+    This is a deliberately dedicated exception for historical liveness
+    classification.  The main database is opened with SQLite's
+    ``mode=ro&immutable=1`` URI and remains protected by a fail-closed
+    authorizer; the only writes admitted after setup target the connection's
+    in-memory TEMP schema.  It does not accept caller-selected profiles,
+    descriptors, attachments, or write options.
+    """
+
+    profile = SEALED_STAGING_CONNECTION_PROFILE
+    database_uri = f"file:{quote(str(path))}?mode=ro&immutable=1"
+    conn = sqlite3.connect(database_uri, uri=True, timeout=profile.timeout_seconds)
+    try:
+        if validate_schema:
+            _assert_schema_supported(conn, path, tier)
+        # Apply only this bounded profile's setup statements.  In particular,
+        # do not copy READ_CONNECTION_PROFILE here: its query_only=ON is
+        # exactly what prevents TEMP staging.
+        for statement in profile.pragma_statements:
+            conn.execute(statement)
+        conn.set_authorizer(_authorize_sealed_staging_operation)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 def open_profiled_connection(
     path: str | Path,
     *,
@@ -1349,6 +1480,7 @@ __all__ = [
     "READ_MMAP_SIZE_BYTES",
     "READ_PROFILES",
     "SEALED_READ_CONNECTION_PROFILE",
+    "SEALED_STAGING_CONNECTION_PROFILE",
     "BACKGROUND_READ_CONNECTION_PROFILE",
     "OFFLINE_BULK_READ_CONNECTION_PROFILE",
     "BACKGROUND_READ_SNAPSHOT_AGE_S",
@@ -1379,6 +1511,7 @@ __all__ = [
     "read_frame",
     "connection_context",
     "descriptor_alias_path",
+    "open_sealed_staging_connection",
     "log_mapped_bytes_budget_check",
     "mapped_bytes_budget",
     "assert_tier_schema_supported",
