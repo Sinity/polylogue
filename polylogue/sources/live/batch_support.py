@@ -843,8 +843,16 @@ def _jsonl_provider_and_session_artifact(
     path: Path,
     fallback_provider: Provider,
 ) -> tuple[Provider, bool]:
+    from polylogue.sources.origin_specs import path_declaration_refuses_session
+
     records = _jsonl_sample_from_path(path)
     provider = (detect_provider(records) if records else None) or fallback_provider
+    # A ``raw-only`` declaration is terminal: its bytes are evidence and the
+    # record shape cannot decide otherwise (polylogue-ximhz). Checked before
+    # the content probe so a prompt-history log -- whose rows carry the same
+    # ``sessionId`` keys a transcript does -- is never session-parsed.
+    if path_declaration_refuses_session(provider, path):
+        return provider, False
     if jsonl_session_artifact(path, provider=provider) is not None:
         return provider, True
     path_classification = classify_artifact_path(path, provider=provider)
@@ -860,6 +868,10 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
     ):
         return True
     if is_jsonl_source_path(str(path)):
+        from polylogue.sources.origin_specs import path_declaration_refuses_session
+
+        if path_declaration_refuses_session(provider, path):
+            return False
         if jsonl_session_artifact(path, provider=provider) is not None:
             return True
         # A path rule may still rescue content the bounded scan could not

@@ -3159,7 +3159,7 @@ def _enrich_retained_parse_results(
     for raw_id, outcome in tuple(results.items()):
         if isinstance(outcome, Exception):
             continue
-        provider, _blob_hash, _source_path, _descriptor_kind, _size, _native_id = descriptors[raw_id]
+        provider, _blob_hash, descriptor_source_path, _descriptor_kind, _size, _native_id = descriptors[raw_id]
         sessions, payload_bytes, kind = outcome
         sessions = _normalize_retained_parse_sessions(source_conn, raw_id, sessions)
         if sessions:
@@ -3169,6 +3169,9 @@ def _enrich_retained_parse_results(
                 provider=provider,
                 sessions=sessions,
                 index_conn=index_conn,
+                source_conn=source_conn,
+                blob_root=Path(archive.archive_root) / "blob",
+                source_path=descriptor_source_path,
             ),
             payload_bytes,
             kind,
@@ -3204,6 +3207,9 @@ def _replay_safe_enrich_sessions(
     provider: Provider,
     sessions: list[ParsedSession],
     index_conn: sqlite3.Connection | None = None,
+    source_conn: sqlite3.Connection | None = None,
+    blob_root: Path | None = None,
+    source_path: str | None = None,
 ) -> list[ParsedSession]:
     """Enrich one retained parse without consulting ambient source files.
 
@@ -3226,6 +3232,21 @@ def _replay_safe_enrich_sessions(
         titles = read_thread_titles(index_conn, thread_ids=thread_ids)
         if titles:
             sidecar_data = cast("SidecarData", {"retained_state_titles": titles})
+    if source_conn is not None and blob_root is not None and source_path:
+        # polylogue-ximhz: Claude Code index/history and ChatGPT asset maps
+        # are retained source artifacts. Replay resolves them from the source
+        # tier and the blob store -- never from a file beside the original
+        # source path, which may no longer exist.
+        from polylogue.sources.retained_assembly import with_retained_assembly_evidence
+        from polylogue.storage.blob_store import BlobStore
+
+        sidecar_data = with_retained_assembly_evidence(
+            sidecar_data,
+            provider=provider,
+            source_conn=source_conn,
+            blob_store=BlobStore(blob_root),
+            source_path=source_path,
+        )
     return [spec.enrich_session(session, sidecar_data) for session in sessions]
 
 
