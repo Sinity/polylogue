@@ -143,7 +143,7 @@ def test_bulk_saturation_cannot_consume_interactive_or_control_capacity() -> Non
     blocker = _Blocker()
     with _adapter(max_workers=8, queue_units=16) as adapter:
         try:
-            bulk: list[SubmittedOperation] = []
+            bulk: list[SubmittedOperation[object]] = []
             with pytest.raises(DaemonBackpressureError) as rejection:
                 for _index in range(adapter.capacity_units):
                     bulk.append(adapter.submit(blocker, admission_class="bulk-candidate"))

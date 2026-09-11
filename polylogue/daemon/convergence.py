@@ -100,6 +100,7 @@ class _SelectedSessionAdapter(Protocol):
 if TYPE_CHECKING:
     from polylogue.daemon.execution import BoundedComputeAdapter
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
 
 
 class _DerivationAdmission:
@@ -114,7 +115,7 @@ class _DerivationAdmission:
             raise RuntimeError("session derivation publish was invoked on the daemon event loop thread")
         # The bridge owns the coordinator until the transaction really returns;
         # a caller-side timeout must not admit a second archive writer.
-        return cast("bool", self._bridge.run_sync_with_timeout(f"derivation.{domain}", None, publish))
+        return self._bridge.run_sync_with_timeout(f"derivation.{domain}", None, publish)
 
 
 class SessionProfileConvergenceOwner:
@@ -221,7 +222,7 @@ class SessionProfileConvergenceOwner:
             ),
             admission_class="incremental-background",
         )
-        operation = asyncio.wrap_future(submitted.future, loop=loop)  # type: ignore[arg-type]
+        operation = asyncio.wrap_future(submitted.future, loop=loop)
         try:
             return await asyncio.shield(operation)
         except asyncio.CancelledError:
@@ -275,7 +276,7 @@ class SessionProfileConvergenceOwner:
             ),
             admission_class="incremental-background",
         )
-        operation = asyncio.wrap_future(submitted.future, loop=loop)  # type: ignore[arg-type]
+        operation = asyncio.wrap_future(submitted.future, loop=loop)
         try:
             return await asyncio.shield(operation)
         except asyncio.CancelledError:
@@ -536,10 +537,7 @@ def _converge_selected_session_parts_sync(
                 )
                 break
             try:
-                accepted = admission(
-                    "session_profile",
-                    lambda replacement=replacement: adapter.publish(frame, replacement),
-                )
+                accepted = admission("session_profile", partial(adapter.publish, frame, replacement))
             except Exception as exc:
                 from polylogue.storage.derived.session.derivation import SessionProfileMarkerLoweringError
 
@@ -662,7 +660,7 @@ def make_session_profile_derivation(
     archive_root: Path,
     materializer_version: int | None = None,
     now: Callable[[], float],
-) -> DerivationAdapter:
+) -> SessionProfileDerivation:
     """Build the one daemon-owned adapter for one active index generation.
 
     The protocol composition layer calls this once for its active generation
@@ -736,18 +734,15 @@ def make_session_profile_derivation(
             raise TypeError("session profile frame scope must be a tuple of session ids or None")
         return tuple(str(item) for item in value)
 
-    return cast(
-        "DerivationAdapter",
-        SessionProfileDerivation(
-            read_connection,
-            write_connection,
-            materializer_version=materializer_version,
-            session_scope=scope,
-            quiet_key=quiet_key,
-            marker_read_connection=marker_read_connection if user_db.exists() else None,
-            marker_write_connection=marker_write_connection if user_db.exists() else None,
-            generation_binding=generation_binding,
-        ),
+    return SessionProfileDerivation(
+        read_connection,
+        write_connection,
+        materializer_version=materializer_version,
+        session_scope=scope,
+        quiet_key=quiet_key,
+        marker_read_connection=marker_read_connection if user_db.exists() else None,
+        marker_write_connection=marker_write_connection if user_db.exists() else None,
+        generation_binding=generation_binding,
     )
 
 

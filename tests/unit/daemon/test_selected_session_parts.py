@@ -24,6 +24,7 @@ from polylogue.daemon.convergence import (
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.storage.derived.session import derivation as session_derivation
+from polylogue.storage.derived.session.derivation import SessionProfilePartFacts, SessionProfileReplacement
 from tests.infra.convergence_harness import (
     build_converged_archive,
     rich_convergence_sources,
@@ -290,7 +291,7 @@ async def test_selected_part_retries_only_the_same_binding_moved_target(tmp_path
     original_compute = adapter.compute
     compute_attempts = 0
 
-    def move_target_binding(frame: object, session_id: str) -> object:
+    def move_target_binding(frame: object, session_id: str) -> SessionProfileReplacement:
         nonlocal compute_attempts
         replacement = original_compute(frame, session_id)
         compute_attempts += 1
@@ -302,7 +303,7 @@ async def test_selected_part_retries_only_the_same_binding_moved_target(tmp_path
             conn.commit()
         return replacement
 
-    adapter.compute = move_target_binding  # type: ignore[method-assign]
+    adapter.compute = move_target_binding  # type: ignore[method-assign, assignment]
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator()
     owner = SessionProfileConvergenceOwner(
@@ -350,7 +351,7 @@ async def test_selected_part_retains_a_committed_effect_when_post_certification_
     original_facts = adapter.selected_part_facts
     observations = 0
 
-    def facts_missing_after_publish(frame: object, session_id: str) -> object:
+    def facts_missing_after_publish(frame: object, session_id: str) -> SessionProfilePartFacts:
         nonlocal observations
         observations += 1
         if observations == 3:

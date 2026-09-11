@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from time import monotonic
-from typing import Literal, TypeVar
+from typing import Generic, Literal, TypeVar, cast
 
 AdmissionClass = Literal["interactive-read", "control", "incremental-background", "bulk-candidate"]
 T = TypeVar("T")
@@ -244,8 +244,10 @@ def current_cancellation() -> CancellationHandle | None:
 
 
 @dataclass(frozen=True, slots=True)
-class SubmittedOperation:
-    future: Future[object]
+class SubmittedOperation(Generic[T]):
+    """One admitted operation with its result type retained for awaiters."""
+
+    future: Future[T]
     cancellation: CancellationHandle
     _task: _Task | None = None
 
@@ -423,7 +425,7 @@ class BoundedComputeAdapter:
         units: int = 1,
         estimated_bytes: int = 0,
         cancellation: CancellationHandle | None = None,
-    ) -> SubmittedOperation:
+    ) -> SubmittedOperation[T]:
         if admission_class not in self._classes:
             raise ValueError(f"unknown daemon admission class: {admission_class!r}")
         if units < 1 or estimated_bytes < 0 or estimated_bytes > self.capacity_bytes:
@@ -433,10 +435,12 @@ class BoundedComputeAdapter:
                 evidence={"capacity_bytes": self.capacity_bytes, "estimated_bytes": max(0, estimated_bytes)},
             )
         handle = cancellation or CancellationHandle()
-        future: Future[object] = Future()
+        future: Future[T] = Future()
         task = _Task(
             function=function,
-            future=future,
+            # The scheduler queue is heterogeneous, while this public handle
+            # retains the concrete result type supplied by its caller.
+            future=cast("Future[object]", future),
             cancellation=handle,
             admission_class=admission_class,
             units=units,

@@ -38,6 +38,7 @@ from polylogue.daemon.convergence import (
     make_session_profile_frame,
 )
 from polylogue.daemon.convergence_stages import make_fts_stage
+from polylogue.daemon.derivation import DerivationReport
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
@@ -325,10 +326,10 @@ def converge_session_profiles(
     session_ids: Sequence[str] | None,
     *,
     now: Callable[[], float],
-) -> object:
+) -> DerivationReport:
     """Converge session profiles through the typed owner and derivation kernel."""
 
-    async def run() -> object:
+    async def run() -> DerivationReport:
         compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
         coordinator = DaemonWriteCoordinator()
         try:

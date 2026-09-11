@@ -49,6 +49,9 @@ def lower_markers(
     """
     ids: list[str] = []
     for candidate in candidates:
+        assertion_kind = candidate.assertion_kind
+        if assertion_kind is None:
+            continue
         assertion_id = assertion_id_for_marker(candidate)
         if assertion_id is None:
             continue
@@ -74,7 +77,7 @@ def lower_markers(
             conn,
             assertion_id=assertion_id,
             target_ref=candidate.evidence_refs[0],
-            kind=candidate.assertion_kind,
+            kind=assertion_kind,
             key=match.kind,
             value={"marker_kind": match.kind, "arguments": dict(match.arguments)},
             body_text=match.body,

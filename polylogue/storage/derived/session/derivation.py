@@ -615,6 +615,7 @@ class SessionProfileDerivation:
         the storage adapter so marker presence remains part of the same
         validity definition used by recurring convergence.
         """
+        marker_read_connection = self._marker_read_connection
         conn = self._read_connection()
         marker_ids: tuple[str, ...] = ()
         try:
@@ -648,12 +649,12 @@ class SessionProfileDerivation:
                 input_binding,
                 materializer_version=self._materializer_version,
             )
-            if status == _VALID and self._marker_read_connection is not None:
+            if status == _VALID and marker_read_connection is not None:
                 marker_ids = _marker_assertion_ids(conn, session_id)
         finally:
             conn.close()
-        if marker_ids:
-            marker_conn = self._marker_read_connection()
+        if marker_ids and marker_read_connection is not None:
+            marker_conn = marker_read_connection()
             try:
                 if not _marker_assertions_present(marker_conn, marker_ids):
                     status = _STALE
@@ -733,11 +734,12 @@ class SessionProfileDerivation:
         since at runtime the kernel hands back exactly what ``compute`` made.
         """
         assert isinstance(replacement, SessionProfileReplacement)
+        generation_binding = self._generation_binding
         with write_lease(f"derivation.{self.domain}", max_hold_seconds=_PUBLISH_HOLD_BUDGET_S):
             if (
                 replacement.generation_binding is not None
-                and self._generation_binding is not None
-                and self._generation_binding() != replacement.generation_binding
+                and generation_binding is not None
+                and generation_binding() != replacement.generation_binding
             ):
                 return False
             conn = self._write_connection()
@@ -763,8 +765,8 @@ class SessionProfileDerivation:
                         replacement.payload,
                         generation_is_current=(
                             None
-                            if replacement.generation_binding is None or self._generation_binding is None
-                            else lambda: self._generation_binding() == replacement.generation_binding
+                            if replacement.generation_binding is None or generation_binding is None
+                            else lambda: generation_binding() == replacement.generation_binding
                         ),
                     )
                     index_family_committed = published

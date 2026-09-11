@@ -96,7 +96,7 @@ async def run_lease_free_embedding_work(
         partial(function, *args, admit=admission, **kwargs),
         admission_class="incremental-background",
     )
-    return await asyncio.wrap_future(submitted.future, loop=loop)  # type: ignore[arg-type]
+    return await asyncio.wrap_future(submitted.future, loop=loop)
 
 
 async def converge_archive_embeddings(
