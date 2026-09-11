@@ -81,11 +81,7 @@ class DaemonOperationStack:
         """Read the seeded archive through its canonical archive reader."""
 
         with ArchiveStore.open_existing(self.archive_root) as archive:
-            try:
-                archive.resolve_session_id(session_id)
-            except KeyError:
-                return False
-        return True
+            return session_id in archive.resolve_exact_session_ids((session_id,))
 
     def close(self) -> None:
         """Stop ingress, drain the lifecycle owner, then release resources."""

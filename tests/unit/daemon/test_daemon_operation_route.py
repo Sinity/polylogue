@@ -65,7 +65,7 @@ def test_one_uds_operation_request_returns_canonical_read_without_health_probe(
     assert envelope["readiness"]["ready"] is True
     assert envelope["authority"]["writes"] == "daemon-owned"
     assert envelope["result"]["total"] == len(session_ids)
-    assert {item["session_id"] for item in envelope["result"]["items"]} == set(session_ids)
+    assert {item["id"] for item in envelope["result"]["items"]} == set(session_ids)
 
 
 def test_machine_listener_uses_the_independent_operation_handler(tmp_path: Path) -> None:
@@ -144,18 +144,23 @@ def test_changed_intent_cannot_reuse_a_durable_request_id(tmp_path: Path) -> Non
 
 
 def test_operation_route_bounds_the_real_canonical_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Mutation: bypass the UDS response bound and this canonical title leaks through."""
+    """Mutation: bypass the UDS response bound and the oversized canonical rows escape."""
+
+    import json
 
     import polylogue.daemon.uds as uds
 
-    monkeypatch.setattr(uds, "MAX_OPERATION_RESULT_BYTES", 4096)
     with running_daemon_operations(
         tmp_path / "archive",
-        seed_archive=lambda root: _seed_sessions(root, count=1, title="x" * 16_384),
+        seed_archive=lambda root: _seed_sessions(root, count=8),
     ) as stack:
+        unbounded = stack.client.operation("cli.query", {"params": {"limit": 8}}, archive_root=str(stack.archive_root))
+        assert unbounded is not None and unbounded["outcome"] == "completed"
+        assert len(json.dumps(unbounded, separators=(",", ":")).encode()) > 4096
+        monkeypatch.setattr(uds, "MAX_OPERATION_RESULT_BYTES", 4096)
         envelope = stack.client.operation(
             "cli.query",
-            {"params": {"limit": 1}},
+            {"params": {"limit": 8}},
             archive_root=str(stack.archive_root),
         )
 

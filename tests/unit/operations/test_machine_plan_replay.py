@@ -108,7 +108,24 @@ def test_real_plan_replays_before_authorization_without_losing_its_hash(
     assert recovered.plan.plan_hash == preview.plan.plan_hash
     validate_mutation_plan_integrity(recovered.plan)
     authorization = executor.authorize_bound(operation, recovered, principal, confirmation_strength="bound_token")
-    assert restarted.issue_authorization(recovered, principal, authorization)
+    target_kind = "issue_authorization"
+    with monkeypatch.context() as patch:
+        patch.setattr(AuditContinuityCoordinator, "_phase", crash)
+        with pytest.raises(RuntimeError, match="source-WAL crash"):
+            restarted.issue_authorization(recovered, principal, authorization)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        pending = json.loads(source.execute("SELECT pending_payload_json FROM audit_continuity_control").fetchone()[0])
+    issued_at_ms = pending["command"]["payload"]["issued_at_ms"]
+    assert isinstance(issued_at_ms, int)
+    assert authorization.token not in json.dumps(pending)
+    restarted.reconcile_continuity()
+    with closing(sqlite3.connect(tmp_path / "audit.db")) as connection:
+        assert (
+            connection.execute(
+                "SELECT issued_at_ms FROM operation_authorizations WHERE preview_id=?", (ref,)
+            ).fetchone()[0]
+            == issued_at_ms
+        )
 
 
 def test_machine_replay_refuses_unknown_context_fields() -> None:

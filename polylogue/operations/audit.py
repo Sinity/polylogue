@@ -906,6 +906,9 @@ class AuditRepository:
                 "principal": _principal_payload(principal),
             }
         if kind == "issue_authorization":
+            issued_at_ms = values.get("issued_at_ms")
+            if issued_at_ms is None:
+                issued_at_ms = int(time.time() * 1000)
             if isinstance(args[0], _StoredAuthorizationDigest):
                 preview, principal, authorization = (
                     cast(MutationPreview, args[1]),
@@ -920,7 +923,7 @@ class AuditRepository:
                 )
             return {
                 "authorization_id": f"authorization:{secrets.token_urlsafe(18)}",
-                "issued_at_ms": cast(int, values.get("issued_at_ms", int(time.time() * 1000))),
+                "issued_at_ms": cast(int, issued_at_ms),
                 "preview": _preview_payload(preview),
                 "principal": _principal_payload(principal),
                 "authorization": _authorization_payload(authorization),
