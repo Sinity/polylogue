@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +52,9 @@ from polylogue.sources.sidecar_evidence import (
     SiblingTranscript,
     iter_jsonl_records,
 )
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.tier_access import TierRefusal, open_tier_reader
 
 logger = get_logger(__name__)
 
@@ -110,10 +114,15 @@ def _prefix_range(prefix: str) -> tuple[str, str]:
 class RetainedSidecarResolver:
     """Derivation-time resolution from retained bytes only.
 
-    Read-only against ``source.db`` so it is safe beside the daemon's single
-    writer. Every failure mode -- no archive, no source tier, an unreadable
-    database -- degrades to an unresolved scope, which records nothing at all
-    rather than manufacturing absence evidence from infrastructure state.
+    Read-only against the source tier so it is safe beside the daemon's single
+    writer. What an unavailable store looks like is not this module's to
+    decide: ``open_tier_reader`` classifies absence, schema skew and an
+    unopenable file once at the seam, and any refusal yields an unresolved
+    scope -- which records nothing at all rather than manufacturing absence
+    evidence from infrastructure state. A query that fails *after* the seam
+    admitted the tier is a corrupt store, not an absent one, and propagates:
+    reporting it as zero retained members is exactly the silent truncation
+    this resolver exists to prevent.
     """
 
     def __init__(self, archive_root: Path, *, blob_root: Path | None = None) -> None:
@@ -124,19 +133,13 @@ class RetainedSidecarResolver:
         tool_results_dir = resolve_tool_results_dir(source_path)
         if tool_results_dir is None or source_path is None:
             return UNRESOLVED_SIDECAR_SCOPE
-        conn = self._open()
-        if conn is None:
-            return UNRESOLVED_SIDECAR_SCOPE
-        try:
+        with self._source_reader() as conn:
+            if conn is None:
+                return UNRESOLVED_SIDECAR_SCOPE
             rows = self._children_of(conn, tool_results_dir)
             if not rows:
                 return UNRESOLVED_SIDECAR_SCOPE
             siblings = self._retained_siblings(conn, source_path)
-        except sqlite3.Error as exc:
-            logger.debug("retained sidecar resolution failed for %s: %s", source_path, exc)
-            return UNRESOLVED_SIDECAR_SCOPE
-        finally:
-            conn.close()
         return RetainedSidecarScope(
             scope_key=str(tool_results_dir),
             files=tuple(self._as_file(row) for row in rows),
@@ -148,16 +151,10 @@ class RetainedSidecarResolver:
         tool_outputs_dir = resolve_tool_outputs_dir(source_path, session_id)
         if tool_outputs_dir is None:
             return UNRESOLVED_SIDECAR_SCOPE
-        conn = self._open()
-        if conn is None:
-            return UNRESOLVED_SIDECAR_SCOPE
-        try:
+        with self._source_reader() as conn:
+            if conn is None:
+                return UNRESOLVED_SIDECAR_SCOPE
             rows = self._children_of(conn, tool_outputs_dir)
-        except sqlite3.Error as exc:
-            logger.debug("retained tool-output resolution failed for %s: %s", source_path, exc)
-            return UNRESOLVED_SIDECAR_SCOPE
-        finally:
-            conn.close()
         if not rows:
             return UNRESOLVED_SIDECAR_SCOPE
         return RetainedSidecarScope(
@@ -168,15 +165,25 @@ class RetainedSidecarResolver:
 
     # -- retained reads -------------------------------------------------
 
-    def _open(self) -> sqlite3.Connection | None:
-        source_db = self._archive_root / "source.db"
-        if not source_db.exists():
-            return None
-        try:
-            return sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
-        except sqlite3.Error as exc:
-            logger.debug("Failed to open source.db for retained sidecars: %s", exc)
-            return None
+    @contextmanager
+    def _source_reader(self) -> Iterator[sqlite3.Connection | None]:
+        """Scope a read-only source-tier connection, or ``None`` on refusal.
+
+        The refusal carries the reason the seam decided, so an unresolved
+        scope traced back to here names *why* the tier did not answer rather
+        than being indistinguishable from a scope holding no retained members.
+        """
+        source_db = self._archive_root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
+        with open_tier_reader(ArchiveTier.SOURCE, source_db) as acquired:
+            if isinstance(acquired, TierRefusal):
+                logger.debug(
+                    "retained sidecar scope unresolved: source tier %s (%s)",
+                    acquired.reason,
+                    acquired.detail,
+                )
+                yield None
+            else:
+                yield acquired.connection
 
     def _children_of(self, conn: sqlite3.Connection, directory: Path) -> list[_RetainedRow]:
         """Latest retained row per file directly inside ``directory``.
