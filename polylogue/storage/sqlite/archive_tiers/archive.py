@@ -1879,12 +1879,13 @@ class ArchiveStore:
     def replace_raw_membership_census(
         self,
         raw_id: str,
-        sessions: list[ParsedSession] | None,
+        sessions: Sequence[ParsedSession] | None,
         *,
         parser_fingerprint: str,
         censused_at_ms: int,
         detail: str = "",
         retire_full_revision_governance: bool = False,
+        projections: Sequence[SessionRevisionProjection] | None = None,
         manage_transaction: bool = True,
     ) -> None:
         self._require_writable("replace source.db membership census")
@@ -1896,6 +1897,7 @@ class ArchiveStore:
             censused_at_ms=censused_at_ms,
             detail=detail,
             retire_full_revision_governance=retire_full_revision_governance,
+            projections=projections,
             manage_transaction=manage_transaction,
         )
 
@@ -2011,6 +2013,9 @@ class ArchiveStore:
         bulk_fts: bool = False,
         bulk_build: bool = False,
         defer_fts: bool = False,
+        preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
+        preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
+        prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
     ) -> str | None:
         self._require_writable("apply source.db membership classification")
         return apply_raw_membership_classification(
@@ -2026,6 +2031,9 @@ class ArchiveStore:
             bulk_fts=bulk_fts,
             bulk_build=bulk_build,
             defer_fts=defer_fts,
+            preacquired_attachment_blobs=preacquired_attachment_blobs,
+            preacquired_attachment_refs=preacquired_attachment_refs,
+            prepared_by_raw_id=prepared_by_raw_id,
         )
 
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:

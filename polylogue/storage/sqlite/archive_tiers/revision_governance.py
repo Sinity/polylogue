@@ -151,6 +151,7 @@ from polylogue.pipeline.ids import SessionRevisionProjection, session_content_ha
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -1822,8 +1823,6 @@ def raw_revision_descriptor(
     store: RawRevisionGovernanceHost, raw_id: str
 ) -> tuple[Provider, str, str, RawRevisionKind, int]:
     """Return one retained revision's identity without materializing its blob."""
-    if store._blob_publisher is None:
-        raise RuntimeError("raw revision replay requires a writable blob publisher")
     row = (
         store._ensure_source_conn()
         .execute(
@@ -1876,8 +1875,15 @@ def open_raw_revision_material(
 ) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
     """Open a retained revision for bounded streaming consumption."""
     provider, blob_hash, source_path, kind, _blob_size = raw_revision_descriptor(store, raw_id)
-    assert store._blob_publisher is not None
-    with store._blob_publisher.open(blob_hash) as payload:
+    publisher = store._blob_publisher
+    if publisher is not None:
+        payload_store: Any = publisher
+    else:
+        archive_root = getattr(store, "archive_root", None)
+        if archive_root is None:
+            raise RuntimeError("read-only retained material requires an explicit archive root")
+        payload_store = BlobStore(Path(archive_root) / "blob")
+    with payload_store.open(blob_hash) as payload:
         yield provider, payload, source_path, kind
 
 
@@ -1889,8 +1895,15 @@ def raw_revision_material(
     Use ``open_raw_revision_material`` for potentially large blobs.
     """
     provider, blob_hash, source_path, kind, _blob_size = raw_revision_descriptor(store, raw_id)
-    assert store._blob_publisher is not None
-    return provider, store._blob_publisher.read_all(blob_hash), source_path, kind
+    publisher = store._blob_publisher
+    if publisher is not None:
+        payload_store: Any = publisher
+    else:
+        archive_root = getattr(store, "archive_root", None)
+        if archive_root is None:
+            raise RuntimeError("read-only retained material requires an explicit archive root")
+        payload_store = BlobStore(Path(archive_root) / "blob")
+    return provider, payload_store.read_all(blob_hash), source_path, kind
 
 
 def blob_path_for_hash(store: RawRevisionGovernanceHost, blob_hash: str) -> Path | None:
@@ -2110,12 +2123,13 @@ def raw_payload_sizes(store: RawRevisionGovernanceHost, raw_ids: Sequence[str]) 
 def replace_raw_membership_census(
     store: RawRevisionGovernanceHost,
     raw_id: str,
-    sessions: list[ParsedSession] | None,
+    sessions: Sequence[ParsedSession] | None,
     *,
     parser_fingerprint: str,
     censused_at_ms: int,
     detail: str = "",
     retire_full_revision_governance: bool = False,
+    projections: Sequence[SessionRevisionProjection] | None = None,
     manage_transaction: bool = True,
 ) -> None:
     """Replace one raw's complete parser census and memberships.
@@ -2124,6 +2138,8 @@ def replace_raw_membership_census(
     into one caller-managed commit window (polylogue-amg1) -- the caller
     must call ``commit()`` (or ``rollback()`` on failure) itstore.
     """
+    if projections is not None and (sessions is None or len(projections) != len(sessions)):
+        raise ValueError("prepared membership projections must align with the complete parser census")
     conn = store._ensure_source_conn()
     with conn if manage_transaction else nullcontext():
         if retire_full_revision_governance:
@@ -2163,8 +2179,8 @@ def replace_raw_membership_census(
             )
         conn.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (raw_id,))
         if sessions is not None:
-            for session in sessions:
-                projection = session_revision_projection(session)
+            for index, session in enumerate(sessions):
+                projection = projections[index] if projections is not None else session_revision_projection(session)
                 logical_key = canonical_authority_logical_key(
                     f"{session.source_name.value}:{session.provider_session_id}"
                 )
@@ -3325,6 +3341,9 @@ def apply_raw_membership_classification(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     defer_fts: bool = False,
+    preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
+    prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
 ) -> str | None:
     """Apply one semantic member head and persist every membership decision.
 
@@ -3357,18 +3376,30 @@ def apply_raw_membership_classification(
         accepted_raw_id = classification.accepted_raw_ids[-1]
         accepted_session = parsed_by_raw_id[accepted_raw_id]
         _provider, _blob_hash, source_path, _kind, _blob_size = raw_revision_descriptor(store, accepted_raw_id)
-        attachments, refs = store._preacquire_attachment_blobs(
-            accepted_session,
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-        )
-        if store._blob_publisher is not None:
-            if not manage_transaction and store._blob_publisher.has_pending:
-                # Same batched-replay deadlock avoidance as
-                # ``apply_raw_revision_replay``: commit the open batch before
-                # a non-empty flush takes its separate source.db write lock.
-                store.commit()
-            store._blob_publisher.flush()
+        if preacquired_attachment_blobs is None:
+            attachments, refs = store._preacquire_attachment_blobs(
+                accepted_session,
+                source_path=source_path,
+                acquired_at_ms=acquired_at_ms,
+            )
+            if store._blob_publisher is not None:
+                if not manage_transaction and store._blob_publisher.has_pending:
+                    # Same batched-replay deadlock avoidance as
+                    # ``apply_raw_revision_replay``: commit the open batch before
+                    # a non-empty flush takes its separate source.db write lock.
+                    store.commit()
+                store._blob_publisher.flush()
+        else:
+            # Shared compute staged attachment blobs without a source-tier
+            # reservation.  This admitted writer owns the first source write:
+            # reserve and publish the staged bytes before the durable refs
+            # below make them live, without reopening or hashing them.
+            attachments = preacquired_attachment_blobs
+            refs = preacquired_attachment_refs or ()
+            if store._blob_publisher is not None and store._blob_publisher.has_pending:
+                if not manage_transaction:
+                    store.commit()
+                store._blob_publisher.flush()
         if not _is_frozen_candidate(store):
             write_source_blob_refs(conn, accepted_raw_id, refs)
         with store._conn if manage_transaction else nullcontext():
@@ -3589,6 +3620,7 @@ def apply_raw_membership_classification(
                     bulk_fts=bulk_fts,
                     bulk_build=bulk_build,
                     defer_fts_rebuild=not bulk_build,
+                    prepared=(prepared_by_raw_id or {}).get(accepted_raw_id),
                 )
                 if stage_timings_s is not None:
                     key = f"{stage_timing_prefix}.index_parsed_write"
