@@ -202,10 +202,19 @@ def _build_lineage_archive(
     )
 
 
+@pytest.mark.timeout(180)
 def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Exercise the full catalog path under its calibrated behavior-test bound.
+
+    The default suite guard is 120 seconds.  This complete generated-manifest
+    ingest, FTS, and profile-convergence route has a recorded successful
+    107.6-second run under load, so its local 180-second allowance preserves
+    the coverage without changing the suite-wide hang policy.  It is not a
+    latency target or an attribution of a particular I/O stall.
+    """
     registry = SchemaRegistry(storage_root=SCHEMA_DIR)
     manifest = compile_inferred_corpus_manifest(
         registry=registry,

@@ -35,6 +35,7 @@ from polylogue.storage.sqlite.write_lease import write_lease
 __all__ = [
     "SESSION_PARTITION_INSPECT_CHUNK",
     "SESSION_PROFILE_DOMAIN",
+    "SessionProfilePartFacts",
     "SessionProfileDerivation",
     "SessionProfileReplacement",
     "SESSION_PROFILE_RECIPE_VERSION",
@@ -128,6 +129,25 @@ class _StoredPartition:
 
 
 _ABSENT_PARTITION = _StoredPartition(present=False, materializer_version=None, input_binding=None)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionProfilePartFacts:
+    """One exact session-family observation for a sealed owner target.
+
+    This stays storage-owned because it is a direct read of the index and user
+    tiers. The daemon owner translates it into its transport-neutral receipt
+    types without giving a maintenance surface a connection or a publisher.
+    """
+
+    session_present: bool
+    status: str
+    input_binding: str | None
+    output_binding: str | None
+    profiles: int
+    work_events: int
+    phases: int
+
 
 #: The partition's sibling relations, read back per session. They are written
 #: inside the same replacement as the profile row, so a partition whose siblings
@@ -569,6 +589,73 @@ class SessionProfileDerivation:
         finally:
             marker_conn.close()
         return statuses
+
+    def selected_part_facts(self, frame: object, session_id: str) -> SessionProfilePartFacts:
+        """Read the exact family facts a sealed owner target may certify.
+
+        The ordinary adapter contract intentionally exposes statuses only.
+        Maintenance needs neither discovery nor a connection escape hatch, but
+        it must retain the current source binding, stored binding, and actual
+        partition counts beside its one-key receipt. Keep that inspection in
+        the storage adapter so marker presence remains part of the same
+        validity definition used by recurring convergence.
+        """
+        conn = self._read_connection()
+        marker_ids: tuple[str, ...] = ()
+        try:
+            session_present = (
+                conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is not None
+            )
+            stored = _stored_partitions(conn, (session_id,))[session_id]
+            input_binding = session_input_bindings(conn, (session_id,)).get(session_id) if session_present else None
+            # Do not infer sibling cardinalities from ``session_profiles``.
+            # A sealed excess receipt must report the actual family even when
+            # a partial historical/corrupt relation has no profile parent.
+            # The publisher then gets a chance to retire that exact key rather
+            # than falsely certifying the part absent.
+            profiles = _count(
+                conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0]
+            )
+            work_events = _count(
+                conn.execute("SELECT COUNT(*) FROM session_work_events WHERE session_id = ?", (session_id,)).fetchone()[
+                    0
+                ]
+            )
+            phases = _count(
+                conn.execute("SELECT COUNT(*) FROM session_phases WHERE session_id = ?", (session_id,)).fetchone()[0]
+            )
+            status = _classify_partition(
+                stored,
+                input_binding,
+                materializer_version=self._materializer_version,
+            )
+            if status == _VALID and self._marker_read_connection is not None:
+                marker_ids = _marker_assertion_ids(conn, session_id)
+        finally:
+            conn.close()
+        if marker_ids:
+            marker_conn = self._marker_read_connection()
+            try:
+                if not _marker_assertions_present(marker_conn, marker_ids):
+                    status = _STALE
+            finally:
+                marker_conn.close()
+        return SessionProfilePartFacts(
+            session_present=session_present,
+            status=status,
+            input_binding=input_binding,
+            output_binding=stored.input_binding,
+            profiles=profiles,
+            work_events=work_events,
+            phases=phases,
+        )
+
+    def selected_frame_is_current(self, frame: object) -> bool:
+        """Whether a sealed frame still names this adapter's active generation."""
+        if self._generation_binding is None:
+            return True
+        generation = self._generation_binding()
+        return getattr(frame, "source_revision", None) == f"index-generation:{generation}"
 
     def excess_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
         conn = self._read_connection()
