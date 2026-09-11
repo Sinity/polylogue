@@ -41,31 +41,31 @@ def test_a_pytest_pool_job_holds_the_slot_it_runs_in(tmp_path: Path) -> None:
     proc = _fake_proc(tmp_path, [(os.getpid(), 42, ["devtools", "verify", "--all"]), (42, 1, _runner_argv(document))])
     # No environment marker at all: this is the process shape the deadlocked
     # job actually had -- no AGENTCTL_/SINNIXD_ variables, no pytest slice.
-    assert holds_pytest_slot({}, proc=proc) is True
+    assert holds_pytest_slot({}, cgroup_reader=lambda: "", proc=proc) is True
 
 
 def test_a_normal_pool_job_still_queues(tmp_path: Path) -> None:
     document = _launch(tmp_path / "launch.json", pool="normal")
     proc = _fake_proc(tmp_path, [(os.getpid(), 42, ["devtools", "verify"]), (42, 1, _runner_argv(document))])
-    assert holds_pytest_slot({}, proc=proc) is False
+    assert holds_pytest_slot({}, cgroup_reader=lambda: "", proc=proc) is False
 
 
 def test_a_session_shell_outside_any_job_queues(tmp_path: Path) -> None:
     proc = _fake_proc(tmp_path, [(os.getpid(), 42, ["devtools", "verify"]), (42, 1, ["/bin/zsh"])])
-    assert holds_pytest_slot({}, proc=proc) is False
+    assert holds_pytest_slot({}, cgroup_reader=lambda: "", proc=proc) is False
     assert declared_pool_of_enclosing_job({}, proc=proc) is None
 
 
 def test_the_explicit_held_marker_still_wins(tmp_path: Path) -> None:
     proc = _fake_proc(tmp_path, [(os.getpid(), 42, ["pytest"]), (42, 1, ["/bin/zsh"])])
-    assert holds_pytest_slot({"POLYLOGUE_PYTEST_SLOT": "held"}, proc=proc) is True
+    assert holds_pytest_slot({"POLYLOGUE_PYTEST_SLOT": "held"}, cgroup_reader=lambda: "", proc=proc) is True
 
 
 def test_an_unreadable_or_malformed_launch_document_is_not_a_claim(tmp_path: Path) -> None:
     document = tmp_path / "launch.json"
     document.write_text("{not json")
     proc = _fake_proc(tmp_path, [(os.getpid(), 42, ["devtools", "verify"]), (42, 1, _runner_argv(document))])
-    assert holds_pytest_slot({}, proc=proc) is False
+    assert holds_pytest_slot({}, cgroup_reader=lambda: "", proc=proc) is False
 
 
 def test_the_pool_is_read_through_intermediate_processes(tmp_path: Path) -> None:
@@ -79,4 +79,4 @@ def test_the_pool_is_read_through_intermediate_processes(tmp_path: Path) -> None
             (43, 1, _runner_argv(document)),
         ],
     )
-    assert holds_pytest_slot({}, proc=proc) is True
+    assert holds_pytest_slot({}, cgroup_reader=lambda: "", proc=proc) is True

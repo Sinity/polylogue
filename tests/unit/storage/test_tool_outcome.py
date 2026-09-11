@@ -88,7 +88,7 @@ def test_sidecar_execution_evidence_derives_result_outcome(tmp_path: Path) -> No
                         blocks=[
                             ParsedContentBlock(
                                 type=BlockType.TOOL_RESULT,
-                                outcome_unknown_reason="not_reported",
+                                outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
                                 tool_id="call-1",
                                 text="failed",
                             )
