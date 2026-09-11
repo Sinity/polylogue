@@ -40,6 +40,14 @@ if TYPE_CHECKING:
 _T = TypeVar("_T")
 
 
+def _operation_int(value: object, *, field: str) -> int:
+    """Reject malformed operation payloads instead of coercing control facts."""
+
+    if type(value) is not int:
+        raise ValueError(f"operation {field} is not an integer")
+    return value
+
+
 class BeforeAcceptanceCancelledError(RuntimeError):
     """Cancellation won the lock before durable prepare could begin."""
 
@@ -313,6 +321,7 @@ class DaemonOperationRuntime:
                 request.operation,
             )
             audit = AuditRepository.for_archive_root(self.archive_root)
+            record: dict[str, object] | None = None
             try:
                 with audit.settled_machine_read():
                     record = audit.machine_request(binding)
@@ -425,7 +434,7 @@ class DaemonOperationRuntime:
                         },
                     ).to_dict()
 
-                def settled(_future: Future[object]) -> None:
+                def settled(_future: Future[DaemonOperationEnvelope]) -> None:
                     with self._condition:
                         if self._exchanges.get(request_id) is exchange:
                             self._exchanges.pop(request_id)
@@ -492,12 +501,14 @@ class DaemonOperationRuntime:
                         # publication. A stale handler error is not authority.
                         if state["outcome"] == "completed":
                             envelope.pop("error", None)
-                    envelope["timing"] = {
+                    timing: dict[str, int] = {
                         "elapsed_ms": max(0, int((monotonic() - started) * 1000)),
                         "queue_ms": exchange.queue_ms,
                     }
-                    if isinstance(envelope.get("authority_snapshot"), dict):
-                        envelope["authority_snapshot"].update(envelope["timing"])
+                    envelope["timing"] = timing
+                    authority_snapshot = envelope.get("authority_snapshot")
+                    if isinstance(authority_snapshot, dict):
+                        authority_snapshot.update(timing)
                     return envelope
                 if record is not None:
                     return self._pending_envelope(exchange, outcome="accepted", record=record)
@@ -513,8 +524,8 @@ class DaemonOperationRuntime:
         self, request: DaemonOperationRequest, principal: MutationPrincipal, archive_identity: str
     ) -> dict[str, object]:
         target = str(request.payload["request_id"])
-        deadline = monotonic() + min(30.0, int(request.payload.get("timeout_ms", 0)) / 1000)
-        after = int(request.payload.get("after_sequence", 0))
+        deadline = monotonic() + min(30.0, _operation_int(request.payload.get("timeout_ms", 0), field="timeout") / 1000)
+        after = _operation_int(request.payload.get("after_sequence", 0), field="after sequence")
         audit = AuditRepository.for_archive_root(self.archive_root)
         if request.operation == "operation.cancel":
             with self._condition:
@@ -575,7 +586,8 @@ class DaemonOperationRuntime:
                     state = {"outcome": "running", "sequence": 0}
                 if request.operation != "operation.await":
                     return state
-                if not pending and (int(state["sequence"]) > after or state["outcome"] not in {"running", "accepted"}):
+                sequence = _operation_int(state["sequence"], field="state sequence")
+                if not pending and (sequence > after or state["outcome"] not in {"running", "accepted"}):
                     return state
                 remaining = deadline - monotonic()
                 if remaining <= 0:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias, TypeVar
 
 from polylogue.operations.mutation_transaction import MutationPlan, MutationPreview
 
@@ -25,6 +25,7 @@ InsightPartDisposition: TypeAlias = Literal["already_satisfied", "published", "p
 
 MAX_INSIGHT_PART_TARGETS = 256
 MAX_INSIGHT_ACCEPTED_PARTS = 4096
+ArgsT = TypeVar("ArgsT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,7 +292,7 @@ class InsightAcceptance:
             preview_ref = self.audit.append_insight_preview(plan, self.principal)
         return MutationPreview(preview_ref, plan)
 
-    def staged_authorization(self, preview: MutationPreview):
+    def staged_authorization(self, preview: MutationPreview) -> MutationAuthorization | None:
         """Reload an active staged authorization; callers must refuse if absent/expired."""
 
         return self.audit.active_authorization_for_preview(preview.preview_ref, self.principal)
@@ -299,7 +300,7 @@ class InsightAcceptance:
     def ensure_staged_authorization(
         self,
         executor: OperationExecutor,
-        binding: OperationBinding[object, object],
+        binding: OperationBinding[ArgsT, object],
         preview: MutationPreview,
     ) -> MutationAuthorization:
         """Issue once for an unissued page, never replace expired/consumed authority."""
@@ -343,16 +344,13 @@ class InsightAcceptance:
         elif existing.get("artifact_kind") != "execution-batch":
             raise ValueError("machine request is already bound to another staged artifact")
         parts = self.audit.sealed_insight_parts(self.binding, self.principal)
-        typed = tuple(part for part in parts if isinstance(part, AcceptedInsightPart))
-        if len(typed) != len(parts):
-            raise RuntimeError("sealed insight authority did not reconstruct typed parts")
         if (
-            len(typed) != page_count
-            or typed[-1].preview_ref != head_preview_ref
-            or typed[0].manifest_digest != manifest_digest
+            len(parts) != page_count
+            or parts[-1].preview_ref != head_preview_ref
+            or parts[0].manifest_digest != manifest_digest
         ):
             raise ValueError("existing insight request differs from the supplied sealed manifest")
-        return typed
+        return parts
 
 
 __all__ = [
