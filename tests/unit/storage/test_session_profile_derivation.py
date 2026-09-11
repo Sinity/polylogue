@@ -419,6 +419,77 @@ def test_prepared_partition_refuses_related_input_that_moved_before_publish(
         ] == [0, 0, 0, 0]
 
 
+def test_marker_recovery_retries_without_replacing_a_valid_index_partition(
+    archive: tuple[Path, str],
+) -> None:
+    """Marker absence is restart-discoverable and never authorizes index rewrites.
+
+    Anti-vacuity: omit marker inspection and a post-crash user-tier assertion
+    stays absent forever; remove the valid-profile fast path and recovery
+    changes the already-valid index partition just to retry user-tier work.
+    """
+    from polylogue.markers import lower_markers
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+    from polylogue.storage.derived.session.rebuild import marker_candidates_for_session_sync
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    index_db, session_id = archive
+    user_db = index_db.with_name("user.db")
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    with write_lease("test.seed-marker"), closing(_write_connection(index_db)) as conn:
+        conn.execute(
+            "UPDATE blocks SET text = ? WHERE message_id = (SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1)",
+            ("::finding: recover from the separate user tier", session_id),
+        )
+        conn.commit()
+
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+        marker_read_connection=lambda: sqlite3.connect(f"file:{user_db}?mode=ro", uri=True),
+        marker_write_connection=lambda: sqlite3.connect(user_db),
+    )
+    frame = type("Frame", (), {"scope": (session_id,)})()
+    first = adapter.compute(frame, session_id)
+    assert adapter.publish(frame, first) is True
+    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        materialized_at = conn.execute(
+            "SELECT materialized_at FROM session_profiles WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+    with closing(sqlite3.connect(user_db)) as conn:
+        assertion_id = conn.execute("SELECT assertion_id FROM assertions").fetchone()[0]
+        conn.execute("DELETE FROM assertions WHERE assertion_id = ?", (assertion_id,))
+        conn.commit()
+
+    assert adapter.inspect(frame, (session_id,))[session_id] == "stale"
+    retry = adapter.compute(frame, session_id)
+    assert adapter.publish(frame, retry) is True
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        assert (
+            conn.execute("SELECT materialized_at FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[
+                0
+            ]
+            == materialized_at
+        )
+    with closing(sqlite3.connect(user_db)) as conn:
+        conn.execute(
+            "UPDATE assertions SET author_kind = ?, body_text = ? WHERE assertion_id = ?",
+            ("user", "keep", assertion_id),
+        )
+        conn.commit()
+    with closing(_write_connection(index_db)) as index_conn, closing(sqlite3.connect(user_db)) as marker_conn:
+        lower_markers(marker_conn, marker_candidates_for_session_sync(index_conn, session_id))
+        marker_conn.commit()
+    with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)) as conn:
+        assert conn.execute(
+            "SELECT author_kind, body_text FROM assertions WHERE assertion_id = ?", (assertion_id,)
+        ).fetchone() == ("user", "keep")
+
+
 def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path, str]) -> None:
     """Policy deferral leaves the profile absent and the key rediscoverable."""
     from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, Outcome, PendingReason, converge
