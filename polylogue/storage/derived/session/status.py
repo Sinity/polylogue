@@ -38,6 +38,15 @@ StatusCounts: TypeAlias = dict[str, int]
 _VIEW_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "threads": ("session_profiles", "session_work_events"),
     "session_tag_rollups": ("session_profiles",),
+    # The run projections are CTEs rather than relations, so their descriptors
+    # point ``table_name`` at ``sessions`` to get past the presence gate (see
+    # the comment beside them). That makes the gate say "readable" whatever
+    # else is missing, and their bodies select through the substrate relations
+    # named here -- an ungated read of one raised ``no such table:
+    # session_events`` from a status call on an archive that had not built them.
+    "session_runs": ("messages", "blocks", "session_events"),
+    "session_observed_events": ("messages", "blocks", "session_events"),
+    "session_context_snapshots": ("messages", "blocks", "session_events"),
 }
 
 
@@ -445,6 +454,11 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         count_key="context_snapshot_count",
         count_sql=SESSION_CONTEXT_SNAPSHOT_COUNT_SQL,
     ),
+    # Presence probes only. The run projections above select through these, and
+    # ``_VIEW_DEPENDENCIES`` can only name a relation the probe reports on.
+    SessionInsightTableDescriptor(key="messages", table_name="messages"),
+    SessionInsightTableDescriptor(key="blocks", table_name="blocks"),
+    SessionInsightTableDescriptor(key="session_events", table_name="session_events"),
     SessionInsightTableDescriptor(
         key="threads",
         table_name="threads",
