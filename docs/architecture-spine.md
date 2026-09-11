@@ -103,6 +103,27 @@ Archive verification is composed from domain-owned declarations. Each owner supp
 - **Constraint**: `polylogue-mcp` CLI entry point takes no capability flags; config is the
   sole authority.
 
+### Raw authority: addressable decisions, disposable iteration (polylogue-gen6d)
+- **Chosen**: a durable raw decision is addressed by the content digest of the
+  plan it was made about, so recording it again is a no-op and an unchanged
+  pass opens no durable write transaction. Which components a bounded pass
+  looked at, in what order, and when it last attempted one is scheduling state
+  and lives in the disposable `ops` tier. Pending work is derived by inspecting
+  the output relation, never stored. Source-frontier authorization
+  (`raw_authority_blockers` and the `raw_sessions` frontier CAS) stays durable.
+  Full disposition, transactions, fixtures and migration order:
+  `docs/design/raw-decision-authority.md`.
+- **Rejected**: re-recording the whole pending plan set every pass (the census
+  ledger this replaces — 99.98% of its rows meant "nothing happened"); keeping
+  that machinery behind an adapter, which preserves its write cost, its
+  retention sweep and its truncated predecessor chain; and a generic durable
+  correctness ledger, which would be a second source of truth beside the
+  evidence that is already authoritative.
+- **Constraint**: retiring the four census tables is a destructive durable
+  change — additive migration and backfill first, readers and writers next,
+  `DROP` only in a separate migration under explicit operator consent behind a
+  verified backup.
+
 ### Browser capture: unpacked extension + local receiver
 - **Chosen**: MV3 browser extension captures provider-native page/app evidence
   where available, falls back to DOM snapshots when no structured source is

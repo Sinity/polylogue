@@ -22,10 +22,12 @@ from pathlib import Path
 from typing import cast
 
 from polylogue.daemon.derivation import (
+    Budget,
     DerivationAdapter,
     DerivationFrame,
     DerivationRegistry,
     DerivationReport,
+    PassCursor,
     converge,
 )
 from polylogue.logging import get_logger
@@ -187,6 +189,7 @@ class DaemonConverger:
         self._file_states: dict[Path, FileState] = {}
         self._session_states: dict[str, SessionState] = {}
         self._derivations = DerivationRegistry(cast("Iterable[DerivationAdapter]", derivations))
+        self._derivation_cursor = PassCursor()
 
     @property
     def derivation_domains(self) -> tuple[str, ...]:
@@ -196,9 +199,10 @@ class DaemonConverger:
         self,
         frame: DerivationFrame,
         *,
-        budget: int | None = None,
+        budget: Budget | int | None = None,
         deadline_s: float | None = None,
         domains: Sequence[str] | None = None,
+        resume: bool = True,
     ) -> DerivationReport:
         """Converge the migrated domains from their own output relations.
 
@@ -207,8 +211,24 @@ class DaemonConverger:
         that lost every scheduling hint. Adapters own their write acquisition:
         this facade must not wrap compute or publication in an outer lease, or
         one long batch would hold the writer across every domain's computation.
+
+        The one thing carried between calls is a process-local
+        :class:`PassCursor`: where the last bounded pass stopped looking. It is
+        deliberately not durable and cannot certify a key -- a restart drops it
+        and converges the same set, one sweep later. Without it a bounded pass
+        would re-examine the same prefix forever, so a permanently quiet head
+        would starve the tail; that is scheduling fairness, not authority.
         """
-        return converge(self._derivations, frame, budget=budget, deadline_s=deadline_s, domains=domains)
+        report = converge(
+            self._derivations,
+            frame,
+            budget=budget,
+            deadline_s=deadline_s,
+            domains=domains,
+            cursor=self._derivation_cursor if resume else None,
+        )
+        self._derivation_cursor = report.cursor
+        return report
 
     @property
     def stage_names(self) -> list[str]:

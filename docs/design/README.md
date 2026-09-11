@@ -22,6 +22,7 @@ domain models rather than plans:
 | [Prefix-blob reclamation](prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes; consent-gated durable-tier reclamation (polylogue-vzn6) |
 | [Derived-artifact freshness](derived-artifact-freshness.md) | Source-digest and verify-or-refuse law for derived state (polylogue-ntwtk) |
 | [Convergence simplification inventory](convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign — what phases (b)-(d) remove and why (polylogue-m6tp) |
+| [Addressable raw decisions](raw-decision-authority.md) | Durable raw-authority decisions addressed by plan digest instead of per-pass census membership; per-field disposition, transactions, and migration order (polylogue-gen6d) |
 | [Daemon core](daemon-core.md) | The resident daemon: ownership, write serialization, ingest shape, convergence, service lifecycle, status cost, with rehearsal measurements (polylogue-bp12n) |
 
 If a doc here stops matching the external task authority, update or purge it.
