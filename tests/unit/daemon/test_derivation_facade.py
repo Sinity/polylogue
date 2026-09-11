@@ -5,6 +5,10 @@ domain converges from its own output relation instead of from stage state. The
 laws here are the ones that would let a second engine creep back in: a facade
 that caches the pending set, that wraps computation in an outer lease, or that
 lets stage state certify a derived output.
+
+The one thing the facade may carry between calls is a resume position, and
+these tests pin what that is allowed to be: scheduling fairness, never
+authority, and never durable.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.derivation import (
     BaseDerivation,
+    Budget,
     DerivationFrame,
     DerivationKey,
     Replacement,
@@ -32,13 +37,14 @@ class StringStatusDerivation(BaseDerivation):
     domain = "strings"
     prerequisites: tuple[str, ...] = ()
 
-    def __init__(self) -> None:
+    def __init__(self, keys: Sequence[str] = ("a", "b"), *, publish_refuses: frozenset[str] = frozenset()) -> None:
         self.output: dict[str, str] = {}
-        self.binding = {"a": "b0", "b": "b0"}
+        self.binding = dict.fromkeys(keys, "b0")
+        self.publish_refuses = publish_refuses
         self.leases: list[str] = []
 
-    def required(self, frame: DerivationFrame) -> Iterable[str]:
-        return ("a", "b")
+    def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
+        return iter(self.binding)
 
     def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, str]:
         return {
@@ -52,8 +58,11 @@ class StringStatusDerivation(BaseDerivation):
         return Replacement(key=DerivationKey(self.domain, key), input_binding=self.binding[key], payload=key)
 
     def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
-        self.leases.append(str(replacement.payload))
-        self.output[str(replacement.payload)] = replacement.input_binding
+        key = str(replacement.payload)
+        self.leases.append(key)
+        if key in self.publish_refuses:
+            return False
+        self.output[key] = replacement.input_binding
         return True
 
 
@@ -96,6 +105,42 @@ def test_a_budget_bounds_the_facade_pass_without_losing_the_remainder() -> None:
     assert converger.converge_derivations(FRAME, budget=1).done == 1
     assert converger.converge_derivations(FRAME, budget=1).done == 1
     assert converger.converge_derivations(FRAME).wrote_nothing
+
+
+def test_the_facade_resumes_where_the_last_bounded_pass_stopped() -> None:
+    """The carried position is what stops a stuck head from starving the tail.
+
+    The first two keys always refuse publication, so they consume the pass's
+    compute budget and publish nothing. Anti-vacuity: drop the cursor the facade
+    carries -- ``resume=False``, as the contrast run does -- and every pass
+    re-spends its whole budget on the same two keys forever.
+    """
+    keys = tuple(f"k{index}" for index in range(6))
+    stuck = frozenset(keys[:2])
+    budget = Budget(page=2, compute=2)
+
+    starved = StringStatusDerivation(keys, publish_refuses=stuck)
+    unresumed = DaemonConverger([], derivations=[starved])
+    for _ in range(6):
+        unresumed.converge_derivations(FRAME, budget=budget, resume=False)
+    assert starved.output == {}
+
+    fair = StringStatusDerivation(keys, publish_refuses=stuck)
+    resumed = DaemonConverger([], derivations=[fair])
+    for _ in range(6):
+        resumed.converge_derivations(FRAME, budget=budget)
+    assert sorted(fair.output) == list(keys[2:])
+
+
+def test_a_restart_drops_the_resume_position_without_dropping_work() -> None:
+    """The position is process-local; losing it costs a sweep, not a key."""
+    adapter = StringStatusDerivation(("a", "b", "c"))
+    first = DaemonConverger([], derivations=[adapter])
+    first.converge_derivations(FRAME, budget=1)
+
+    restarted = DaemonConverger([], derivations=[adapter])
+    assert restarted.converge_derivations(FRAME).done == 2
+    assert sorted(adapter.output) == ["a", "b", "c"]
 
 
 def test_the_facade_can_select_one_domain() -> None:
