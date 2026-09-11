@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+import json
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -10,6 +13,8 @@ from os import getpid
 from pathlib import Path
 
 import pytest
+
+from tests.infra.daemon_operations import running_daemon_operations
 
 
 @pytest.fixture
@@ -27,13 +32,19 @@ def _short_uds_runtime_dir() -> Iterator[Path]:
 
 def test_uds_server_preserves_bind_error_during_partial_initialization(tmp_path: Path) -> None:
     """A failed AF_UNIX bind is not masked by cleanup of uninitialized state."""
-    from http.server import BaseHTTPRequestHandler
-
     from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
 
     overlong_socket = tmp_path / ("socket-" + "x" * 160)
-    with pytest.raises(OSError, match="AF_UNIX path too long"):
-        DaemonAPIUnixHTTPServer(overlong_socket, BaseHTTPRequestHandler)
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        with pytest.raises(OSError, match="AF_UNIX path too long"):
+            DaemonAPIUnixHTTPServer(
+                overlong_socket,
+                archive_root=stack.archive_root,
+                auth_token=None,
+                write_bridge=stack.write_bridge,
+                execution_kernel=stack.execution_kernel,
+                operation_runtime=stack.runtime,
+            )
 
 
 def test_daemon_client_import_does_not_load_storage() -> None:
@@ -41,7 +52,7 @@ def test_daemon_client_import_does_not_load_storage() -> None:
         [
             sys.executable,
             "-c",
-            "import sys; import polylogue.cli.daemon_client; assert 'polylogue.storage' not in sys.modules",
+            "import sys; import polylogue.daemon_client; assert 'polylogue.storage' not in sys.modules",
         ],
         check=False,
         capture_output=True,
@@ -80,8 +91,7 @@ def test_operation_rejects_a_socket_serving_a_different_archive(
     makes this envelope acceptable.
     """
 
-    from polylogue.cli.daemon_client import DaemonClient
-    from polylogue.daemon_client import DaemonOperationProtocolError
+    from polylogue.daemon_client import DaemonClient, DaemonOperationProtocolError
     from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
 
     client = DaemonClient(tmp_path / "daemon.sock")
@@ -104,73 +114,72 @@ def test_operation_rejects_a_socket_serving_a_different_archive(
         client.operation("status", {}, archive_root="/realm/archive")
 
 
-def test_operation_reaches_the_production_uds_server(
-    monkeypatch: pytest.MonkeyPatch, _short_uds_runtime_dir: Path
-) -> None:
-    """The stdlib client reaches the production AF_UNIX server in one request.
+def test_operation_reaches_the_production_uds_server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The stdlib client reaches the maintained production operation stack.
 
-    Anti-vacuity: the handler below fails the test if the client issues a
-    health probe before its operation.
+    Anti-vacuity: the client fails the test if it issues a health probe before
+    its canonical status operation.
     """
 
-    from http import HTTPStatus
-
-    from polylogue.cli.daemon_client import DaemonClient
-    from polylogue.daemon.http import DaemonAPIHandler
-    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
+    from polylogue.daemon_client import DaemonClient
     from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
 
-    def refuse_health(self: DaemonAPIHandler) -> None:
+    def refuse_health(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("the CLI path must not issue a health probe")
 
-    def status(self: DaemonAPIHandler) -> None:
-        self._send_json(HTTPStatus.OK, {"daemon": {"running": True}})
+    monkeypatch.setattr(DaemonClient, "request_json", refuse_health)
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        envelope = stack.client.operation("status", {}, archive_root=str(stack.archive_root))
+    assert envelope is not None
+    assert envelope["protocol"] == DAEMON_OPERATION_PROTOCOL
+    assert envelope["result"]["total_sessions"] == 0
 
-    monkeypatch.setattr(DaemonAPIHandler, "_handle_health", refuse_health)
-    monkeypatch.setattr(DaemonAPIHandler, "_handle_status", lambda self, _params: status(self))
-    socket_path = _short_uds_runtime_dir / f"daemon-{getpid()}.sock"
-    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
-    server.auth_token = "uds-test-token"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+
+@contextlib.contextmanager
+def _raw_unix_http_responder(socket_path: Path, *, status: int, payload: dict[str, object]) -> Iterator[None]:
+    """Serve one arbitrary HTTP payload without exercising daemon behavior."""
+
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    response = (
+        f"HTTP/1.1 {status} Test\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode() + body
+
+    def serve_once() -> None:
+        connection, _address = listener.accept()
+        with connection:
+            connection.recv(4096)
+            connection.sendall(response)
+
+    thread = threading.Thread(target=serve_once, daemon=True)
     thread.start()
     try:
-        client = DaemonClient(socket_path, auth_token="uds-test-token", timeout_s=2)
-        envelope = client.operation("status", {})
-        assert envelope is not None
-        assert envelope["protocol"] == DAEMON_OPERATION_PROTOCOL
-        assert envelope["result"] == {"daemon": {"running": True}}
+        yield
     finally:
-        server.shutdown()
-        server.server_close()
+        listener.close()
         thread.join(timeout=2)
 
 
-def test_machine_socket_rejects_legacy_non_operation_routes(
+def test_transport_preserves_typed_non_operation_error_payload(
     _short_uds_runtime_dir: Path,
 ) -> None:
-    """The machine socket exposes only the declared operation endpoint."""
+    """Arbitrary HTTP response transport preserves the peer's typed refusal."""
     from http import HTTPStatus
 
-    from polylogue.daemon.http import DaemonAPIHandler
-    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
     from polylogue.daemon_client import DaemonClient, DaemonResponseError
 
-    class InvalidMaintenanceHandler(DaemonAPIHandler):
-        def _handle_rebuild_index(self) -> None:
-            self._send_error(
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-                "canary_report_invalid",
-                "receipt is missing the canonical acceptance profile",
-            )
-
     socket_path = _short_uds_runtime_dir / f"canary-4xx-{getpid()}.sock"
-    server = DaemonAPIUnixHTTPServer(socket_path, InvalidMaintenanceHandler)
-    server.auth_token = "uds-test-token"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _raw_unix_http_responder(
+        socket_path,
+        status=404,
+        payload={"error": "canary_report_invalid", "detail": "receipt is missing the canonical acceptance profile"},
+    ):
         client = DaemonClient(socket_path, auth_token="uds-test-token")
-        with pytest.raises(DaemonResponseError, match="daemon returned HTTP 404") as raised:
+        with pytest.raises(DaemonResponseError, match="receipt is missing") as raised:
             client.request_json(
                 "POST",
                 "/api/maintenance/rebuild-index",
@@ -178,10 +187,6 @@ def test_machine_socket_rejects_legacy_non_operation_routes(
                 raise_for_status=True,
             )
         assert raised.value.status == HTTPStatus.NOT_FOUND
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
 
 
 def test_daemon_mutation_timeout_is_typed_indeterminate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -211,7 +216,7 @@ def test_daemon_mutation_timeout_is_typed_indeterminate(monkeypatch: pytest.Monk
 
     with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/operation"):
         DaemonClient(socket_path, timeout_s=0.01).operation(
-            "mutation.session.delete.execute", {"authorization_tokens": ["t1"]}
+            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}
         )
 
 
@@ -243,4 +248,73 @@ def test_daemon_mutation_interrupt_after_connect_is_typed_indeterminate(
     monkeypatch.setattr("polylogue.daemon_client._UnixHTTPConnection", InterruptedConnection)
 
     with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/operation"):
-        DaemonClient(socket_path).operation("mutation.session.delete.execute", {"authorization_tokens": ["t1"]})
+        DaemonClient(socket_path).operation("mutation.session.delete.execute", {"authorization_refs": ["ref-1"]})
+
+
+def test_initial_post_interrupt_signals_the_same_request_without_claiming_no_effect(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
+
+    client = DaemonClient(tmp_path / "daemon.sock")
+    cancelled: list[str] = []
+
+    def interrupted(*args: object, **kwargs: object) -> object:
+        raise DaemonMutationIndeterminateError(
+            method="POST", path="/api/operation", request_id="interrupt-request"
+        ) from KeyboardInterrupt()
+
+    monkeypatch.setattr(client, "operation", interrupted)
+    monkeypatch.setattr(client, "cancel", lambda request_id, **kwargs: cancelled.append(request_id))
+    with pytest.raises(DaemonMutationIndeterminateError):
+        client.operation_to_completion(
+            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
+        )
+    assert cancelled == ["interrupt-request"]
+
+
+def test_write_deadline_does_not_mutate_a_shared_clients_read_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.daemon_client import DaemonClient
+
+    client = DaemonClient(tmp_path / "daemon.sock", timeout_s=0.25)
+    captured: list[object] = []
+
+    def request(*args: object, **kwargs: object) -> None:
+        captured.append((client.timeout_s, kwargs["timeout_s"]))
+        return None
+
+    monkeypatch.setattr(client, "_request_json_response", request)
+    assert (
+        client.operation("mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, deadline_ms=1500) is None
+    )
+    assert captured == [(0.25, 2.5)]
+    assert client.timeout_s == 0.25
+
+
+def test_await_interrupt_cancels_the_original_request_not_the_control_exchange(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
+
+    client = DaemonClient(tmp_path / "daemon.sock")
+    cancelled: list[str] = []
+    monkeypatch.setattr(
+        client,
+        "operation",
+        lambda *args, **kwargs: {"request_id": "accepted-mutation", "outcome": "accepted", "result": {"sequence": 1}},
+    )
+
+    def interrupted(*args: object, **kwargs: object) -> object:
+        raise DaemonMutationIndeterminateError(
+            method="POST", path="/api/operation", request_id="await-control"
+        ) from KeyboardInterrupt()
+
+    monkeypatch.setattr(client, "await_operation", interrupted)
+    monkeypatch.setattr(client, "cancel", lambda request_id, **kwargs: cancelled.append(request_id))
+    with pytest.raises(DaemonMutationIndeterminateError):
+        client.operation_to_completion(
+            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
+        )
+    assert cancelled == ["accepted-mutation"]

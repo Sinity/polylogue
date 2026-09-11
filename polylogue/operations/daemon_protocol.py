@@ -12,8 +12,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from polylogue.core.enums import OperationStatus
 
@@ -53,11 +54,11 @@ class DaemonOperationOutcome(StrEnum):
 class _OperationPayload(BaseModel):
     """Base for a concrete machine-operation payload type."""
 
-    model_config = ConfigDict(extra="allow", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class StatusRequest(_OperationPayload):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    include_archive_readiness: bool = False
 
 
 class QueryRequest(_OperationPayload):
@@ -69,7 +70,10 @@ class QueryUnitsRequest(QueryRequest):
 
 
 class CompletionRequest(_OperationPayload):
-    pass
+    kind: str = "field"
+    incomplete: str = ""
+    unit: str | None = None
+    field: str | None = None
 
 
 class FacetsRequest(QueryRequest):
@@ -77,81 +81,235 @@ class FacetsRequest(QueryRequest):
 
 
 class IngestRequest(_OperationPayload):
-    pass
+    path: str = Field(min_length=1)
+    source_path: str | None = None
+    idempotency_key: str | None = None
 
 
 class DeletePreviewRequest(_OperationPayload):
-    pass
+    session_ids: list[str] = Field(min_length=1, max_length=10_000)
 
 
 class DeleteAuthorizeRequest(_OperationPayload):
-    pass
+    preview_ref: str | None = Field(default=None, min_length=1)
+    preview_refs: list[str] | None = Field(default=None, min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def exact_reference_shape(self) -> DeleteAuthorizeRequest:
+        if (self.preview_ref is None) == (self.preview_refs is None):
+            raise ValueError("supply exactly one of preview_ref or preview_refs")
+        if self.preview_refs is not None and (
+            any(not ref for ref in self.preview_refs) or len(set(self.preview_refs)) != len(self.preview_refs)
+        ):
+            raise ValueError("preview_refs must be distinct nonempty references")
+        return self
 
 
-class DeleteCancelRequest(_OperationPayload):
+class DeleteCancelRequest(DeleteAuthorizeRequest):
     pass
 
 
 class DeleteExecuteRequest(_OperationPayload):
-    pass
+    authorization_ref: str | None = Field(default=None, min_length=1)
+    authorization_refs: list[str] | None = Field(default=None, min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def exact_reference_shape(self) -> DeleteExecuteRequest:
+        if (self.authorization_ref is None) == (self.authorization_refs is None):
+            raise ValueError("supply exactly one of authorization_ref or authorization_refs")
+        if self.authorization_refs is not None and (
+            any(not ref for ref in self.authorization_refs)
+            or len(set(self.authorization_refs)) != len(self.authorization_refs)
+        ):
+            raise ValueError("authorization_refs must be distinct nonempty references")
+        return self
 
 
 class SessionTagRequest(_OperationPayload):
-    pass
+    session_ids: list[str] = Field(min_length=1, max_length=10_000)
+    tags: list[str] = Field(min_length=1)
 
 
 class SessionMetadataRequest(_OperationPayload):
+    session_ids: list[str] = Field(min_length=1, max_length=10_000)
+    pairs: list[list[str]] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def valid_pairs(self) -> SessionMetadataRequest:
+        from polylogue.surfaces.payloads import validate_metadata_key
+
+        for pair in self.pairs:
+            if len(pair) != 2:
+                raise ValueError("metadata pairs must contain exactly a key and value")
+            error = validate_metadata_key(pair[0])
+            if error is not None:
+                raise ValueError(error)
+        return self
+
+
+class OperationStatusRequest(_OperationPayload):
+    request_id: str = Field(min_length=1)
+
+
+class OperationAwaitRequest(OperationStatusRequest):
+    after_sequence: int = Field(default=0, ge=0)
+    timeout_ms: int = Field(default=30_000, ge=1, le=30_000)
+
+
+class OperationCancelRequest(OperationStatusRequest):
     pass
 
 
 class _OperationResult(BaseModel):
     """Base for declared result payloads; envelopes own authority metadata."""
 
-    model_config = ConfigDict(extra="allow", frozen=True)
+    model_config = ConfigDict(extra="allow", frozen=True, strict=True)
 
 
 class StatusResult(_OperationResult):
-    pass
+    total_sessions: int = Field(ge=0)
+    total_messages: int = Field(ge=0)
+    archive_stats: dict[str, object]
 
 
 class QueryResult(_OperationResult):
-    pass
+    @model_validator(mode="before")
+    @classmethod
+    def canonical_query_contract(cls, value: object) -> object:
+        from polylogue.surfaces.payloads import SearchEnvelope, SessionListResponse
+
+        if not isinstance(value, dict):
+            raise ValueError("query result must be an object")
+        payload = dict(value)
+        if "items" in payload:
+            unit = payload.pop("total_unit", None)
+            if not isinstance(unit, str) or not unit:
+                raise ValueError("session list result requires its total unit")
+            SessionListResponse.model_validate_json(json.dumps(payload), strict=True)
+        else:
+            SearchEnvelope.model_validate_json(json.dumps(payload), strict=True)
+        return value
 
 
 class QueryUnitsResult(_OperationResult):
-    pass
+    @model_validator(mode="before")
+    @classmethod
+    def canonical_unit_contract(cls, value: object) -> object:
+        from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope, QueryUnitEnvelope
+
+        if not isinstance(value, dict):
+            raise ValueError("query unit result must be an object")
+        model = QueryUnitAggregateEnvelope if value.get("mode") == "query-unit-aggregate" else QueryUnitEnvelope
+        model.model_validate_json(json.dumps(value), strict=True)
+        return value
 
 
-class CompletionResult(_OperationResult):
-    pass
+class CompletionCandidateResult(_OperationPayload):
+    value: str
+    insert: str
+    display: str
+    kind: str
+    group: str
+    description: str
+    source: str
+    replace_start: int | None
+    replace_end: int | None
+    stale: bool
+    danger: bool
+    score: float
+    payload_model: str | None
+    unsupported_reason: str | None
+    preview_command: str | None
+    route: dict[str, object] | None
+
+
+class CompletionCandidatesResult(_OperationPayload):
+    kind: str
+    incomplete: str
+    unit: str | None
+    field: str | None
+    candidates: list[CompletionCandidateResult]
+
+
+class CompletionResult(_OperationPayload):
+    query_completions: CompletionCandidatesResult
 
 
 class FacetsResult(_OperationResult):
-    pass
+    @model_validator(mode="before")
+    @classmethod
+    def canonical_facets_contract(cls, value: object) -> object:
+        from polylogue.surfaces.payloads import FacetsResponse
+
+        FacetsResponse.model_validate_json(json.dumps(value), strict=True)
+        return value
 
 
 class IngestResult(_OperationResult):
-    pass
+    source_generation_id: str = Field(min_length=1)
+    outcome: DaemonOperationOutcome
+    sequence: int = Field(ge=0)
 
 
-class MutationResult(_OperationResult):
-    pass
+class MutationResult(_OperationPayload):
+    status: Literal["prepared", "authorized", "cancelled"] | None = None
+    operation: str | None = None
+    preview_ref: str | None = None
+    preview_refs: list[str] | None = None
+    authorization_ref: str | None = None
+    authorization_refs: list[str] | None = None
+    session_ids: list[str] | None = None
+    session_count: int | None = Field(default=None, ge=0)
+    expires_at_ms: int | None = None
+    outcome: str | None = None
+    sequence: int | None = Field(default=None, ge=0)
+    reference: dict[str, object] | None = None
+    effect: Literal["committed", "no-effect", "indeterminate"] | None = None
+    completed_chunks: int | None = Field(default=None, ge=0)
+    affected_count: int | None = Field(default=None, ge=0)
+    not_attempted: list[int] | None = None
+    parts: list[dict[str, object]] | None = None
+    stop_reason: str | None = None
+    artifact_refs: list[str] | None = None
+    result: dict[str, object] | None = None
+    cancellation_requested: bool | None = None
+
+    @model_validator(mode="after")
+    def exact_result_family(self) -> MutationResult:
+        if self.status is None:
+            if self.outcome not in {item.value for item in DaemonOperationOutcome} or self.sequence is None:
+                raise ValueError("mutation lifecycle result requires outcome and durable sequence")
+        elif self.status == "prepared":
+            if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids is None:
+                raise ValueError("prepared result requires exact preview references and selection")
+            if self.session_count != len(self.session_ids) or self.expires_at_ms is None:
+                raise ValueError("prepared result requires selection count and expiry")
+        elif self.status == "authorized":
+            if not self.authorization_refs or self.authorization_ref != self.authorization_refs[0]:
+                raise ValueError("authorized result requires exact authorization references")
+        elif not self.preview_refs:
+            raise ValueError("cancelled preview result requires exact preview references")
+        return self
 
 
-@dataclass(frozen=True, slots=True)
-class AcceptedOperationReference:
+class AcceptedOperationReference(_OperationPayload):
     """Immutable reference returned after durable admission of long work."""
 
-    operation_id: str
-    accepted_at: str
-    status_operation: str = "operation.status"
+    archive_identity: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    principal_ref: str = Field(min_length=1)
+    fingerprint: str = Field(pattern="^[0-9a-f]{64}$")
+    operation_name: str = Field(min_length=1)
+    artifact_kind: str = Field(min_length=1)
+    artifact_ref: str = Field(min_length=1)
+    accepted_at_ms: int = Field(ge=0)
+    part_count: int = Field(ge=1, le=40)
+    stop_reason: str | None
+    stopped_at_ms: int | None
+    accepted_deadline_unix_ms: int | None
 
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "operation_id": self.operation_id,
-            "accepted_at": self.accepted_at,
-            "status_operation": self.status_operation,
-        }
+    def to_dict(self) -> dict[str, object]:
+        return self.model_dump(mode="json")
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,9 +384,10 @@ class DaemonOperationSpec:
     )
     request_type: str = ""
     result_type: str = ""
-    request_model: type[_OperationPayload] = _OperationPayload
-    result_model: type[_OperationResult] = _OperationResult
+    request_model: type[BaseModel] = _OperationPayload
+    result_model: type[BaseModel] = _OperationResult
     idempotent: bool = False
+    handler: str = ""
     cancellation_outcomes: tuple[str, ...] = (
         "cancelled",
         "timed-out",
@@ -238,6 +397,8 @@ class DaemonOperationSpec:
     )
 
     def __post_init__(self) -> None:
+        if not self.handler:
+            object.__setattr__(self, "handler", self.name.replace(".", "_"))
         if self.request_type and self.result_type:
             return
         stem = "".join(part.capitalize() for part in self.name.replace(".", "-").split("-"))
@@ -269,11 +430,40 @@ class DaemonOperationSpec:
             "request_model": self.request_model.__name__,
             "result_model": self.result_model.__name__,
             "idempotent": self.idempotent,
+            "handler": self.handler,
             "cancellation_outcomes": list(self.cancellation_outcomes),
         }
 
 
 DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
+    DaemonOperationSpec(
+        "operation.status",
+        DaemonAuthority.CONTROL,
+        DaemonFallback.NEVER,
+        capability="read",
+        request_model=OperationStatusRequest,
+        result_model=MutationResult,
+        handler="operation_status",
+    ),
+    DaemonOperationSpec(
+        "operation.await",
+        DaemonAuthority.CONTROL,
+        DaemonFallback.NEVER,
+        capability="read",
+        deadline_s=30.0,
+        request_model=OperationAwaitRequest,
+        result_model=MutationResult,
+        handler="operation_await",
+    ),
+    DaemonOperationSpec(
+        "operation.cancel",
+        DaemonAuthority.CONTROL,
+        DaemonFallback.NEVER,
+        capability="read",
+        request_model=OperationCancelRequest,
+        result_model=MutationResult,
+        handler="operation_cancel",
+    ),
     DaemonOperationSpec(
         "cli.query",
         DaemonAuthority.READ,
@@ -451,6 +641,21 @@ def daemon_operation_spec(name: str) -> DaemonOperationSpec | None:
     return next((spec for spec in DAEMON_OPERATION_SPECS if spec.name == name), None)
 
 
+class OperationResultContractError(RuntimeError):
+    """An executor or peer returned a value outside its declared contract."""
+
+
+def validate_operation_result(operation: str, result: object) -> None:
+    """Validate without coercing or rewriting the product's wire value."""
+    spec = daemon_operation_spec(operation)
+    if spec is None:
+        raise OperationResultContractError(f"undeclared operation: {operation}")
+    try:
+        spec.result_model.model_validate_json(json.dumps(result, allow_nan=False), strict=True)
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise OperationResultContractError(f"invalid {operation} result: {exc}") from exc
+
+
 @dataclass(frozen=True, slots=True)
 class DaemonOperationRequest:
     operation: str
@@ -467,6 +672,24 @@ class DaemonOperationRequest:
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> DaemonOperationRequest:
+        if not isinstance(raw, Mapping):
+            raise ValueError("operation request must be an object")
+        allowed = {
+            "protocol",
+            "operation",
+            "payload",
+            "archive_root",
+            "index_schema_version",
+            "daemon_version",
+            "expected_archive_identity",
+            "expected_generation_id",
+            "request_id",
+            "deadline_ms",
+            "idempotency_key",
+            "cancellation_token",
+        }
+        if set(raw) - allowed:
+            raise ValueError("unexpected operation request fields")
         protocol = raw.get("protocol")
         operation = raw.get("operation")
         payload = raw.get("payload", {})
@@ -535,7 +758,14 @@ class DaemonOperationRequest:
     @property
     def fingerprint(self) -> str:
         """Stable exchange identity used for safe duplicate recovery."""
-        encoded = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+        intent = {
+            "operation": self.operation,
+            "payload": self.payload,
+            "archive_root": self.archive_root,
+            "expected_archive_identity": self.expected_archive_identity,
+            "expected_generation_id": self.expected_generation_id,
+        }
+        encoded = json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
     def to_dict(self) -> dict[str, object]:

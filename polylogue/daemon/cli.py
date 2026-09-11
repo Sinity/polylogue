@@ -3112,6 +3112,12 @@ async def _run_daemon_services_under_active_writer_lease(
                 )
 
         if enable_api:
+            if not durable_schema_mismatch:
+                from polylogue.operations.operation_context import prepare_operation_journals
+
+                await write_coordinator.run_sync(
+                    "daemon.operation_journals.startup", prepare_operation_journals, archive_root_path
+                )
             from polylogue.daemon.http import (
                 DaemonAPIHandler,
                 DaemonAPIHTTPServer,
@@ -3123,6 +3129,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 auth_token=resolved_api_auth_token,
                 api_host=api_host,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                archive_root=archive_root_path,
             )
             # Daemon-internal lease-free work shares the capacity the API
             # server already owns rather than standing up a second pool
@@ -3136,12 +3143,11 @@ async def _run_daemon_services_under_active_writer_lease(
 
             uds_server = DaemonAPIUnixHTTPServer(
                 daemon_socket_path(archive_root_path),
-                # The UDS server creates its own one-route handler.  This
-                # class supplies canonical operation semantics only; it is
-                # not the handler installed on the machine socket.
-                DaemonAPIHandler,
+                archive_root=archive_root_path,
                 auth_token=resolved_api_auth_token,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                execution_kernel=api_server.execution_kernel,
+                operation_runtime=api_server.operation_runtime,
             )
             uds_server_task = supervisor.start(
                 "uds_server",
