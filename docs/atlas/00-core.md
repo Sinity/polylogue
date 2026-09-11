@@ -10,7 +10,7 @@ Polylogue is a local, single-writer archive for AI coding and chat sessions.
 It acquires heterogeneous exports and live captures, parses them into a
 normalized session tree, stores durable evidence in split SQLite tiers, and
 serves query-first reads through the CLI, MCP, Python API, and daemon
-(`polylogue/daemon/cli.py:2663-2700`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:24-82`).
+(`polylogue/daemon/cli.py:2542-2600`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:45-82`).
 
 The useful mental model is a flight recorder: every derived answer should be
 able to resolve to stored source bytes, structured records, and provenance.
@@ -41,9 +41,9 @@ source acquisition → detection → parsing → archive write → derived reads
 
 The parsed-session write choke point computes public origin, native identity,
 session identity, and parser fingerprints before lowering records
-(`polylogue/storage/sqlite/archive_tiers/write.py:363-382`). The daemon owns
+(`polylogue/storage/sqlite/archive_tiers/write.py:574-730`). The daemon owns
 the normal live write path and serializes admitted mutations; read surfaces
-adapt through operations and insights (`polylogue/daemon/write_coordinator.py:178-196`).
+adapt through operations and insights (`polylogue/daemon/write_coordinator.py:280-340`).
 
 ## Identity you must preserve
 
@@ -58,7 +58,7 @@ duplicated in caller metadata:
 outcomes use the canonical `blocks.tool_outcome` enum; deliberate unknown
 outcomes preserve `tool_result_outcome_unknown_reason`. Lineage
 children physically store only their divergent tail and reads recompose the
-parent prefix (`polylogue/storage/sqlite/archive_tiers/write.py:505-563`).
+parent prefix (`polylogue/storage/sqlite/archive_tiers/write.py:731-812`).
 
 ## Where to start
 
@@ -89,4 +89,4 @@ not rotted.
 - Tests use synthetic fixtures and managed `devtools test` commands; ambient
   personal archives never enter tracked files.
 
-verified: 24be873c0 2026-08-27
+verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11

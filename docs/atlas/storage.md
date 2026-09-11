@@ -2,14 +2,14 @@
 
 ## Area boundary
 
-Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not subject matter, determines tier placement (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:24-34`).
+Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not subject matter, determines tier placement (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:45-82`).
 
 ## Tier map
 
 | Tier | Runtime durability | Backup | Primary contents |
 | --- | --- | --- | --- |
-| `source.db` | `irreplaceable` | required | Raw acquisition records, blob references and publication reservations, GC generations, hook events, sidecars (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:45-51`; `polylogue/storage/sqlite/archive_tiers/source.py:28-62`; `polylogue/storage/sqlite/archive_tiers/source.py:535-587`) |
-| `index.db` | `rebuildable` | no | Parsed sessions, messages, blocks, action pairs/views, lineage links, FTS state, materialized insights (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:52-57`; `polylogue/storage/sqlite/archive_tiers/index.py:501-598`; `polylogue/storage/sqlite/archive_tiers/index.py:774-865`; `polylogue/storage/sqlite/archive_tiers/index.py:1093-1107`) |
+| `source.db` | `irreplaceable` | required | Raw acquisition records, blob references and publication reservations, GC generations, hook events, sidecars (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:52-57`; `polylogue/storage/sqlite/archive_tiers/source.py:535-587`) |
+| `index.db` | `rebuildable` | no | Parsed sessions, messages, blocks, action pairs/views, lineage links, FTS state, materialized insights (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:58-63`; `polylogue/storage/sqlite/archive_tiers/index.py:555-640`; `polylogue/storage/sqlite/archive_tiers/index.py:832-900`; `polylogue/storage/sqlite/archive_tiers/index.py:1360-1390`) |
 | `embeddings.db` | `expensive_rebuild` | required | Vector table, metadata, references, status, derivation state, failures (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:58-63`; `polylogue/storage/sqlite/archive_tiers/embeddings.py:24-87`) |
 | `user.db` | `human` | required | Assertions, saved queries/results, annotation schemas and batches, settings, context-delivery provenance (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:64-69`; `polylogue/storage/sqlite/archive_tiers/user.py:19-40`; `polylogue/storage/sqlite/archive_tiers/user.py:236-318`) |
 | `audit.db` | `irreplaceable` | required | Operation previews, authorization, runs, attempts, events, continuity head (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:76-81`; `polylogue/storage/sqlite/archive_tiers/audit.py:20-35`; `polylogue/storage/sqlite/archive_tiers/audit.py:80-115`; `polylogue/storage/sqlite/archive_tiers/audit.py:181-229`) |
@@ -17,22 +17,22 @@ Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not
 
 ## Identity and generated columns
 
-- `sessions.session_id` is stored-generated as `origin || ':' || native_id` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:520-530`).
-- `messages.message_id` is stored-generated with explicit namespace tags: native identity becomes `session_id || ':n:' || native_id`; positional identity becomes `session_id || ':p:' || position || '.' || variant_index` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:101-105`).
-- `blocks.block_id` is stored-generated as `message_id || ':' || position`; tool command/path/search projections are virtual generated columns (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:266-313`).
-- Sessions, messages, and blocks are `STRICT`; message and block ownership is enforced by cascading FKs (`polylogue/storage/sqlite/archive_tiers/index.py:501-503`; `polylogue/storage/sqlite/archive_tiers/index.py:520-522`; `polylogue/storage/sqlite/archive_tiers/index.py:578-580`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:106-113`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:279-283`).
-- `material_origin` is independently constrained from role, preserving authoredness as a separate axis (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:115-125`).
+- `sessions.session_id` is stored-generated as `origin || ':' || native_id` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:668-700`).
+- `messages.message_id` is stored-generated with explicit namespace tags: native identity becomes `session_id || ':n:' || native_id`; positional identity becomes `session_id || ':p:' || position || '.' || variant_index` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:214-265`).
+- `blocks.block_id` is stored-generated as `message_id || ':' || position`; tool command/path/search projections are virtual generated columns (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:411-500`).
+- Sessions, messages, and blocks are `STRICT`; message and block ownership is enforced by cascading FKs (`polylogue/storage/sqlite/archive_tiers/index.py:555-640`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:214-230`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:411-430`).
+- `material_origin` is independently constrained from role, preserving authoredness as a separate axis (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:262-265`).
 - Tool outcomes use the canonical enum derived from structured parser evidence;
   deliberate unknown outcomes preserve their parser reason. The `actions` view
   joins paired blocks and derives `result_state` without prose matching
-  (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:293-309`;
-  `polylogue/storage/sqlite/archive_tiers/index.py:809-847`).
+  (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:457-480`;
+  `polylogue/storage/sqlite/archive_tiers/index.py:878-900`).
 
 ## Parsed-session write choke point
 
-- `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (`polylogue/storage/sqlite/archive_tiers/write.py:363-382`; `polylogue/storage/sqlite/archive_tiers/write.py:446-451`).
-- It owns its transaction by default; bulk callers may explicitly own a surrounding transaction to amortize commits (`polylogue/storage/sqlite/archive_tiers/write.py:404-408`).
-- This is the parsed-session lowering choke point for normal API writes, batch ingest, revision replay, and reindex paths. It is not the only mutation function in the six-tier substrate (`polylogue/storage/sqlite/archive_tiers/archive.py:1034-1083`; `polylogue/pipeline/services/ingest_batch/_core.py:1077-1131`; `polylogue/storage/sqlite/archive_tiers/revision_governance.py:381-414`).
+- `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (`polylogue/storage/sqlite/archive_tiers/write.py:574-730`).
+- It owns its transaction by default; bulk callers may explicitly own a surrounding transaction to amortize commits (`polylogue/storage/sqlite/archive_tiers/write.py:620-665`).
+- This is the parsed-session lowering choke point for normal API writes, batch ingest, revision replay, and reindex paths. It is not the only mutation function in the six-tier substrate (`polylogue/storage/sqlite/archive_tiers/archive.py:1348-1375`; `polylogue/pipeline/services/ingest_batch/_core.py:1162-1195`; `polylogue/storage/sqlite/archive_tiers/revision_governance.py:409-430`).
 
 ## Blob publication, liveness, and GC
 
@@ -47,20 +47,20 @@ Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not
 ### Two-phase `gc_generations`
 
 1. Commit one generation and every exact member intent as `pending` before any unlink (`polylogue/storage/sqlite/archive_tiers/source.py:559-587`; `polylogue/storage/blob_gc.py:489-532`).
-2. Under `BEGIN IMMEDIATE` on source and index, recheck liveness/reservations, unlink or reconcile each member, commit outcomes, then finalize only when no pending members remain (`polylogue/storage/blob_gc.py:535-589`; `polylogue/storage/blob_gc.py:705-839`).
+2. Under `BEGIN IMMEDIATE` on source and index, recheck liveness/reservations, unlink or reconcile each member, commit outcomes, then finalize only when no pending members remain (`polylogue/storage/blob_gc.py:683-839`).
 
-Pending generations are restartable; a restart resumes their exact member set instead of rediscovering intent from the filesystem (`polylogue/storage/blob_gc.py:592-600`; `polylogue/storage/blob_gc.py:856-890`).
+Pending generations are restartable; a restart resumes their exact member set instead of rediscovering intent from the filesystem (`polylogue/storage/blob_gc.py:598-616`; `polylogue/storage/blob_gc.py:892-929`).
 
 ## Lineage storage model
 
-- A prefix-sharing child stores only its divergent tail. The writer resolves the parent, compares composed signatures, records the last inherited message as the branch point, and lowers only the remaining messages (`polylogue/storage/sqlite/archive_tiers/write.py:505-563`; `polylogue/storage/sqlite/archive_tiers/write.py:6854-6886`).
-- `session_links` stores destination identity, resolved parent, branch point, inheritance mode, status, method, confidence, and evidence (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:851-885`).
+- A prefix-sharing child stores only its divergent tail. The writer resolves the parent, compares composed signatures, records the last inherited message as the branch point, and lowers only the remaining messages (`polylogue/storage/sqlite/archive_tiers/write.py:731-812`; `polylogue/storage/sqlite/archive_tiers/write.py:6854-6886`).
+- `session_links` stores destination identity, resolved parent, branch point, inheritance mode, status, method, confidence, and evidence (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:1118-1150`).
 - Reads recursively compose the parent through the branch point, with explicit depth-limit and dangling-branch-point status instead of silently claiming completeness (`polylogue/storage/sqlite/archive_tiers/write.py:1488-1555`).
-- Link writes refuse to let parser inference overwrite an existing hook-authoritative edge (`polylogue/storage/sqlite/archive_tiers/write.py:3890-3949`).
+- Link writes refuse to let parser inference overwrite an existing hook-authoritative edge (`polylogue/storage/sqlite/archive_tiers/write.py:4410-4470`).
 
 ## Invariants and gotchas
 
-- `branch_point_message_id` is deliberately not an FK. Parent full replacement deletes before reinserting deterministic message IDs; `ON DELETE SET NULL` would permanently sever the child (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:866-877`).
+- `branch_point_message_id` is deliberately not an FK. Parent full replacement deletes before reinserting deterministic message IDs; `ON DELETE SET NULL` would permanently sever the child (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:1132-1150`).
 - A failed or unavailable liveness surface is not equivalent to zero references (`polylogue/storage/blob_liveness.py:294-310`; `polylogue/storage/blob_gc.py:9-20`).
 - A published blob may legitimately have no durable ref yet; its reservation protects that publication window (`polylogue/storage/blob_publication.py:196-207`; `polylogue/storage/sqlite/archive_tiers/source.py:548-557`).
 - GC history counters are summaries derived only after all member outcomes close; member rows are the crash-recovery authority (`polylogue/storage/sqlite/archive_tiers/source.py:568-583`; `polylogue/storage/blob_gc.py:559-589`).
@@ -69,7 +69,7 @@ Pending generations are restartable; a restart resumes their exact member set in
 ## DISCREPANCIES
 
 - `docs/architecture.md` draws only source, index, embeddings, user, and ops; code has six tiers and includes `audit.db` (`docs/architecture.md:24-28`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:45-82`).
-- The repository contract omits the `n:` and `p:` namespaces from `messages.message_id`; the generated-column expression includes them (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:101-105`).
+- The repository contract omits the `n:` and `p:` namespaces from `messages.message_id`; the generated-column expression includes them (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:214-220`).
 - The repository contract and `docs/architecture.md` call embeddings simply rebuildable; runtime metadata classifies them as `expensive_rebuild` with backup required (`docs/architecture.md:54-56`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:58-63`).
 
-verified: a4536f6b26ba5a84cc9bfbb75c77805fb4442196 2026-08-27
+verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11
