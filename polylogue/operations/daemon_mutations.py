@@ -29,6 +29,14 @@ from polylogue.operations.operation_context import OperationContext, PinnedOpera
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
+def _audit_int(value: object, *, field: str) -> int:
+    """Reject malformed durable counters before scheduling a mutation batch."""
+
+    if type(value) is not int:
+        raise ValueError(f"machine mutation {field} is not an integer")
+    return value
+
+
 def _binding(
     request: DaemonOperationRequest, context: OperationContext, snapshot: PinnedOperationRead
 ) -> MachineRequestBinding:
@@ -201,14 +209,18 @@ def _execute_batch(
                 break
             if part["operation_id"] is not None:
                 run = audit.get_operation(str(part["operation_id"]))
-                if run is not None and run["status"] == "completed" and not int(run["unknown_count"]):
+                if (
+                    run is not None
+                    and run["status"] == "completed"
+                    and not _audit_int(run["unknown_count"], field="unknown count")
+                ):
                     continue
                 # Startup's shared recovery classifier owns interrupted domain
                 # receipts. A consumed part is never replayed or reauthorized.
                 break
             stop = context.runtime.stop_reason(request)
             deadline = record.get("accepted_deadline_unix_ms")
-            if stop is None and deadline is not None and int(time() * 1000) >= int(deadline):
+            if stop is None and deadline is not None and int(time() * 1000) >= _audit_int(deadline, field="deadline"):
                 stop = "deadline"
             if stop is not None:
                 audit.stop_machine_batch(binding, stop)
@@ -219,13 +231,15 @@ def _execute_batch(
                 )
                 requested_ids = None
                 if request.operation in {"mutation.session.tag", "mutation.session.metadata"}:
-                    offset = int(part["ordinal"]) * MAX_MUTATION_PLAN_TARGETS
+                    offset = _audit_int(part["ordinal"], field="part ordinal") * MAX_MUTATION_PLAN_TARGETS
                     requested_ids = tuple(
                         cast(list[str], request.payload["session_ids"])[offset : offset + MAX_MUTATION_PLAN_TARGETS]
                     )
                 operation, args = _part_args(archive, preview, requested_session_ids=requested_ids)
                 with audit.bind_machine_request(
-                    binding, transition="consume_authorization_and_start", part=int(part["ordinal"])
+                    binding,
+                    transition="consume_authorization_and_start",
+                    part=_audit_int(part["ordinal"], field="part ordinal"),
                 ):
                     executor.execute_bound(operation, preview, authorization, args)
             except Exception:

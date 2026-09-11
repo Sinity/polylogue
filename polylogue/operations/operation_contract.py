@@ -67,7 +67,7 @@ class AcceptedOperation(SurfacePayloadModel):
     """Durable acceptance result; completion is event-driven, not polling-only."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    reference: dict[str, str]
+    reference: dict[str, object]
     outcome: str = DaemonOperationOutcome.ACCEPTED.value
 
     @classmethod

@@ -644,12 +644,12 @@ def raw_materialization_readiness_from_pinned_index(
         "source_family_counts": {str(item[0]): int(item[1] or 0) for item in family_rows},
         **authority_projection,
         "raw_authority_parser_census": parser_census,
-        "raw_authority_parser_census_incomplete_count": int(parser_census["incomplete_count"]),
-        "raw_authority_parser_census_incomplete_blob_bytes": int(parser_census["incomplete_blob_bytes"]),
+        "raw_authority_parser_census_incomplete_count": _safe_int(parser_census["incomplete_count"]),
+        "raw_authority_parser_census_incomplete_blob_bytes": _safe_int(parser_census["incomplete_blob_bytes"]),
         "raw_authority_ledger_counts": {
-            "unresolved_blockers": int(authority_projection["raw_authority_blocker_count"]),
-            "pending_censuses": int(authority_projection["raw_authority_pending_census_count"]),
-            "parser_census_incomplete": int(parser_census["incomplete_count"]),
+            "unresolved_blockers": _safe_int(authority_projection["raw_authority_blocker_count"]),
+            "pending_censuses": _safe_int(authority_projection["raw_authority_pending_census_count"]),
+            "parser_census_incomplete": _safe_int(parser_census["incomplete_count"]),
         },
     }
 
