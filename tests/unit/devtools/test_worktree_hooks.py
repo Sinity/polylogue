@@ -62,8 +62,16 @@ def test_the_venv_hook_passes_a_spaced_worktree_path_as_one_argument(tmp_path: P
     argv = _argv_under_sh(_hook("venv"), primary, workspace)
 
     assert argv["readlink"] == ["-f", expected]
-    assert argv["uv"][argv["uv"].index("--python") + 1] == expected
-    assert len(argv["uv"]) == argv["uv"].index("--python") + 2
+    assert argv["uv"] == [
+        "sync",
+        "--extra",
+        "dev",
+        "--group",
+        "audit",
+        "--frozen",
+        "--python",
+        expected,
+    ]
 
 
 def test_the_seed_hook_snapshots_rather_than_byte_copying() -> None:
