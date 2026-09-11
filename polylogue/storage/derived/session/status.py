@@ -38,6 +38,15 @@ StatusCounts: TypeAlias = dict[str, int]
 _VIEW_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "threads": ("session_profiles", "session_work_events"),
     "session_tag_rollups": ("session_profiles",),
+    # The run projections are CTEs rather than relations, so their descriptors
+    # point ``table_name`` at ``sessions`` to get past the presence gate (see
+    # the comment beside them). That makes the gate say "readable" whatever
+    # else is missing, and their bodies select through the substrate relations
+    # named here -- an ungated read of one raised ``no such table:
+    # session_events`` from a status call on an archive that had not built them.
+    "session_runs": ("messages", "blocks", "session_events"),
+    "session_observed_events": ("messages", "blocks", "session_events"),
+    "session_context_snapshots": ("messages", "blocks", "session_events"),
 }
 
 
@@ -259,8 +268,31 @@ ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
     LEFT JOIN sessions c ON c.session_id = slp.session_id
     WHERE c.session_id IS NULL
 """
+#: Row accounting, never a freshness answer. Both sides come from
+#: ``session_profiles``, so a profile that is wrong about its own partition is
+#: wrong on both and the comparison agrees with itself. What decides whether a
+#: work-event or phase row is current is the value-complete inspection below,
+#: which recomputes the binding from ``sessions``/``messages``; these two exist
+#: only to report how many rows the built partitions declare.
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
 EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
+#: Rows belonging to a partition the value-complete inspection did not certify.
+#: The binding covers the whole partition, so a non-valid partition's work
+#: events and phases are exactly as uncertified as its profile row -- the same
+#: relation ``STALE_SESSION_LATENCY_PROFILE_COUNT_SQL`` states for the latency
+#: profile. Before this existed the two counts were snapshot fields no
+#: descriptor emitted, so they read zero on every archive and the readiness
+#: gates that compared them to zero could not fail.
+STALE_SESSION_WORK_EVENT_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM json_each(?) n
+    JOIN session_work_events swe ON swe.session_id = n.value
+"""
+STALE_SESSION_PHASE_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM json_each(?) n
+    JOIN session_phases sph ON sph.session_id = n.value
+"""
 ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_work_events swe
@@ -422,6 +454,11 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         count_key="context_snapshot_count",
         count_sql=SESSION_CONTEXT_SNAPSHOT_COUNT_SQL,
     ),
+    # Presence probes only. The run projections above select through these, and
+    # ``_VIEW_DEPENDENCIES`` can only name a relation the probe reports on.
+    SessionInsightTableDescriptor(key="messages", table_name="messages"),
+    SessionInsightTableDescriptor(key="blocks", table_name="blocks"),
+    SessionInsightTableDescriptor(key="session_events", table_name="session_events"),
     SessionInsightTableDescriptor(
         key="threads",
         table_name="threads",
@@ -489,6 +526,20 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="expected_phase_inference_count",
         table_keys=("session_profiles",),
         sql=EXPECTED_PHASE_COUNT_SQL,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="stale_work_event_inference_count",
+        table_keys=("session_work_events",),
+        sql=STALE_SESSION_WORK_EVENT_COUNT_SQL,
+        requires_freshness=True,
+        requires_inspection=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="stale_phase_inference_count",
+        table_keys=("session_phases",),
+        sql=STALE_SESSION_PHASE_COUNT_SQL,
+        requires_freshness=True,
+        requires_inspection=True,
     ),
     SessionInsightCountDescriptor(
         count_key="orphan_work_event_inference_count",

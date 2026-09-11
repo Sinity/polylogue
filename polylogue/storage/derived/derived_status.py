@@ -111,29 +111,40 @@ def _message_fts_metrics(conn: sqlite3.Connection, *, verify_full: bool) -> Metr
 
 
 def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Metrics:
-    profile_ready = (
-        session_status.profile_row_count == session_status.total_sessions
-        and session_status.missing_profile_row_count == 0
+    # Work events, phases, the latency profile and the profile row are one
+    # partition, replaced together and bound together, so one answer decides
+    # whether any of them is current: the value-complete inspection, which
+    # recomputes the binding from sessions/messages. The expected-row equalities
+    # below stay as row accounting and cannot carry that decision on their own --
+    # they read session_profiles on both sides, so a profile that is wrong about
+    # its own inputs is wrong on both and the comparison agrees with itself.
+    partitions_current = (
+        session_status.missing_profile_row_count == 0
         and session_status.stale_profile_row_count == 0
         and session_status.orphan_profile_row_count == 0
     )
+    profile_ready = partitions_current and session_status.profile_row_count == session_status.total_sessions
     work_event_ready = (
-        session_status.work_event_inference_count == session_status.expected_work_event_inference_count
+        partitions_current
+        and session_status.work_event_inference_count == session_status.expected_work_event_inference_count
         and session_status.stale_work_event_inference_count == 0
         and session_status.orphan_work_event_inference_count == 0
     )
     phase_ready = (
-        session_status.phase_count == session_status.expected_phase_count
+        partitions_current
+        and session_status.phase_count == session_status.expected_phase_count
         and session_status.stale_phase_inference_count == 0
         and session_status.orphan_phase_inference_count == 0
     )
     threads_ready = (
-        session_status.thread_count == session_status.root_threads
+        partitions_current
+        and session_status.thread_count == session_status.root_threads
         and session_status.stale_thread_count == 0
         and session_status.orphan_thread_count == 0
     )
     tag_rollups_ready = (
-        session_status.tag_rollup_count == session_status.expected_tag_rollup_count
+        partitions_current
+        and session_status.tag_rollup_count == session_status.expected_tag_rollup_count
         and session_status.stale_tag_rollup_count == 0
     )
     return {

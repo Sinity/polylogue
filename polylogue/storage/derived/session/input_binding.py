@@ -33,7 +33,9 @@ from collections.abc import Mapping, Sequence
 import aiosqlite
 
 __all__ = [
+    "SESSION_INPUT_EXCLUDED_COLUMNS",
     "SESSION_INPUT_PROJECTION_COLUMNS",
+    "SESSION_ROW_EXCLUDED_COLUMNS",
     "SESSION_ROW_PROJECTION_COLUMNS",
     "SessionInputDigest",
     "SESSION_INPUT_RECIPE_VERSION",
@@ -108,6 +110,51 @@ SESSION_INPUT_PROJECTION_COLUMNS: tuple[str, ...] = (
     "is_active_path",
     "content_hash",
 )
+
+#: Every ``sessions`` column the projection deliberately leaves out, with the
+#: reason it is not an input value. Completeness is the property this module
+#: exists for, and an unclassified column is the one way to lose it silently:
+#: a column added to ``sessions`` and read by the profile, but never added
+#: here or above, makes the binding report VALID after the output moved. The
+#: partition of the relation's columns is checked against the live schema by
+#: ``tests/unit/storage/test_session_partition_convergence.py``, so adding a
+#: column forces a decision rather than a default.
+SESSION_ROW_EXCLUDED_COLUMNS: Mapping[str, str] = {
+    "session_id": "the partition key: it selects the row rather than being a value in it",
+    "native_id": "the partition key's other half (session_id = origin || ':' || native_id)",
+    "raw_id": "acquisition provenance; a re-parse that changes what the profile reads moves content_hash",
+    "parser_fingerprint": "which parser build produced the row, not what it says",
+    "lowering_fingerprint": "which lowering produced the row, not what it says",
+    "active_leaf_message_id": "hashed ParsedSession field, covered by the projected content_hash",
+    "title_source": "hashed ParsedSession field, covered by the projected content_hash",
+    "title_ref": "hashed ParsedSession field, covered by the projected content_hash",
+    "display_name": "hashed ParsedSession field, covered by the projected content_hash",
+    "pending_drafts_json": "hashed ParsedSession field, covered by the projected content_hash",
+    "commit_hash": "hashed ParsedSession field, covered by the projected content_hash",
+    "instructions_text": "hashed ParsedSession field, covered by the projected content_hash",
+}
+
+#: The same partition for ``messages``. The usage and timing measurements
+#: ``pipeline/ids.py`` excludes from the message content hash are projected
+#: above precisely because the hash cannot carry them; everything listed here
+#: either is carried by that hash or is a coordinate the projection already
+#: scopes and orders by.
+SESSION_INPUT_EXCLUDED_COLUMNS: Mapping[str, str] = {
+    "message_id": "generated from session_id, position, variant_index and native_id, all already bound",
+    "session_id": "the partition key: the projection selects on it and groups by it",
+    "native_id": "identity input to message_id, not a value the profile reads",
+    "identity_source": "records which identity path fired, not what the message says",
+    "parent_message_id": "lineage coordinate resolved from hashed parser fields",
+    "is_active_leaf": "lineage marker derived from the same hashed payload as is_active_path",
+    "content_address": "storage address of the content the projected content_hash already binds",
+    "paste_boundary": "derived from the hashed paste_spans field",
+    "model_effort": "hashed ParsedMessage field, covered by the projected content_hash",
+    "sender_name": "hashed ParsedMessage field, covered by the projected content_hash",
+    "recipient": "hashed ParsedMessage field, covered by the projected content_hash",
+    "delivery_status": "hashed ParsedMessage field, covered by the projected content_hash",
+    "end_turn": "hashed ParsedMessage field, covered by the projected content_hash",
+    "user_context_text": "hashed ParsedMessage field, covered by the projected content_hash",
+}
 
 _HASHED_BLOB_COLUMNS = frozenset({"content_hash"})
 
