@@ -264,8 +264,9 @@ async def test_ingest_files_serializes_batch_processor_calls(
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
         max_pass_seconds: float | None = None,
+        whole_archive_convergence: bool = True,
     ) -> None:
-        del queued_file_count, skipped_file_count, max_pass_seconds
+        del queued_file_count, skipped_file_count, max_pass_seconds, whole_archive_convergence
         nonlocal active, max_active
         active += 1
         max_active = max(max_active, active)
