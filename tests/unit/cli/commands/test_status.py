@@ -144,8 +144,8 @@ class TestArchivePrimaryTierCount:
 
     def test_user_tier_with_assertions(self) -> None:
         """user tier with assertions in counts returns ('assertions', count)."""
-        result = _archive_primary_tier_count("user", {"annotations": 5})
-        assert result == ("annotations", 5)
+        result = _archive_primary_tier_count("user", {"assertions": 5})
+        assert result == ("assertions", 5)
 
     def test_embeddings_tier_with_embedding_status(self) -> None:
         """embeddings tier with embedding_status returns ('embedding_status', count)."""
