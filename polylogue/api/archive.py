@@ -23,9 +23,8 @@ from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
 from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.archive.actions.actions import Action
-from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.blackboard import BlackboardNote
-from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter, Role
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
@@ -39,7 +38,6 @@ from polylogue.archive.query.spec import (
 )
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
-from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.context.compiler import (
@@ -53,7 +51,7 @@ from polylogue.context.scheduler import (
     record_context_ledger,
     schedule_context,
 )
-from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider, TitleSource
+from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider
 from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.refs import (
@@ -80,10 +78,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
-    ArchiveAttachmentRow,
-    ArchiveMessageRow,
     ArchiveSessionEnvelope,
-    archive_message_display_text,
 )
 from polylogue.storage.sqlite.connection_profile import (
     ReadFrameExpiredError,
@@ -818,7 +813,7 @@ def _archive_list_summaries_with_post_filters(
         candidates = cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
 
     sessions = [
-        _archive_session_to_session(archive.read_session(summary.session_id), display_label=summary.display_label)
+        archive_envelope_to_session(archive.read_session(summary.session_id), display_label=summary.display_label)
         for summary in candidates
     ]
     matched = spec.to_plan()._apply_full_filters(sessions, sql_pushed=True)
@@ -2412,139 +2407,6 @@ def _archive_count_table_rows(conn: Any, table_name: str) -> int | None:
     return int(count_row[0] or 0) if count_row is not None else 0
 
 
-def _maybe_parse_json_object(value: str | None) -> dict[str, object] | None:
-    """Decode a stored JSON object column back into a mapping for domain blocks."""
-    if not value:
-        return None
-    try:
-        parsed = json.loads(value)
-    except (ValueError, TypeError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _archive_attachment_to_domain(attachment: ArchiveAttachmentRow) -> Attachment:
-    return Attachment(
-        id=attachment.attachment_id,
-        name=attachment.display_name,
-        mime_type=attachment.media_type,
-        size_bytes=attachment.byte_count,
-        path=None,
-        source_url=attachment.source_url,
-        caption=attachment.caption,
-        upload_origin=attachment.upload_origin,
-        direction=attachment.direction,
-        producer_ref=attachment.producer_ref,
-        availability=attachment.availability,
-    )
-
-
-def _archive_message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message:
-    text = archive_message_display_text(message.blocks) or None
-    content_blocks: list[dict[str, object]] = [
-        {
-            key: value
-            for key, value in {
-                "id": block.block_id,
-                "type": block.block_type,
-                "text": block.text,
-                "tool_name": block.tool_name,
-                "tool_id": block.tool_id,
-                "semantic_type": block.semantic_type,
-                "tool_input": _maybe_parse_json_object(block.tool_input),
-                "metadata": _maybe_parse_json_object(block.metadata),
-                "tool_result_is_error": block.tool_result_is_error,
-                "tool_result_exit_code": block.tool_result_exit_code,
-                "tool_outcome": str(block.tool_outcome) if block.tool_outcome is not None else None,
-            }.items()
-            if value is not None
-        }
-        for block in message.blocks
-    ]
-    return Message(
-        id=message.message_id,
-        identity_source=message.identity_source,
-        role=Role.normalize(message.role),
-        text=text,
-        timestamp=parse_archive_datetime(message.occurred_at),
-        origin=origin,
-        blocks=content_blocks,
-        message_type=MessageType.normalize(message.message_type),
-        material_origin=MaterialOrigin.normalize(message.material_origin),
-        has_tool_use=message.has_tool_use,
-        has_thinking=message.has_thinking,
-        has_paste=message.has_paste,
-        paste_boundary_state=message.paste_boundary_state,
-        duration_ms=message.duration_ms,
-        # variant_index is creation order, NOT display state (polylogue-9qq7):
-        # for a regenerated/edited turn, index 0 is the first attempt, not
-        # necessarily the accepted one. is_active_path is the provider's
-        # "currently accepted sibling" signal and is authoritative for
-        # mainline selection; ArchiveMessageRow.is_active_path is always a
-        # concrete bool (schema default), never a guess.
-        branch_index=message.variant_index,
-        is_active_path=message.is_active_path,
-        position=message.position,
-        is_active_leaf=message.is_active_leaf,
-        parent_id=message.parent_message_id,
-        attachments=[_archive_attachment_to_domain(att) for att in message.attachments],
-    )
-
-
-def _archive_session_to_session(session: ArchiveSessionEnvelope, *, display_label: str | None = None) -> Session:
-    origin = Origin.from_string(session.origin)
-    messages = [_archive_message_to_domain(message, origin=origin) for message in session.messages]
-    timestamps = [message.timestamp for message in messages if message.timestamp is not None]
-    # Prefer the stored session timestamps (sessions.created_at_ms/updated_at_ms);
-    # fall back to the message-timestamp envelope only when the session row has
-    # none. The summary projection already uses the stored values, so this keeps
-    # the full-read and summary-read session timelines consistent.
-    stored_created = parse_archive_datetime(session.created_at)
-    stored_updated = parse_archive_datetime(session.updated_at)
-    return Session(
-        id=SessionId(session.session_id),
-        origin=origin,
-        title=session.title if session.title_source in {"origin", "heuristic"} else None,
-        display_label=display_label,
-        title_source=TitleSource(session.title_source) if session.title_source is not None else None,
-        title_ref=session.title_ref,
-        messages=MessageCollection(messages=messages),
-        created_at=stored_created or (min(timestamps) if timestamps else None),
-        updated_at=stored_updated or (max(timestamps) if timestamps else None),
-        working_directories=tuple(session.working_directories),
-        git_branch=session.git_branch,
-        git_repository_url=session.git_repository_url,
-        provider_project_ref=session.provider_project_ref,
-        parent_id=SessionId(session.parent_session_id) if session.parent_session_id else None,
-        branch_type=BranchType(session.branch_type) if session.branch_type else None,
-        attachments=[_archive_attachment_to_domain(att) for att in session.orphan_attachments],
-        reported_cost_usd=session.reported_cost_usd,
-    )
-
-
-def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
-    return SessionSummary(
-        id=SessionId(summary.session_id),
-        origin=Origin.from_string(summary.origin),
-        title=summary.title,
-        display_label=summary.display_label,
-        title_source=TitleSource(summary.title_source) if summary.title_source is not None else None,
-        title_ref=summary.title_ref,
-        created_at=parse_archive_datetime(summary.created_at),
-        updated_at=parse_archive_datetime(summary.updated_at),
-        working_directories=tuple(summary.working_directories),
-        git_branch=summary.git_branch,
-        git_repository_url=summary.git_repository_url,
-        provider_project_ref=summary.provider_project_ref,
-        display_name=summary.display_name,
-        message_count=summary.message_count,
-        tags_m2m=summary.tags,
-        terminal_state=summary.terminal_state,
-        total_cost_usd=summary.total_cost_usd,
-        cost_provenance=summary.cost_provenance,
-    )
-
-
 def _archive_search_hit_to_domain(hit: ArchiveSessionSearchHit) -> SearchHit:
     return SearchHit(
         session_id=hit.session_id,
@@ -2571,7 +2433,7 @@ def _archive_search_hit_to_payload(
 
     return SessionSearchHitPayload(
         session=session_summary_envelope_from_summary(
-            _archive_summary_to_domain(summary),
+            archive_summary_to_domain(summary),
             message_count=summary.message_count,
         ),
         match=SessionSearchMatchPayload(
@@ -2702,7 +2564,7 @@ class _ArchiveNeighborRuntime:
         try:
             resolved = self._archive.resolve_session_id(session_id)
             summary = self._archive.read_summary(resolved)
-            return _archive_session_to_session(
+            return archive_envelope_to_session(
                 self._archive.read_session(resolved), display_label=summary.display_label
             )
         except KeyError:
@@ -2714,7 +2576,7 @@ class _ArchiveNeighborRuntime:
             origins=builtins.list(query.origins) if query.origins else [],
         )
         return [
-            _archive_summary_to_domain(summary)
+            archive_summary_to_domain(summary)
             for summary in self._archive.list_summaries(
                 limit=query.limit or 50,
                 offset=query.offset or 0,
@@ -2758,7 +2620,7 @@ class _ArchiveNeighborRuntime:
         results: builtins.list[SessionSearchHit] = []
         for hit in hits:
             try:
-                summary = _archive_summary_to_domain(self._archive.read_summary(hit.session_id))
+                summary = archive_summary_to_domain(self._archive.read_summary(hit.session_id))
             except KeyError:
                 continue
             results.append(
@@ -2946,7 +2808,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             except KeyError:
                 return None
             summary = archive.read_summary(resolved_id)
-            session = _archive_session_to_session(
+            session = archive_envelope_to_session(
                 archive.read_session(resolved_id), display_label=summary.display_label
             )
             if content_projection is None or not content_projection.filters_content():
@@ -4665,7 +4527,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 PublicRefResolutionPayload,
                 _unresolved_ref_payload(ref, "session not found", normalized_ref=normalized_ref, kind="session"),
             )
-        summary_payload = session_summary_envelope_from_summary(_archive_summary_to_domain(summaries[0]))
+        summary_payload = session_summary_envelope_from_summary(archive_summary_to_domain(summaries[0]))
         return PublicRefResolutionPayload(
             ref=ref,
             normalized_ref=normalized_ref,
@@ -4712,7 +4574,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         session_id = str(row["session_id"])
         message_id = str(row["message_id"])
         summary = archive.read_summary(session_id)
-        session = _archive_session_to_session(archive.read_session(session_id), display_label=summary.display_label)
+        session = archive_envelope_to_session(archive.read_session(session_id), display_label=summary.display_label)
         message = next((item for item in session.messages if str(item.id) == message_id), None)
         if message is None:
             return cast(
@@ -5239,7 +5101,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             model_json_document,
         )
 
-        session = _archive_session_to_session(
+        session = archive_envelope_to_session(
             archive.read_session(str(summary.session_id)),
             display_label=summary.display_label,
         )
@@ -5400,7 +5262,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 limit=DEFAULT_SESSION_LIST_LIMIT if limit is None else limit,
             )
             sessions = [
-                _archive_session_to_session(
+                archive_envelope_to_session(
                     archive.read_session(summary.session_id),
                     display_label=summary.display_label,
                 )
@@ -5438,7 +5300,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             operation="archive.summaries.list",
             arguments={"origin": origin},
             work=lambda archive: [
-                _archive_summary_to_domain(summary)
+                archive_summary_to_domain(summary)
                 for summary in archive.list_summaries(
                     origin=origin,
                     limit=DEFAULT_SESSION_LIST_LIMIT if limit is None else limit,
@@ -5664,7 +5526,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 hit_payloads = tuple(
                     SessionSearchHitPayload.from_search_hit(
                         session_search_hit_from_summary(
-                            _archive_summary_to_domain(summary),
+                            archive_summary_to_domain(summary),
                             rank=fetch_offset + index,
                             retrieval_lane=spec.retrieval_lane,
                             match_surface="session",
@@ -5995,7 +5857,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             stats = archive.stats()
             word_row = archive._conn.execute("SELECT COALESCE(SUM(word_count), 0) FROM sessions").fetchone()
             recent = [
-                _archive_session_to_session(
+                archive_envelope_to_session(
                     archive.read_session(summary.session_id),
                     display_label=summary.display_label,
                 )
@@ -6809,7 +6671,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         def read(archive: ArchiveStore) -> SessionSummary | None:
             try:
                 resolved_id = archive.resolve_session_id(session_id)
-                return _archive_summary_to_domain(archive.read_summary(resolved_id))
+                return archive_summary_to_domain(archive.read_summary(resolved_id))
             except KeyError:
                 return None
 
@@ -7042,7 +6904,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             operation="archive.session_tree",
             arguments={"session_id": session_id},
             work=lambda archive: [
-                _archive_session_to_session(
+                archive_envelope_to_session(
                     session,
                     display_label=archive.read_summary(session.session_id).display_label,
                 )

@@ -467,7 +467,7 @@ async def test_get_default_projection_surfaces_display_name_when_title_absent(
     common Claude Code subagent case) now surfaces its provider-assigned
     slug as the title instead of a raw session id -- read through the real
     ``ArchiveStore``-backed summary path (``_resolve_session_object_ref`` ->
-    ``_archive_summary_to_domain`` -> ``SessionSummaryPayload``), not the
+    ``archive_summary_to_domain`` -> ``SessionSummaryPayload``), not the
     storage row in isolation.
     """
     from polylogue.core.enums import BlockType, Provider, Role

@@ -23,10 +23,11 @@ from pydantic import ValidationError
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import BlockType
+from polylogue.core.enums import BlockType, ToolOutcome
 from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.runtime.archive.records import BlockRecord, MessageRecord
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow
 from polylogue.surfaces.payloads import (
     _MESSAGE_MASK,
     MessageRenderEnvelope,
@@ -166,39 +167,66 @@ def test_message_envelope_preserves_unknown_active_path() -> None:
     assert payload.is_active_path is None
 
 
+def _archive_row(**overrides: object) -> ArchiveMessageRow:
+    """The real compact archive row, not a record stand-in.
+
+    ``MessageRecord`` used to double for it here, which only exercised the
+    fields whose attribute names happened to agree (``variant_index`` vs
+    ``branch_index`` did not). The envelope now hydrates through
+    ``polylogue.archive.hydration``, so the row family must be the real one.
+    """
+    defaults: dict[str, object] = {
+        "message_id": "m1",
+        "native_id": "native-m1",
+        "role": "user",
+        "position": 0,
+        "variant_index": 0,
+        "is_active_path": False,
+        "is_active_leaf": False,
+        "blocks": (),
+    }
+    defaults.update(overrides)
+    return ArchiveMessageRow(**defaults)  # type: ignore[arg-type]
+
+
 def test_from_archive_row_propagates_position_and_active_path_state() -> None:
-    # Note: MessageRecord's sibling-order field is named ``branch_index``
-    # while the archive-row projection reads the real ArchiveMessageRow's
-    # ``variant_index`` attribute -- a pre-existing naming mismatch that
-    # means MessageRecord-as-stand-in only exercises the fields whose
-    # attribute names agree (position/is_active_path/is_active_leaf).
-    row = MessageRecord(
-        message_id=MessageId("m1"),
-        session_id=SessionId("c1"),
-        provider_message_id="native-m1",
-        role=Role.USER,
-        content_hash=ContentHash("0" * 64),
-        is_active_path=True,
-        position=5,
-        is_active_leaf=True,
-    )
+    row = _archive_row(is_active_path=True, position=5, is_active_leaf=True, variant_index=3)
     payload = message_render_envelope_from_archive_row(row, session_id="c1")
     assert payload.position == 5
     assert payload.is_active_path is True
     assert payload.is_active_leaf is True
+    assert payload.branch_index == 3
 
 
 def test_from_archive_row_preserves_identity_source() -> None:
-    row = MessageRecord(
-        message_id=MessageId("m1"),
-        session_id=SessionId("c1"),
-        provider_message_id="native-m1",
-        role=Role.USER,
-        content_hash=ContentHash("0" * 64),
-        identity_source="native",
-    )
+    row = _archive_row(identity_source="native")
 
     assert message_render_envelope_from_archive_row(row, session_id="c1").identity_source == "native"
+
+
+def test_from_archive_row_preserves_stop_reason_and_block_outcomes() -> None:
+    """polylogue-blpir: the MCP row envelope must carry structured outcomes."""
+    row = _archive_row(
+        role="assistant",
+        stop_reason="max_tokens",
+        blocks=(
+            ArchiveBlockRow(
+                block_id="m1:0",
+                message_id="m1",
+                block_type="tool_result",
+                text="total 0",
+                tool_id="t1",
+                tool_outcome=ToolOutcome.UNKNOWN,
+                tool_result_outcome_unknown_reason="no_structural_outcome",
+            ),
+        ),
+    )
+
+    payload = message_render_envelope_from_archive_row(row, session_id="c1")
+
+    assert payload.stop_reason == "max_tokens"
+    assert payload.content_blocks[0]["tool_outcome"] == "unknown"
+    assert payload.content_blocks[0]["tool_result_outcome_unknown_reason"] == "no_structural_outcome"
 
 
 def test_message_envelope_propagates_content_flags() -> None:
@@ -217,23 +245,16 @@ def test_message_envelope_propagates_content_flags() -> None:
 
 def test_from_archive_row_propagates_paste_boundary_state() -> None:
     """Archive row payloads must not collapse paste evidence to has_paste."""
-    row = MessageRecord(
-        message_id=MessageId("m1"),
-        session_id=SessionId("c1"),
-        provider_message_id="native-m1",
-        role=Role.USER,
-        content_hash=ContentHash("0" * 64),
-        blocks=[
-            BlockRecord(
-                block_id="b1",
-                message_id=MessageId("m1"),
-                session_id=SessionId("c1"),
-                block_index=0,
-                type=BlockType.TEXT,
+    row = _archive_row(
+        blocks=(
+            ArchiveBlockRow(
+                block_id="m1:0",
+                message_id="m1",
+                block_type="text",
                 text="See [Pasted text #1]",
-            )
-        ],
-        has_paste=1,
+            ),
+        ),
+        has_paste=True,
         paste_boundary_state="projected",
     )
 

@@ -917,6 +917,11 @@ class MCPMessagesListPayload(SurfacePayloadModel):
     next_offset: int | None = None
     suggested_tail_offset: int | None = None
     offset_note: str | None = None
+    # Set when the page was served by the bounded message-row projection,
+    # which does not select every message-level field. It names the richer
+    # operation rather than letting a domain default read as measured fact
+    # (polylogue-blpir).
+    projection_note: str | None = None
     # 4ts.6: whether the underlying session's composed transcript is the FULL
     # logical transcript, or truncated by a lineage depth limit / dangling
     # branch point -- surfaced so a consumer never mistakes a partial

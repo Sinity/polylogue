@@ -58,15 +58,22 @@ class TestColumnSpecReordering:
         assert generated_cols == {"block_id", "tool_command", "tool_path", "search_text", "tool_detail_text"}
 
     def test_block_query_projection_uses_canonical_table_columns(self) -> None:
-        """The compact block SELECT must name only declared storage columns."""
-        from polylogue.storage.sqlite.archive_tiers.archive_query_reads import _ARCHIVE_BLOCK_QUERY_COLUMNS
+        """The compact block SELECT must name only declared storage columns.
+
+        The query read model used to subtract ``tool_result_outcome_unknown_
+        reason`` from this projection, so a bounded message page reported an
+        unknown tool outcome with no reason; it now selects the whole declared
+        block row (polylogue-blpir).
+        """
+        from polylogue.storage.sqlite.archive_tiers.write import ARCHIVE_BLOCK_ROW_COLUMNS
 
         blocks_spec, _, _ = self._specs()
         declared = {column.name for column in blocks_spec.all_columns}
 
-        assert _ARCHIVE_BLOCK_QUERY_COLUMNS
-        assert set(_ARCHIVE_BLOCK_QUERY_COLUMNS) <= declared
-        assert len(_ARCHIVE_BLOCK_QUERY_COLUMNS) == len(set(_ARCHIVE_BLOCK_QUERY_COLUMNS))
+        assert ARCHIVE_BLOCK_ROW_COLUMNS
+        assert set(ARCHIVE_BLOCK_ROW_COLUMNS) <= declared
+        assert len(ARCHIVE_BLOCK_ROW_COLUMNS) == len(set(ARCHIVE_BLOCK_ROW_COLUMNS))
+        assert "tool_result_outcome_unknown_reason" in ARCHIVE_BLOCK_ROW_COLUMNS
 
     def test_blocks_insert_statement_format(self) -> None:
         """Verify that the INSERT statement can be correctly formatted."""

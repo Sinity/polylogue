@@ -15,6 +15,7 @@ import click
 import yaml
 
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.hydration import archive_summary_to_domain
 from polylogue.archive.query.transaction import run_archive_read_sync
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import Session, SessionSummary
@@ -23,9 +24,6 @@ from polylogue.cli.read_views.streaming_markdown import stream_exact_session_mar
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.core.enums import Origin
-from polylogue.core.timestamps import parse_archive_datetime
-from polylogue.core.types import SessionId
 from polylogue.rendering.formatting import format_session
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.projection_spec import ProjectionSpec
@@ -283,26 +281,6 @@ def _dialogue_payload(session: Session, *, projection: ProjectionSpec | None = N
     }
 
 
-def _archive_summary_to_domain(summary: Any) -> SessionSummary:
-    return SessionSummary(
-        id=SessionId(str(summary.session_id)),
-        origin=Origin.from_string(summary.origin),
-        title=summary.title,
-        display_label=summary.display_label,
-        created_at=parse_archive_datetime(summary.created_at),
-        updated_at=parse_archive_datetime(summary.updated_at),
-        working_directories=tuple(summary.working_directories),
-        git_branch=summary.git_branch,
-        git_repository_url=summary.git_repository_url,
-        provider_project_ref=summary.provider_project_ref,
-        message_count=summary.message_count,
-        tags_m2m=summary.tags,
-        terminal_state=summary.terminal_state,
-        total_cost_usd=summary.total_cost_usd,
-        cost_provenance=summary.cost_provenance,
-    )
-
-
 def exact_read_summaries(config: Config, request: RootModeRequest) -> list[SessionSummary] | None:
     """Resolve a single ``--id`` read without enumerating generic query rows."""
 
@@ -322,7 +300,7 @@ def exact_read_summaries(config: Config, request: RootModeRequest) -> list[Sessi
             operation="cli.read.exact_summary",
             arguments={"session_id": session_id},
             work=lambda archive: [
-                _archive_summary_to_domain(archive.read_summary(archive.resolve_session_id(session_id)))
+                archive_summary_to_domain(archive.read_summary(archive.resolve_session_id(session_id)))
             ],
             projection="session-summary",
         )

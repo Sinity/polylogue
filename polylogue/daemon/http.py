@@ -91,7 +91,6 @@ from polylogue.rendering.semantic_cards import (
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import archive_message_display_text
 from polylogue.surfaces.authority import serialize_authority
 from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes, decide_outcome
 from polylogue.surfaces.payloads import (
@@ -3426,30 +3425,41 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             }
 
     def _archive_summary_payload(self, summary: ArchiveSessionSummary) -> dict[str, object]:
+        """Project one archive summary row into the web reader's list shape.
+
+        The row is hydrated once by the canonical owner
+        (``polylogue.archive.hydration``) and this method only applies the web
+        reader's mask to the resulting domain summary, so it cannot populate a
+        different subset than the API/CLI/MCP summary routes.
+        """
+        from polylogue.archive.hydration import archive_summary_to_domain
         from polylogue.surfaces.query_rows import session_row
 
-        session_id = str(summary.session_id)
-        row = session_row(summary)
+        domain = archive_summary_to_domain(summary)
+        session_id = str(domain.id)
+        row = session_row(domain)
         target_ref = TargetRefPayload.session(session_id)
         return {
             "id": session_id,
             "session_id": session_id,
-            "title": summary.display_label or summary.title or session_id,
-            "origin": summary.origin,
+            "title": domain.display_title,
+            "origin": str(domain.origin),
             "target_ref": _dump_target_ref(target_ref),
             "anchor": reader_anchor("session", session_id),
             "actions": _dump_actions(reader_session_actions()),
             "date": summary.updated_at or summary.created_at,
             "created_at": summary.created_at,
             "updated_at": summary.updated_at,
-            "message_count": summary.message_count,
+            "message_count": domain.message_count,
+            # Stored session word counter; the domain summary deliberately
+            # delegates word totals to the query-row projection.
             "word_count": summary.word_count,
             "terminal_state": row.outcome,
             "total_cost_usd": row.cost_usd,
             "relative_time": row.relative_time,
-            "repo": summary.git_repository_url,
-            "cwd_display": next(iter(summary.working_directories), None),
-            "tags": list(summary.tags),
+            "repo": domain.git_repository_url,
+            "cwd_display": next(iter(domain.working_directories), None),
+            "tags": list(domain.tags),
             "flags": None,
             "summary": None,
         }
@@ -3523,8 +3533,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         payload.update(
             {
                 "display_title": payload["title"],
-                "branch_type": None,
-                "parent_id": None,
+                # The summary row carries topology and title provenance; the
+                # detail-shape route used to hardcode NULL here, so the same
+                # session reported a parent through the full read and no
+                # parent through the summary read (polylogue-blpir).
+                "branch_type": summary.branch_type,
+                "parent_id": summary.parent_id,
+                "session_kind": summary.session_kind,
+                "display_name": summary.display_name,
+                "title_source": summary.title_source,
+                "title_ref": summary.title_ref,
                 "model": None,
                 "total": payload["message_count"],
             }
@@ -3673,14 +3691,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # into one session-level list, mirroring the archive detail handler
         # so the inspector tab and the session envelope share one source of
         # truth (#1199).
-        from polylogue.api.archive import _archive_attachment_to_domain
+        from polylogue.archive.hydration import archive_attachment_to_domain
 
         session_attachments: list[dict[str, object]] = []
         for message_payload in messages:
             session_attachments.extend(cast("list[dict[str, object]]", message_payload["attachments"]))
         session_attachments.extend(
             attachment_to_envelope(
-                _archive_attachment_to_domain(att),
+                archive_attachment_to_domain(att),
                 session_id=session_id,
                 message_id=att.message_id,
             )
@@ -3727,11 +3745,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         )
 
     def _archive_message_attachments(self, session_id: str, message: ArchiveMessageRow) -> list[dict[str, object]]:
-        from polylogue.api.archive import _archive_attachment_to_domain
+        from polylogue.archive.hydration import archive_attachment_to_domain
 
         return [
             attachment_to_envelope(
-                _archive_attachment_to_domain(att),
+                archive_attachment_to_domain(att),
                 session_id=session_id,
                 message_id=str(message.message_id),
             )
@@ -3747,31 +3765,47 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         semantic_cards: Sequence[JSONDocument] = (),
         semantic_card_suppressed: bool = False,
     ) -> dict[str, object]:
-        message_id = str(message.message_id)
-        text = archive_message_display_text(message.blocks)
-        has_paste = bool(message.has_paste)
+        from polylogue.archive.hydration import archive_message_to_domain
+
+        # One hydration, then the web-reader wire shape. The semantic fields
+        # below are read off the canonical domain message so this route cannot
+        # drift from the DB-backed detail route (``_do_get_session``), which
+        # reaches the same ``Message`` through ``Polylogue.get_session``.
+        domain = archive_message_to_domain(message)
+        message_id = str(domain.id)
+        text = domain.text or ""
+        has_paste = bool(domain.has_paste)
         return {
             "id": message_id,
-            "role": str(message.role),
+            "identity_source": domain.identity_source,
+            "role": str(domain.role),
             "text": text,
             "target_ref": _dump_target_ref(TargetRefPayload.message(session_id=session_id, message_id=message_id)),
             "anchor": reader_anchor("message", message_id),
             "actions": _dump_actions(reader_message_actions()),
+            # The stored ISO string is the wire contract here; the reader
+            # compares it verbatim against block anchors.
             "timestamp": message.occurred_at,
-            "message_type": message.message_type,
-            "material_origin": message.material_origin,
-            "duration_ms": message.duration_ms,
-            "parent_message_id": message.parent_message_id,
-            "variant_index": message.variant_index,
-            "is_active_path": message.is_active_path,
-            "is_active_leaf": message.is_active_leaf,
+            "message_type": str(domain.message_type),
+            "material_origin": str(domain.material_origin),
+            "duration_ms": domain.duration_ms,
+            "parent_message_id": domain.parent_id,
+            "variant_index": domain.branch_index,
+            "is_active_path": domain.is_active_path,
+            "is_active_leaf": domain.is_active_leaf,
+            # Provider-reported terminal signal; the reader's turn-state
+            # rendering claims terminal semantics, so it must not be dropped.
+            "stop_reason": domain.stop_reason,
             "source_session_id": message.source_session_id,
             "inherited_prefix": (
                 message.source_session_id != session_id if message.source_session_id is not None else None
             ),
+            # The stored per-message counter, not the text-derived
+            # ``Message.word_count``: the reader totals it against the session
+            # row's own word_count.
             "word_count": message.word_count,
-            "has_tool_use": bool(message.has_tool_use),
-            "has_thinking": bool(message.has_thinking),
+            "has_tool_use": bool(domain.has_tool_use),
+            "has_thinking": bool(domain.has_thinking),
             "has_paste_evidence": has_paste,
             "paste_spans": envelope_paste_spans(text, has_paste=has_paste),
             "semantic_entries": list(semantic_entries),

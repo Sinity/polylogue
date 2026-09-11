@@ -96,6 +96,11 @@ if TYPE_CHECKING:
     from collections.abc import Container
 
     from polylogue.annotations.batch import AnnotationBatch
+
+    # ``ArchiveMessageRow`` is re-exported by the canonical hydration owner:
+    # this package projects what a read already resolved and does not import
+    # storage internals directly.
+    from polylogue.archive.hydration import ArchiveMessageRow
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
     from polylogue.storage.sqlite.archive_tiers.archive import (
@@ -1168,67 +1173,40 @@ def message_row_envelope_from_domain(
     return MessageRowEnvelope(**values)
 
 
-def message_render_envelope_from_archive_row(message: Any, *, session_id: object) -> MessageRenderEnvelope:
-    """Project an archive row without making each surface own a mapper."""
-    message_id = str(message.message_id)
-    blocks = tuple(getattr(message, "blocks", ()))
-    text = "\n\n".join(str(block.text) for block in blocks if block.text)
-    if not text:
-        text = str(getattr(message, "text", "") or "")
-    content_blocks: list[dict[str, object]] = []
-    for block in blocks:
-        row: dict[str, object] = {
-            "type": str(getattr(block, "block_type", "")),
-            "text": str(getattr(block, "text", "") or ""),
-            "block_id": str(getattr(block, "block_id", "") or ""),
-        }
-        for source_name in ("tool_name", "tool_id", "semantic_type"):
-            value = getattr(block, source_name, None)
-            if value:
-                row[source_name] = str(value)
-        content_blocks.append(row)
-    values = {
-        "id": message_id,
-        "identity_source": getattr(message, "identity_source", "positional"),
-        "role": role_label(getattr(message, "role", "")),
-        "text": text,
-        "timestamp": (
-            _parse_optional_datetime(getattr(message, "occurred_at", None))
-            or (
-                datetime.fromtimestamp(float(message.occurred_at_ms) / 1000.0, UTC)
-                if getattr(message, "occurred_at_ms", None) is not None
-                else None
-            )
-        ),
-        "content_blocks": content_blocks,
-        "message_type": role_label(getattr(message, "message_type", "message") or "message"),
-        "material_origin": role_label(getattr(message, "material_origin", "unknown") or "unknown"),
-        "parent_id": getattr(message, "parent_message_id", None),
-        "branch_index": int(getattr(message, "variant_index", 0) or 0),
-        "position": int(getattr(message, "position", 0) or 0),
-        "is_active_path": getattr(message, "is_active_path", None),
-        "is_active_leaf": bool(getattr(message, "is_active_leaf", False)),
-        "has_tool_use": bool(getattr(message, "has_tool_use", False)),
-        "has_thinking": bool(getattr(message, "has_thinking", False)),
-        "has_paste_evidence": bool(getattr(message, "has_paste", False)),
-        "paste_boundary_state": getattr(message, "paste_boundary_state", None),
-        "input_tokens": int(getattr(message, "input_tokens", 0) or 0),
-        "output_tokens": int(getattr(message, "output_tokens", 0) or 0),
-        "cache_read_tokens": int(getattr(message, "cache_read_tokens", 0) or 0),
-        "cache_write_tokens": int(getattr(message, "cache_write_tokens", 0) or 0),
-        "duration_ms": int(getattr(message, "duration_ms", 0) or 0),
-        "model_name": getattr(message, "model_name", None),
-        "stop_reason": getattr(message, "stop_reason", None),
-        "target_ref": TargetRefPayload.message(session_id=session_id, message_id=message_id),
-        "anchor": reader_anchor("message", message_id),
-        "actions": reader_message_actions(),
-        "attachment_refs": tuple(
-            str(getattr(attachment, "attachment_id", ""))
-            for attachment in getattr(message, "attachments", ())
-            if getattr(attachment, "attachment_id", None)
-        ),
-    }
-    return MessageRenderEnvelope(**values)
+def message_render_envelope_from_archive_row(
+    message: ArchiveMessageRow, *, session_id: object
+) -> MessageRenderEnvelope:
+    """Project a composed archive message row through canonical hydration.
+
+    The row reaches the envelope as a domain ``Message`` first, so this surface
+    owns no field mapping of its own and cannot drift from the API/query
+    routes: block ``tool_outcome``/``tool_result_outcome_unknown_reason`` and
+    message ``stop_reason`` reach MCP exactly as they reach every other route.
+    """
+    from polylogue.archive.hydration import archive_message_to_domain
+
+    return message_render_envelope_from_domain(
+        archive_message_to_domain(message),
+        session_id=session_id,
+    )
+
+
+def message_render_envelope_from_message_query_row(
+    row: ArchiveMessageQueryRow, *, session_id: object
+) -> MessageRenderEnvelope:
+    """Project one bounded message-page row through canonical hydration.
+
+    This projection is deliberately narrower than the composed read; the
+    message-level fields it does not select are declared in
+    ``MESSAGE_QUERY_ROW_UNPROJECTED`` and the surface serving it names the
+    richer operation.
+    """
+    from polylogue.archive.hydration import archive_message_query_row_to_domain
+
+    return message_render_envelope_from_domain(
+        archive_message_query_row_to_domain(row),
+        session_id=session_id,
+    )
 
 
 def session_summary_envelope_from_domain(session: Session) -> SessionSummaryEnvelope:
@@ -4403,6 +4381,7 @@ __all__ = [
     "SessionSummaryPayload",
     "SessionSummaryEnvelope",
     "message_render_envelope_from_archive_row",
+    "message_render_envelope_from_message_query_row",
     "message_render_envelope_from_domain",
     "message_row_envelope_from_domain",
     "session_detail_envelope_from_domain",

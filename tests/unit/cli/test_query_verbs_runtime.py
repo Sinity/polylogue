@@ -22,6 +22,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 from polylogue.core.enums import Origin
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 from polylogue.surfaces.projection_spec import ProjectionSpec, QueryProjectionSpec, RenderFormat, projection_from_views
 from tests.infra.builders import make_conv, make_msg
@@ -1316,22 +1317,25 @@ def test_read_view_temporal_includes_bounded_message_events(
 def test_exact_read_summaries_resolves_id_without_query_enumeration(tmp_path: Path) -> None:
     from polylogue.cli.read_views.standard import exact_read_summaries
 
-    archive_summary = SimpleNamespace(
+    # The real summary row, not a partial stand-in: the exact CLI read now
+    # shares one hydration owner with the API/query/MCP/HTTP routes, so a stub
+    # that omits half the projection would not exercise the production mapping.
+    archive_summary = ArchiveSessionSummary(
         session_id="codex-session:abc",
+        native_id="abc",
         origin="codex-session",
         title="Exact",
         display_label="Exact",
         created_at="2026-07-03T09:00:00+00:00",
         updated_at=None,
-        working_directories=(),
-        git_branch=None,
-        git_repository_url=None,
-        provider_project_ref=None,
         message_count=42,
-        terminal_state=None,
-        total_cost_usd=None,
-        cost_provenance=None,
+        word_count=0,
         tags=(),
+        parent_id="codex-session:parent",
+        branch_type="continuation",
+        display_name="exact-display-name",
+        title_source="origin",
+        title_ref="message:abc:0",
     )
     archive = MagicMock()
     archive.resolve_session_id.return_value = "codex-session:abc"
@@ -1351,6 +1355,13 @@ def test_exact_read_summaries_resolves_id_without_query_enumeration(tmp_path: Pa
     assert summaries is not None
     assert [str(summary.id) for summary in summaries] == ["codex-session:abc"]
     assert summaries[0].message_count == 42
+    # polylogue-blpir: the exact read used to drop parent identity, branch type
+    # and title provenance that the row already carried.
+    assert str(summaries[0].parent_id) == "codex-session:parent"
+    assert summaries[0].branch_type is not None and str(summaries[0].branch_type) == "continuation"
+    assert summaries[0].display_name == "exact-display-name"
+    assert summaries[0].title_source is not None and str(summaries[0].title_source) == "origin"
+    assert summaries[0].title_ref == "message:abc:0"
     archive.resolve_session_id.assert_called_once_with("abc")
     archive.read_summary.assert_called_once_with("codex-session:abc")
 
