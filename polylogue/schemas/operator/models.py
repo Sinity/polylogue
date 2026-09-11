@@ -85,6 +85,7 @@ class SchemaInferRequest:
     source_inputs: tuple[SchemaSourceInput, ...] = ()
     source_cache_path: Path | None = None
     source_workers: int = 2
+    archive_location: ArchiveLocation | None = None
 
 
 @dataclass(frozen=True)

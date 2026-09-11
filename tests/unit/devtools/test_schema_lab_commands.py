@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,10 +21,12 @@ from polylogue.schemas.operator.models import (
     SchemaPromoteRequest,
     SchemaPromoteResult,
 )
+from polylogue.storage.archive_identity import ArchiveLocation
 
 
 @dataclass(frozen=True)
 class _ConfigStub:
+    archive_root: Path
     db_path: Path
 
 
@@ -164,7 +167,7 @@ def test_schema_generate_forwards_generation_request(
     captured: list[SchemaInferRequest] = []
 
     def fake_get_config() -> _ConfigStub:
-        return _ConfigStub(db_path=tmp_path / "archive.db")
+        return _ConfigStub(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
     def fake_infer(request: SchemaInferRequest) -> SchemaInferResult:
         captured.append(request)
@@ -197,7 +200,8 @@ def test_schema_generate_forwards_generation_request(
     assert captured == [
         SchemaInferRequest(
             provider="chatgpt",
-            db_path=tmp_path / "archive.db",
+            db_path=tmp_path / "index.db",
+            archive_location=ArchiveLocation.resolve(tmp_path),
             max_samples=2,
             privacy_config=None,
             cluster=False,
@@ -213,7 +217,7 @@ def test_schema_generate_writes_aggregate_progress_receipt(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fake_get_config() -> _ConfigStub:
-        return _ConfigStub(db_path=tmp_path / "archive.db")
+        return _ConfigStub(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
     def fake_infer(request: SchemaInferRequest) -> SchemaInferResult:
         assert request.progress_callback is not None
@@ -272,13 +276,61 @@ def test_schema_generate_writes_aggregate_progress_receipt(
     assert "observe_and_cluster" in capsys.readouterr().err
 
 
+def test_schema_generate_preview_binds_external_active_index_to_configured_archive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A preview must use its configured archive, not generation siblings or ambient blobs."""
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+
+    def seed(root: Path, label: str) -> tuple[ArchiveLocation, bytes]:
+        initialize_active_archive_root(root)
+        payload = json.dumps([{"id": label, "mapping": {}}]).encode()
+        BlobStore(root / "blob").write_from_bytes(payload)
+        with sqlite3.connect(root / "source.db") as connection:
+            write_source_raw_session(
+                connection,
+                origin=origin_from_provider("chatgpt"),
+                source_path=f"/{label}.json",
+                source_index=0,
+                payload=payload,
+                acquired_at_ms=0,
+            )
+        external_index = root / ".index-generations" / "current" / "index.db"
+        external_index.parent.mkdir(parents=True)
+        external_index.write_bytes((root / "index.db").read_bytes())
+        (root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
+        return ArchiveLocation.resolve(root), payload
+
+    selected, selected_payload = seed(tmp_path / "selected", "selected")
+    seed(tmp_path / "ambient", "ambient")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "ambient"))
+    monkeypatch.setattr(
+        schema_generate,
+        "get_config",
+        lambda: _ConfigStub(archive_root=selected.configured_root, db_path=selected.active_index_path),
+    )
+
+    receipt_path = tmp_path / "preview-receipt.json"
+    assert schema_generate.main(["--provider", "chatgpt", "--receipt", str(receipt_path)]) == 0
+
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["input"]["raw_row_count"] == 1
+    assert receipt["input"]["raw_blob_bytes"] == len(selected_payload)
+    assert receipt["input"]["source_db_bytes"] is not None
+    assert receipt["generation"]["status"] == "succeeded"
+
+
 def test_schema_generate_cluster_without_manifest_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fake_get_config() -> _ConfigStub:
-        return _ConfigStub(db_path=tmp_path / "archive.db")
+        return _ConfigStub(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
     def fake_infer(request: SchemaInferRequest) -> SchemaInferResult:
         return SchemaInferResult(
@@ -304,7 +356,7 @@ def test_schema_promote_forwards_cluster_request(
     captured: list[SchemaPromoteRequest] = []
 
     def fake_get_config() -> _ConfigStub:
-        return _ConfigStub(db_path=tmp_path / "archive.db")
+        return _ConfigStub(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
     def fake_promote(request: SchemaPromoteRequest) -> SchemaPromoteResult:
         captured.append(request)
@@ -347,7 +399,7 @@ def test_schema_promote_reports_workflow_errors(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fake_get_config() -> _ConfigStub:
-        return _ConfigStub(db_path=tmp_path / "archive.db")
+        return _ConfigStub(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
     def fake_promote(request: SchemaPromoteRequest) -> SchemaPromoteResult:
         raise ValueError(f"missing cluster: {request.cluster_id}")
