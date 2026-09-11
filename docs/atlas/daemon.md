@@ -63,7 +63,9 @@ This means the ownership machinery described above is present but no live daemon
 
 Decision record outside Git: `polylogue-04r9f` is closed with SELECT-HYBRID selected. The target is one small recurring registry, per-key `VALID/MISSING/STALE/EXCESS`, `DONE/PENDING/FAILED`, domain-owned required/inspect/compute/publish adapters, process-local scheduling, compute outside the writer lease, and publish-time binding revalidation under `BEGIN IMMEDIATE`.
 
-This direction has not landed in this HEAD. Current code still exposes the generic `ConvergenceStage` abstraction and the nine-stage default list (`polylogue/daemon/convergence.py:59-87`; `polylogue/daemon/convergence_stages.py:1227-1260`). The 04r9f experiment implementations were explicitly disposable, so their absence is intentional task state rather than a missing merge.
+The registry itself has not landed in this HEAD. Current code still exposes the generic `ConvergenceStage` abstraction and the nine-stage default list (`polylogue/daemon/convergence.py:59-87`; `polylogue/daemon/convergence_stages.py:1227-1260`). The 04r9f experiment implementations were explicitly disposable, so their absence is intentional task state rather than a missing merge.
+
+Two of its properties do hold for embeddings (polylogue-c0l7n). `embed_archive_session_sync` is split into admitted reservation, lease-free provider computation, and admitted publication that re-acquires a fresh generation binding and revalidates the reserved attempt (`polylogue/storage/embeddings/materialization.py`). The `embed` stage refuses to call a provider while the writer gate is held and defers to convergence debt instead (`polylogue/daemon/convergence_stages.py`), and the three production owners, live-batch ingest, convergence-debt retry, and the embedding backlog, run the pass through `polylogue/daemon/embedding_owner.py` on the process's shared bounded compute capacity. No other derivation computes outside the lease yet.
 
 ## Workload-probe honesty
 

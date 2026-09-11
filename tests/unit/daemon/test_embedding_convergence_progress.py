@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import threading
 from pathlib import Path
-from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.daemon import convergence_stages, embedding_backlog
+from polylogue.daemon import convergence_stages, embedding_backlog, embedding_owner
+from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.status import format_daemon_status_lines
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.embeddings.materialization import EmbedSessionOutcome, PendingSession
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def test_periodic_embedding_backlog_waits_for_catch_up_complete(
@@ -20,8 +25,10 @@ def test_periodic_embedding_backlog_waits_for_catch_up_complete(
 ) -> None:
     calls: list[str] = []
 
-    async def fake_run_sync(actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        assert actor == "maintenance.embedding_backlog"
+    async def fake_lease_free(function: object, *_args: object, **_kwargs: object) -> object:
+        # The drain is the provider-calling pass, so it is admitted to the
+        # daemon's compute capacity rather than run under the writer gate.
+        assert function is embedding_backlog.drain_embedding_backlog_once
         calls.append("drain")
         raise asyncio.CancelledError
 
@@ -31,8 +38,8 @@ def test_periodic_embedding_backlog_waits_for_catch_up_complete(
             "polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: tmp_path / "index.db"
         )
         monkeypatch.setattr(
-            "polylogue.daemon.write_coordinator.daemon_write_coordinator",
-            lambda: SimpleNamespace(run_sync=fake_run_sync),
+            "polylogue.daemon.embedding_owner.run_lease_free_embedding_work",
+            fake_lease_free,
         )
         monkeypatch.setattr(embedding_backlog, "EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS", 0)
         task = asyncio.create_task(
@@ -505,3 +512,191 @@ def test_daemon_status_lines_include_latest_embedding_catchup() -> None:
     )
 
     assert "  latest catch-up: running, 3/10 convs, 42 msgs embedded" in lines
+
+
+# ── Lease-free embedding computation (polylogue-c0l7n) ──────────────────────
+#
+# The provider call used to run inside the daemon's writer gate and inside the
+# embedding generation lock, so one slow round trip blocked every unrelated
+# archive publication. These tests hold each of the three production owners to
+# the split contract: reserve under admission, compute holding nothing, publish
+# under admission again.
+
+
+def _install_test_coordinator(monkeypatch: pytest.MonkeyPatch, archive_root: Path) -> DaemonWriteCoordinator:
+    """Bind one archive-scoped coordinator and one compute pool into the owner."""
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+    adapter = BoundedComputeAdapter(max_workers=2)
+    monkeypatch.setattr(embedding_owner, "daemon_write_coordinator", lambda: coordinator)
+    monkeypatch.setattr(embedding_owner, "daemon_compute_adapter", lambda: adapter)
+    return coordinator
+
+
+class _PausedEmbeddingPass:
+    """A stand-in embedding pass that observes its own authority, then blocks."""
+
+    def __init__(self, archive_root: Path) -> None:
+        self.archive_root = archive_root
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.lease_during_compute: bool | None = None
+        self.lease_during_publish: bool | None = None
+
+    def __call__(self, *, admit: object) -> bool:
+        from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+        self.lease_during_compute = daemon_write_lease_active()
+        self.entered.set()
+        assert self.release.wait(10.0), "paused embedding compute was never released"
+
+        def publish() -> None:
+            self.lease_during_publish = daemon_write_lease_active()
+
+        cast(Any, admit)("embedding.publish", publish)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_embedding_compute_holds_no_writer_authority_and_unblocks_other_writers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Embedding compute holds no writer authority, and publication still does.
+
+    Anti-vacuity: restore the old route -- run the whole pass inside one
+    ``DaemonWriteCoordinator`` operation -- and ``lease_during_compute`` becomes
+    True while the unrelated writer below blocks until the provider returns, so
+    the ``wait_for`` fails. Drop the admitted publish phase instead and
+    ``lease_during_publish`` becomes False, which is the other half: compute
+    must lose the authority, publication must keep it.
+
+    The generation lock is proven separately, against the real archive route,
+    by ``test_generation_lock_is_free_while_the_provider_computes`` in
+    ``tests/unit/storage/test_embedding_generations.py``.
+    """
+    coordinator = _install_test_coordinator(monkeypatch, tmp_path)
+    embedding_pass = _PausedEmbeddingPass(tmp_path)
+    unrelated_committed: list[bool] = []
+
+    def unrelated_writer() -> None:
+        from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+        unrelated_committed.append(daemon_write_lease_active())
+
+    task = asyncio.create_task(embedding_owner.run_lease_free_embedding_work(embedding_pass))
+    await asyncio.to_thread(embedding_pass.entered.wait, 10.0)
+    assert embedding_pass.entered.is_set()
+
+    # The provider is still paused. An unrelated bounded writer must be able to
+    # enter the gate and commit right now.
+    await asyncio.wait_for(coordinator.run_sync("maintenance.unrelated", unrelated_writer), timeout=5.0)
+    assert unrelated_committed == [True]
+
+    embedding_pass.release.set()
+    assert await asyncio.wait_for(task, timeout=10.0) is True
+
+    assert embedding_pass.lease_during_compute is False
+    assert embedding_pass.lease_during_publish is True
+
+
+@pytest.mark.asyncio
+async def test_embedding_owner_refuses_to_run_inside_a_held_writer_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller that still holds the gate is refused, not deadlocked.
+
+    Anti-vacuity: drop the guard and this call hangs forever, because the
+    admitted publish phase queues behind the very gate its caller is holding.
+    """
+    coordinator = _install_test_coordinator(monkeypatch, tmp_path)
+
+    async def inside_gate() -> None:
+        with pytest.raises(RuntimeError, match="holds the daemon writer gate"):
+            await embedding_owner.run_lease_free_embedding_work(lambda *, admit: True)
+
+    await asyncio.wait_for(coordinator.run("maintenance.holder", inside_gate), timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_embedding_backlog_owner_drains_without_the_writer_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The periodic backlog loop runs its drain off the writer.
+
+    Anti-vacuity: route the drain back through
+    ``daemon_write_coordinator().run_sync`` and ``observed`` records True.
+    """
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+    _install_test_coordinator(monkeypatch, tmp_path)
+    observed: list[bool] = []
+
+    def fake_drain(_db: Path, *, admit: object) -> int:
+        observed.append(daemon_write_lease_active())
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(embedding_backlog, "drain_embedding_backlog_once", fake_drain)
+    monkeypatch.setattr(embedding_backlog, "EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+
+    catch_up_complete = asyncio.Event()
+    catch_up_complete.set()
+    task = asyncio.create_task(embedding_backlog.periodic_embedding_backlog_check(catch_up_complete=catch_up_complete))
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert observed == [False]
+
+
+@pytest.mark.asyncio
+async def test_convergence_debt_retry_embeds_before_its_admitted_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Embed-stage debt is converged off the writer, then cleared by the admitted pass.
+
+    Anti-vacuity: delete the lease-free pass and ``order`` loses its
+    ``embed_owner`` entry entirely -- the admitted drain would re-defer the
+    same debt forever, because the stage refuses to call a provider under the
+    gate.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+    from polylogue.sources.live.cursor import CursorStore
+
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    cursor = CursorStore(index_db)
+    cursor.record_convergence_debt(
+        stage="embed",
+        subject_type="session_id",
+        subject_id="codex-session:v1-a",
+        error="deferred to the lease-free embedding owner",
+        deferred=True,
+    )
+    # A freshly recorded row carries its backoff, so age it into the due window
+    # the retry tick actually inspects.
+    with sqlite3.connect(tmp_path / "ops.db") as ops:
+        ops.execute("UPDATE convergence_debt SET next_retry_at = ?", ("2000-01-01T00:00:00+00:00",))
+        ops.commit()
+
+    coordinator = _install_test_coordinator(monkeypatch, tmp_path)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: coordinator)
+    order: list[tuple[str, bool]] = []
+
+    def fake_convergence(_db: Path, *, paths: object = (), session_ids: object = (), admit: object = None) -> bool:
+        order.append(("embed_owner", daemon_write_lease_active()))
+        assert tuple(cast(Any, session_ids)) == ("codex-session:v1-a",)
+        return True
+
+    def fake_drain(_db: Path, *, limit: int = 0) -> int:
+        order.append(("admitted_drain", daemon_write_lease_active()))
+        return 0
+
+    monkeypatch.setattr("polylogue.daemon.convergence_stages.run_archive_embedding_convergence", fake_convergence)
+    monkeypatch.setattr(daemon_cli, "_drain_convergence_debt_once", fake_drain)
+
+    await asyncio.wait_for(daemon_cli._retry_convergence_debt_once(index_db), timeout=10.0)
+
+    assert order == [("embed_owner", False), ("admitted_drain", True)]

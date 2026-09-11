@@ -6,6 +6,7 @@ import asyncio
 import sqlite3
 import time
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,7 @@ from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
+    from polylogue.storage.embeddings.materialization import EmbeddingWriteAdmission
     from polylogue.storage.embeddings.reconcile import EmbeddingOrphanReconcileReport
 
 logger = get_logger(__name__)
@@ -62,13 +64,13 @@ async def periodic_embedding_backlog_check(
     while True:
         await asyncio.sleep(EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS)
         try:
-            from polylogue.daemon.write_coordinator import daemon_write_coordinator
+            from polylogue.daemon.embedding_owner import run_lease_free_embedding_work
 
-            processed = await daemon_write_coordinator().run_sync(
-                "maintenance.embedding_backlog",
-                drain_embedding_backlog_once,
-                db,
-            )
+            # The drain calls a provider, so it runs on the daemon's compute
+            # capacity with no writer authority; the receipts and vector
+            # publications it produces are admitted one at a time through the
+            # write coordinator (polylogue-c0l7n).
+            processed = await run_lease_free_embedding_work(drain_embedding_backlog_once, db)
             if processed:
                 logger.info("embed: drained %d pending session(s)", processed)
         except sqlite3.OperationalError as exc:
@@ -80,8 +82,14 @@ async def periodic_embedding_backlog_check(
             logger.warning("embed: backlog check failed", exc_info=True)
 
 
-def drain_embedding_backlog_once(db_path: Path) -> int:
-    """Run one bounded daemon embedding catch-up window over pending backlog."""
+def drain_embedding_backlog_once(db_path: Path, *, admit: EmbeddingWriteAdmission | None = None) -> int:
+    """Run one bounded daemon embedding catch-up window over pending backlog.
+
+    ``admit`` is the writer-admission seam. When the caller runs this off the
+    writer -- the production route -- every write below is admitted through it
+    individually, so the provider calls between them hold neither the writer
+    gate nor the embedding generation lock.
+    """
 
     from polylogue.daemon.convergence_stages import _embedding_config_enabled
 
@@ -91,7 +99,7 @@ def drain_embedding_backlog_once(db_path: Path) -> int:
     index_db = _active_archive_index_path(db_path)
     if index_db is None:
         return 0
-    return _drain_archive_embedding_backlog_once(index_db, archive_root=db_path.parent)
+    return _drain_archive_embedding_backlog_once(index_db, archive_root=db_path.parent, admit=admit)
 
 
 async def periodic_embedding_orphan_reconcile_check(
@@ -190,7 +198,12 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
         return None
 
 
-def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path) -> int:
+def _drain_archive_embedding_backlog_once(
+    index_db: Path,
+    *,
+    archive_root: Path,
+    admit: EmbeddingWriteAdmission | None = None,
+) -> int:
     from polylogue.daemon.convergence_stages import (
         _DAEMON_EMBED_MAX_ERRORS,
         _DAEMON_EMBED_MAX_MESSAGES,
@@ -199,8 +212,11 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
     )
     from polylogue.storage.embeddings.materialization import (
         embed_archive_session_sync,
+        inline_embedding_admission,
         select_pending_archive_session_window,
     )
+
+    admit_phase = inline_embedding_admission if admit is None else admit
     from polylogue.storage.search_providers import create_vector_provider
     from polylogue.storage.search_providers.sqlite_vec_support import (
         ESTIMATED_TOKENS_PER_MESSAGE,
@@ -215,7 +231,10 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+    admit_phase(
+        "embedding.bootstrap",
+        partial(initialize_archive_database, embeddings_db, ArchiveTier.EMBEDDINGS),
+    )
     monthly_cap = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
     ops_db = archive_root / "ops.db"
     if monthly_cap > 0:
@@ -250,13 +269,17 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
         return 0
 
     started_at_ms = int(time.time() * 1000)
-    run_id = _upsert_archive_embedding_catchup_run(
-        ops_db,
-        status=OperationStatus.RUNNING,
-        started_at_ms=started_at_ms,
-        scanned_sessions=0,
-        embedded_messages=0,
-        estimated_cost_usd=0.0,
+    run_id = admit_phase(
+        "embedding.catchup_receipt",
+        partial(
+            _upsert_archive_embedding_catchup_run,
+            ops_db,
+            status=OperationStatus.RUNNING,
+            started_at_ms=started_at_ms,
+            scanned_sessions=0,
+            embedded_messages=0,
+            estimated_cost_usd=0.0,
+        ),
     )
     vec_provider = create_vector_provider(
         voyage_api_key=str(voyage_key),
@@ -267,13 +290,17 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
     )
     if vec_provider is None:
         logger.warning("embed: archive vector provider unavailable")
-        _upsert_archive_embedding_catchup_run(
-            ops_db,
-            run_id=run_id,
-            status=OperationStatus.FAILED,
-            started_at_ms=started_at_ms,
-            finished_at_ms=int(time.time() * 1000),
-            error_message="vector provider unavailable",
+        admit_phase(
+            "embedding.catchup_receipt",
+            partial(
+                _upsert_archive_embedding_catchup_run,
+                ops_db,
+                run_id=run_id,
+                status=OperationStatus.FAILED,
+                started_at_ms=started_at_ms,
+                finished_at_ms=int(time.time() * 1000),
+                error_message="vector provider unavailable",
+            ),
         )
         return 0
 
@@ -304,6 +331,7 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
             item.session_id,
             embeddings_db_path=embeddings_db,
             stop_after_seconds=_DAEMON_EMBED_STOP_AFTER_SECONDS,
+            admit=admit,
         )
         processed += 1
         if outcome.status == "deferred":
@@ -333,19 +361,23 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
             if errors >= _DAEMON_EMBED_MAX_ERRORS:
                 break
     logger.info("embed: archive %d done, %d errors, est. cost $%.4f", embedded, errors, cumulative_cost)
-    _upsert_archive_embedding_catchup_run(
-        ops_db,
-        run_id=run_id,
-        status=OperationStatus.FAILED if errors else OperationStatus.COMPLETED,
-        started_at_ms=started_at_ms,
-        finished_at_ms=int(time.time() * 1000),
-        scanned_sessions=processed,
-        embedded_sessions=embedded,
-        skipped_sessions=skipped,
-        error_count=errors,
-        embedded_messages=embedded_messages,
-        estimated_cost_usd=cumulative_cost,
-        error_message=error_message,
+    admit_phase(
+        "embedding.catchup_receipt",
+        partial(
+            _upsert_archive_embedding_catchup_run,
+            ops_db,
+            run_id=run_id,
+            status=OperationStatus.FAILED if errors else OperationStatus.COMPLETED,
+            started_at_ms=started_at_ms,
+            finished_at_ms=int(time.time() * 1000),
+            scanned_sessions=processed,
+            embedded_sessions=embedded,
+            skipped_sessions=skipped,
+            error_count=errors,
+            embedded_messages=embedded_messages,
+            estimated_cost_usd=cumulative_cost,
+            error_message=error_message,
+        ),
     )
     return processed if errors == 0 else 0
 

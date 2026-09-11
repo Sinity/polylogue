@@ -168,3 +168,53 @@ def test_dedup_first_write_wins_the_stored_vector_bytes(tmp_path: Path) -> None:
 
     stored = struct.unpack("<1024f", row[0])
     assert stored[0] == pytest.approx(0.11), "the first write's vector must survive, not the second"
+
+
+def test_second_unchanged_pass_calls_no_provider_and_writes_no_vector_again(tmp_path: Path) -> None:
+    """Idempotence across the split route (polylogue-c0l7n).
+
+    The archive embedding route now reserves its attempt under one admitted
+    phase, computes with no writer authority, and publishes under another. A
+    second pass over an unchanged session must still reach neither the provider
+    nor the vector tables: reuse is decided from stored content addresses in the
+    reservation phase, before any computation is scheduled.
+
+    Anti-vacuity: move the existing-ref/present-hash comparison out of the
+    reservation phase (or recompute it from the post-attempt generation) and the
+    second pass calls the provider again, making ``provider.calls`` length 2.
+    """
+    root = tmp_path / "archive"
+    session_id = _write_session(root, native_id="idempotent-a", text=_SHARED_TEXT)
+
+    index_db = root / "index.db"
+    embeddings_db = root / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+    _connect_vec(embeddings_db).close()
+
+    provider = _FakeVectorProvider()
+    first = embed_archive_session_sync(index_db, provider, session_id)
+    assert first.status == "embedded"
+    assert len(provider.calls) == 1
+
+    def vector_state() -> tuple[list[object], list[tuple[object, ...]], list[tuple[object, ...]]]:
+        with _connect_vec(embeddings_db) as conn:
+            return (
+                # ``message_embeddings`` is a vec0 virtual table: sort the
+                # stored vectors in Python rather than by a rowid it does not
+                # expose.
+                sorted(row[0] for row in conn.execute("SELECT embedding FROM message_embeddings").fetchall()),
+                conn.execute(
+                    "SELECT vector_derivation_hash, model, dimension, embedded_at_ms, recipe_hash "
+                    "FROM message_embeddings_meta ORDER BY vector_derivation_hash"
+                ).fetchall(),
+                conn.execute(
+                    "SELECT message_id, session_id, vector_derivation_hash FROM message_embedding_refs "
+                    "ORDER BY message_id"
+                ).fetchall(),
+            )
+
+    before = vector_state()
+    embed_archive_session_sync(index_db, provider, session_id)
+
+    assert len(provider.calls) == 1, "an unchanged session must not reach the provider a second time"
+    assert vector_state() == before, "an unchanged second pass must not rewrite a single vector, meta, or ref row"
