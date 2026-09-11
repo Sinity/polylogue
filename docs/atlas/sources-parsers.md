@@ -31,11 +31,12 @@ must not reverse a public origin into a guessed provider
 - Parsing preserves structured tool-result outcome and exit-code fields;
   prose is not an outcome oracle.
 - Parser inference cannot overwrite a hook-authoritative lineage edge
-  (`polylogue/storage/sqlite/archive_tiers/write.py:4410-4470`).
+  (`polylogue/storage/sqlite/archive_tiers/write.py:4433-4455`).
 - Replaying identical normalized content is idempotent by content hash;
   user metadata does not alter import identity.
 - All ordinary ingest, replay, and reindex paths share the parsed-session
   write choke point.
+- Batch ingest keeps source membership and precedence checks read-only; its index publication and later source receipt consumption each use the selected archive root as their write authority (`polylogue/pipeline/services/ingest_batch/_core.py:157-184`; `polylogue/pipeline/services/ingest_batch/_core.py:1958-1968`; `polylogue/pipeline/services/ingest_batch/_core.py:2016-2033`).
 
 ## Gotchas
 
@@ -54,4 +55,4 @@ fixture. Follow the parsed object into
 contract from a surface serializer. The provider guides under
 `docs/providers/` explain format-specific caveats.
 
-verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11
+verified: f6df6366a 2026-09-11

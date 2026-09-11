@@ -30,8 +30,8 @@ Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not
 
 ## Parsed-session write choke point
 
-- `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (`polylogue/storage/sqlite/archive_tiers/write.py:574-730`).
-- It owns its transaction by default; bulk callers may explicitly own a surrounding transaction to amortize commits (`polylogue/storage/sqlite/archive_tiers/write.py:620-665`).
+- `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (`polylogue/storage/sqlite/archive_tiers/write.py:578-730`).
+- It owns its transaction by default; bulk callers may explicitly own a surrounding transaction to amortize commits (`polylogue/storage/sqlite/archive_tiers/write.py:625-629`).
 - This is the parsed-session lowering choke point for normal API writes, batch ingest, revision replay, and reindex paths. It is not the only mutation function in the six-tier substrate (`polylogue/storage/sqlite/archive_tiers/archive.py:1348-1375`; `polylogue/pipeline/services/ingest_batch/_core.py:1162-1195`; `polylogue/storage/sqlite/archive_tiers/revision_governance.py:409-430`).
 
 ## Blob publication, liveness, and GC
@@ -53,10 +53,10 @@ Pending generations are restartable; a restart resumes their exact member set in
 
 ## Lineage storage model
 
-- A prefix-sharing child stores only its divergent tail. The writer resolves the parent, compares composed signatures, records the last inherited message as the branch point, and lowers only the remaining messages (`polylogue/storage/sqlite/archive_tiers/write.py:731-812`; `polylogue/storage/sqlite/archive_tiers/write.py:6854-6886`).
+- A prefix-sharing child stores only its divergent tail. The writer resolves the parent, compares composed signatures, records the last inherited message as the branch point, and lowers only the remaining messages (`polylogue/storage/sqlite/archive_tiers/write.py:735-816`).
 - `session_links` stores destination identity, resolved parent, branch point, inheritance mode, status, method, confidence, and evidence (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:1118-1150`).
-- Reads recursively compose the parent through the branch point, with explicit depth-limit and dangling-branch-point status instead of silently claiming completeness (`polylogue/storage/sqlite/archive_tiers/write.py:1488-1555`).
-- Link writes refuse to let parser inference overwrite an existing hook-authoritative edge (`polylogue/storage/sqlite/archive_tiers/write.py:4410-4470`).
+- Reads recursively compose the parent through the branch point, with explicit depth-limit and dangling-branch-point status instead of silently claiming completeness (`polylogue/storage/sqlite/archive_tiers/write.py:1537-1565`).
+- Link writes refuse to let parser inference overwrite an existing hook-authoritative edge (`polylogue/storage/sqlite/archive_tiers/write.py:4433-4455`).
 
 ## Invariants and gotchas
 
@@ -72,4 +72,4 @@ Pending generations are restartable; a restart resumes their exact member set in
 - The repository contract omits the `n:` and `p:` namespaces from `messages.message_id`; the generated-column expression includes them (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:214-220`).
 - The repository contract and `docs/architecture.md` call embeddings simply rebuildable; runtime metadata classifies them as `expensive_rebuild` with backup required (`docs/architecture.md:54-56`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:58-63`).
 
-verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11
+verified: f6df6366a 2026-09-11

@@ -26,7 +26,7 @@ Use generated session, message, and block identities for exact reads. Use
 public `origin` filters, not provider-wire names. Lineage-aware reads compose
 parent prefixes and report depth-limit or dangling-branch-point status rather
 than silently claiming completeness
-(`polylogue/storage/sqlite/archive_tiers/write.py:1488-1555`).
+(`polylogue/storage/sqlite/archive_tiers/write.py:1537-1565`).
 
 ## Terminal outcome
 
@@ -69,4 +69,4 @@ cancellation coverage, then `devtools gate doc-commands` and the generated
 surface check. Use `devtools why` to inspect a managed verification refusal or
 failure before interpreting a receipt.
 
-verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11
+verified: f6df6366a 2026-09-11
