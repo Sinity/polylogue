@@ -122,10 +122,15 @@ async def test_selected_required_part_certifies_nonzero_work_event_and_phase_cou
     zero sibling counts and accepted maintenance cannot certify its full
     selected partition.
     """
-    archive = build_converged_archive(tmp_path / "archive", rich_convergence_sources(), session_order=(0,))
-    target_id = archive.session_ids[0]
-    before = session_materialization_facts(archive.root / "index.db", session_id=target_id)
-    assert before.work_events and before.phases
+    archive = build_converged_archive(tmp_path / "archive", rich_convergence_sources())
+    rich_families = tuple(
+        (session_id, facts)
+        for session_id in archive.session_ids
+        if (facts := session_materialization_facts(archive.root / "index.db", session_id=session_id)).work_events
+        and facts.phases
+    )
+    assert rich_families
+    target_id, before = rich_families[0]
     with sqlite3.connect(archive.root / "index.db") as conn:
         for table in ("session_work_events", "session_phases", "session_latency_profiles", "session_profiles"):
             conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (target_id,))

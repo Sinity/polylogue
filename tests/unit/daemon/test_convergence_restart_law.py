@@ -180,17 +180,19 @@ async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(
     )
     archive_frame = make_session_profile_frame(recovered.index_db, archive_root=recovered.root, scope=None)
     try:
-        # Inspection is the relevant whole-pass bound here: quiet deferral does
-        # not consume compute capacity, so a compute-only limit would correctly
-        # continue to the cold second page in this same pass.
-        first = await owner.converge(archive_frame, budget=Budget(page=1, inspection=1, compute=1))
+        # Discovery is the relevant pass bound: quiet deferral consumes no
+        # compute capacity, while an inspection limit stops before the quiet
+        # predicate is evaluated. One discovered page therefore captures the
+        # real no-hint continuation after the hot key was actually deferred.
+        first = await owner.converge(archive_frame, budget=Budget(page=1, discovery=1, compute=1))
         assert first.pending == 1
         assert first.done == 0
         assert session_materialization_facts(recovered.index_db, session_id=recovered.target_session_id).profile is None
         assert (
             session_materialization_facts(recovered.index_db, session_id=recovered.unrelated_session_id).profile is None
         )
-        assert converger._derivation_cursor.position("session_profile").page_cursor == recovered.target_session_id
+        archive_cursor = first.cursor
+        assert not archive_cursor.position("session_profile").swept
 
         recovered.make_target_quiet()
         targeted = await owner.converge(
@@ -207,9 +209,9 @@ async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(
             session_materialization_facts(recovered.index_db, session_id=recovered.target_session_id).profile
             is not None
         )
-        assert converger._derivation_cursor.position("session_profile").page_cursor == recovered.target_session_id
+        assert converger._derivation_cursor == archive_cursor
 
-        resumed = await owner.converge(archive_frame, budget=Budget(page=1, inspection=1, compute=1))
+        resumed = await owner.converge(archive_frame, budget=Budget(page=1, discovery=1, compute=1))
         assert resumed.done == 1
         assert resumed.pending == 0
         assert (
