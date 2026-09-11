@@ -3568,6 +3568,7 @@ def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path:
 
 def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.execution import BoundedComputeAdapter, reset_daemon_compute_adapter
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
@@ -3629,6 +3630,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
 
     def fake_operation_recovery(_archive_root_path: Path) -> None:
         events.append("operation-recovery")
+
+    def recording_converger(*args: object, **kwargs: object) -> DaemonConverger:
+        events.append("converger")
+        return DaemonConverger(*args, **kwargs)
 
     async def fake_loop(name: str) -> None:
         events.append(name)
@@ -3732,6 +3737,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         stack.enter_context(
             patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=())
         )
+        stack.enter_context(patch("polylogue.daemon.convergence.DaemonConverger", recording_converger))
         stack.enter_context(patch("polylogue.daemon.http.DaemonAPIHTTPServer", api_server_factory))
         stack.enter_context(patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event))
         stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
