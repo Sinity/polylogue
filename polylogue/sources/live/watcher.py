@@ -272,6 +272,10 @@ class _SourceTreeWalk:
             return False
 
 
+#: Directory names no watched root ever descends into.
+_DEFAULT_IGNORED_DIR_NAMES: frozenset[str] = frozenset({".git", "__pycache__", "node_modules", "venv", ".venv"})
+
+
 @dataclass(frozen=True, slots=True)
 class WatchSource:
     """A directory to watch for live session files."""
@@ -279,7 +283,7 @@ class WatchSource:
     name: str
     root: Path
     suffixes: tuple[str, ...] = (".jsonl",)
-    ignored_dir_names: frozenset[str] = frozenset({".git", "__pycache__", "node_modules", "venv", ".venv"})
+    ignored_dir_names: frozenset[str] = _DEFAULT_IGNORED_DIR_NAMES
     # Hook sources carry durable topology identity.  Ordinary sources retain
     # their historical name-only contract.
     source_id: str | None = None
@@ -2368,8 +2372,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
             name="claude-code-history",
             root=claude_code_path().parent,
             suffixes=(),
-            ignored_dir_names=WatchSource.__dataclass_fields__["ignored_dir_names"].default
-            | frozenset({"projects", "todos"}),
+            ignored_dir_names=_DEFAULT_IGNORED_DIR_NAMES | frozenset({"projects", "todos"}),
         ),
         WatchSource(name="codex", root=codex_path()),
         # polylogue-0jf4: Codex also keeps live SQLite state (thread titles,

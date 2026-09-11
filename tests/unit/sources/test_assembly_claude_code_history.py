@@ -340,8 +340,11 @@ def test_retained_claude_coordinates_follow_the_session_install(tmp_path: Path) 
     first = tmp_path / "install-a" / ".claude" / "projects" / "-p" / "s.jsonl"
     second = tmp_path / "install-b" / ".claude" / "projects" / "-p" / "s.jsonl"
 
-    first_index, first_history = claude_code_sidecar_coordinates(str(first))
-    second_index, second_history = claude_code_sidecar_coordinates(str(second))
+    first_coordinates = claude_code_sidecar_coordinates(str(first))
+    second_coordinates = claude_code_sidecar_coordinates(str(second))
+    assert first_coordinates is not None and second_coordinates is not None
+    first_index, first_history = first_coordinates
+    second_index, second_history = second_coordinates
 
     assert first_index == str(first.parent / "sessions-index.json")
     assert first_history == str(tmp_path / "install-a" / ".claude" / "history.jsonl")

@@ -81,9 +81,10 @@ def _source_rows(archive_root: Path, sql: str, params: tuple[object, ...] = ()) 
         conn.close()
 
 
-def _retained_bytes(archive_root: Path, blob_hash: bytes) -> bytes:
+def _retained_bytes(archive_root: Path, blob_hash: object) -> bytes:
     from polylogue.storage.blob_store import BlobStore
 
+    assert isinstance(blob_hash, bytes)
     return BlobStore(archive_root / "blob").read_all(blob_hash.hex())
 
 
@@ -259,12 +260,13 @@ async def test_same_basename_in_two_projects_stays_two_scoped_objects(
 
     await _acquire(workspace_env, _claude_source(root), discovered)
 
-    rows = dict(
-        _source_rows(
+    rows: dict[object, object] = {
+        row[0]: row[1]
+        for row in _source_rows(
             workspace_env["archive_root"],
             "SELECT source_path, blob_hash FROM raw_sessions ORDER BY source_path",
         )
-    )
+    }
     assert set(rows) == {str(first), str(second)}
     assert _retained_bytes(workspace_env["archive_root"], rows[str(first)]) == b"# x\n"
     assert _retained_bytes(workspace_env["archive_root"], rows[str(second)]) == b"# y\n"

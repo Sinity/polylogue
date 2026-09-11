@@ -486,7 +486,7 @@ async def test_claude_retained_index_is_scoped_to_its_own_install(blob_store: Bl
 
 
 def _write_chatgpt_export(root: Path) -> tuple[Path, Path, Path, Path]:
-    root.mkdir(parents=True)
+    root.mkdir(parents=True, exist_ok=True)
     asset = root / f"{_CHATGPT_ASSET_ID}.dat"
     asset.write_bytes(_CHATGPT_ASSET_BYTES)
     library = root / "library_files.json"
@@ -611,3 +611,32 @@ async def test_the_same_asset_id_in_two_exports_never_cross_binds(blob_store: Bl
     attachment = parsed.attachments[0]  # type: ignore[attr-defined]
     assert attachment.name != "diagram.png"
     assert attachment.precomputed_blob is None
+
+
+@pytest.mark.asyncio
+async def test_a_late_asset_map_resolves_on_the_next_convergence(blob_store: BlobStore, tmp_path: Path) -> None:
+    """Late metadata is an attributable outcome, then an ordinary resolution.
+
+    Convergence over the same retained conversation is idempotent and
+    re-reads the source tier, so an export map acquired after the
+    conversation resolves on the next pass instead of being permanently
+    missed. Before the map lands the resolution is explicitly unresolved,
+    which is what makes the second assertion non-vacuous.
+    """
+    archive_root = tmp_path / "archive"
+    root = tmp_path / "live" / "chatgpt-export"
+    root.mkdir(parents=True)
+    conversations = root / "conversations.json"
+    conversations.write_bytes(_chatgpt_export_document())
+
+    before = _chatgpt_replay(archive_root, blob_store, conversations)
+    assert before.attachments[0].name != "diagram.png"  # type: ignore[attr-defined]
+    assert before.attachments[0].precomputed_blob is None  # type: ignore[attr-defined]
+
+    asset, library, names, _conversations = await _acquire_chatgpt_export(archive_root, root)
+    for path in (asset, library, names, conversations):
+        path.unlink()
+
+    after = _chatgpt_replay(archive_root, blob_store, conversations)
+    assert after.attachments[0].name == "diagram.png"  # type: ignore[attr-defined]
+    assert after.attachments[0].precomputed_blob is not None  # type: ignore[attr-defined]
