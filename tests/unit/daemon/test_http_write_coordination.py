@@ -13,7 +13,7 @@ from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Protocol, cast
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -29,12 +29,6 @@ from tests.infra.daemon_operations import running_daemon_operations
 
 class _DeleteDaemonClient(DaemonClient):
     archive_root: Path
-
-
-class _OperationReplayServer(Protocol):
-    operation_ids_seen: set[str]
-    operation_results: dict[str, tuple[str, int, dict[str, object]]]
-    operation_ids_lock: threading.Lock
 
 
 class _RecordingBridge:
@@ -321,14 +315,18 @@ def test_matched_session_mutation_refuses_a_malformed_selection(
     _seed_delete_authority_archive(archive_root, 1)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        envelope = client.operation_to_completion(
-            "mutation.session.tag",
-            {"session_ids": [], "tags": ["triage"]},
-            archive_root=str(archive_root),
-        )
+        with patch.object(
+            client,
+            "_request_json_response",
+            side_effect=AssertionError("client-side payload validation must precede the daemon request"),
+        ):
+            with pytest.raises(ValueError, match="invalid SessionTagRequest payload"):
+                client.operation_to_completion(
+                    "mutation.session.tag",
+                    {"session_ids": [], "tags": ["triage"]},
+                    archive_root=str(archive_root),
+                )
 
-    assert envelope is not None
-    assert envelope["error"]["code"] == "invalid_request"
     assert _operation_runs(archive_root) == []
 
 
@@ -481,34 +479,43 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_
 def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A conflicting retry responds without replacing the accepted request.
+    """A conflicting retry maps the resident runtime rejection to HTTP 409.
 
-    Anti-vacuity: sending the duplicate error while ``operation_ids_lock`` is
-    held deadlocks because response recording needs that same lock.
+    Anti-vacuity: a legacy fake server without ``operation_runtime`` turns this
+    current conflict contract into an internal server error instead.
     """
-    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL, DaemonOperationRequest
+    from polylogue.daemon.execution import CancellationHandle
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+
+    class _OperationConflictRuntime:
+        def __init__(self) -> None:
+            self.calls: list[DaemonOperationRequest] = []
+
+        def call(
+            self,
+            request: DaemonOperationRequest,
+            principal: MutationPrincipal,
+            *,
+            client_disconnect: CancellationHandle | None = None,
+        ) -> dict[str, object]:
+            del principal, client_disconnect
+            self.calls.append(request)
+            return {
+                "outcome": "rejected",
+                "error": {"code": "request_identity_conflict", "retryable": False},
+            }
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-    (tmp_path / "index.db").write_bytes(b"index")
-    original = DaemonOperationRequest(
-        operation="status",
-        payload={},
-        request_id="request-id-reused",
-    )
     conflicting = DaemonOperationRequest(
         operation="completion",
         payload={"prefix": "x"},
         request_id="request-id-reused",
     )
-    request_id = original.request_id
-    assert request_id is not None
     body = json.dumps(conflicting.to_dict()).encode()
     handler = _operation_handler([], body)
-    accepted_payload: dict[str, object] = {"protocol": DAEMON_OPERATION_PROTOCOL, "request_id": request_id}
-    replay_server = cast(_OperationReplayServer, handler.server)
-    replay_server.operation_ids_seen = {request_id}
-    replay_server.operation_results = {request_id: (original.fingerprint, 200, accepted_payload)}
-    replay_server.operation_ids_lock = threading.Lock()
+    runtime = _OperationConflictRuntime()
+    object.__setattr__(handler.server, "operation_runtime", runtime)
     responses: list[tuple[HTTPStatus, object]] = []
     object.__setattr__(handler, "_send_json", lambda status, payload, **_kwargs: responses.append((status, payload)))
 
@@ -527,13 +534,13 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
     assert not thread.is_alive(), "conflicting duplicate request id deadlocked the machine endpoint"
     assert failure == []
     assert responses and responses[0][0] is HTTPStatus.CONFLICT
+    assert runtime.calls == [conflicting]
     response = responses[0][1]
     assert isinstance(response, dict)
     assert response["error"] == {
-        "code": "duplicate_request_id_conflict",
-        "detail": "request_id was already used for a different request",
+        "code": "request_identity_conflict",
+        "retryable": False,
     }
-    assert replay_server.operation_results[request_id] == (original.fingerprint, 200, accepted_payload)
 
 
 def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap(
@@ -608,25 +615,24 @@ def test_cli_delete_real_daemon_route_refuses_selection_beyond_preview_work_budg
 ) -> None:
     """The durable preview route must bound target work independently of request bytes.
 
-    This sends 10,001 ordinary IDs through the real UDS client and daemon
-    handler. Before the repair, the route entered the sole-writer gate and
-    attempted resolution until it encountered a stale ID, because no target
-    work budget existed. The repaired route rejects the request before any
-    archive lookup or durable preview write.
+    The typed UDS client rejects 10,001 IDs before opening a request because
+    the protocol contract caps this list at 10,000. This must happen before
+    any archive lookup or durable preview write.
     """
-    from polylogue.daemon_client import DaemonResponseError
-
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     _seed_delete_authority_archive(archive_root, 0)
     selection = [f"codex-session:over-budget-{index}" for index in range(10_001)]
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        with pytest.raises(DaemonResponseError) as error:
-            _delete_operation(client, "preview", {"session_ids": selection})
+        with patch.object(
+            client,
+            "_request_json_response",
+            side_effect=AssertionError("client-side payload validation must precede the daemon request"),
+        ):
+            with pytest.raises(ValueError, match="invalid DeletePreviewRequest payload"):
+                _delete_operation(client, "preview", {"session_ids": selection})
 
-    assert error.value.status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-    assert error.value.code == "selection_exceeds_preview_work_budget"
     with sqlite3.connect(archive_root / "audit.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM operation_previews").fetchone() == (0,)
 
