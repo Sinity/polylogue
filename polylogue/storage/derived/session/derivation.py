@@ -496,6 +496,7 @@ class SessionProfileDerivation:
 
         conn = self._read_connection()
         try:
+            conn.row_factory = sqlite3.Row
             prepared = prepare_session_insight_partition(conn, key)
         finally:
             conn.close()
