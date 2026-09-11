@@ -54,6 +54,38 @@ _F = TypeVar("_F", bound=Callable[..., object])
 _CONFIRMATION_STRENGTH_ORDER = {"role_only": 0, "confirm_flag": 1, "bound_token": 2}
 
 
+@dataclass(frozen=True, slots=True)
+class MachineRequestBinding:
+    """Authenticated exchange identity, without request content or credentials."""
+
+    archive_identity: str
+    request_id: str
+    principal_ref: str
+    fingerprint: str
+    operation_name: str
+
+    def __post_init__(self) -> None:
+        if not all((self.archive_identity, self.request_id, self.principal_ref, self.operation_name)):
+            raise ValueError("machine request binding requires archive, request, principal and operation")
+        if len(self.fingerprint) != 64 or any(c not in "0123456789abcdef" for c in self.fingerprint):
+            raise ValueError("machine request fingerprint must be a SHA-256 digest")
+
+    def to_dict(self) -> dict[str, str]:
+        return {field.name: str(getattr(self, field.name)) for field in fields(self)}
+
+
+class MachineRequestConflictError(ValueError):
+    """An exchange identifier was already bound to different authenticated intent."""
+
+
+class MachineRequestRecoveredError(RuntimeError):
+    """Stop dispatch when a durable exchange already owns the domain effect."""
+
+    def __init__(self, record: dict[str, object]) -> None:
+        super().__init__("machine request already has a durable domain reference")
+        self.record = record
+
+
 #: Terminal reasons that deliberately keep a finished run open to bounded
 #: operator adjudication.  ``recovery_unknown`` is the wedge a blocked
 #: classification installs; ``recovered_applied`` is the duplicate-effect
@@ -177,24 +209,40 @@ def _continuity_mutation(kind: str) -> Callable[[_F], _F]:
             # coordinator becomes mandatory as soon as both schema halves are
             # present.
             if not self._continuity.is_available():
+                if self._machine_binding is not None:
+                    raise RuntimeError("machine acceptance requires source-WAL audit continuity")
                 return method(self, *args, **kwargs)
+            payload = self._continuity_payload(kind, args, kwargs)
+            if self._machine_binding is not None and self._machine_binding[1] == kind:
+                binding = self._machine_binding[0]
+                prior = self.machine_request(binding)
+                if prior is not None:
+                    raise MachineRequestRecoveredError(prior)
+                payload["machine_request"] = binding.to_dict()
+                if self._before_machine_prepare is not None:
+                    self._before_machine_prepare()
             mutation = AuditMutation(
                 kind=kind,
                 mutation_id=f"audit-mutation:{secrets.token_urlsafe(18)}",
                 created_at_ms=int(time.time() * 1000),
-                payload=self._continuity_payload(kind, args, kwargs),
+                payload=payload,
             )
 
             def apply(conn: sqlite3.Connection, _mutation: AuditMutation) -> object:
                 self._coordinated_connection = conn
                 self._coordinated_mutation = _mutation
                 try:
-                    return method(self, *args, **kwargs)
+                    result = method(self, *args, **kwargs)
+                    self._bind_machine_result(conn, _mutation, result)
+                    return result
                 finally:
                     self._coordinated_mutation = None
                     self._coordinated_connection = None
 
-            return self._continuity.execute(mutation, apply)
+            result = self._continuity.execute(mutation, apply)
+            if self._on_commit is not None:
+                self._on_commit()
+            return result
 
         return cast(_F, wrapped)
 
@@ -410,12 +458,143 @@ def _receipt_from_payload(raw: object) -> MutationReceipt:
 class AuditRepository:
     """Small synchronous repository whose methods make audit transactions explicit."""
 
-    def __init__(self, path: Path, *, attempt_owner_id: str | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        attempt_owner_id: str | None = None,
+        before_machine_prepare: Callable[[], None] | None = None,
+        on_commit: Callable[[], None] | None = None,
+    ) -> None:
         self.path = path
         self._attempt_owner_id = attempt_owner_id
         self._continuity = AuditContinuityCoordinator(path.parent)
         self._coordinated_connection: sqlite3.Connection | None = None
         self._coordinated_mutation: AuditMutation | None = None
+        self._machine_binding: tuple[MachineRequestBinding, str] | None = None
+        self._before_machine_prepare = before_machine_prepare
+        self._on_commit = on_commit
+
+    @contextmanager
+    def bind_machine_request(self, binding: MachineRequestBinding, *, transition: str) -> Iterator[None]:
+        """Bind exactly one domain transition in its existing continuity transaction."""
+
+        if transition not in {
+            "create_preview",
+            "issue_authorization",
+            "consume_authorization_and_start",
+            "cancel_preview",
+        }:
+            raise ValueError("machine request must bind a declared audit authority transition")
+        if self._machine_binding is not None:
+            raise RuntimeError("machine request binding scopes cannot overlap")
+        self._machine_binding = (binding, transition)
+        try:
+            yield
+        finally:
+            self._machine_binding = None
+
+    def machine_request(self, binding: MachineRequestBinding) -> dict[str, object] | None:
+        """Recover the immutable domain reference and reject conflicting reuse."""
+
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM machine_requests WHERE archive_identity = ? AND request_id = ?",
+                (binding.archive_identity, binding.request_id),
+            ).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        if any(record[key] != value for key, value in binding.to_dict().items()):
+            raise MachineRequestConflictError("request id is bound to another principal or intent")
+        return record
+
+    def preview_for_principal(self, preview_ref: str, principal: MutationPrincipal) -> MutationPreview:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT plan_json, principal_actor_ref, principal_surface FROM operation_previews WHERE preview_id = ?",
+                (preview_ref,),
+            ).fetchone()
+        if row is None or row[1] != principal.actor_ref or row[2] != principal.surface:
+            raise AuthorizationMismatchError("preview does not belong to the authenticated principal")
+        return MutationPreview(preview_ref=preview_ref, plan=_plan_from_payload(json.loads(row[0])))
+
+    def authorization_for_principal(
+        self, authorization_ref: str, principal: MutationPrincipal
+    ) -> tuple[MutationPreview, MutationAuthorization]:
+        """Resolve authenticated durable authority without reconstructing a bearer token."""
+
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM operation_authorizations WHERE authorization_id = ?", (authorization_ref,)
+            ).fetchone()
+            if row is None or row["actor_ref"] != principal.actor_ref or row["surface"] != principal.surface:
+                raise AuthorizationMismatchError("authorization does not belong to the authenticated principal")
+            capabilities = tuple(
+                str(item[0])
+                for item in conn.execute(
+                    "SELECT capability FROM operation_authorization_capabilities WHERE authorization_id = ? ORDER BY capability",
+                    (authorization_ref,),
+                )
+            )
+            if not set(capabilities).issubset(principal.capabilities):
+                raise AuthorizationMismatchError("authenticated principal no longer has authorization capabilities")
+            record = dict(row)
+        preview = self.preview_for_principal(str(record["preview_id"]), principal)
+        authorization = MutationAuthorization(
+            plan_hash=preview.plan.plan_hash,
+            actor=principal.actor_ref,
+            role=str(record["role_label"] or ""),
+            capability=capabilities[0] if capabilities else "",
+            confirmation_strength=cast(Any, record["confirmation_strength"]),
+            authorized_at=str(record["issued_at_ms"]),
+            preview_ref=preview.preview_ref,
+            authorization_id=authorization_ref,
+            token=None,
+            expires_at_ms=int(cast(int, record["expires_at_ms"])),
+            capabilities=capabilities,
+            surface=principal.surface,
+        )
+        return preview, authorization
+
+    @staticmethod
+    def _bind_machine_result(conn: sqlite3.Connection, mutation: AuditMutation, result: object) -> None:
+        raw = mutation.payload.get("machine_request")
+        if raw is None:
+            return
+        binding = MachineRequestBinding(**cast(dict[str, str], raw))
+        plan = cast(
+            dict[str, object],
+            mutation.payload.get("plan") or cast(dict[str, object], mutation.payload["preview"])["plan"],
+        )
+        principal = mutation.payload.get("principal") or mutation.payload.get("authorization")
+        if not isinstance(principal, dict):
+            if mutation.kind != "cancel_preview":
+                raise RuntimeError("machine acceptance lacks authenticated authority")
+        elif (principal.get("actor_ref") or principal.get("actor")) != binding.principal_ref:
+            raise MachineRequestConflictError("machine binding principal does not own the domain transition")
+        if plan["archive_identity_digest"] != binding.archive_identity:
+            raise MachineRequestConflictError("machine binding archive differs from domain authority")
+        kinds = {
+            "create_preview": "preview",
+            "issue_authorization": "authorization",
+            "consume_authorization_and_start": "operation",
+            "cancel_preview": "cancelled-preview",
+        }
+        artifact = result
+        if mutation.kind == "cancel_preview":
+            artifact = cast(dict[str, object], mutation.payload["preview"])["preview_ref"]
+        if artifact is None:
+            return  # Expired authorization has no accepted domain execution.
+        if not isinstance(artifact, str) or mutation.kind not in kinds:
+            raise RuntimeError("machine acceptance requires a typed domain reference")
+        conn.execute(
+            """INSERT INTO machine_requests(
+                archive_identity, request_id, principal_ref, fingerprint, operation_name,
+                artifact_kind, artifact_ref, accepted_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (*binding.to_dict().values(), kinds[mutation.kind], artifact, mutation.created_at_ms),
+        )
 
     @classmethod
     def for_archive_root(cls, archive_root: Path, *, attempt_owner_id: str | None = None) -> AuditRepository:
@@ -521,7 +700,12 @@ class AuditRepository:
                 "attempt_owner_id": self._attempt_owner_id,
                 "now_ms": int(time.time() * 1000),
                 "preview": _preview_payload(preview),
-                "authorization": _authorization_payload(authorization),
+                "authorization": {
+                    **_authorization_payload(authorization),
+                    "token_sha256": args[0].value
+                    if isinstance(args[0], _StoredAuthorizationDigest)
+                    else token_sha256(cast(str, authorization.token)),
+                },
             }
         if kind == "mark_preview_stale":
             return {"preview": _preview_payload(cast(MutationPreview, args[0]))}
@@ -571,6 +755,11 @@ class AuditRepository:
         raise RuntimeError(f"unregistered audit continuity mutation {kind!r}")
 
     def _replay_pending_mutation(self, conn: sqlite3.Connection, mutation: AuditMutation) -> object:
+        result = self._replay_domain_mutation(conn, mutation)
+        self._bind_machine_result(conn, mutation, result)
+        return result
+
+    def _replay_domain_mutation(self, conn: sqlite3.Connection, mutation: AuditMutation) -> object:
         """Replay the stored typed command without allocating fresh ids or clocks."""
 
         payload = mutation.payload
@@ -732,14 +921,7 @@ class AuditRepository:
                     plan.expires_at_ms,
                     json.dumps(
                         {
-                            "operation": plan.operation,
-                            "operation_version": plan.operation_version,
-                            "archive_instance_id": plan.archive_instance_id,
-                            "archive_identity_digest": plan.archive_identity_digest,
-                            "parameter_digest": plan.parameter_digest,
-                            "target_digest": plan.target_digest,
-                            "target_refs": list(plan.target_refs),
-                            "affected_tiers": list(plan.affected_tiers),
+                            **_replay_plan_payload(plan),
                             "context": dict(plan.context),
                         },
                         sort_keys=True,
@@ -974,9 +1156,20 @@ class AuditRepository:
         """Consume a token and create run, targets, and initial attempt atomically."""
 
         if authorization.token is None:
-            raise ValueError("authorization token is missing")
+            if authorization.authorization_id is None:
+                raise ValueError("authorization token or durable reference is missing")
+            with self._connection() as conn:
+                row = conn.execute(
+                    "SELECT token_sha256 FROM operation_authorizations WHERE authorization_id = ?",
+                    (authorization.authorization_id,),
+                ).fetchone()
+            if row is None:
+                raise AuthorizationMismatchError("authorization reference is unknown")
+            digest = str(row[0])
+        else:
+            digest = token_sha256(authorization.token)
         operation_id = self._consume_authorization_and_start(
-            _StoredAuthorizationDigest(token_sha256(authorization.token)),
+            _StoredAuthorizationDigest(digest),
             preview,
             authorization,
         )

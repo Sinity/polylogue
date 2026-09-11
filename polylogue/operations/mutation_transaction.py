@@ -851,9 +851,11 @@ class OperationExecutor:
 
         binding.validate()
         validate_mutation_plan_integrity(preview.plan)
-        if authorization.preview_ref != preview.preview_ref or authorization.token is None:
+        if authorization.preview_ref != preview.preview_ref or (
+            authorization.token is None and (self._audit is None or authorization.authorization_id is None)
+        ):
             raise AuthorizationMismatchError("authorization is not bound to this preview")
-        issued = self._issued_authorizations.get(authorization.token)
+        issued = self._issued_authorizations.get(authorization.token or "")
         if self._audit is None and (issued is None or issued != authorization):
             raise AuthorizationMismatchError("authorization token was not issued for this executor")
         if (
@@ -893,7 +895,7 @@ class OperationExecutor:
         # Tokens are one-shot even for daemonless/library executors. Durable
         # audit rows enforce this in production; this local consume closes
         # the equivalent replay path when no audit repository is configured.
-        self._issued_authorizations.pop(authorization.token, None)
+        self._issued_authorizations.pop(authorization.token or "", None)
         if self._audit is not None:
             self._recover_overlapping_operations(binding.actuator, args, fresh_plan)
             # polylogue-39pdi: the ``recovered_applied`` barrier records that a
@@ -1166,7 +1168,10 @@ class OperationExecutor:
         if (
             plan.targets
             and plan.destructive_class in {"reset", "delete", "excise"}
-            and (authorization.token is None or authorization.confirmation_strength != "bound_token")
+            and (
+                (authorization.token is None and not self._prevalidated_executions.get())
+                or authorization.confirmation_strength != "bound_token"
+            )
         ):
             raise ConfirmationRequiredError("destructive execution requires a bound preview token")
         if authorization.plan_hash != plan.plan_hash:

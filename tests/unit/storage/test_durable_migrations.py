@@ -25,6 +25,7 @@ from polylogue.storage.backup_attestation import (
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite import migration_runner
+from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL, AUDIT_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL, SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -338,6 +339,72 @@ def _create_source_v1(path: Path) -> None:
             """
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _create_audit_v2(path: Path) -> None:
+    """Create the exact pre-machine-request durable audit tier."""
+
+    path.unlink(missing_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        # Start from the canonical DDL so this fixture remains representative
+        # of the current authority journal, then remove only the v3 rider.
+        conn.executescript(AUDIT_DDL)
+        conn.execute("DROP INDEX IF EXISTS idx_machine_requests_artifact")
+        conn.execute("DROP TABLE IF EXISTS machine_requests")
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _audit_schema_sql(conn: sqlite3.Connection) -> tuple[tuple[object, ...], ...]:
+    rows = conn.execute(
+        """
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_schema
+        WHERE name NOT LIKE 'sqlite_%'
+        ORDER BY type, name
+        """
+    ).fetchall()
+    return tuple((row[0], row[1], row[2], _normalize_schema_sql(str(row[3]))) for row in rows)
+
+
+def test_audit_tier_v2_migrates_to_current_with_verified_backup_and_fresh_ddl_parity(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_path = workspace_env["archive_root"] / "audit.db"
+    _create_audit_v2(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(MigrationError, match="verified backup manifest"):
+            migrate_archive_tier(conn, ArchiveTier.AUDIT, backup_manifest=None)
+        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
+
+    manifest = _verified_backup_manifest(tmp_path / "audit-backup", profile="user_overlays")
+    conn = sqlite3.connect(db_path)
+    try:
+        result = migrate_archive_tier(conn, ArchiveTier.AUDIT, backup_manifest=manifest)
+        assert result.from_version == 2
+        assert result.to_version == AUDIT_SCHEMA_VERSION == 3
+        assert result.applied_versions == (3,)
+        assert result.backup_receipt == manifest.with_name("verification-receipt.json")
+        assert conn.execute("PRAGMA user_version").fetchone() == (3,)
+        assert conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'machine_requests'"
+        ).fetchone() == ("machine_requests",)
+        assert conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'idx_machine_requests_artifact'"
+        ).fetchone() == ("idx_machine_requests_artifact",)
+
+        fresh_db = tmp_path / "fresh-audit-v3.db"
+        initialize_archive_database(fresh_db, ArchiveTier.AUDIT)
+        with sqlite3.connect(fresh_db) as fresh_conn:
+            assert fresh_conn.execute("PRAGMA user_version").fetchone() == (3,)
+            assert _audit_schema_sql(conn) == _audit_schema_sql(fresh_conn)
     finally:
         conn.close()
 

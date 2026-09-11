@@ -8,7 +8,23 @@ from __future__ import annotations
 
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-AUDIT_SCHEMA_VERSION = 2
+AUDIT_SCHEMA_VERSION = 3
+
+MACHINE_REQUEST_DDL = """
+CREATE TABLE IF NOT EXISTS machine_requests (
+    archive_identity TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    principal_ref TEXT NOT NULL,
+    fingerprint TEXT NOT NULL CHECK(length(fingerprint) = 64),
+    operation_name TEXT NOT NULL,
+    artifact_kind TEXT NOT NULL,
+    artifact_ref TEXT NOT NULL,
+    accepted_at_ms INTEGER NOT NULL CHECK(accepted_at_ms >= 0),
+    PRIMARY KEY(archive_identity, request_id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_machine_requests_artifact
+ON machine_requests(artifact_kind, artifact_ref);
+"""
 
 AUDIT_DDL = """
 CREATE TABLE IF NOT EXISTS archive_authority (
@@ -233,5 +249,6 @@ INSERT OR IGNORE INTO audit_continuity_head(
 """
 
 AUDIT_DDL = AUDIT_DDL.replace("__AUDIT_CONTINUITY_GENESIS_HEAD__", AUDIT_CONTINUITY_GENESIS_HEAD_SHA256)
+AUDIT_DDL += MACHINE_REQUEST_DDL
 
 __all__ = ["AUDIT_DDL", "AUDIT_SCHEMA_VERSION"]

@@ -16,6 +16,9 @@ from pydantic import BaseModel
 
 from polylogue.operations.audit import (
     AuditRepository,
+    MachineRequestBinding,
+    MachineRequestConflictError,
+    MachineRequestRecoveredError,
     _attempt_owner_is_live,
     _attempt_owner_liveness,
     _current_process_attempt_owner,
@@ -219,6 +222,94 @@ def _principal() -> MutationPrincipal:
 def _audit(tmp_path: Path) -> AuditRepository:
     bootstrap_archive_root(tmp_path)
     return AuditRepository.for_archive_root(tmp_path)
+
+
+@pytest.mark.parametrize("crash_phase", ["after_source_prepare", "after_audit_commit"])
+def test_machine_request_and_domain_run_replay_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash_phase: str
+) -> None:
+    """Removing the binding from the prepared command loses the exchange after restart."""
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "synthetic-private-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:fixture",
+        archive_identity_digest="identity:fixture",
+        parameter_digest="params:fixture",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    binding = MachineRequestBinding("identity:fixture", "request:fixture", "actor:test", "a" * 64, "mutation.fixture")
+    original_phase = AuditContinuityCoordinator._phase
+
+    def crash(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "consume_authorization_and_start" and phase == crash_phase:
+            raise RuntimeError("synthetic machine acceptance crash")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", crash)
+    with audit.bind_machine_request(binding, transition="consume_authorization_and_start"):
+        with pytest.raises(RuntimeError, match="machine acceptance crash"):
+            executor.execute_bound(_binding(actuator), preview, authorization, object())
+    assert actuator.calls == 0
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+    recovered = AuditRepository.for_archive_root(tmp_path)
+    recovered.reconcile_continuity()
+    record = recovered.machine_request(binding)
+    assert record is not None
+    assert record["artifact_kind"] == "operation"
+    operation = recovered.get_operation(str(record["artifact_ref"]))
+    assert operation is not None and operation["preview_id"] == preview.preview_ref
+    with recovered.bind_machine_request(binding, transition="consume_authorization_and_start"):
+        with pytest.raises(MachineRequestRecoveredError):
+            recovered.consume_authorization_and_start(preview, authorization)
+    with pytest.raises(MachineRequestConflictError):
+        recovered.machine_request(replace(binding, fingerprint="b" * 64))
+    with pytest.raises(MachineRequestConflictError):
+        recovered.machine_request(replace(binding, principal_ref="actor:other"))
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM operation_runs").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM machine_requests").fetchone()[0] == 1
+        assert "synthetic-private-token" not in "\n".join(conn.iterdump())
+
+
+def test_authenticated_authorization_reference_survives_restart_and_is_one_shot(tmp_path: Path) -> None:
+    """Dropping principal/capability checks or consuming a second time must fail."""
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit)
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:fixture",
+        archive_identity_digest="identity:fixture",
+        parameter_digest="params:fixture",
+    )
+    issued = executor.authorize_bound(_binding(actuator), preview, _principal())
+    assert issued.authorization_id is not None
+    recovered = AuditRepository.for_archive_root(tmp_path)
+    for principal in (
+        replace(_principal(), actor_ref="actor:other"),
+        replace(_principal(), capabilities=frozenset()),
+        replace(_principal(), surface="api"),
+    ):
+        with pytest.raises(AuthorizationMismatchError):
+            recovered.authorization_for_principal(issued.authorization_id, principal)
+    restored_preview, restored = recovered.authorization_for_principal(issued.authorization_id, _principal())
+    assert restored.token is None
+    assert restored_preview.plan.plan_hash == preview.plan.plan_hash
+    assert restored.expires_at_ms == issued.expires_at_ms
+    resumed = OperationExecutor(audit=recovered)
+    receipt = resumed.execute_bound(_binding(actuator), restored_preview, restored, object())
+    assert receipt.status == "applied" and actuator.calls == 1
+    with pytest.raises(TokenConsumedError):
+        resumed.execute_bound(_binding(actuator), restored_preview, restored, object())
+    assert actuator.calls == 1
 
 
 def test_token_is_digest_only_and_consumption_run_attempt_are_atomic(tmp_path: Path) -> None:
