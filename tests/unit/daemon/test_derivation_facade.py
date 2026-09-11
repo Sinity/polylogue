@@ -25,6 +25,8 @@ from polylogue.daemon.derivation import (
     Budget,
     DerivationFrame,
     DerivationKey,
+    Outcome,
+    PendingReason,
     Replacement,
 )
 from polylogue.daemon.execution import BoundedComputeAdapter
@@ -102,6 +104,36 @@ def test_the_facade_routes_only_publication_through_the_owner_admission() -> Non
 
     assert converger.converge_derivations(FRAME, publisher=publisher).done == 2
     assert admissions == ["strings", "strings"]
+
+
+def test_a_required_key_that_disappears_after_discovery_is_binding_moved() -> None:
+    """Correct retirement during a required pass is pending, not a false failure.
+
+    Anti-vacuity: classify a post-publish MISSING relation as FAILED and this
+    loses the retryable moved-input distinction although the old output was
+    correctly removed.
+    """
+
+    class VanishingDerivation(BaseDerivation):
+        domain = "vanishing"
+        prerequisites: tuple[str, ...] = ()
+
+        def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
+            return ("gone",)
+
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, str]:
+            return dict.fromkeys(keys, "missing")
+
+        def compute(self, frame: DerivationFrame, key: str) -> Replacement:
+            return Replacement(key=DerivationKey(self.domain, key), input_binding="before", payload=key)
+
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            return True
+
+    report = DaemonConverger([], derivations=[VanishingDerivation()]).converge_derivations(FRAME)
+    outcome = report.by_outcome(Outcome.PENDING)
+    assert len(outcome) == 1
+    assert outcome[0].reason is PendingReason.BINDING_MOVED
 
 
 @pytest.mark.asyncio

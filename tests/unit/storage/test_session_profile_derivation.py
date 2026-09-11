@@ -490,6 +490,42 @@ def test_marker_recovery_retries_without_replacing_a_valid_index_partition(
         ).fetchone() == ("user", "keep")
 
 
+def test_prepared_generation_refuses_when_the_active_anchor_promotes(
+    archive: tuple[Path, str],
+) -> None:
+    """A prepared partition cannot publish through a promoted index anchor.
+
+    Anti-vacuity: freeze ``index_db_path.resolve()`` in the factory or omit
+    the generation checks and this writes the prepared family after its
+    admitted generation has been retired.
+    """
+    from polylogue.daemon.derivation import DerivationFrame
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+
+    index_db, session_id = archive
+    active_generation = {"path": str(index_db.resolve())}
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+        generation_binding=lambda: active_generation["path"],
+    )
+    frame = DerivationFrame(
+        archive_root=str(index_db.parent),
+        source_revision=f"index-generation:{index_db.resolve()}",
+        scope=(session_id,),
+    )
+    prepared = adapter.compute(frame, session_id)
+    active_generation["path"] = "retired-generation"
+
+    assert adapter.publish(frame, prepared) is False
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
+        )
+
+
 def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path, str]) -> None:
     """Policy deferral leaves the profile absent and the key rediscoverable."""
     from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, Outcome, PendingReason, converge

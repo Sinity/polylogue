@@ -934,6 +934,20 @@ class _Pass:
                 )
             )
             return
+        if after is KeyStatus.MISSING and expected is KeyStatus.VALID:
+            # A required key may disappear after discovery while its prepared
+            # publisher correctly retires the old partition.  That is a moved
+            # binding, not a failed write: a future no-hint sweep decides
+            # whether a later admission recreated the key.
+            self.record(
+                KeyOutcome(
+                    key=derivation_key,
+                    outcome=Outcome.PENDING,
+                    reason=PendingReason.BINDING_MOVED,
+                    elapsed_s=elapsed,
+                )
+            )
+            return
         if after is not expected:
             self.record(
                 KeyOutcome(
