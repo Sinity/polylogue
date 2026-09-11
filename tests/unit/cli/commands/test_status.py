@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
+from typing import Literal, TypedDict, cast
 
 import pytest
 
@@ -25,16 +25,54 @@ from polylogue.storage.archive_readiness import (
     _action_readiness_counts,
     _archive_readiness_counts,
     _archive_status_surfaces,
-    _column_exists,
     _fast_count,
-    _table_exists,
     _view_exists,
     probe_archive_tier,
 )
+from polylogue.storage.introspection import column_exists as _column_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
+
+
+class _ArchiveTierResult(TypedDict):
+    table_counts: dict[str, int]
+    table_count_precision: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _ArchiveFixture:
+    archive_root: Path
+    operation_schema_versions: dict[str, int]
+
+
+class _ArchiveStats(TypedDict):
+    total_sessions: int
+    total_messages: int
+
+
+class _DirectStatusPayload(TypedDict):
+    archive_stats: _ArchiveStats
+    archive_tiers: dict[str, _ArchiveTierResult]
+
+
+_DaemonTierName = Literal["source", "index", "embeddings", "user", "ops"]
+
+
+def _archive_fixture(root: Path, version: int) -> ArchiveStore:
+    return cast(
+        ArchiveStore,
+        _ArchiveFixture(archive_root=root, operation_schema_versions={"index": version}),
+    )
+
+
+def _daemon_tier_name(value: str) -> _DaemonTierName:
+    """Adapt the all-tier fixture vocabulary to the daemon helper contract."""
+
+    return cast(_DaemonTierName, value)
 
 
 class TestDefaultDaemonUrl:
@@ -341,11 +379,10 @@ class TestArchiveTableCounts:
             conn.execute("INSERT INTO sessions VALUES (1), (2)")
             conn.execute("INSERT INTO messages VALUES (1), (2), (3)")
             conn.commit()
-            archive = SimpleNamespace(
-                archive_root=tmp_path,
-                operation_schema_versions={"index": ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]},
+            result = cast(
+                _ArchiveTierResult,
+                _archive_tiers(_archive_fixture(tmp_path, ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]), conn)["index"],
             )
-            result = _archive_tiers(archive, conn)["index"]
             assert result["table_counts"]["sessions"] == 2
             assert result["table_counts"]["messages"] == 3
             assert result["table_count_precision"] == {"sessions": "exact", "messages": "exact"}
@@ -360,11 +397,10 @@ class TestArchiveTableCounts:
             conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
             conn.execute("INSERT INTO sessions VALUES (1)")
             conn.commit()
-            archive = SimpleNamespace(
-                archive_root=tmp_path,
-                operation_schema_versions={"index": ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]},
+            result = cast(
+                _ArchiveTierResult,
+                _archive_tiers(_archive_fixture(tmp_path, ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]), conn)["index"],
             )
-            result = _archive_tiers(archive, conn)["index"]
             assert "sessions" in result["table_counts"]
             assert "nonexistent" not in result["table_counts"]
             assert "missing" not in result["table_counts"]
@@ -429,13 +465,10 @@ class TestArchiveOneTierStatus:
         conn.execute("INSERT INTO messages VALUES (1)")
         conn.commit()
 
-        archive = SimpleNamespace(
-            archive_root=tmp_path,
-            operation_schema_versions={"index": expected_version},
-        )
-        result = _archive_tiers(archive, conn)
-        assert result["index"]["table_counts"]["sessions"] == 2
-        assert result["index"]["table_counts"]["messages"] == 1
+        result = _archive_tiers(_archive_fixture(tmp_path, expected_version), conn)
+        index_result = cast(_ArchiveTierResult, result["index"])
+        assert index_result["table_counts"]["sessions"] == 2
+        assert index_result["table_counts"]["messages"] == 1
 
 
 class TestArchiveOneTierStatusDaemonParity:
@@ -505,7 +538,11 @@ class TestArchiveTierStatus:
         from polylogue.daemon.status import _archive_tier_status
 
         return {
-            tier.value: _archive_tier_status(tier.value, root / f"{tier.value}.db").model_dump() for tier in ArchiveTier
+            tier.value: _archive_tier_status(
+                _daemon_tier_name(tier.value),
+                root / f"{tier.value}.db",
+            ).model_dump()
+            for tier in ArchiveTier
         }
 
     def test_returns_status_for_all_tiers(self, tmp_path: Path) -> None:
@@ -541,14 +578,14 @@ class TestDirectArchiveCounts:
     """Canonical direct OperationResult retains archive workload counts."""
 
     @staticmethod
-    def _status_result(root: Path) -> dict[str, object]:
+    def _status_result(root: Path) -> _DirectStatusPayload:
         from polylogue.cli.operation_kernel import configured_read_operation
         from polylogue.config import Config
 
         config = Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "index.db")
         result = configured_read_operation(config, "status", {}, daemon_disabled=True)
         assert result.operation == "status"
-        return cast(dict[str, object], result.value)
+        return cast(_DirectStatusPayload, result.value)
 
     def test_empty_archive_returns_zeros(self, tmp_path: Path) -> None:
         """Archive with no sessions returns zeros."""

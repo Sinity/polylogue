@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
+from typing import TypedDict, cast
 
+from polylogue.config import Config
 from polylogue.operations.daemon_reads import (
     DaemonReadDependencies,
     execute_read_operation,
@@ -13,6 +14,7 @@ from polylogue.operations.daemon_reads import (
     vector_binding_from_config,
 )
 from polylogue.operations.operation_context import open_operation_read
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
 
@@ -27,26 +29,99 @@ class _Archive:
         return _Stats()
 
 
+@dataclass(frozen=True)
+class _IndexConfig:
+    voyage_api_key: str | None
+
+
+@dataclass(frozen=True)
+class _VectorConfig:
+    index_config: _IndexConfig | None
+    embedding_model: str
+    embedding_dimension: int
+
+
+class _ArchiveStatsPayload(TypedDict):
+    total_sessions: int
+
+
+class _RawMaterializationPayload(TypedDict):
+    available: bool
+
+
+class _ObservationFields(TypedDict):
+    fields: list[str]
+
+
+class _RuntimeObservation(TypedDict):
+    checked_at: str
+    fields: list[str]
+
+
+class _StatusObservations(TypedDict):
+    archive: _ObservationFields
+    runtime: _RuntimeObservation
+
+
+class _StatusResult(TypedDict):
+    daemon_liveness: bool
+    browser_capture_active: bool
+    total_sessions: int
+    archive_stats: _ArchiveStatsPayload
+    raw_parse_failures: int
+    raw_materialization_readiness: _RawMaterializationPayload
+    status_observations: _StatusObservations
+
+
+class _CompletionCandidate(TypedDict):
+    value: str
+
+
+class _CompletionPayload(TypedDict):
+    kind: str
+    incomplete: str
+    candidates: list[_CompletionCandidate]
+
+
+class _CompletionResult(TypedDict):
+    query_completions: _CompletionPayload
+
+
+class _Outcome(TypedDict):
+    state: str
+
+
+class _SearchResult(TypedDict):
+    outcome: _Outcome
+    requested_lanes: list[str]
+    executed_lanes: list[str]
+    unavailable_lanes: list[str]
+    failed_lanes: list[str]
+
+
 def test_status_preserves_runtime_contract_without_using_cached_archive_evidence(tmp_path: Path) -> None:
     """Mutation: merge the cached snapshot last and stale archive facts win."""
     bootstrap_archive_root(tmp_path)
     with open_operation_read(tmp_path) as pinned:
-        result = execute_read_operation(
-            "status",
-            {},
-            archive=pinned.archive,
-            serving_identity="daemon",
-            dependencies=DaemonReadDependencies(
-                status_now_ms=1_700_000_000_000,
-                runtime_status={
-                    "ok": True,
-                    "daemon_liveness": True,
-                    "total_sessions": 99,
-                    "raw_parse_failures": 88,
-                    "raw_materialization_readiness": {"available": False},
-                    "checked_at": "2023-11-14T22:13:19Z",
-                    "browser_capture_active": True,
-                },
+        result = cast(
+            _StatusResult,
+            execute_read_operation(
+                "status",
+                {},
+                archive=pinned.archive,
+                serving_identity="daemon",
+                dependencies=DaemonReadDependencies(
+                    status_now_ms=1_700_000_000_000,
+                    runtime_status={
+                        "ok": True,
+                        "daemon_liveness": True,
+                        "total_sessions": 99,
+                        "raw_parse_failures": 88,
+                        "raw_materialization_readiness": {"available": False},
+                        "checked_at": "2023-11-14T22:13:19Z",
+                        "browser_capture_active": True,
+                    },
+                ),
             ),
         )
 
@@ -63,11 +138,14 @@ def test_status_preserves_runtime_contract_without_using_cached_archive_evidence
 
 
 def test_completion_is_the_existing_public_completion_envelope() -> None:
-    result = execute_read_operation(
-        "completion",
-        {"kind": "field", "incomplete": "orig"},
-        archive=_Archive(),  # type: ignore[arg-type]
-        serving_identity="daemon",
+    result = cast(
+        _CompletionResult,
+        execute_read_operation(
+            "completion",
+            {"kind": "field", "incomplete": "orig"},
+            archive=cast(ArchiveStore, _Archive()),
+            serving_identity="daemon",
+        ),
     )
 
     completion = result["query_completions"]
@@ -95,19 +173,22 @@ def test_vector_snapshot_requirement_uses_the_canonical_cli_lowering() -> None:
 def test_vector_binding_uses_only_explicit_resolved_config_values() -> None:
     """Mutation: fall back to ambient configuration and this misses the configured model."""
 
-    config = SimpleNamespace(
-        index_config=SimpleNamespace(voyage_api_key="test-voyage-key"),
+    config = _VectorConfig(
+        index_config=_IndexConfig(voyage_api_key="test-voyage-key"),
         embedding_model="voyage-3-lite",
         embedding_dimension=512,
     )
 
-    binding = vector_binding_from_config(config)  # type: ignore[arg-type]
+    binding = vector_binding_from_config(cast(Config, config))
 
     assert binding is not None
     assert (binding.voyage_key, binding.model, binding.dimension) == ("test-voyage-key", "voyage-3-lite", 512)
     assert (
         vector_binding_from_config(
-            SimpleNamespace(index_config=None, embedding_model="voyage-4-lite", embedding_dimension=1024)  # type: ignore[arg-type]
+            cast(
+                Config,
+                _VectorConfig(index_config=None, embedding_model="voyage-4-lite", embedding_dimension=1024),
+            )
         )
         is None
     )
@@ -118,11 +199,14 @@ def test_hybrid_query_names_an_absent_vector_provider_as_a_degraded_lane(tmp_pat
 
     bootstrap_archive_root(tmp_path)
     with open_operation_read(tmp_path) as pinned:
-        result = execute_read_operation(
-            "cli.query",
-            {"params": {"query": ("needle",), "retrieval_lane": "hybrid"}},
-            archive=pinned.archive,
-            serving_identity="daemon",
+        result = cast(
+            _SearchResult,
+            execute_read_operation(
+                "cli.query",
+                {"params": {"query": ("needle",), "retrieval_lane": "hybrid"}},
+                archive=pinned.archive,
+                serving_identity="daemon",
+            ),
         )
 
     assert result["outcome"]["state"] == "degraded"

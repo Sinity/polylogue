@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import TypedDict, cast
 
 from polylogue.operations.daemon_status import produce_direct_status
 from polylogue.operations.operation_context import open_operation_read, prepare_operation_journals
@@ -11,12 +12,72 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import record_schema_drift
 from tests.infra.archive_templates import bootstrap_archive_root
 
 
+class _ArchiveStats(TypedDict):
+    total_sessions: int
+    total_messages: int
+
+
+class _AvailableStatus(TypedDict):
+    available: bool
+
+
+class _StateStatus(TypedDict):
+    state: str
+
+
+class _ArchiveReadiness(TypedDict):
+    checked: bool
+
+
+class _TierStatus(TypedDict):
+    table_counts: dict[str, int]
+
+
+class _RawMaterializationStatus(TypedDict):
+    available: bool
+    raw_authority_parser_census: _AvailableStatus
+    raw_authority_frontier: object
+
+
+class _SchemaOriginStatus(TypedDict):
+    total: int
+
+
+class _SchemaDriftStatus(TypedDict):
+    origins: list[_SchemaOriginStatus]
+
+
+class _EmbeddingStatus(TypedDict):
+    embedded_sessions: int
+    embedded_messages: int
+    has_voyage_api_key: bool | None
+    configured_model: str | None
+    configured_dimension: int | None
+    config_enabled: bool | None
+    daemon_stage_enabled: bool | None
+    monthly_cost_cap_usd: float | None
+
+
+class _StatusPayload(TypedDict):
+    archive_stats: _ArchiveStats
+    raw_materialization_readiness: _RawMaterializationStatus
+    raw_replay_backlog: _AvailableStatus
+    archive_readiness: _ArchiveReadiness
+    sinex_publication: _StateStatus
+    assertion_candidate_queue: _StateStatus
+    archive_tiers: dict[str, _TierStatus]
+    raw_parse_failures: int
+    raw_failure_lifecycle_state: str
+    embedding_status: _EmbeddingStatus
+    schema_drift: _SchemaDriftStatus
+
+
 def test_direct_status_uses_the_pinned_archive_and_retains_legacy_sections(tmp_path: Path) -> None:
     """Mutation: reopen a tier or omit a legacy status block and this fails."""
 
     bootstrap_archive_root(tmp_path)
     with open_operation_read(tmp_path) as pinned:
-        payload = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000)
+        payload = cast(_StatusPayload, produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000))
 
     assert payload["archive_stats"]["total_sessions"] == 0
     assert payload["raw_materialization_readiness"]["available"] is True
@@ -105,10 +166,13 @@ def test_direct_status_keeps_source_ops_and_embeddings_on_the_pinned_snapshot(tm
                 VALUES ('late-session', 'codex-session', 9, 0)
                 """
             )
-        payload = produce_direct_status(
-            archive=pinned.archive,
-            now_ms=1_700_000_000_002,
-            include_archive_readiness=True,
+        payload = cast(
+            _StatusPayload,
+            produce_direct_status(
+                archive=pinned.archive,
+                now_ms=1_700_000_000_002,
+                include_archive_readiness=True,
+            ),
         )
 
     assert payload["raw_parse_failures"] == 1
@@ -138,7 +202,10 @@ def test_embedding_status_preserves_supplied_key_without_guessing_missing_settin
         embedding_dimension=512,
     )
     with open_operation_read(tmp_path) as pinned:
-        payload = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000, config=config)
+        payload = cast(
+            _StatusPayload,
+            produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000, config=config),
+        )
 
     embeddings = payload["embedding_status"]
     assert embeddings["has_voyage_api_key"] is True

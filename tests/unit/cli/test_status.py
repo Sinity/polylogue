@@ -7,7 +7,7 @@ import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,6 +28,47 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.conftest import _MANAGED_VERIFY_ENV
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.frozen_clock import FrozenClock
+
+
+class _ArchiveStats(TypedDict):
+    total_sessions: int
+    total_messages: int
+
+
+class _TierStatus(TypedDict):
+    table_counts: dict[str, int]
+
+
+class _ArchiveReadinessSurface(TypedDict):
+    ready: bool
+    blockers: list[str]
+
+
+class _ArchiveReadiness(TypedDict):
+    reason: str
+    checked: bool
+    surfaces: dict[str, _ArchiveReadinessSurface]
+
+
+class _RawFrontierIntegrity(TypedDict):
+    overall_status: str
+
+
+class _ConvergedClaim(TypedDict):
+    value: bool
+
+
+class _ClaimGuard(TypedDict):
+    converged: _ConvergedClaim
+
+
+class _DirectStatusPayload(TypedDict):
+    ok: bool
+    archive_stats: _ArchiveStats
+    archive_tiers: dict[str, _TierStatus]
+    archive_readiness: _ArchiveReadiness
+    raw_frontier_integrity: _RawFrontierIntegrity
+    claim_guard: _ClaimGuard
 
 
 class _CapturingConsole:
@@ -558,7 +599,7 @@ class TestCanonicalStatusOperation:
     """Status command tests pin the canonical operation-result producer."""
 
     @staticmethod
-    def _direct_status(root: Path, *, include_archive_readiness: bool = False) -> dict[str, object]:
+    def _direct_status(root: Path, *, include_archive_readiness: bool = False) -> _DirectStatusPayload:
         from polylogue.cli.operation_kernel import configured_read_operation
         from polylogue.config import Config
 
@@ -571,7 +612,7 @@ class TestCanonicalStatusOperation:
         )
         assert result.operation == "status"
         assert result.authority["mode"] == "direct"
-        return cast(dict[str, object], result.value)
+        return cast(_DirectStatusPayload, result.value)
 
     def test_status_command_renders_canonical_direct_operation_result(self, tmp_path: Path) -> None:
         env = _make_app_env()
