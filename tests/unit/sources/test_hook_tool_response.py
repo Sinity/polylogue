@@ -270,7 +270,9 @@ def test_subagent_session_recovers_from_its_parents_hook_journal(tmp_path: Path)
         archive_root,
         session_native_id="sess-parent",
         tool_use_id="toolu_AAA",
-        tool_response={"result": f"whole hook copy {_RECOVERED_NEEDLE}"},
+        # Recovery never replaces a longer provider preview with a shorter
+        # hook copy, so this whole-result payload must exceed the envelope.
+        tool_response={"result": f"whole hook copy {_RECOVERED_NEEDLE} " + "r" * 512},
     )
     session = _session(
         _tool_result("toolu_AAA", _truncated_inline(_UNREACHABLE_SIDECAR)),

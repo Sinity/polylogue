@@ -8,7 +8,9 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 
+from polylogue.cli.click_app import cli
 from polylogue.cli.commands.status_diagnostics import (
     StatusDiagnostic,
     diagnose_first_run,
@@ -65,8 +67,18 @@ class TestDiagnoseSchemaMismatch:
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "schema_mismatch"
         assert "99" in diag.headline
-        assert "polylogue ops reset" in diag.next_action
-        assert "polylogue ops maintenance rebuild-index" in diag.next_action
+        assert diag.next_action == "polylogue ops reset --index && polylogued run"
+
+        # The diagnostic names two executable recovery routes.  Verify their
+        # registered command shapes rather than preserving retired prose.
+        reset_help = CliRunner().invoke(cli, ["ops", "reset", "--help"])
+        assert reset_help.exit_code == 0, reset_help.output
+        assert "--index" in reset_help.output
+
+        from polylogue.daemon.cli import main as daemon_cli
+
+        daemon_help = CliRunner().invoke(daemon_cli, ["run", "--help"])
+        assert daemon_help.exit_code == 0, daemon_help.output
 
     def test_schema_match_returns_none_for_this_probe(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)

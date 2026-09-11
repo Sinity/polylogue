@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from re import compile as compile_pattern
 from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 try:
@@ -101,6 +102,13 @@ def _schema_branch_for_value(schema: object, value: object) -> object:
         branches = schema.get(key)
         if not isinstance(branches, list):
             continue
+        # A union can contain several object (or array) branches.  Pick a
+        # branch which accepts the concrete value before falling back to its
+        # broad JSON type, otherwise a drift walk can attribute a field to an
+        # unrelated sibling branch.
+        for branch in branches:
+            if isinstance(branch, Mapping) and _schema_accepts_value(branch, value):
+                return branch
         for branch in branches:
             if isinstance(value, Mapping) and _schema_allows_type(branch, "object"):
                 return branch
@@ -114,22 +122,124 @@ def _schema_branch_for_value(schema: object, value: object) -> object:
     return schema
 
 
+def _schema_accepts_value(schema: Mapping[str, object], value: object) -> bool:
+    """Return whether an individual union branch accepts ``value``.
+
+    This is deliberately a branch-selection aid only.  The complete schema
+    validator remains the authority for acceptance and error reporting.
+    """
+    if Draft202012Validator is None:
+        return False
+    try:
+        return bool(Draft202012Validator(schema).is_valid(value))
+    except Exception:
+        # A referenced or otherwise incomplete branch still has useful type
+        # information below; do not let diagnostics mask validation itself.
+        return False
+
+
 def _schema_for_property(schema: object, key: str, value: object) -> object:
     if not isinstance(schema, Mapping):
         return None
     properties = schema.get("properties")
     if isinstance(properties, Mapping) and key in properties:
         return _schema_branch_for_value(properties[key], value)
+    pattern_properties = schema.get("patternProperties")
+    if isinstance(pattern_properties, Mapping):
+        matches: list[Mapping[str, object]] = []
+        for pattern, pattern_schema in pattern_properties.items():
+            if isinstance(pattern, str):
+                try:
+                    pattern_match = compile_pattern(pattern).search(key)
+                except Exception:
+                    pattern_match = None
+                if pattern_match:
+                    selected = _schema_branch_for_value(pattern_schema, value)
+                    if isinstance(selected, Mapping):
+                        matches.append(selected)
+        if matches:
+            return _merge_pattern_observation_schemas(matches)
     additional_properties = schema.get("additionalProperties")
     if isinstance(additional_properties, Mapping):
         return _schema_branch_for_value(additional_properties, value)
     return None
 
 
+def _merge_pattern_observation_schemas(schemas: Iterable[Mapping[str, object]]) -> ValidationSchema:
+    """Union declared observation fields from every matching pattern schema.
+
+    JSON Schema applies *all* matching ``patternProperties`` schemas.  Drift
+    observation therefore cannot pick the first match: a field declared by a
+    later matching pattern would otherwise be reported as unexpected, with
+    the result depending on mapping insertion order.
+    """
+    property_schemas: dict[str, list[Mapping[str, object]]] = {}
+    nested_patterns: dict[str, list[Mapping[str, object]]] = {}
+    additional_schemas: list[Mapping[str, object]] = []
+    additional_forbidden = False
+    dynamic_containers: list[bool] = []
+    for schema in schemas:
+        properties = schema.get("properties")
+        if isinstance(properties, Mapping):
+            for name, property_schema in properties.items():
+                if isinstance(name, str) and isinstance(property_schema, Mapping):
+                    property_schemas.setdefault(name, []).append(property_schema)
+        pattern_properties = schema.get("patternProperties")
+        if isinstance(pattern_properties, Mapping):
+            for pattern, pattern_schema in pattern_properties.items():
+                if isinstance(pattern, str) and isinstance(pattern_schema, Mapping):
+                    nested_patterns.setdefault(pattern, []).append(pattern_schema)
+        additional = schema.get("additionalProperties", True)
+        if additional is False:
+            additional_forbidden = True
+        elif isinstance(additional, Mapping):
+            additional_schemas.append(additional)
+        dynamic_containers.append(bool(schema.get("x-polylogue-dynamic-keys")))
+
+    merged: dict[str, object] = {
+        "type": "object",
+        "properties": {
+            name: _merge_pattern_observation_schemas(values) if len(values) > 1 else values[0]
+            for name, values in property_schemas.items()
+        },
+    }
+    if nested_patterns:
+        merged["patternProperties"] = {
+            pattern: _merge_pattern_observation_schemas(values) if len(values) > 1 else values[0]
+            for pattern, values in nested_patterns.items()
+        }
+    if additional_forbidden:
+        merged["additionalProperties"] = False
+    elif additional_schemas:
+        merged["additionalProperties"] = _merge_pattern_observation_schemas(additional_schemas)
+    if dynamic_containers and all(dynamic_containers):
+        merged["x-polylogue-dynamic-keys"] = True
+    return merged
+
+
+def _has_matching_pattern_property(schema: Mapping[str, object], key: str) -> bool:
+    pattern_properties = schema.get("patternProperties")
+    if not isinstance(pattern_properties, Mapping):
+        return False
+    for pattern in pattern_properties:
+        if not isinstance(pattern, str):
+            continue
+        try:
+            if compile_pattern(pattern).search(key):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _schema_for_items(schema: object, value: object) -> object:
     if not isinstance(schema, Mapping):
         return None
+    del value
     items = schema.get("items")
+    # Selection belongs to each concrete item.  Selecting against the parent
+    # array would choose neither a nullable nor object item branch and break
+    # the normalization walk which invokes this helper before it has an item.
     return items if isinstance(items, Mapping) else None
 
 
@@ -219,42 +329,63 @@ def detect_drift(
     schema: Mapping[str, object],
     path: str,
 ) -> list[str]:
-    """Detect fields in data not present in schema (drift)."""
+    """Detect newly observed named fields without changing schema acceptance.
+
+    JSON Schema's default ``additionalProperties`` is permissive.  That is an
+    admission rule, not evidence that a provider named field is already
+    known: newly named fields are still reported.  Explicit dynamic-key maps
+    and pattern properties remain declarations, so their members are not
+    reported one-by-one.
+    """
     warnings: list[str] = []
+    selected_schema = _schema_branch_for_value(schema, data)
+    if not isinstance(selected_schema, Mapping):
+        return warnings
+    schema = selected_schema
     schema_props = _schema_mapping(schema.get("properties", {}))
     has_additional = schema.get("additionalProperties", True)
+    dynamic_container = bool(schema.get("x-polylogue-dynamic-keys"))
 
     for key, value in data.items():
         current_path = f"{path}.{key}" if path else key
 
         if key not in schema_props:
+            property_schema = _schema_for_property(schema, key, value)
+            if _has_matching_pattern_property(schema, key):
+                warnings.extend(_detect_nested_drift(value, property_schema, current_path))
+                continue
             if has_additional is False:
                 warnings.append(f"Unexpected field: {current_path}")
             elif has_additional is True:
-                continue
+                if not dynamic_container:
+                    warnings.append(f"Unexpected field: {current_path}")
             else:
                 additional_schema = _schema_mapping(has_additional)
-                dynamic_container = bool(schema.get("x-polylogue-dynamic-keys"))
-                if not dynamic_container and not looks_dynamic_key(key):
+                if dynamic_container:
+                    continue
+                if not looks_dynamic_key(key):
                     warnings.append(f"Unexpected field: {current_path}")
-                nested_value = _sample_payload(value)
-                if nested_value is not None:
-                    warnings.extend(detect_drift(nested_value, additional_schema, current_path))
+                warnings.extend(_detect_nested_drift(value, additional_schema, current_path))
             continue
 
-        prop_schema = _schema_mapping(schema_props.get(key))
-        nested_value = _sample_payload(value)
-        if nested_value is not None and "properties" in prop_schema:
-            warnings.extend(detect_drift(nested_value, prop_schema, current_path))
-            continue
-        if isinstance(value, list) and "items" in prop_schema:
-            items_schema = _schema_mapping(prop_schema.get("items"))
-            if "properties" in items_schema:
-                for index, item in enumerate(value):
-                    nested_item = _sample_payload(item)
-                    if nested_item is not None:
-                        warnings.extend(detect_drift(nested_item, items_schema, f"{current_path}[{index}]"))
+        warnings.extend(_detect_nested_drift(value, schema_props.get(key), current_path))
 
+    return warnings
+
+
+def _detect_nested_drift(value: object, schema: object, path: str) -> list[str]:
+    """Walk an object or array using the schema branch selected by ``value``."""
+    selected_schema = _schema_branch_for_value(schema, value)
+    if not isinstance(selected_schema, Mapping):
+        return []
+    nested_value = _sample_payload(value)
+    if nested_value is not None:
+        return detect_drift(nested_value, selected_schema, path)
+    if not isinstance(value, list):
+        return []
+    warnings: list[str] = []
+    for index, item in enumerate(value):
+        warnings.extend(_detect_nested_drift(item, _schema_for_items(selected_schema, item), f"{path}[{index}]"))
     return warnings
 
 
