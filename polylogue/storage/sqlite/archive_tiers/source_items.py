@@ -64,6 +64,57 @@ class FrozenSourceInput:
 
 
 @dataclass(frozen=True, slots=True)
+class RetainedSourceInput:
+    """An accepted source reference; publication authority was already consumed."""
+
+    source_item_id: str
+    coordinate: str
+    source_path: str
+    blob_hash: str
+    enumeration_complete: bool
+    stage: str
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedSourceGeneration:
+    source_generation_id: str
+    enumeration_fingerprint: str
+    inputs: tuple[RetainedSourceInput, ...]
+
+
+def retained_source_generation(conn: sqlite3.Connection, source_generation_id: str) -> RetainedSourceGeneration:
+    """Read accepted identity without inventing a consumed publication receipt."""
+    generation = conn.execute(
+        "SELECT item_count FROM source_generations WHERE source_generation_id=?", (source_generation_id,)
+    ).fetchone()
+    if generation is None:
+        raise KeyError(source_generation_id)
+    rows = conn.execute(
+        "SELECT source_item_id, logical_coordinate, source_path, blob_hash, enumeration_fingerprint, "
+        "enumerated_at_ms, stage, revision FROM source_items WHERE source_generation_id=? ORDER BY logical_coordinate",
+        (source_generation_id,),
+    ).fetchall()
+    if not 1 <= len(rows) <= 10_000 or len(rows) != int(generation[0]):
+        raise ValueError("accepted source generation has an incomplete manifest")
+    fingerprints = {row[4] for row in rows}
+    if len(fingerprints) != 1 or None in fingerprints:
+        raise ValueError("accepted source generation has no exact decoder identity")
+    fingerprint = str(next(iter(fingerprints)))
+    _require_digest(fingerprint, "enumeration_fingerprint")
+    inputs = []
+    for row in rows:
+        if row[2] is None or not isinstance(row[3], bytes) or len(row[3]) != 32:
+            raise ValueError("accepted source input lost its retained physical identity")
+        inputs.append(
+            RetainedSourceInput(
+                str(row[0]), str(row[1]), str(row[2]), row[3].hex(), row[5] is not None, str(row[6]), int(row[7])
+            )
+        )
+    return RetainedSourceGeneration(source_generation_id, fingerprint, tuple(inputs))
+
+
+@dataclass(frozen=True, slots=True)
 class FrozenSourceManifest:
     """The complete typed source denominator fixed before machine acceptance."""
 

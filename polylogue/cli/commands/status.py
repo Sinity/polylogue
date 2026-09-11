@@ -3,40 +3,14 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-import time
-from collections.abc import Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
-from urllib.request import Request, urlopen
+from typing import Any
 
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.errors import SchemaSkewError
-from polylogue.logging import get_logger
-from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-if TYPE_CHECKING:
-    from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary
-
-logger = get_logger(__name__)
-
-
-def convergence_debt_summary_info(*args: Any, **kwargs: Any) -> Any:
-    from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info as implementation
-
-    return implementation(*args, **kwargs)
-
-
-def schema_drift_status(*args: Any, **kwargs: Any) -> Any:
-    from polylogue.analysis.schema_drift import schema_drift_status as implementation
-
-    return implementation(*args, **kwargs)
 
 
 def normalize_raw_frontier_status_payload(*args: Any, **kwargs: Any) -> Any:
@@ -47,12 +21,6 @@ def normalize_raw_frontier_status_payload(*args: Any, **kwargs: Any) -> Any:
 
 def raw_frontier_integrity_is_proven_healthy(*args: Any, **kwargs: Any) -> Any:
     from polylogue.readiness.capability import raw_frontier_integrity_is_proven_healthy as implementation
-
-    return implementation(*args, **kwargs)
-
-
-def raw_frontier_integrity_projection(*args: Any, **kwargs: Any) -> Any:
-    from polylogue.readiness.capability import raw_frontier_integrity_projection as implementation
 
     return implementation(*args, **kwargs)
 
@@ -69,76 +37,13 @@ def status_snapshot_has_fresh_provenance(*args: Any, **kwargs: Any) -> Any:
     return implementation(*args, **kwargs)
 
 
-def derive_claim_guard(*args: Any, **kwargs: Any) -> Any:
-    from polylogue.readiness.claim_guard import derive_claim_guard as implementation
-
-    return implementation(*args, **kwargs)
-
-
 def archive_file_set_root(*args: Any, **kwargs: Any) -> Any:
     from polylogue.storage.archive_identity import archive_file_set_root as implementation
 
     return implementation(*args, **kwargs)
 
 
-def _archive_readiness_status(*args: Any, **kwargs: Any) -> Any:
-    from polylogue.storage.archive_readiness import archive_readiness_status as implementation
-
-    return implementation(*args, **kwargs)
-
-
-def _raw_materialization_ready_bool(*args: Any, **kwargs: Any) -> Any:
-    from polylogue.storage.archive_readiness import raw_materialization_ready as implementation
-
-    return implementation(*args, **kwargs)
-
-
-def _column_exists(*args: Any, **kwargs: Any) -> Any:
-    from polylogue.storage.introspection import column_exists as implementation
-
-    return implementation(*args, **kwargs)
-
-
-def _table_exists(*args: Any, **kwargs: Any) -> Any:
-    from polylogue.storage.introspection import table_exists as implementation
-
-    return implementation(*args, **kwargs)
-
-
 _BUILTIN_DAEMON_URL = "http://127.0.0.1:8766"
-# Bare `polylogue` uses this as a quick probe before falling back to SQLite.
-_FAST_TIMEOUT_S = 1.0
-# Explicit status is still an operator command; a busy local daemon should fall
-# through to bounded read-only SQLite status instead of hiding the archive.
-_FULL_TIMEOUT_S = 3.0
-_ARCHIVE_TIER_TARGETS: tuple[str, ...] = (
-    "source.db",
-    "index.db",
-    "embeddings.db",
-    "user.db",
-    "ops.db",
-)
-
-_ARCHIVE_COMPONENT_SCOPES: dict[str, str] = {
-    "archive_sessions": "archive",
-    "raw_artifacts": "source",
-    "search": "lexical",
-    "session_profiles": "insights",
-    "timeline_work_events": "insights",
-    "timeline_phases": "insights",
-    "threads": "insights",
-    "tool_usage": "actions",
-    "latency_profiles": "insights",
-}
-
-_ARCHIVE_COMPONENT_REPAIR_HINTS: dict[str, str] = {
-    "search": "polylogued run",
-    "session_profiles": "polylogued run",
-    "timeline_work_events": "polylogued run",
-    "timeline_phases": "polylogued run",
-    "threads": "polylogued run",
-    "latency_profiles": "polylogued run",
-}
 
 
 def _default_daemon_url() -> str:
@@ -152,11 +57,6 @@ def _default_daemon_url() -> str:
     from polylogue.config import load_polylogue_config
 
     return load_polylogue_config().daemon_url or _BUILTIN_DAEMON_URL
-
-
-def _fast_count(conn: Any, sql: str, params: tuple[object, ...] = ()) -> int:
-    row = conn.execute(sql, params).fetchone()
-    return int(row[0] or 0) if row is not None else 0
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -173,730 +73,25 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _safe_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
-
-
-def _fast_fts_doc_count(conn: Any) -> int | None:
-    """Return ``None``: direct status deliberately does not measure FTS coverage.
-
-    Counting the FTS shadow table can fault gigabytes of pages during catch-up,
-    so the maintained freshness state on daemon status is the supported source.
-    This returned ``0`` before, which is indistinguishable from a genuinely empty
-    index and made the caller's coverage branch dead rather than skipped -- the
-    line silently disappeared instead of saying it was not measured.
-    """
-    del conn
-    return None
-
-
-def _daemon_live(daemon_url: str, *, timeout: float) -> bool:
-    try:
-        req = Request(
-            f"{daemon_url}/healthz/live",
-            headers={"Accept": "application/json"},
-            method="GET",
-        )
-        with urlopen(req, timeout=timeout) as resp:
-            return 200 <= int(resp.status) < 500
-    except (OSError, ValueError):
-        return False
-
-
-def _fetch_uds_operation(config: Any, operation: str) -> dict[str, Any] | None:
-    """Fetch one typed daemon operation without a health/probe round trip."""
-
-    from polylogue.cli.daemon_client import DaemonClient
-    from polylogue.cli.operation_kernel import OperationKernel, OperationKernelError, OperationRequest
-    from polylogue.daemon.api_auth import resolve_api_auth_token
-    from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.version import POLYLOGUE_VERSION
-
-    client = DaemonClient(
-        daemon_socket_path(config.archive_root),
-        timeout_s=_FULL_TIMEOUT_S,
-        auth_token=resolve_api_auth_token(
-            getattr(config, "api_auth_token", None),
-            allow_no_auth=getattr(config, "api_allow_no_auth", False),
-        ),
-    )
-    try:
-        result = OperationKernel(
-            lambda request: client.operation(
-                request.operation,
-                dict(request.payload),
-                archive_root=str(config.archive_root),
-                daemon_version=POLYLOGUE_VERSION,
-            )
-        ).execute(OperationRequest(operation, {}))
-    except OperationKernelError:
-        return None
-    return result.value if isinstance(result.value, dict) else None
-
-
 def _status_operation_result(
-    env: AppEnv, *, daemon_url: str | None = None, include_archive_readiness: bool = False
-) -> Any:
-    """Execute status once through the operation kernel for every authority."""
-    from polylogue.cli.daemon_client import DaemonClient
-    from polylogue.cli.operation_kernel import OperationKernel, OperationRequest
-    from polylogue.cli.shared.helpers import load_effective_config
-    from polylogue.daemon.api_auth import resolve_api_auth_token
-    from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.version import POLYLOGUE_VERSION
-
-    config: Any = None
-    if daemon_url in (None, _BUILTIN_DAEMON_URL):
-        try:
-            config = load_effective_config(env)
-        except Exception:
-            # Without a resolved config there is no socket to address, but a
-            # daemon on a discovered API port is still reachable over HTTP.
-            config = None
-    client = (
-        DaemonClient(
-            daemon_socket_path(config.archive_root),
-            timeout_s=_FULL_TIMEOUT_S,
-            auth_token=resolve_api_auth_token(
-                getattr(config, "api_auth_token", None),
-                allow_no_auth=getattr(config, "api_allow_no_auth", False),
-            ),
-        )
-        if config is not None
-        else None
-    )
-    request = OperationRequest("status", {"include_archive_readiness": include_archive_readiness})
-
-    def daemon_call(lowered: Any) -> Any:
-        if client is not None and config is not None:
-            try:
-                uds_value = client.operation(
-                    lowered.operation,
-                    dict(lowered.payload),
-                    archive_root=str(config.archive_root),
-                    daemon_version=POLYLOGUE_VERSION,
-                )
-            except Exception:
-                uds_value = None
-            if uds_value is not None:
-                return uds_value
-            # No socket for this archive root does not mean no daemon: a
-            # dev-loop daemon on a discovered API port still answers over
-            # HTTP, which is what _candidate_daemon_urls is for.
-        for candidate in _candidate_daemon_urls(daemon_url or _BUILTIN_DAEMON_URL):
-            try:
-                request = Request(f"{candidate}/api/status", headers={"Accept": "application/json"}, method="GET")
-                with urlopen(request, timeout=_FULL_TIMEOUT_S) as response:
-                    value = json.loads(response.read())
-                return {"operation": lowered.operation, "result": value, "authority": {"mode": "daemon"}}
-            except (OSError, TimeoutError, ValueError):
-                continue
-        return None
-
-    # No direct fallback here: both callers render the direct surface
-    # themselves, so a fallback would assemble the whole direct payload once
-    # to be discarded. An unreachable daemon raises OperationKernelError.
-    return OperationKernel(daemon_call).execute(request)
-
-
-def _candidate_daemon_urls(primary_url: str) -> tuple[str, ...]:
-    """Return daemon URLs worth probing, with explicit config first.
-
-    Dev-loop daemons often run on an isolated API port while the invoking shell
-    lacks the launch-time ``POLYLOGUE_DAEMON_URL``. Discovering the live local
-    ``polylogued --api-port`` process keeps status truthful without requiring
-    the operator to copy transient environment variables by hand.
-    """
-    urls: list[str] = []
-
-    def add(url: str) -> None:
-        normalized = url.rstrip("/")
-        if normalized and normalized not in urls:
-            urls.append(normalized)
-
-    add(primary_url)
-    from polylogue.config import load_polylogue_config
-
-    if load_polylogue_config().layer_of("daemon_url") != "default":
-        return tuple(urls)
-    for port in _discover_polylogued_api_ports():
-        add(f"http://127.0.0.1:{port}")
-    return tuple(urls)
-
-
-def _discover_polylogued_api_ports() -> tuple[int, ...]:
-    """Best-effort discovery of local polylogued API ports from /proc."""
-    proc = Path("/proc")
-    if not proc.exists():
-        return ()
-
-    ports: list[int] = []
-    for entry in proc.iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            raw = (entry / "cmdline").read_bytes()
-        except OSError:
-            continue
-        if not raw:
-            continue
-        parts = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
-        if not parts:
-            continue
-        command_text = " ".join(parts)
-        if "polylogued" not in command_text or "run" not in parts:
-            continue
-        port = _parse_cmdline_api_port(parts)
-        if port is not None and port not in ports:
-            ports.append(port)
-    return tuple(ports)
-
-
-def _parse_cmdline_api_port(parts: Sequence[str]) -> int | None:
-    for index, part in enumerate(parts):
-        if part == "--api-port" and index + 1 < len(parts):
-            return _valid_port(parts[index + 1])
-        if part.startswith("--api-port="):
-            return _valid_port(part.split("=", 1)[1])
-    return None
-
-
-def _valid_port(value: str) -> int | None:
-    try:
-        port = int(value)
-    except ValueError:
-        return None
-    return port if 0 < port < 65536 else None
-
-
-def _schema_object_exists(conn: Any, name: str, *, types: Sequence[str]) -> bool:
-    placeholders = ", ".join("?" for _ in types)
-    row = conn.execute(
-        f"SELECT 1 FROM sqlite_master WHERE type IN ({placeholders}) AND name = ? LIMIT 1",
-        (*types, name),
-    ).fetchone()
-    return row is not None
-
-
-def _view_exists(conn: Any, view_name: str) -> bool:
-    return _schema_object_exists(conn, view_name, types=("view",))
-
-
-def _archive_index_path(db: Any) -> Any | None:
-    if not isinstance(db, Path):
-        # Fallback for non-Path objects (shouldn't happen in practice)
-        index_db = db if getattr(db, "name", None) == "index.db" else db.with_name("index.db")
-        return index_db if index_db.exists() else None
-    from polylogue.storage.archive_identity import ArchiveLocation
-
-    index_db = ArchiveLocation.resolve(db.parent).active_index_path
-    return index_db if index_db.exists() else None
-
-
-def _active_status_db(db: Any) -> Any | None:
-    if isinstance(db, Path):
-        try:
-            from polylogue.paths import archive_root as _resolve_archive_root
-            from polylogue.storage.archive_identity import resolve_active_index_path
-
-            active_db = resolve_active_index_path(_resolve_archive_root())
-            if active_db.exists():
-                return active_db
-        except Exception as exc:
-            # An unreadable active pointer is not the same as an absent one:
-            # falling back to a sibling index.db may read a different archive
-            # generation, so say which happened.
-            logger.warning(
-                "active archive pointer unreadable (%s: %s); falling back to sibling index.db", type(exc).__name__, exc
-            )
-    index_db = _archive_index_path(db)
-    if index_db is not None:
-        return index_db
-    return db if db.exists() else index_db
-
-
-def _archive_tier_files(root: Path) -> dict[str, Path]:
-    return {
-        "source": root / "source.db",
-        "index": root / "index.db",
-        "embeddings": root / "embeddings.db",
-        "user": root / "user.db",
-        "ops": root / "ops.db",
-    }
-
-
-_ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
-    "source": (
-        "raw_sessions",
-        "blob_refs",
-        "blob_publication_reservations",
-        "raw_artifacts",
-        "raw_hook_events",
-    ),
-    "index": (
-        "sessions",
-        "messages",
-        "blocks",
-        "actions",
-        "session_profiles",
-        "session_work_events",
-        "session_phases",
-        "threads",
-        "thread_sessions",
-    ),
-    # message_embeddings_meta/message_embeddings are content-addressed and
-    # deduped (polylogue-q88p); message_embedding_refs is the per-message
-    # count operators actually want from a row-count status summary.
-    "embeddings": ("message_embedding_refs", "message_embeddings_meta", "embedding_status"),
-    "user": (
-        "assertions",
-        "annotation_schemas",
-        "annotation_batches",
-        "user_settings",
-        "context_deliveries",
-    ),
-    "ops": (
-        "ingest_cursor",
-        "ingest_attempts",
-        "convergence_debt",
-        "cursor_lag_samples",
-        "daemon_stage_events",
-        "daemon_events",
-        "embedding_catchup_runs",
-    ),
-}
-
-
-_ARCHIVE_TIER_ENUM: dict[str, ArchiveTier] = {tier.value: tier for tier in ArchiveTier}
-_LARGE_TIER_EXACT_COUNT_LIMIT_BYTES = 256 * 1024 * 1024
-_UNKNOWN_COUNT = -2
-
-
-def _archive_tier_status(root: Path) -> dict[str, dict[str, Any]]:
-    return {tier: _archive_one_tier_status(tier, path) for tier, path in _archive_tier_files(root).items()}
-
-
-def _archive_one_tier_status(tier: str, path: Path) -> dict[str, Any]:
-    """Coarse per-tier existence/size/version facts come from the shared
-    ``probe_archive_tier`` (polylogue-703 -- ONE status assembly): this used
-    to reimplement its own ``PRAGMA user_version`` probe independently of
-    ``polylogue.daemon.status``, which is how a bare CLI status and a
-    daemon-backed status could disagree in production (2026-07-03). Only
-    ``table_counts`` (row-level detail with no daemon equivalent, used by
-    ``--full``/diagnostics) is still computed locally here, on top of the
-    shared probe's facts.
-    """
-    from polylogue.storage.archive_readiness import probe_archive_tier
-
-    probe = probe_archive_tier(_ARCHIVE_TIER_ENUM[tier], path)
-    status: dict[str, Any] = {
-        "path": probe.path,
-        "exists": probe.exists,
-        "size_bytes": probe.size_bytes if probe.exists else None,
-        "expected_user_version": probe.expected_user_version,
-        "user_version": probe.user_version,
-        "version_status": probe.version_status,
-        "table_counts": {},
-    }
-    if not probe.exists:
-        return status
-
-    try:
-        conn = _open_status_connection(path)
-        try:
-            counts, precision = _archive_table_counts(conn, _ARCHIVE_TIER_TABLES[tier], db_size_bytes=probe.size_bytes)
-            status["table_counts"] = counts
-            status["table_count_precision"] = precision
-        finally:
-            conn.close()
-    except (sqlite3.Error, SchemaSkewError) as exc:
-        # Row detail is an extra on top of the shared probe. A tier this
-        # runtime cannot read still has reportable existence/size/version
-        # facts, so the skew is recorded as data rather than raised through
-        # the status surface.
-        status["error"] = str(exc)
-    return status
-
-
-def _archive_table_counts(
-    conn: sqlite3.Connection,
-    table_names: Sequence[str],
+    env: AppEnv,
     *,
-    db_size_bytes: int,
-) -> tuple[dict[str, int], dict[str, str]]:
-    counts: dict[str, int] = {}
-    precision: dict[str, str] = {}
-    large_tier = db_size_bytes > _LARGE_TIER_EXACT_COUNT_LIMIT_BYTES
-    for table in table_names:
-        if not _table_exists(conn, table):
-            continue
-        cheap = _cheap_archive_table_count(conn, table)
-        if cheap is not None:
-            counts[table] = cheap
-            precision[table] = "exact"
-            continue
-        if not large_tier:
-            counts[table] = _fast_count(conn, f"SELECT COUNT(*) FROM {table}")
-            precision[table] = "exact"
-            continue
-        estimate = _sqlite_stat1_table_estimate(conn, table)
-        if estimate is not None:
-            counts[table] = estimate
-            precision[table] = "estimate"
-        else:
-            counts[table] = -2
-            precision[table] = "unavailable"
-    return counts, precision
+    daemon_url: str | None = None,
+    include_archive_readiness: bool = False,
+) -> Any:
+    """Use the configured machine endpoint or the same pinned direct reader."""
+    from polylogue.cli.operation_kernel import OperationKernelError, configured_read_operation
+    from polylogue.cli.shared.helpers import load_effective_config
 
-
-def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> int | None:
-    if table == "messages" and _table_exists(conn, "sessions") and _column_exists(conn, "sessions", "message_count"):
-        row = conn.execute("SELECT COALESCE(SUM(message_count), 0) FROM sessions").fetchone()
-        return int(row[0] or 0) if row is not None else 0
-    if table in {
-        "sessions",
-        "raw_sessions",
-        "embedding_status",
-        "ingest_cursor",
-        "ingest_attempts",
-        "convergence_debt",
-    }:
-        return _fast_count(conn, f"SELECT COUNT(*) FROM {table}")
-    return None
-
-
-def _sqlite_stat1_table_estimate(conn: sqlite3.Connection, table: str) -> int | None:
-    if not _table_exists(conn, "sqlite_stat1"):
-        return None
-    rows = conn.execute(
-        """
-        SELECT stat
-        FROM sqlite_stat1
-        WHERE tbl = ?
-        ORDER BY idx IS NOT NULL, idx
-        LIMIT 1
-        """,
-        (table,),
-    ).fetchall()
-    if not rows:
-        return None
-    try:
-        return int(str(rows[0][0]).split()[0])
-    except (IndexError, TypeError, ValueError):
-        return None
-
-
-def _sqlite_sidecar_wal_bytes(path: Path) -> int:
-    wal_path = Path(f"{path}-wal")
-    return wal_path.stat().st_size if wal_path.exists() else 0
-
-
-def _sqlite_stat1_rows(conn: sqlite3.Connection) -> int:
-    if not _table_exists(conn, "sqlite_stat1"):
-        return 0
-    return _fast_count(conn, "SELECT COUNT(*) FROM sqlite_stat1")
-
-
-def _open_status_connection(path: Path) -> sqlite3.Connection:
-    """Open a tier read-only for reporting.
-
-    Status reports a skewed or unstamped tier as data. Validating the schema
-    on the way in raises the whole status surface out of service on exactly
-    the archive whose state the operator is asking about, so these reads
-    never validate.
-    """
-    return open_readonly_connection(path, timeout_class="interactive-read", validate_schema=False)
-
-
-def _sqlite_maintenance_status(root: Path) -> dict[str, Any]:
-    tiers: dict[str, dict[str, Any]] = {}
-    total_wal_bytes = 0
-    tiers_with_planner_stats: list[str] = []
-    for tier, path in _archive_tier_files(root).items():
-        tier_status: dict[str, Any] = {
-            "path": str(path),
-            "exists": path.exists(),
-            "wal_bytes": _sqlite_sidecar_wal_bytes(path),
-            "sqlite_stat1_rows": 0,
-            "planner_stats_present": False,
-        }
-        total_wal_bytes += int(tier_status["wal_bytes"])
-        if path.exists():
-            try:
-                conn = _open_status_connection(path)
-                try:
-                    stat_rows = _sqlite_stat1_rows(conn)
-                finally:
-                    conn.close()
-                tier_status["sqlite_stat1_rows"] = stat_rows
-                tier_status["planner_stats_present"] = stat_rows > 0
-                if stat_rows > 0:
-                    tiers_with_planner_stats.append(tier)
-            except sqlite3.Error as exc:
-                tier_status["error"] = str(exc)
-        tiers[tier] = tier_status
-    return {
-        "archive_root": str(root),
-        "total_wal_bytes": total_wal_bytes,
-        "tiers_with_planner_stats": tiers_with_planner_stats,
-        "tiers": tiers,
-    }
-
-
-def _direct_archive_counts(conn: Any, *, configured_root: Path | None = None) -> dict[str, int]:
-    if _table_exists(conn, "sessions"):
-        messages = (
-            _fast_count(conn, "SELECT COALESCE(SUM(message_count), 0) FROM sessions")
-            if _column_exists(conn, "sessions", "message_count")
-            else (_fast_count(conn, "SELECT COUNT(*) FROM messages") if _table_exists(conn, "messages") else 0)
-        )
-        return {
-            "sessions": _fast_count(conn, "SELECT COUNT(*) FROM sessions"),
-            "messages": messages,
-            "raw_records": _archive_source_raw_count(conn, configured_root=configured_root),
-            "unidentified_artifacts": _archive_unidentified_artifact_count(conn, configured_root=configured_root),
-        }
-    return {"sessions": 0, "messages": 0, "raw_records": 0, "unidentified_artifacts": 0}
-
-
-def _archive_source_raw_count(conn: Any, *, configured_root: Path | None = None) -> int:
-    return _archive_source_table_count(
-        conn, table="raw_sessions", sql="SELECT COUNT(*) FROM raw_sessions", configured_root=configured_root
+    if daemon_url not in (None, _BUILTIN_DAEMON_URL):
+        raise OperationKernelError("machine status uses the configured archive's Unix socket, not a daemon URL")
+    config = load_effective_config(env)
+    return configured_read_operation(
+        config,
+        "status",
+        {"include_archive_readiness": include_archive_readiness},
+        daemon_disabled=bool(getattr(env, "no_daemon", False)),
     )
-
-
-def _archive_unidentified_artifact_count(conn: Any, *, configured_root: Path | None = None) -> int:
-    """Count ``raw_artifacts`` rows classified ``artifact_kind='unknown'``.
-
-    polylogue-9ykn: a record that cannot be positively identified as a
-    session, sidecar, or other known artifact kind is durably ledgered in
-    ``source.db``'s ``raw_artifacts`` table (``archive.artifact_taxonomy.
-    classify_artifact`` -> ``storage.artifacts.inspection.inspect_raw_artifact``
-    -> ``save_artifact_observation``, run for every acquired record) rather
-    than silently becoming a session or silently vanishing. Surfacing the
-    live count here is what makes a NEW unidentified artifact class (e.g. a
-    third-party sidecar under a watched directory nobody has seen before)
-    show up in routine ``polylogue ops status`` output the week it appears,
-    instead of sitting unnoticed for a year -- see
-    ``polylogue ops doctor --artifact-coverage --cohorts`` for the
-    full per-kind/per-provider breakdown this count summarizes.
-    """
-    return _archive_source_table_count(
-        conn,
-        table="raw_artifacts",
-        sql="SELECT COUNT(*) FROM raw_artifacts WHERE artifact_kind = 'unknown'",
-        configured_root=configured_root,
-    )
-
-
-def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_root: Path | None = None) -> int:
-    """Shared source.db row-count resolution: active connection, configured
-    root, or (fallback) the active db's sibling directory via PRAGMA
-    database_list. Factored out of ``_archive_source_raw_count`` so a second
-    source.db-tier count (``_archive_unidentified_artifact_count``) does not
-    duplicate the three-branch resolution.
-    """
-    if _table_exists(conn, table):
-        return _fast_count(conn, sql)
-    if configured_root is not None:
-        source_db = configured_root / "source.db"
-        if not source_db.exists():
-            return -1
-        try:
-            source_conn = _open_status_connection(source_db)
-            try:
-                if not _table_exists(source_conn, table):
-                    return -1
-                return _fast_count(source_conn, sql)
-            finally:
-                source_conn.close()
-        except sqlite3.Error:
-            return _UNKNOWN_COUNT
-    try:
-        row = conn.execute("PRAGMA database_list").fetchone()
-    except Exception as exc:
-        logger.warning("%s count unavailable (database_list probe failed: %s); reporting 0", table, exc)
-        return _UNKNOWN_COUNT
-    if row is None or len(row) < 3 or not row[2]:
-        return 0
-    source_db = Path(str(row[2])).with_name("source.db")
-    if not source_db.exists():
-        return -1
-    try:
-        source_conn = _open_status_connection(source_db)
-        try:
-            if not _table_exists(source_conn, table):
-                return -1
-            return _fast_count(source_conn, sql)
-        finally:
-            source_conn.close()
-    except sqlite3.Error:
-        return _UNKNOWN_COUNT
-
-
-# Live ingest workload is read directly from ops.db so it is visible even when
-# the daemon runs with --no-api (no HTTP /api/status to query). The data already
-# exists in ingest_attempts/ingest_cursor/convergence_debt; this surface derives
-# observed throughput and real backlogs from it rather than inferring an ETA it
-# cannot substantiate.
-_WORKLOAD_THROUGHPUT_WINDOW_MS = 5 * 60 * 1000
-_WORKLOAD_HEARTBEAT_STALE_MS = 90 * 1000
-_CONVERGENCE_DEBT_STATUSES = frozenset(("failed", "deferred"))
-
-
-def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
-    """Derive live ingest-workload state from ops.db (read-only).
-
-    Surfaces in-flight attempts, observed throughput over a recent window,
-    cursor coverage, and convergence/retry debt. Returns ``available: False``
-    when the ops tier or its tables are absent.
-    """
-    ops_db = active_root / "ops.db"
-    if not ops_db.exists():
-        return {"available": False, "reason": "missing_ops_tier"}
-    try:
-        conn = _open_status_connection(ops_db)
-    except sqlite3.Error as exc:
-        return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
-    try:
-        try:
-            if not _table_exists(conn, "ingest_attempts"):
-                return {"available": False, "reason": "missing_ingest_attempts"}
-        except Exception as exc:
-            return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
-
-        try:
-            if not _table_exists(conn, "convergence_debt"):
-                return {"available": False, "reason": "missing_convergence_debt"}
-        except Exception as exc:
-            return {"available": False, "reason": f"convergence debt status unavailable: {exc}"}
-
-        try:
-            running_rows = conn.execute(
-                """
-                SELECT phase, origin, started_at_ms, heartbeat_at_ms,
-                       parsed_raw_count, materialized_count
-                FROM ingest_attempts
-                WHERE status = 'running'
-                ORDER BY started_at_ms DESC
-                """
-            ).fetchall()
-            running: list[dict[str, Any]] = []
-            actively_ingesting = False
-            for row in running_rows:
-                heartbeat = _safe_int(row[3], 0)
-                heartbeat_age_ms = now_ms - heartbeat if heartbeat else None
-                fresh = heartbeat_age_ms is not None and heartbeat_age_ms <= _WORKLOAD_HEARTBEAT_STALE_MS
-                actively_ingesting = actively_ingesting or fresh
-                running.append(
-                    {
-                        "phase": row[0],
-                        "origin": row[1],
-                        "age_ms": now_ms - _safe_int(row[2], now_ms),
-                        "heartbeat_age_ms": heartbeat_age_ms,
-                        "heartbeat_fresh": fresh,
-                    }
-                )
-
-            window_start = now_ms - _WORKLOAD_THROUGHPUT_WINDOW_MS
-            tput = conn.execute(
-                """
-                SELECT COUNT(*),
-                       COALESCE(SUM(parsed_raw_count), 0),
-                       COALESCE(SUM(materialized_count), 0),
-                       COALESCE(SUM(finished_at_ms - started_at_ms), 0)
-                FROM ingest_attempts
-                WHERE status = 'completed' AND finished_at_ms >= ?
-                """,
-                (window_start,),
-            ).fetchone()
-            window_batches = _safe_int(tput[0], 0) if tput else 0
-            window_files = _safe_int(tput[1], 0) if tput else 0
-            window_materialized = _safe_int(tput[2], 0) if tput else 0
-            window_busy_ms = _safe_int(tput[3], 0) if tput else 0
-            files_per_s = (window_files / (window_busy_ms / 1000.0)) if window_busy_ms > 0 else 0.0
-
-            lifetime = {
-                status: _safe_int(count, 0)
-                for status, count in conn.execute(
-                    "SELECT status, COUNT(*) FROM ingest_attempts GROUP BY status"
-                ).fetchall()
-            }
-
-            cursor: dict[str, int] = {}
-            if _table_exists(conn, "ingest_cursor"):
-                cursor = {
-                    "tracked": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor"),
-                    "excluded": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1"),
-                    "retry_pending": _fast_count(
-                        conn,
-                        "SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0 AND excluded = 0",
-                    ),
-                }
-        except Exception as exc:
-            return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
-
-        try:
-            debt_rows = conn.execute("SELECT status, COUNT(*) FROM convergence_debt GROUP BY status").fetchall()
-            unknown_statuses = sorted(
-                {repr(status) for status, _count in debt_rows if status not in _CONVERGENCE_DEBT_STATUSES}
-            )
-            if unknown_statuses:
-                return {
-                    "available": False,
-                    "reason": "convergence debt status unavailable: "
-                    f"unknown status value(s): {', '.join(unknown_statuses)}",
-                }
-            debt = {status: _safe_int(count, 0) for status, count in debt_rows}
-            debt_total = sum(debt.values())
-        except Exception as exc:
-            # A present but malformed ledger is unknown, not an empty workload.
-            # Keep this explicit so both direct status renderers can preserve
-            # the ledger failure and block claims instead of falling into the
-            # generic archive-query fallback.
-            return {"available": False, "reason": f"convergence debt status unavailable: {exc}"}
-    finally:
-        conn.close()
-
-    return {
-        "available": True,
-        "actively_ingesting": actively_ingesting,
-        "running_count": len(running),
-        "running": running,
-        "throughput": {
-            "window_minutes": _WORKLOAD_THROUGHPUT_WINDOW_MS // 60000,
-            "batches": window_batches,
-            "files": window_files,
-            "materialized": window_materialized,
-            "files_per_second": round(files_per_s, 2),
-        },
-        "cursor": cursor,
-        "debt": {"total": debt_total, "by_status": debt},
-        "lifetime_attempts": lifetime,
-    }
-
-
-def _raw_replay_backlog_status(active_root: Path, *, limit: int = 5) -> dict[str, Any]:
-    """Return the weighted raw source-to-index replay backlog for status."""
-    try:
-        from polylogue.config import Config
-        from polylogue.paths import render_root
-        from polylogue.storage.raw_convergence import raw_materialization_replay_backlog
-
-        return raw_materialization_replay_backlog(
-            Config(archive_root=active_root, render_root=render_root(), sources=[]),
-            limit=limit,
-        )
-    except Exception as exc:
-        return {
-            "available": False,
-            "reason": str(exc),
-            "candidate_count": 0,
-            "total_blob_bytes": 0,
-            "top_raw_rows": [],
-            "origin_summary": [],
-            "source_path_summary": [],
-        }
 
 
 @click.command("status")
@@ -1016,58 +211,33 @@ def status_command(
         route="cli.status",
         verb="full" if full_payload else "compact",
     ) as obs:
+        from polylogue.cli.operation_kernel import OperationKernelError
+
         try:
             operation_result = _status_operation_result(
                 env,
                 daemon_url=daemon_url,
                 include_archive_readiness=exact_archive_readiness,
             )
-        except Exception:
-            operation_result = None
-        # An unparseable or timed-out /api/status is not a stopped daemon. When
-        # the named daemon still answers its liveness probe, say so instead of
-        # publishing local archive facts as daemon truth.
-        daemon_answered = operation_result is not None and operation_result.authority.get("mode") != "direct"
-        if (
-            not daemon_answered
-            and daemon_url not in (None, _BUILTIN_DAEMON_URL)
-            and _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S)
-        ):
+        except OperationKernelError:
             obs.attributes["daemon_reachable"] = True
             obs.daemon_path = "daemon"
             if output_format == "json":
                 _show_daemon_status_unavailable_json(env)
             else:
                 _show_daemon_status_unavailable(env, compact=not full_payload)
-            raise click.exceptions.Exit(1)
-        if operation_result is None:
-            obs.attributes["daemon_reachable"] = False
-            obs.daemon_path = "direct"
-            if output_format == "json":
-                status_ok = _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
-            else:
-                status_ok = _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
-        else:
-            mode = operation_result.authority.get("mode")
-            obs.attributes["daemon_reachable"] = mode == "daemon"
-            obs.daemon_path = str(mode)
-            status = operation_result.value
-            if mode == "direct":
-                status_ok = (
-                    _show_direct_json(
-                        env,
-                        full=full_payload,
-                        include_archive_readiness=exact_archive_readiness,
-                    )
-                    if output_format == "json"
-                    else _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
-                )
-            else:
-                status_ok = (
-                    _show_status_json(env, status, full=full_payload)
-                    if output_format == "json"
-                    else _show_daemon_status(env, status)
-                )
+            raise click.exceptions.Exit(1) from None
+        mode = operation_result.authority.get("mode")
+        obs.attributes["daemon_reachable"] = mode == "daemon"
+        obs.daemon_path = str(mode)
+        status = operation_result.value
+        status_ok = (
+            _show_status_json(env, status, full=full_payload or exact_archive_readiness)
+            if output_format == "json"
+            else _render_direct_status_payload(env, status, compact=not full_payload)
+            if mode == "direct"
+            else _show_daemon_status(env, status)
+        )
         if not status_ok:
             raise click.exceptions.Exit(1)
     return
@@ -1085,10 +255,10 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
     try:
         result = _status_operation_result(env)
     except OperationKernelError:
-        _show_direct_status(env, compact=True)
+        _show_daemon_status_unavailable(env, compact=True)
         return
     if result.authority.get("mode") == "direct":
-        _show_direct_status(env, compact=True)
+        _render_direct_status_payload(env, result.value, compact=True)
     else:
         _show_daemon_status(env, result.value, compact=True)
 
@@ -1223,12 +393,47 @@ def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False
     source = "direct" if status.get("daemon_liveness") is False else "daemon"
     normalized = normalize_raw_frontier_status_payload(
         status,
-        snapshot_state="live" if source == "direct" else None,
+        snapshot_state="pinned" if source == "direct" else None,
         require_fresh_snapshot=source == "daemon",
     )
     payload = normalized if full else _compact_status_payload(normalized, source=source)
     env.ui.console.print(json.dumps(payload, indent=2, default=str))
-    return _status_ok(normalized, require_fresh_snapshot=True)
+    return _status_ok(normalized, require_fresh_snapshot=source == "daemon")
+
+
+def _render_direct_status_payload(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> bool:
+    """Render the already executed reader result without opening any archive."""
+    env.ui.console.print("\n[bold]Archive (pinned direct snapshot)[/bold]")
+    env.ui.console.print(f"  Sessions: {_safe_int(status.get('total_sessions')):,}")
+    env.ui.console.print(f"  Messages: {_safe_int(status.get('total_messages')):,}")
+    source_tier = status.get("archive_tiers", {}).get("source", {})
+    if source_tier.get("exists"):
+        env.ui.console.print(f"  Raw records: {_safe_int(source_tier.get('table_counts', {}).get('raw_sessions')):,}")
+    _render_ingest_workload(env, status.get("ingest_workload", {}))
+    convergence = status.get("convergence", {})
+    if isinstance(convergence, dict):
+        if convergence.get("available"):
+            env.ui.console.print(
+                "  Convergence debt: "
+                f"{_safe_int(convergence.get('failed_count'))} failed, "
+                f"{_safe_int(convergence.get('deferred_count'))} deferred, "
+                f"{_safe_int(convergence.get('retry_due_count'))} retry due"
+            )
+        else:
+            env.ui.console.print("  Convergence debt: unavailable")
+    _render_schema_drift_status(env, status.get("schema_drift", {}))
+    _render_raw_frontier_integrity(env, status.get("raw_frontier_integrity", {}))
+    _render_direct_embedding_status(env, status.get("embedding_status", {}))
+    if not compact:
+        tier_detail = _archive_tier_detail_line(status.get("archive_tiers", {}))
+        if tier_detail:
+            env.ui.console.print(f"  Tiers: {tier_detail}")
+        _render_sqlite_maintenance(env, status.get("sqlite_maintenance", {}))
+        _render_raw_replay_backlog(env, status.get("raw_replay_backlog", {}))
+        _render_archive_readiness(env, status.get("archive_readiness", {}))
+        _render_assertion_candidate_queue(env, status.get("assertion_candidate_queue", {}))
+        _render_sinex_publication(env, status.get("sinex_publication", {}))
+    return _status_ok(status)
 
 
 def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str, Any]:
@@ -1487,25 +692,6 @@ def _raw_failure_lifecycle_is_healthy(status: dict[str, Any]) -> bool:
     )
 
 
-def _direct_raw_failure_status(root: Path) -> dict[str, Any]:
-    """Adapt the archive raw-failure ledger for the stopped-daemon surface."""
-    from polylogue.daemon.status import raw_failure_info_for_root
-
-    info = raw_failure_info_for_root(root)
-    return {
-        "raw_parse_failures": _safe_int(info.get("parse_failures")),
-        "raw_validation_failures": _safe_int(info.get("validation_failures")),
-        "raw_quarantined": _safe_int(info.get("quarantined")),
-        "raw_deferred_failures": _safe_int(info.get("deferred_failures")),
-        "raw_terminal_rejections": _safe_int(info.get("terminal_rejections")),
-        "raw_unexplained_failures": _safe_int(info.get("unexplained_failures")),
-        "raw_failure_lifecycle_available": info.get("raw_failure_lifecycle_available"),
-        "raw_failure_lifecycle_state": info.get("raw_failure_lifecycle_state"),
-        "raw_failure_lifecycle_reason": info.get("raw_failure_lifecycle_reason"),
-        "raw_failure_samples": info.get("samples", []),
-    }
-
-
 def _show_daemon_status_unavailable_json(env: AppEnv) -> None:
     payload = {
         "daemon_liveness": True,
@@ -1522,472 +708,6 @@ def _show_daemon_status_unavailable(env: AppEnv, *, compact: bool = False) -> No
     env.ui.console.print("  Status snapshot: [yellow]unavailable[/yellow]")
     if not compact:
         env.ui.console.print("  [dim]/api/status did not answer within the bounded CLI timeout.[/dim]")
-
-
-def _direct_archive_readiness_status(root: Path, *, include_archive_readiness: bool) -> dict[str, Any]:
-    if include_archive_readiness:
-        return cast(dict[str, Any], _archive_readiness_status(root))
-    return {
-        "checked": False,
-        "reason": "direct_status_default_skips_exact_archive_readiness",
-        "surfaces": {},
-    }
-
-
-def _collect_direct_archive_readiness(root: Path, *, include_archive_readiness: bool) -> dict[str, Any]:
-    """Collect exact archive readiness as an independently budgeted component."""
-    registry = StatusComponentRegistry(
-        [
-            StatusComponentSpec(
-                name="archive_readiness",
-                scope="archive",
-                collector=lambda: _direct_archive_readiness_status(
-                    root, include_archive_readiness=include_archive_readiness
-                ),
-                deadline_s=2.0,
-                cost_class="expensive",
-                detail_only=False,
-            )
-        ]
-    )
-    snapshot = registry.collect(names=("archive_readiness",))["archive_readiness"]
-    result = dict(snapshot.value) if isinstance(snapshot.value, dict) else {"available": False}
-    if snapshot.state != "fresh":
-        result.setdefault("component_state", snapshot.state)
-        result.setdefault("component_age_s", round(snapshot.age_s, 3))
-    if snapshot.error:
-        result.setdefault("component_error", snapshot.error)
-    return result
-
-
-def _show_direct_json(
-    env: AppEnv,
-    *,
-    full: bool = False,
-    include_archive_readiness: bool = False,
-    emit: bool = True,
-) -> bool | dict[str, Any]:
-    """Machine-readable JSON fallback when daemon is not running."""
-    from polylogue.cli.commands.init import starter_config_path
-    from polylogue.cli.commands.status_diagnostics import (
-        diagnose_first_run,
-        diagnostic_payload,
-    )
-    from polylogue.paths import archive_root, db_path
-
-    db = db_path()
-    root = archive_root()
-    config_path = starter_config_path()
-    diag = diagnose_first_run(daemon_alive=False)
-    active_db = _active_status_db(db)
-    active_root = active_db.parent if active_db is not None and active_db.name == "index.db" else root
-    archive_readiness = _collect_direct_archive_readiness(
-        active_root,
-        include_archive_readiness=include_archive_readiness,
-    )
-    raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
-    raw_frontier_integrity = _direct_raw_frontier_integrity(active_root, raw_materialization_readiness)
-    raw_failure_status = _direct_raw_failure_status(root)
-    from polylogue.config import Config, resolve_runtime_config
-    from polylogue.daemon.status import assertion_candidate_queue_status_summary
-    from polylogue.paths import render_root
-
-    try:
-        resolved_runtime_config = resolve_runtime_config().as_config()
-    except Exception as exc:
-        assertion_candidate_queue = {
-            "mode": "assertion-candidate-queue-health",
-            "state": "unavailable",
-            "pending_count": 0,
-            "caveats": [f"queue health configuration unavailable: {exc}"],
-        }
-    else:
-        queue_config = Config(
-            archive_root=active_root,
-            render_root=render_root(),
-            sources=[],
-            db_path=active_db if active_db is not None else active_root / "index.db",
-            judgment_automation_interval_s=resolved_runtime_config.judgment_automation_interval_s,
-        )
-        assertion_candidate_queue = assertion_candidate_queue_status_summary(config=queue_config)
-    component_readiness = _direct_component_readiness(
-        env,
-        active_root=active_root,
-        archive_readiness=archive_readiness,
-        raw_materialization_readiness=raw_materialization_readiness,
-        raw_frontier_integrity=raw_frontier_integrity,
-    )
-    archive_tiers = _archive_tier_status(active_root)
-    ingest_workload = _ops_workload_status(active_root, now_ms=int(time.time() * 1000))
-    convergence = convergence_debt_summary_info(
-        active_root / "index.db",
-        ops_db=active_root / "ops.db",
-    )
-    schema_drift = schema_drift_status(active_root, now_ms=int(time.time() * 1000))
-    payload: dict[str, Any] = {
-        "ok": _direct_status_ok(component_readiness) and _raw_failure_lifecycle_is_healthy(raw_failure_status),
-        "daemon_liveness": False,
-        "archive_root": str(root),
-        "active_archive_root": str(active_root),
-        "active_archive_root_matches_configured": active_root == root,
-        "db_exists": db.exists(),
-        "active_db_path": None,
-        "config_exists": config_path.exists(),
-        "config_path": str(config_path),
-        "archive_tiers": archive_tiers,
-        "sinex_publication": _direct_sinex_publication_status(active_root),
-        "sqlite_maintenance": _sqlite_maintenance_status(active_root),
-        "ingest_workload": ingest_workload,
-        "convergence": convergence.model_dump(mode="json"),
-        "schema_drift": schema_drift,
-        "raw_replay_backlog": _raw_replay_backlog_status(active_root),
-        "archive_readiness": archive_readiness,
-        "assertion_candidate_queue": assertion_candidate_queue,
-        "raw_materialization_readiness": raw_materialization_readiness,
-        "raw_frontier_integrity": raw_frontier_integrity,
-        "component_readiness": component_readiness,
-        "claim_guard": _direct_claim_guard(
-            archive_tiers=archive_tiers,
-            raw_materialization_readiness=raw_materialization_readiness,
-            raw_frontier_integrity=raw_frontier_integrity,
-            component_readiness=component_readiness,
-            ingest_workload=ingest_workload,
-            convergence=convergence,
-        ),
-        "next_action": diag.next_action,
-        "diagnostic": diagnostic_payload(diag),
-    }
-    payload.update(raw_failure_status)
-    if active_db is not None and active_db.exists():
-        payload["active_db_path"] = str(active_db)
-        try:
-            from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-            conn = open_readonly_connection(active_db, validate_schema=False)
-            try:
-                payload.update(_direct_archive_counts(conn, configured_root=active_root))
-                payload["db_exists"] = True
-            finally:
-                conn.close()
-        except Exception as exc:
-            payload["error"] = str(exc)
-    normalized_payload = normalize_raw_frontier_status_payload(payload, snapshot_state="live")
-    output = (
-        normalized_payload
-        if full or include_archive_readiness
-        else _compact_status_payload(normalized_payload, source="direct")
-    )
-    if emit:
-        env.ui.console.print(json.dumps(output, indent=2, default=str))
-        return _status_ok(normalized_payload)
-    return cast(dict[str, Any], normalized_payload)
-
-
-def _component_computation_failure(component: str, exc: Exception, *, scope: str = "archive") -> dict[str, Any]:
-    """Explicit unknown-state entry for a component whose readiness computation failed.
-
-    A component that cannot be computed must stay visible as unknown; silently
-    omitting it is indistinguishable from not-applicable (polylogue-feqr).
-    """
-    from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
-
-    return dict(
-        ComponentReadiness(
-            component=component,
-            scope=scope,
-            state=CapabilityReadinessState.UNKNOWN,
-            summary=f"status computation failed: {type(exc).__name__}: {exc}",
-            caveats=("component readiness could not be computed; unknown is not healthy",),
-            metadata={"computation_failed": True},
-        ).to_dict()
-    )
-
-
-def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
-    """Return direct-fallback health without penalizing intentionally unknown probes."""
-
-    hard_failure_states = {"blocked", "poisoned", "stale", "degraded"}
-    required_missing_components = {
-        "archive_sessions",
-        "raw_materialization",
-        "search",
-        "transforms",
-        "assertions",
-    }
-    required_known_components = {"raw_frontier_integrity"}
-    if any(not isinstance(component_readiness.get(component), dict) for component in required_known_components):
-        return False
-    for component, readiness in component_readiness.items():
-        if not isinstance(readiness, dict):
-            continue
-        metadata = readiness.get("metadata")
-        if (
-            component in required_known_components | required_missing_components
-            and isinstance(metadata, dict)
-            and metadata.get("computation_failed")
-        ):
-            # A required component whose readiness could not even be computed
-            # must not read as healthy (polylogue-feqr review follow-up).
-            return False
-        state = str(readiness.get("state") or "unknown")
-        if state in hard_failure_states:
-            return False
-        if state == "unknown" and component in required_known_components:
-            return False
-        if state == "missing" and component in required_missing_components:
-            return False
-    return True
-
-
-def _direct_sinex_publication_status(root: Path) -> dict[str, Any]:
-    """Read durable Sinex publication state without requiring a transport."""
-    from polylogue.config import load_polylogue_config
-    from polylogue.sinex.models import PublicationMode
-    from polylogue.sinex.service import publication_status
-    from polylogue.storage.archive_identity import ArchiveLocation
-
-    mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
-    source_db = ArchiveLocation.resolve(root).configured_tier("source").configured_path
-    return publication_status(source_db, mode).as_dict()
-
-
-def _direct_component_readiness(
-    env: AppEnv,
-    *,
-    active_root: Path,
-    archive_readiness: dict[str, Any] | None = None,
-    raw_materialization_readiness: dict[str, Any] | None = None,
-    raw_frontier_integrity: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return additive component readiness for direct status JSON."""
-    components: dict[str, Any] = {}
-    if archive_readiness is not None:
-        try:
-            from polylogue.readiness.capability import component_from_archive_surface
-
-            surfaces = archive_readiness.get("surfaces") or {}
-            if isinstance(surfaces, dict):
-                for component, scope in _ARCHIVE_COMPONENT_SCOPES.items():
-                    surface = surfaces.get(component)
-                    if not isinstance(surface, dict):
-                        continue
-                    readiness = component_from_archive_surface(
-                        component,
-                        surface,
-                        scope=scope,
-                        repair_hint=_ARCHIVE_COMPONENT_REPAIR_HINTS.get(component),
-                    )
-                    components[readiness.component] = readiness.to_dict()
-        except Exception as exc:
-            components["archive_surfaces"] = _component_computation_failure("archive_surfaces", exc)
-    try:
-        raw_component = _direct_raw_materialization_component(raw_materialization_readiness)
-        components[raw_component["component"]] = raw_component
-    except Exception as exc:
-        components["raw_materialization"] = _component_computation_failure("raw_materialization", exc)
-    if raw_frontier_integrity is not None:
-        try:
-            frontier_component = _direct_raw_frontier_integrity_component(raw_frontier_integrity)
-            components[frontier_component["component"]] = frontier_component
-        except Exception as exc:
-            components["raw_frontier_integrity"] = _component_computation_failure("raw_frontier_integrity", exc)
-    try:
-        from polylogue.readiness.capability import component_from_embedding_payload
-        from polylogue.storage.embeddings.status_payload import embedding_status_payload
-
-        embedding_payload = embedding_status_payload(env, include_retrieval_bands=False)
-        embedding = component_from_embedding_payload(embedding_payload)
-        components[embedding.component] = embedding.to_dict()
-    except Exception as exc:
-        components["embeddings"] = _component_computation_failure("embeddings", exc, scope="semantic")
-    try:
-        assertions = _direct_assertion_component(active_root)
-        components[assertions["component"]] = assertions
-    except Exception as exc:
-        components["assertions"] = _component_computation_failure("assertions", exc, scope="user")
-    try:
-        transforms = _direct_transform_component(archive_readiness)
-        components[transforms["component"]] = transforms
-    except Exception as exc:
-        components["transforms"] = _component_computation_failure("transforms", exc, scope="session-analysis")
-    return components
-
-
-def _direct_claim_guard(
-    *,
-    archive_tiers: dict[str, dict[str, Any]],
-    raw_materialization_readiness: dict[str, Any],
-    raw_frontier_integrity: dict[str, Any],
-    component_readiness: dict[str, Any],
-    ingest_workload: dict[str, Any],
-    convergence: ConvergenceDebtSummary,
-) -> dict[str, Any]:
-    """Derive the claim-guard block for the no-daemon direct SQLite fallback."""
-    missing_tiers = [tier for tier, info in archive_tiers.items() if not info.get("exists")]
-    schema_mismatches = [
-        tier for tier, info in archive_tiers.items() if info.get("exists") and info.get("version_status") != "ok"
-    ]
-    archive_schema_ready = not missing_tiers and not schema_mismatches
-
-    raw_component = component_readiness.get("raw_materialization")
-    raw_summary = str(raw_component.get("summary", "")) if isinstance(raw_component, dict) else ""
-
-    frontier_component = component_readiness.get("raw_frontier_integrity")
-    frontier_ready = isinstance(frontier_component, dict) and frontier_component.get("state") == "ready"
-    frontier_summary = raw_frontier_integrity_summary(raw_frontier_integrity)
-
-    search_component = component_readiness.get("search")
-    search_ready = isinstance(search_component, dict) and search_component.get("state") == "ready"
-    search_summary = str(search_component.get("summary", "")) if isinstance(search_component, dict) else "unknown"
-
-    if not ingest_workload.get("available"):
-        # An unreadable/missing ops-workload tier cannot establish the
-        # *absence* of a concurrent writer — treat it as blocking the
-        # perf-measurable claim, not as a clean "no writer" signal.
-        active_writer = True
-        active_writer_summary = "ingest workload inspection unavailable; cannot rule out a concurrent archive writer"
-    else:
-        running_count = int(ingest_workload.get("running_count") or 0)
-        active_writer = bool(ingest_workload.get("actively_ingesting")) or running_count > 0
-        active_writer_summary = f"{running_count} live ingest attempt(s) running" if running_count else ""
-
-    return cast(
-        dict[str, Any],
-        derive_claim_guard(
-            archive_schema_ready=archive_schema_ready,
-            schema_mismatches=schema_mismatches,
-            missing_tiers=missing_tiers,
-            raw_materialization_ready=_raw_materialization_ready_bool(raw_materialization_readiness),
-            raw_materialization_summary=raw_summary,
-            raw_frontier_integrity_ready=bool(frontier_ready),
-            raw_frontier_integrity_summary=frontier_summary,
-            search_ready=bool(search_ready),
-            search_summary=search_summary,
-            active_writer=active_writer,
-            active_writer_summary=active_writer_summary,
-            convergence_debt_available=convergence.available,
-            convergence_debt_pending=convergence.failed_count > 0 or convergence.deferred_count > 0,
-            convergence_debt_summary=(
-                convergence.error
-                or (
-                    "convergence debt pending: "
-                    + ", ".join(
-                        part
-                        for part in (
-                            f"{convergence.failed_count} failed" if convergence.failed_count else "",
-                            f"{convergence.deferred_count} deferred" if convergence.deferred_count else "",
-                        )
-                        if part
-                    )
-                )
-                or "no pending convergence debt"
-            ),
-        ).to_dict(),
-    )
-
-
-def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
-    from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
-
-    return raw_materialization_readiness_snapshot(active_root)
-
-
-def _direct_raw_materialization_component(readiness: dict[str, Any] | None) -> dict[str, Any]:
-    from polylogue.readiness.capability import component_from_raw_materialization_readiness
-
-    return component_from_raw_materialization_readiness(readiness).to_dict()
-
-
-def _direct_raw_frontier_integrity(
-    active_root: Path,
-    raw_materialization_readiness: dict[str, Any],
-) -> dict[str, Any]:
-    """Direct fallback consuming the same canonical projection as the daemon."""
-
-    return cast(
-        dict[str, Any],
-        raw_frontier_integrity_projection(active_root, raw_materialization_readiness).to_dict(),
-    )
-
-
-def _direct_raw_frontier_integrity_component(integrity: dict[str, Any] | None) -> dict[str, Any]:
-    from polylogue.readiness.capability import component_from_raw_frontier_integrity
-
-    return component_from_raw_frontier_integrity(integrity).to_dict()
-
-
-def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
-    from polylogue.readiness.capability import component_from_assertion_substrate
-    from polylogue.storage.sqlite.archive_tiers.user_audit import audit_user_overlay_storage
-
-    user_db = active_root / "user.db"
-    if not user_db.exists():
-        return component_from_assertion_substrate(table_exists=False).to_dict()
-
-    try:
-        conn = _open_status_connection(user_db)
-        try:
-            table_exists = _table_exists(conn, "assertions")
-            if not table_exists:
-                return component_from_assertion_substrate(table_exists=False).to_dict()
-            component = component_from_assertion_substrate(
-                table_exists=True,
-                assertion_count=_fast_count(conn, "SELECT COUNT(*) FROM assertions"),
-                target_count=_fast_count(conn, "SELECT COUNT(DISTINCT target_ref) FROM assertions"),
-                active_count=_fast_count(
-                    conn,
-                    """
-                    SELECT COUNT(*)
-                    FROM assertions
-                    WHERE status IS NULL OR status IN ('active', 'candidate')
-                    """,
-                ),
-                overlay_audit=audit_user_overlay_storage(conn).to_dict(),
-            )
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        component = component_from_assertion_substrate(table_exists=True, error=str(exc))
-    return component.to_dict()
-
-
-def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dict[str, Any]:
-    from polylogue.analysis.transforms import SESSION_DIGEST_TRANSFORM_VERSION, TRANSFORM_REGISTRY
-    from polylogue.readiness.capability import (
-        CapabilityReadinessState,
-        ComponentReadiness,
-        component_from_transform_registry,
-    )
-
-    if isinstance(archive_readiness, dict) and archive_readiness.get("checked") is False:
-        reason = str(archive_readiness.get("reason") or "archive_readiness_unchecked")
-        if reason == "direct_status_default_skips_exact_archive_readiness":
-            return ComponentReadiness(
-                component="transforms",
-                scope="session-analysis",
-                state=CapabilityReadinessState.UNKNOWN,
-                summary=reason,
-                counts={
-                    "transform_count": len(TRANSFORM_REGISTRY),
-                    "session_digest_transform_version": SESSION_DIGEST_TRANSFORM_VERSION,
-                },
-                caveats=(reason,),
-                evidence_refs=("transform_registry",),
-            ).to_dict()
-        return component_from_transform_registry(
-            transform_count=len(TRANSFORM_REGISTRY),
-            session_count=None,
-            session_digest_transform_version=SESSION_DIGEST_TRANSFORM_VERSION,
-            error=reason,
-        ).to_dict()
-
-    counts = archive_readiness.get("counts") if isinstance(archive_readiness, dict) else None
-    session_count = int(counts.get("session_count") or 0) if isinstance(counts, dict) else 0
-    return component_from_transform_registry(
-        transform_count=len(TRANSFORM_REGISTRY),
-        session_count=session_count,
-        session_digest_transform_version=SESSION_DIGEST_TRANSFORM_VERSION,
-    ).to_dict()
 
 
 def _render_ingest_workload(env: AppEnv, workload: dict[str, Any]) -> None:
@@ -2040,28 +760,6 @@ def _render_ingest_workload(env: AppEnv, workload: dict[str, Any]) -> None:
     if debt_total:
         detail = ", ".join(f"{status}={count}" for status, count in (debt.get("by_status") or {}).items())
         env.ui.console.print(f"    convergence debt: [yellow]{debt_total}[/yellow] ({detail})")
-
-
-def _render_convergence_debt(env: AppEnv, summary: ConvergenceDebtSummary) -> None:
-    """Render the authoritative convergence-debt ledger state."""
-    if not summary.available:
-        env.ui.console.print("  Convergence debt: [yellow]unavailable[/yellow]")
-        if summary.error:
-            env.ui.console.print(f"    [yellow]{summary.error}[/yellow]")
-        return
-
-    pending_parts = [
-        f"{summary.failed_count} failed" if summary.failed_count else "",
-        f"{summary.deferred_count} deferred" if summary.deferred_count else "",
-    ]
-    pending_parts = [part for part in pending_parts if part]
-    if not pending_parts:
-        env.ui.console.print("  Convergence debt: [green]none (ledger healthy)[/green]")
-        return
-
-    if summary.retry_due_count:
-        pending_parts.append(f"{summary.retry_due_count} retry due")
-    env.ui.console.print(f"  Convergence debt: [yellow]{', '.join(pending_parts)}[/yellow]")
 
 
 def _render_schema_drift_status(env: AppEnv, drift: dict[str, Any]) -> None:
@@ -2134,14 +832,6 @@ def _render_raw_replay_backlog(env: AppEnv, backlog: dict[str, Any]) -> None:
             env.ui.console.print(f"    weighted by origin: {', '.join(parts)}")
 
 
-def _render_diagnostic(env: AppEnv, diag: Any) -> None:
-    """Render a ``StatusDiagnostic`` with rich tags but no traceback."""
-    color = "red" if diag.kind in {"schema_mismatch", "locked_db", "unknown_db_error"} else "yellow"
-    env.ui.console.print(f"\n[{color}]{diag.headline}[/{color}]")
-    if diag.detail:
-        env.ui.console.print(f"  {diag.detail}")
-
-
 def _render_direct_embedding_status(env: AppEnv, payload: dict[str, Any]) -> None:
     """Render bounded embedding readiness in direct SQLite fallback status."""
     if int(payload.get("total_sessions", 0) or 0) <= 0:
@@ -2195,192 +885,6 @@ def _render_direct_embedding_status(env: AppEnv, payload: dict[str, Any]) -> Non
             f"{material.get('status', 'unknown')}, {processed:,}/{planned:,} convs, "
             f"{embedded:,} msgs embedded, {errors:,} errors"
         )
-
-
-def _show_direct_status(
-    env: AppEnv,
-    *,
-    compact: bool = False,
-    include_archive_readiness: bool = False,
-) -> bool:
-    """Fallback status when daemon is not running."""
-    from polylogue.cli.commands.status_diagnostics import diagnose_first_run
-    from polylogue.paths import archive_root, db_path
-
-    db = db_path()
-    root = archive_root()
-    active_db = _active_status_db(db)
-    if active_db is None or not active_db.exists():
-        diag = diagnose_first_run(daemon_alive=False)
-        _render_diagnostic(env, diag)
-        return False
-    # An index-only external generation's active_db can live outside the
-    # configured root (polylogue-yla8.1 split-root contract); source.db must
-    # then resolve against the active db's own directory, not the configured
-    # root, mirroring _show_direct_json's active_root derivation.
-    active_root = active_db.parent if active_db.name == "index.db" else root
-
-    # Pre-flight: detect schema mismatch / locked db / stale pidfile
-    # before attempting row counts. Short-circuits with actionable text
-    # rather than a Python traceback (#1263).
-    if db.exists() and active_db == db:
-        diag = diagnose_first_run(daemon_alive=False)
-        if diag.kind in {"schema_mismatch", "locked_db", "stale_pidfile"}:
-            _render_diagnostic(env, diag)
-            return False
-
-    try:
-        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-        conn = open_readonly_connection(active_db, validate_schema=False)
-        try:
-            counts = _direct_archive_counts(conn, configured_root=active_root)
-            convs = counts["sessions"]
-            msgs = counts["messages"]
-            raw = counts["raw_records"]
-            unidentified = counts["unidentified_artifacts"]
-            fts = _fast_fts_doc_count(conn)
-        finally:
-            conn.close()
-
-        now_ms = int(time.time() * 1000)
-        workload = (
-            _ops_workload_status(active_db.parent, now_ms=now_ms)
-            if active_db.name == "index.db"
-            else {"available": False}
-        )
-        actively_ingesting = bool(workload.get("actively_ingesting"))
-        if not workload.get("available"):
-            header = "Archive (daemon workload unavailable)"
-        else:
-            header = "Archive (daemon ingesting)" if actively_ingesting else "Archive (daemon idle)"
-        env.ui.console.print(f"\n[bold]{header}[/bold]")
-        env.ui.console.print(f"  Database: {active_db.name}")
-        if active_db.name == "index.db":
-            active_root = active_db.parent
-            _render_ingest_workload(env, workload)
-            convergence = convergence_debt_summary_info(active_db, ops_db=active_root / "ops.db")
-            _render_convergence_debt(env, convergence)
-            _render_schema_drift_status(env, schema_drift_status(active_root, now_ms=now_ms))
-            tiers = _archive_tier_status(active_root)
-            present = ", ".join(tier for tier, info in tiers.items() if info["exists"])
-            missing = ", ".join(tier for tier, info in tiers.items() if not info["exists"])
-            tier_line = f"  Schema tiers: present={present or 'none'}"
-            if missing:
-                tier_line += f"; missing={missing}"
-            env.ui.console.print(tier_line)
-            tier_detail = _archive_tier_detail_line(tiers)
-            if tier_detail:
-                env.ui.console.print(f"  Archive tier detail: {tier_detail}")
-            _render_sqlite_maintenance(env, _sqlite_maintenance_status(active_root))
-            _render_raw_replay_backlog(env, _raw_replay_backlog_status(active_root))
-            _render_archive_readiness(
-                env,
-                _direct_archive_readiness_status(
-                    active_root,
-                    include_archive_readiness=include_archive_readiness,
-                ),
-            )
-            materialization = _direct_raw_materialization_readiness(active_root)
-            materialization_total = _safe_int(materialization.get("total"))
-            if materialization_total:
-                if _safe_int(materialization.get("affected_unchecked")) or _safe_int(materialization.get("unchecked")):
-                    raw_count = _safe_int(materialization.get("raw_artifact_count"))
-                    materialized_count = _safe_int(materialization.get("materialized_raw_artifact_count"))
-                    progress = f"{materialized_count:,}/{raw_count:,} materialized; " if raw_count else ""
-                    env.ui.console.print(
-                        "  Raw materialization: "
-                        f"{progress}{materialization_total} raw/index join gap(s) need classification"
-                    )
-                else:
-                    env.ui.console.print(
-                        "  Raw materialization: "
-                        f"{materialization_total} debt row(s), "
-                        f"{_safe_int(materialization.get('critical'))} critical, "
-                        f"{_safe_int(materialization.get('warning'))} warning, "
-                        f"{_safe_int(materialization.get('blocked'))} blocked"
-                    )
-            _render_raw_frontier_integrity(
-                env,
-                _direct_raw_frontier_integrity(active_root, materialization),
-            )
-            from polylogue.daemon.status import assertion_candidate_queue_status_summary
-
-            _render_assertion_candidate_queue(env, assertion_candidate_queue_status_summary())
-            from polylogue.config import load_polylogue_config
-            from polylogue.paths import source_db_path
-            from polylogue.sinex.service import publication_status_payload
-
-            _render_sinex_publication(
-                env,
-                publication_status_payload(source_db_path(), load_polylogue_config().sinex_mode),
-            )
-        env.ui.console.print(f"  Sessions: {convs:,}")
-        env.ui.console.print(f"  Messages: {msgs:,}")
-        if raw == _UNKNOWN_COUNT:
-            env.ui.console.print("  Raw records: unavailable (source.db could not be queried)")
-        elif raw == -1:
-            env.ui.console.print("  Raw records: missing (source.db/raw_sessions)")
-        else:
-            env.ui.console.print(f"  Raw records: {raw:,}")
-        raw_failure_status = _direct_raw_failure_status(root)
-        raw_lifecycle_healthy = _raw_failure_lifecycle_is_healthy(raw_failure_status)
-        raw_total = raw_failure_status["raw_parse_failures"] + raw_failure_status["raw_validation_failures"]
-        if raw_total:
-            env.ui.console.print(
-                "  Raw failures: "
-                f"{raw_total:,} total, {raw_failure_status['raw_deferred_failures']:,} deferred retryable, "
-                f"{raw_failure_status['raw_terminal_rejections']:,} terminal, "
-                f"{raw_failure_status['raw_unexplained_failures']:,} unexplained"
-            )
-        if not raw_lifecycle_healthy and (
-            not raw_total or raw_failure_status["raw_failure_lifecycle_state"] in {"unavailable", "blocked"}
-        ):
-            lifecycle_state = raw_failure_status["raw_failure_lifecycle_state"] or "unavailable"
-            lifecycle_reason = raw_failure_status["raw_failure_lifecycle_reason"] or "source.db evidence is unavailable"
-            env.ui.console.print(f"  Raw failure lifecycle: [{lifecycle_state}] {lifecycle_reason}")
-        if unidentified:
-            env.ui.console.print(
-                f"  Unidentified artifacts: [yellow]{unidentified:,}[/yellow] "
-                "(never became a session; see `polylogue ops doctor --artifact-coverage --cohorts`)"
-            )
-        if fts is not None:
-            fts_pct = 100 * fts / msgs if msgs else 100
-            fts_color = "green" if fts_pct > 99 else "yellow"
-            env.ui.console.print(f"  FTS indexed: [{fts_color}]{fts_pct:.1f}%[/{fts_color}]")
-        else:
-            env.ui.console.print("  FTS indexed: [dim]not measured without the daemon[/dim]")
-
-        try:
-            from polylogue.storage.embeddings.status_payload import embedding_status_payload
-
-            ep = embedding_status_payload(env, include_retrieval_bands=False)
-            _render_direct_embedding_status(env, dict(ep))
-        except Exception as exc:
-            env.ui.console.print(f"  Embeddings: [yellow]status unavailable ({type(exc).__name__})[/yellow]")
-        # When the archive is empty (no ingest has run yet), surface the
-        # most relevant first-run diagnostic so the operator knows what to
-        # do next — typically `no_sources` or `no_daemon` (#1263).
-        if msgs == 0 and convs == 0:
-            from polylogue.cli.commands.status_diagnostics import diagnose_first_run
-
-            diag = diagnose_first_run(daemon_alive=False)
-            if diag.kind in {"no_sources", "no_daemon", "missing_optional_dep"}:
-                _render_diagnostic(env, diag)
-                return raw_lifecycle_healthy
-
-        if not compact and not actively_ingesting:
-            env.ui.console.print("\n  [dim]Run [bold]polylogued run[/bold] to start the daemon.[/dim]")
-        return raw_lifecycle_healthy
-    except Exception as exc:
-        # markup=False: raw exception text may contain [brackets] Rich would
-        # otherwise parse as style tags and crash on, hiding the error.
-        env.ui.console.print(
-            f"\nArchive exists at {archive_root()} but could not be queried ({type(exc).__name__}: {exc}).",
-            style="yellow",
-            markup=False,
-        )
-        return False
 
 
 def _render_archive_readiness(env: AppEnv, readiness: dict[str, Any]) -> None:
@@ -2504,7 +1008,8 @@ def _archive_primary_tier_count(tier: str, counts: dict[str, int]) -> tuple[str,
         "source": "raw_sessions",
         "index": "sessions",
         "embeddings": "embedding_status",
-        "user": "annotations",
+        "user": "assertions",
+        "audit": "mutation_attempts",
         "ops": "ingest_attempts",
     }
     table = primary_tables.get(tier)

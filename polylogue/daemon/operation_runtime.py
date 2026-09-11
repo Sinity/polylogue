@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -9,6 +10,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic, time
+from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.archive.query.execution_control import QueryExecutionContext
 from polylogue.daemon.execution import BoundedComputeAdapter, CancellationHandle, DaemonBackpressureError
@@ -19,7 +21,7 @@ from polylogue.operations.audit import (
     MachineRequestBinding,
     MachineRequestConflictError,
 )
-from polylogue.operations.daemon_execution import execute_operation, operation_envelope
+from polylogue.operations.daemon_execution import execute_operation, operation_envelope, validate_execution_request
 from polylogue.operations.daemon_protocol import (
     DaemonAuthority,
     DaemonOperationEnvelope,
@@ -29,7 +31,13 @@ from polylogue.operations.daemon_protocol import (
 from polylogue.operations.daemon_reads import DaemonReadDependencies
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
-from polylogue.operations.operation_context import OperationContext, PinnedOperationRead
+from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, observe_control_authority
+
+if TYPE_CHECKING:
+    from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance
+    from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
+
+_T = TypeVar("_T")
 
 
 class BeforeAcceptanceCancelledError(RuntimeError):
@@ -60,20 +68,109 @@ class DaemonOperationRuntime:
         execution_kernel: BoundedComputeAdapter,
         read_dependencies: DaemonReadDependencies | None = None,
         read_dependencies_factory: Callable[[], DaemonReadDependencies] | None = None,
+        owner_loop: asyncio.AbstractEventLoop | None = None,
+        session_maintenance: SessionInsightMaintenance | None = None,
     ) -> None:
         self.archive_root = archive_root.resolve()
         self._bridge = write_bridge
         self._kernel = execution_kernel
         self._read_dependencies = read_dependencies
         self._read_dependencies_factory = read_dependencies_factory
+        self._owner_loop = owner_loop
+        self._session_maintenance = session_maintenance
         self._condition = threading.Condition(threading.RLock())
         self._exchanges: dict[str, _Exchange] = {}
+        self._closing = False
+
+    async def shutdown(self) -> None:
+        """Stop admission and settle actual operation workers before owner teardown."""
+        with self._condition:
+            self._closing = True
+            exchanges = tuple(self._exchanges.values())
+            for exchange in exchanges:
+                exchange.cancellation.cancel()
+            self._condition.notify_all()
+        pending = asyncio.gather(
+            *(asyncio.wrap_future(exchange.future) for exchange in exchanges if exchange.future is not None),
+            return_exceptions=True,
+        )
+        try:
+            await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            while not pending.done():
+                try:
+                    await asyncio.shield(pending)
+                except asyncio.CancelledError:
+                    continue
+            raise
+
+    @property
+    def shutdown_settled(self) -> bool:
+        with self._condition:
+            return self._closing and not self._exchanges
 
     def publication_guard(self) -> AbstractContextManager[None]:
         return self._bridge.hold("operation.pin-read")
 
-    def run_write(self, name: str, work: Callable[[], DaemonOperationEnvelope]) -> DaemonOperationEnvelope:
+    def run_write(self, name: str, work: Callable[[], _T]) -> _T:
         return self._bridge.run_sync_with_timeout(f"operation.{name}", None, work)
+
+    async def compute_phase(self, work: Callable[[], _T]) -> _T:
+        """Await shared admission without occupying another kernel worker."""
+        submitted = self._kernel.submit(work, admission_class="control")
+        pending = asyncio.wrap_future(submitted.future)
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            while not pending.done():
+                try:
+                    await asyncio.shield(pending)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not pending.cancelled():
+                pending.exception()
+            raise
+
+    async def write_phase(self, name: str, work: Callable[[], _T]) -> _T:
+        result = await self._bridge.run_async(f"operation.{name}", work)
+        self._notify()
+        return result
+
+    def require_session_maintenance(self) -> None:
+        if self._session_maintenance is None:
+            raise ValueError("session derivation runtime is unavailable")
+
+    def session_profile_plan_binding(self, *, opened_index_path: Path) -> tuple[str, str]:
+        self.require_session_maintenance()
+        assert self._session_maintenance is not None
+        return self._session_maintenance.plan_binding(opened_index_path=opened_index_path)
+
+    async def converge_ingest_sessions(
+        self,
+        request: DaemonOperationRequest,
+        session_ids: tuple[str, ...],
+        *,
+        expected_recipe: str,
+        stop_requested: Callable[[], str | None],
+    ) -> SessionInsightPartReceipt:
+        self.require_session_maintenance()
+        assert self._session_maintenance is not None
+        return await self._session_maintenance.converge_ingest_sessions(
+            session_ids,
+            expected_recipe=expected_recipe,
+            stop_requested=lambda: self.stop_reason(request) or stop_requested(),
+        )
+
+    async def converge_insight_part(
+        self, request: DaemonOperationRequest, part: AcceptedInsightPart, *, stop_requested: Callable[[], str | None]
+    ) -> SessionInsightPartReceipt:
+        self.require_session_maintenance()
+        assert self._session_maintenance is not None
+        return await self._session_maintenance.converge_part(
+            part, stop_requested=lambda: self.stop_reason(request) or stop_requested()
+        )
 
     def observe_snapshot(self, request: DaemonOperationRequest, snapshot: PinnedOperationRead) -> None:
         with self._condition:
@@ -125,7 +222,13 @@ class DaemonOperationRuntime:
         audit = AuditRepository.for_archive_root(self.archive_root)
         try:
             with audit.settled_machine_read():
-                return audit.machine_request(exchange.binding)
+                record = audit.machine_request(exchange.binding)
+                # Preview-page staging is durable authority preparation, not
+                # acceptance of the execution manifest. Only its seal crosses
+                # the machine acceptance boundary.
+                if record is not None and record["artifact_kind"] == "insight-preview-pages":
+                    return None
+                return record
         except AuditContinuityPendingError:
             return None
 
@@ -195,11 +298,58 @@ class DaemonOperationRuntime:
             else None
         )
         context = OperationContext(self.archive_root, principal, "daemon", self, dependencies, read_control)
+        request = validate_execution_request(request, context)
         if request.operation.startswith("operation."):
             return execute_operation(request, context).to_dict()
+        if spec.accepted_reference:
+            control = observe_control_authority(self.archive_root)
+            if request.archive_root is not None and Path(request.archive_root).resolve() != self.archive_root.resolve():
+                raise ValueError("archive_identity_mismatch")
+            binding = MachineRequestBinding(
+                control.identity.authority_identity_digest,
+                str(request.request_id),
+                principal.actor_ref,
+                request.fingerprint,
+                request.operation,
+            )
+            audit = AuditRepository.for_archive_root(self.archive_root)
+            try:
+                with audit.settled_machine_read():
+                    record = audit.machine_request(binding)
+                    durable = machine_request_state(audit, record) if record is not None else None
+            except AuditContinuityPendingError:
+                durable = None
+            except MachineRequestConflictError:
+                return operation_envelope(
+                    request,
+                    context,
+                    snapshot=control,
+                    outcome="rejected",
+                    error={"code": "request_identity_conflict", "retryable": False},
+                ).to_dict()
+            if durable is not None and durable["outcome"] in {"completed", "failed", "cancelled"}:
+                # Initial generation/recipe preconditions were checked at
+                # acceptance. A historical terminal receipt does not reopen
+                # index/source or become false after ordinary reconvergence.
+                return operation_envelope(
+                    request,
+                    context,
+                    snapshot=control,
+                    started_at=started,
+                    outcome=str(durable["outcome"]),
+                    reference=record,
+                    result=durable.get("result", durable),
+                ).to_dict()
         request_id = str(request.request_id)
         peer_closed = False
         with self._condition:
+            if self._closing:
+                return operation_envelope(
+                    request,
+                    context,
+                    outcome="rejected",
+                    error={"code": "runtime_stopping", "retryable": True},
+                ).to_dict()
             exchange = self._exchanges.get(request_id)
             if exchange is not None:
                 if exchange.request.fingerprint != request.fingerprint or exchange.context.principal != principal:
@@ -238,11 +388,31 @@ class DaemonOperationRuntime:
                     return execute_operation(request, context)
 
                 try:
-                    scheduled = self._kernel.submit(
-                        work,
-                        admission_class="interactive-read" if spec.authority is DaemonAuthority.READ else "control",
-                        cancellation=exchange.cancellation if spec.authority is DaemonAuthority.READ else None,
-                    )
+                    if request.operation in {"ingest", "maintenance.insights.rebuild"}:
+                        if self._owner_loop is None:
+                            self._exchanges.pop(request_id)
+                            return operation_envelope(
+                                request,
+                                context,
+                                outcome="rejected",
+                                error={"code": "ingest_runtime_unavailable", "retryable": False},
+                            ).to_dict()
+                        from polylogue.operations.daemon_ingest import execute_ingest_operation
+                        from polylogue.operations.daemon_insights import execute_insights_rebuild_operation
+
+                        staged = (
+                            execute_ingest_operation
+                            if request.operation == "ingest"
+                            else execute_insights_rebuild_operation
+                        )
+                        exchange.future = asyncio.run_coroutine_threadsafe(staged(request, context), self._owner_loop)
+                    else:
+                        scheduled = self._kernel.submit(
+                            work,
+                            admission_class="interactive-read" if spec.authority is DaemonAuthority.READ else "control",
+                            cancellation=exchange.cancellation if spec.authority is DaemonAuthority.READ else None,
+                        )
+                        exchange.future = scheduled.future
                 except DaemonBackpressureError:
                     self._exchanges.pop(request_id)
                     return operation_envelope(
@@ -254,7 +424,6 @@ class DaemonOperationRuntime:
                             "retryable": True,
                         },
                     ).to_dict()
-                exchange.future = scheduled.future
 
                 def settled(_future: Future[object]) -> None:
                     with self._condition:
@@ -362,7 +531,7 @@ class DaemonOperationRuntime:
                     record = audit.machine_request_for_principal(archive_identity, target, principal.actor_ref)
                     if record is None:
                         raise ValueError("operation_reference_unknown")
-                    if record["artifact_kind"] == "execution-batch":
+                    if record["artifact_kind"] in {"execution-batch", "source-generation"}:
                         binding = MachineRequestBinding(
                             **{
                                 key: str(record[key])
@@ -376,7 +545,10 @@ class DaemonOperationRuntime:
                             }
                         )
                         parts = audit.machine_parts(binding)
-                        if any(part["operation_id"] is None for part in parts):
+                        if any(part["operation_id"] is None for part in parts) or (
+                            record["artifact_kind"] == "source-generation"
+                            and machine_request_state(audit, record)["outcome"] not in {"completed", "failed"}
+                        ):
                             audit.stop_machine_batch(binding, "cancelled")
 
                 try:

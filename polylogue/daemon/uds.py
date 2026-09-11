@@ -200,6 +200,7 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
             archive_root,
             write_bridge=write_bridge,
             execution_kernel=execution_kernel,
+            owner_loop=write_bridge.owner_loop,
         )
         socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         super().__init__(str(socket_path), MachineOperationHandler)

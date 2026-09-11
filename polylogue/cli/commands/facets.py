@@ -6,9 +6,7 @@ from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.query_verbs import emit_facets_response
-from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
@@ -66,18 +64,7 @@ def facets_command(
         no_idf=no_idf,
         disabled=bool(ctx.parent and ctx.parent.params.get("no_daemon")),
     )
-    if daemon_response is not None:
-        emit_facets_response(daemon_response, output_format="json" if json_output else output_format)
-        return
-
-    spec = RootModeRequest.from_params(
-        {
-            "query": (query_text,) if query_text else (),
-            "origin": origin,
-        }
-    ).query_spec()
-    response = run_coroutine_sync(env.polylogue.facets(spec, include_idf=not no_idf, include_deferred=include_deferred))
-    emit_facets_response(response, output_format="json" if json_output else output_format)
+    emit_facets_response(daemon_response, output_format="json" if json_output else output_format)
 
 
 def _fetch_daemon_facets(
@@ -88,44 +75,26 @@ def _fetch_daemon_facets(
     include_deferred: bool,
     no_idf: bool,
     disabled: bool,
-) -> FacetsResponse | None:
-    """Use the config-matched UDS daemon for read-only facets when lossless."""
-
-    from polylogue.config import load_polylogue_config
-
-    settings = load_polylogue_config()
-    if disabled or no_idf or settings.no_daemon:
-        return None
-    if settings.daemon_client_mode == "off":
-        return None
-    from polylogue.cli.daemon_client import DaemonClient
+) -> FacetsResponse:
+    """Use the same supplied-reader facet operation for both serving modes."""
+    from polylogue.cli.operation_kernel import configured_read_operation
     from polylogue.cli.shared.helpers import load_effective_config
-    from polylogue.daemon.api_auth import resolve_api_auth_token
-    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.config import load_polylogue_config
     from polylogue.surfaces.payloads import FacetsResponse
 
+    settings = load_polylogue_config()
     config = load_effective_config(env)
-    client = DaemonClient(
-        daemon_socket_path(config.archive_root),
-        auth_token=resolve_api_auth_token(
-            getattr(config, "api_auth_token", None),
-            allow_no_auth=getattr(config, "api_allow_no_auth", False),
-        ),
-    )
-    params: dict[str, str] = {}
-    if query_text:
-        params["query"] = query_text
+    params: dict[str, object] = {
+        "query": query_text or "",
+        "include_deferred": include_deferred,
+        "no_idf": no_idf,
+    }
     if origin:
         params["origin"] = origin
-    if include_deferred:
-        params["include_expensive"] = "1"
-    envelope = client.operation("facets", {"params": params}, archive_root=str(config.archive_root))
-    if envelope is None or envelope.get("error") is not None:
-        return None
-    payload = envelope.get("result")
-    if not isinstance(payload, dict):
-        return None
-    try:
-        return FacetsResponse.model_validate(payload)
-    except ValueError:
-        return None
+    result = configured_read_operation(
+        config,
+        "facets",
+        {"params": params},
+        daemon_disabled=disabled or settings.no_daemon or settings.daemon_client_mode == "off",
+    )
+    return FacetsResponse.model_validate(result.value)

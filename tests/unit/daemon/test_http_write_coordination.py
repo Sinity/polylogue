@@ -5,17 +5,14 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import socket
 import sqlite3
 import threading
 from collections.abc import Awaitable, Callable, Iterator
 from http import HTTPStatus
 from io import BytesIO
-from os import getpid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
 
 import pytest
 
@@ -24,6 +21,7 @@ from polylogue.daemon.http import (
     DaemonAPIHTTPServer,
 )
 from polylogue.daemon.web_auth import WebCredentialScope
+from tests.infra.daemon_operations import running_daemon_operations
 
 
 class _RecordingBridge:
@@ -111,34 +109,17 @@ def _seed_delete_authority_archive(root: Path, count: int) -> tuple[str, ...]:
 
 @contextlib.contextmanager
 def _delete_authority_daemon(monkeypatch: pytest.MonkeyPatch, archive_root: Path) -> Iterator[object]:
-    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
-    from polylogue.daemon_client import DaemonClient
-
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
-    socket_path = Path("/tmp") / f"polylogue-delete-authority-{getpid()}-{uuid4().hex}.sock"
-    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        try:
-            probe.bind(str(socket_path))
-        except PermissionError:
-            pytest.skip("sandbox denies AF_UNIX listeners required for the production daemon route")
-    finally:
-        probe.close()
-        socket_path.unlink(missing_ok=True)
-    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
-    server.auth_token = "delete-authority-token"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with running_daemon_operations(archive_root) as stack:
+        stack.server.auth_token = "delete-authority-token"
+        stack.client.auth_token = "delete-authority-token"
+        stack.client.archive_root = archive_root
         # These routes delete hundreds of sessions through a real daemon. The
         # client budget bounds one request, not the test: at two seconds it
         # measured how loaded the host was. A genuine hang is still caught by
         # the suite-wide pytest timeout.
-        yield DaemonClient(socket_path, timeout_s=60.0, auth_token="delete-authority-token")
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+        stack.client.timeout_s = 60.0
+        yield stack.client
 
 
 def _delete_operation(client: object, step: str, body: dict[str, object]) -> dict[str, object]:
@@ -151,7 +132,15 @@ def _delete_operation(client: object, step: str, body: dict[str, object]) -> dic
     from polylogue.daemon_client import DaemonClient, DaemonResponseError
 
     assert isinstance(client, DaemonClient)
-    envelope = client.operation(f"mutation.session.delete.{step}", body)
+    operation = f"mutation.session.delete.{step}"
+    if step == "execute":
+        envelope = client.operation(operation, body)  # type: ignore[attr-defined]
+    else:
+        envelope = client.operation_to_completion(  # type: ignore[attr-defined]
+            operation,
+            body,
+            archive_root=str(client.archive_root),  # type: ignore[attr-defined]
+        )
     assert envelope is not None, f"daemon did not answer {step}"
     error = envelope.get("error")
     if error:
@@ -298,8 +287,10 @@ def test_matched_session_mutation_runs_under_the_daemon_authority(
     session_ids = _seed_delete_authority_archive(archive_root, 2)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        envelope = client.operation(  # type: ignore[attr-defined]
-            operation, {"session_ids": list(session_ids), payload_key: values}
+        envelope = client.operation_to_completion(  # type: ignore[attr-defined]
+            operation,
+            {"session_ids": list(session_ids), payload_key: values},
+            archive_root=str(archive_root),
         )
 
     assert envelope is not None
@@ -317,8 +308,10 @@ def test_matched_session_mutation_refuses_a_malformed_selection(
     _seed_delete_authority_archive(archive_root, 1)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        envelope = client.operation(  # type: ignore[attr-defined]
-            "mutation.session.tag", {"session_ids": [], "tags": ["triage"]}
+        envelope = client.operation_to_completion(  # type: ignore[attr-defined]
+            "mutation.session.tag",
+            {"session_ids": [], "tags": ["triage"]},
+            archive_root=str(archive_root),
         )
 
     assert envelope is not None

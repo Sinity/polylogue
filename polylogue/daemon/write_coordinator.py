@@ -713,6 +713,32 @@ class DaemonWriteThreadBridge:
                 future.cancel()
                 logger.warning("timed out releasing daemon write gate actor=%s", actor)
 
+    @property
+    def owner_loop(self) -> asyncio.AbstractEventLoop:
+        """The explicitly composed loop that owns this bridge's writer."""
+        return self._loop
+
+    async def run_async(self, actor: str, function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
+        """Borrow the already-owned loop for one staged operation publication."""
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("staged publication must run on the bridge's owner loop")
+        pending = asyncio.create_task(self._coordinator.run_sync(actor, function, *args, **kwargs))
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            # A lifecycle cancellation is not permission to release the
+            # writer or abandon the receipt of an admitted callable.
+            while not pending.done():
+                try:
+                    await asyncio.shield(pending)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not pending.cancelled():
+                pending.exception()
+            raise
+
     def run_sync(self, actor: str, function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
         """Run a blocking request operation through the daemon's sole writer.
 

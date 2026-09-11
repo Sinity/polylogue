@@ -12,7 +12,7 @@ import select
 import socket
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from dataclasses import replace as dataclasses_replace
@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
-from time import monotonic
+from time import monotonic, time
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
@@ -111,6 +111,7 @@ from polylogue.surfaces.payloads import (
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.daemon.session_profile_composition import SessionProfileCallback
     from polylogue.daemon.webui import WebUIAsset
     from polylogue.operations.mutation_transaction import MutationPrincipal
     from polylogue.storage.sqlite.archive_tiers.archive import (
@@ -5618,37 +5619,53 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
             else None
         )
 
+        from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+
+        self.session_profile_callback = compose_session_profile_callback(
+            self.archive_root,
+            compute_adapter=self.execution_kernel,
+            write_bridge=self.write_bridge,
+            now=time,
+        )
         self.operation_runtime = DaemonOperationRuntime(
             self.archive_root,
             write_bridge=self.write_bridge,
             execution_kernel=self.execution_kernel,
+            owner_loop=self.write_bridge.owner_loop,
+            session_maintenance=self.session_profile_callback.maintenance,
             read_dependencies_factory=lambda: DaemonReadDependencies(
                 vector_binding=vector_binding,
                 runtime_status=get_status_snapshot_payload(),
                 status_config=operation_settings,
             ),
         )
+        if self._owned_write_runtime is not None:
+            self._owned_write_runtime.start_session_profile_sweep(self.session_profile_callback)
 
     def server_close(self) -> None:
-        # cancel_futures=True drops any still-queued (not yet started) work
-        # and wait=False means this call itself does not block on a wedged
-        # in-flight query. A worker already stuck in one keeps running as an
-        # orphaned thread; concurrent.futures registers its own atexit hook
-        # that would otherwise join it at interpreter exit, so a genuinely
-        # wedged query can still delay process exit until systemd's
-        # TimeoutStopSec forces a SIGKILL -- acceptable (bounded, not
-        # unbounded) and unchanged from today's plain-thread behavior.
-        kernel = getattr(self, "execution_kernel", None)
-        if isinstance(kernel, BoundedComputeAdapter):
-            kernel.shutdown(wait=False, cancel_futures=True)
-        else:
-            executor = getattr(self, "archive_query_executor", None)
-            if executor is not None:
-                executor.shutdown(wait=False, cancel_futures=True)
+        # Staged workers settle before their shared compute owner closes.
+        # Standalone composition also drains its periodic profile task and
+        # writer; polylogued drains those services before calling this method.
+        def close_compute() -> None:
+            kernel = getattr(self, "execution_kernel", None)
+            if isinstance(kernel, BoundedComputeAdapter):
+                kernel.shutdown(wait=False, cancel_futures=True)
+            else:
+                executor = getattr(self, "archive_query_executor", None)
+                if executor is not None:
+                    executor.shutdown(wait=False, cancel_futures=True)
+
         owned_write_runtime = getattr(self, "_owned_write_runtime", None)
         self._owned_write_runtime = None
         if owned_write_runtime is not None:
-            owned_write_runtime.close()
+            owned_write_runtime.close(before_drain=self.operation_runtime.shutdown, after_drain=close_compute)
+        else:
+            runtime = getattr(self, "operation_runtime", None)
+            if runtime is None or runtime.shutdown_settled:
+                close_compute()
+            else:
+                settled = asyncio.run_coroutine_threadsafe(runtime.shutdown(), self.write_bridge.owner_loop)
+                settled.add_done_callback(lambda future: close_compute() if future.exception() is None else None)
         super().server_close()
 
 
@@ -5659,6 +5676,7 @@ class _StandaloneWriteRuntime:
         ready = threading.Event()
         self.loop = asyncio.new_event_loop()
         self.coordinator: DaemonWriteCoordinator | None = None
+        self._session_profile_task: asyncio.Task[None] | None = None
 
         def run() -> None:
             asyncio.set_event_loop(self.loop)
@@ -5683,22 +5701,58 @@ class _StandaloneWriteRuntime:
             self.close()
             raise
 
-    def close(self) -> None:
-        assert self.coordinator is not None
-        future = asyncio.run_coroutine_threadsafe(self.coordinator.shutdown(timeout=5.0), self.loop)
-        try:
-            idle = future.result(timeout=5.5)
-        except TimeoutError:
-            idle = False
-        if idle:
-            self.loop.call_soon_threadsafe(self.loop.stop)
-            self.thread.join(timeout=1.0)
-        else:
-            logger.warning("standalone daemon HTTP writer still active during server close")
-            asyncio.run_coroutine_threadsafe(self._stop_when_idle(), self.loop)
+    def start_session_profile_sweep(self, callback: SessionProfileCallback) -> None:
+        """Borrow the existing loop and compute owner even without a watcher."""
 
-    async def _stop_when_idle(self) -> None:
+        async def sweep() -> None:
+            while True:
+                try:
+                    await callback(None)
+                except Exception:
+                    logger.warning("standalone session profile convergence failed", exc_info=True)
+                await asyncio.sleep(60.0)
+
+        async def start() -> None:
+            if self._session_profile_task is not None:
+                raise RuntimeError("standalone session profile sweep already started")
+            self._session_profile_task = asyncio.create_task(sweep(), name="standalone.session-profiles")
+
+        asyncio.run_coroutine_threadsafe(start(), self.loop).result(timeout=2.0)
+
+    def close(
+        self,
+        *,
+        before_drain: Callable[[], Awaitable[None]] | None = None,
+        after_drain: Callable[[], None] | None = None,
+    ) -> None:
         assert self.coordinator is not None
+        future = asyncio.run_coroutine_threadsafe(self._stop_when_idle(before_drain, after_drain), self.loop)
+        future.add_done_callback(
+            lambda completed: self.loop.call_soon_threadsafe(self.loop.stop) if completed.exception() is None else None
+        )
+        try:
+            future.result(timeout=5.5)
+        except TimeoutError:
+            # The task retains the loop, writer and compute owner until actual
+            # publication settles. A bounded close does not release ownership.
+            logger.warning("standalone daemon HTTP runtime still draining during server close")
+            return
+        self.thread.join(timeout=1.0)
+
+    async def _stop_when_idle(
+        self,
+        before_drain: Callable[[], Awaitable[None]] | None = None,
+        after_drain: Callable[[], None] | None = None,
+    ) -> None:
+        assert self.coordinator is not None
+        if before_drain is not None:
+            await before_drain()
+        task = self._session_profile_task
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         while not await self.coordinator.shutdown(timeout=5.0):
             logger.warning("standalone daemon HTTP writer still draining after server close")
-        self.loop.call_soon(self.loop.stop)
+        if after_drain is not None:
+            after_drain()

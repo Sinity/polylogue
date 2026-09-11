@@ -94,6 +94,7 @@ class DaemonOperationStack:
 
         loop = self._loop.loop
         assert loop is not None
+        asyncio.run_coroutine_threadsafe(self.runtime.shutdown(), loop).result(timeout=5)
         drained = asyncio.run_coroutine_threadsafe(self.write_coordinator.shutdown(timeout=2), loop).result(timeout=3)
         if not drained:
             raise RuntimeError("test daemon writer did not drain before loop close")
@@ -138,7 +139,9 @@ def running_daemon_operations(
     bridge.run_sync("daemon.operation_journals.startup", prepare_operation_journals, archive_root)
     bridge.run_sync("daemon.operation_recovery.startup", recover_interrupted_operations, archive_root)
     kernel = BoundedComputeAdapter(max_workers=2, queue_units=4, thread_name_prefix="test-daemon-operation")
-    runtime = DaemonOperationRuntime(archive_root, write_bridge=bridge, execution_kernel=kernel)
+    runtime = DaemonOperationRuntime(
+        archive_root, write_bridge=bridge, execution_kernel=kernel, owner_loop=bridge.owner_loop
+    )
     server = DaemonAPIUnixHTTPServer(
         socket_path,
         archive_root=archive_root,

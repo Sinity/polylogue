@@ -94,7 +94,6 @@ from polylogue.storage.sqlite.connection import _load_sqlite_vec
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     WRITE_CONNECTION_PROFILE,
-    open_connection,
     open_isolated_write_connection,
     open_readonly_connection,
     write_connection_pragma_statements,
@@ -171,7 +170,9 @@ def _open_sync_connection(db_path: Path, *, archive_root: Path | None = None) ->
     # This is the index publication connection.  Route it through the
     # canonical writer factory so daemon-owned batches cannot open a second
     # write door outside the archive-bound coordinator lease.
-    conn = open_connection(db_path, timeout=DB_TIMEOUT, archive_root=bound_root)
+    conn = open_isolated_write_connection(
+        db_path, purpose="ingest index publication", timeout=DB_TIMEOUT, archive_root=bound_root
+    )
     conn.row_factory = sqlite3.Row
     for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
         conn.execute(statement)

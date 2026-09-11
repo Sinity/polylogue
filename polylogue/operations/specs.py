@@ -662,8 +662,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="mutate-rebuild-insights",
         kind=OperationKind.MAINTENANCE,
         description=(
-            "Rebuild durable session-insight read models for the requested session set. The canonical "
-            "materializer runs through OperationExecutor/InsightsRebuildActuator with a typed receipt."
+            "Converge the exact accepted session-insight target manifest through the daemon's shared "
+            "profile owner, with phased OperationExecutor authorization and historical receipts."
         ),
         surfaces=("facade", "mcp"),
         mutates_state=True,
@@ -672,7 +672,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
-        allowed_surfaces=("api",),
+        allowed_surfaces=("cli", "api", "mcp", "daemon"),
         target_authority=(
             TargetAuthorityPolicy(
                 key="insights-rebuild",

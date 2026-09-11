@@ -8,7 +8,7 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from time import monotonic
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.operations.audit import AuditRepository, MachineRequestRecoveredError
@@ -30,13 +30,39 @@ from polylogue.operations.operation_context import (
 )
 from polylogue.version import POLYLOGUE_VERSION
 
+_T = TypeVar("_T")
+
+if TYPE_CHECKING:
+    from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
+
 
 class OperationRuntime(Protocol):
     """Resident authority injected into the product executor by its owner."""
 
     def publication_guard(self) -> AbstractContextManager[None]: ...
 
-    def run_write(self, name: str, work: Callable[[], DaemonOperationEnvelope]) -> DaemonOperationEnvelope: ...
+    def run_write(self, name: str, work: Callable[[], _T]) -> _T: ...
+
+    async def compute_phase(self, work: Callable[[], _T]) -> _T: ...
+
+    async def write_phase(self, name: str, work: Callable[[], _T]) -> _T: ...
+
+    def require_session_maintenance(self) -> None: ...
+
+    def session_profile_plan_binding(self, *, opened_index_path: Path) -> tuple[str, str]: ...
+
+    async def converge_ingest_sessions(
+        self,
+        request: DaemonOperationRequest,
+        session_ids: tuple[str, ...],
+        *,
+        expected_recipe: str,
+        stop_requested: Callable[[], str | None],
+    ) -> SessionInsightPartReceipt: ...
+
+    async def converge_insight_part(
+        self, request: DaemonOperationRequest, part: AcceptedInsightPart, *, stop_requested: Callable[[], str | None]
+    ) -> SessionInsightPartReceipt: ...
 
     def audit_for_request(self, request: DaemonOperationRequest, context: OperationContext) -> AuditRepository: ...
 
@@ -127,21 +153,29 @@ def _validate_identity(
         raise ValueError("daemon_version_mismatch")
 
 
+def validate_execution_request(request: DaemonOperationRequest, context: OperationContext) -> DaemonOperationRequest:
+    """Apply the same admission contract before synchronous or staged execution."""
+    request = DaemonOperationRequest.from_dict(request.to_dict())
+    spec = daemon_operation_spec(request.operation)
+    assert spec is not None
+    if len(json.dumps(request.to_dict(), separators=(",", ":")).encode()) > spec.max_body_bytes:
+        raise ValueError("request_too_large")
+    if spec.capability not in context.principal.capabilities:
+        raise PermissionError(f"operation requires capability {spec.capability}")
+    if context.runtime is None and not spec.direct_allowed:
+        raise PermissionError("daemon_required")
+    return request
+
+
 def execute_operation(request: DaemonOperationRequest, context: OperationContext) -> DaemonOperationEnvelope:
     """Validate and execute the declared operation against explicit authority."""
 
     started = monotonic()
     snapshot: PinnedOperationRead | None = None
     try:
-        request = DaemonOperationRequest.from_dict(request.to_dict())
+        request = validate_execution_request(request, context)
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
-        if len(json.dumps(request.to_dict(), separators=(",", ":")).encode()) > spec.max_body_bytes:
-            raise ValueError("request_too_large")
-        if spec.capability not in context.principal.capabilities:
-            raise PermissionError(f"operation requires capability {spec.capability}")
-        if context.runtime is None and not spec.direct_allowed:
-            raise PermissionError("daemon_required")
         if request.operation.startswith("operation."):
             assert context.runtime is not None
             control_snapshot = observe_control_authority(context.archive_root)

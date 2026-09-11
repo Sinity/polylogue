@@ -46,7 +46,7 @@ def _captured_operation(monkeypatch: pytest.MonkeyPatch, config: Any, call: Any)
             seen["payload"] = payload
             return {"operation": operation, "outcome": "complete", "result": {"items": [], "total": 0}}
 
-    monkeypatch.setattr("polylogue.cli.daemon_client.DaemonClient", _Client)
+    monkeypatch.setattr("polylogue.daemon_client.DaemonClient", _Client)
     monkeypatch.setattr(archive_query, "_daemon_disabled", lambda **_kwargs: False)
     call(config)
     return seen["operation"], seen["payload"]
@@ -90,6 +90,6 @@ def test_a_disabled_daemon_never_opens_a_client(monkeypatch: pytest.MonkeyPatch,
     def _explode(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("a disabled daemon must not construct a client")
 
-    monkeypatch.setattr("polylogue.cli.daemon_client.DaemonClient", _explode)
+    monkeypatch.setattr("polylogue.daemon_client.DaemonClient", _explode)
 
     assert archive_query._fetch_daemon_payload(_config, "query.units", {}, disabled=True) is None

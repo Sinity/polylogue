@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from polylogue.operations.mutation_transaction import MutationPlan, MutationPreview
@@ -282,7 +282,7 @@ class InsightAcceptance:
                 preview_ref=preview.preview_ref,
                 authorization_ref="pending-authorization",
             )
-            if durable != expected:
+            if durable != replace(expected, preview_ref=preview.preview_ref):
                 raise ValueError("staged insight page differs from the supplied immutable plan")
             return preview
         if expected.ordinal != len(parts):
