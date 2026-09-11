@@ -863,7 +863,7 @@ def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path
 
 
 def test_session_insight_rebuild_reprices_existing_usage_rows(tmp_path: Path) -> None:
-    """Catalog pricing is repaired even when source evidence is no longer present."""
+    """Catalog pricing repairs token rows retained by provider usage evidence."""
     db_path = tmp_path / "profile-stale-catalog-cost.db"
     with open_connection(db_path) as conn:
         store_records(
@@ -887,6 +887,15 @@ def test_session_insight_rebuild_reprices_existing_usage_rows(tmp_path: Path) ->
             conn=conn,
         )
         session_id = _sid("conv-stale-catalog-cost", "codex-session")
+        conn.execute(
+            """
+            INSERT INTO session_provider_usage_events (
+                session_id, position, provider_event_type, model_name,
+                last_input_tokens, last_output_tokens
+            ) VALUES (?, 99, 'token_count', 'gpt-5.5', ?, ?)
+            """,
+            (session_id, 1_000, 100),
+        )
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         conn.execute(
             "UPDATE session_model_usage SET input_tokens = 1_000, output_tokens = 100, catalog_cost_usd = NULL WHERE session_id = ?",

@@ -146,7 +146,7 @@ def make_session_profile_derivation(
     index_db_path: Path,
     *,
     archive_root: Path,
-    materializer_version: int,
+    materializer_version: int | None = None,
     now: Callable[[], float],
 ) -> DerivationAdapter:
     """Build the one daemon-owned adapter for one active index generation.
@@ -158,7 +158,11 @@ def make_session_profile_derivation(
     """
     from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+    from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
     from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
+
+    if materializer_version is None:
+        materializer_version = SESSION_INSIGHT_MATERIALIZER_VERSION
 
     def active_index_path() -> Path:
         # ``root/index.db`` can be a pointer stub.  Consult the configured

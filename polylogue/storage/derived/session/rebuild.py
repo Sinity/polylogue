@@ -1585,8 +1585,10 @@ def _refresh_provider_usage_rollup(conn: sqlite3.Connection, session_id: str) ->
     ``messages``, which are already persisted archive tables independent of
     any in-flight ``ParsedSession`` — so calling them here re-derives the
     rollup the same way ingest does, without needing the original parse. A
-    final pass reprices any surviving token rows whose source evidence is no
-    longer available.
+    final pass reprices surviving token rows. Reconciliation removes a row
+    with neither message nor provider-usage-event evidence, while a
+    provider-event-backed row remains priceable if its source message has
+    since disappeared.
     """
     from polylogue.storage.sqlite.archive_tiers.write import (
         _aggregate_message_tokens_into_model_usage,

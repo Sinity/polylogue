@@ -54,7 +54,6 @@ from polylogue.sources.parsers.base import (
     ParsedSessionRef,
 )
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
-from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -336,7 +335,6 @@ def converge_session_profiles(
             adapter = make_session_profile_derivation(
                 index_db,
                 archive_root=archive_root,
-                materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
                 now=now,
             )
             converger = DaemonConverger((), derivations=[adapter])

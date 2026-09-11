@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tests.infra.convergence_harness import (
+    converge_session_profiles,
     raw_authority_facts,
     seed_partial_convergence_archive,
     session_materialization_facts,
@@ -94,4 +96,46 @@ def test_fresh_no_hint_owner_sweeps_all_session_profiles_before_legacy_debt_can_
     _run_typed_owner_in_fresh_process(recovered.index_db, recovered.root, None)
     assert session_materialization_facts(recovered.index_db, session_id=recovered.target_session_id) == target
     assert session_materialization_facts(recovered.index_db, session_id=recovered.unrelated_session_id) == unrelated
+    assert raw_authority_facts(recovered.source_db) == raw_before
+
+
+@pytest.mark.contract
+@pytest.mark.timeout(90)
+def test_fresh_no_hint_owner_retires_an_excess_profile_before_reporting_complete(tmp_path: Path) -> None:
+    """A restart sweep reaches the output-only excess phase, not just sources.
+
+    Anti-vacuity: stop the no-hint owner after required source keys and the
+    profile for the removed session remains in the output relation forever.
+    """
+    recovered = seed_partial_convergence_archive(tmp_path / "recovered", target_hot=False)
+    converge_session_profiles(
+        recovered.index_db,
+        recovered.root,
+        (recovered.target_session_id, recovered.unrelated_session_id),
+        now=lambda: 0.0,
+    )
+    raw_before = raw_authority_facts(recovered.source_db)
+    with sqlite3.connect(recovered.index_db) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM session_profiles WHERE session_id = ?",
+            (recovered.unrelated_session_id,),
+        ).fetchone()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (recovered.unrelated_session_id,))
+        conn.commit()
+
+    _run_typed_owner_in_fresh_process(recovered.index_db, recovered.root, None)
+
+    with sqlite3.connect(recovered.index_db) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM session_profiles WHERE session_id = ?",
+            (recovered.target_session_id,),
+        ).fetchone()
+        assert (
+            conn.execute(
+                "SELECT 1 FROM session_profiles WHERE session_id = ?",
+                (recovered.unrelated_session_id,),
+            ).fetchone()
+            is None
+        )
     assert raw_authority_facts(recovered.source_db) == raw_before

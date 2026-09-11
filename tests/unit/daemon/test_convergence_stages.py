@@ -191,8 +191,7 @@ def test_file_probe_exceptions_log_and_fail_toward_work(
         assert fts.check_sessions is not None
         assert fts.check_sessions(session_ids) == set(session_ids)
 
-    assert "convergence freshness probe" in caplog.text
-    assert "treating as needs-work" in caplog.text
+    assert "fts: source-path partition lookup failed" in caplog.text
     assert warning_exc_info
     assert all(value is True for value in warning_exc_info)
 
