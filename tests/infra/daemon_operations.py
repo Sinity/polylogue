@@ -10,8 +10,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import queue
 import socket
+import sys
 import threading
+import traceback
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,6 +110,7 @@ def running_daemon_operations(
     archive_root: Path,
     *,
     seed_archive: Callable[[Path], None] | None = None,
+    server_error_sink: queue.SimpleQueue[str] | None = None,
 ) -> Iterator[DaemonOperationStack]:
     """Start one real machine operation stack rooted at ``archive_root``.
 
@@ -150,6 +154,16 @@ def running_daemon_operations(
         execution_kernel=kernel,
         operation_runtime=runtime,
     )
+    if server_error_sink is not None:
+
+        def capture_server_error(_request: object, _client_address: object) -> None:
+            """Retain one unhandled handler traceback for a test assertion."""
+
+            exc_type, exc, trace = sys.exc_info()
+            assert exc_type is not None and exc is not None
+            server_error_sink.put("".join(traceback.format_exception(exc_type, exc, trace)))
+
+        object.__setattr__(server, "handle_error", capture_server_error)
     thread = threading.Thread(target=server.serve_forever, name="test-machine-operation-listener", daemon=True)
     thread.start()
     stack = DaemonOperationStack(

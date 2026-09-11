@@ -152,7 +152,8 @@ def mutation_session_delete_cancel(
         )
         with audit.bind_machine_request(binding, transition="cancel_preview_batch"):
             audit.cancel_preview_batch(previews, context.principal)
-    return {"status": "cancelled", "preview_refs": list(_refs(request.payload, "preview_ref"))}
+    refs = _refs(request.payload, "preview_ref")
+    return {"status": "cancelled", "preview_ref": refs[0], "preview_refs": list(refs)}
 
 
 def _part_args(

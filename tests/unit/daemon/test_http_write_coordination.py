@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import socket
 import sqlite3
 import threading
 from collections.abc import Awaitable, Callable, Iterator
@@ -140,14 +141,11 @@ def _delete_operation(client: _DeleteDaemonClient, step: str, body: dict[str, ob
     from polylogue.daemon_client import DaemonResponseError
 
     operation = f"mutation.session.delete.{step}"
-    if step == "execute":
-        envelope = client.operation(operation, body)
-    else:
-        envelope = client.operation_to_completion(
-            operation,
-            body,
-            archive_root=str(client.archive_root),
-        )
+    envelope = client.operation_to_completion(
+        operation,
+        body,
+        archive_root=str(client.archive_root),
+    )
     assert envelope is not None, f"daemon did not answer {step}"
     error = envelope.get("error")
     if error:
@@ -391,6 +389,21 @@ def _operation_handler(timeline: list[str], body: bytes, *, content_length: int 
     """Build a real handler for ``POST /api/operation`` over a fake socket."""
 
     handler = _handler(["api", "operation"], timeline)
+    connection, peer = socket.socketpair()
+
+    class _RecordingOperationRuntime:
+        def call(self, request: object, _principal: object, **_kwargs: object) -> dict[str, object]:
+            timeline.append(f"runtime:{getattr(request, 'operation', 'unknown')}")
+            return {"outcome": "completed"}
+
+    object.__setattr__(
+        handler,
+        "server",
+        SimpleNamespace(write_bridge=_RecordingBridge(timeline), operation_runtime=_RecordingOperationRuntime()),
+    )
+    object.__setattr__(handler, "connection", connection)
+    # Retain the other endpoint so the disconnect observer sees an open peer.
+    object.__setattr__(handler, "_test_peer", peer)
     object.__setattr__(
         handler,
         "headers",
@@ -416,15 +429,15 @@ def _preview_operation_body(session_ids: list[str]) -> bytes:
     ).encode()
 
 
-def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_gate(
+def test_delete_preview_operation_bounds_body_bytes_and_reads_before_runtime_dispatch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The selection bound is the operation's own, and the gate opens after the read.
+    """The selection bound is the operation's own, and dispatch starts after the read.
 
     Anti-vacuity: raising ``mutation.session.delete.preview``'s
     ``max_body_bytes`` above the transport's declared maximum makes the
-    oversize case read a body it must refuse; entering the writer gate before
-    the body read reorders ``slow_timeline``.
+    oversize case read a body it must refuse; dispatching before the body read
+    reorders ``slow_timeline``.
     """
     from polylogue.operations.daemon_protocol import (
         MAX_DECLARED_OPERATION_BODY_BYTES,
@@ -449,10 +462,9 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_
     large_timeline: list[str] = []
     large_body = _preview_operation_body([f"codex-session:{index}" for index in range(257)])
     large = _operation_handler(large_timeline, large_body)
-    object.__setattr__(large, "_sync_run", lambda _operation: {"status": "prepared"})
     object.__setattr__(large, "_send_json", lambda *_args, **_kwargs: large_timeline.append("response"))
     large._do_post_impl()
-    assert large_timeline == ["enter:http.cli.delete.prepare", "exit:http.cli.delete.prepare", "response"]
+    assert large_timeline == ["runtime:mutation.session.delete.preview", "response"]
 
     slow_timeline: list[str] = []
     slow_body = _preview_operation_body(["codex-session:slow"])
@@ -460,18 +472,16 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_
     class _SlowBody:
         def read(self, _size: int) -> bytes:
             slow_timeline.append("body-read")
-            assert not any(item.startswith("enter:") for item in slow_timeline)
+            assert not any(item.startswith("runtime:") for item in slow_timeline)
             return slow_body
 
     slow = _operation_handler(slow_timeline, b"", content_length=len(slow_body))
     object.__setattr__(slow, "rfile", _SlowBody())
-    object.__setattr__(slow, "_sync_run", lambda _operation: {"status": "prepared"})
     object.__setattr__(slow, "_send_json", lambda *_args, **_kwargs: slow_timeline.append("response"))
     slow._do_post_impl()
     assert slow_timeline == [
         "body-read",
-        "enter:http.cli.delete.prepare",
-        "exit:http.cli.delete.prepare",
+        "runtime:mutation.session.delete.preview",
         "response",
     ]
 
