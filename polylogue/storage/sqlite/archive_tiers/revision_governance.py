@@ -150,6 +150,7 @@ from polylogue.core.timestamp_authority import (
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
+from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
@@ -285,6 +286,10 @@ class ArchiveRawParsedWriteResult:
     session_id: str
     content_changed: bool
     counts: dict[str, int]
+    # The ordinary raw replay route must retain the writer's typed owner
+    # decisions.  An empty tuple means every written attachment got a ref;
+    # entries are ``(attachment_id, reason)`` for deliberate non-links.
+    unresolved_attachment_owners: tuple[tuple[str, AttachmentOwnerResolutionReason], ...] = ()
 
 
 def _reissue_accepted_head_reparse_receipt(
@@ -458,6 +463,7 @@ def _write_parsed_precedence_result(
             session_id=session_id,
             content_changed=True,
             counts=store._write_counts(session),
+            unresolved_attachment_owners=(writer_outcomes[-1].unresolved_attachment_owners if writer_outcomes else ()),
         )
     if revision_authority_refuses_write(
         store._conn,
@@ -605,6 +611,7 @@ def _write_parsed_precedence_result(
         session_id=session_id,
         content_changed=True,
         counts=counts,
+        unresolved_attachment_owners=(writer_outcomes[-1].unresolved_attachment_owners if writer_outcomes else ()),
     )
 
 

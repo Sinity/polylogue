@@ -93,6 +93,10 @@ class _IngestBatchSummary:
     publication_payload_bytes: int = 0
     publication_deferred_raw_ids: set[str] = field(default_factory=set)
     schema_drift_observations: list[SchemaDriftObservation] = field(default_factory=list)
+    # Keep the exact production-writer disposition visible through the batch
+    # boundary.  This is deliberately per attachment rather than a single
+    # lossy counter: callers can account for every non-linked attachment.
+    attachment_owner_resolutions: list[dict[str, str]] = field(default_factory=list)
     counts: dict[str, int] = field(
         default_factory=lambda: {
             "sessions": 0,

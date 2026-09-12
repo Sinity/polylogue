@@ -87,6 +87,7 @@ def _build_parse_batch_observation(
         "commit_elapsed_ms": round(batch_summary.commit_elapsed_s * 1000, 1),
         "executor_teardown_elapsed_ms": round(batch_summary.teardown_elapsed_s * 1000, 1),
         "raw_state_update_elapsed_ms": round(raw_state_update_elapsed_s * 1000, 1),
+        "attachment_owner_resolutions": list(batch_summary.attachment_owner_resolutions),
     }
     residual_elapsed_s = _unattributed_batch_elapsed_s(
         elapsed_s=elapsed_s,

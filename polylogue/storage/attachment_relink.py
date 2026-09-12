@@ -101,10 +101,12 @@ class RelinkableAttachment:
 
 
 class UnrecoverableAttachmentReason(StrEnum):
-    NO_AUTHORITATIVE_RAW = "no_authoritative_raw"
-    # Alias retained for callers that need to distinguish source omission in
-    # the replay report without changing the historical wire value.
-    SOURCE_OMITTED = "no_authoritative_raw"
+    # ``source_omitted`` is the public replay disposition.  Keep the older
+    # spelling as an enum alias so callers comparing the historical member do
+    # not lose compatibility while serialized reports carry the typed reason
+    # required by the attachment-owner contract.
+    SOURCE_OMITTED = "source_omitted"
+    NO_AUTHORITATIVE_RAW = "source_omitted"
     MESSAGE_MISSING = "message_missing"
     OWNER_AMBIGUOUS = "owner_ambiguous"
     PROVIDER_NEVER_LINKED = "provider_never_linked"
