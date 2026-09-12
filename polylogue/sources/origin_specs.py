@@ -66,6 +66,11 @@ TopologyCapabilityDimension = Literal[
 #: authority from its first observation.
 SourceFrontierKind = Literal["exact-prefix", "claude-header-body", "whole-snapshot"]
 DatabaseMemberDisposition = Literal["acquire", "acquire-partial", "out-of-scope"]
+DatabaseTableDisposition = Literal[
+    "retained-and-consumed",
+    "retained-for-later-consumption",
+    "deliberately-excluded",
+]
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
@@ -827,6 +832,21 @@ class OriginCompletenessMode:
 
 
 @dataclass(frozen=True, slots=True)
+class DatabaseTableRule:
+    """Disposition of one observed table within a declared database member.
+
+    Member-level admission decides whether Polylogue opens a database at all.
+    Table rules make the narrower export decision inspectable: a retained table
+    belongs to the member's logical revision, while a deliberately excluded
+    table remains visible to schema observation with its reason.
+    """
+
+    table: str
+    disposition: DatabaseTableDisposition
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class DatabaseMemberRule:
     """Admission disposition for one database member of a DB-shaped origin.
 
@@ -844,6 +864,10 @@ class DatabaseMemberRule:
     reason: str
     logical_tables: tuple[str, ...] = ()
     consumer: str | None = None
+    table_rules: tuple[DatabaseTableRule, ...] = ()
+
+    def table_rule(self, table: str) -> DatabaseTableRule | None:
+        return next((item for item in self.table_rules if item.table == table), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1117,7 +1141,7 @@ class OriginSpecRegistry:
                     raise ValueError(f"{spec.origin.value}: database member filenames must be basenames")
                 for member in spec.database_capability.members:
                     if member.disposition == "out-of-scope":
-                        if member.logical_tables or member.consumer is not None:
+                        if member.logical_tables or member.consumer is not None or member.table_rules:
                             raise ValueError(
                                 f"{spec.origin.value}: out-of-scope database member "
                                 f"{member.filename} cannot declare a logical product"
@@ -1133,6 +1157,24 @@ class OriginSpecRegistry:
                             f"{spec.origin.value}: acquired database member {member.filename} "
                             "must name the consumer of its logical product"
                         )
+                    if member.table_rules:
+                        table_names = [rule.table for rule in member.table_rules]
+                        if len(table_names) != len(set(table_names)) or any(not name for name in table_names):
+                            raise ValueError(
+                                f"{spec.origin.value}: database member {member.filename} has duplicate or blank table rules"
+                            )
+                        retained_tables = {
+                            rule.table for rule in member.table_rules if rule.disposition != "deliberately-excluded"
+                        }
+                        if retained_tables != set(member.logical_tables):
+                            raise ValueError(
+                                f"{spec.origin.value}: database member {member.filename} table rules must account for "
+                                "exactly its logical tables"
+                            )
+                        if any(not rule.reason.strip() for rule in member.table_rules):
+                            raise ValueError(
+                                f"{spec.origin.value}: database member {member.filename} table rules require reasons"
+                            )
         elif spec.parser_paths or spec.stream_parser_path is not None:
             raise ValueError(f"{spec.origin.value}: non-executable origin cannot declare a parser binding")
         self._kernel.register(spec.declaration)
@@ -2029,9 +2071,89 @@ def _codex_spec() -> OriginSpec:
                     "state_5.sqlite",
                     "acquire",
                     "thread_state",
-                    "threads and spawn edges are unique state evidence",
-                    logical_tables=("threads", "thread_spawn_edges"),
-                    consumer="polylogue/sources/codex_state_projection.py:apply_retained_state_export",
+                    "thread state is retained as one logical export, with table-level dispositions below",
+                    logical_tables=(
+                        "threads",
+                        "thread_spawn_edges",
+                        "thread_artifacts",
+                        "thread_dynamic_tools",
+                        "thread_sections",
+                        "projects",
+                        "project_roots",
+                    ),
+                    consumer="polylogue/sources/codex_state_evidence.py:record_codex_state_snapshot_terminal",
+                    table_rules=(
+                        DatabaseTableRule(
+                            "threads",
+                            "retained-and-consumed",
+                            "Curated titles and orchestration metadata feed the thread-state projection.",
+                        ),
+                        DatabaseTableRule(
+                            "thread_spawn_edges",
+                            "retained-and-consumed",
+                            "Codex orchestration parent/child edges feed the thread-state projection.",
+                        ),
+                        DatabaseTableRule(
+                            "thread_artifacts",
+                            "retained-for-later-consumption",
+                            "Artifact identity and payload are thread evidence with no typed projection yet.",
+                        ),
+                        DatabaseTableRule(
+                            "thread_dynamic_tools",
+                            "retained-for-later-consumption",
+                            "Dynamic tool descriptions and schemas are thread evidence with no typed projection yet.",
+                        ),
+                        DatabaseTableRule(
+                            "thread_sections",
+                            "retained-for-later-consumption",
+                            "Thread section definitions contextualize the retained thread section references.",
+                        ),
+                        DatabaseTableRule(
+                            "projects",
+                            "retained-for-later-consumption",
+                            "Project identity and metadata contextualize retained thread project references.",
+                        ),
+                        DatabaseTableRule(
+                            "project_roots",
+                            "retained-for-later-consumption",
+                            "Project roots contextualize retained project references without a typed projection yet.",
+                        ),
+                        DatabaseTableRule(
+                            "_sqlx_migrations",
+                            "deliberately-excluded",
+                            "Database migration bookkeeping is not session evidence.",
+                        ),
+                        DatabaseTableRule(
+                            "backfill_state",
+                            "deliberately-excluded",
+                            "Resumable backfill cursor state is operational bookkeeping, not session evidence.",
+                        ),
+                        DatabaseTableRule(
+                            "external_agent_config_imports",
+                            "deliberately-excluded",
+                            "External-agent configuration import status is operational configuration, not session evidence.",
+                        ),
+                        DatabaseTableRule(
+                            "project_idempotency_keys",
+                            "deliberately-excluded",
+                            "Project request deduplication keys are operational state, not session evidence.",
+                        ),
+                        DatabaseTableRule(
+                            "remote_control_enrollments",
+                            "deliberately-excluded",
+                            "Remote-control enrollment configuration can carry connection details and is not session evidence.",
+                        ),
+                        DatabaseTableRule(
+                            "rollout_migration_skipped_rollouts",
+                            "deliberately-excluded",
+                            "Rollout migration skip bookkeeping duplicates rollout discovery operational state.",
+                        ),
+                        DatabaseTableRule(
+                            "rollout_migration_state",
+                            "deliberately-excluded",
+                            "Rollout migration cursors are operational bookkeeping, not session evidence.",
+                        ),
+                    ),
                 ),
                 DatabaseMemberRule(
                     "goals_1.sqlite",
@@ -3264,8 +3386,10 @@ __all__ = [
     "DroppedValueVocabulary",
     "OriginArtifactRule",
     "DatabaseMemberRule",
+    "DatabaseTableRule",
     "DatabaseSourceCapability",
     "DatabaseMemberDisposition",
+    "DatabaseTableDisposition",
     "SourceClassRecognition",
     "SourceClass",
     "OriginLifecycle",

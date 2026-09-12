@@ -16,6 +16,7 @@ from pathlib import Path
 
 from polylogue.sources.parsers.codex_state import (
     CODEX_STATE_FIDELITY,
+    CODEX_STATE_TABLE_FIDELITY,
     IN_SCOPE_KINDS,
     classify_codex_sqlite_path,
     declared_codex_sqlite_classification,
@@ -26,6 +27,7 @@ from polylogue.sources.parsers.codex_state import (
     parse_codex_memories_db,
     parse_codex_state_db,
 )
+from polylogue.sources.sqlite_export import open_logical_source, read_export_header
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     snapshot_sqlite_database,
@@ -87,8 +89,24 @@ def _write_state_db(path: Path) -> None:
                 name TEXT NOT NULL,
                 description TEXT NOT NULL,
                 input_schema TEXT NOT NULL,
+                defer_loading INTEGER NOT NULL DEFAULT 0,
+                namespace TEXT,
                 PRIMARY KEY(thread_id, position)
             );
+            CREATE TABLE thread_artifacts (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                artifact_type TEXT NOT NULL,
+                identity_key TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE thread_sections (id TEXT PRIMARY KEY, name TEXT NOT NULL, appearance TEXT NOT NULL);
+            CREATE TABLE projects (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, metadata TEXT NOT NULL,
+                position INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE project_roots (project_id TEXT NOT NULL, position INTEGER NOT NULL, path TEXT NOT NULL);
             """
         )
         conn.execute(
@@ -129,6 +147,17 @@ def _write_state_db(path: Path) -> None:
             "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES (?, ?, ?)",
             ("0000-thread-parent", "0000-thread-child", "closed"),
         )
+        conn.execute(
+            "INSERT INTO thread_artifacts VALUES (?, ?, ?, ?, ?, ?)",
+            ("artifact-1", "0000-thread-parent", "file", "artifact-key", '{"path":"notes.md"}', 1700000100000),
+        )
+        conn.execute(
+            "INSERT INTO thread_dynamic_tools VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("0000-thread-parent", 0, "search", "search repository", '{"type":"object"}', 0, "workspace"),
+        )
+        conn.execute("INSERT INTO thread_sections VALUES ('section-1', 'investigations', 'blue')")
+        conn.execute("INSERT INTO projects VALUES ('project-1', 'polylogue', '{}', 0, 1, 2)")
+        conn.execute("INSERT INTO project_roots VALUES ('project-1', 0, '/work/polylogue')")
         conn.commit()
 
 
@@ -329,6 +358,32 @@ def test_every_declared_codex_database_has_a_disposition_and_a_reason() -> None:
         assert fidelity[filename].reason.strip(), filename
 
 
+def test_every_observed_state_table_has_a_matching_export_disposition() -> None:
+    """Retained tables enter the logical export; exclusions have a reason.
+
+    Anti-vacuity: remove ``thread_artifacts`` or ``thread_dynamic_tools`` from
+    the declared export and their nonempty synthetic rows no longer survive an
+    ordinary state snapshot.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.origin_specs import database_capability_for_provider
+
+    capability = database_capability_for_provider(Provider.CODEX)
+    assert capability is not None
+    member = capability.member("state_5.sqlite")
+    assert member is not None
+    declared = {rule.table: rule for rule in member.table_rules}
+    fidelity = {classification.table: classification for classification in CODEX_STATE_TABLE_FIDELITY}
+    assert set(declared) == set(fidelity)
+    assert all(rule.reason.strip() for rule in declared.values())
+    assert {rule.table for rule in declared.values() if rule.disposition != "deliberately-excluded"} == set(
+        member.logical_tables
+    )
+    assert {table: (rule.disposition, rule.reason) for table, rule in declared.items()} == {
+        table: (classification.disposition, classification.reason) for table, classification in fidelity.items()
+    }
+
+
 # --- parsing ------------------------------------------------------------
 
 
@@ -347,6 +402,34 @@ def test_parse_state_db_extracts_titles_and_spawn_edges(tmp_path: Path) -> None:
     assert edge.parent_thread_id == "0000-thread-parent"
     assert edge.child_thread_id == "0000-thread-child"
     assert edge.status == "closed"
+
+
+def test_state_export_retains_unprojected_thread_evidence(tmp_path: Path) -> None:
+    """Nonempty artifact and dynamic-tool rows survive after the original DB is gone."""
+    source = tmp_path / "state_5.sqlite"
+    _write_state_db(source)
+    blob_store = BlobStore(tmp_path / "blobs")
+    snapshot = snapshot_sqlite_to_blob(source, blob_store)
+    source.unlink()
+    export_path = blob_store.blob_path(snapshot.blob_hash)
+
+    header = read_export_header(export_path)
+    assert set(header.tables) == {
+        "threads",
+        "thread_spawn_edges",
+        "thread_artifacts",
+        "thread_dynamic_tools",
+        "thread_sections",
+        "projects",
+        "project_roots",
+    }
+    with open_logical_source(export_path, immutable=True) as conn:
+        assert conn.execute("SELECT identity_key, payload FROM thread_artifacts").fetchall() == [
+            ("artifact-key", '{"path":"notes.md"}')
+        ]
+        assert conn.execute("SELECT name, input_schema FROM thread_dynamic_tools").fetchall() == [
+            ("search", '{"type":"object"}')
+        ]
 
 
 def test_parse_goals_db(tmp_path: Path) -> None:

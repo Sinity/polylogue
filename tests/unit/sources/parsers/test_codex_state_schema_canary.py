@@ -54,10 +54,40 @@ _LIVE_THREADS_COLUMNS = frozenset(
         "recency_at_ms",
         "history_mode",
         "name",
+        "is_pinned",
+        "thread_section_id",
+        "section_position",
+        "section_entered_at_ms",
+        "project_id",
+        "originator",
+        "daybreak_enabled",
     }
 )
 
 _LIVE_THREAD_SPAWN_EDGES_COLUMNS = frozenset({"parent_thread_id", "child_thread_id", "status"})
+
+# Every non-SQLite-owned table observed in state_5.sqlite on 2026-09-12. The
+# state export carries all retained tables whole, including columns with no
+# typed projection. Operational tables are deliberately excluded with a
+# source-visible disposition rather than silently disappearing.
+_LIVE_STATE_TABLES = frozenset(
+    {
+        "_sqlx_migrations",
+        "backfill_state",
+        "external_agent_config_imports",
+        "project_idempotency_keys",
+        "project_roots",
+        "projects",
+        "remote_control_enrollments",
+        "rollout_migration_skipped_rollouts",
+        "rollout_migration_state",
+        "thread_artifacts",
+        "thread_dynamic_tools",
+        "thread_sections",
+        "thread_spawn_edges",
+        "threads",
+    }
+)
 
 # Columns ``CodexThreadRecord`` reads directly (see codex_state.py's SELECT).
 _THREADS_COLUMNS_READ = frozenset(
@@ -120,6 +150,16 @@ _THREADS_COLUMNS_ALLOWLISTED = frozenset(
         # Reasoning-effort/model config already reflected in per-turn JSONL
         # evidence; the thread-level column is a coarse summary of it.
         "reasoning_effort",
+        # UI pinning, section/project membership, and provider-origin flags
+        # are retained in the full logical ``threads`` row. They are not
+        # separately projected by this initial retained-state increment.
+        "is_pinned",
+        "thread_section_id",
+        "section_position",
+        "section_entered_at_ms",
+        "project_id",
+        "originator",
+        "daybreak_enabled",
     }
 )
 
@@ -143,3 +183,11 @@ def test_every_live_threads_column_is_read_or_allowlisted() -> None:
 def test_every_live_spawn_edge_column_is_read() -> None:
     unmapped = _LIVE_THREAD_SPAWN_EDGES_COLUMNS - _SPAWN_EDGES_COLUMNS_READ
     assert not unmapped, f"Live thread_spawn_edges columns not read: {sorted(unmapped)}"
+
+
+def test_every_observed_state_table_is_declared_for_retention_or_exclusion() -> None:
+    from polylogue.sources.parsers.codex_state import CODEX_STATE_TABLE_FIDELITY
+
+    observed = {classification.table for classification in CODEX_STATE_TABLE_FIDELITY}
+    assert observed == _LIVE_STATE_TABLES
+    assert all(classification.reason.strip() for classification in CODEX_STATE_TABLE_FIDELITY)
