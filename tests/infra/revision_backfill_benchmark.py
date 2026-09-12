@@ -18,10 +18,14 @@ Two shapes are provided, matching amg1's own recorded measurements:
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -50,6 +54,126 @@ WHALE_BEARING_SHAPE: dict[str, int] = {
 # byte-superset of the last). ~1MB final size, 50 superseded snapshots plus
 # the winner -- the "45GB/46% of a restore is stale snapshots" shape.
 REVISION_CHAIN_SHAPE: dict[str, int] = {"superseded_count": 50, "final_payload_bytes": 1_000_000}
+
+# The finished-build comparison uses a synthetic parent whose children each
+# retain its complete prefix. The parent deliberately appears last so every
+# route has to preserve the same lineage outcome even when input order is
+# inconvenient. This is a fixture for controlled route comparisons, not a
+# scale claim about an operator corpus.
+LARGE_PARENT_SHARED_PREFIX_SHAPE: dict[str, int] = {
+    "parent_message_count": 24,
+    "child_count": 8,
+    "shared_message_bytes": 1_024,
+}
+
+FinishedBuildRoute = Literal["retained", "deferred", "shard"]
+
+
+@dataclass(frozen=True, slots=True)
+class FinishedBuildMeasurement:
+    """One completed synthetic route measurement.
+
+    The route's phase times are intentionally separate. A caller must not
+    treat a partially imported archive as comparable output: canonical
+    digests and counts are recorded only after index restoration, derived/FTS
+    finalization, and the final checkpoint have all completed.
+    """
+
+    route: FinishedBuildRoute
+    construction_seconds: float
+    import_seconds: float
+    index_restoration_seconds: float
+    derived_fts_finalization_seconds: float
+    checkpoint_seconds: float
+    canonical_output_digests: dict[str, str]
+    offered_count: int
+    ingested_count: int
+    refused_count: int
+    deferred_count: int
+    output_count: int
+
+    def __post_init__(self) -> None:
+        if any(
+            seconds < 0
+            for seconds in (
+                self.construction_seconds,
+                self.import_seconds,
+                self.index_restoration_seconds,
+                self.derived_fts_finalization_seconds,
+                self.checkpoint_seconds,
+            )
+        ):
+            raise ValueError("finished-build phase times must be non-negative")
+        if any(
+            count < 0
+            for count in (
+                self.offered_count,
+                self.ingested_count,
+                self.refused_count,
+                self.deferred_count,
+                self.output_count,
+            )
+        ):
+            raise ValueError("finished-build counts must be non-negative")
+        if not self.canonical_output_digests:
+            raise ValueError("finished-build measurements require canonical output digests")
+
+
+def _measurement_text_message(index: int, text: str) -> ParsedMessage:
+    return ParsedMessage(
+        provider_message_id=f"measurement-text-{index}",
+        role=Role.USER if index % 2 == 0 else Role.ASSISTANT,
+        text=text,
+        position=index,
+        variant_index=0,
+        is_active_path=True,
+        is_active_leaf=False,
+        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+    )
+
+
+def build_large_parent_shared_prefix_sessions(
+    *,
+    parent_message_count: int = LARGE_PARENT_SHARED_PREFIX_SHAPE["parent_message_count"],
+    child_count: int = LARGE_PARENT_SHARED_PREFIX_SHAPE["child_count"],
+    shared_message_bytes: int = LARGE_PARENT_SHARED_PREFIX_SHAPE["shared_message_bytes"],
+) -> list[ParsedSession]:
+    """Build a deterministic parent-plus-children session fixture.
+
+    Every child repeats the parent's full, sizeable message prefix and adds a
+    unique tail. Children are returned before their parent to retain the
+    historically expensive deferred-tail shape. The fixture is synthetic and
+    has no operator content.
+    """
+    if parent_message_count < 1 or child_count < 1 or shared_message_bytes < 1:
+        raise ValueError("large-parent/shared-prefix fixture dimensions must be positive")
+
+    parent_native_id = "measurement-zparent"
+    prefix_texts = [
+        f"measurement-prefix-{index:04d}-" + ("x" * shared_message_bytes) for index in range(parent_message_count)
+    ]
+
+    def session_messages(texts: list[str]) -> list[ParsedMessage]:
+        return [_measurement_text_message(index, text) for index, text in enumerate(texts)]
+
+    children = [
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=f"measurement-achild-{index:04d}",
+            title=f"measurement child {index}",
+            parent_session_provider_id=parent_native_id,
+            messages=session_messages([*prefix_texts, f"measurement-child-tail-{index:04d}"]),
+        )
+        for index in range(child_count)
+    ]
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=parent_native_id,
+        title="measurement parent",
+        messages=session_messages(prefix_texts),
+    )
+    return [*children, parent]
+
 
 # Fixed per-record JSON envelope overhead (quotes, keys, braces) that isn't
 # part of the padded text field -- subtracted from the target size so the
@@ -226,10 +350,13 @@ def build_whale_bearing_corpus(
 
 __all__ = [
     "LARGE_PAYLOAD_SHAPE",
+    "LARGE_PARENT_SHARED_PREFIX_SHAPE",
     "REVISION_CHAIN_SHAPE",
     "SMALL_PAYLOAD_SHAPE",
     "WHALE_BEARING_SHAPE",
+    "FinishedBuildMeasurement",
     "build_independent_raw_corpus",
+    "build_large_parent_shared_prefix_sessions",
     "build_revision_chain_corpus",
     "build_whale_bearing_corpus",
 ]
