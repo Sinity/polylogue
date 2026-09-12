@@ -41,7 +41,7 @@ def _captured_operation(monkeypatch: pytest.MonkeyPatch, config: Any, call: Any)
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def operation_with_direct_fallback(
+        def operation_with_read_fallback(
             self, operation: str, payload: dict[str, object], **_kwargs: object
         ) -> dict[str, object]:
             seen["operation"] = operation
