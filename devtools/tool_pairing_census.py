@@ -28,6 +28,7 @@ from typing import NamedTuple, cast
 
 from devtools.tool_evidence_oracle import SUPPORTED_ORIGINS, declare_tool_evidence
 from polylogue.config import get_config
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # --------------------------------------------------------------------------
@@ -280,16 +281,20 @@ def _source_states(
         # that the sessions are absent. Keep the source axis explicitly
         # unchecked rather than turning a missing table into a false absence
         # (or failing the entire census before it can report its denominator).
+        raw_session_columns = _table_columns(conn, "raw_sessions")
+        if not {"origin", "native_id", "blob_hash", "acquired_at_ms"}.issubset(raw_session_columns):
+            return {session_id: SourceState(SOURCE_UNCHECKED, COMPLETION_UNKNOWN) for session_id in sessions}
         has_raw_sessions = conn.execute(
             "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'raw_sessions' LIMIT 1"
         ).fetchone()
         if has_raw_sessions is None:
             return {session_id: SourceState(SOURCE_UNCHECKED, COMPLETION_UNKNOWN) for session_id in sessions}
+        mtime_expression = "file_mtime_ms" if "file_mtime_ms" in raw_session_columns else "NULL"
         for session_id in sessions:
             origin, _, native_id = session_id.partition(":")
             row = conn.execute(
-                """
-                SELECT blob_hash, acquired_at_ms, file_mtime_ms
+                f"""
+                SELECT blob_hash, acquired_at_ms, {mtime_expression}
                 FROM raw_sessions
                 WHERE origin = ? AND native_id = ?
                 ORDER BY acquired_at_ms DESC
@@ -373,7 +378,11 @@ def _classify_result(*, owner_present: bool, source: SourceState) -> str:
 def build_report(args: CensusArgs) -> dict[str, object]:
     config = get_config()
     archive_root = (args.archive_root or config.archive_root).expanduser().resolve()
-    index_db = args.index_db or archive_root / "index.db"
+    # A candidate archive may publish a generation outside its root and bind
+    # it through .index-active-pointer. Following that pointer is part of the
+    # evidence boundary; silently opening the conventional path can census a
+    # superseded generation while reporting candidate numbers.
+    index_db = args.index_db or resolve_active_index_path(archive_root)
     source_db = args.source_db or archive_root / "source.db"
     blob_root = archive_root / "blob"
 
