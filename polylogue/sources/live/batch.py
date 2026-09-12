@@ -2167,6 +2167,7 @@ class LiveBatchProcessor:
             path
             for path in paths
             if fallback_provider is Provider.ANTIGRAVITY
+            and path.suffix.lower() == ".pb"
             and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
         ]
         if antigravity_pb_paths:
@@ -2368,7 +2369,57 @@ class LiveBatchProcessor:
                 and codex_member is not None
                 and codex_member.disposition != "out-of-scope"
             )
-            if (hermes_owned_sqlite_name) or (
+            antigravity_trajectory = (
+                fallback_provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path)
+            )
+            if antigravity_trajectory:
+                # Antigravity trajectory stores are mutable SQLite sources.
+                # Acquire one logical export inside the existing snapshot
+                # contract (including WAL), then parse the retained export;
+                # never read the live pages directly or invent a filename
+                # based session identity.
+                provider = Provider.ANTIGRAVITY
+                source_name = provider.value
+                try:
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy",
+                            current_path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        )
+                    snapshot = snapshot_sqlite_to_blob(
+                        path,
+                        blob_store,
+                        heartbeat=_blob_copy_heartbeat(
+                            heartbeat,
+                            path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        ),
+                    )
+                    blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
+                    blob_publication_receipt_id = snapshot.blob_publication_receipt_id
+                    source_path = original_sqlite_source_path(path) or path
+                    raw_id = antigravity.trajectory_raw_id(source_path, snapshot.source_revision)
+                    raw_source_revisions[path] = snapshot.source_revision
+                    raw_source_fingerprints[path] = snapshot.source_fingerprint
+                    retained_path = blob_store.blob_path(blob_hash)
+                    parsed_sessions_by_raw_id[raw_id] = list(
+                        antigravity.parse_trajectory_db(retained_path, fallback_id=path.stem, immutable=True)
+                    )
+                except Exception as error:
+                    if not antigravity._is_trajectory_storage_error(error):
+                        raise
+                    logger.exception("antigravity: trajectory SQLite acquisition failed: %s", path)
+                    failed.append(path)
+                    continue
+                source_payload_read_bytes += blob_size
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
+            elif (hermes_owned_sqlite_name) or (
                 not source_only
                 and (
                     hermes_state.looks_like_state_db_path(path)

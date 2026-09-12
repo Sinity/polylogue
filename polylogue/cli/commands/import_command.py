@@ -56,7 +56,7 @@ def _default_daemon_url() -> str:
 
 def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
     """Copy a local import target into the archive inbox for daemon pickup."""
-    from polylogue.sources.parsers import hermes_state
+    from polylogue.sources.parsers import antigravity, hermes_state
     from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
 
     resolved = path.expanduser().resolve()
@@ -76,7 +76,7 @@ def _stage_for_daemon(path: Path, *, replace_existing: bool = False) -> Path:
                 shutil.rmtree(dest)
             else:
                 dest.unlink()
-        if hermes_state.looks_like_state_db_path(resolved):
+        if hermes_state.looks_like_state_db_path(resolved) or antigravity.looks_like_trajectory_db_path(resolved):
             stage_sqlite_snapshot(resolved, dest)
             return dest
         sqlite_staging_metadata_path(dest).unlink(missing_ok=True)
