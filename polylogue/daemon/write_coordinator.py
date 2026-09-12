@@ -396,8 +396,6 @@ class DaemonWriteCoordinator:
         finally:
             exit_write_hold(hold_token)
             _ACTIVE_LEASE.reset(token)
-            if request.caller_cancelled and outcome == "success":
-                outcome = "cancelled"
             hold_seconds = time.perf_counter() - acquired_at
             over_budget = hold_seconds > budget_s
             if over_budget:
