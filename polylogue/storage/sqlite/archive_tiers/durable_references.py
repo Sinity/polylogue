@@ -110,6 +110,29 @@ _USER_RELATIONS = (
 )
 
 _AUDIT_RELATIONS = (
+    # Machine-request artifacts and their authority links are durable audit
+    # metadata.  They are commonly relative paths or provider-specific ids,
+    # so preserve them as opaque values when they do not use public-ref
+    # syntax.  The catalog guard still needs descriptors for every ``*_ref``
+    # column so a transition can prove it considered the complete tier.
+    DurableReferenceRelation(
+        "audit",
+        "machine_requests",
+        ("archive_identity", "request_id"),
+        (_scalar("principal_ref", grammar="public-or-opaque"), _scalar("artifact_ref", grammar="public-or-opaque")),
+        since_version=3,
+    ),
+    DurableReferenceRelation(
+        "audit",
+        "machine_request_parts",
+        ("archive_identity", "request_id", "ordinal"),
+        (
+            _scalar("artifact_ref", grammar="public-or-opaque"),
+            _scalar("preview_ref", grammar="public-or-opaque"),
+            _scalar("authorization_ref", grammar="public-or-opaque"),
+        ),
+        since_version=3,
+    ),
     DurableReferenceRelation("audit", "operation_previews", ("preview_id",), (_scalar("principal_actor_ref"),)),
     DurableReferenceRelation("audit", "operation_preview_targets", ("preview_id", "ordinal"), (_scalar("target_ref"),)),
     DurableReferenceRelation("audit", "operation_authorizations", ("authorization_id",), (_scalar("actor_ref"),)),
