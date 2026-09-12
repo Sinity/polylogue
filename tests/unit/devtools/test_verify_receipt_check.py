@@ -59,6 +59,30 @@ def test_a_failed_run_or_pytest_step_is_refused() -> None:
     assert "did not succeed" in str(verify_receipt_check.refusal(_receipt(steps=steps)))
 
 
+def test_an_affected_admission_refusal_names_count_reason_and_boundary() -> None:
+    reason = verify_receipt_check.refusal(
+        _receipt(
+            status="failed",
+            exit_code=2,
+            diagnosis="affected_admission_refused",
+            testmon_selection={
+                "selection_mode": "affected",
+                "admission": {
+                    "status": "refused",
+                    "selected_count": 1001,
+                    "reason": "exceeds cap",
+                    "next_boundary": "devtools verify --all at the explicit master/corpus boundary",
+                },
+            },
+        )
+    )
+
+    assert reason is not None
+    assert "1001" in reason
+    assert "exceeds cap" in reason
+    assert "verify --all" in reason
+
+
 def _write_run(root: Path, payload: dict[str, Any]) -> Path:
     directory = root / VERIFY_RUNS_DIR / str(payload["run_id"])
     directory.mkdir(parents=True, exist_ok=True)

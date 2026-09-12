@@ -27,6 +27,7 @@ from devtools import (
 )
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument
 from devtools.testmon_provision import TESTMON_ENVIRONMENT, TestmonGraphStatus
+from devtools.verification_admission import AFFECTED_MAX_SELECTED_TESTS
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
@@ -354,8 +355,7 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
 
     assert descriptor["workspace"]["verify"] == {
         "focused": "verify_quick",
-        "candidate": "verify_quick",
-        "corpus": "verify_all",
+        "candidate": "hosted:ci/circleci: quick-gate",
     }
     assert descriptor["workspace"]["publish"] == "pr"
     assert operation["exec"] == ["devtools", "verify", "--quick"]
@@ -365,7 +365,6 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     assert affected["result"] == "pytest"
     assert complete["exec"] == ["devtools", "verify", "--all"]
     assert complete["checkout"] == "default"
-    assert complete["schedule"] == "*-*-* 03:17:00"
     assert complete["pool"] == "pytest"
     assert projection["kind"] == "polylogue.verification-result"
     assert projection["operation"] == "verify_quick"
@@ -514,6 +513,61 @@ def test_verify_main_routes_descriptor_diff_to_bounded_selection(
     assert history["pytest_aggregate"]["selection_mode"] == "descriptor"
 
 
+@pytest.mark.parametrize(
+    ("graph_status", "selected_count", "expected_status"),
+    [
+        (TestmonGraphStatus.USABLE, AFFECTED_MAX_SELECTED_TESTS + 1, "refused"),
+        (TestmonGraphStatus.UNUSABLE, None, "unknown"),
+    ],
+)
+def test_affected_admission_refuses_without_launching_pytest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    graph_status: TestmonGraphStatus,
+    selected_count: int | None,
+    expected_status: str,
+) -> None:
+    """An oversized or unknown plan is terminal before any pytest step exists."""
+    from devtools.agent_env import AGENT_PRINCIPAL, AGENT_PRINCIPAL_ENV
+
+    history: dict[str, Any] = {}
+    launched: list[str] = []
+    monkeypatch.setenv(AGENT_PRINCIPAL_ENV, AGENT_PRINCIPAL)
+    monkeypatch.setattr(verify, "refuse_verify_tier", lambda _argv, _env: None)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "_git_changed_paths", lambda _root: frozenset({"polylogue/example.py"}))
+    monkeypatch.setattr(verify, "sync_testmon_graph", lambda _root: False)
+    graph = SimpleNamespace(status=graph_status, reason="synthetic graph state", full_rerun_cause=None)
+    monkeypatch.setattr(verify, "inspect_testmon_graph", lambda _root: graph)
+    monkeypatch.setattr(
+        verify,
+        "_estimate_affected_selection",
+        lambda _root, _graph: (selected_count, 1.0, None),
+    )
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+
+    def capture_run(label: str, **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        launched.append(label)
+        return 0, 0.1, {}
+
+    monkeypatch.setattr(verify, "_run", capture_run)
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
+    monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
+
+    assert verify._main([]) == 2
+    assert not any(label.startswith("pytest") for label in launched)
+    assert history["testmon_selection"]["admission"]["status"] == expected_status
+    assert history["pytest_aggregate"]["selected_union_count"] == selected_count
+    assert history["pytest_aggregate"]["terminal_union_count"] == 0
+    output = capsys.readouterr().err
+    assert "refused before pytest launch" in output
+    assert "next boundary" in output
+
+
 def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
     artifacts = run.start_step(label="pytest focused", cmd=[sys.executable, "-m", "pytest"])
@@ -613,6 +667,7 @@ def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
         command: list[str],
         *,
         run: VerifyRun,
+        runner: str = "managed",
     ) -> tuple[int, float, dict[str, object]]:
         run.start_step(label=label, cmd=command)
         raise verify.VerificationInterrupted(signal.SIGTERM)
