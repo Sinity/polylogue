@@ -373,6 +373,8 @@ def _write_parsed_precedence_result(
     revision_authoritative: bool = False,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    fresh_build: bool = False,
+    fresh_build_batch: set[str] | None = None,
     defer_fts_rebuild: bool = False,
     prepared: PreparedRows | None = None,
     prepared_required: bool = False,
@@ -381,10 +383,14 @@ def _write_parsed_precedence_result(
     session = normalize_session_timestamps(session, fallback_timestamp=raw_revision_file_mtime(store, raw_id))
     session_id = str(make_session_id(session.source_name, session.provider_session_id))
     content_hash = str(session_content_hash(session))
-    existing_row = store._conn.execute(
-        "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
+    existing_row = (
+        None
+        if fresh_build
+        else store._conn.execute(
+            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    )
     existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
     existing_hash = existing_row["content_hash"] if existing_row is not None else None
     existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
@@ -429,6 +435,8 @@ def _write_parsed_precedence_result(
                 manage_transaction=False,
                 bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
+                fresh_build=fresh_build,
+                fresh_build_batch=fresh_build_batch,
                 defer_fts_rebuild=defer_fts_rebuild,
                 prepared=prepared,
                 prepared_required=prepared_required,
@@ -444,7 +452,7 @@ def _write_parsed_precedence_result(
                 store._conn.commit()
 
     if revision_authoritative:
-        write_with_reparse_receipt(force_replace=source_index >= 0)
+        write_with_reparse_receipt(force_replace=source_index >= 0 and not fresh_build)
         return ArchiveRawParsedWriteResult(
             raw_id=raw_id,
             session_id=session_id,
@@ -2895,6 +2903,8 @@ def apply_raw_revision_replay(
     manage_transaction: bool = True,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    fresh_build: bool = False,
+    fresh_build_batch: set[str] | None = None,
     defer_fts: bool = False,
     skip_already_applied: bool = False,
     prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
@@ -3152,6 +3162,8 @@ def apply_raw_revision_replay(
                 revision_authoritative=True,
                 bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
+                fresh_build=fresh_build,
+                fresh_build_batch=fresh_build_batch,
                 defer_fts_rebuild=not bulk_build,
                 prepared=resolved_prepared,
                 prepared_required=tip_raw_id in prepared_required_raw_ids or prepared_write is not None,
@@ -3362,6 +3374,8 @@ def apply_raw_membership_classification(
     manage_transaction: bool = True,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    fresh_build: bool = False,
+    fresh_build_batch: set[str] | None = None,
     defer_fts: bool = False,
     preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
     preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
@@ -3641,6 +3655,8 @@ def apply_raw_membership_classification(
                     revision_authoritative=True,
                     bulk_fts=bulk_fts,
                     bulk_build=bulk_build,
+                    fresh_build=fresh_build,
+                    fresh_build_batch=fresh_build_batch,
                     defer_fts_rebuild=not bulk_build,
                     prepared=(prepared_by_raw_id or {}).get(accepted_raw_id),
                 )
@@ -4058,6 +4074,8 @@ def _index_parsed_for_retained_raw(
     revision_authoritative: bool = False,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    fresh_build: bool = False,
+    fresh_build_batch: set[str] | None = None,
     defer_fts_rebuild: bool = False,
     prepared: PreparedRows | None = None,
     prepared_required: bool = False,
@@ -4081,6 +4099,8 @@ def _index_parsed_for_retained_raw(
             revision_authoritative=revision_authoritative,
             bulk_fts=bulk_fts,
             bulk_build=bulk_build,
+            fresh_build=fresh_build,
+            fresh_build_batch=fresh_build_batch,
             defer_fts_rebuild=defer_fts_rebuild,
             prepared=prepared,
             prepared_required=prepared_required,

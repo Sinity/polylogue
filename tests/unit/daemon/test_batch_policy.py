@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.daemon.batch_policy import (
+from polylogue.pipeline.batch_policy import (
     COLD_BACKLOG_MIN_QUEUE_AGE_S,
     COLD_BACKLOG_MIN_QUEUE_DEPTH,
     LIVE_TRICKLE_MAX_BYTES,
