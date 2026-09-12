@@ -203,6 +203,9 @@ class SourceConservationReport:
     terms: tuple[ConservationTerm, ...]
     frontier_sha256: str | None = None
     frontier_total: int = 0
+    frontier_bytes: int = 0
+    frontier_complete: bool | None = None
+    frontier_root_states: dict[str, str] = field(default_factory=dict)
 
     @property
     def blocking_count(self) -> int:
@@ -224,7 +227,10 @@ class SourceConservationReport:
             f"{self.session_total:,} index session(s)"
         ]
         if self.frontier_sha256 is not None:
-            parts.append(f"frontier={self.frontier_total:,} item(s) digest={self.frontier_sha256}")
+            parts.append(
+                f"frontier={self.frontier_total:,} item(s), {self.frontier_bytes:,} byte(s) "
+                f"digest={self.frontier_sha256}"
+            )
         for term in self.terms:
             if term.count and term.name != _TERM_MATERIALIZED:
                 marker = "!" if term.blocking else ""
@@ -240,6 +246,9 @@ class SourceConservationReport:
                 "session_total": self.session_total,
                 "frontier_sha256": self.frontier_sha256,
                 "frontier_total": self.frontier_total,
+                "frontier_bytes": self.frontier_bytes,
+                "frontier_complete": self.frontier_complete,
+                "frontier_root_states": dict(sorted(self.frontier_root_states.items())),
                 "blocking_count": self.blocking_count,
                 "warning_count": self.warning_count,
                 "terms": {term.name: term.to_json() for term in self.terms},
@@ -779,7 +788,14 @@ def audit_source_conservation(
                 raw_digest = (
                     bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash or "")
                 )
-                digest_matches = raw_digest.lower() == digest or member.logical_sha256 is not None
+                # SQLite members carry a logical revision rather than the
+                # mutable page-image digest.  Their acquired row is still
+                # bound by the canonical source path; ordinary members must
+                # match the captured bytes exactly.  Never let a logical
+                # member make an unrelated path or extra raw an owner.
+                digest_matches = raw_digest.lower() == digest or (
+                    member.logical_sha256 is not None and str(source_path) in {str(root)}
+                )
                 if str(source_path) in expected_paths and digest_matches:
                     owners.append((raw_id, source_path, blob_hash))
                     raw_bound.add(str(raw_id))
@@ -810,9 +826,9 @@ def audit_source_conservation(
                 SELECT m.raw_id
                 FROM raw_session_memberships m
                 JOIN idx_tier.sessions s ON s.raw_id = m.raw_id
-                WHERE m.normalized_content_hash IS NOT NULL
-                  AND s.content_hash IS NOT NULL
-                  AND m.normalized_content_hash != s.content_hash
+                WHERE m.normalized_content_hash IS NULL
+                   OR s.content_hash IS NULL
+                   OR m.normalized_content_hash != s.content_hash
                 LIMIT ?
                 """,
                 (sample_limit,),
@@ -823,9 +839,9 @@ def audit_source_conservation(
                     SELECT COUNT(*)
                     FROM raw_session_memberships m
                     JOIN idx_tier.sessions s ON s.raw_id = m.raw_id
-                    WHERE m.normalized_content_hash IS NOT NULL
-                      AND s.content_hash IS NOT NULL
-                      AND m.normalized_content_hash != s.content_hash
+                    WHERE m.normalized_content_hash IS NULL
+                       OR s.content_hash IS NULL
+                       OR m.normalized_content_hash != s.content_hash
                     """
                 ).fetchone()[0]
             )
@@ -919,6 +935,13 @@ def audit_source_conservation(
         terms=tuple(terms),
         frontier_sha256=frontier.frontier_sha256 if frontier is not None else None,
         frontier_total=frontier.item_count if frontier is not None else 0,
+        frontier_bytes=frontier.byte_count if frontier is not None else 0,
+        frontier_complete=frontier.complete if frontier is not None else None,
+        frontier_root_states=(
+            {source_id: state.value for source_id, state in frontier.root_states.items()}
+            if frontier is not None
+            else {}
+        ),
     )
 
 
