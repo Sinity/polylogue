@@ -638,14 +638,14 @@ def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, obj
                 compact[key] = value
     elif event_type == "task_started":
         for key in ("model_context_window", "collaboration_mode_kind"):
-            value = payload.get(key)
-            if isinstance(value, (str, int, float, bool)):
-                compact[key] = value
+            field_value = payload.get(key)
+            if isinstance(field_value, (str, int, float, bool)):
+                compact[key] = field_value
     elif event_type in {"task_complete", "turn_aborted"}:
         if event_type == "task_complete":
-            value = payload.get("last_agent_message")
-            if isinstance(value, str) and value:
-                compact["last_agent_message_chars"] = len(value)
+            message_value = payload.get("last_agent_message")
+            if isinstance(message_value, str) and message_value:
+                compact["last_agent_message_chars"] = len(message_value)
         reason = _string_value(payload.get("reason"))
         if reason:
             compact["reason"] = reason
@@ -685,26 +685,26 @@ def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, obj
         if item:
             retained_item: dict[str, object] = {}
             for key in ("type", "id", "text", "name", "path"):
-                value = item.get(key)
-                if isinstance(value, (str, int, float, bool)):
-                    retained_item[key] = value
+                item_value = item.get(key)
+                if isinstance(item_value, (str, int, float, bool)):
+                    retained_item[key] = item_value
             if retained_item:
                 compact["item"] = retained_item
     elif event_type == "entered_review_mode":
         target = _dict_record(payload.get("target"))
         if target:
             compact["target"] = {
-                key: value
+                key: target_value
                 for key in ("instructions", "user_facing_hint")
-                if isinstance((value := target.get(key)), str)
+                if isinstance((target_value := target.get(key)), str)
             }
     elif event_type == "exited_review_mode":
         review_output = _dict_record(payload.get("review_output"))
         if review_output:
             compact["review_output"] = {
-                key: value
+                key: review_value
                 for key in ("findings", "overall_correctness", "overall_explanation", "overall_confidence_score")
-                if isinstance((value := review_output.get(key)), (str, int, float, bool, list))
+                if isinstance((review_value := review_output.get(key)), (str, int, float, bool, list))
             }
     elif event_type == "view_image_tool_call":
         path = _string_value(payload.get("path"))
@@ -717,8 +717,9 @@ def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, obj
         if query:
             compact["query"] = query
         action = _dict_record(payload.get("action"))
-        if action and isinstance(action.get("queries"), list):
-            compact["action"] = {"queries": [q for q in action["queries"] if isinstance(q, str)]}
+        queries = action.get("queries") if action else None
+        if isinstance(queries, list):
+            compact["action"] = {"queries": [query for query in queries if isinstance(query, str)]}
     elif event_type == "thread_rolled_back":
         num_turns = _optional_int_field(payload, "num_turns")
         if num_turns is not None:
@@ -740,9 +741,9 @@ def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, obj
     # Preserve observed lifecycle timing as scalar evidence without retaining a
     # provider envelope dump or guessing its units.
     for key in ("started_at", "start_time", "ended_at", "end_time", "duration_ms", "elapsed_ms", "elapsed_seconds"):
-        value = payload.get(key)
-        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-            compact[key] = value
+        timing_value = payload.get(key)
+        if isinstance(timing_value, (str, int, float)) and not isinstance(timing_value, bool):
+            compact[key] = timing_value
     return compact
 
 
