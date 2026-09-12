@@ -19,6 +19,7 @@ from devtools.tool_pairing_census import (
     CLASS_UNSUPPORTED_CONSTRUCT,
     COMPLETION_SETTLED,
     COMPLETION_SUPERSEDED,
+    COMPLETION_UNKNOWN,
     POSITION_INTERIOR,
     POSITION_TAIL,
     SOURCE_BYTES_ABSENT,
@@ -27,6 +28,7 @@ from devtools.tool_pairing_census import (
     SourceState,
     _classify_call,
     _classify_result,
+    _source_states,
     build_report,
 )
 from polylogue.archive.message.roles import Role
@@ -185,3 +187,63 @@ def test_superseded_source_is_truncated_before_position_heuristics() -> None:
     assert _classify_result(owner_present=False, source=SourceState(SOURCE_BYTES_ABSENT, COMPLETION_SETTLED)) == (
         CLASS_SOURCE_TRUNCATED
     )
+
+
+def test_census_follows_the_candidate_active_index_pointer(tmp_path: Path, test_db: Path) -> None:
+    """An archive root's active generation is the candidate evidence boundary."""
+    archive_root = tmp_path / "candidate"
+    generation = archive_root / ".index-generations" / "generation-1"
+    generation.mkdir(parents=True)
+    active_index = generation / "index.db"
+    write_session_sync(test_db, _codex_session())
+    source_conn = sqlite3.connect(test_db)
+    target_conn = sqlite3.connect(active_index)
+    try:
+        source_conn.backup(target_conn)
+    finally:
+        target_conn.close()
+        source_conn.close()
+    (archive_root / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+
+    report = build_report(
+        CensusArgs(
+            archive_root=archive_root,
+            index_db=None,
+            source_db=archive_root / "source.db",
+            near_tail_messages=0,
+            check_source=False,
+            replay_sessions=0,
+            json=True,
+        )
+    )
+
+    archive = report["archive"]
+    denominator = report["denominator"]
+    assert isinstance(archive, dict)
+    assert isinstance(denominator, dict)
+    assert archive["index_db"] == str(active_index)
+    assert denominator["tool_calls"] == 3
+
+
+def test_incomplete_source_schema_stays_unchecked() -> None:
+    """A pre-migration source tier is not evidence that a session is absent."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as directory:
+        source_db = Path(directory) / "source.db"
+        conn = sqlite3.connect(source_db)
+        try:
+            conn.execute(
+                "CREATE TABLE raw_sessions (origin TEXT, native_id TEXT, blob_hash BLOB, acquired_at_ms INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO raw_sessions VALUES (?, ?, ?, ?)",
+                ("codex-session", "stale", bytes(32), 1),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        states = _source_states(source_db, None, ["codex-session:stale"], enabled=True)
+
+    assert states["codex-session:stale"] == SourceState(SOURCE_PRESENT, COMPLETION_UNKNOWN)
