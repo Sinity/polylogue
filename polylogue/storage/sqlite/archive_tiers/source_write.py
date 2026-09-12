@@ -619,6 +619,15 @@ def insert_reconstructed_raw_row(
     """
     if schema not in {"main", "source"}:
         raise ValueError(f"unsupported source schema: {schema}")
+    # This repair route is deliberately exempt from admission (it replays an
+    # already-proven revision envelope), but it is still a source-tier write.
+    # Keep the same vocabulary boundary as the acquisition writers so a typed
+    # repair row cannot smuggle a malformed origin or capture mode into the
+    # durable tier merely because its evidence was reconstructed elsewhere.
+    origin_value = require_vocabulary(row.origin, Origin, field="origin")
+    capture_mode_value = (
+        require_vocabulary(row.capture_mode, Provider, field="capture_mode") if row.capture_mode is not None else None
+    )
     if len(row.blob_hash) != 32:
         raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
     _assert_excision_policy(row.blob_hash, source_path=row.source_path, policy_snapshot=policy_snapshot)
@@ -644,7 +653,7 @@ def insert_reconstructed_raw_row(
     ]
     values: list[object] = [
         row.raw_id,
-        row.origin,
+        origin_value,
         row.native_id,
         row.source_path,
         row.source_index,
@@ -660,7 +669,7 @@ def insert_reconstructed_raw_row(
     ]
     if "capture_mode" in columns:
         names.insert(2, "capture_mode")
-        values.insert(2, row.capture_mode)
+        values.insert(2, capture_mode_value)
     conn.execute(
         f"INSERT INTO {schema}.raw_sessions ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
         values,
