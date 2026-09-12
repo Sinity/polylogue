@@ -109,8 +109,13 @@ def _check_blob_conservation_locked(root: Path, *, sample_size: int) -> BlobCons
     }
     referenced = set(projection.live_hashes)
     reservations = _source_blob_reservations(source_db, immutable=False)
+    # A reservation protects a published file from the orphan side of this
+    # check, but it is not itself a durable reference.  In particular, a
+    # writer may commit the reservation before the atomic rename, so a
+    # reservation-only hash must not become a dangling reference merely
+    # because the short publication window has not exposed its bytes yet.
     protected = referenced | reservations
-    missing = protected - present
+    missing = referenced - present
     source_hashes = set().union(
         *(set(hashes) for owner, hashes in projection.owner_hashes if owner.startswith("source.db."))
     )
