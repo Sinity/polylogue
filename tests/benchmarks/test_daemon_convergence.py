@@ -19,7 +19,13 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
+from tests.infra.workload_declarations import (
+    CONVERGENCE_SCALE_TIERS,
+    convergence_corpus_specs,
+    convergence_workload_profile,
+)
 
 # ── Synthetic data generation ──────────────────────────────────────
 
@@ -71,32 +77,11 @@ def _make_claude_code_session(uuid: str, n_messages: int, *, include_tools: bool
 # ── Scale tiers ─────────────────────────────────────────────────────
 
 
-_SCALE_TIERS = {
-    "xs-tiny-files": {"files": 10, "msgs_per_file": 10},
-    "sm-small-corpus": {"files": 50, "msgs_per_file": 50},
-    "md-medium-corpus": {"files": 100, "msgs_per_file": 100},
-    "lg-few-large": {"files": 5, "msgs_per_file": 1000},
-    "xl-single-giant": {"files": 1, "msgs_per_file": 10000},
-    # ``xxl-mega-session`` covers the huge-single-session pathology from
-    # #1244 / #845 slice A: one Claude-Code / Codex session JSONL file
-    # containing ≥100k messages. The previous implementation of
-    # ``fingerprint_file`` read the entire file via ``Path.read_bytes()``
-    # for each successful full-ingest cursor write, producing an RSS peak
-    # proportional to file size. The streaming fingerprint now bounds the
-    # working set independent of session length; this tier is the
-    # before/after probe for that change.
-    "xxl-mega-session": {"files": 1, "msgs_per_file": 100_000},
-}
-
-
 def _generate_corpus(tmp_path: Path, tier: str) -> Path:
     """Generate a synthetic corpus at the given scale tier."""
-    spec = _SCALE_TIERS[tier]
+    workload = convergence_corpus_specs(tier)[0]
     root = tmp_path / "corpus" / "test-project"
-    for i in range(spec["files"]):
-        uuid = f"deadbeef-0000-0000-0000-{i:012x}"
-        records = _make_claude_code_session(uuid, spec["msgs_per_file"])
-        _write_jsonl(root / f"{uuid}.jsonl", records)
+    SyntheticCorpus.write_spec_artifacts(workload, root, prefix="convergence", index_width=4)
     return root.parent
 
 
@@ -168,7 +153,7 @@ class _BenchmarkPolylogue:
 
 
 @pytest.mark.benchmark
-@pytest.mark.parametrize("tier", _SCALE_TIERS)
+@pytest.mark.parametrize("tier", CONVERGENCE_SCALE_TIERS)
 def test_convergence_scale_tier(benchmark, tier: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
     """Measure convergence throughput at each scale tier."""
     corpus_root = _generate_corpus(tmp_path, tier)
@@ -177,15 +162,16 @@ def test_convergence_scale_tier(benchmark, tier: str, tmp_path: Path, monkeypatc
 
     result = benchmark_one_shot(benchmark, _run_convergence_probe, corpus_root, tmp_path)
 
-    spec = _SCALE_TIERS[tier]
-    total_msgs = spec["files"] * spec["msgs_per_file"]
+    profile = convergence_workload_profile(tier)
+    _provider, files, msgs_per_file = profile.provider_session_shapes[0]
+    total_msgs = files * msgs_per_file
     if result["total_s"] > 0:
         msgs_per_s = total_msgs / result["total_s"]
         # Round-trip via benchmark extra_info for pytest-benchmark.
         extras = {
             "tier": tier,
-            "files": spec["files"],
-            "msgs_per_file": spec["msgs_per_file"],
+            "files": files,
+            "msgs_per_file": msgs_per_file,
             "total_msgs": total_msgs,
             "total_s": round(result["total_s"], 2),
             "msgs_per_s": round(msgs_per_s, 1),
