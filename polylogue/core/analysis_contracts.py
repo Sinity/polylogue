@@ -183,7 +183,7 @@ class DefinitionIdentity:
         if self.kind not in _DEFINITION_KINDS:
             raise AnalysisContractError(f"unsupported definition kind: {self.kind!r}")
         object.__setattr__(self, "protocol_version", _protocol_version(self.protocol_version))
-        if not isinstance(self.content, Mapping) or not self.content:
+        if not self.content:
             raise AnalysisContractError("definition content must be a non-empty mapping")
         object.__setattr__(self, "content", _canonical(self.content))
         if self.privacy_class not in _PRIVACY:
@@ -219,7 +219,7 @@ class DefinitionIdentity:
 
     @property
     def ref(self) -> ObjectRef:
-        return ObjectRef(kind=self.kind, object_id=self.digest)  # type: ignore[arg-type]
+        return ObjectRef(kind=self.kind, object_id=self.digest)
 
     @property
     def ref_text(self) -> str:
