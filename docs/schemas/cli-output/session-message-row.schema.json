@@ -281,6 +281,18 @@
       "default": null,
       "title": "Parent Id"
     },
+    "parent_message_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Message Id"
+    },
     "paste_boundary_state": {
       "anyOf": [
         {
@@ -370,6 +382,11 @@
       ],
       "default": null,
       "title": "Timestamp"
+    },
+    "variant_index": {
+      "default": 0,
+      "title": "Variant Index",
+      "type": "integer"
     }
   },
   "required": [
