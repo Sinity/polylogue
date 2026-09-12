@@ -8,7 +8,7 @@ from polylogue.pipeline.services.acquisition_records import pending_pre_parse_ra
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
-from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 
 logger = get_logger(__name__)
 
@@ -19,6 +19,8 @@ async def persist_raw_record(
     *,
     result: AcquireResult,
     policy_snapshot: ExcisionPolicySnapshot | None = None,
+    prepared_observation: ArtifactObservationRecord | None = None,
+    preparation_error: Exception | None = None,
 ) -> None:
     """Persist one raw record and update acquisition counters."""
     try:
@@ -26,7 +28,13 @@ async def persist_raw_record(
             pending_pre_parse_raw_admission_request(record, policy_snapshot=policy_snapshot)
         )
         admitted_record = record.model_copy(update={"raw_id": admission.result.raw_id})
-        observation = inspect_raw_artifact(admitted_record)
+        if preparation_error is not None:
+            raise preparation_error
+        observation = (
+            inspect_raw_artifact(admitted_record)
+            if prepared_observation is None
+            else prepared_observation.model_copy(update={"raw_id": admission.result.raw_id})
+        )
         await repository.save_artifact_observation(observation)
         if admission.inserted:
             result.acquired += 1

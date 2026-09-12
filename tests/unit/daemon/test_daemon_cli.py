@@ -1479,7 +1479,10 @@ def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
 
     calls: list[str] = []
 
-    async def fake_run(_actor: str, _func: object, *_args: object, **_kwargs: object) -> int:
+    async def fake_run() -> int:
+        from polylogue.storage.sqlite.write_lease import current_write_lease
+
+        assert current_write_lease() is None
         calls.append("drive")
         raise asyncio.CancelledError
 
@@ -1487,8 +1490,8 @@ def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
         catch_up_complete = asyncio.Event()
         monkeypatch.setattr(
             daemon_cli,
-            "daemon_write_coordinator",
-            lambda: SimpleNamespace(run=fake_run),
+            "_run_drive_source_catchup_safely",
+            fake_run,
         )
         task = asyncio.create_task(daemon_cli._periodic_drive_source_catchup(catch_up_complete=catch_up_complete))
         await asyncio.sleep(0)
@@ -2335,7 +2338,10 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
             events.append("close")
 
     class FakeParser:
-        def __init__(self, *, repository: object, archive_root: Path, config: Config) -> None:
+        def __init__(self, *, repository: object, archive_root: Path, config: Config, execution: object) -> None:
+            from polylogue.daemon.drive_catchup import DriveCatchupExecution
+
+            assert isinstance(execution, DriveCatchupExecution)
             events.append(("parser", repository, archive_root, config))
 
         async def ingest_sources(
@@ -2351,7 +2357,7 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
                 acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0),
                 parse_result=SimpleNamespace(
                     processed_ids={"session-b", "session-a"},
-                    counts={"sessions": 2},
+                    counts={"sessions": 0},
                     time_budget_exceeded=False,
                 ),
             )
@@ -3617,7 +3623,9 @@ def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path:
     asyncio.run(exercise())
 
 
-def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path) -> None:
+@pytest.mark.parametrize("configured_drive", [False, True])
+def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path, configured_drive: bool) -> None:
+    from polylogue.config import Source
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.execution import BoundedComputeAdapter, reset_daemon_compute_adapter
@@ -3628,6 +3636,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     watcher_coordinators: list[object] = []
     watcher_profile_callbacks: list[object] = []
     periodic_profile_callbacks: list[object] = []
+    drive_called = asyncio.Event()
     ok_schema = HealthAlert(
         check_name="schema_version",
         tier=HealthTier.FAST,
@@ -3652,6 +3661,8 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         async def run(self) -> None:
             events.append("watcher")
             self.catch_up_complete.set()
+            if configured_drive:
+                await asyncio.wait_for(drive_called.wait(), 10)
             raise RuntimeError("watch stopped")
 
         def stop(self) -> None:
@@ -3673,7 +3684,11 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         events.append("blob-publications")
 
     async def fake_drive_catchup() -> int:
+        from polylogue.storage.sqlite.write_lease import current_write_lease
+
+        assert current_write_lease() is None
         events.append("drive-once")
+        drive_called.set()
         return 0
 
     async def fake_configure_fts_automerge() -> None:
@@ -3731,6 +3746,17 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
 
     with contextlib.ExitStack() as stack:
         stack.callback(reset_daemon_compute_adapter)
+        stack.enter_context(
+            patch(
+                "polylogue.config.get_config",
+                return_value=Config(
+                    archive_root=tmp_path,
+                    render_root=tmp_path / "render",
+                    db_path=tmp_path / "index.db",
+                    sources=[Source(name="gemini", folder="fixture")] if configured_drive else [],
+                ),
+            )
+        )
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
         stack.enter_context(
@@ -3819,11 +3845,14 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     assert "blob-gc" in events
     assert "blob-publication-reconciliation" in events
     # Source acquisition belongs to fair intake after startup readiness.
-    assert "drive-once" not in events
+    if configured_drive:
+        assert events.index("lineage") < events.index("drive-once")
+    else:
+        assert "drive-once" not in events
     assert events.index("lineage") < events.index("convergence")
     assert "raw-materialization" not in events
     assert "drive" not in events
-    assert events.index("lineage") < events.index("converger")
+    assert events.index("converger") < events.index("watcher")
     assert events.count("convergence") == 1
     lifecycle_phases = [str(payload["phase"]) for payload in lifecycle_payloads]
     assert lifecycle_phases[0] == "startup"

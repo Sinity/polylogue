@@ -26,11 +26,12 @@ from polylogue.sources.source_snapshot import (
 )
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
     from polylogue.maintenance.source_manifest_continuity import SourceDeclaration
+    from polylogue.pipeline.services.ingest_execution import IngestExecution
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -52,13 +53,14 @@ class AcquisitionService:
     The stored raw data can then be processed by the parse stage.
     """
 
-    def __init__(self, backend: SQLiteBackend):
+    def __init__(self, backend: SQLiteBackend, *, execution: IngestExecution | None = None):
         """Initialize the async acquisition service.
 
         Args:
             backend: Async SQLite backend for database operations
         """
         self.backend = backend
+        self.execution = execution
         from polylogue.storage.repository import SessionRepository
 
         self.repository: SessionRepository = SessionRepository(backend=backend)
@@ -81,8 +83,17 @@ class AcquisitionService:
         *,
         result: AcquireResult,
         policy_snapshot: ExcisionPolicySnapshot,
+        prepared_observation: ArtifactObservationRecord | None = None,
+        preparation_error: Exception | None = None,
     ) -> None:
-        await persist_raw_record(self.repository, record, result=result, policy_snapshot=policy_snapshot)
+        await persist_raw_record(
+            self.repository,
+            record,
+            result=result,
+            policy_snapshot=policy_snapshot,
+            prepared_observation=prepared_observation,
+            preparation_error=preparation_error,
+        )
 
     async def _persist_source_cursors(
         self,
@@ -168,6 +179,7 @@ class AcquisitionService:
                     drive_config=drive_config,
                     observation_callback=observation_callback,
                     progress_callback=progress_callback,
+                    execution=self.execution,
                 ):
                     await _consume(record)
                     if progress_callback:
@@ -218,7 +230,13 @@ class AcquisitionService:
             AcquireResult with counts and list of acquired raw_ids
         """
         result = AcquireResult()
-        policy_snapshot = build_excision_policy_snapshot(self.backend.db_path.parent)
+        policy_snapshot = (
+            build_excision_policy_snapshot(self.backend.db_path.parent)
+            if self.execution is None
+            else await self.execution.publish_sync(
+                "policy", lambda: build_excision_policy_snapshot(self.backend.db_path.parent)
+            )
+        )
         from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
         blob_publisher = ArchiveBlobPublisher(
@@ -228,7 +246,7 @@ class AcquisitionService:
         # Records are metadata-only (~1 KB each, no BLOBs). Larger batches
         # reduce commit frequency and async thread-crossing overhead.
         flush_interval = 500
-        pending_records: list[RawSessionRecord] = []
+        pending_records: list[tuple[RawSessionRecord, ArtifactObservationRecord | None, Exception | None]] = []
         peak_observation: JSONDocument | None = None
         observation_count = 0
         peak_baseline = read_peak_rss_self_mb() or 0.0
@@ -280,12 +298,41 @@ class AcquisitionService:
                 return
             records = tuple(pending_records)
             pending_records.clear()
-            async with self.backend.bulk_connection():
-                for pending_record in records:
-                    await self._persist_record(pending_record, result=result, policy_snapshot=policy_snapshot)
+
+            async def persist() -> None:
+                current_policy = (
+                    policy_snapshot
+                    if self.execution is None
+                    else build_excision_policy_snapshot(self.backend.db_path.parent)
+                )
+                async with self.backend.bulk_connection():
+                    for pending_record, observation, preparation_error in records:
+                        await self._persist_record(
+                            pending_record,
+                            result=result,
+                            policy_snapshot=current_policy,
+                            prepared_observation=observation,
+                            preparation_error=preparation_error,
+                        )
+
+            if self.execution is None:
+                await persist()
+            else:
+                await self.execution.publish("raw", persist)
 
         async def _store(record: RawSessionRecord) -> None:
-            pending_records.append(record)
+            observation = None
+            preparation_error = None
+            if self.execution is not None:
+                from polylogue.storage.artifacts.inspection import inspect_raw_artifact
+
+                try:
+                    observation = await self.execution.prepare(
+                        lambda: inspect_raw_artifact(record, blob_store=blob_publisher)
+                    )
+                except Exception as exc:
+                    preparation_error = exc
+            pending_records.append((record, observation, preparation_error))
             if len(pending_records) >= flush_interval:
                 await _flush_pending()
 
