@@ -11,6 +11,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
+from polylogue.core.errors import SchemaRefusalError
 from polylogue.operations.audit import AuditRepository, MachineRequestRecoveredError
 from polylogue.operations.daemon_protocol import (
     AuthoritySnapshot,
@@ -88,12 +89,20 @@ def operation_envelope(
     outcome: str = "completed",
     error: dict[str, object] | None = None,
     reference: dict[str, object] | None = None,
+    degraded_components: tuple[str, ...] | None = None,
+    progress: dict[str, object] | None = None,
 ) -> DaemonOperationEnvelope:
     spec = daemon_operation_spec(request.operation)
     elapsed = max(0, int((monotonic() - started_at) * 1000)) if started_at is not None else 0
     identity = snapshot.identity if snapshot is not None else None
     versions = snapshot.schema_versions if snapshot is not None else {}
-    degraded = snapshot.degraded_components if snapshot is not None else ("authority_unavailable",)
+    degraded = (
+        snapshot.degraded_components
+        if snapshot is not None
+        else degraded_components
+        if degraded_components is not None
+        else ("authority_unavailable",)
+    )
     authority = AuthoritySnapshot(
         archive_identity=identity.authority_identity_digest if identity is not None else "unavailable",
         generation=identity.active_generation if identity is not None else "unavailable",
@@ -124,7 +133,7 @@ def operation_envelope(
             "fallback": spec.fallback.value if spec is not None else "never",
             "writes": "daemon-owned",
         },
-        progress={"state": "complete" if outcome == "completed" else outcome},
+        progress=progress or {"state": "complete" if outcome == "completed" else outcome},
         outcome=outcome,
         served_by={"identity": context.serving_identity, "daemon_version": POLYLOGUE_VERSION},
         timing={"elapsed_ms": elapsed, "queue_ms": queue_ms},
@@ -265,6 +274,26 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
             started_at=started,
             outcome="cancelled" if isinstance(exc, QueryCancelledError) else "timed-out",
             error={"code": type(exc).__name__, "detail": str(exc), "retryable": True},
+        )
+    except SchemaRefusalError as exc:
+        from polylogue.daemon.derived_degradation import schema_refusal_details
+
+        details = schema_refusal_details(exc)
+        tier = str(details["tier"])
+        return operation_envelope(
+            request,
+            context,
+            snapshot=snapshot,
+            started_at=started,
+            outcome="degraded",
+            degraded_components=(f"derived_schema:{tier}",),
+            progress={**details, "state": "degraded"},
+            error={
+                "code": str(details["code"]),
+                "detail": str(exc),
+                "retryable": True,
+                "data": details,
+            },
         )
     except (ValueError, PermissionError) as exc:
         return operation_envelope(

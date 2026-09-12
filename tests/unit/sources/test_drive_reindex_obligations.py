@@ -40,6 +40,14 @@ def _current_export_fixture() -> dict[str, Any]:
     return payload
 
 
+def _string_leaves(value: object) -> list[str]:
+    if isinstance(value, dict):
+        return [leaf for child in value.values() for leaf in _string_leaves(child)]
+    if isinstance(value, list):
+        return [leaf for child in value for leaf in _string_leaves(child)]
+    return [value] if isinstance(value, str) else []
+
+
 def _document_turn(file_id: str) -> dict[str, Any]:
     """One id-less, text-less AI Studio turn citing a Drive file."""
     return {
@@ -158,6 +166,36 @@ def test_checked_in_current_export_is_a_production_parser_and_schema_canary() ->
         )
         is not UNSEEN_SHAPE
     )
+
+
+def test_committed_gemini_schema_declares_current_shape_without_fixture_values() -> None:
+    """The committed package is structural evidence, not a sample archive.
+
+    The required-field assertion catches a package that only carries a broad
+    identity witness while omitting one current envelope member. The sentinel
+    checks are a small privacy review against this fixture's intentionally
+    synthetic values; a generated package must retain field/type shape and
+    identity evidence, never conversation text, paths, or sample constants.
+    """
+    payload = _current_export_fixture()
+    schema = SchemaRegistry().get_schema(Provider.GEMINI.value)
+    assert schema is not None
+    properties = schema.get("properties")
+    assert isinstance(properties, dict)
+    assert {"chunkedPrompt", "runSettings", "systemInstruction"} <= properties.keys()
+    required = schema.get("required")
+    assert isinstance(required, list)
+    required_names = {item for item in required if isinstance(item, str)}
+    assert required_names >= {"chunkedPrompt", "runSettings", "systemInstruction"}
+
+    serialized = json.dumps(schema, sort_keys=True)
+    fixture_sentinels = {
+        value
+        for value in _string_leaves(payload)
+        if value.startswith("synthetic") or "example.invalid" in value or value == "AAAA" or value.startswith("2026-")
+    }
+    assert fixture_sentinels
+    assert fixture_sentinels.isdisjoint(serialized)
 
 
 @pytest.mark.parametrize("label,payload", _STILL_UNSEEN, ids=[label for label, _ in _STILL_UNSEEN])

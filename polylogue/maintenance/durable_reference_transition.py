@@ -61,7 +61,7 @@ _GRAIN_RELATIONS: dict[EvidenceRefKind, tuple[str, str]] = {
 }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class DurableReferenceTransition:
     """One planned transition and the evidence that binds it to two archives."""
 
@@ -70,6 +70,9 @@ class DurableReferenceTransition:
     inventory: tuple[DurableReference, ...]
     candidate_index_path: str
     predecessor_index_path: str
+    durable_row_counts: tuple[tuple[str, int], ...] = ()
+    resolution_counts: tuple[tuple[str, int], ...] = ()
+    applied_durable_row_counts: tuple[tuple[str, int], ...] | None = None
 
     @property
     def dispositions(self) -> dict[str, int]:
@@ -87,6 +90,8 @@ class DurableReferenceTransition:
 
     def receipt(self, *, applied: bool) -> dict[str, Any]:
         """The record of what this transition classified, in full."""
+        before_rows = dict(self.durable_row_counts)
+        after_rows = None if self.applied_durable_row_counts is None else dict(self.applied_durable_row_counts)
         return {
             "schema": TRANSITION_RECEIPT_SCHEMA,
             "applied": applied,
@@ -96,6 +101,8 @@ class DurableReferenceTransition:
             "candidate_index_path": self.candidate_index_path,
             "predecessor_index_path": self.predecessor_index_path,
             "durable_reference_cells": len(self.inventory),
+            "durable_rows": {"before": before_rows, "after": after_rows},
+            "resolution": dict(self.resolution_counts),
             "classified_references": len(self.plan.rows),
             "dispositions": self.dispositions,
             "forward": [list(pair) for pair in self.plan.forward],
@@ -171,10 +178,11 @@ def governed_target(ref: str) -> tuple[str, str, str] | None:
         if not _names_an_origin(parsed.session_id):
             return None
         grain: EvidenceRefKind = parsed.ref_kind
+        message_id = _qualified_message_id(parsed.session_id, parsed.message_id)
         identity = {
             "session": parsed.session_id,
-            "message": str(parsed.message_id),
-            "block": f"{parsed.message_id}:{parsed.block_index}",
+            "message": str(message_id),
+            "block": f"{message_id}:{parsed.block_index}",
         }[grain]
     else:
         if parsed.kind not in INDEX_GOVERNED_KINDS:
@@ -236,6 +244,16 @@ def plan_durable_reference_transition(
     # classified by whether the id it moves *to* is really there.
     targets = () if migration is None else tuple(new for _old, new in migration.entries)
     candidate = resolve_candidate_references(candidate_index_conn, (*refs, *targets))
+    migration_targets = dict(() if migration is None else migration.entries)
+    resolution_counts = {
+        "unique_references": len(refs),
+        "durable_reference_cells": len(inventory),
+        "predecessor_resolved_cells": sum(item.value in predecessor for item in inventory),
+        "candidate_direct_resolved_cells": sum(item.value in present for item in inventory),
+        "candidate_resolved_cells": sum(
+            (migration_targets.get(item.value, item.value) in candidate) for item in inventory
+        ),
+    }
     binding = TransitionBinding(
         predecessor_digest=index_identity(predecessor_index_conn),
         candidate_digest=index_identity(candidate_index_conn),
@@ -258,6 +276,8 @@ def plan_durable_reference_transition(
         inventory=inventory,
         candidate_index_path=candidate_index_path,
         predecessor_index_path=predecessor_index_path,
+        durable_row_counts=_durable_row_counts(user_conn, audit_conn),
+        resolution_counts=tuple(sorted(resolution_counts.items())),
     )
 
 
@@ -269,6 +289,9 @@ def apply_durable_reference_transition(
     verified_backup: bool,
 ) -> None:
     """Apply one planned transition to both durable tiers, or leave them untouched."""
+    current_rows = _durable_row_counts(user_conn, audit_conn)
+    if current_rows != transition.durable_row_counts:
+        raise ObjectRefReconciliationError("durable row counts no longer match the authorized transition")
     apply_assertion_transition(
         user_conn,
         transition.plan,
@@ -276,6 +299,19 @@ def apply_durable_reference_transition(
         verified_backup=verified_backup,
         audit_conn=audit_conn,
     )
+    after_rows = _durable_row_counts(user_conn, audit_conn)
+    before = dict(transition.durable_row_counts)
+    after = dict(after_rows)
+    # Rewriting is row-preserving. Successor result manifests are the one
+    # intentional exception, and must only add rows; losing any durable row is
+    # never an acceptable transition outcome.
+    for key, count in before.items():
+        if key in {"user.result_sets", "user.result_set_members"}:
+            if after.get(key, 0) < count:
+                raise ObjectRefReconciliationError(f"durable row count decreased: {key}")
+        elif after.get(key) != count:
+            raise ObjectRefReconciliationError(f"durable row count changed unexpectedly: {key}")
+    transition.applied_durable_row_counts = after_rows
     user_conn.commit()
     audit_conn.commit()
 
@@ -302,7 +338,9 @@ def _successor_ref(conn: sqlite3.Connection, ref: str) -> str | None:
     if isinstance(parsed, EvidenceRef):
         if parsed.message_id is None:
             return None
-        successor = _successor_message_id(conn, parsed.message_id)
+        old_message_id = _qualified_message_id(parsed.session_id, parsed.message_id)
+        assert old_message_id is not None
+        successor = _successor_message_id(conn, old_message_id)
         if successor is None:
             return None
         evidence = EvidenceRef(parsed.session_id, successor, parsed.block_index).format()
@@ -336,6 +374,13 @@ def _successor_message_id(conn: sqlite3.Connection, old: str) -> str | None:
     return successors[0] if successors else None
 
 
+def _qualified_message_id(session_id: str, message_id: str | None) -> str | None:
+    """Normalize compact evidence message ids to the generated index id."""
+    if message_id is None:
+        return None
+    return message_id if message_id.startswith(f"{session_id}:") else f"{session_id}:{message_id}"
+
+
 def _candidate_session_prefixes(conn: sqlite3.Connection, old: str) -> list[tuple[str, str]]:
     """Every ``(session_id, tail)`` split of ``old`` the candidate knows a session for."""
     found: list[tuple[str, str]] = []
@@ -361,6 +406,27 @@ def _resolves(conn: sqlite3.Connection, ref: str) -> bool:
 def _user_version(conn: sqlite3.Connection) -> int:
     row = conn.execute("PRAGMA user_version").fetchone()
     return int(row[0] or 0) if row is not None else 0
+
+
+def _durable_row_counts(user_conn: sqlite3.Connection, audit_conn: sqlite3.Connection) -> tuple[tuple[str, int], ...]:
+    """Count every durable table for before/after reconciliation."""
+    counts: list[tuple[str, int]] = []
+    for tier, connection in (("user", user_conn), ("audit", audit_conn)):
+        tables = tuple(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        )
+        for table in tables:
+            quoted = _quote_identifier(table)
+            count = connection.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()
+            counts.append((f"{tier}.{table}", int(count[0]) if count else 0))
+    return tuple(counts)
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:

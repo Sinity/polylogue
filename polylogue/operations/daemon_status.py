@@ -129,7 +129,18 @@ def produce_direct_status(
         component_from_raw_frontier_integrity=component_from_raw_frontier_integrity,
     )
     missing_tiers = [name for name, info in tiers.items() if not info["exists"]]
-    mismatched_tiers = [name for name, info in tiers.items() if info["exists"] and info["version_status"] != "ok"]
+    mismatched_tiers = [
+        name
+        for name, info in tiers.items()
+        if info["exists"]
+        and (
+            info["version_status"] != "ok"
+            or (
+                isinstance(identity_status := info.get("identity_status"), Mapping)
+                and identity_status.get("status") != "ok"
+            )
+        )
+    ]
     raw_component = components.get("raw_materialization", {})
     frontier_component = components.get("raw_frontier_integrity", {})
     search_component = components.get("search", {})
@@ -293,6 +304,7 @@ def _archive_tiers(archive: ArchiveStore, conn: sqlite3.Connection) -> dict[str,
         versions = archive.operation_schema_versions or {}
         version = versions.get(tier.value) if exists else None
         expected = ARCHIVE_VERSION_BY_TIER[tier]
+        identity_status: dict[str, object] | None = None
         table_counts: dict[str, int] = {}
         table_count_precision: dict[str, str] = {}
         if exists:
@@ -312,6 +324,27 @@ def _archive_tiers(archive: ArchiveStore, conn: sqlite3.Connection) -> dict[str,
                     continue
                 table_counts[table] = int(str(row[0] or 0))
                 table_count_precision[table] = "exact"
+            if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
+                from polylogue.storage.sqlite.archive_tiers.schema_identity import (
+                    DerivedTier,
+                    derived_schema_identity,
+                )
+
+                derived_tier = DerivedTier(tier.value)
+                expected_identity = derived_schema_identity(derived_tier)
+                identity_row = (
+                    conn.execute(
+                        f"SELECT identity FROM {alias}.schema_identity WHERE tier = ?", (tier.value,)
+                    ).fetchone()
+                    if _table_exists(conn, "schema_identity", schema=alias)
+                    else None
+                )
+                actual_identity = None if identity_row is None else str(identity_row[0])
+                identity_status = {
+                    "status": "ok" if actual_identity == expected_identity else "mismatch",
+                    "expected": expected_identity,
+                    "actual": actual_identity,
+                }
         result[tier.value] = {
             "path": str(archive.archive_root / f"{tier.value}.db"),
             "exists": exists,
@@ -319,6 +352,7 @@ def _archive_tiers(archive: ArchiveStore, conn: sqlite3.Connection) -> dict[str,
             "expected_user_version": expected,
             "user_version": version,
             "version_status": "ok" if version == expected else "missing" if not exists else "mismatch",
+            "identity_status": identity_status,
             "table_counts": table_counts,
             "table_count_precision": table_count_precision,
             "file_metadata": {
