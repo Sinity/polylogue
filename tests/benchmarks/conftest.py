@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from tests.infra.benchmark_archives import seed_benchmark_archive
-from tests.infra.workload_artifacts import BenchmarkWorkloadTier
+from tests.infra.workload_declarations import BenchmarkWorkloadTier
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

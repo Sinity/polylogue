@@ -16,9 +16,9 @@ from tests.infra.workload_artifacts import (
     acquire_query_only_seeded_archive,
     build_seeded_archive,
     clone_seeded_archive,
-    named_corpus_specs,
     seeded_archive_key,
 )
+from tests.infra.workload_declarations import named_corpus_specs
 
 
 @pytest.fixture(scope="session")

@@ -17,7 +17,7 @@ import pytest
 from tests.benchmarks.helpers import BenchmarkFixture
 from tests.infra.benchmark_archives import seed_benchmark_archive
 from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
-from tests.infra.workload_artifacts import BenchmarkWorkloadTier
+from tests.infra.workload_declarations import BenchmarkWorkloadTier
 
 pytestmark = pytest.mark.uses_real_clock(
     "polylogue-20d.1 daemon UDS benchmark uses the maintained production daemon operation stack; frozen_clock cannot substitute for its real writer/listener lifecycle."

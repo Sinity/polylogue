@@ -14,10 +14,10 @@ from tests.infra.workload_artifacts import (
     ArtifactGcDisposition,
     SeededArchiveReachabilityInventory,
     build_seeded_archive,
-    c03_semantic_corpus_spec,
     current_seeded_archive_reachability,
     gc_seeded_archive_artifacts,
 )
+from tests.infra.workload_declarations import c03_semantic_corpus_spec
 
 
 def _age_artifact(root: Path, *, now: float = 10_000.0) -> None:
