@@ -293,6 +293,8 @@ class VerifyRun:
         graph_status: str,
         graph_reason: str,
         full_rerun_cause: str | None = None,
+        graph_recorded_tests: int | None = None,
+        graph_source_dependencies: int | None = None,
         seed_source: str | None = None,
         seed_source_mtime_ns: int | None = None,
         selection_reason: str | None = None,
@@ -302,6 +304,8 @@ class VerifyRun:
             "graph_status": graph_status,
             "graph_reason": graph_reason,
             "full_rerun_cause": full_rerun_cause,
+            "graph_recorded_tests": graph_recorded_tests,
+            "graph_source_dependencies": graph_source_dependencies,
             "seed_source": seed_source,
             "seed_source_mtime_ns": seed_source_mtime_ns,
             # Why the selection is bounded or empty; what a reader of a run
