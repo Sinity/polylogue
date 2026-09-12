@@ -26,7 +26,8 @@ from polylogue.daemon.intake import (
 )
 from polylogue.daemon.observation import ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
-from polylogue.operations.intake_adapters import discover_pending_raw_ids
+from polylogue.operations.intake_adapters import _bounded_source_paths, discover_pending_raw_ids
+from polylogue.sources.live.watcher import WatchSource
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -63,6 +64,27 @@ class FakeAdapter:
         # Atomic and idempotent: acknowledging twice releases one entry.
         if item.item_id in self.pending:
             self.pending.remove(item.item_id)
+
+
+def test_bounded_source_paths_prunes_ignored_subtrees_and_keeps_nested_sources(tmp_path: Path) -> None:
+    """An ignored directory cannot consume a page or hide an accepted child."""
+    ignored = tmp_path / "ignored"
+    ignored.mkdir()
+    (ignored / "not-an-intake.json").write_text("ignored")
+    nested = tmp_path / "accepted" / "deeper"
+    nested.mkdir(parents=True)
+    accepted = nested / "intake.json"
+    accepted.write_text("accepted")
+    source = WatchSource(
+        name="test",
+        root=tmp_path,
+        suffixes=(".json",),
+        ignored_dir_names=frozenset({"ignored"}),
+    )
+
+    first_page = _bounded_source_paths(source, (source,), limit=1, after=None)
+    assert first_page == [accepted]
+    assert _bounded_source_paths(source, (source,), limit=8, after=str(accepted)) == []
 
 
 def test_raw_discovery_uses_canonical_adapter_and_returns_payload_costs(
