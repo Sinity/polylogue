@@ -1585,22 +1585,60 @@ def _refresh_provider_usage_rollup(conn: sqlite3.Connection, session_id: str) ->
     ``messages``, which are already persisted archive tables independent of
     any in-flight ``ParsedSession`` — so calling them here re-derives the
     rollup the same way ingest does, without needing the original parse. A
-    final pass reprices surviving token rows. Reconciliation removes a row
-    with neither message nor provider-usage-event evidence, while a
-    provider-event-backed row remains priceable if its source message has
-    since disappeared.
+    Before the message aggregate runs, its current rows are cleared. Ingest's
+    monotonic upsert intentionally keeps a larger provider rollup from being
+    clobbered by a later append, but that rule is wrong for a rebuild: a
+    fixed-id model correction can reduce one model's message total while that
+    model still has other messages. Provider-event rollups are reapplied after
+    the message aggregate, and the persisted session-level provider total is
+    then apportioned across the refreshed model rows.
     """
     from polylogue.storage.sqlite.archive_tiers.write import (
+        ProviderCost,
         _aggregate_message_tokens_into_model_usage,
         _aggregate_provider_usage_into_model_usage,
         _reconcile_session_model_usage_rows,
         _reprice_model_usage_rows,
+        _write_provider_cost,
     )
 
+    conn.execute(
+        """
+        UPDATE session_model_usage AS usage
+        SET input_tokens = 0,
+            output_tokens = 0,
+            cache_read_tokens = 0,
+            cache_write_tokens = 0,
+            message_count = 0,
+            provider_cost_usd = NULL,
+            catalog_cost_usd = NULL
+        WHERE usage.session_id = ?
+          AND EXISTS (
+              SELECT 1
+              FROM messages AS message
+              WHERE message.session_id = usage.session_id
+                AND message.model_name = usage.model_name
+          )
+        """,
+        (session_id,),
+    )
     _aggregate_message_tokens_into_model_usage(conn, session_id)
     _reconcile_session_model_usage_rows(conn, session_id)
     _aggregate_provider_usage_into_model_usage(conn, session_id)
     _reprice_model_usage_rows(conn, session_id)
+    reported_cost_row = conn.execute(
+        "SELECT reported_cost_usd FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    model_names = tuple(
+        str(row[0])
+        for row in conn.execute(
+            "SELECT model_name FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
+            (session_id,),
+        )
+    )
+    if reported_cost_row is not None and reported_cost_row[0] is not None and model_names:
+        _write_provider_cost(conn, session_id, model_names, ProviderCost(float(reported_cost_row[0])))
     row = conn.execute(
         "SELECT COUNT(*) FROM session_model_usage WHERE session_id = ?",
         (session_id,),
