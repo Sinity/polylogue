@@ -255,16 +255,19 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "memory": {},
         "health": {},
         "daemon_write_coordinator": _daemon_write_coordinator_payload(),
-        "raw_parse_failures": 0,
-        "raw_validation_failures": 0,
-        "raw_quarantined": 0,
-        "raw_deferred_failures": 0,
-        "raw_terminal_rejections": 0,
-        "raw_unexplained_failures": 0,
+        # Rich source-tier evidence was not collected on this path.  Null is
+        # intentional: a compact/minimal snapshot must not turn unavailable
+        # failure counts into measured zeros.
+        "raw_parse_failures": None,
+        "raw_validation_failures": None,
+        "raw_quarantined": None,
+        "raw_deferred_failures": None,
+        "raw_terminal_rejections": None,
+        "raw_unexplained_failures": None,
         "raw_failure_lifecycle_available": False,
         "raw_failure_lifecycle_state": "unavailable",
         "raw_failure_lifecycle_reason": frontier_reason,
-        "raw_detection_warnings": 0,
+        "raw_detection_warnings": None,
         "raw_failure_samples": [],
         "status_snapshot": {
             "state": "refreshing" if refresh_in_progress else "minimal",

@@ -68,6 +68,16 @@ class StatusComponentSpec:
     ttl_s: float = 10.0
     detail_only: bool = False
 
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("status component name must not be empty")
+        if not self.scope.strip():
+            raise ValueError(f"status component {self.name!r} has no scope")
+        if self.deadline_s <= 0:
+            raise ValueError(f"status component {self.name!r} deadline_s must be positive")
+        if self.ttl_s < 0:
+            raise ValueError(f"status component {self.name!r} ttl_s must not be negative")
+
 
 @dataclass(frozen=True, slots=True)
 class ComponentSnapshot:
@@ -123,6 +133,10 @@ class StatusComponentRegistry:
     """Collects declared components independently, retaining last-good evidence."""
 
     def __init__(self, specs: Sequence[StatusComponentSpec]) -> None:
+        names = [spec.name for spec in specs]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate status component name(s): {', '.join(duplicates)}")
         self._specs: dict[str, StatusComponentSpec] = {spec.name: spec for spec in specs}
         self._lock = threading.Lock()
         self._pending: dict[str, _Attempt] = {}

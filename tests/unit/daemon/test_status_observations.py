@@ -26,6 +26,77 @@ from polylogue.daemon.observation import (
 )
 
 
+def test_raw_failure_read_error_does_not_become_zero_or_ok(tmp_path: Path) -> None:
+    """Anti-vacuity: a failed source read must retain an unavailable count."""
+    from polylogue.daemon import status as status_module
+
+    result = status_module._archive_raw_failure_info(tmp_path / "missing-source.db")
+
+    assert result["raw_failure_lifecycle_available"] is False
+    assert result["raw_failure_lifecycle_state"] == "unavailable"
+    assert result["parse_failures"] is None
+    assert result["validation_failures"] is None
+    assert result["samples"] == []
+
+
+def test_minimal_snapshot_does_not_invent_raw_failure_warning_count() -> None:
+    """The request-safe path has no rich source evidence to count."""
+    from polylogue.daemon.status_snapshot import _minimal_status_payload
+
+    payload = _minimal_status_payload()
+
+    assert payload["raw_detection_warnings"] is None
+    assert payload["raw_failure_lifecycle_available"] is False
+
+
+def test_unreadable_archive_tier_count_is_explicitly_unavailable(tmp_path: Path) -> None:
+    """A corrupt tier is present, but its table count is not a measured zero."""
+    from polylogue.daemon.status import _archive_tier_status
+
+    path = tmp_path / "index.db"
+    path.write_bytes(b"not sqlite")
+    result = _archive_tier_status("index", path)
+
+    assert result.exists is True
+    assert result.table_count is None
+    assert result.table_count_state == "unavailable"
+
+
+def test_component_snapshot_metadata_keeps_collection_state_out_of_business_readiness() -> None:
+    """The surface projection carries timeout evidence without inventing a value."""
+    from polylogue.daemon.status import _status_component_metadata
+    from polylogue.operations.status_protocol import ComponentSnapshot
+
+    metadata = _status_component_metadata(
+        {
+            "slow": ComponentSnapshot(
+                name="slow",
+                scope="archive",
+                state="timed_out",
+                value=0,
+                captured_at="now",
+                age_s=0.0,
+                deadline_s=0.1,
+                error="collector exceeded deadline_s=0.1",
+            )
+        }
+    )
+
+    assert metadata == [
+        {
+            "component": "slow",
+            "scope": "archive",
+            "state": "timed_out",
+            "captured_at": "now",
+            "age_s": 0.0,
+            "deadline_s": 0.1,
+            "fingerprint": None,
+            "error": "collector exceeded deadline_s=0.1",
+            "last_good_at": None,
+        }
+    ]
+
+
 def test_a_genuine_zero_is_measured() -> None:
     observation = observe_bounded("sessions", lambda: 0, budget_s=1.0)
 
