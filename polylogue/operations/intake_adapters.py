@@ -404,6 +404,7 @@ class _RawDiscoveryBinding:
     archive_root: str
     source_revision: str
     recipe_version: str
+    raw_frontier: int
 
 
 class RawMaterializationDiscovery:
@@ -418,6 +419,24 @@ class RawMaterializationDiscovery:
         self._max_payload_bytes = max_payload_bytes
         self._binding: _RawDiscoveryBinding | None = None
         self._cursor: str | None = None
+
+    def _raw_frontier(self) -> int:
+        """Return the durable high-water mark for admitted raw observations.
+
+        The cursor only says where this process last looked.  A new raw can
+        sort before that position, so an index-generation binding alone would
+        let it wait for the whole old sweep to wrap around.  ``raw_sessions``
+        is append-only for admitted observations; its rowid high-water mark is
+        therefore a bounded durable invalidation signal, not a second pending
+        queue or a validity cache.  Changes made while publishing an existing
+        raw do not advance it and consequently do not restart discovery.
+        """
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        source_db = self._archive_root / "source.db"
+        with open_readonly_connection(source_db, timeout=5.0) as conn:
+            row = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM raw_sessions").fetchone()
+        return int(row[0]) if row is not None else 0
 
     def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
         """Inspect one bounded canonical page and retain its continuation.
@@ -442,6 +461,7 @@ class RawMaterializationDiscovery:
             archive_root=frame.archive_root,
             source_revision=frame.source_revision,
             recipe_version=frame.recipe_version(RAW_OBSERVATION_DOMAIN),
+            raw_frontier=self._raw_frontier(),
         )
         if binding != self._binding:
             self._binding = binding
