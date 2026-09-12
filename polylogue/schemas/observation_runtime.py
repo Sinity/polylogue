@@ -153,8 +153,19 @@ def _extract_record_observation(
     # record-envelope keys used by session streams.  Their path declaration is
     # already a strong admission contract, so retain one object for shape
     # observation even when the generic record sampler would reject it.
-    if not samples and admitted_artifact_kind is None and isinstance(normalized_payload, dict):
-        samples = [json_document(normalized_payload)]
+    if not samples and admitted_artifact_kind is None:
+        # Fact sidecars commonly contain a plain metadata object without the
+        # ``type`` envelope used by record streams.  When the strong path
+        # declaration has already established a non-session artifact family,
+        # retain one bounded object for structure observation.  This fallback
+        # is deliberately path-gated so unsupported session-like records do
+        # not bypass whole-stream admission.
+        declared = strong_path_classification(context.source_path, provider=context.source_name)
+        if declared is not None and not declared.parse_as_session:
+            if isinstance(normalized_payload, dict):
+                samples = [json_document(normalized_payload)]
+            elif isinstance(normalized_payload, list):
+                samples = [json_document(item) for item in islice(normalized_payload, 1) if isinstance(item, dict)]
     if compact_values:
         samples = _compact_schema_samples(samples)
     if not samples:
