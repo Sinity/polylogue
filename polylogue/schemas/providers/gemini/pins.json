@@ -1,0 +1,11 @@
+{
+  "provider": "gemini",
+  "pins": [
+    {
+      "path": "$.runSettings.thinkingLevel",
+      "role": "session_title",
+      "action": "reject",
+      "reason": "Gemini thinkingLevel selects model reasoning mode; it is not a conversation title and is not emitted as session metadata."
+    }
+  ]
+}

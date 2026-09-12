@@ -8,6 +8,30 @@
       "reason": "git branch names (e.g. 'master') are not conversation titles"
     },
     {
+      "path": "$.origin.name",
+      "role": "session_title",
+      "action": "reject",
+      "reason": "Claude Code origin names identify the source process, not a conversation title."
+    },
+    {
+      "path": "$.attachment.content",
+      "role": "message_body",
+      "action": "reject",
+      "reason": "Claude Code attachment content is source metadata; canonical message blocks carry the archived body."
+    },
+    {
+      "path": "$.attachment.content.content",
+      "role": "message_body",
+      "action": "reject",
+      "reason": "Claude Code nested attachment content is source metadata; canonical message blocks carry the archived body."
+    },
+    {
+      "path": "$.command",
+      "role": "message_body",
+      "action": "reject",
+      "reason": "Claude Code command fields are structured tool inputs, not standalone conversational body text."
+    },
+    {
       "path": "$.toolUseResult.oldTodos",
       "role": "message_container",
       "action": "reject",
