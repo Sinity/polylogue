@@ -1124,17 +1124,11 @@ def raw_synthetic_samples() -> list[RawSessionRecord]:
     import hashlib
     from datetime import datetime, timezone
 
-    from polylogue.scenarios import build_default_corpus_specs
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.storage.runtime import RawSessionRecord
+    from tests.infra.workload_declarations import raw_sample_corpus_specs
 
-    specs = build_default_corpus_specs(
-        providers=SyntheticCorpus.available_providers(),
-        count=5,
-        seed=42,
-        origin="generated.test-raw-samples",
-        tags=("synthetic", "test", "raw-samples"),
-    )
+    specs = raw_sample_corpus_specs()
 
     samples: list[RawSessionRecord] = []
     for spec in specs:
