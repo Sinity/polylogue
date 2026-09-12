@@ -36,6 +36,7 @@ from typing import Any, cast, get_type_hints
 
 import pytest
 
+import polylogue.api.archive as archive_module
 from polylogue import Polylogue
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.importer import AnnotationBatchImportRequest
@@ -851,8 +852,10 @@ async def test_health_check_warns_when_session_insight_row_counts_do_not_match(t
         await archive.close()
 
 
-@pytest.mark.parametrize("corruption", ["missing", "invalid"])
-async def test_health_check_includes_audit_tier_integrity(tmp_path: Path, corruption: str) -> None:
+@pytest.mark.parametrize("corruption", ["missing", "invalid", "unreadable"])
+async def test_health_check_includes_audit_tier_integrity(
+    tmp_path: Path, corruption: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The durable audit tier is part of the archive health contract."""
     from polylogue.readiness import VerifyStatus
 
@@ -861,8 +864,17 @@ async def test_health_check_includes_audit_tier_integrity(tmp_path: Path, corrup
         audit_path = tmp_path / "audit.db"
         if corruption == "missing":
             audit_path.unlink()
-        else:
+        elif corruption == "invalid":
             audit_path.write_bytes(b"not a sqlite database")
+        else:
+            original_open_readonly_connection = archive_module.open_readonly_connection
+
+            def refuse_audit(path: Any, *args: Any, **kwargs: Any) -> Any:
+                if Path(path) == audit_path:
+                    raise PermissionError("synthetic audit.db permission denied")
+                return original_open_readonly_connection(path, *args, **kwargs)
+
+            monkeypatch.setattr(archive_module, "open_readonly_connection", refuse_audit)
 
         report = await archive.health_check()
 
