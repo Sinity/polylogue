@@ -1292,7 +1292,13 @@ def _collect_database_schema_candidate(
     member = binding.member
     records: list[JSONDocument] = []
     try:
-        with open_logical_source(candidate.path, immutable=True) as conn:
+        # A live SQLite member may have its newest schema in a WAL.  Immutable
+        # mode intentionally ignores that sidecar, so it would make schema
+        # observation lag the normal logical-export acquisition route.  The
+        # read-only connection still gives us a consistent transaction while
+        # including the current WAL state; retained logical exports are
+        # reconstructed through the same adapter and are safe on this path too.
+        with open_logical_source(candidate.path, immutable=False) as conn:
             conn.row_factory = sqlite3.Row
             table_rows = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"

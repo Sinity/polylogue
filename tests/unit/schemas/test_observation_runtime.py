@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from polylogue.core.enums import Provider
@@ -102,3 +103,25 @@ class TestExtractSchemaUnitsFromPayload:
         assert len(collected.contributions) == 1
         evidence = SchemaEvidence.from_json(collected.contributions[0].evidence_by_element["agent_sidecar_meta"])
         assert "new_field" in json.dumps(evidence.structure)
+
+    def test_database_schema_observation_includes_the_current_wal_shape(self, tmp_path: Path) -> None:
+        """Observation must see committed schema changes that remain in SQLite's WAL."""
+        path = tmp_path / "state_5.sqlite"
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT)")
+            connection.execute(
+                "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT)"
+            )
+            connection.commit()
+            connection.execute("ALTER TABLE threads ADD COLUMN observed_in_wal TEXT")
+            connection.commit()
+
+            collected = _collect_candidate(_SourceCandidate("codex", tmp_path, path, "codex-state"))
+            assert collected.terminal.outcome == "included"
+            assert len(collected.contributions) == 1
+            evidence = SchemaEvidence.from_json(collected.contributions[0].evidence_by_element["database_schema"])
+            assert "observed_in_wal" in json.dumps(evidence.structure)
+        finally:
+            connection.close()
