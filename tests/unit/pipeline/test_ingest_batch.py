@@ -3038,6 +3038,139 @@ def test_iter_ingest_results_sync_emits_heartbeat_while_workers_are_pending(
     assert heartbeat_count == 1
 
 
+def test_iter_ingest_results_sync_refuses_zero_completion_pool_at_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_artifacts = [
+        RawSessionRecord(
+            raw_id="raw-stalled",
+            source_name="codex",
+            source_path="/tmp/raw-stalled.jsonl",
+            blob_size=12,
+            acquired_at="2026-04-02T00:00:00Z",
+        )
+    ]
+    future: Future[IngestRecordResult] = Future()
+    progress = ingest_batch_core._WorkerProgress()
+    shutdown_calls: list[dict[str, object]] = []
+    clock = iter((0.0, 0.0, 301.0))
+
+    class FakeExecutor:
+        def submit(
+            self,
+            fn: object,
+            raw_record: RawSessionRecord,
+            request: _IngestWorkerRequest,
+        ) -> Future[IngestRecordResult]:
+            del fn, raw_record, request
+            return future
+
+        def shutdown(self, **kwargs: object) -> None:
+            shutdown_calls.append(kwargs)
+
+    def fake_process_pool_executor(*, max_workers: int) -> FakeExecutor:
+        assert max_workers == 2
+        return FakeExecutor()
+
+    def fake_wait(
+        futures: object,
+        *,
+        timeout: float | None = None,
+        return_when: object | None = None,
+    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
+        del futures, timeout, return_when
+        return set(), {future}
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
+    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.time.monotonic", lambda: next(clock))
+
+    results = list(
+        _iter_ingest_results_sync(
+            raw_artifacts,
+            request=_IngestWorkerRequest(
+                archive_root_str="/tmp/archive",
+                blob_root_str="/tmp/blob-store",
+                validation_mode="strict",
+                measure_ingest_result_size=False,
+            ),
+            worker_count=2,
+            progress=progress,
+        )
+    )
+
+    assert [result.raw_id for result in results] == ["raw-stalled"]
+    assert results[0].error == "worker progress deadline exceeded; retryable stalled/refused result"
+    assert future.cancelled()
+    assert progress.in_flight_raw_ids == []
+    assert shutdown_calls == [{"wait": False, "cancel_futures": True}]
+
+
+def test_iter_ingest_results_sync_keeps_completion_racing_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_artifacts = [
+        RawSessionRecord(
+            raw_id="raw-raced",
+            source_name="codex",
+            source_path="/tmp/raw-raced.jsonl",
+            blob_size=12,
+            acquired_at="2026-04-02T00:00:00Z",
+        )
+    ]
+    future: Future[IngestRecordResult] = Future()
+    shutdown_calls: list[dict[str, object]] = []
+    clock = iter((0.0, 0.0, 301.0, 301.0))
+
+    class FakeExecutor:
+        def submit(
+            self,
+            fn: object,
+            raw_record: RawSessionRecord,
+            request: _IngestWorkerRequest,
+        ) -> Future[IngestRecordResult]:
+            del fn, raw_record, request
+            return future
+
+        def shutdown(self, **kwargs: object) -> None:
+            shutdown_calls.append(kwargs)
+
+    def fake_process_pool_executor(*, max_workers: int) -> FakeExecutor:
+        assert max_workers == 2
+        return FakeExecutor()
+
+    def fake_wait(
+        futures: object,
+        *,
+        timeout: float | None = None,
+        return_when: object | None = None,
+    ) -> tuple[set[Future[IngestRecordResult]], set[Future[IngestRecordResult]]]:
+        del futures, timeout, return_when
+        future.set_result(IngestRecordResult(raw_id="raw-raced"))
+        return set(), {future}
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
+    monkeypatch.setattr(ingest_batch_core, "wait", fake_wait)
+    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.time.monotonic", lambda: next(clock))
+
+    results = list(
+        _iter_ingest_results_sync(
+            raw_artifacts,
+            request=_IngestWorkerRequest(
+                archive_root_str="/tmp/archive",
+                blob_root_str="/tmp/blob-store",
+                validation_mode="strict",
+                measure_ingest_result_size=False,
+            ),
+            worker_count=2,
+        )
+    )
+
+    assert [result.raw_id for result in results] == ["raw-raced"]
+    assert results[0].error is None
+    assert shutdown_calls == [{"wait": True, "cancel_futures": True}]
+
+
 def test_process_ingest_batch_sync_commits_targeted_fts_repair_and_invalidates_search_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
