@@ -32,6 +32,8 @@ Ref #1297, Ref #1184, Ref #1186.
 from __future__ import annotations
 
 import json
+from collections import Counter
+from copy import deepcopy
 from pathlib import Path
 from typing import cast
 
@@ -354,6 +356,81 @@ class TestChunkTextIsMaterializedOnce:
         [message] = session.messages
         assert [block.text for block in message.blocks] == ["first segment", "second segment"]
         assert message.text == "first segment\nsecond segment"
+
+
+def _wire_rendered_texts(payload: JSONDocument) -> list[str]:
+    """Collect source strings that the parser promises to render as blocks.
+
+    This is deliberately a small fixture-side oracle, rather than a call to
+    ``extract_text_from_chunk`` or ``GeminiMessage``.  The latter would make a
+    parser regression tautological: both sides of the assertion would share
+    the same extraction bug.  A chunk-level ``text`` wins over its streamed
+    ``parts`` because those fields describe the same wire content.
+    """
+    prompt = payload.get("chunkedPrompt")
+    chunks = prompt.get("chunks") if isinstance(prompt, dict) else None
+    if not isinstance(chunks, list):
+        return []
+
+    rendered: list[str] = []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        text = chunk.get("text")
+        if isinstance(text, str) and text:
+            rendered.append(text)
+        elif isinstance(chunk.get("parts"), list):
+            rendered.extend(
+                part["text"]
+                for part in chunk["parts"]
+                if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"]
+            )
+        executable_code = chunk.get("executableCode")
+        if isinstance(executable_code, dict) and isinstance(executable_code.get("code"), str):
+            rendered.append(executable_code["code"])
+        execution_result = chunk.get("codeExecutionResult")
+        if isinstance(execution_result, dict) and isinstance(execution_result.get("output"), str):
+            rendered.append(execution_result["output"])
+        error_message = chunk.get("errorMessage")
+        if isinstance(error_message, str) and error_message:
+            rendered.append(error_message)
+    return rendered
+
+
+def test_current_export_conserves_wire_text_into_typed_blocks() -> None:
+    """Every source rendering string reaches exactly one parsed block.
+
+    Anti-vacuity: the oracle reads the checked-in wire fixture directly and
+    includes code, result, and delivery-error renderings in addition to turn
+    text. Dropping a field, or emitting the co-occurring ``text``/``parts``
+    pair twice, therefore makes this fail independently of parser helpers.
+    """
+    payload = _load_catalog("current_export.json")
+    session = _parse(payload, "current_export")
+    source = Counter(_wire_rendered_texts(payload))
+    parsed = Counter(
+        block.text
+        for message in session.messages
+        for block in message.blocks
+        if isinstance(block.text, str) and block.text
+    )
+
+    assert source
+    assert parsed == source
+
+
+def test_current_export_conservation_oracle_rejects_dropped_mutated_text() -> None:
+    """The conservation lock follows changed source bytes, not fixture names."""
+    payload = _load_catalog("current_export.json")
+    mutated = deepcopy(payload)
+    chunks = mutated["chunkedPrompt"]["chunks"]
+    chunks[0]["text"] = "synthetic conservation mutation"
+    session = _parse(mutated, "current_export")
+
+    parsed_texts = [
+        block.text for message in session.messages for block in message.blocks if isinstance(block.text, str)
+    ]
+    assert "synthetic conservation mutation" in parsed_texts
 
 
 # ---------------------------------------------------------------------------
