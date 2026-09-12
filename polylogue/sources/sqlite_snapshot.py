@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_like_sqlite_bytes
@@ -50,6 +50,30 @@ class SQLiteBlobSnapshot:
     source_revision: str
     source_fingerprint: str
     blob_publication_receipt_id: str | None = None
+
+
+class _SQLiteSnapshotFailureAsOSError:
+    """Adapt SQLite acquisition failures to the live-file failure contract.
+
+    The live batch already treats ``OSError`` as a per-file acquisition
+    failure.  Keeping this adapter as an exception context manager lets that
+    route account for SQLite corruption/lock errors without widening every
+    batch catch site, while direct callers still receive the original typed
+    ``sqlite3.Error`` from :func:`snapshot_sqlite_to_blob`.
+    """
+
+    def __enter__(self) -> _SQLiteSnapshotFailureAsOSError:
+        return self
+
+    def __exit__(self, _exc_type: object, exc: BaseException | None, _traceback: object) -> Literal[False]:
+        if isinstance(exc, sqlite3.Error):
+            raise OSError(f"SQLite snapshot acquisition failed: {exc}") from exc
+        return False
+
+
+def sqlite_snapshot_failure_as_oserror() -> _SQLiteSnapshotFailureAsOSError:
+    """Translate a snapshot's SQLite error for per-file live acquisition."""
+    return _SQLiteSnapshotFailureAsOSError()
 
 
 def hermes_profile_raw_id(source_path: Path | str, source_index: int, logical_revision: str) -> str:
@@ -375,6 +399,7 @@ __all__ = [
     "retained_content_revision",
     "snapshot_sqlite_database",
     "snapshot_sqlite_to_blob",
+    "sqlite_snapshot_failure_as_oserror",
     "sqlite_staging_metadata_path",
     "stage_sqlite_snapshot",
     "sqlite_database_for_sidecar",

@@ -194,6 +194,7 @@ from polylogue.sources.sqlite_snapshot import (
     hermes_profile_raw_id,
     original_sqlite_source_path,
     snapshot_sqlite_to_blob,
+    sqlite_snapshot_failure_as_oserror,
     sqlite_source_revision,
 )
 from polylogue.storage.archive_identity import ArchiveLocation
@@ -2388,15 +2389,16 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    snapshot = snapshot_sqlite_to_blob(
-                        path,
-                        blob_store,
-                        heartbeat=_blob_copy_heartbeat(
-                            heartbeat,
-                            path=path,
-                            source_payload_read_bytes=source_payload_read_bytes,
-                        ),
-                    )
+                    with sqlite_snapshot_failure_as_oserror():
+                        snapshot = snapshot_sqlite_to_blob(
+                            path,
+                            blob_store,
+                            heartbeat=_blob_copy_heartbeat(
+                                heartbeat,
+                                path=path,
+                                source_payload_read_bytes=source_payload_read_bytes,
+                            ),
+                        )
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
                     blob_publication_receipt_id = snapshot.blob_publication_receipt_id
                     source_path = original_sqlite_source_path(path) or path
@@ -2482,15 +2484,16 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    snapshot = snapshot_sqlite_to_blob(
-                        path,
-                        blob_store,
-                        heartbeat=_blob_copy_heartbeat(
-                            heartbeat,
-                            path=path,
-                            source_payload_read_bytes=source_payload_read_bytes,
-                        ),
-                    )
+                    with sqlite_snapshot_failure_as_oserror():
+                        snapshot = snapshot_sqlite_to_blob(
+                            path,
+                            blob_store,
+                            heartbeat=_blob_copy_heartbeat(
+                                heartbeat,
+                                path=path,
+                                source_payload_read_bytes=source_payload_read_bytes,
+                            ),
+                        )
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
                     blob_publication_receipt_id = snapshot.blob_publication_receipt_id
                     source_path = original_sqlite_source_path(path) or path

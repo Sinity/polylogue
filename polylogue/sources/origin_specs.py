@@ -851,11 +851,11 @@ class DatabaseMemberRule:
     """Admission disposition for one database member of a DB-shaped origin.
 
     A mutable database is admitted for the logical content it carries, so an
-    admitted member names that content (``logical_tables``) and who reads it
-    (``consumer``). ``consumer`` is ``None`` only for ``acquire-partial``: the
-    logical product is declared and retained as durable evidence with no
-    typed reader yet. ``out-of-scope`` members declare neither -- nothing is
-    acquired to have a product or a consumer.
+    admitted member names that content (``logical_tables``) and who
+    reads it (``consumer``). ``acquire-partial`` describes the admission
+    completeness of a product, not an unowned product: it still needs a
+    consumer for the durable evidence it retains. ``out-of-scope`` members
+    declare neither -- nothing is acquired to have a product or a consumer.
     """
 
     filename: str
@@ -1152,9 +1152,9 @@ class OriginSpecRegistry:
                             f"{spec.origin.value}: admitted database member {member.filename} "
                             "must name the logical tables it is acquired for"
                         )
-                    if member.disposition == "acquire" and not member.consumer:
+                    if not member.consumer:
                         raise ValueError(
-                            f"{spec.origin.value}: acquired database member {member.filename} "
+                            f"{spec.origin.value}: admitted database member {member.filename} "
                             "must name the consumer of its logical product"
                         )
                     if member.table_rules:
@@ -2161,6 +2161,7 @@ def _codex_spec() -> OriginSpec:
                     "goals",
                     "goal intent is retained as durable raw evidence",
                     logical_tables=("thread_goals", "thread_goal_continuation_deferrals"),
+                    consumer="polylogue/sources/codex_state_evidence.py:materialize_codex_state_content",
                 ),
                 DatabaseMemberRule(
                     "memories_1.sqlite",
@@ -2168,6 +2169,7 @@ def _codex_spec() -> OriginSpec:
                     "memories",
                     "memory state is retained as durable raw evidence",
                     logical_tables=("stage1_outputs", "jobs"),
+                    consumer="polylogue/sources/codex_state_evidence.py:materialize_codex_state_content",
                 ),
                 DatabaseMemberRule("logs_2.sqlite", "out-of-scope", "logs", "runtime tracing is not session evidence"),
                 DatabaseMemberRule(
