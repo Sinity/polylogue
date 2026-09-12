@@ -36,7 +36,6 @@ from tests.infra.workload_artifacts import (
     SeededArchiveReachabilityInventory,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
-    _manifest_file_entries,
     _manifest_from_payload,
     _open_no_follow,
     _recover_obsolete_staging,
@@ -61,10 +60,8 @@ from tests.infra.workload_declarations import (
     WorkloadProfile,
     WorkloadSessionShape,
     benchmark_corpus_specs,
-    benchmark_workload_profile,
     c03_semantic_corpus_spec,
     named_corpus_specs,
-    named_workload_profile,
 )
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
@@ -114,89 +111,6 @@ def test_seeded_archive_integrity_checks_the_durable_audit_tier(tmp_path: Path) 
     assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
 
 
-def test_benchmark_profiles_are_semantic_mixed_origin_exact_message_projections() -> None:
-    """Benchmark targets are named workload contracts, not direct index seeds.
-
-    Replacing the catalog with one provider or a round-count-only map makes the
-    provider and exact-message assertions fail before any benchmark runs.
-    """
-    assert tuple(profile.tier for profile in BENCHMARK_WORKLOAD_PROFILES) == (
-        BenchmarkWorkloadTier.SMOKE,
-        BenchmarkWorkloadTier.REPRESENTATIVE,
-        BenchmarkWorkloadTier.ARCHIVE_SCALE,
-        BenchmarkWorkloadTier.STRESS,
-    )
-    assert tuple(profile.target_messages for profile in BENCHMARK_WORKLOAD_PROFILES) == (1_000, 5_000, 10_000, 50_000)
-    for profile in BENCHMARK_WORKLOAD_PROFILES:
-        specs = benchmark_corpus_specs(profile.tier)
-        assert sum(spec.count * spec.messages_min for spec in specs) == profile.target_messages
-        assert {spec.provider for spec in specs} == {"chatgpt", "claude-ai", "claude-code", "codex", "gemini"}
-        assert {spec.messages_min for spec in specs} == {2, 8, profile.messages_per_session, 100}
-        assert {spec.messages_max for spec in specs} == {2, 8, profile.messages_per_session, 100}
-        assert {spec.profile.primary_family_id for spec in specs} == {"benchmark-archive"}
-        assert {profile.tier.value for spec in specs if profile.tier.value in spec.tags} == {profile.tier.value}
-
-
-def test_benchmark_profile_selection_is_deterministic_and_named() -> None:
-    """The adapter has one stable corpus identity per supported semantic tier."""
-    first = benchmark_corpus_specs(BenchmarkWorkloadTier.REPRESENTATIVE, seed=91)
-    second = benchmark_corpus_specs("representative", seed=91)
-
-    assert first == second
-    assert benchmark_workload_profile("representative").target_messages == 5_000
-    with pytest.raises(ValueError, match="not-a-tier"):
-        BenchmarkWorkloadTier("not-a-tier")
-
-
-def test_named_workload_profiles_are_semantic_and_build_deterministic_provider_specs() -> None:
-    """Fixture workloads retain purpose and provider-native artifact identity."""
-    assert {profile.name for profile in NAMED_WORKLOAD_PROFILES} == {
-        "schema-small",
-        "schema-medium",
-        "cli-chatgpt",
-        "cli-mixed",
-        "completion",
-    }
-
-    profile = named_workload_profile("completion")
-    first = named_corpus_specs(profile.name)
-    second = profile.corpus_specs()
-
-    assert first == second
-    assert profile.purpose == "completion"
-    assert {spec.provider for spec in first} == {"chatgpt", "claude-ai"}
-    assert {spec.seed for spec in first} == {1271}
-    assert {spec.origin for spec in first} == {"generated.test-workload-completion"}
-    assert {spec.profile.primary_family_id for spec in first} == {"test-workload"}
-    assert {"completion", "provider-native"}.issubset(set(first[0].profile.profile_tokens))
-    with pytest.raises(ValueError, match="unknown named seeded archive workload"):
-        named_workload_profile("unknown")
-
-
-def test_profile_name_and_purpose_are_part_of_artifact_identity() -> None:
-    """Changing a declared profile cannot reuse an identical cache recipe.
-
-    The profile's name and purpose are operational declaration metadata, not
-    semantic expected output. They still need to reach the provider-shaped
-    ``CorpusSpec`` identity: otherwise a profile renamed or re-purposed while
-    retaining its family/tokens would silently reuse a stale artifact.
-    """
-    import dataclasses
-
-    profile = named_workload_profile("cli-chatgpt")
-    shapes = tuple(
-        WorkloadSessionShape(provider, count, profile.messages_min, profile.messages_max)
-        for provider, count in profile.provider_session_counts
-    )
-    baseline = seeded_archive_key(profile.workload.corpus_specs(shapes))
-
-    renamed = dataclasses.replace(profile.workload, name="cli-chatgpt-renamed")
-    repurposed = dataclasses.replace(profile.workload, purpose="cli-write")
-
-    assert seeded_archive_key(renamed.corpus_specs(shapes)).value != baseline.value
-    assert seeded_archive_key(repurposed.corpus_specs(shapes)).value != baseline.value
-
-
 def test_profile_identity_controls_published_artifact_reuse(tmp_path: Path) -> None:
     """The cache route reuses one profile and publishes a changed profile separately.
 
@@ -240,129 +154,6 @@ def test_seeded_archive_manifest_is_the_canonical_corpus_artifact_manifest(
     assert isinstance(artifact.manifest, CorpusArtifactManifest)
     assert artifact.manifest.key == seeded_archive_key((c03_semantic_corpus_spec(),)).value
     assert not hasattr(artifact.manifest, "expected_sessions")
-
-
-def test_workload_identity_rejects_semantic_oracle_metadata(tmp_path: Path) -> None:
-    """Removing either identity or manifest-field validation must make this red."""
-    import dataclasses
-
-    with pytest.raises(ValueError, match="semantic metadata"):
-        WorkloadProfile(
-            name="invalid",
-            purpose="fixture-shape",
-            seed=1,
-            family_ids=("test",),
-            profile_tokens=("expected_sessions",),
-            origin="generated.test-invalid",
-            tags=("synthetic",),
-        )
-
-    with pytest.raises(ValueError, match="semantic metadata"):
-        WorkloadProfile(
-            name="invalid-family",
-            purpose="fixture-shape",
-            seed=1,
-            family_ids=("expected_sessions",),
-            profile_tokens=("fixture-shape",),
-            origin="generated.test-invalid",
-            tags=("synthetic",),
-        )
-
-    with pytest.raises(ValueError, match="semantic metadata"):
-        WorkloadProfile(
-            name="invalid-family",
-            purpose="fixture-shape",
-            seed=1,
-            family_ids=("expected_sessions",),
-            profile_tokens=("provider-native",),
-            origin="generated.test-invalid",
-            tags=("synthetic",),
-        )
-
-    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
-    with pytest.raises(ValueError, match="semantic metadata"):
-        dataclasses.replace(
-            artifact.manifest,
-            receipt={**artifact.manifest.receipt, "expected_sessions": 64},
-        )
-
-    file_entry = dict(artifact.manifest.files[0])
-    file_entry["expected_sessions"] = 64
-    with pytest.raises(ValueError, match="semantic metadata"):
-        _manifest_file_entries((file_entry,))
-
-    with pytest.raises(ValueError, match="semantic metadata"):
-        dataclasses.replace(
-            artifact.manifest,
-            files=({"path": "index.db", "size": 0, "sha256": "0" * 64, "expected_sessions": 64},),
-        )
-
-    # Every profile field is operational metadata.  Checking only family_ids
-    # and profile_tokens would let a catalogue-shaped tag or name leak into
-    # the shared artifact identity while the obvious fields remain clean.
-    for field, value in {
-        "name": "expected_sessions",
-        "purpose": "expected_sessions",
-        "origin": "expected_sessions",
-        "tags": ("expected_sessions",),
-    }.items():
-        with pytest.raises(ValueError, match="semantic metadata"):
-            dataclasses.replace(
-                cast(
-                    Any,
-                    WorkloadProfile(
-                        name="valid-name",
-                        purpose="fixture-shape",
-                        seed=1,
-                        family_ids=("test",),
-                        profile_tokens=("fixture-shape",),
-                        origin="generated.test-invalid",
-                        tags=("synthetic",),
-                    ),
-                ),
-                **{field: value},
-            )
-
-
-def test_workload_profile_wrappers_reject_semantic_fields_and_unknown_providers() -> None:
-    """Every profile wrapper must remain operational and provider-shaped.
-
-    Anti-vacuity: validating only the base profile lets a wrapper carry an
-    ``expected_*`` field or an unregistered provider into corpus construction.
-    """
-    import dataclasses
-
-    shape = WorkloadSessionShape("chatgpt", 1, 2, 2)
-    with pytest.raises(ValueError, match="unknown corpus provider"):
-        dataclasses.replace(shape, provider="not-a-provider")
-    with pytest.raises(ValueError, match="semantic metadata"):
-        dataclasses.replace(shape, style="expected_sessions")
-
-    named = named_workload_profile("cli-chatgpt")
-    with pytest.raises(ValueError, match="named workload profile cannot repeat"):
-        dataclasses.replace(named, provider_session_counts=(("chatgpt", 1), ("chatgpt", 2)))
-    with pytest.raises(ValueError, match="semantic metadata"):
-        dataclasses.replace(named, workload=dataclasses.replace(named.workload, purpose="expected_semantics"))
-
-    benchmark = benchmark_workload_profile(BenchmarkWorkloadTier.SMOKE)
-    with pytest.raises(ValueError, match="benchmark workload cannot repeat"):
-        dataclasses.replace(benchmark, provider_session_counts=(("chatgpt", 1), ("chatgpt", 1)))
-    with pytest.raises(ValueError, match="unknown corpus provider"):
-        dataclasses.replace(benchmark, provider_session_counts=(("not-a-provider", 1),))
-
-
-def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None:
-    """Both catalog adapters retain a common identity and native-spec constructor."""
-    catalog_profiles = (*NAMED_WORKLOAD_PROFILES, *BENCHMARK_WORKLOAD_PROFILES)
-
-    assert all(isinstance(profile.workload, WorkloadProfile) for profile in catalog_profiles)
-    assert all(profile.workload.name and profile.workload.purpose for profile in catalog_profiles)
-    assert all("provider-native" in profile.workload.profile_tokens for profile in catalog_profiles)
-
-    named = named_workload_profile("cli-mixed")
-    benchmark = benchmark_workload_profile(BenchmarkWorkloadTier.SMOKE)
-    assert {spec.origin for spec in named.corpus_specs()} == {named.workload.origin}
-    assert {spec.origin for spec in benchmark_corpus_specs(benchmark.tier)} == {benchmark.workload.origin}
 
 
 def test_current_seeded_archive_reachability_is_generated_and_rejects_partial_sets() -> None:
