@@ -212,6 +212,16 @@ def test_compaction_boundary_without_a_stored_range_is_not_a_finding() -> None:
     assert [f for f in detect_session_pathologies(proj) if f.kind == "stale_context"] == []
 
 
+def test_compaction_boundary_requires_a_complete_nonnegative_range() -> None:
+    snapshot = _compaction_snapshot().model_copy(
+        update={"metadata": {COMPACTION_RANGE_START_KEY: "-1", COMPACTION_RANGE_END_KEY: "2"}}
+    )
+    assert [f for f in detect_session_pathologies(_projection(snapshots=[snapshot])) if f.kind == "stale_context"] == []
+
+    partial = _compaction_snapshot().model_copy(update={"metadata": {COMPACTION_RANGE_START_KEY: "0"}})
+    assert [f for f in detect_session_pathologies(_projection(snapshots=[partial])) if f.kind == "stale_context"] == []
+
+
 def test_stored_range_replaces_the_lossy_resume_heuristic() -> None:
     """One context loss is one finding: the precise reading wins outright."""
     proj = _projection(snapshots=[_snapshot("resume", "summary"), _compaction_snapshot()])
