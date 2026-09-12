@@ -350,6 +350,10 @@ ARCHIVE_MESSAGE_QUERY_ROW_DISPOSITIONS: Dispositions = {
     "material_origin": exposed("material_origin"),
     "occurred_at_ms": exposed("timestamp", _datetime_from_ms),
     "position": exposed("position"),
+    "parent_message_id": exposed("parent_id"),
+    "variant_index": exposed("branch_index"),
+    "is_active_path": exposed("is_active_path"),
+    "is_active_leaf": exposed("is_active_leaf"),
     "word_count": delegated("Message.word_count is derived from text by MessageRuntimeMixin"),
     "text": delegated(
         "the row's pre-flattened search text; the display-text policy joins the block rows and "
@@ -362,10 +366,6 @@ ARCHIVE_MESSAGE_QUERY_ROW_DISPOSITIONS: Dispositions = {
 # domain defaults, which is only honest because the surface says so.
 MESSAGE_QUERY_ROW_UNPROJECTED: tuple[str, ...] = (
     "identity_source",
-    "parent_id",
-    "branch_index",
-    "is_active_path",
-    "is_active_leaf",
     "has_tool_use",
     "has_thinking",
     "has_paste",
@@ -376,7 +376,7 @@ MESSAGE_QUERY_ROW_UNPROJECTED: tuple[str, ...] = (
 )
 
 MESSAGE_QUERY_ROW_RICHER_OPERATION = (
-    "Branch/paste/tool flags, attachments and stop_reason are not selected by "
+    "Paste/tool flags, attachments and stop_reason are not selected by "
     "the bounded message-page projection; read the composed session "
     "(get_session / read_session) for those fields."
 )

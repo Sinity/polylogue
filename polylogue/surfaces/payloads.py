@@ -1724,6 +1724,10 @@ class MessageQueryRowPayload(SurfacePayloadModel):
     material_origin: str = "unknown"
     occurred_at_ms: int | None = None
     position: int
+    parent_message_id: str | None = None
+    variant_index: int = 0
+    is_active_path: bool | None = None
+    is_active_leaf: bool = False
     word_count: int
     text: str
 

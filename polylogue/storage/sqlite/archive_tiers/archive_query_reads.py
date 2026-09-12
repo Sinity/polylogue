@@ -99,6 +99,13 @@ class ArchiveMessageQueryRow:
     position: int
     word_count: int
     text: str
+    # Topology columns are selected by every production query path. Defaults
+    # preserve construction compatibility for narrow test/query doubles while
+    # retaining the storage values whenever this row comes from SQL.
+    parent_message_id: str | None = None
+    variant_index: int = 0
+    is_active_path: bool | None = None
+    is_active_leaf: bool = False
     blocks: tuple[ArchiveBlockRow, ...] = ()
 
 
@@ -2633,6 +2640,10 @@ def query_messages(
             m.material_origin,
             m.occurred_at_ms,
             m.position,
+            m.parent_message_id,
+            m.variant_index,
+            m.is_active_path,
+            m.is_active_leaf,
             m.word_count,
             COALESCE((
                 SELECT group_concat(ordered.search_text, char(10))
@@ -2667,6 +2678,10 @@ def query_messages(
             material_origin=str(row["material_origin"]),
             occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
             position=int(row["position"]),
+            parent_message_id=(str(row["parent_message_id"]) if row["parent_message_id"] is not None else None),
+            variant_index=int(row["variant_index"]),
+            is_active_path=(bool(row["is_active_path"]) if row["is_active_path"] is not None else None),
+            is_active_leaf=bool(row["is_active_leaf"]),
             word_count=int(row["word_count"]),
             text=str(row["text"] or ""),
             blocks=tuple(blocks_by_message[str(row["message_id"])]),
@@ -2732,6 +2747,10 @@ def query_session_messages(
             m.material_origin,
             m.occurred_at_ms,
             m.position,
+            m.parent_message_id,
+            m.variant_index,
+            m.is_active_path,
+            m.is_active_leaf,
             m.word_count,
             COALESCE((
                 SELECT group_concat(ordered.search_text, char(10))
@@ -2765,6 +2784,10 @@ def query_session_messages(
             material_origin=str(row["material_origin"]),
             occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
             position=int(row["position"]),
+            parent_message_id=(str(row["parent_message_id"]) if row["parent_message_id"] is not None else None),
+            variant_index=int(row["variant_index"]),
+            is_active_path=(bool(row["is_active_path"]) if row["is_active_path"] is not None else None),
+            is_active_leaf=bool(row["is_active_leaf"]),
             word_count=int(row["word_count"]),
             text=str(row["text"] or ""),
             blocks=tuple(blocks_by_message[str(row["message_id"])]),
