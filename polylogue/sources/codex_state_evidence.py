@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from contextlib import closing
@@ -11,10 +12,125 @@ from typing import Any
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources import codex_state_projection
 from polylogue.sources.parsers import codex_state
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.materials import admit_material, link_material
 
 logger = logging.getLogger(__name__)
 
 CODEX_STATE_CENSUS_DETAIL = "retained Codex state evidence applied"
+
+
+def _upsert_codex_material(
+    archive: Any,
+    *,
+    raw_id: str,
+    thread_id: str,
+    kind: str,
+    item_id: str,
+    payload: dict[str, object],
+    observed_at_ms: int,
+) -> None:
+    """Retain one generated Codex record through the shared material route."""
+    conn = archive.source_connection
+    source_uri = f"codex://state/{kind}/{item_id}"
+    referrer_ref = f"codex-session:{thread_id}"
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    previous = conn.execute(
+        "SELECT material_id FROM material_observations WHERE source_uri = ? AND referrer_ref = ? "
+        "AND acquisition_state != 'superseded' ORDER BY created_at_ms DESC, material_id DESC LIMIT 1",
+        (source_uri, referrer_ref),
+    ).fetchone()
+    material = admit_material(
+        conn,
+        blob_store=BlobStore(archive.archive_root / "blob"),
+        source_uri=source_uri,
+        referrer_ref=referrer_ref,
+        observed_at_ms=observed_at_ms,
+        payload=encoded,
+        media_type="application/json",
+        filename=f"{kind}-{item_id}.json",
+        privacy_classification="private",
+        supersedes_material_id=str(previous[0]) if previous is not None else None,
+    )
+    if previous is not None and str(previous[0]) != material.material_id:
+        conn.execute(
+            "UPDATE material_observations SET acquisition_state = 'superseded' WHERE material_id = ?",
+            (str(previous[0]),),
+        )
+    link_material(
+        conn,
+        material.material_id,
+        raw_id,
+        relation="acquired_from",
+        authority="provider",
+        observed_at_ms=observed_at_ms,
+        source_diagnostic=f"Codex {kind} retained export {raw_id}",
+    )
+    link_material(
+        conn,
+        material.material_id,
+        referrer_ref,
+        relation="refers_to",
+        authority="provider",
+        observed_at_ms=observed_at_ms,
+        source_diagnostic="Codex provider-generated state associated with its thread",
+    )
+
+
+def materialize_codex_state_content(
+    archive: Any,
+    raw_id: str,
+    *,
+    state_path: Path,
+    state_kind: str,
+    acquired_at_ms: int,
+) -> None:
+    """Project retained goals/memories into the existing material read model."""
+    if state_kind == "goals":
+        for goal in codex_state.parse_codex_goals_db(state_path, immutable=True):
+            _upsert_codex_material(
+                archive,
+                raw_id=raw_id,
+                thread_id=goal.thread_id,
+                kind="goal",
+                item_id=goal.goal_id,
+                observed_at_ms=acquired_at_ms,
+                payload={
+                    "thread_id": goal.thread_id,
+                    "goal_id": goal.goal_id,
+                    "objective": goal.objective,
+                    "status": goal.status,
+                    "token_budget": goal.token_budget,
+                    "tokens_used": goal.tokens_used,
+                    "time_used_seconds": goal.time_used_seconds,
+                    "created_at_ms": goal.created_at_ms,
+                    "updated_at_ms": goal.updated_at_ms,
+                    "provider": "codex",
+                    "generated": False,
+                },
+            )
+    elif state_kind == "memories":
+        for memory in codex_state.parse_codex_memories_db(state_path, immutable=True):
+            _upsert_codex_material(
+                archive,
+                raw_id=raw_id,
+                thread_id=memory.thread_id,
+                kind="memory",
+                item_id=memory.thread_id,
+                observed_at_ms=acquired_at_ms,
+                payload={
+                    "thread_id": memory.thread_id,
+                    "raw_memory": memory.raw_memory,
+                    "rollout_summary": memory.rollout_summary,
+                    "source_updated_at_ms": memory.source_updated_at_ms,
+                    "generated_at_ms": memory.generated_at_ms,
+                    "usage_count": memory.usage_count,
+                    "has_rollout_slug": memory.has_rollout_slug,
+                    "selected_for_phase2": memory.selected_for_phase2,
+                    "provider": "codex",
+                    "generated": True,
+                },
+            )
 
 
 def record_codex_state_snapshot_terminal(
@@ -41,6 +157,14 @@ def record_codex_state_snapshot_terminal(
     """
     from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 
+    if state_kind in {"goals", "memories"}:
+        materialize_codex_state_content(
+            archive,
+            raw_id,
+            state_path=state_path,
+            state_kind=state_kind,
+            acquired_at_ms=acquired_at_ms,
+        )
     if state_kind == codex_state_projection.THREAD_STATE_KIND:
         codex_state_projection.apply_retained_state_export(
             archive,
@@ -181,6 +305,7 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
 
 __all__ = [
     "CODEX_STATE_CENSUS_DETAIL",
+    "materialize_codex_state_content",
     "record_codex_state_snapshot_terminal",
     "resolve_retained_codex_state_receipts",
 ]
