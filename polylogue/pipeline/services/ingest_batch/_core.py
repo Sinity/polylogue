@@ -147,6 +147,12 @@ class _BlobSized(Protocol):
 
 IngestHeartbeat = Callable[[], None]
 _INGEST_RESULT_WAIT_HEARTBEAT_S = 15.0
+# A heartbeat only proves that the coordinator is alive.  It is deliberately
+# not progress: a worker that completes no future must eventually be reported
+# as unfinished so the ordinary retry/refusal path can settle its raw IDs.
+# The deadline is per-progress window, not a batch wall-clock timeout, so a
+# legitimately large source can run indefinitely while results keep arriving.
+_INGEST_RESULT_PROGRESS_DEADLINE_S = 300.0
 _INGEST_RESULT_CHUNK_SIZE = 100
 
 
@@ -1547,49 +1553,68 @@ def _iter_ingest_results_chunk(
                 progress.completed_raw_count += 1
                 progress.in_flight_raw_ids.clear()
         return
+    executor = None
+    stalled = False
     try:
-        with process_pool_executor(max_workers=max(1, worker_count)) as executor:
-            raw_iter = iter(raw_artifacts)
-            futures: dict[Future[IngestRecordResult], str] = {}
-            max_in_flight = max(1, worker_count)
+        executor = process_pool_executor(max_workers=max(1, worker_count))
+        raw_iter = iter(raw_artifacts)
+        futures: dict[Future[IngestRecordResult], str] = {}
+        max_in_flight = max(1, worker_count)
 
-            def submit_next() -> bool:
-                try:
-                    raw_record = next(raw_iter)
-                except StopIteration:
-                    return False
-                future = executor.submit(_run_ingest_record, raw_record, request)
-                futures[future] = raw_record.raw_id
+        def submit_next() -> bool:
+            try:
+                raw_record = next(raw_iter)
+            except StopIteration:
+                return False
+            future = executor.submit(_run_ingest_record, raw_record, request)
+            futures[future] = raw_record.raw_id
+            if progress is not None:
+                progress.in_flight_raw_ids[:] = list(futures.values())
+            return True
+
+        for _ in range(max_in_flight):
+            if not submit_next():
+                break
+        last_progress_at = time.monotonic()
+        while futures:
+            remaining_deadline = _INGEST_RESULT_PROGRESS_DEADLINE_S - (time.monotonic() - last_progress_at)
+            done, _pending = wait(
+                tuple(futures),
+                timeout=max(0.0, min(_INGEST_RESULT_WAIT_HEARTBEAT_S, remaining_deadline)),
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                if heartbeat is not None:
+                    heartbeat()
+                if time.monotonic() - last_progress_at >= _INGEST_RESULT_PROGRESS_DEADLINE_S:
+                    stalled = True
+                    unfinished = tuple(futures.items())
+                    logger.warning(
+                        "ingest worker progress deadline exceeded; refusing %d unfinished raw item(s)",
+                        len(unfinished),
+                    )
+                    for future, raw_id in unfinished:
+                        future.cancel()
+                        yield IngestRecordResult(
+                            raw_id=raw_id,
+                            error="worker progress deadline exceeded; retryable stalled/refused result",
+                        )
+                    futures.clear()
+                continue
+            last_progress_at = time.monotonic()
+            for future in done:
+                raw_id = futures.pop(future)
                 if progress is not None:
                     progress.in_flight_raw_ids[:] = list(futures.values())
-                return True
-
-            for _ in range(max_in_flight):
-                if not submit_next():
-                    break
-            while futures:
-                done, _pending = wait(
-                    tuple(futures),
-                    timeout=_INGEST_RESULT_WAIT_HEARTBEAT_S,
-                    return_when=FIRST_COMPLETED,
-                )
-                if not done:
-                    if heartbeat is not None:
-                        heartbeat()
-                    continue
-                for future in done:
-                    raw_id = futures.pop(future)
-                    if progress is not None:
-                        progress.in_flight_raw_ids[:] = list(futures.values())
-                    try:
-                        result = future.result()
-                    except Exception as exc:
-                        result = IngestRecordResult(raw_id=raw_id, error=f"worker: {exc}")
-                    submit_next()
-                    if progress is not None:
-                        progress.in_flight_raw_ids[:] = list(futures.values())
-                        progress.completed_raw_count += 1
-                    yield result
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = IngestRecordResult(raw_id=raw_id, error=f"worker: {exc}")
+                submit_next()
+                if progress is not None:
+                    progress.in_flight_raw_ids[:] = list(futures.values())
+                    progress.completed_raw_count += 1
+                yield result
     except (TypeError, pickle.PicklingError):
         for raw_record in raw_artifacts:
             if progress is not None:
@@ -1600,6 +1625,16 @@ def _iter_ingest_results_chunk(
             if progress is not None:
                 progress.completed_raw_count += 1
                 progress.in_flight_raw_ids.clear()
+    finally:
+        if executor is not None:
+            shutdown = getattr(executor, "shutdown", None)
+            if callable(shutdown):
+                try:
+                    shutdown(wait=not stalled, cancel_futures=True)
+                except TypeError:
+                    # Small test doubles and older executor implementations
+                    # may not expose ``cancel_futures``.
+                    shutdown(wait=not stalled)
 
 
 def _select_ingest_worker_count(raw_artifacts: Sequence[_BlobSized], ingest_workers: int | None) -> int:

@@ -159,6 +159,10 @@ class ArchiveEmbeddingRunState(TypedDict):
     error_count: int
     estimated_cost_usd: float
 
+    # ``processed`` is the successful work denominator, not the number of
+    # rows scanned/planned.  Keep this explicit so a capped or failed run
+    # cannot publish the scan count under two different labels.
+
 
 PROMETHEUS_CONTENT_TYPE: str = "text/plain; version=0.0.4; charset=utf-8"
 
@@ -853,7 +857,9 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
         "latest_status": latest["status"] if latest is not None else None,
         "latest_rebuild": "false",
         "latest_planned_sessions": latest["scanned_sessions"] if latest is not None else 0,
-        "latest_processed_sessions": latest["scanned_sessions"] if latest is not None else 0,
+        "latest_processed_sessions": (
+            latest["embedded_sessions"] + latest["skipped_sessions"] if latest is not None else 0
+        ),
         "latest_embedded_sessions": latest["embedded_sessions"] if latest is not None else 0,
         "latest_skipped_sessions": latest["skipped_sessions"] if latest is not None else 0,
         "latest_error_count": latest["error_count"] if latest is not None else 0,

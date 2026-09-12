@@ -60,7 +60,8 @@ class FakeAdapter:
             self.pending.remove(item.item_id)
 
 
-def test_a_huge_class_cannot_starve_its_siblings() -> None:
+@pytest.mark.asyncio
+async def test_a_huge_class_cannot_starve_its_siblings() -> None:
     """Mutation: give ``huge`` absolute priority and ``small`` admits nothing."""
     huge = FakeAdapter("huge", [f"h{index}" for index in range(10_000)])
     small = FakeAdapter("small", ["s0", "s1"])
@@ -71,24 +72,26 @@ def test_a_huge_class_cannot_starve_its_siblings() -> None:
         ]
     )
 
-    result = dispatcher.run_once(budget=16)
+    result = await dispatcher.run_once(budget=16)
 
     assert result.require_report("small").admitted == 2
     assert result.require_report("huge").admitted > 0
     assert small.pending == []
 
 
-def test_no_pass_enumerates_a_whole_spool() -> None:
+@pytest.mark.asyncio
+async def test_no_pass_enumerates_a_whole_spool() -> None:
     """Discovery is paged; a per-tick full scan cannot converge at spool scale."""
     huge = FakeAdapter("huge", [f"h{index}" for index in range(830_789)])
     dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="huge", adapter=huge, page_size=32)])
 
-    dispatcher.run_once(budget=64)
+    await dispatcher.run_once(budget=64)
 
     assert huge.discover_calls == [32]
 
 
-def test_weight_decides_the_share_of_one_pass() -> None:
+@pytest.mark.asyncio
+async def test_weight_decides_the_share_of_one_pass() -> None:
     """Mutation: ignore ``weight`` and both classes admit the same count."""
     heavy = FakeAdapter("heavy", [f"a{index}" for index in range(100)])
     light = FakeAdapter("light", [f"b{index}" for index in range(100)])
@@ -99,12 +102,13 @@ def test_weight_decides_the_share_of_one_pass() -> None:
         ]
     )
 
-    result = dispatcher.run_once(budget=40)
+    result = await dispatcher.run_once(budget=40)
 
     assert result.require_report("heavy").admitted > result.require_report("light").admitted
 
 
-def test_a_poison_item_is_isolated_and_its_siblings_continue() -> None:
+@pytest.mark.asyncio
+async def test_a_poison_item_is_isolated_and_its_siblings_continue() -> None:
     """Mutation: drop the attempt bound and the head item blocks the class."""
 
     def outcome(item: IntakeItem) -> AdmissionResult:
@@ -115,15 +119,16 @@ def test_a_poison_item_is_isolated_and_its_siblings_continue() -> None:
     adapter = FakeAdapter("hooks", ["poison", "good0", "good1"], outcome_for=outcome)
     dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="hooks", adapter=adapter, max_attempts=2, page_size=8)])
 
-    dispatcher.run_once(budget=8)
-    dispatcher.run_once(budget=8)
+    await dispatcher.run_once(budget=8)
+    await dispatcher.run_once(budget=8)
 
     assert dispatcher.isolated_items("hooks") == frozenset({"poison"})
     assert adapter.admitted == ["good0", "good1", "good0", "good1"] or set(adapter.admitted) == {"good0", "good1"}
     assert adapter.pending == ["poison"]
 
 
-def test_an_adapter_that_raises_is_one_item_retried_not_a_dead_class() -> None:
+@pytest.mark.asyncio
+async def test_an_adapter_that_raises_is_one_item_retried_not_a_dead_class() -> None:
     def outcome(item: IntakeItem) -> AdmissionResult:
         if item.item_id == "boom":
             raise RuntimeError("adapter exploded")
@@ -132,13 +137,14 @@ def test_an_adapter_that_raises_is_one_item_retried_not_a_dead_class() -> None:
     adapter = FakeAdapter("hooks", ["boom", "fine"], outcome_for=outcome)
     dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="hooks", adapter=adapter, max_attempts=1, page_size=8)])
 
-    result = dispatcher.run_once(budget=8)
+    result = await dispatcher.run_once(budget=8)
 
     assert result.require_report("hooks").admitted == 1
     assert dispatcher.isolated_items("hooks") == frozenset({"boom"})
 
 
-def test_a_terminal_item_is_set_aside_without_further_attempts() -> None:
+@pytest.mark.asyncio
+async def test_a_terminal_item_is_set_aside_without_further_attempts() -> None:
     def outcome(item: IntakeItem) -> AdmissionResult:
         if item.item_id == "unparseable":
             return AdmissionResult(AdmissionOutcome.TERMINAL, reason="unknown envelope version")
@@ -147,13 +153,14 @@ def test_a_terminal_item_is_set_aside_without_further_attempts() -> None:
     adapter = FakeAdapter("browser", ["unparseable", "ok"], outcome_for=outcome)
     dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="browser", adapter=adapter, page_size=8)])
 
-    dispatcher.run_once(budget=8)
+    await dispatcher.run_once(budget=8)
 
     assert dispatcher.isolated_items("browser") == frozenset({"unparseable"})
     assert adapter.acknowledged == ["ok"]
 
 
-def test_duplicate_delivery_is_acknowledged_without_double_admission() -> None:
+@pytest.mark.asyncio
+async def test_duplicate_delivery_is_acknowledged_without_double_admission() -> None:
     """Crash after admission but before acknowledgement replays the item."""
     adapter = FakeAdapter(
         "hooks",
@@ -162,7 +169,7 @@ def test_duplicate_delivery_is_acknowledged_without_double_admission() -> None:
     )
     dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="hooks", adapter=adapter, page_size=8)])
 
-    result = dispatcher.run_once(budget=8)
+    result = await dispatcher.run_once(budget=8)
 
     assert result.require_report("hooks").duplicates == 1
     assert result.require_report("hooks").admitted == 0
@@ -170,22 +177,24 @@ def test_duplicate_delivery_is_acknowledged_without_double_admission() -> None:
     assert adapter.admitted == []
 
 
-def test_losing_every_scheduling_hint_preserves_correctness() -> None:
+@pytest.mark.asyncio
+async def test_losing_every_scheduling_hint_preserves_correctness() -> None:
     """Deficits, attempts and the ready set are hints; the spool is authority."""
     adapter = FakeAdapter("hooks", [f"h{index}" for index in range(6)])
     first = FairIntakeDispatcher([IntakeClassSpec(name="hooks", adapter=adapter, page_size=2)])
-    first.run_once(budget=2)
+    await first.run_once(budget=2)
 
     # A restart constructs a new dispatcher with no hints at all.
     second = FairIntakeDispatcher([IntakeClassSpec(name="hooks", adapter=adapter, page_size=2)])
     while adapter.pending:
-        second.run_once(budget=2)
+        await second.run_once(budget=2)
 
     assert sorted(adapter.acknowledged) == [f"h{index}" for index in range(6)]
     assert len(adapter.acknowledged) == len(set(adapter.acknowledged))
 
 
-def test_a_class_in_terminal_refusal_is_excluded_at_selection(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_a_class_in_terminal_refusal_is_excluded_at_selection(tmp_path: Path) -> None:
     """The claude-code wedge: refusing late is the defect.
 
     Mutation: consult the halt inside ``admit`` instead of
@@ -209,18 +218,19 @@ def test_a_class_in_terminal_refusal_is_excluded_at_selection(tmp_path: Path) ->
         frame="daemon:1",
     )
 
-    dispatcher.run_once(budget=8)
+    await dispatcher.run_once(budget=8)
     discover_calls_at_halt = len(dead.discover_calls)
 
     for _ in range(5):
-        dispatcher.run_once(budget=8)
+        await dispatcher.run_once(budget=8)
 
     assert len(dead.discover_calls) == discover_calls_at_halt, "a halted class was planned again"
     assert live.acknowledged == ["x0", "x1"]
     assert halts.is_halted(unit_id(UnitKind.INTAKE_CLASS, "claude-code"))
 
 
-def test_a_halted_class_is_named_in_its_status_observation(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_a_halted_class_is_named_in_its_status_observation(tmp_path: Path) -> None:
     halts = HaltRegistry(tmp_path)
     halts.halt(
         unit_id(UnitKind.INTAKE_CLASS, "claude-code"),
@@ -236,7 +246,7 @@ def test_a_halted_class_is_named_in_its_status_observation(tmp_path: Path) -> No
         board=board,
     )
 
-    result = dispatcher.run_once(budget=8)
+    result = await dispatcher.run_once(budget=8)
 
     assert result.skipped_halted == ("claude-code",)
     observation = board.get_or_unavailable("intake.claude-code")
@@ -245,7 +255,8 @@ def test_a_halted_class_is_named_in_its_status_observation(tmp_path: Path) -> No
     assert observation.value is None
 
 
-def test_a_halted_class_survives_a_restart(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_a_halted_class_survives_a_restart(tmp_path: Path) -> None:
     halts = HaltRegistry(tmp_path)
     halts.halt(
         unit_id(UnitKind.INTAKE_CLASS, "claude-code"),
@@ -260,13 +271,14 @@ def test_a_halted_class_survives_a_restart(tmp_path: Path) -> None:
         halts=HaltRegistry(tmp_path),
     )
 
-    restarted.run_once(budget=8)
+    await restarted.run_once(budget=8)
 
     assert adapter.discover_calls == []
     assert adapter.acknowledged == []
 
 
-def test_a_discovery_failure_reports_rather_than_raising() -> None:
+@pytest.mark.asyncio
+async def test_a_discovery_failure_reports_rather_than_raising() -> None:
     class BrokenAdapter(FakeAdapter):
         def discover(self, *, limit: int) -> Sequence[IntakeItem]:
             raise OSError("spool directory vanished")
@@ -279,7 +291,7 @@ def test_a_discovery_failure_reports_rather_than_raising() -> None:
         ]
     )
 
-    result = dispatcher.run_once(budget=8)
+    result = await dispatcher.run_once(budget=8)
 
     assert "spool directory vanished" in (result.require_report("broken").reason or "")
     assert result.require_report("codex").admitted == 1
