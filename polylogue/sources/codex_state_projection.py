@@ -61,7 +61,12 @@ def codex_state_source_scope(source_path: str) -> str:
     live below ``sessions/``.  The retained source path is sufficient to join
     both forms even after the original files have disappeared.
     """
-    path = Path(source_path)
+    # Source paths are retained as diagnostics and may be spelled relative to
+    # the watcher, while rollout paths are normally absolute.  Scope identity
+    # must not depend on that presentation detail: normalize the path
+    # lexically (without requiring the source to still exist) before joining
+    # state exports to rollout evidence.
+    path = Path(source_path).expanduser().resolve(strict=False)
     if path.name in thread_state_member_filenames():
         return str(path.parent)
     for parent in path.parents:
@@ -194,9 +199,20 @@ def write_thread_state_projection(
     receipt order is what says which observation is current.
     """
     current = projection_provenance(index_conn, source_scope=source_scope)
-    if current is not None and (current.observed_at_ms, current.observation_order) > (
-        observed_at_ms,
-        observation_order,
+    # Receipt timestamps and rowids are normally unique, but callers can
+    # legitimately replay synthetic receipts with equal ordering fields.
+    # Include the content identity as a final tie-break so equal-key replay is
+    # deterministic rather than dependent on which raw arrived first.
+    incoming_key = (observed_at_ms, observation_order, raw_id, blob_hash)
+    if (
+        current is not None
+        and (
+            current.observed_at_ms,
+            current.observation_order,
+            current.raw_id,
+            current.blob_hash,
+        )
+        > incoming_key
     ):
         return False
     index_conn.execute(
