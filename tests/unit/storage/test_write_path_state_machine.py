@@ -6,6 +6,8 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Origin, Provider
@@ -13,6 +15,7 @@ from polylogue.pipeline.services.ingest_batch._core import _append_delta_payload
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.security.excision import apply_session_excision
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope, write_parsed_session_to_archive
@@ -228,3 +231,72 @@ def test_cascade_excision_removes_rawless_inherited_child(tmp_path: Path) -> Non
     check = sqlite3.connect(tmp_path / "index.db")
     assert check.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     check.close()
+
+
+def test_full_replace_recovers_orphaned_messages_without_touching_foreign_membership(tmp_path: Path) -> None:
+    """Anti-vacuity: skipping orphan cleanup makes the target replay hit its message-coordinate UNIQUE key."""
+    conn = _index(tmp_path / "index.db")
+    target = _session("target", [_message("old-0", "old zero", 0), _message("old-1", "old one", 1)])
+    foreign = _session("foreign", [_message("foreign-0", "foreign row", 0)])
+    target_id = write_parsed_session_to_archive(conn, target, raw_id="target-raw")
+    foreign_id = write_parsed_session_to_archive(conn, foreign, raw_id="foreign-raw")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DELETE FROM sessions WHERE session_id = ?", (target_id,))
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    replacement = _session("target", [_message("new-0", "new zero", 0), _message("new-1", "new one", 1)])
+    write_parsed_session_to_archive(conn, replacement, raw_id="target-raw")
+    write_parsed_session_to_archive(conn, replacement, raw_id="target-raw")
+
+    target_rows = conn.execute(
+        "SELECT messages.native_id, messages.position, blocks.text FROM messages "
+        "JOIN blocks USING (message_id) WHERE messages.session_id = ? ORDER BY messages.position",
+        (target_id,),
+    ).fetchall()
+    foreign_rows = conn.execute(
+        "SELECT messages.native_id, messages.position, blocks.text FROM messages "
+        "JOIN blocks USING (message_id) WHERE messages.session_id = ? ORDER BY messages.position",
+        (foreign_id,),
+    ).fetchall()
+    assert [tuple(row) for row in target_rows] == [("new-0", 0, "new zero"), ("new-1", 1, "new one")]
+    assert [tuple(row) for row in foreign_rows] == [("foreign-0", 0, "foreign row")]
+    assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (target_id,)).fetchone()[0] == 2
+    conn.close()
+
+
+@pytest.mark.parametrize("fault_target", ["_write_messages", "_write_attachments"])
+def test_full_replace_faults_roll_back_to_complete_membership_then_retry_idempotently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_target: str
+) -> None:
+    """A fault before or after replacement rolls back the old cohort; a retry publishes one new cohort."""
+    conn = _index(tmp_path / "index.db")
+    original = _session("atomic", [_message("old-0", "old zero", 0), _message("old-1", "old one", 1)])
+    session_id = write_parsed_session_to_archive(conn, original, raw_id="atomic-raw")
+    replacement = _session("atomic", [_message("new-0", "new zero", 0), _message("new-1", "new one", 1)])
+    original_writer = getattr(archive_tier_write, fault_target)
+
+    def fail_write(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError(f"injected {fault_target} crash")
+
+    monkeypatch.setattr(archive_tier_write, fault_target, fail_write)
+    with pytest.raises(RuntimeError, match=f"injected {fault_target} crash"):
+        write_parsed_session_to_archive(conn, replacement, raw_id="atomic-raw")
+    old_rows = conn.execute(
+        "SELECT messages.native_id, messages.position, blocks.text FROM messages "
+        "JOIN blocks USING (message_id) WHERE messages.session_id = ? ORDER BY messages.position",
+        (session_id,),
+    ).fetchall()
+    assert [tuple(row) for row in old_rows] == [("old-0", 0, "old zero"), ("old-1", 1, "old one")]
+
+    monkeypatch.setattr(archive_tier_write, fault_target, original_writer)
+    write_parsed_session_to_archive(conn, replacement, raw_id="atomic-raw")
+    write_parsed_session_to_archive(conn, replacement, raw_id="atomic-raw")
+    new_rows = conn.execute(
+        "SELECT messages.native_id, messages.position, blocks.text FROM messages "
+        "JOIN blocks USING (message_id) WHERE messages.session_id = ? ORDER BY messages.position",
+        (session_id,),
+    ).fetchall()
+    assert [tuple(row) for row in new_rows] == [("new-0", 0, "new zero"), ("new-1", 1, "new one")]
+    assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (session_id,)).fetchone()[0] == 2
+    conn.close()
