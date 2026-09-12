@@ -3645,6 +3645,8 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                 if model_effort := _string_field(normalized_turn_context, "effort", "model_effort"):
                     current_model_effort = model_effort
                     tc_payload["effort"] = model_effort
+                if turn_id := _string_field(normalized_turn_context, "turn_id"):
+                    tc_payload["turn_id"] = turn_id
                 # `personality`/`summary`/`collaboration_mode` were unread
                 # (polylogue-cgfy triage, codex lane): agent-persona,
                 # reasoning-summary-verbosity, and collaboration-mode knobs
