@@ -38,6 +38,7 @@ from tests.infra.workload_artifacts import (
     SeededArchiveQueryLease,
     SeededArchiveReachabilityInventory,
     WorkloadProfile,
+    WorkloadSessionShape,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
     _manifest_file_entries,
@@ -263,6 +264,33 @@ def test_workload_identity_rejects_semantic_oracle_metadata(tmp_path: Path) -> N
                 ),
                 **{field: value},
             )
+
+
+def test_workload_profile_wrappers_reject_semantic_fields_and_unknown_providers() -> None:
+    """Every profile wrapper must remain operational and provider-shaped.
+
+    Anti-vacuity: validating only the base profile lets a wrapper carry an
+    ``expected_*`` field or an unregistered provider into corpus construction.
+    """
+    import dataclasses
+
+    shape = WorkloadSessionShape("chatgpt", 1, 2, 2)
+    with pytest.raises(ValueError, match="unknown corpus provider"):
+        dataclasses.replace(shape, provider="not-a-provider")
+    with pytest.raises(ValueError, match="semantic metadata"):
+        dataclasses.replace(shape, style="expected_sessions")
+
+    named = named_workload_profile("cli-chatgpt")
+    with pytest.raises(ValueError, match="named workload profile cannot repeat"):
+        dataclasses.replace(named, provider_session_counts=(("chatgpt", 1), ("chatgpt", 2)))
+    with pytest.raises(ValueError, match="semantic metadata"):
+        dataclasses.replace(named, workload=dataclasses.replace(named.workload, purpose="expected_semantics"))
+
+    benchmark = benchmark_workload_profile(BenchmarkWorkloadTier.SMOKE)
+    with pytest.raises(ValueError, match="benchmark workload cannot repeat"):
+        dataclasses.replace(benchmark, provider_session_counts=(("chatgpt", 1), ("chatgpt", 1)))
+    with pytest.raises(ValueError, match="unknown corpus provider"):
+        dataclasses.replace(benchmark, provider_session_counts=(("not-a-provider", 1),))
 
 
 def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None:
