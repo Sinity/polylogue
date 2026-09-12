@@ -308,7 +308,7 @@ def _archive_tiers(archive: ArchiveStore, conn: sqlite3.Connection) -> dict[str,
                 if row is None:
                     table_count_precision[table] = "unavailable"
                     continue
-                table_counts[table] = int(row[0] or 0) if row is not None else 0
+                table_counts[table] = int(str(row[0] or 0))
                 table_count_precision[table] = "exact"
         result[tier.value] = {
             "path": str(archive.archive_root / f"{tier.value}.db"),
