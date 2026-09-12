@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import threading
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,60 @@ async def _owner_for(
 async def _shutdown(compute: BoundedComputeAdapter, coordinator: DaemonWriteCoordinator) -> None:
     compute.shutdown(wait=True)
     await coordinator.shutdown(timeout=1.0)
+
+
+def test_session_inspection_cannot_certify_a_partition_from_mixed_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing the adapter's read snapshot falsely certifies this partition.
+
+    The old output disagrees with its inputs before the competing commit;
+    afterwards it is missing a sibling. No committed state is valid, although
+    the old output and the new input binding would appear to agree.
+    """
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    adapter = make_session_profile_derivation(recovered.index_db, archive_root=recovered.root, now=lambda: 0.0)
+    frame = make_session_profile_frame(
+        recovered.index_db, archive_root=recovered.root, scope=(recovered.target_session_id,)
+    )
+    converger = DaemonConverger((), derivations=[adapter])
+    assert converger.converge_derivations(frame).done == 1
+    with sqlite3.connect(recovered.index_db) as conn:
+        title = conn.execute(
+            "SELECT title FROM sessions WHERE session_id = ?", (recovered.target_session_id,)
+        ).fetchone()[0]
+        conn.execute("UPDATE sessions SET title = 'Changed input' WHERE session_id = ?", (recovered.target_session_id,))
+        conn.commit()
+    assert adapter.inspect(frame, (recovered.target_session_id,)) == {recovered.target_session_id: "stale"}
+
+    stored_partitions = session_derivation._stored_partitions
+    commits = 0
+
+    def commit_between_output_and_input_reads(
+        conn: sqlite3.Connection, session_ids: Sequence[str]
+    ) -> Mapping[str, session_derivation._StoredPartition]:
+        nonlocal commits
+        stored = stored_partitions(conn, session_ids)
+        with sqlite3.connect(recovered.index_db) as writer:
+            writer.execute("UPDATE sessions SET title = ? WHERE session_id = ?", (title, recovered.target_session_id))
+            removed = writer.execute(
+                "DELETE FROM session_latency_profiles WHERE session_id = ?", (recovered.target_session_id,)
+            ).rowcount
+            writer.commit()
+        assert removed == 1
+        commits += 1
+        return stored
+
+    with monkeypatch.context() as race:
+        race.setattr(session_derivation, "_stored_partitions", commit_between_output_and_input_reads)
+        assert adapter.inspect(frame, (recovered.target_session_id,)) == {recovered.target_session_id: "stale"}
+    assert commits == 1
+    assert adapter.inspect(frame, (recovered.target_session_id,)) == {recovered.target_session_id: "stale"}
+
+    restarted = DaemonConverger((), derivations=[adapter])
+    assert restarted.converge_derivations(frame).done == 1
+    assert adapter.inspect(frame, (recovered.target_session_id,)) == {recovered.target_session_id: "valid"}
+    assert restarted.converge_derivations(frame).wrote_nothing
 
 
 @pytest.mark.asyncio
