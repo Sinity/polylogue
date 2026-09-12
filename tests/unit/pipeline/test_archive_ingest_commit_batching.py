@@ -532,6 +532,10 @@ def test_parallel_ingest_pool_uses_shared_safe_process_pool_executor(
 
     assert calls == [2]
     assert result.counts["sessions"] == _expected_session_count(sources)
+    assert result.stage_timings_s["append.parse"] >= 0.0
+    assert result.stage_timings_s["append.parse_pool_submit"] >= 0.0
+    assert result.stage_timings_s["append.parse_pool_shutdown"] >= 0.0
+    assert "append.parse_pool" not in result.stage_timings_s
     assert not hasattr(archive_ingest, "ProcessPoolExecutor")
 
 

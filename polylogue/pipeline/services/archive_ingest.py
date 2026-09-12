@@ -466,17 +466,27 @@ async def parse_sources_archive(
                         )
                         for submission in submissions
                     }
-                    _record_stage(result, "parse_pool", pool_started_at)
-                    # Workers spawn lazily behind `submit`, so the parse itself
-                    # is the wait between completions, not `future.result()`.
-                    wait_started_at = time.perf_counter()
-                    for future in as_completed(future_to_source):
+                    _record_stage(result, "parse_pool_submit", pool_started_at)
+                    # Workers spawn lazily behind ``submit``.  Advance the
+                    # completion iterator manually so the timer starts after
+                    # the previous writer hold: a completed parse that was
+                    # overlapped by SQLite writes must not charge that writer
+                    # time to ``append.parse``.  The resulting value is the
+                    # non-overlapped parse wait on the critical path, while
+                    # the per-session ``append.index_*`` stages retain the
+                    # serialized writer totals.
+                    completed = iter(as_completed(future_to_source))
+                    while True:
+                        wait_started_at = time.perf_counter()
+                        try:
+                            future = next(completed)
+                        except StopIteration:
+                            break
                         _record_stage(result, "parse", wait_started_at)
                         source, path = future_to_source[future]
                         await consume(source, path, future.result)
-                        wait_started_at = time.perf_counter()
                     shutdown_started_at = time.perf_counter()
-                _record_stage(result, "parse_pool", shutdown_started_at)
+                _record_stage(result, "parse_pool_shutdown", shutdown_started_at)
 
             if failed > 0:
                 logger.warning(
