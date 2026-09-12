@@ -104,6 +104,70 @@ def test_raw_materialization_returns_a_typed_failure_while_rebuild_owns_archive(
     assert "offline index rebuild owns archive" in result.detail
 
 
+def test_raw_materialization_planner_write_uses_the_archive_bound_generation_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Planner statistics cannot use an active generation's parent as authority.
+
+    Anti-vacuity: passing ``index_db.parent`` to the planner writer lets an
+    active generation outside the archive root open under the wrong lease.
+    The real replay is stopped immediately after the planner phase, so this
+    exercises its production connection route without publishing a session.
+    """
+    from polylogue.sources import revision_backfill
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+    from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, write_lease
+
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    active_index = archive_root / "active-generation" / "index.db"
+    initialize_archive_database(active_index, ArchiveTier.INDEX)
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=_codex_conversation_bytes("planner-root"),
+            source_path="planner-root.jsonl",
+            acquired_at_ms=1,
+        )
+    (archive_root / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
+
+    planner_opens: list[tuple[Path, Path | None]] = []
+
+    def trace_planner_open(
+        path: str | Path,
+        *,
+        purpose: str,
+        profile: object = None,
+        timeout: float | None = None,
+        archive_root: str | Path | None = None,
+    ) -> sqlite3.Connection:
+        if purpose == "raw convergence planner statistics":
+            planner_opens.append((Path(path), None if archive_root is None else Path(archive_root)))
+        kwargs: dict[str, object] = {"purpose": purpose, "timeout": timeout, "archive_root": archive_root}
+        if profile is not None:
+            kwargs["profile"] = profile
+        return open_isolated_write_connection(path, **kwargs)  # type: ignore[arg-type]
+
+    def stop_after_planner(*_args: object, selected_raw_ids: list[str] | None = None, **_kwargs: object) -> object:
+        assert selected_raw_ids == [raw_id]
+        raise RuntimeError("stop after planner statistics")
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.connection_profile.open_isolated_write_connection",
+        trace_planner_open,
+    )
+    monkeypatch.setattr(revision_backfill, "backfill_historical_revision_evidence", stop_after_planner)
+
+    with arm_write_lease_enforcement(), write_lease("test.raw-planner", archive_root=archive_root):
+        result = raw_convergence_mod.converge_raw_materialization(
+            Config(archive_root=archive_root, render_root=archive_root, sources=[])
+        )
+
+    assert result.plan_outcomes[0].status is RawReplayPlanStatus.RETRYABLE
+    assert planner_opens == [(active_index, archive_root)]
+
+
 def test_raw_materialization_reparses_legacy_indexed_raw_before_receipting(tmp_path: Path) -> None:
     """The daemon reopens legacy bytes instead of certifying old durable bindings."""
     from polylogue.archive.message.roles import Role
