@@ -35,12 +35,15 @@ would not produce.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -234,6 +237,204 @@ def shared_wire_generation() -> Iterator[None]:
 
 _RECEIPTS: dict[tuple[str, tuple[str, ...] | None, int], WireSupportReceipt] = {}
 
+_CACHE_VERSION = 1
+
+
+def _run_cache_path(*, root: Path, selection: tuple[str, ...] | None, seed: int) -> Path | None:
+    """A per-harness-run receipt path shared by xdist workers.
+
+    A run id is deliberately mandatory: cached synthetic parser evidence must
+    never survive into a later source revision.  The managed harness assigns
+    one id to every worker in a pytest invocation; ordinary Python use keeps
+    the existing process-local memo semantics.
+    """
+    run_id = os.environ.get("POLYLOGUE_PYTEST_RUN_ID")
+    if not run_id:
+        return None
+    run_digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
+    input_digest = _content_digest({"root": str(root.resolve()), "providers": selection, "seed": seed})
+    return Path.cwd() / ".cache" / "pytest-wire-support" / run_digest / f"{input_digest}.json"
+
+
+@contextmanager
+def _receipt_cache_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _receipt_from_cache_payload(payload: object) -> WireSupportReceipt:
+    """Rebuild typed immutable receipt data from the private JSON cache."""
+    from polylogue.schemas.synthetic.conservation import ConservationFinding, ConservationResult
+    from polylogue.schemas.synthetic.wire_formats import (
+        ConstructCoverage,
+        WireParserWitness,
+        WireSupportEntry,
+        WireSupportReceipt,
+    )
+
+    if not isinstance(payload, dict) or payload.get("version") != _CACHE_VERSION:
+        raise ValueError("unsupported wire-support cache payload")
+    raw_receipt = payload.get("receipt")
+    if not isinstance(raw_receipt, dict):
+        raise ValueError("wire-support cache receipt is not an object")
+
+    def strings(value: object) -> tuple[str, ...]:
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError("wire-support cache expected strings")
+        return tuple(value)
+
+    def integer(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("wire-support cache expected integer")
+        return value
+
+    def optional_string(value: object) -> str | None:
+        if value is not None and not isinstance(value, str):
+            raise ValueError("wire-support cache expected string or null")
+        return value
+
+    entries: list[WireSupportEntry] = []
+    raw_entries = raw_receipt.get("entries")
+    if not isinstance(raw_entries, list):
+        raise ValueError("wire-support cache entries are not a list")
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, dict):
+            raise ValueError("wire-support cache entry is not an object")
+        raw_coverage = raw_entry.get("construct_coverage")
+        coverage = None
+        if raw_coverage is not None:
+            if not isinstance(raw_coverage, dict):
+                raise ValueError("wire-support cache coverage is not an object")
+            raw_reasons = raw_coverage.get("nonrepresentable_reasons")
+            if not isinstance(raw_reasons, list):
+                raise ValueError("wire-support cache reasons are not a list")
+            reasons = tuple(
+                (item[0], item[1])
+                for item in raw_reasons
+                if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], str)
+            )
+            if len(reasons) != len(raw_reasons):
+                raise ValueError("wire-support cache reason is malformed")
+            coverage = ConstructCoverage(
+                schema_keywords=strings(raw_coverage.get("schema_keywords")),
+                exercised_keywords=strings(raw_coverage.get("exercised_keywords")),
+                missing_keywords=strings(raw_coverage.get("missing_keywords")),
+                nonrepresentable_keywords=strings(raw_coverage.get("nonrepresentable_keywords")),
+                nonrepresentable_reasons=reasons,
+            )
+        witnesses: list[WireParserWitness] = []
+        raw_witnesses = raw_entry.get("parser_witnesses")
+        if not isinstance(raw_witnesses, list):
+            raise ValueError("wire-support cache witnesses are not a list")
+        for raw_witness in raw_witnesses:
+            if not isinstance(raw_witness, dict):
+                raise ValueError("wire-support cache witness is not an object")
+            raw_conservation = raw_witness.get("conservation")
+            conservation = None
+            if raw_conservation is not None:
+                if not isinstance(raw_conservation, dict):
+                    raise ValueError("wire-support cache conservation is not an object")
+                raw_findings = raw_conservation.get("findings")
+                if not isinstance(raw_findings, list):
+                    raise ValueError("wire-support cache findings are not a list")
+                findings: list[ConservationFinding] = []
+                for finding in raw_findings:
+                    if not isinstance(finding, dict):
+                        raise ValueError("wire-support cache finding is not an object")
+                    path, role, verdict, detail = (
+                        finding.get("path"),
+                        finding.get("role"),
+                        finding.get("verdict"),
+                        finding.get("detail"),
+                    )
+                    if not all(isinstance(value, str) for value in (path, role, verdict, detail)):
+                        raise ValueError("wire-support cache finding is malformed")
+                    if verdict not in {"loss", "duplication", "mutation"}:
+                        raise ValueError("wire-support cache finding verdict is invalid")
+                    assert isinstance(path, str) and isinstance(role, str) and isinstance(detail, str)
+                    findings.append(ConservationFinding(path=path, role=role, verdict=verdict, detail=detail))
+                conservation = ConservationResult(
+                    planted_count=integer(raw_conservation.get("planted_count")),
+                    findings=tuple(findings),
+                    excluded_paths=strings(raw_conservation.get("excluded_paths")),
+                )
+            artifact_kind = raw_witness.get("artifact_kind")
+            if artifact_kind not in {"baseline", "coverage"}:
+                raise ValueError("wire-support cache artifact kind is invalid")
+            witnesses.append(
+                WireParserWitness(
+                    index=integer(raw_witness.get("index")),
+                    exercised_keywords=strings(raw_witness.get("exercised_keywords")),
+                    parsed_session_count=integer(raw_witness.get("parsed_session_count")),
+                    parsed_message_count=integer(raw_witness.get("parsed_message_count")),
+                    validation_error=optional_string(raw_witness.get("validation_error")),
+                    artifact_kind=artifact_kind,
+                    artifact_evidence=strings(raw_witness.get("artifact_evidence")),
+                    conservation=conservation,
+                    conservation_enforced=raw_witness.get("conservation_enforced") is True,
+                )
+            )
+        status = raw_entry.get("status")
+        if status not in {"supported", "unsupported"}:
+            raise ValueError("wire-support cache status is invalid")
+        schema_valid = raw_entry.get("schema_valid")
+        if schema_valid is not None and not isinstance(schema_valid, bool):
+            raise ValueError("wire-support cache schema validity is malformed")
+        provider = raw_entry.get("provider")
+        if not isinstance(provider, str):
+            raise ValueError("wire-support cache provider is invalid")
+        entries.append(
+            WireSupportEntry(
+                provider=provider,
+                status=status,
+                reason=optional_string(raw_entry.get("reason")),
+                package_version=optional_string(raw_entry.get("package_version")),
+                element_kind=optional_string(raw_entry.get("element_kind")),
+                schema_valid=schema_valid,
+                parsed_session_count=integer(raw_entry.get("parsed_session_count")),
+                parsed_message_count=integer(raw_entry.get("parsed_message_count")),
+                construct_coverage=coverage,
+                validation_error=optional_string(raw_entry.get("validation_error")),
+                parser_witnesses=tuple(witnesses),
+            )
+        )
+    scope = raw_receipt.get("catalog_scope")
+    if scope not in {"registry-default", "explicit"}:
+        raise ValueError("wire-support cache scope is invalid")
+    return WireSupportReceipt(
+        catalog_providers=strings(raw_receipt.get("catalog_providers")),
+        entries=tuple(entries),
+        missing_routes=strings(raw_receipt.get("missing_routes")),
+        witness_seed=integer(raw_receipt.get("witness_seed")),
+        catalog_scope=scope,
+    )
+
+
+def _read_cached_receipt(path: Path) -> WireSupportReceipt | None:
+    try:
+        return _receipt_from_cache_payload(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _write_cached_receipt(path: Path, receipt: WireSupportReceipt) -> None:
+    payload = json.dumps({"version": _CACHE_VERSION, "receipt": asdict(receipt)}, sort_keys=True, separators=(",", ":"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False) as temporary:
+        temporary.write(payload)
+        temporary.flush()
+        os.fsync(temporary.fileno())
+        temporary_path = Path(temporary.name)
+    try:
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
 
 def shared_wire_support_receipt(
     *,
@@ -256,12 +457,25 @@ def shared_wire_support_receipt(
     key = (root, selection, witness_seed)
     receipt = _RECEIPTS.get(key)
     if receipt is None:
-        with shared_wire_generation():
-            receipt = build_wire_support_receipt(
-                registry=SchemaRegistry(storage_root=Path(root)),
-                providers=selection,
-                seed=witness_seed,
-            )
+        cache_path = _run_cache_path(root=Path(root), selection=selection, seed=witness_seed)
+        if cache_path is None:
+            with shared_wire_generation():
+                receipt = build_wire_support_receipt(
+                    registry=SchemaRegistry(storage_root=Path(root)),
+                    providers=selection,
+                    seed=witness_seed,
+                )
+        else:
+            with _receipt_cache_lock(cache_path.with_suffix(".lock")):
+                receipt = _read_cached_receipt(cache_path)
+                if receipt is None:
+                    with shared_wire_generation():
+                        receipt = build_wire_support_receipt(
+                            registry=SchemaRegistry(storage_root=Path(root)),
+                            providers=selection,
+                            seed=witness_seed,
+                        )
+                    _write_cached_receipt(cache_path, receipt)
         _RECEIPTS[key] = receipt
     return receipt
 

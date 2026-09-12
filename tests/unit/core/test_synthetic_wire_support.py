@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import subprocess
+import sys
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import replace
@@ -19,6 +22,7 @@ from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, wire_formats
 from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
+from polylogue.schemas.synthetic.conservation import ConservationFinding, ConservationResult
 from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.runtime import SCHEMA_CONSTRUCT_HANDLERS
 from polylogue.schemas.synthetic.selection import select_synthetic_schema
@@ -27,6 +31,7 @@ from polylogue.schemas.validator import SchemaValidator
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
+from tests.infra import wire_support as wire_support_infra
 from tests.infra.wire_support import shared_wire_generation, shared_wire_support_receipt
 
 
@@ -1370,6 +1375,94 @@ def test_missing_required_and_additional_property_evidence_makes_receipt_incompl
     assert "required" in coverage.missing_keywords
     assert "additionalProperties" in coverage.missing_keywords
     assert not receipt.complete
+
+
+def test_wire_support_run_cache_round_trips_full_conservation_evidence(tmp_path: Path) -> None:
+    """The cross-process cache preserves evidence rather than a lossy summary."""
+    finding = ConservationFinding(
+        path="$.messages[0]",
+        role="message_body",
+        verdict="loss",
+        detail="missing body",
+    )
+    conservation = ConservationResult(planted_count=1, findings=(finding,), excluded_paths=("$.skip",))
+    coverage = wire_formats.ConstructCoverage(
+        schema_keywords=("type",), exercised_keywords=("type",), missing_keywords=()
+    )
+    receipt = wire_formats.WireSupportReceipt(
+        catalog_providers=("synthetic",),
+        entries=(
+            wire_formats.WireSupportEntry(
+                provider="synthetic",
+                status="supported",
+                reason=None,
+                package_version="test",
+                element_kind="session",
+                schema_valid=True,
+                parsed_session_count=1,
+                parsed_message_count=1,
+                construct_coverage=coverage,
+                parser_witnesses=(
+                    wire_formats.WireParserWitness(
+                        index=0,
+                        exercised_keywords=("type",),
+                        parsed_session_count=1,
+                        parsed_message_count=1,
+                        artifact_evidence=("synthetic",),
+                        conservation=conservation,
+                        conservation_enforced=True,
+                    ),
+                ),
+            ),
+        ),
+        missing_routes=(),
+    )
+    cache_path = tmp_path / "receipt.json"
+    wire_support_infra._write_cached_receipt(cache_path, receipt)
+
+    assert wire_support_infra._read_cached_receipt(cache_path) == receipt
+
+
+def test_wire_support_run_cache_rejects_corrupt_content(tmp_path: Path) -> None:
+    cache_path = tmp_path / "receipt.json"
+    cache_path.write_text("not json", encoding="utf-8")
+
+    assert wire_support_infra._read_cached_receipt(cache_path) is None
+
+
+def test_wire_support_run_cache_is_reused_by_a_second_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A worker can consume a receipt built by an earlier worker in this run."""
+    receipt = wire_formats.WireSupportReceipt(
+        catalog_providers=("cached",),
+        entries=(),
+        missing_routes=(),
+    )
+    run_id = "wire-support-cross-process"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_RUN_ID", run_id)
+    cache_path = wire_support_infra._run_cache_path(root=tmp_path, selection=None, seed=20260805)
+    assert cache_path is not None
+    wire_support_infra._write_cached_receipt(cache_path, receipt)
+
+    environment = dict(os.environ)
+    environment["POLYLOGUE_PYTEST_RUN_ID"] = run_id
+    environment["PYTHONPATH"] = str(Path(__file__).parents[3])
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; from tests.infra.wire_support import shared_wire_support_receipt; "
+            "print(shared_wire_support_receipt(storage_root=Path('.')).catalog_providers[0])",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "cached"
 
 
 def test_removed_provider_route_changes_explicit_support_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
