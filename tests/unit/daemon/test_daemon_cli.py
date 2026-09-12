@@ -1286,7 +1286,7 @@ def test_raw_materialization_fts_failure_records_durable_debt(
         "_raw_materialization_fts_needs_repair",
         lambda _db, *, archive_root: True,
     )
-    monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: False)
+    monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
     daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
@@ -1329,7 +1329,7 @@ def test_raw_materialization_fts_success_clears_prior_debt(
         "_raw_materialization_fts_needs_repair",
         lambda _db, *, archive_root: True,
     )
-    monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: True)
+    monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args, **_kwargs: True)
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
     daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
@@ -1364,7 +1364,7 @@ def test_raw_materialization_fts_exception_becomes_explicit_debt(
     )
     monkeypatch.setattr(
         "polylogue.daemon.convergence_stages.repair_fts_surface",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("injected FTS failure")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected FTS failure")),
     )
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
