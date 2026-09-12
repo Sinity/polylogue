@@ -105,22 +105,37 @@ def execute_read_operation(
     """Execute one declared read against ``archive``'s already-pinned snapshot."""
 
     dependencies = dependencies or DaemonReadDependencies()
+    cacheable = _cacheable_read(name, payload)
+    cache_key_payload = _params(payload) if name in {"cli.query", "facets"} else payload
+    generation = str(archive.index_db_path.resolve())
+    if cacheable:
+        from polylogue.storage.search.cache import get_cached_result
+
+        cached = get_cached_result(
+            name,
+            cache_key_payload,
+            archive_root=archive.archive_root,
+            generation=generation,
+        )
+        if cached is not None:
+            return cached
+
     if name == "cli.query":
         params = _params(payload)
-        return _query_payload(params, archive=archive, serving_identity=serving_identity, dependencies=dependencies)
-    if name == "query.units":
+        result = _query_payload(params, archive=archive, serving_identity=serving_identity, dependencies=dependencies)
+    elif name == "query.units":
         params = _params(payload)
-        return _query_units_payload(params, archive=archive, serving_identity=serving_identity)
-    if name == "completion":
-        return _completion_payload(payload)
-    if name == "facets":
-        return _facets_payload(_params(payload), archive=archive)
-    if name == "status":
+        result = _query_units_payload(params, archive=archive, serving_identity=serving_identity)
+    elif name == "completion":
+        result = _completion_payload(payload)
+    elif name == "facets":
+        result = _facets_payload(_params(payload), archive=archive)
+    elif name == "status":
         if dependencies.status_now_ms is None:
             raise ValueError("status operation requires an operation-captured now_ms")
         from polylogue.operations.daemon_status import produce_operation_status
 
-        return produce_operation_status(
+        result = produce_operation_status(
             archive=archive,
             now_ms=dependencies.status_now_ms,
             config=dependencies.status_config,
@@ -128,7 +143,35 @@ def execute_read_operation(
             include_archive_readiness=_truthy(payload.get("include_archive_readiness"))
             or _truthy(_params(payload).get("include_archive_readiness")),
         )
-    raise ValueError(f"read operation is not declared: {name}")
+    else:
+        raise ValueError(f"read operation is not declared: {name}")
+
+    if cacheable:
+        from polylogue.storage.search.cache import put_cached_result
+
+        put_cached_result(
+            name,
+            cache_key_payload,
+            result,
+            archive_root=archive.archive_root,
+            generation=generation,
+        )
+    return result
+
+
+def _cacheable_read(name: str, payload: Mapping[str, object]) -> bool:
+    """Return whether a read is safe to reuse until the index revision moves.
+
+    Status carries request-time freshness and completion metadata, while vector
+    queries depend on an embeddings snapshot that can advance independently of
+    the index.  Keep both out of this small result cache; ordinary list/search
+    and facets reads are invalidated by the indexing write path.
+    """
+    if name == "facets":
+        return True
+    if name == "cli.query":
+        return not requires_vector_snapshot(name, payload)
+    return False
 
 
 def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:

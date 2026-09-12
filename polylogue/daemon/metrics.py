@@ -1025,6 +1025,44 @@ def format_metrics(
 
     uptime_s = uptime_seconds(now_monotonic=now_monotonic)
     lines: list[str] = []
+    from polylogue.core.result_cache_metrics import result_cache_metrics
+
+    cache_stats = result_cache_metrics()
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_result_cache_entries",
+        help_text="Resident daemon read-result cache entries.",
+        metric_type="gauge",
+        samples=[(None, cache_stats["entries"])],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_result_cache_bytes",
+        help_text="Resident daemon read-result cache bytes.",
+        metric_type="gauge",
+        samples=[(None, cache_stats["bytes"])],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_result_cache_hits_total",
+        help_text="Daemon read-result cache hits since process start.",
+        metric_type="counter",
+        samples=[(None, cache_stats["hits"])],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_result_cache_misses_total",
+        help_text="Daemon read-result cache misses since process start.",
+        metric_type="counter",
+        samples=[(None, cache_stats["misses"])],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_result_cache_evictions_total",
+        help_text="Daemon read-result cache evictions since process start.",
+        metric_type="counter",
+        samples=[(None, cache_stats["evictions"])],
+    )
     # ``configured_root`` stays fixed at db's original parent even though
     # ``db`` itself gets reassigned below to the active index path -- an
     # index-only external generation is explicitly allowed to have no
