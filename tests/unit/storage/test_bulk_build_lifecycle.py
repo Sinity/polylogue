@@ -27,7 +27,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
+from time import perf_counter
+from typing import TypeVar
 
 import pytest
 
@@ -50,13 +53,19 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_shard,
     write_parsed_session_to_archive,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard, open_session_shard
+from polylogue.storage.sqlite.archive_tiers.write_shard import SessionShard, attached_session_shard, open_session_shard
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 from polylogue.storage.sqlite.runtime_indexes import (
     DEFERRED_SECONDARY_INDEX_NAMES,
     defer_secondary_indexes_sync,
     restore_deferred_secondary_indexes_sync,
 )
+from tests.infra.revision_backfill_benchmark import (
+    FinishedBuildMeasurement,
+    build_large_parent_shared_prefix_sessions,
+)
+
+T = TypeVar("T")
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -176,13 +185,43 @@ def _finished_output_snapshot(path: Path) -> tuple[dict[str, str], list[tuple[ob
         return _stable_finished_table_digests(path), _fts_rows(conn), _trigram_rows(conn)
 
 
-def _finish_bulk_build(conn: sqlite3.Connection) -> None:
+def _finish_bulk_build(conn: sqlite3.Connection, *, checkpoint: bool = True) -> None:
     """Run the same reader-shape boundary the cold replay owns."""
     rebuild_fts_index_sync(conn)
     rebuild_command_trigram_index_sync(conn)
     rebuild_all_action_pairs_sync(conn)
     rebuild_all_delegation_facts_sync(conn)
-    conn.commit()
+    if checkpoint:
+        conn.commit()
+
+
+def _measure(operation: Callable[[], T]) -> tuple[T, float]:
+    started = perf_counter()
+    return operation(), perf_counter() - started
+
+
+def _canonical_rows_digest(rows: list[tuple[object, ...]]) -> str:
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update(json.dumps(row, ensure_ascii=True, separators=(",", ":")).encode())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _finished_output_digests(path: Path) -> dict[str, str]:
+    table_digests, fts_rows, trigram_rows = _finished_output_snapshot(path)
+    return {
+        **table_digests,
+        "messages_fts": _canonical_rows_digest(fts_rows),
+        "blocks_command_trigram": _canonical_rows_digest(trigram_rows),
+    }
+
+
+def _finished_build_counts(path: Path, *, offered_count: int, deferred_count: int) -> tuple[int, int, int, int, int]:
+    with sqlite3.connect(path) as conn:
+        ingested_count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        output_count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+    return offered_count, ingested_count, max(0, offered_count - ingested_count), deferred_count, output_count
 
 
 def _write_fresh_shard_arm(conn: sqlite3.Connection, directory: Path, sessions: list[ParsedSession]) -> None:
@@ -522,6 +561,151 @@ def test_fresh_shard_finished_output_comparison_rejects_missing_finalization_or_
     fresh.commit()
     fresh.close()
     assert _finished_output_snapshot(fresh_path) != expected
+
+
+def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path: Path) -> None:
+    """Record the synthetic retained, deferred, and shard comparison shape.
+
+    Timing is descriptive evidence only. This compact test proves that each
+    route records the same finished output after its own checkpoint. It does
+    not claim a protected-scale 1/4/12 CPU comparison or full-corpus result.
+    """
+
+    def complete_retained() -> FinishedBuildMeasurement:
+        (sessions, conn), construction_seconds = _measure(
+            lambda: (build_large_parent_shared_prefix_sessions(), _connect(tmp_path / "retained.db"))
+        )
+        _, import_seconds = _measure(
+            lambda: [
+                write_parsed_session_to_archive(conn, session, content_hash=str(session_content_hash(session)))
+                for session in sessions
+            ]
+        )
+        _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
+        _, checkpoint_seconds = _measure(conn.commit)
+        conn.close()
+        path = tmp_path / "retained.db"
+        offered, ingested, refused, deferred, output = _finished_build_counts(
+            path, offered_count=len(sessions), deferred_count=0
+        )
+        return FinishedBuildMeasurement(
+            route="retained",
+            construction_seconds=construction_seconds,
+            import_seconds=import_seconds,
+            index_restoration_seconds=0.0,
+            derived_fts_finalization_seconds=derived_fts_finalization_seconds,
+            checkpoint_seconds=checkpoint_seconds,
+            canonical_output_digests=_finished_output_digests(path),
+            offered_count=offered,
+            ingested_count=ingested,
+            refused_count=refused,
+            deferred_count=deferred,
+            output_count=output,
+        )
+
+    def complete_deferred() -> FinishedBuildMeasurement:
+        (sessions, conn), construction_seconds = _measure(
+            lambda: (build_large_parent_shared_prefix_sessions(), _connect(tmp_path / "deferred.db"))
+        )
+        seen: set[str] = set()
+        _, import_seconds = _measure(
+            lambda: (
+                defer_secondary_indexes_sync(conn),
+                [
+                    write_parsed_session_to_archive(
+                        conn,
+                        session,
+                        content_hash=str(session_content_hash(session)),
+                        fresh_build=True,
+                        fresh_build_batch=seen,
+                        bulk_build=True,
+                    )
+                    for session in sessions
+                ],
+            )
+        )
+        _, index_restoration_seconds = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
+        _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
+        _, checkpoint_seconds = _measure(conn.commit)
+        conn.close()
+        path = tmp_path / "deferred.db"
+        offered, ingested, refused, deferred, output = _finished_build_counts(
+            path, offered_count=len(sessions), deferred_count=len(sessions)
+        )
+        return FinishedBuildMeasurement(
+            route="deferred",
+            construction_seconds=construction_seconds,
+            import_seconds=import_seconds,
+            index_restoration_seconds=index_restoration_seconds,
+            derived_fts_finalization_seconds=derived_fts_finalization_seconds,
+            checkpoint_seconds=checkpoint_seconds,
+            canonical_output_digests=_finished_output_digests(path),
+            offered_count=offered,
+            ingested_count=ingested,
+            refused_count=refused,
+            deferred_count=deferred,
+            output_count=output,
+        )
+
+    def complete_shard() -> FinishedBuildMeasurement:
+        def construct_shard() -> tuple[list[ParsedSession], sqlite3.Connection, SessionShard]:
+            sessions = build_large_parent_shared_prefix_sessions()
+            conn = _connect(tmp_path / "shard.db")
+            return sessions, conn, prepare_session_shard(tmp_path / "shards", sessions)
+
+        (sessions, conn, shard), construction_seconds = _measure(construct_shard)
+        seen: set[str] = set()
+
+        def import_shard() -> None:
+            dropped = defer_secondary_indexes_sync(conn)
+            assert set(dropped) == set(DEFERRED_SECONDARY_INDEX_NAMES)
+            with attached_session_shard(conn, open_session_shard(shard.path)) as schema:
+                bindings = bind_session_shard(schema, shard)
+                for session in sessions:
+                    write_parsed_session_to_archive(
+                        conn,
+                        session,
+                        content_hash=str(session_content_hash(session)),
+                        prepared=bindings[_archive_session_id(session)],
+                        fresh_build=True,
+                        fresh_build_batch=seen,
+                        bulk_build=True,
+                    )
+
+        _, import_seconds = _measure(import_shard)
+        _, index_restoration_seconds = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
+        _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
+        _, checkpoint_seconds = _measure(conn.commit)
+        conn.close()
+        path = tmp_path / "shard.db"
+        offered, ingested, refused, deferred, output = _finished_build_counts(
+            path, offered_count=len(sessions), deferred_count=len(sessions)
+        )
+        return FinishedBuildMeasurement(
+            route="shard",
+            construction_seconds=construction_seconds,
+            import_seconds=import_seconds,
+            index_restoration_seconds=index_restoration_seconds,
+            derived_fts_finalization_seconds=derived_fts_finalization_seconds,
+            checkpoint_seconds=checkpoint_seconds,
+            canonical_output_digests=_finished_output_digests(path),
+            offered_count=offered,
+            ingested_count=ingested,
+            refused_count=refused,
+            deferred_count=deferred,
+            output_count=output,
+        )
+
+    measurements = [complete_retained(), complete_deferred(), complete_shard()]
+    assert [measurement.route for measurement in measurements] == ["retained", "deferred", "shard"]
+    assert len({json.dumps(measurement.canonical_output_digests, sort_keys=True) for measurement in measurements}) == 1
+    assert all(measurement.canonical_output_digests["messages_fts"] for measurement in measurements)
+    assert all(
+        measurement.offered_count == measurement.ingested_count == measurement.output_count
+        for measurement in measurements
+    )
+    assert all(measurement.refused_count == 0 for measurement in measurements)
+    assert [measurement.deferred_count for measurement in measurements] == [0, 9, 9]
 
 
 def test_bulk_build_anti_vacuity_repopulate_is_load_bearing(tmp_path: Path) -> None:
