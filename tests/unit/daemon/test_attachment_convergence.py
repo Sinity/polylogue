@@ -120,6 +120,37 @@ def test_attachment_convergence_records_debt_for_the_next_bounded_window(tmp_pat
     source.close()
 
 
+def test_shared_attachment_fetches_once_but_records_each_raw_ref(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("shared-one", file_id="shared-file"), raw_id="raw-1")
+    write_parsed_session_to_archive(index, _session("shared-two", file_id="shared-file"), raw_id="raw-2")
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+
+    calls: list[str] = []
+
+    def fetch(file_id: str) -> bytes:
+        calls.append(file_id)
+        return b"shared attachment bytes"
+
+    result = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_bytes=fetch,
+        limit=10,
+    )
+
+    refs = source.execute("SELECT ref_id FROM blob_refs WHERE ref_type = 'attachment' ORDER BY ref_id").fetchall()
+    assert result.acquired == 2
+    assert calls == ["shared-file"]
+    assert [row[0] for row in refs] == ["raw-1", "raw-2"]
+    index.close()
+    source.close()
+
+
 def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
