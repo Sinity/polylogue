@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal, Protocol
 
+from polylogue.analysis.contracts import FindingRecord, claims_view
 from polylogue.core.enums import AssertionStatus, AssertionVisibility, PolylogueStrEnum
 from polylogue.core.evidence_integrity import (
     EvidenceIntegrityStatus,
@@ -908,6 +909,12 @@ def render_public_claims_markdown(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def supported_finding_contract_view(findings: Sequence[FindingRecord]) -> tuple[FindingRecord, ...]:
+    """Expose the canonical finding/claims projection to analysis consumers."""
+
+    return claims_view(findings)
+
+
 def _optional_enum(value: AssertionStatus | None) -> str:
     return "n/a" if value is None else value.value
 
@@ -951,4 +958,5 @@ __all__ = [
     "project_public_claims",
     "render_public_claims_json",
     "render_public_claims_markdown",
+    "supported_finding_contract_view",
 ]
