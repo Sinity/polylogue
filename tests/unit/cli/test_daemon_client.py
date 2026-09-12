@@ -61,6 +61,15 @@ def test_daemon_client_import_does_not_load_storage() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_client_exposes_no_generic_offline_operation_fallback() -> None:
+    """The only local fallback is named and constrained to read operations."""
+
+    from polylogue.daemon_client import DaemonClient
+
+    assert not hasattr(DaemonClient, "operation_with_direct_fallback")
+    assert hasattr(DaemonClient, "operation_with_read_fallback")
+
+
 @pytest.mark.parametrize(
     ("environment", "expected"),
     [

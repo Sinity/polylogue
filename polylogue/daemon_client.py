@@ -320,14 +320,20 @@ class DaemonClient:
             archive_root=archive_root,
         )
 
-    def operation_with_direct_fallback(
+    def operation_with_read_fallback(
         self,
         operation: str,
         payload: dict[str, object] | None = None,
         *,
         context: OperationContext,
     ) -> dict[str, Any]:
-        """Use the identical pinned-reader executor only when the socket is absent."""
+        """Use the pinned reader only when the socket is absent.
+
+        This fallback is deliberately named and scoped as a read fallback.
+        ``operation()`` is the only route for writes; keeping the old generic
+        name made it too easy for a new CLI adapter to mistake this for an
+        offline mutation escape hatch.
+        """
         from polylogue.operations.daemon_execution import execute_operation
 
         spec = daemon_operation_spec(operation)
