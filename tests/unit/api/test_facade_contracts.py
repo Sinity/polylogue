@@ -851,6 +851,27 @@ async def test_health_check_warns_when_session_insight_row_counts_do_not_match(t
         await archive.close()
 
 
+@pytest.mark.parametrize("corruption", ["missing", "invalid"])
+async def test_health_check_includes_audit_tier_integrity(tmp_path: Path, corruption: str) -> None:
+    """The durable audit tier is part of the archive health contract."""
+    from polylogue.readiness import VerifyStatus
+
+    archive = _archive(tmp_path)
+    try:
+        audit_path = tmp_path / "audit.db"
+        if corruption == "missing":
+            audit_path.unlink()
+        else:
+            audit_path.write_bytes(b"not a sqlite database")
+
+        report = await archive.health_check()
+
+        check = next(check for check in report.checks if check.name == "archive_audit")
+        assert check.status is not VerifyStatus.OK
+    finally:
+        await archive.close()
+
+
 async def test_archive_debt_returns_shared_payload_on_empty_archive(tmp_path: Path) -> None:
     """``archive_debt()`` exposes the shared operational debt payload."""
     from polylogue.surfaces.payloads import ArchiveDebtListPayload
