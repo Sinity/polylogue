@@ -25,6 +25,7 @@ from polylogue.storage.introspection import table_exists
 PARENT_ORIGINS: tuple[str, ...] = ("claude-code-session", "codex-session")
 
 _MATERIALIZED = "materialized"
+_MATERIALIZED_UNRESOLVED = "materialized_unresolved"
 _AVAILABLE_UNMATERIALIZED = "source_available_unmaterialized"
 _UNAVAILABLE = "source_unavailable"
 _NOT_ACQUIRED = "not_acquired"
@@ -105,6 +106,7 @@ class ParentSessionAccountingReport:
     source_unavailable_total: int
     not_acquired_total: int
     materialized_parent_total: int
+    unresolved_reference_total: int
     available_unmaterialized_total: int
     raw_total: int
     frontier_total: int
@@ -123,7 +125,7 @@ class ParentSessionAccountingReport:
     def blocking_count(self) -> int:
         # ``untyped_total`` is the separately reported raw denominator's
         # unexplained subset, so do not count that alias twice.
-        return self.available_unmaterialized_total + self.raw_unexplained_total
+        return self.unresolved_reference_total + self.available_unmaterialized_total + self.raw_unexplained_total
 
     @property
     def warning_count(self) -> int:
@@ -141,6 +143,7 @@ class ParentSessionAccountingReport:
                 "source_unavailable_total": self.source_unavailable_total,
                 "not_acquired_total": self.not_acquired_total,
                 "materialized_parent_total": self.materialized_parent_total,
+                "unresolved_reference_total": self.unresolved_reference_total,
                 "available_unmaterialized_total": self.available_unmaterialized_total,
                 "raw_total": self.raw_total,
                 "frontier_total": self.frontier_total,
@@ -163,6 +166,7 @@ class ParentSessionAccountingReport:
         parts = [
             f"{self.reference_total:,} parent reference(s), {self.unique_parent_total:,} unique parent(s)",
             f"materialized={self.materialized_parent_total:,}",
+            f"unresolved-references={self.unresolved_reference_total:,}",
             f"source-available={self.source_available_total:,}",
             f"available-unmaterialized={self.available_unmaterialized_total:,}",
             f"raw={self.raw_total:,}, raw-unexplained={self.raw_unexplained_total:,}",
@@ -236,6 +240,7 @@ def audit_parent_session_accounting(
             source_unavailable_total=0,
             not_acquired_total=0,
             materialized_parent_total=0,
+            unresolved_reference_total=0,
             available_unmaterialized_total=0,
             raw_total=0,
             frontier_total=0,
@@ -260,6 +265,7 @@ def audit_parent_session_accounting(
             source_unavailable_total=0,
             not_acquired_total=0,
             materialized_parent_total=0,
+            unresolved_reference_total=0,
             available_unmaterialized_total=0,
             raw_total=0,
             frontier_total=0,
@@ -328,8 +334,15 @@ def audit_parent_session_accounting(
         ).fetchall()
         session_ids = tuple(str(row[0]) for row in sessions)
         resolved_count = int(link["resolved_count"] or 0)
-        if session_ids:
+        reference_count = int(link["reference_count"])
+        if session_ids and resolved_count == reference_count:
             disposition, reason = _MATERIALIZED, "exact origin/native identity is present in index.db.sessions"
+        elif session_ids:
+            unresolved = reference_count - resolved_count
+            disposition, reason = (
+                _MATERIALIZED_UNRESOLVED,
+                f"candidate session exists but {unresolved} parent reference(s) remain unresolved",
+            )
         elif not source_present:
             disposition, reason = _NOT_ACQUIRED, "no retained raw has this exact source identity"
         elif not source_available:
@@ -343,12 +356,12 @@ def audit_parent_session_accounting(
             ParentReferenceEvidence(
                 origin=origin,
                 native_id=native_id,
-                reference_count=int(link["reference_count"]),
+                reference_count=reference_count,
                 source_raw_ids=raw_ids,
                 source_bytes=source_bytes,
                 source_paths=source_paths,
                 indexed_session_ids=session_ids,
-                resolved_reference_count=resolved_count if session_ids else 0,
+                resolved_reference_count=resolved_count,
                 disposition=disposition,
                 reason=reason,
             )
@@ -412,11 +425,17 @@ def audit_parent_session_accounting(
         unique_parent_total=len(refs),
         resolved_reference_total=sum(entry.resolved_reference_count for entry in refs),
         source_available_total=sum(
-            entry.disposition == _AVAILABLE_UNMATERIALIZED or entry.disposition == _MATERIALIZED for entry in refs
+            entry.disposition in {_AVAILABLE_UNMATERIALIZED, _MATERIALIZED, _MATERIALIZED_UNRESOLVED} for entry in refs
         ),
         source_unavailable_total=sum(entry.disposition == _UNAVAILABLE for entry in refs),
         not_acquired_total=sum(entry.disposition == _NOT_ACQUIRED for entry in refs),
         materialized_parent_total=sum(entry.disposition == _MATERIALIZED for entry in refs),
+        unresolved_reference_total=sum(
+            max(0, entry.reference_count - entry.resolved_reference_count)
+            if entry.disposition == _MATERIALIZED_UNRESOLVED
+            else 0
+            for entry in refs
+        ),
         available_unmaterialized_total=sum(entry.disposition == _AVAILABLE_UNMATERIALIZED for entry in refs),
         raw_total=len(raw_rows),
         frontier_total=len(raw_rows),
