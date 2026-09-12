@@ -617,6 +617,66 @@ def test_rebuild_reconciles_model_usage_after_a_fixed_id_model_correction(archiv
     assert _pending(index_db) == []
 
 
+def test_rebuild_rederives_usage_when_a_model_keeps_some_messages(archive_root: Path) -> None:
+    """A fixed-id model correction may reduce, rather than remove, a rollup.
+
+    Anti-vacuity: the former monotonic message upsert leaves ``model-before``
+    at 120 tokens because one message still carries that model, even though its
+    remaining source evidence totals only 48.  A rebuild must derive both model
+    rows from the current messages instead of retaining the larger stale value.
+    """
+    index_db = _index_db(archive_root)
+    builder = SessionBuilder(index_db, "partial-model-usage-reconciliation")
+    builder = builder.created_at(f"{_SEEDED_DAY}T00:00:00+00:00").updated_at(f"{_SEEDED_DAY}T01:00:00+00:00")
+    builder.add_message(role="user", text="ask", timestamp=f"{_SEEDED_DAY}T00:00:00+00:00")
+    builder.add_message(
+        role="assistant",
+        text="first answer",
+        timestamp=f"{_SEEDED_DAY}T00:01:00+00:00",
+        model_name="model-before",
+        input_tokens=48,
+        output_tokens=12,
+    )
+    builder.add_message(
+        role="assistant",
+        text="corrected answer",
+        timestamp=f"{_SEEDED_DAY}T00:02:00+00:00",
+        model_name="model-before",
+        input_tokens=72,
+        output_tokens=24,
+    )
+    builder.save()
+    session_id = builder.native_session_id()
+    _converge_to_fixpoint(index_db)
+
+    with write_lease("test.partial-model-correction"), closing(_write_connection(index_db)) as conn:
+        changed = conn.execute(
+            "UPDATE messages SET model_name = 'model-after' WHERE session_id = ? AND position = 2",
+            (session_id,),
+        ).rowcount
+        conn.commit()
+    assert changed == 1
+    assert _pending(index_db) == [session_id]
+
+    with write_lease("test.partial-model-rebuild"), closing(_write_connection(index_db)) as conn:
+        rebuild_session_insights_sync(conn, session_ids=[session_id])
+        usage_rows = conn.execute(
+            """
+            SELECT model_name, input_tokens, output_tokens
+            FROM session_model_usage
+            WHERE session_id = ?
+            ORDER BY model_name
+            """,
+            (session_id,),
+        ).fetchall()
+
+    assert [tuple(row) for row in usage_rows] == [
+        ("model-after", 72, 24),
+        ("model-before", 48, 12),
+    ]
+    assert _pending(index_db) == []
+
+
 def test_a_token_count_change_makes_the_partition_stale(archive_root: Path) -> None:
     """Usage measurements are excluded from the content hash and read by the profile.
 
