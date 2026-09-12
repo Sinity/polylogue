@@ -586,6 +586,9 @@ class SessionProfileDerivation:
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         conn = self._read_connection()
         try:
+            # Output rows, input values and marker candidates must come from
+            # one commit; mixing snapshots can certify a never-valid family.
+            conn.execute("BEGIN")
             statuses = dict(inspect_session_profiles(conn, keys, materializer_version=self._materializer_version))
             if self._marker_read_connection is None:
                 return statuses
