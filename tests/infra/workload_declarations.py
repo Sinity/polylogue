@@ -362,17 +362,144 @@ def benchmark_corpus_specs(tier: BenchmarkWorkloadTier | str, *, seed: int = 42)
     return replace(profile.workload, seed=seed).corpus_specs(tuple(session_shapes))
 
 
+class ConvergenceWorkloadTier(str, Enum):
+    """Named daemon-convergence benchmark shapes.
+
+    These declarations retain the benchmark suite's existing provider, file,
+    and message dimensions while moving corpus construction next to the other
+    deterministic workload recipes.
+    """
+
+    XS_TINY_FILES = "xs-tiny-files"
+    SM_SMALL_CORPUS = "sm-small-corpus"
+    MD_MEDIUM_CORPUS = "md-medium-corpus"
+    LG_FEW_LARGE = "lg-few-large"
+    XL_SINGLE_GIANT = "xl-single-giant"
+    XXL_MEGA_SESSION = "xxl-mega-session"
+    MULTI_XS_TINY = "xs-tiny"
+    MULTI_SM_SMALL = "sm-small"
+    MULTI_MD_MEDIUM = "md-medium"
+    SINGLE_FILE_1000 = "single-file-1000"
+    SINGLE_FILE_500 = "single-file-500"
+
+
+@dataclass(frozen=True)
+class ConvergenceWorkloadProfile:
+    """Provider-native corpus shape used by a convergence benchmark."""
+
+    tier: ConvergenceWorkloadTier
+    workload: WorkloadProfile
+    provider_session_shapes: tuple[tuple[str, int, int], ...]
+
+    def __post_init__(self) -> None:
+        if not self.provider_session_shapes:
+            raise ValueError("convergence workload requires provider session shapes")
+        providers = tuple(
+            validate_workload_provider(provider) for provider, _count, _messages in self.provider_session_shapes
+        )
+        if len(set(providers)) != len(providers):
+            raise ValueError("convergence workload cannot repeat a provider")
+        if any(count < 1 or messages < 1 for _provider, count, messages in self.provider_session_shapes):
+            raise ValueError("convergence workload dimensions must be positive")
+        reject_semantic_metadata(asdict(self), location="convergence workload profile")
+
+    def corpus_specs(self, *, provider: str | None = None, seed: int | None = None) -> tuple[CorpusSpec, ...]:
+        """Resolve the declared shape, optionally selecting one provider."""
+        shapes = self.provider_session_shapes
+        if provider is not None:
+            validate_workload_provider(provider)
+            shapes = tuple(shape for shape in shapes if shape[0] == provider)
+            if not shapes:
+                raise ValueError(f"convergence workload {self.tier.value!r} has no provider {provider!r}")
+        session_shapes = tuple(
+            WorkloadSessionShape(name, count, messages, messages, offset)
+            for offset, (name, count, messages) in enumerate(shapes)
+        )
+        return replace(self.workload, seed=self.workload.seed if seed is None else seed).corpus_specs(session_shapes)
+
+
+def _convergence_workload(tier: ConvergenceWorkloadTier) -> WorkloadProfile:
+    return WorkloadProfile(
+        name=f"convergence-{tier.value}",
+        purpose="daemon-convergence-benchmark",
+        seed=42,
+        family_ids=("benchmark-convergence",),
+        profile_tokens=("daemon-convergence", tier.value, "provider-native"),
+        origin="generated.schema-convergence-benchmark",
+        tags=("synthetic", "schema", "benchmark", "convergence"),
+    )
+
+
+def _convergence_profile(
+    tier: ConvergenceWorkloadTier, *provider_session_shapes: tuple[str, int, int]
+) -> ConvergenceWorkloadProfile:
+    return ConvergenceWorkloadProfile(tier, _convergence_workload(tier), provider_session_shapes)
+
+
+CONVERGENCE_SCALE_TIERS = (
+    ConvergenceWorkloadTier.XS_TINY_FILES,
+    ConvergenceWorkloadTier.SM_SMALL_CORPUS,
+    ConvergenceWorkloadTier.MD_MEDIUM_CORPUS,
+    ConvergenceWorkloadTier.LG_FEW_LARGE,
+    ConvergenceWorkloadTier.XL_SINGLE_GIANT,
+    ConvergenceWorkloadTier.XXL_MEGA_SESSION,
+)
+
+MULTI_PROVIDER_SCALE_TIERS = (
+    ConvergenceWorkloadTier.MULTI_XS_TINY,
+    ConvergenceWorkloadTier.MULTI_SM_SMALL,
+    ConvergenceWorkloadTier.MULTI_MD_MEDIUM,
+)
+
+CONVERGENCE_WORKLOAD_PROFILES = (
+    _convergence_profile(ConvergenceWorkloadTier.XS_TINY_FILES, ("claude-code", 10, 10)),
+    _convergence_profile(ConvergenceWorkloadTier.SM_SMALL_CORPUS, ("claude-code", 50, 50)),
+    _convergence_profile(ConvergenceWorkloadTier.MD_MEDIUM_CORPUS, ("claude-code", 100, 100)),
+    _convergence_profile(ConvergenceWorkloadTier.LG_FEW_LARGE, ("claude-code", 5, 1_000)),
+    _convergence_profile(ConvergenceWorkloadTier.XL_SINGLE_GIANT, ("claude-code", 1, 10_000)),
+    _convergence_profile(ConvergenceWorkloadTier.XXL_MEGA_SESSION, ("claude-code", 1, 100_000)),
+    _convergence_profile(ConvergenceWorkloadTier.MULTI_XS_TINY, ("claude-code", 5, 10), ("codex", 5, 10)),
+    _convergence_profile(ConvergenceWorkloadTier.MULTI_SM_SMALL, ("claude-code", 20, 25), ("codex", 20, 25)),
+    _convergence_profile(ConvergenceWorkloadTier.MULTI_MD_MEDIUM, ("claude-code", 50, 50), ("codex", 50, 50)),
+    _convergence_profile(ConvergenceWorkloadTier.SINGLE_FILE_1000, ("claude-code", 1, 1_000)),
+    _convergence_profile(ConvergenceWorkloadTier.SINGLE_FILE_500, ("claude-code", 1, 500), ("codex", 1, 500)),
+)
+
+
+def convergence_workload_profile(tier: ConvergenceWorkloadTier | str) -> ConvergenceWorkloadProfile:
+    """Resolve one named convergence benchmark declaration."""
+    resolved = ConvergenceWorkloadTier(tier)
+    return next(profile for profile in CONVERGENCE_WORKLOAD_PROFILES if profile.tier is resolved)
+
+
+def convergence_corpus_specs(
+    tier: ConvergenceWorkloadTier | str,
+    *,
+    provider: str | None = None,
+    seed: int | None = None,
+) -> tuple[CorpusSpec, ...]:
+    """Build corpus specs from a named convergence workload declaration."""
+    return convergence_workload_profile(tier).corpus_specs(provider=provider, seed=seed)
+
+
 __all__ = [
     "BENCHMARK_WORKLOAD_PROFILES",
+    "CONVERGENCE_SCALE_TIERS",
+    "CONVERGENCE_WORKLOAD_PROFILES",
+    "MULTI_PROVIDER_SCALE_TIERS",
     "NAMED_WORKLOAD_PROFILES",
     "BenchmarkWorkloadProfile",
     "BenchmarkWorkloadTier",
+    "ConvergenceWorkloadProfile",
+    "ConvergenceWorkloadTier",
     "NamedWorkloadProfile",
     "SEMANTIC_METADATA_PREFIXES",
     "WorkloadProfile",
     "WorkloadSessionShape",
     "benchmark_corpus_specs",
     "benchmark_workload_profile",
+    "convergence_corpus_specs",
+    "convergence_workload_profile",
     "c03_semantic_corpus_spec",
     "named_corpus_specs",
     "named_workload_profile",
