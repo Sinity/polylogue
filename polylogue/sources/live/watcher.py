@@ -419,6 +419,7 @@ class LiveWatcher:
         embedding_owner: EmbeddingConvergenceOwner | None = None,
         session_profile_callback: SessionProfileConvergenceCallback | None = None,
         intake_hints_only: bool = False,
+        intake_wakeup: asyncio.Event | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
@@ -441,6 +442,8 @@ class LiveWatcher:
         # The watcher remains valuable as a low-latency wake/hint producer,
         # but must not start a competing catch-up, debounce, or hook drain.
         self._intake_hints_only = intake_hints_only
+        self._intake_wakeup = intake_wakeup
+        self._intake_revisions = dict.fromkeys((source.root for source in self._sources), 0)
         self._catch_up_event_emitter = catch_up_event_emitter
         self._event_emitter = event_emitter
         self._published_source_halts: dict[str, str] = {}
@@ -515,6 +518,10 @@ class LiveWatcher:
     def catch_up_complete(self) -> asyncio.Event:
         return self._catch_up_complete
 
+    def intake_revision(self, source: WatchSource) -> int:
+        """Disposable invalidation of one source's file-discovery position."""
+        return self._intake_revisions[source.root]
+
     @property
     def catch_up_active(self) -> bool:
         """Whether a chunked catch-up ingest loop is running right now.
@@ -586,15 +593,17 @@ class LiveWatcher:
             for change, raw_path in changes:
                 if change is Change.deleted:
                     continue
+                if self._intake_hints_only:
+                    self._enqueue(Path(raw_path))
+                    continue
                 observed_path = Path(raw_path)
                 if change is Change.added and observed_path.is_dir():
                     if self._is_hook_spool_path(observed_path):
                         needs_first_envelope_retry = self._is_hook_spool_shard_directory(
                             observed_path
                         ) and not self._hook_spool_directory_has_envelope(observed_path)
-                        if not self._intake_hints_only:
-                            await self._drain_hook_spools()
-                        if needs_first_envelope_retry and not self._intake_hints_only:
+                        await self._drain_hook_spools()
+                        if needs_first_envelope_retry:
                             self._schedule_hook_spool_directory_retry(observed_path)
                         continue
                     self._enqueue_added_directory(observed_path)
@@ -605,8 +614,7 @@ class LiveWatcher:
                 if not self._source_accepts(path):
                     continue
                 if self._is_hook_spool_path(path):
-                    if not self._intake_hints_only:
-                        await self._drain_hook_spools()
+                    await self._drain_hook_spools()
                     self._cancel_hook_spool_directory_retry_if_acknowledged(path.parent)
                     continue
                 self._enqueue(path)
@@ -1210,6 +1218,15 @@ class LiveWatcher:
 
     def _enqueue(self, path: Path) -> None:
         """Enqueue a path for batched ingestion after debounce."""
+        if self._intake_hints_only:
+            observed = path.resolve()
+            for root in self._intake_revisions:
+                resolved_root = root.resolve()
+                if observed.is_relative_to(resolved_root) or resolved_root.is_relative_to(observed):
+                    self._intake_revisions[root] += 1
+            if self._intake_wakeup is not None:
+                self._intake_wakeup.set()
+            return
         self._pending_paths.add(path)
         if self._source_name_for(path).split(":", 1)[0] == "claude-code" and path.parent.name == "tool-results":
             session_dir = path.parent.parent
@@ -2345,6 +2362,9 @@ class LiveWatcher:
         """Cover files created before a recursive watcher installs its new sub-watch."""
 
         if not self._directory_is_watch_relevant(directory):
+            return
+        if self._intake_hints_only:
+            self._enqueue(directory)
             return
         for parent, dir_names, file_names in os.walk(directory):
             dir_names[:] = [name for name in dir_names if self._directory_is_watch_relevant(Path(parent) / name)]
