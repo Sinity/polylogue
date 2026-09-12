@@ -150,7 +150,11 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "prompt_history_log",
     }
     assert {rule.kind for rule in chatgpt.artifact_rules} == {"export_asset_index", "export_asset"}
-    assert {rule.kind for rule in by_origin[Origin.CODEX_SESSION].artifact_rules} == {"agent_memory_document"}
+    assert {rule.kind for rule in by_origin[Origin.CODEX_SESSION].artifact_rules} == {
+        "agent_memory_document",
+        "session_index",
+        "prompt_history_log",
+    }
     assert artifact_suffixes_for_provider(Provider.CLAUDE_CODE) == (".json", ".jsonl", ".ndjson")
     tool_result_rule = next(rule for rule in claude.artifact_rules if rule.kind == "tool_result_sidecar")
     assert tool_result_rule.path_suffixes == (".json", ".txt", ".html", "")

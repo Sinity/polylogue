@@ -64,6 +64,8 @@ logger = get_logger(__name__)
 #: ``ClaudeCodeAssemblySpec`` resolves it on the live path.
 _HISTORY_RELATIVE = Path("..") / ".." / "history.jsonl"
 _SESSIONS_INDEX_NAME = "sessions-index.json"
+_CODEX_SESSION_INDEX_NAME = "session_index.jsonl"
+_CODEX_HISTORY_NAME = "history.jsonl"
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +220,80 @@ def retained_claude_code_sidecars(
 
 
 # --------------------------------------------------------------------------
+# Codex
+# --------------------------------------------------------------------------
+
+
+def codex_sidecar_coordinates(session_source_path: str) -> tuple[str, str] | None:
+    """Return the two root-sidecar coordinates for one Codex rollout.
+
+    Codex writes both title inputs at the install root, immediately above its
+    ``sessions/`` tree.  Finding that tree in the session's own coordinate is
+    deliberate: two installs may have identical thread ids and sidecar names,
+    but never share retained title evidence.
+    """
+    if not session_source_path or ":" in PurePosixPath(session_source_path).name:
+        return None
+    path = Path(session_source_path)
+    sessions_root = next((parent for parent in path.parents if parent.name == "sessions"), None)
+    if sessions_root is None:
+        return None
+    install_root = sessions_root.parent
+    if str(install_root) in {"", ".", sessions_root.anchor}:
+        return None
+    return str(install_root / _CODEX_SESSION_INDEX_NAME), str(install_root / _CODEX_HISTORY_NAME)
+
+
+def retained_codex_sidecars(
+    source_conn: sqlite3.Connection,
+    blob_store: BlobStore,
+    *,
+    session_source_path: str,
+) -> SidecarData:
+    """Rebuild Codex title inputs from exact retained root-sidecar bytes."""
+    coordinates = codex_sidecar_coordinates(session_source_path)
+    if coordinates is None:
+        return cast(SidecarData, {})
+    index_path, history_path = coordinates
+    resolved: SidecarData = {}
+
+    indexes = _select_retained(
+        source_conn,
+        origin=Origin.CODEX_SESSION,
+        artifact_kind=ArtifactKind.SESSION_INDEX,
+        where="a.source_path = ?",
+        parameters=[index_path],
+    )
+    artifact = indexes.get(index_path)
+    if artifact is not None:
+        payload = _read(blob_store, artifact)
+        if payload is not None:
+            from .assembly_codex import parse_codex_session_index_bytes
+
+            names = parse_codex_session_index_bytes(payload)
+            if names:
+                resolved["thread_names"] = names
+
+    histories = _select_retained(
+        source_conn,
+        origin=Origin.CODEX_SESSION,
+        artifact_kind=ArtifactKind.PROMPT_HISTORY_LOG,
+        where="a.source_path = ?",
+        parameters=[history_path],
+    )
+    artifact = histories.get(history_path)
+    if artifact is not None:
+        payload = _read(blob_store, artifact)
+        if payload is not None:
+            from .assembly_codex import parse_codex_history_bytes
+
+            titles = parse_codex_history_bytes(payload)
+            if titles:
+                resolved["history_titles"] = titles
+    return resolved
+
+
+# --------------------------------------------------------------------------
 # ChatGPT
 # --------------------------------------------------------------------------
 
@@ -332,14 +408,26 @@ def with_retained_assembly_evidence(
         return sidecar_data
     if provider is Provider.CLAUDE_CODE:
         wanted: tuple[str, ...] = ("session_index", "history_paste_index")
+    elif provider is Provider.CODEX:
+        wanted = ("thread_names", "history_titles")
     elif provider is Provider.CHATGPT:
         wanted = ("chatgpt_asset_index", "chatgpt_asset_blobs")
     else:
         return sidecar_data
-    if all(key in sidecar_data for key in wanted):
+    # An empty live Codex snapshot supplies no title evidence. Unlike the
+    # other sidecar families, its two maps are often carried explicitly as
+    # empty dicts, so key presence alone must not hide retained evidence.
+    if provider is not Provider.CODEX and all(key in sidecar_data for key in wanted):
         return sidecar_data
     if provider is Provider.CLAUDE_CODE:
         retained = retained_claude_code_sidecars(source_conn, blob_store, session_source_path=source_path)
+    elif provider is Provider.CODEX:
+        # The acquisition snapshot is the live authority.  Retained sidecars
+        # are replay evidence only, so never mix them into a bundle that
+        # already carries any live Codex title input.
+        if any(sidecar_data.get(key) for key in ("thread_names", "history_titles", "state_titles")):
+            return sidecar_data
+        retained = retained_codex_sidecars(source_conn, blob_store, session_source_path=source_path)
     else:
         retained = retained_chatgpt_sidecars(source_conn, blob_store, session_source_path=source_path)
     if not retained:
@@ -365,7 +453,7 @@ def resolve_retained_assembly_evidence(
     this safe beside the daemon's single writer, and an absent or unreadable
     source tier degrades to no evidence rather than to a rediscovery.
     """
-    if provider not in {Provider.CLAUDE_CODE, Provider.CHATGPT} or not source_path:
+    if provider not in {Provider.CLAUDE_CODE, Provider.CODEX, Provider.CHATGPT} or not source_path:
         return sidecar_data
     source_db = archive_root / "source.db"
     if not source_db.exists():
@@ -386,8 +474,10 @@ def resolve_retained_assembly_evidence(
 __all__ = [
     "RetainedArtifact",
     "resolve_retained_assembly_evidence",
+    "codex_sidecar_coordinates",
     "chatgpt_export_scope",
     "claude_code_sidecar_coordinates",
+    "retained_codex_sidecars",
     "retained_chatgpt_sidecars",
     "retained_claude_code_sidecars",
     "with_retained_assembly_evidence",

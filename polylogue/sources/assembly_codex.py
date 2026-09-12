@@ -37,25 +37,42 @@ def _parse_codex_session_index(sessions_root: Path) -> dict[str, str]:
 
 
 def _parse_session_index_file(index_path: Path) -> dict[str, str]:
-    names: dict[str, str] = {}
     try:
-        for line in index_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed = json.loads(line)
-                if not isinstance(parsed, dict):
-                    continue
-                entry = json_document(parsed)
-                tid = _coerce_codex_session_id(entry)
-                name = _coerce_codex_thread_name(entry)
-                if tid and name:
-                    names[tid] = name  # Latest wins (append-only)
-            except (json.JSONDecodeError, TypeError):
-                continue
+        return parse_codex_session_index_bytes(index_path.read_bytes())
     except OSError as exc:
         logger.debug("Failed to read Codex session_index.jsonl: %s", exc)
+        return {}
+
+
+def parse_codex_session_index_bytes(payload: bytes) -> CodexThreadNames:
+    """Parse retained ``session_index.jsonl`` bytes.
+
+    Kept beside the live-file wrapper so acquisition and retained replay apply
+    exactly the same append-order rule: the latest valid row for a thread
+    wins.  A malformed or non-UTF-8 retained artifact is simply unusable
+    optional title evidence, never a reason to mint a session.
+    """
+    names: dict[str, str] = {}
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        logger.debug("Failed to decode Codex session_index.jsonl: %s", exc)
+        return names
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+            if not isinstance(parsed, dict):
+                continue
+            entry = json_document(parsed)
+            tid = _coerce_codex_session_id(entry)
+            name = _coerce_codex_thread_name(entry)
+            if tid and name:
+                names[tid] = name  # Latest wins (append-only)
+        except (json.JSONDecodeError, TypeError):
+            continue
     return names
 
 
@@ -75,31 +92,42 @@ def _parse_codex_history(sessions_root: Path) -> dict[str, str]:
 
 
 def _parse_history_file(history_path: Path) -> dict[str, str]:
+    try:
+        return parse_codex_history_bytes(history_path.read_bytes())
+    except OSError as exc:
+        logger.debug("Failed to read Codex history.jsonl: %s", exc)
+        return {}
+
+
+def parse_codex_history_bytes(payload: bytes) -> CodexHistoryTitles:
+    """Parse retained ``history.jsonl`` bytes using the live title rule."""
     titles: dict[str, str] = {}
     earliest_ts: dict[str, float] = {}
     try:
-        for line in history_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(parsed, dict):
-                continue
-            sid = parsed.get("session_id")
-            text = parsed.get("text")
-            ts = parsed.get("ts")
-            if not (isinstance(sid, str) and sid and isinstance(text, str) and text.strip()):
-                continue
-            ts_value = float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else float("inf")
-            known = earliest_ts.get(sid)
-            if known is None or ts_value < known:
-                earliest_ts[sid] = ts_value
-                titles[sid] = text
-    except OSError as exc:
-        logger.debug("Failed to read Codex history.jsonl: %s", exc)
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        logger.debug("Failed to decode Codex history.jsonl: %s", exc)
+        return titles
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        sid = parsed.get("session_id")
+        entry_text = parsed.get("text")
+        ts = parsed.get("ts")
+        if not (isinstance(sid, str) and sid and isinstance(entry_text, str) and entry_text.strip()):
+            continue
+        ts_value = float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else float("inf")
+        known = earliest_ts.get(sid)
+        if known is None or ts_value < known:
+            earliest_ts[sid] = ts_value
+            titles[sid] = entry_text
     return titles
 
 
@@ -412,5 +440,7 @@ __all__ = [
     "_parse_codex_history",
     "_parse_codex_session_index",
     "_parse_codex_state_titles",
+    "parse_codex_history_bytes",
+    "parse_codex_session_index_bytes",
     "resolve_retained_codex_state_titles",
 ]
