@@ -20,13 +20,8 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.archive.revision_authority import decided_unresolved_membership_sql
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import OperationStatus, Provider
-from polylogue.core.raw_failure_evidence import (
-    RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
-    RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
-)
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.daemon.write_coordinator import daemon_write_lease_active
@@ -630,258 +625,69 @@ def make_sinex_publication_stage(
 
 
 _RAW_PARSE_RECOVERY_BATCH_LIMIT = 200
-# Mirrors ``storage.raw_convergence.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES`` as a
-# local literal rather than importing it: new surface code (this stage lives
-# in ``daemon/``) should not import substrate (``storage``) internals
-# directly per this repo's layering ratchet, and ``converge_materialization``'s
-# ``max_payload_bytes`` is a plain bound this stage can restate on its own.
 _RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES = 1024 * 1024 * 1024
-# Roots per pending-probe statement. One statement per chunk keeps the
-# parameter count and the SQL text bounded on a large catch-up batch.
-_RAW_PARSE_RECOVERY_ROOT_PROBE_CHUNK = 200
-
-
-def _source_root_scope_bounds(path: Path) -> tuple[str, str, str]:
-    """Return ``(root, descendant_lo, descendant_hi)`` for one source-root scope.
-
-    ``raw_sessions.source_path`` is indexed under BINARY collation, so only an
-    equality or a half-open range bounds the seek. ``'0'`` is the byte after
-    ``'/'``, which makes ``[root + '/', root + '0')`` exactly the descendants of
-    ``root``. A ``LIKE`` prefix cannot stand in: it plans as a scan, matches
-    case-insensitively over ASCII, and reads ``%``/``_`` inside the root itself
-    as wildcards.
-    """
-    root = str(path).rstrip("/")
-    return root, f"{root}/", f"{root}0"
-
-
-def _raw_parse_recovery_pending_roots(
-    db_path: Path,
-    paths: Sequence[Path],
-    *,
-    archive_root: Path | None = None,
-) -> set[Path]:
-    """Return the roots under which raw rows are acquired but never materialized.
-
-    Mirrors the non-terminal branch of ``repair.py``'s candidate query at the
-    cheap read-only level this stage's ``check`` needs: no materialized
-    ``sessions`` row for the raw (by raw_id or native-id alias) and no
-    terminal parse error recorded. It intentionally does not replicate the
-    full authority/quarantine/byte-authority classification -- that
-    refinement happens inside ``converge_raw_materialization`` itself during
-    ``execute``; this is only a cheap "is there plausibly pending work here"
-    probe so ``check`` stays fast and false positives just cost one wasted
-    ``execute`` call rather than silently missing real backlog.
-
-    One statement answers a whole chunk of roots and each root costs an index
-    seek, so the probe's cost tracks the batch rather than the archive: a cold
-    rebuild must not pay a ``raw_sessions`` scan per ingested file.
-
-    The one classification it must share is
-    ``decided_unresolved_membership_sql``. That state carries no
-    ``parse_error`` and no session, so the shape above reads it as pending
-    forever while ``converge_raw_materialization`` reports it converged and
-    quarantined. The recovery debt would otherwise be retried indefinitely
-    with an unchanging count.
-    """
-    ordered = tuple(dict.fromkeys(paths))
-    if not ordered:
-        return set()
-    durable_root = archive_root or db_path.parent
-    source_db = durable_root / "source.db"
-    if not source_db.exists():
-        # An uninitialized archive has neither durable nor derived tiers and
-        # has no recovery work.  Once an index exists, however, a missing
-        # source tier is an authority failure and must remain retryable.
-        if db_path.exists() or (durable_root / ".index-active-pointer").exists():
-            raise FileNotFoundError(f"durable source tier is missing: {source_db}")
-        return set()
-    index_db = ArchiveLocation.resolve(durable_root).active_index_path
-    replay_authority_placeholders = ", ".join("?" for _ in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS)
-    try:
-        conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
-    except sqlite3.Error:
-        logger.warning(
-            "raw_parse_recovery: could not open source.db for %d root(s); refusing to classify as no pending work",
-            len(ordered),
-            exc_info=True,
-        )
-        raise
-    try:
-        if index_db.exists():
-            conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
-            materialized_join = """
-                LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
-                LEFT JOIN index_tier.sessions AS s_by_native
-                  ON r.native_id IS NOT NULL
-                 AND s_by_native.origin = r.origin
-                 AND s_by_native.native_id = r.native_id
-                LEFT JOIN raw_sessions AS existing_native_raw
-                  ON existing_native_raw.raw_id = s_by_native.raw_id
-            """
-            materialized_where = """
-              AND s_by_raw.raw_id IS NULL
-              AND (s_by_native.native_id IS NULL OR existing_native_raw.raw_id IS NULL)
-            """
-        else:
-            materialized_join = ""
-            materialized_where = ""
-        pending: set[Path] = set()
-        for offset in range(0, len(ordered), _RAW_PARSE_RECOVERY_ROOT_PROBE_CHUNK):
-            chunk = ordered[offset : offset + _RAW_PARSE_RECOVERY_ROOT_PROBE_CHUNK]
-            bounds = [_source_root_scope_bounds(path) for path in chunk]
-            by_root = {bound[0]: path for bound, path in zip(bounds, chunk, strict=True)}
-            root_rows = ", ".join("(?, ?, ?)" for _ in chunk)
-            params: list[str] = [value for bound in bounds for value in bound]
-            params.extend(sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS))
-            params.append(RAW_FAILURE_DEFERRED_SUPPORT_STATUS)
-            rows = conn.execute(
-                f"""
-                WITH roots(root, descendant_lo, descendant_hi) AS (VALUES {root_rows})
-                SELECT roots.root
-                FROM roots
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM raw_sessions AS r
-                    {materialized_join}
-                    WHERE (
-                        r.source_path = roots.root
-                        OR (
-                          r.source_path >= roots.descendant_lo
-                          AND r.source_path < roots.descendant_hi
-                        )
-                      )
-                      AND NOT (
-                        COALESCE(r.validation_status, '') = 'failed'
-                        AND (
-                          r.parsed_at_ms IS NULL
-                          OR r.validated_at_ms IS NULL
-                          OR r.validated_at_ms >= r.parsed_at_ms
-                        )
-                      )
-                      -- A successful parse can still be stranded when the
-                      -- index projection is interrupted or an older
-                      -- generation is active. Keep parsed-but-unindexed raw
-                      -- on the recovery queue. Explicitly skipped
-                      -- non-session artifacts are terminal.
-                      AND NOT (
-                        COALESCE(r.validation_status, '') = 'skipped'
-                        AND r.parsed_at_ms IS NOT NULL
-                        AND r.parse_error IS NULL
-                      )
-                      AND (
-                        (
-                          r.parse_error IS NULL
-                          OR r.parse_error = 'OperationalError: database is locked'
-                          OR r.parse_error LIKE 'decode:%No such file or directory:%'
-                          OR r.parse_error LIKE 'membership_replay_conflict:%'
-                        )
-                        OR EXISTS (
-                            SELECT 1
-                            FROM raw_artifacts AS failure_evidence
-                            WHERE failure_evidence.raw_id IS r.raw_id
-                              AND failure_evidence.origin IS r.origin
-                              AND failure_evidence.source_path IS r.source_path
-                              AND failure_evidence.source_index IS r.source_index
-                              AND failure_evidence.artifact_kind IN ({replay_authority_placeholders})
-                              AND failure_evidence.support_status = ?
-                        )
-                      )
-                      AND NOT ({decided_unresolved_membership_sql("r")})
-                      {materialized_where}
-                )
-                """,
-                params,
-            ).fetchall()
-            for row in rows:
-                matched = by_root.get(row[0])
-                if matched is not None:
-                    pending.add(matched)
-        return pending
-    except sqlite3.Error:
-        logger.warning(
-            "raw_parse_recovery: pending probe failed for %d root(s); refusing to classify as no pending work",
-            len(ordered),
-            exc_info=True,
-        )
-        raise
-    finally:
-        conn.close()
 
 
 def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = None) -> ConvergenceStage:
-    """Requeue raw rows an interrupted ingest attempt never validated/parsed.
+    """Adapt source/debt scheduling onto the raw-observation derivation.
 
-    polylogue-61jg: when the daemon stops mid-batch,
-    ``CursorStore._mark_interrupted_ops_attempts`` stamps the dangling
-    ``ingest_attempts`` row ``interrupted`` and records one
-    ``raw_parse_recovery`` convergence-debt row per source path that attempt
-    covered. This stage is what actually drains that debt: ``check`` reports
-    whether raw rows under the path are still acquired but never
-    materialized, and ``execute`` re-drives ``converge_raw_materialization``
-    scoped to exactly that path via ``source_root`` -- the same replay engine
-    the archive-wide trickle conveyor already uses, just requeued
-    deterministically instead of waiting for an accidental future touch of
-    the same path.
+    Membership and recipe inspection determine pending work, including partial
+    output loss. The stage retains a disposable kernel cursor per source scope.
     """
+    from polylogue.daemon.derivation import PassCursor
+    from polylogue.operations.raw_observation_derivation import (
+        converge_raw_observations,
+        raw_observation_pending_roots,
+    )
+
+    configured_root = archive_root or db_path.parent
+    cursors: dict[Path, PassCursor] = {}
 
     def check(path: Path) -> bool:
-        return path in _raw_parse_recovery_pending_roots(db_path, (path,), archive_root=archive_root)
+        return path in check_many((path,))
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
-        return _raw_parse_recovery_pending_roots(db_path, paths, archive_root=archive_root)
+        return raw_observation_pending_roots(configured_root, paths)
 
     def execute(path: Path) -> StageExecuteReturn:
         return execute_many((path,))
 
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
-        from polylogue.config import Config
-        from polylogue.maintenance.raw_authority import converge_materialization
         from polylogue.readiness.capability import raw_frontier_source_selection_refusal
 
         ordered = tuple(dict.fromkeys(paths))
         if not ordered:
             return True
-        configured_root = archive_root or db_path.parent
         refusal = raw_frontier_source_selection_refusal(configured_root)
-        config = Config(archive_root=configured_root, render_root=configured_root, sources=[])
-        failure: Exception | None = None
+        failed: list[str] = []
         for path in ordered:
-            # Only this path's own broken authority defers it; another path's
-            # refusal must not stall this one's recovery.
-            blocked_reason = refusal.unattributed_reason
-            if blocked_reason is None and (
-                str(path) in refusal.source_paths or str(path.resolve()) in refusal.source_paths
+            if (
+                refusal.unattributed_reason
+                or str(path) in refusal.source_paths
+                or str(path.resolve()) in refusal.source_paths
             ):
-                blocked_reason = "source-selection authority is broken for this path"
-            if blocked_reason is not None:
-                logger.warning(
-                    "raw_parse_recovery: source-selection gate blocked for %s: %s",
-                    path,
-                    blocked_reason,
-                )
                 continue
             try:
-                converge_materialization(
-                    config,
-                    dry_run=False,
-                    raw_artifact_limit=_RAW_PARSE_RECOVERY_BATCH_LIMIT,
+                report = converge_raw_observations(
+                    configured_root,
+                    source_roots=(path,),
+                    limit=_RAW_PARSE_RECOVERY_BATCH_LIMIT,
                     max_payload_bytes=_RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES,
-                    source_root=path,
+                    cursor=cursors.get(path),
                 )
             except Exception as exc:
-                logger.warning("raw_parse_recovery: repair pass failed for %s", path, exc_info=True)
-                # The chunk's other roots are independent repairs; finish them
-                # before surfacing this, then let the failure classify the
-                # chunk so a real error never reads as a deliberate deferral.
-                failure = failure or exc
-        if failure is not None:
-            raise failure
-        return not _raw_parse_recovery_pending_roots(db_path, ordered, archive_root=configured_root)
+                failed.append(str(exc))
+                continue
+            cursors[path] = report.cursor
+            if report.failed:
+                failed.extend(outcome.error or "raw observation failed" for outcome in report.outcomes if outcome.error)
+        if failed:
+            raise RuntimeError("; ".join(failed))
+        return not check_many(ordered)
 
     return ConvergenceStage(
         name="raw_parse_recovery",
-        description="Requeue raw rows an interrupted ingest attempt never validated/parsed",
+        description="Converge raw observations from retained bytes and logical membership",
         check=check,
         check_many=check_many,
         execute=execute,
@@ -1025,7 +831,6 @@ def make_default_convergence_stages(
     from polylogue.sinex.models import PublicationMode
     from polylogue.sinex.service import PublicationService
     from polylogue.sinex.transport import resolve_configured_transport
-    from polylogue.storage.archive_identity import ArchiveLocation
 
     mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
     stages: list[ConvergenceStage] = []
@@ -1406,7 +1211,6 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
     instead of blindly renaming ``db_path`` to ``index.db`` in place, so an
     active ``.index-active-pointer`` generation is still followed correctly.
     """
-    from polylogue.storage.archive_identity import ArchiveLocation
 
     index_db = ArchiveLocation.resolve(db_path.parent).active_index_path
     if not index_db.exists():
