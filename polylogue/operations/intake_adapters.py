@@ -386,18 +386,42 @@ class RawMaterializationIntakeAdapter(IntakeAdapter):
 
 
 def discover_pending_raw_ids(archive_root: Path, limit: int, max_payload_bytes: int) -> tuple[tuple[str, int], ...]:
-    """Return a bounded read-only raw frontier page for the intake adapter."""
-    from polylogue.config import Config
-    from polylogue.paths import render_root
-    from polylogue.storage.raw_convergence import raw_materialization_pending_census_raw_ids
+    """Return a bounded, stable raw frontier page for the intake adapter.
 
-    config = Config(archive_root=archive_root, render_root=render_root(), sources=[])
-    raw_ids = raw_materialization_pending_census_raw_ids(
-        config,
-        limit=limit,
-        max_payload_bytes=max_payload_bytes,
-    )
-    return tuple((raw_id, 1) for raw_id in raw_ids)
+    Raw discovery is deliberately a read-only derivation traversal.  The old
+    census preview was a second backlog authority and could miss observations
+    whose parser census was complete but whose derived output had been lost.
+    Page through the canonical raw-observation adapter instead, inspecting
+    each bounded page before admitting only non-valid observations.  The
+    payload size is the scheduler's cost estimate, read from the durable raw
+    rows rather than guessed by the adapter.
+    """
+    if limit <= 0:
+        return ()
+    from polylogue.operations.raw_observation_derivation import raw_observation_frame
+    from polylogue.storage.derived.raw import RawObservationDerivation
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    adapter = RawObservationDerivation(archive_root, max_payload_bytes=max_payload_bytes)
+    frame = raw_observation_frame(archive_root)
+    pending: list[str] = []
+    cursor: str | None = None
+    while len(pending) < limit:
+        page, next_cursor = adapter.required_page(frame, cursor=cursor, limit=limit - len(pending))
+        if not page:
+            break
+        statuses = adapter.inspect(frame, page)
+        pending.extend(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+        if next_cursor is None:
+            break
+        cursor = next_cursor
+
+    selected = tuple(pending[:limit])
+    if not selected:
+        return ()
+    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        sizes = archive.raw_payload_sizes(selected)
+    return tuple((raw_id, max(1, int(sizes.get(raw_id, 1)))) for raw_id in selected)
 
 
 class DaemonIntakeService:
