@@ -283,6 +283,22 @@ def _child_session() -> ParsedSession:
                     )
                 ],
             ),
+            # A second sibling at the same transcript position makes the
+            # public row projection prove both creation order and active-path
+            # selection.  The inactive sibling must remain visible so a
+            # consumer can reconstruct the branch rather than receiving a
+            # flattened mainline.
+            ParsedMessage(
+                provider_message_id="child-m1-variant",
+                role=Role.ASSISTANT,
+                timestamp="2026-03-01T10:16:00+00:00",
+                position=1,
+                variant_index=1,
+                parent_message_provider_id="child-m0",
+                is_active_path=False,
+                is_active_leaf=False,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="the inactive sibling")],
+            ),
         ],
     )
 
@@ -512,6 +528,18 @@ async def test_message_and_block_hydration_parity_across_api_query_mcp_and_http(
     # MCP rich content: structured block outcomes must survive the envelope.
     mcp_messages = [archive_message_payload(row, session_id=seeded.session_id) for row in rows]
     assert [payload.stop_reason for payload in mcp_messages] == [message.stop_reason for message in canonical_messages]
+    assert [payload.parent_message_id for payload in mcp_messages] == [
+        message.parent_id for message in canonical_messages
+    ]
+    assert [payload.variant_index for payload in mcp_messages] == [
+        message.branch_index for message in canonical_messages
+    ]
+    assert [payload.is_active_path for payload in mcp_messages] == [
+        message.is_active_path for message in canonical_messages
+    ]
+    assert [payload.is_active_leaf for payload in mcp_messages] == [
+        message.is_active_leaf for message in canonical_messages
+    ]
     mcp_blocks = [
         {
             "tool_outcome": block.get("tool_outcome"),
@@ -535,6 +563,15 @@ async def test_message_and_block_hydration_parity_across_api_query_mcp_and_http(
     assert [payload["text"] for payload in http_messages] == [message.text or "" for message in canonical_messages]
     assert [payload["is_active_leaf"] for payload in http_messages] == [
         message.is_active_leaf for message in canonical_messages
+    ]
+    assert [payload["parent_message_id"] for payload in http_messages] == [
+        message.parent_id for message in canonical_messages
+    ]
+    assert [payload["variant_index"] for payload in http_messages] == [
+        message.branch_index for message in canonical_messages
+    ]
+    assert [payload["is_active_path"] for payload in http_messages] == [
+        message.is_active_path for message in canonical_messages
     ]
     http_attachments = [
         att for payload in http_messages for att in cast("list[dict[str, object]]", payload["attachments"])
@@ -567,6 +604,15 @@ async def test_mcp_page_and_composed_message_routes_agree_on_text_and_outcomes(
         # the test to the route it is not trying to cover.
         assert archive.has_prefix_lineage(seeded.session_id) is False
         page = archive_message_page_payload(archive, seeded.session_id, limit=50, offset=0)
+        query_rows = archive.query_session_messages((seeded.session_id,), limit=50, offset=0)
+        from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
+
+        predicate_rows = archive.query_messages(
+            QueryFieldPredicate(field="session.id", values=(seeded.session_id,), op="=").with_field_ref(
+                QueryFieldRef(scope="session", name="id", source_name="session.id")
+            ),
+            limit=50,
+        )
 
     def _outcomes(messages: Sequence[MessageRenderEnvelope]) -> list[list[object]]:
         return [
@@ -578,10 +624,89 @@ async def test_mcp_page_and_composed_message_routes_agree_on_text_and_outcomes(
     assert [message.text for message in page.messages] == [message.text for message in composed]
     assert _outcomes(page.messages) == _outcomes(composed)
     assert [ToolOutcome.UNKNOWN.value, ToolResultUnknownReason.NOT_REPORTED.value] in _outcomes(page.messages)
-    # The bounded projection does not select these; it says so instead of
-    # letting the domain default read as a measured fact.
+    # The bounded projection carries topology because order/branch
+    # reconstruction is part of the public message contract. It still names
+    # the richer operation for the fields it intentionally does not select.
+    assert [message.parent_message_id for message in page.messages] == [
+        message.parent_message_id for message in composed
+    ]
+    assert [message.variant_index for message in page.messages] == [message.variant_index for message in composed]
+    assert [message.is_active_path for message in page.messages] == [message.is_active_path for message in composed]
+    assert [message.is_active_leaf for message in page.messages] == [message.is_active_leaf for message in composed]
+    # The terminal query row payload is the CLI/API/HTTP query-unit adapter;
+    # both bounded SQL entry points must carry the same topology fields.
+    from polylogue.surfaces.payloads import MessageQueryRowPayload
+
+    for query_rows_variant in (query_rows, predicate_rows):
+        query_payloads = [MessageQueryRowPayload.from_row(row) for row in query_rows_variant]
+        assert [payload.parent_message_id for payload in query_payloads] == [
+            message.parent_message_id for message in page.messages
+        ]
+        assert [payload.variant_index for payload in query_payloads] == [
+            message.variant_index for message in page.messages
+        ]
+        assert [payload.is_active_path for payload in query_payloads] == [
+            message.is_active_path for message in page.messages
+        ]
+        assert [payload.is_active_leaf for payload in query_payloads] == [
+            message.is_active_leaf for message in page.messages
+        ]
+    # A consumer using only the bounded public rows can rebuild the branch:
+    # transcript coordinates determine sibling order, parent ids determine
+    # edges, and active-path flags identify the accepted sibling.
+    topology = sorted(
+        (
+            message.position,
+            message.variant_index,
+            message.parent_message_id,
+            message.is_active_path,
+            message.is_active_leaf,
+        )
+        for message in page.messages
+    )
+    assert topology == sorted(
+        (
+            message.position,
+            message.variant_index,
+            message.parent_message_id,
+            message.is_active_path,
+            message.is_active_leaf,
+        )
+        for message in composed
+    )
+    assert [message.variant_index for message in page.messages if message.position == 1] == [0, 1]
+    assert [message.is_active_path for message in page.messages if message.position == 1] == [True, False]
     assert page.projection_note == hydration.MESSAGE_QUERY_ROW_RICHER_OPERATION
     assert "stop_reason" in hydration.MESSAGE_QUERY_ROW_UNPROJECTED
+    assert "parent_id" not in hydration.MESSAGE_QUERY_ROW_UNPROJECTED
+    assert "branch_index" not in hydration.MESSAGE_QUERY_ROW_UNPROJECTED
+    assert "is_active_path" not in hydration.MESSAGE_QUERY_ROW_UNPROJECTED
+    assert "is_active_leaf" not in hydration.MESSAGE_QUERY_ROW_UNPROJECTED
+
+
+@pytest.mark.asyncio
+async def test_dropping_topology_from_bounded_row_adapter_breaks_public_parity(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bounded SQL adapter is load-bearing, not a second default mapper."""
+    from polylogue.mcp.archive_support import archive_message_page_payload
+
+    seeded = _seed(workspace_env)
+    with ArchiveStore(seeded.archive_root, initialize=False, read_only=True) as archive:
+        expected = archive_message_page_payload(archive, seeded.session_id, limit=50, offset=0)
+
+    monkeypatch.setattr(
+        hydration,
+        "ARCHIVE_MESSAGE_QUERY_ROW_DISPOSITIONS",
+        _without(hydration.ARCHIVE_MESSAGE_QUERY_ROW_DISPOSITIONS, "parent_message_id"),
+    )
+    with ArchiveStore(seeded.archive_root, initialize=False, read_only=True) as archive:
+        mutated = archive_message_page_payload(archive, seeded.session_id, limit=50, offset=0)
+
+    assert [message.parent_message_id for message in mutated.messages] != [
+        message.parent_message_id for message in expected.messages
+    ]
 
 
 # ---------------------------------------------------------------------------

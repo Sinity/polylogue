@@ -2932,6 +2932,7 @@ def _session_payload(envelope: ArchiveSessionEnvelope) -> dict[str, object]:
                 "native_id": message.native_id,
                 "role": message.role,
                 "position": message.position,
+                "parent_message_id": message.parent_message_id,
                 "variant_index": message.variant_index,
                 "is_active_path": message.is_active_path,
                 "is_active_leaf": message.is_active_leaf,
