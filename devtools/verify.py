@@ -906,6 +906,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             graph_status=str(graph.status),
             graph_reason=graph.reason,
             full_rerun_cause=graph.full_rerun_cause if selection not in _GRAPH_FREE_SELECTIONS else None,
+            graph_recorded_tests=getattr(graph, "recorded_tests", None),
+            graph_source_dependencies=getattr(graph, "source_dependencies", None),
             seed_source=str(testmon_datafile(primary_worktree())) if seeded_from_primary else None,
             seed_source_mtime_ns=(
                 testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None

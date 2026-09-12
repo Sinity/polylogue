@@ -10,6 +10,7 @@ it and re-execute everything under the name of selection.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import sqlite3
 import subprocess
@@ -29,9 +30,6 @@ from devtools.testmon_provision import (
     current_environment_key,
     discard_testmon_graph,
     inspect_testmon_graph,
-)
-from devtools.testmon_provision import (
-    testmon_datafile as _testmon_datafile,
 )
 from devtools.toolchain import venv_python
 from devtools.verify_runs import VerifyRun
@@ -70,6 +68,8 @@ def test_a_datafile_the_installed_testmon_wrote_is_usable(tmp_path: Path) -> Non
     state = inspect_testmon_graph(tmp_path)
     assert state.status is TestmonGraphStatus.USABLE
     assert state.full_rerun_cause is None
+    assert state.recorded_tests == 0
+    assert state.source_dependencies == 0
 
 
 def test_a_datafile_from_another_testmon_data_version_is_unusable(tmp_path: Path) -> None:
@@ -124,6 +124,8 @@ def test_a_graph_with_no_source_dependencies_is_unusable(tmp_path: Path) -> None
     state = inspect_testmon_graph(tmp_path)
     assert state.status is TestmonGraphStatus.UNUSABLE
     assert "no dependency on any source file" in state.reason
+    assert state.recorded_tests == 1
+    assert state.source_dependencies == 0
 
     connection = sqlite3.connect(path)
     connection.execute(
@@ -153,6 +155,19 @@ def test_provision_discards_only_an_unusable_datafile(tmp_path: Path, monkeypatc
     _seed_with_testmon(tmp_path)
     assert testmon_provision.main([]) == 0
     assert path.exists()
+
+
+def test_provision_json_includes_inspected_graph_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seed_with_testmon(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    assert testmon_provision.main(["--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["recorded_tests"] == 0
+    assert payload["source_dependencies"] == 0
 
 
 def test_seeding_snapshots_a_database_with_an_uncommitted_writer(tmp_path: Path) -> None:
@@ -353,30 +368,26 @@ def _managed_pytest_environment(root: Path, datafile: Path) -> dict[str, str]:
     return environment
 
 
-def test_a_focused_run_traces_a_scratch_graph_not_the_checkout_one(tmp_path: Path) -> None:
-    """The checkout's graph is written only by a run whose collection is the corpus.
+def test_a_focused_run_does_not_configure_a_testmon_graph(tmp_path: Path) -> None:
+    """Focused runs do not load testmon or configure a datafile.
 
-    Anti-vacuity: return ``env_for_pytest_step`` unchanged and the focused run
-    opens ``.cache/testmon/testmondata`` again, which is the assignment that
-    let a twenty-test selection replace a twenty-thousand-test graph.
+    Anti-vacuity: returning an environment with ``TESTMON_DATAFILE`` would
+    make a future plugin or ambient option mutate a graph for a non-corpus
+    selection. Only an affected/full verification run owns the corpus graph.
     """
     run = VerifyRun(tier="focused-test", argv=["tests/unit/devtools"], git_head=None, root=tmp_path)
     artifacts = run.start_step(label="pytest focused", cmd=["python", "-m", "pytest"])
 
     environment = focused_pytest_env(run=run, artifacts=artifacts)
 
-    datafile = Path(environment["TESTMON_DATAFILE"])
-    assert datafile != _testmon_datafile(tmp_path)
-    assert datafile.parent == artifacts.step_dir
+    assert "TESTMON_DATAFILE" not in environment
 
 
 def test_the_focused_command_leaves_a_corpus_graph_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """testmon prunes whichever datafile it opens down to the run's own
-    collection, so the production focused command must be shown against a real
-    graph, not only against the path it was handed.
+    """The production focused command never opens the corpus graph.
 
-    Anti-vacuity: point the focused run at the corpus graph and it drops from
-    every recorded test to the four this selection collected.
+    Anti-vacuity: enabling testmon in the focused command would prune the
+    twenty-test corpus graph down to the four tests named by the selection.
     """
     _synthetic_corpus(tmp_path)
     corpus_graph = tmp_path / "corpus-testmondata"
@@ -420,4 +431,4 @@ def test_the_focused_command_leaves_a_corpus_graph_whole(tmp_path: Path, monkeyp
     )
     assert focused.returncode == 0, focused.stdout + focused.stderr
     assert _recorded_tests(corpus_graph) == 20
-    assert _recorded_tests(tmp_path / "scratch-testmondata") == 4
+    assert not (tmp_path / "scratch-testmondata").exists()

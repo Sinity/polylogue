@@ -23,6 +23,8 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
             "verification_scope": verification_scope,
             "selection_mode": _string(selection.get("selection_mode")),
             "testmon_graph_status": _string(selection.get("graph_status")),
+            "testmon_graph_recorded_tests": _integer(selection.get("graph_recorded_tests")),
+            "testmon_graph_source_dependencies": _integer(selection.get("graph_source_dependencies")),
         },
         "gate_outcomes": _gate_outcomes(payload.get("steps")),
         "pytest_outcomes": _pytest_outcomes(aggregate),

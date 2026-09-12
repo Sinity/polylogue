@@ -207,8 +207,10 @@ are not independently anchor-checked; durable citations belong in
 
 Testmon is an accelerator: a selected green proves the selected scope only,
 and the receipt names which selection ran. Focused `devtools test` runs do
-not load testmon or change its graph. Explicitly requested affected/full runs
-advance the broad graph. When `--all` is requested, the corpus runs as one
+not load testmon and never change the checkout's corpus graph. Their receipt
+may report a diagnostic snapshot of that graph, but this is not selection
+evidence. Explicitly requested affected/full runs advance the broad graph.
+When `--all` is requested, the corpus runs as one
 collection; partitioning it would drop the edges of every test the last shard
 did not collect. A test names its anti-vacuity condition — what mutation or
 bypass would make it red.

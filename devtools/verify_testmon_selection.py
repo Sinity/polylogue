@@ -8,7 +8,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from devtools.pytest_invocation import MANAGED_PLUGIN_ARGS
+from devtools.pytest_invocation import (
+    CLOSED_WORLD_COLLECTION_ARGS,
+    DEVTOOLS_PLUGIN_ARGS,
+    IGNORED_COLLECTION_ARGS,
+    managed_plugin_args,
+)
 from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT, inspect_testmon_graph
 from devtools.toolchain import venv_python
 from devtools.verify import _pytest_worker_args
@@ -19,9 +24,10 @@ def main(_argv: list[str] | None = None) -> int:
     """Trace a generated corpus, edit one leaf, and require a small rerun.
 
     Anti-vacuity: changing ``--testmon-forceselect`` to ``--testmon-noselect``
-    makes the second run execute all tests; changing the default worker count
-    to zero makes the worker assertion fail; refusing the seed makes the first
-    run fail to establish the graph.
+    makes the second run execute all tests; removing xdist from this command
+    would stop this gate from covering the hosted route; changing the default
+    worker count to zero makes the worker assertion fail; refusing the seed
+    makes the first run fail to establish the graph.
     """
     configured_workers = os.environ.pop("POLYLOGUE_PYTEST_WORKERS", None)
     try:
@@ -55,9 +61,15 @@ def main(_argv: list[str] | None = None) -> int:
             "-m",
             "pytest",
             "-q",
+            *IGNORED_COLLECTION_ARGS,
             "-p",
             "pytest_jsonreport",
-            *MANAGED_PLUGIN_ARGS,
+            *DEVTOOLS_PLUGIN_ARGS,
+            *managed_plugin_args(testmon=True),
+            *CLOSED_WORLD_COLLECTION_ARGS[:-1],
+            "-p",
+            "no:randomly",
+            *_pytest_worker_args(),
         ]
         first = subprocess.run(
             [
