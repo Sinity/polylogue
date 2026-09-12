@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import socket
@@ -253,6 +254,57 @@ def test_uds_refuses_when_kernel_peer_credentials_cannot_be_read(
     assert refused is not None
     assert refused["outcome"] == "rejected"
     assert refused["error"]["code"] == "peer_authentication_unavailable"
+
+
+def test_disconnected_queued_control_releases_its_compute_admission(tmp_path: Path) -> None:
+    """A pre-acceptance control disconnect must not retain a future worker slot.
+
+    Anti-vacuity: omitting the control cancellation handle from the scheduler
+    leaves the queued preview exchange and its reservation until the blockers
+    release, even though the real UDS peer has already disconnected.
+    """
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
+
+    entered = threading.Semaphore(0)
+    release = threading.Event()
+
+    def block_worker() -> None:
+        entered.release()
+        assert release.wait(timeout=5)
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        blockers = [stack.execution_kernel.submit(block_worker) for _ in range(2)]
+        assert all(entered.acquire(timeout=2) for _ in blockers)
+        request_id = "disconnected-queued-control"
+        body = json.dumps(
+            {
+                "protocol": DAEMON_OPERATION_PROTOCOL,
+                "request_id": request_id,
+                "operation": "mutation.session.delete.preview",
+                "payload": {"session_ids": ["codex:absent"]},
+                "archive_root": str(stack.archive_root),
+            },
+            separators=(",", ":"),
+        ).encode()
+        peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            peer.connect(str(stack.socket_path))
+            peer.sendall(
+                b"POST /api/operation HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"Content-Type: application/json\r\n" + f"Content-Length: {len(body)}\r\n\r\n".encode() + body
+            )
+            with stack.runtime._condition:
+                assert stack.runtime._condition.wait_for(lambda: request_id in stack.runtime._exchanges, timeout=2)
+            peer.close()
+            with stack.runtime._condition:
+                assert stack.runtime._condition.wait_for(lambda: request_id not in stack.runtime._exchanges, timeout=2)
+            assert stack.execution_kernel.snapshot().used_units == len(blockers)
+        finally:
+            release.set()
+            peer.close()
+            for blocker in blockers:
+                blocker.future.result(timeout=2)
 
 
 def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
