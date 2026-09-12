@@ -2490,6 +2490,248 @@ def test_non_patch_tool_arguments_are_left_alone() -> None:
 
 
 # =============================================================================
+# Codex lifecycle/event field conservation (polylogue-z1rdw/q0vka)
+# =============================================================================
+
+
+class TestCodexLifecycleEventFields:
+    def test_declared_event_families_keep_semantic_fields(self) -> None:
+        payload: list[dict[str, Any]] = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "thread_goal_updated",
+                    "goal": {"objective": "ship it", "status": "in_progress", "tokensUsed": 8, "timeUsedSeconds": 3.5},
+                    "started_at": 10,
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "sub_agent_activity",
+                    "agent_thread_id": "child",
+                    "agent_path": "0.1",
+                    "kind": "interacted",
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_started",
+                    "turn_id": "turn-1",
+                    "model_context_window": 200000,
+                    "collaboration_mode_kind": "default",
+                    "started_at": 11,
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "turn-1",
+                    "last_agent_message": "unmirrored final",
+                    "error": {"message": "limit", "codex_error_info": "usage_limit_exceeded"},
+                    "completed_at": 12,
+                },
+            },
+            {"type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "turn-2", "reason": "interrupted"}},
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "thread_settings_applied",
+                    "settings": {
+                        "model": "gpt-test",
+                        "reasoning_effort": "high",
+                        "personality": "precise",
+                        "collaboration_mode": {"kind": "agent", "settings": {"developer_instructions": "be precise"}},
+                    },
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "collab_agent_interaction_end",
+                    "receiver_thread_id": "child",
+                    "receiver_agent_nickname": "Birch",
+                    "receiver_agent_role": "worker",
+                    "prompt": "inspect this",
+                    "status": "completed",
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "entered_review_mode",
+                    "target": {"instructions": "review", "user_facing_hint": "checking"},
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "exited_review_mode",
+                    "review_output": {
+                        "findings": ["none"],
+                        "overall_correctness": "yes",
+                        "overall_explanation": "good",
+                        "overall_confidence_score": 0.9,
+                    },
+                },
+            },
+            {"type": "event_msg", "payload": {"type": "view_image_tool_call", "path": "/producer/image.png"}},
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "web_search_end",
+                    "query": "polylogue",
+                    "action": {"queries": ["polylogue", "archive"]},
+                },
+            },
+            {"type": "event_msg", "payload": {"type": "thread_rolled_back", "num_turns": 2}},
+            {
+                "type": "event_msg",
+                "payload": {"type": "error", "message": "failed", "codex_error_info": "usage_limit_exceeded"},
+            },
+        ]
+        result = parse(payload, "field-contract")
+        by_type: dict[str, dict[str, Any]] = {
+            event.event_type: cast(dict[str, Any], event.payload) for event in result.session_events
+        }
+
+        assert by_type["thread_goal_updated"]["goal"] == {
+            "objective": "ship it",
+            "status": "in_progress",
+            "tokensUsed": 8,
+            "timeUsedSeconds": 3.5,
+        }
+        assert by_type["sub_agent_activity"]["agent_thread_id"] == "child"
+        assert by_type["task_started"]["turn_id"] == "turn-1"
+        assert by_type["task_started"]["model_context_window"] == 200000
+        assert by_type["task_complete"]["last_agent_message"] == "unmirrored final"
+        assert by_type["task_complete"]["message"] == "limit"
+        assert by_type["task_complete"]["codex_error_info"] == "usage_limit_exceeded"
+        assert by_type["turn_aborted"]["turn_id"] == "turn-2"
+        assert by_type["thread_settings_applied"]["collaboration_mode"] == {
+            "kind": "agent",
+            "developer_instructions": "be precise",
+        }
+        assert by_type["collab_agent_interaction_end"]["prompt"] == "inspect this"
+        assert by_type["entered_review_mode"]["target"]["instructions"] == "review"
+        assert by_type["exited_review_mode"]["review_output"]["findings"] == ["none"]
+        assert by_type["view_image_tool_call"]["path"] == "/producer/image.png"
+        assert by_type["web_search_end"]["action"] == {"queries": ["polylogue", "archive"]}
+        assert by_type["thread_rolled_back"]["num_turns"] == 2
+        assert by_type["error"]["codex_error_info"] == "usage_limit_exceeded"
+
+    def test_turn_conflicts_and_user_references_are_explicit(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "m1",
+                    "role": "assistant",
+                    "phase": "commentary",
+                    "metadata": {"turn_id": "metadata-turn"},
+                    "internal_chat_message_metadata_passthrough": {"turn_id": "passthrough-turn"},
+                    "content": [{"type": "output_text", "text": "hello"}],
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "look at this",
+                    "local_images": [{"path": "/producer/private.png", "mime_type": "image/png"}],
+                    "text_elements": [
+                        {"type": "image", "start": 3, "end": 4, "placeholder": "[image]", "hidden": "not retained"}
+                    ],
+                },
+            },
+        ]
+        result = parse(payload, "reference-contract")
+        response = next(event for event in result.session_events if event.event_type == "response_item")
+        assert response.payload["phase"] == "commentary"
+        assert response.payload["turn_id"] == "metadata-turn"
+        conflict = cast(dict[str, Any], response.payload["turn_id_conflict"])
+        assert conflict["values"] == {
+            "metadata.turn_id": "metadata-turn",
+            "internal_chat_message_metadata_passthrough.turn_id": "passthrough-turn",
+        }
+        user = next(event for event in result.session_events if event.event_type == "user_message")
+        local_images = cast(list[dict[str, Any]], user.payload["local_images"])
+        assert local_images[0] == {
+            "path": "/producer/private.png",
+            "mime_type": "image/png",
+            "source": "codex.user_message.local_images",
+            "acquired_bytes": False,
+            "path_disclosure": "provider_reference",
+        }
+        text_elements = cast(list[dict[str, Any]], user.payload["text_elements"])
+        assert text_elements[0] == {
+            "type": "image",
+            "start": 3,
+            "end": 4,
+            "placeholder": "[image]",
+            "source": "codex.user_message.text_elements",
+            "content_policy": "range_only",
+        }
+        assert "hidden" not in text_elements[0]
+
+    def test_top_level_records_have_bounded_named_payloads_and_are_supported(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "top-level", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            },
+            {
+                "type": "inter_agent_communication_metadata",
+                "payload": {"trigger_turn": True, "turn_id": "turn-3", "opaque": {"secret": "drop"}},
+            },
+            {
+                "type": "token_usage_record",
+                "payload": {"usage": {"input_tokens": 10, "output_tokens": 4}, "opaque": "drop"},
+            },
+        ]
+        result = parse(payload, "top-level")
+        assert is_supported_session_stream(payload)
+        by_type: dict[str, dict[str, Any]] = {
+            event.event_type: cast(dict[str, Any], event.payload) for event in result.session_events
+        }
+        assert by_type["inter_agent_communication_metadata"]["trigger_turn"] is True
+        assert by_type["inter_agent_communication_metadata"]["turn_id"] == "turn-3"
+        assert by_type["token_usage_record"]["usage"] == {"input_tokens": 10, "output_tokens": 4}
+        assert "opaque" not in by_type["inter_agent_communication_metadata"]
+        assert "opaque" not in by_type["token_usage_record"]
+
+    def test_command_item_completed_does_not_duplicate_typed_result_text(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "item": {"type": "CommandExecution", "id": "cmd-1", "text": "stdout that has a typed result"},
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "item": {"type": "Plan", "id": "plan-1", "text": "full plan content"},
+                },
+            },
+        ]
+        result = parse(payload, "item-dedup")
+        by_type: list[dict[str, Any]] = [
+            cast(dict[str, Any], event.payload)
+            for event in result.session_events
+            if event.event_type == "item_completed"
+        ]
+        assert "text" not in by_type[0]["item"]
+        assert by_type[1]["item"]["text"] == "full plan content"
+
+
+# =============================================================================
 # Re-embedded context conservation (replacement_history, task_complete)
 # =============================================================================
 
