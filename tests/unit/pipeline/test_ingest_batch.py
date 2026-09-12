@@ -85,6 +85,8 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
+from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 
 BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
@@ -217,6 +219,26 @@ def test_sync_index_connection_ensures_runtime_indexes(tmp_path: Path) -> None:
         conn.close()
 
     assert row is not None
+
+
+def test_sync_ingest_index_publication_refuses_a_foreign_archive_lease(tmp_path: Path) -> None:
+    """Index generations cannot borrow writer authority from another archive.
+
+    Anti-vacuity: removing the explicit ``archive_root`` from
+    ``_open_sync_connection`` lets this real ingest publication opener create
+    a connection to the target tier under the owner archive's lease.
+    """
+    owner_root = tmp_path / "owner"
+    target_root = tmp_path / "target"
+    owner_root.mkdir()
+    bootstrap_archive_root(target_root)
+
+    with (
+        arm_write_lease_enforcement(),
+        write_lease("test.owner", archive_root=owner_root),
+        pytest.raises(UnleasedWriteError, match="outside the archive"),
+    ):
+        ingest_batch_core._open_sync_connection(target_root / "index.db", archive_root=target_root)
 
 
 def test_primary_mode_keeps_unconfirmed_revision_out_of_index_and_fts(
@@ -3324,7 +3346,11 @@ def test_process_ingest_batch_sync_reserves_inline_attachment_until_index_commit
         return IngestRecordResult(raw_id=record.raw_id, sessions=[session])
 
     gc_reports: list[BlobGCResult] = []
+    readonly_opens: list[Path] = []
+    write_opens: list[tuple[Path, str, Path | None]] = []
     original_flush = ArchiveBlobPublisher.flush
+    original_open_write = open_isolated_write_connection
+    original_open_readonly = open_readonly_connection
 
     def flush_then_gc(publisher: ArchiveBlobPublisher):  # type: ignore[no-untyped-def]
         receipts = original_flush(publisher)
@@ -3336,15 +3362,48 @@ def test_process_ingest_batch_sync_reserves_inline_attachment_until_index_commit
     monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
     monkeypatch.setattr(ArchiveBlobPublisher, "flush", flush_then_gc)
 
-    _process_ingest_batch_sync(
-        [raw_record],
-        db_path=db_path,
-        archive_root_str=str(archive_root),
-        blob_root_str=str(legacy_blob_root),
-        validation_mode="off",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
+    def trace_archive_bound_write(
+        path: Path,
+        *,
+        purpose: str,
+        timeout: float | None = None,
+        archive_root: Path | None = None,
+    ) -> sqlite3.Connection:
+        write_opens.append((path, purpose, archive_root))
+        return original_open_write(path, purpose=purpose, timeout=timeout, archive_root=archive_root)
+
+    monkeypatch.setattr(
+        "polylogue.pipeline.services.ingest_batch._core.open_isolated_write_connection",
+        trace_archive_bound_write,
     )
+
+    def trace_source_read(
+        path: Path,
+        *,
+        timeout_class: str = "interactive-read",
+        validate_schema: bool = True,
+    ) -> sqlite3.Connection:
+        readonly_opens.append(path)
+        return original_open_readonly(path, timeout_class=timeout_class, validate_schema=validate_schema)
+
+    monkeypatch.setattr(
+        "polylogue.pipeline.services.ingest_batch._core.open_readonly_connection",
+        trace_source_read,
+    )
+
+    # The real index publication and its later source-tier receipt consumption
+    # must share the lease bound to this archive. A refactor that opens either
+    # tier outside the authority route now fails before SQLite can contend.
+    with arm_write_lease_enforcement(), write_lease("test.ingest", archive_root=archive_root):
+        _process_ingest_batch_sync(
+            [raw_record],
+            db_path=db_path,
+            archive_root_str=str(archive_root),
+            blob_root_str=str(legacy_blob_root),
+            validation_mode="off",
+            ingest_workers=1,
+            measure_ingest_result_size=False,
+        )
 
     expected_hash = sha256(payload).digest()
     assert len(gc_reports) == 1
@@ -3356,6 +3415,9 @@ def test_process_ingest_batch_sync_reserves_inline_attachment_until_index_commit
         assert conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash = ?", (expected_hash,)).fetchone()[0] == 1
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+    assert archive_root / "source.db" in readonly_opens
+    assert (db_path, "ingest index publication", archive_root) in write_opens
+    assert (archive_root / "source.db", "ingest blob publication receipt", archive_root) in write_opens
 
 
 def test_process_ingest_batch_sync_replaces_stale_sessions_for_same_raw_id(

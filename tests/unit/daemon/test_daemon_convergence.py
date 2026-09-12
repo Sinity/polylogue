@@ -1,9 +1,72 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 from polylogue.daemon.convergence import ConvergenceStage, DaemonConverger, StageExecutionResult, StageState
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
+
+
+async def test_coordinator_cancellation_keeps_the_real_writer_owned_until_it_stops() -> None:
+    """Cancellation distinguishes pre-admission from an admitted writer.
+
+    Anti-vacuity: releasing the gate in ``run`` when its caller is cancelled
+    allows ``after-admission`` to overlap ``first`` before the real operation
+    has stopped, which is exactly the SQLite-writer race this coordinator owns.
+    """
+    events: list[DaemonWriteEvent] = []
+    coordinator = DaemonWriteCoordinator(observer=events.append)
+    first_started = asyncio.Event()
+    allow_first_finish = asyncio.Event()
+    admitted_finished = asyncio.Event()
+    effects: list[str] = []
+
+    async def first() -> None:
+        first_started.set()
+        await allow_first_finish.wait()
+        effects.append("first")
+
+    async def no_effect_before_admission() -> None:
+        effects.append("pre-admission")
+
+    async def after_admission() -> None:
+        effects.append("after-admission")
+        admitted_finished.set()
+
+    first_caller = asyncio.create_task(coordinator.run("watcher.first", first))
+    try:
+        await first_started.wait()
+
+        pre_admission = asyncio.create_task(coordinator.run("watcher.pre-admission", no_effect_before_admission))
+        await asyncio.sleep(0)
+        pre_admission.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pre_admission
+        assert effects == []
+
+        # ``first`` is already admitted. Its caller may stop waiting, but the
+        # coordinator-owned execution must retain the gate until it signals
+        # its actual completion.
+        first_caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_caller
+
+        second_caller = asyncio.create_task(coordinator.run("watcher.after-admission", after_admission))
+        await asyncio.sleep(0)
+        assert effects == []
+
+        allow_first_finish.set()
+        await admitted_finished.wait()
+        await second_caller
+        assert effects == ["first", "after-admission"]
+        assert coordinator.snapshot().active_actor is None
+        assert any(event.actor == "watcher.first" and event.outcome == "cancelled" for event in events)
+    finally:
+        allow_first_finish.set()
+        await coordinator.shutdown(timeout=1.0)
 
 
 def test_converger_reports_only_current_run_stage_timings(tmp_path: Path) -> None:
