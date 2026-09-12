@@ -116,6 +116,25 @@ def test_checkpoint_writer_refuses_a_different_archive_root(tmp_path: Path) -> N
         checkpoint_archive_wals(target_root, reason="test", warn_bytes=0)
 
 
+def test_embedding_failure_resolution_refuses_an_unleased_writer(tmp_path: Path) -> None:
+    """The CLI failure-resolution path cannot bypass archive-bound admission.
+
+    Anti-vacuity: restoring the generic ``sqlite_connection`` open makes this
+    mutation run despite the daemon's armed process-wide writer boundary.
+    """
+    from polylogue.storage.embeddings.materialization import resolve_embedding_failure_with_lifecycle
+
+    embeddings_db = tmp_path / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        resolve_embedding_failure_with_lifecycle(
+            embeddings_db,
+            failure_id="failure-does-not-matter-before-admission",
+            action="acknowledge",
+        )
+
+
 def test_enforcement_is_off_by_default_so_one_shot_writers_are_unaffected(db_path: Path) -> None:
     """A CLI or API process is its own single writer and has no gate to be outside of."""
     assert write_lease_enforced() is False
