@@ -1069,17 +1069,23 @@
           "sessions": 2,
           "messages": 10,
           "blocks": 12,
+          "actions": 0,
           "session_profiles": 0,
           "session_work_events": 0,
-          "session_phases": 0
+          "session_phases": 0,
+          "threads": 2,
+          "thread_sessions": 2
         },
         "table_count_precision": {
           "sessions": "exact",
           "messages": "exact",
           "blocks": "exact",
+          "actions": "exact",
           "session_profiles": "exact",
           "session_work_events": "exact",
-          "session_phases": "exact"
+          "session_phases": "exact",
+          "threads": "exact",
+          "thread_sessions": "exact"
         }
       },
       "embeddings": {

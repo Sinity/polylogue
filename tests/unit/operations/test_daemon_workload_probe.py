@@ -357,6 +357,19 @@ def test_daemon_workload_probe_table_count_uses_sqlite_stats_after_cheap_counts(
         assert _table_count(conn, "missing", exact=False) == -1
 
 
+def test_daemon_workload_probe_counts_view_backed_relations(tmp_path: Path) -> None:
+    db = tmp_path / "index.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
+        conn.executemany("INSERT INTO sessions(id) VALUES (?)", [(1,), (2,)])
+        for view in ("threads", "thread_sessions", "actions"):
+            conn.execute(f"CREATE VIEW {view} AS SELECT id FROM sessions")
+
+        assert _table_count(conn, "threads", exact=True) == 2
+        assert _table_count(conn, "thread_sessions", exact=True) == 2
+        assert _table_count(conn, "actions", exact=True) == 2
+
+
 def test_daemon_workload_probe_reports_sqlite_maintenance_state(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     _seed_minimal_archive(db, tmp_path / "session.jsonl")
