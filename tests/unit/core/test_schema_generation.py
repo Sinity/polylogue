@@ -151,6 +151,20 @@ def test_schema_sampling_binds_external_generation_to_selected_archive_location(
 
     assert [unit.source_path for unit in units] == ["/selected.json"]
 
+    # Exercise the production generation route as well as the lower-level
+    # sampler.  If the route drops ``archive_location``, its source lookup
+    # falls back to the generation directory (which has no source.db) or its
+    # ambient blob store (which contains only the unrelated archive).
+    generated = generate_provider_schema(
+        "chatgpt",
+        db_path=selected_index,
+        archive_location=selected,
+        max_samples=16,
+    )
+
+    assert generated.success, generated.error
+    assert generated.sample_count > 0
+
 
 def test_schema_sampling_refuses_missing_selected_source_evidence(tmp_path: Path) -> None:
     from polylogue.schemas.sampling import iter_schema_units

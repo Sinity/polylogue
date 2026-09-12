@@ -895,6 +895,81 @@ def test_verify_raw_corpus_uses_selected_location_and_reports_missing_selected_b
     assert report.providers["chatgpt"].decode_errors == 1
 
 
+def test_operator_verification_uses_selected_archive_location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production verification route must consume only the selected archive."""
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.schemas.operator.verification import run_schema_verification
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+
+    selected_payload = b'{"id":"selected","mapping":{}}'
+    ambient_payload = b'{"id":"ambient","mapping":{}}'
+    selected_root = tmp_path / "selected"
+    ambient_root = tmp_path / "ambient"
+    for root, payload, label in (
+        (selected_root, selected_payload, "selected"),
+        (ambient_root, ambient_payload, "ambient"),
+    ):
+        initialize_active_archive_root(root)
+        BlobStore(root / "blob").write_from_bytes(payload)
+        with sqlite3.connect(root / "source.db") as conn:
+            write_source_raw_session(
+                conn,
+                origin=origin_from_provider("chatgpt"),
+                source_path=f"/{label}.json",
+                source_index=0,
+                payload=payload,
+                acquired_at_ms=0,
+            )
+
+    external_index = selected_root / ".index-generations" / "current" / "index.db"
+    external_index.parent.mkdir(parents=True)
+    external_index.write_bytes((selected_root / "index.db").read_bytes())
+    (selected_root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(ambient_root))
+
+    observed_payloads: list[object] = []
+
+    class _AlwaysValidValidator:
+        provider = "chatgpt"
+
+        def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
+            del max_samples
+            return [payload]
+
+        def validate(self, _sample: object) -> ValidationResult:
+            return ValidationResult(is_valid=True)
+
+    def validate_payload(_provider: str, payload: object, **_kwargs: object) -> PayloadValidation:
+        observed_payloads.append(payload)
+        validator = _AlwaysValidValidator()
+        samples = tuple(validator.validation_samples(payload))
+        return PayloadValidation(
+            validator=cast(SchemaValidator, validator),
+            samples=samples,
+            results=tuple(validator.validate(sample) for sample in samples),
+            schema_resolution=None,
+            schema_resolution_is_explicit=True,
+        )
+
+    monkeypatch.setattr(
+        "polylogue.schemas.validation.corpus.SchemaValidator.validate_payload",
+        validate_payload,
+    )
+
+    report = run_schema_verification(
+        SchemaVerificationRequest(providers=["chatgpt"], max_samples=16),
+        db_path=external_index,
+        archive_location=ArchiveLocation.resolve(selected_root),
+    )
+
+    assert report.total_records == 1
+    assert report.providers["chatgpt"].valid_records == 1
+    assert report.providers["chatgpt"].decode_errors == 0
+    assert observed_payloads == [{"id": "selected", "mapping": {}}]
+
+
 def test_verify_raw_corpus_filters_and_parses_by_detected_provider(
     db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
