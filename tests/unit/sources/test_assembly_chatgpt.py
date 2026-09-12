@@ -727,6 +727,71 @@ class TestZipBundleEndToEndBlobAcquisition:
         assert store.read_all(blob_hash) == image_bytes
 
 
+def test_audio_pointer_binds_extension_asset_member_to_normalized_attachment(tmp_path: Path) -> None:
+    """Audio pointer references follow the same sidecar join as images."""
+    from polylogue.sources.source_parsing import parse_one_source_path
+
+    pointer = "file-service://file_0000000000000000000000000000abcd"
+    conversation = {
+        "id": "conv-audio",
+        "conversation_id": "conv-audio",
+        "title": "audio asset",
+        "create_time": 1704067200.0,
+        "current_node": "a1",
+        "mapping": {
+            "a1": {
+                "id": "a1",
+                "message": {
+                    "id": "a1",
+                    "author": {"role": "assistant"},
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "audio_asset_pointer",
+                                "asset_pointer": pointer,
+                                "mime_type": "audio/wav",
+                            }
+                        ],
+                    },
+                    "create_time": 1704067201.0,
+                },
+                "parent": None,
+                "children": [],
+            }
+        },
+    }
+    zip_path = tmp_path / "audio-export.zip"
+    audio_bytes = b"RIFFpolylogue-audio"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("conversations-000.json", json.dumps([conversation]))
+        zf.writestr("conv-audio/audio/file_0000000000000000000000000000abcd.wav", audio_bytes)
+
+    blob_root = tmp_path / "blobs"
+    store = BlobStore(blob_root)
+    sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+    results = list(
+        parse_one_source_path(
+            str(zip_path),
+            file_mtime=None,
+            source_name="chatgpt",
+            sidecar_data=sidecar_data,
+            capture_raw=False,
+            blob_root=blob_root,
+            blob_store=store,
+        )
+    )
+
+    assert len(results) == 1
+    _, session = results[0]
+    attachment = next(a for a in session.attachments if a.provider_attachment_id == pointer)
+    assert attachment.provider_file_id == "file_0000000000000000000000000000abcd"
+    assert attachment.mime_type == "audio/wav"
+    blob_hash, size = sidecar_data["chatgpt_asset_blobs"]["file_0000000000000000000000000000abcd"]
+    assert attachment.precomputed_blob == (blob_hash, size)
+    assert store.read_all(blob_hash) == audio_bytes
+
+
 # ---------------------------------------------------------------------------
 # polylogue-ximhz: the asset maps must be rebuildable from retained bytes,
 # scoped to the export they were acquired from.
