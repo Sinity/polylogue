@@ -31,7 +31,7 @@ from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
+from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_SCHEMA_VERSION
@@ -2205,30 +2205,45 @@ def test_polylogued_run_rejects_empty_component_set() -> None:
 def test_polylogued_watch_uses_default_sources(workspace_env: dict[str, Path]) -> None:
     runner = CliRunner()
     sources = (WatchSource(name="codex", root=Path("/tmp/codex")),)
-    observed_coroutine: object | None = None
 
-    def assert_owned(coroutine: object) -> None:
-        nonlocal observed_coroutine
-        observed_coroutine = coroutine
-        with pytest.raises(ArchiveOwnershipError):
-            OwnedArchiveLocation.acquire(
-                ArchiveLocation.resolve(workspace_env["archive_root"]),
-                owner_id="competing-maintenance",
-            )
-        assert inspect.iscoroutine(coroutine)
-        cast(Any, coroutine).close()
+    async def fake_run_daemon_services(**kwargs: object) -> None:
+        assert kwargs["enable_watch"] is True
 
     with (
         patch("polylogue.daemon.cli.default_sources", return_value=sources) as default_sources,
-        patch("polylogue.daemon.cli.asyncio.run", side_effect=assert_owned),
+        patch("polylogue.daemon.cli.run_daemon_services", side_effect=fake_run_daemon_services) as run_services,
     ):
         result = runner.invoke(main, ["watch", "--debounce-s", "0.25"])
 
     assert result.exit_code == 0
     assert default_sources.call_count == 1
     assert default_sources.call_args.kwargs["hermes_root"] == Path.home() / ".hermes"
-    assert observed_coroutine is not None
-    assert "Watching 1 source(s); debounce=0.25s" in result.stderr
+    run_services.assert_called_once()
+    assert run_services.call_args.kwargs["startup_message"] == "Watching 1 source(s); debounce=0.25s. Ctrl-C to stop."
+
+
+def test_polylogued_watch_uses_supervised_fair_intake_composition(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The standalone watch command must not bypass the fair-intake service."""
+    recorded: dict[str, object] = {}
+
+    async def fake_run_daemon_services(**kwargs: object) -> None:
+        recorded.update(kwargs)
+
+    with patch(
+        "polylogue.daemon.cli.run_daemon_services",
+        side_effect=fake_run_daemon_services,
+    ) as run_services:
+        result = CliRunner().invoke(main, ["watch", "--debounce-s", "0.25"])
+
+    assert result.exit_code == 0
+    run_services.assert_called_once()
+    assert recorded["enable_watch"] is True
+    assert recorded["enable_source_catchup"] is True
+    assert recorded["enable_browser_capture"] is False
+    assert recorded["enable_api"] is False
+    assert recorded["debounce_s"] == 0.25
 
 
 def test_polylogued_watch_reports_archive_ownership_conflict_as_click_error(
@@ -2270,7 +2285,7 @@ def test_polylogued_watch_builds_sources_from_roots(workspace_env: dict[str, Pat
     coroutine = run.call_args.kwargs.get("main") or run.call_args.args[0]
     assert inspect.iscoroutine(coroutine)
     coroutine.close()
-    assert "Watching 3 source(s); debounce=2.0s" in result.stderr
+    assert "Watching" not in result.stderr
 
 
 def test_drive_source_catchup_skips_when_no_drive_sources(tmp_path: Path) -> None:
