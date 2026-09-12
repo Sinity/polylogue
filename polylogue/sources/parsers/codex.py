@@ -1214,6 +1214,14 @@ def _codex_instructions_changed_event(
 # event. The payload key is ``content`` because the writer copies ``text`` and
 # ``summary`` into the event's ``summary`` column.
 _CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE = "codex_replacement_context"
+# Compaction snapshots are raw-source evidence, not a second transcript store.
+# A provider can re-embed a multi-megabyte prior turn in every snapshot.  Keep
+# small replacement-only context (it is not available anywhere else), but do
+# not copy a whale into the derived index.  The source blob remains the
+# reconstruction authority; the omission event below carries enough typed
+# evidence to make the decision visible to readers.
+_CODEX_REPLACEMENT_CONTEXT_MAX_CHARS = 256 * 1024
+_CODEX_REPLACEMENT_CONTEXT_OMITTED_EVENT_TYPE = "codex_replacement_context_omitted"
 
 
 @dataclass
@@ -1323,6 +1331,21 @@ class _CodexReplacementContext:
     candidate: _CodexTextCandidate
 
 
+@dataclass
+class _CodexReplacementContextOmission:
+    """Bounded evidence for replacement-only text too large to duplicate."""
+
+    insert_at: int
+    timestamp: str | None
+    source_index: int
+    entry_type: str | None
+    role: str | None
+    phase: str | None
+    content_chars: int
+    content_sha256: str
+    occurrences: int = 1
+
+
 def _codex_replacement_context_event(context: _CodexReplacementContext) -> ParsedSessionEvent:
     payload: dict[str, object] = {
         "source_index": context.source_index,
@@ -1339,6 +1362,32 @@ def _codex_replacement_context_event(context: _CodexReplacementContext) -> Parse
         payload["phase"] = context.phase
     return ParsedSessionEvent(
         event_type=_CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE,
+        timestamp=context.timestamp,
+        payload=payload,
+    )
+
+
+def _codex_replacement_context_omission_event(
+    context: _CodexReplacementContextOmission,
+) -> ParsedSessionEvent:
+    """Describe a raw-backed replacement value without copying its content."""
+    payload: dict[str, object] = {
+        "source_index": context.source_index,
+        "context_kind": "replacement_history",
+        "content_policy": "omitted_oversized_reembedded_text",
+        "content_chars": context.content_chars,
+        "content_sha256": context.content_sha256,
+        "occurrences": context.occurrences,
+        "reconstruction": "source_blob",
+    }
+    if context.entry_type:
+        payload["entry_type"] = context.entry_type
+    if context.role:
+        payload["role"] = context.role
+    if context.phase:
+        payload["phase"] = context.phase
+    return ParsedSessionEvent(
+        event_type=_CODEX_REPLACEMENT_CONTEXT_OMITTED_EVENT_TYPE,
         timestamp=context.timestamp,
         payload=payload,
     )
@@ -3432,6 +3481,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     # only a value the session retains nowhere else is stored again.
     conservation = _CodexTextConservation()
     pending_replacement_context: list[_CodexReplacementContext] = []
+    pending_replacement_omissions: dict[tuple[int, str], _CodexReplacementContextOmission] = {}
     pending_task_complete: list[tuple[ParsedSessionEvent, _CodexTextCandidate]] = []
     admission = AdmissionLedger()
 
@@ -3467,6 +3517,21 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             ghost_commit_count = 0
             image_count = 0
             history_text_count = 0
+            boundary_start = previous_boundary_end + 1
+            boundary_end = message_position - 1
+            summary_text = str(event_payload["summary"])
+            summary_position = message_position if summary_text else None
+            compaction_event = ParsedSessionEvent(
+                event_type="compaction",
+                timestamp=timestamp,
+                payload=event_payload,
+                boundary_start_position=boundary_start,
+                boundary_end_position=boundary_end,
+                boundary_message_position=summary_position,
+            )
+            # The compaction is appended below; context/omission events must
+            # splice immediately after it, matching the historical ordering.
+            insert_at = len(session_events) + 1
             history_contexts: list[tuple[_CodexTextCandidate, str | None, str | None, str | None]] = []
             for entry in history_list:
                 if not isinstance(entry, dict):
@@ -3490,33 +3555,42 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                         if not isinstance(content_text, str) or not content_text:
                             continue
                         history_text_count += 1
+                        if len(content_text) > _CODEX_REPLACEMENT_CONTEXT_MAX_CHARS:
+                            # The raw source remains durable and can reproduce
+                            # this value.  Keep a digest-only event instead of
+                            # allowing one repeated compaction snapshot to
+                            # turn the derived index into a transcript copy.
+                            digest = hashlib.sha256(content_text.encode("utf-8")).hexdigest()
+                            omission_key = (id(compaction_event), digest)
+                            omission = pending_replacement_omissions.get(omission_key)
+                            if omission is None:
+                                pending_replacement_omissions[omission_key] = _CodexReplacementContextOmission(
+                                    insert_at=insert_at,
+                                    timestamp=timestamp,
+                                    source_index=idx,
+                                    entry_type=entry_type,
+                                    role=entry_role,
+                                    phase=entry_phase,
+                                    content_chars=len(content_text),
+                                    content_sha256=digest,
+                                )
+                            else:
+                                omission.occurrences += 1
+                            continue
                         candidate, is_new = conservation.add(content_text)
                         if is_new:
                             history_contexts.append((candidate, entry_type, entry_role, entry_phase))
             if history_text_count:
-                event_payload["replacement_history_text_count"] = history_text_count
+                compaction_event.payload["replacement_history_text_count"] = history_text_count
             if phase_counts:
-                event_payload["replacement_history_phase_counts"] = dict(sorted(phase_counts.items()))
+                compaction_event.payload["replacement_history_phase_counts"] = dict(sorted(phase_counts.items()))
             if ghost_commit_count:
-                event_payload["replacement_history_ghost_commit_count"] = ghost_commit_count
+                compaction_event.payload["replacement_history_ghost_commit_count"] = ghost_commit_count
             if image_count:
-                event_payload["replacement_history_image_count"] = image_count
-            boundary_start = previous_boundary_end + 1
-            boundary_end = message_position - 1
-            summary_text = str(event_payload["summary"])
-            summary_position = message_position if summary_text else None
-            compaction_event = ParsedSessionEvent(
-                event_type="compaction",
-                timestamp=timestamp,
-                payload=event_payload,
-                boundary_start_position=boundary_start,
-                boundary_end_position=boundary_end,
-                boundary_message_position=summary_position,
-            )
+                compaction_event.payload["replacement_history_image_count"] = image_count
             session_events.append(compaction_event)
             # Context events are spliced in directly after their own compaction
             # event, so a reader meets the text where the compaction dropped it.
-            insert_at = len(session_events)
             for candidate, entry_type, entry_role, entry_phase in history_contexts:
                 pending_replacement_context.append(
                     _CodexReplacementContext(
@@ -4059,7 +4133,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
         else:
             completion_candidate.stored = True
             completion_event.payload["last_agent_message"] = completion_candidate.text
-    if pending_replacement_context:
+    if pending_replacement_context or pending_replacement_omissions:
         context_insertions: dict[int, list[ParsedSessionEvent]] = {}
         for context in pending_replacement_context:
             if context.candidate.retained or context.candidate.stored:
@@ -4070,6 +4144,10 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             context.compaction_event.payload["replacement_history_context_count"] = (
                 stored_here if isinstance(stored_here, int) else 0
             ) + 1
+        for omission in pending_replacement_omissions.values():
+            context_insertions.setdefault(omission.insert_at, []).append(
+                _codex_replacement_context_omission_event(omission)
+            )
         if context_insertions:
             spliced: list[ParsedSessionEvent] = []
             for event_index, event in enumerate(session_events):
