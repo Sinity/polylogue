@@ -49,7 +49,6 @@ from polylogue.storage.sqlite.connection_profile import (
     open_isolated_write_connection,
     open_readonly_connection,
 )
-from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 
 def ensure_embedding_lifecycle(archive_root: Path, *, active_path: Path | None = None) -> Path:
@@ -88,15 +87,25 @@ def resolve_embedding_failure_with_lifecycle(
     from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
 
     store = EmbeddingGenerationStore(embeddings_db.parent, active_path=embeddings_db)
-    with store.writer_lock() as binding, sqlite_connection(binding, timeout=30.0) as conn:
+    with store.writer_lock() as binding:
         store.assert_binding(binding)
-        return resolve_embedding_failure(
-            conn,
-            failure_id=failure_id,
-            action=action,
-            note=note,
-            superseded_by=superseded_by,
+        conn = open_isolated_write_connection(
+            binding.database_path,
+            purpose="embedding failure resolution",
+            timeout=30.0,
+            archive_root=binding.archive_root,
         )
+        try:
+            with conn:
+                return resolve_embedding_failure(
+                    conn,
+                    failure_id=failure_id,
+                    action=action,
+                    note=note,
+                    superseded_by=superseded_by,
+                )
+        finally:
+            conn.close()
 
 
 if TYPE_CHECKING:
