@@ -17,14 +17,21 @@ either.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from polylogue.config import Config
 from polylogue.core.enums import Provider
+from polylogue.daemon import cli as daemon_cli
+from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.parse_prefetch import DaemonParseStage
+from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.storage.raw_convergence import converge_raw_materialization
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -152,3 +159,65 @@ def test_flag_on_prefetch_and_flag_off_produce_identical_archive_content(tmp_pat
     assert _canonical_snapshot(baseline_root) == _canonical_snapshot(prefetch_root)
     with _connect(baseline_root / "index.db") as conn:
         assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) == 4
+
+
+@pytest.mark.asyncio
+async def test_raw_materialization_hands_current_output_to_the_canonical_session_derivation(tmp_path: Path) -> None:
+    """Raw admission targets its actual output after releasing the writer lease.
+
+    Anti-vacuity: removing the raw-to-session query or calling the profile
+    owner before raw publication leaves the materialized session without its
+    canonical profile partition. Repeating the handoff proves that inspection
+    rather than the intake item is the source of idempotence.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=_codex_session("raw-profile-handoff", (("user", "question"), ("assistant", "answer"))),
+            source_path="raw-profile-handoff.jsonl",
+            acquired_at_ms=1,
+        )
+
+    result = converge_raw_materialization(
+        _config(archive_root),
+        dry_run=False,
+        raw_artifact_limit=1,
+        max_payload_bytes=10_000_000,
+    )
+    assert result.success is True
+    session_ids = daemon_cli._raw_materialized_session_ids(archive_root, raw_id)
+    assert session_ids == ("codex-session:raw-profile-handoff",)
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            archive_root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        await daemon_cli._converge_raw_materialized_session_profiles(archive_root, raw_id, composed.callback)
+        with _connect(archive_root / "index.db") as conn:
+            first = tuple(
+                conn.execute(
+                    "SELECT session_id, input_content_hash FROM session_profiles WHERE session_id = ?",
+                    session_ids,
+                ).fetchall()
+            )
+        assert len(first) == 1
+
+        await daemon_cli._converge_raw_materialized_session_profiles(archive_root, raw_id, composed.callback)
+        with _connect(archive_root / "index.db") as conn:
+            second = tuple(
+                conn.execute(
+                    "SELECT session_id, input_content_hash FROM session_profiles WHERE session_id = ?",
+                    session_ids,
+                ).fetchall()
+            )
+        assert second == first
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
