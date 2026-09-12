@@ -1320,6 +1320,56 @@ def _raw_source_path(archive: Path, raw_id: str) -> str | None:
     return None if row is None or row[0] is None else str(row[0])
 
 
+def _raw_materialized_session_ids(archive: Path, raw_id: str) -> tuple[str, ...]:
+    """Return the current logical output of one admitted raw observation.
+
+    The query deliberately follows the active index generation after raw
+    publication. It is not a raw-planning hint: this is the domain output
+    that tells the session-profile derivation which partitions the completed
+    replay may have changed. A raw may legitimately produce zero sessions or
+    split into several, so callers must preserve the complete ordered result.
+    """
+    from contextlib import closing
+
+    from polylogue.storage.archive_identity import resolve_active_index_path
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    index_db = resolve_active_index_path(archive)
+    with closing(open_readonly_connection(index_db, timeout=5.0)) as conn:
+        rows = conn.execute(
+            "SELECT session_id FROM sessions WHERE raw_id = ? ORDER BY session_id",
+            (raw_id,),
+        ).fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
+async def _converge_raw_materialized_session_profiles(
+    archive: Path,
+    raw_id: str,
+    callback: Callable[[Sequence[str] | None], Awaitable[object]] | None,
+) -> None:
+    """Hand a completed raw replay to the canonical lease-free derivation.
+
+    ``admit_raw_intake`` calls this only after ``run_sync`` returns, so profile
+    compute and its short publications cannot extend the raw replay's writer
+    hold. The periodic no-hint sweep still owns retry after a callback failure;
+    source admission is already durable at this boundary.
+    """
+    if callback is None:
+        return
+    session_ids = _raw_materialized_session_ids(archive, raw_id)
+    if not session_ids:
+        return
+    try:
+        await callback(session_ids)
+    except Exception:
+        logger.warning(
+            "raw materialization: lease-free session-profile convergence did not complete for raw %s",
+            raw_id,
+            exc_info=True,
+        )
+
+
 def _drain_raw_materialization_once(
     *,
     limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
@@ -3359,7 +3409,14 @@ async def _run_daemon_services_under_active_writer_lease(
                                 max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
                             ),
                         )
-                        return int(getattr(result, "repaired_count", 0) or 0)
+                        repaired_count = int(getattr(result, "repaired_count", 0) or 0)
+                        if repaired_count:
+                            await _converge_raw_materialized_session_profiles(
+                                archive_root_path,
+                                raw_id,
+                                session_profile_callback,
+                            )
+                        return repaired_count
 
                     drive_sources_configured = False
                     with contextlib.suppress(Exception):
