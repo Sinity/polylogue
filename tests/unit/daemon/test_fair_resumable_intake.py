@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.daemon.derivation import DerivationFrame
 from polylogue.daemon.intake import (
     AdmissionOutcome,
     AdmissionResult,
@@ -26,7 +27,12 @@ from polylogue.daemon.intake import (
 )
 from polylogue.daemon.observation import ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
-from polylogue.operations.intake_adapters import _bounded_source_paths, discover_pending_raw_ids
+from polylogue.operations.intake_adapters import (
+    RawMaterializationDiscovery,
+    RawMaterializationIntakeAdapter,
+    _bounded_source_paths,
+    discover_pending_raw_ids,
+)
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -117,6 +123,173 @@ def test_raw_discovery_uses_canonical_adapter_and_returns_payload_costs(
         (raw_id, len(payloads[path])) for path, raw_id in sorted(raw_ids.items(), key=lambda item: item[1])[:2]
     )
     assert result == expected
+
+
+def test_raw_discovery_bounds_valid_prefix_and_resumes_after_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: scan until a pending raw is found, and the first call exceeds one page."""
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        valid = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"v",
+            source_path="valid.json",
+            acquired_at_ms=1,
+        )
+        pending = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"pending",
+            source_path="pending.json",
+            acquired_at_ms=1,
+        )
+    calls: list[tuple[str | None, int]] = []
+
+    class FakeRawObservationDerivation:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def required_page(
+            self, _frame: object, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
+            calls.append((cursor, limit))
+            return ((valid,), valid) if cursor is None else ((pending,), None)
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
+            return {key: "valid" if key == valid else "missing" for key in keys}
+
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+
+    assert discovery.discover_pending_raw_ids(1) == ()
+    assert calls == [(None, 1)]
+    assert discovery.discover_pending_raw_ids(1) == ((pending, len(b"pending")),)
+    assert calls == [(None, 1), (valid, 1)]
+
+
+@pytest.mark.asyncio
+async def test_raw_discovery_moves_past_an_isolated_poison_in_the_fair_dispatcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: reset discovery each pass, and the isolated head starves the healthy raw."""
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        valid = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"v",
+            source_path="valid.json",
+            acquired_at_ms=1,
+        )
+        poison = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"p",
+            source_path="poison.json",
+            acquired_at_ms=1,
+        )
+        healthy = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"h",
+            source_path="healthy.json",
+            acquired_at_ms=1,
+        )
+
+    class FakeRawObservationDerivation:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def required_page(
+            self, _frame: object, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
+            assert limit <= 32
+            if cursor is None:
+                return (valid,), valid
+            if cursor == valid:
+                return (poison,), poison
+            assert cursor == poison
+            return (healthy,), None
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
+            return {key: "valid" if key == valid else "missing" for key in keys}
+
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    admitted: list[str] = []
+
+    async def admit(raw_id: str) -> AdmissionResult:
+        if raw_id == poison:
+            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="poison")
+        admitted.append(raw_id)
+        return AdmissionResult(AdmissionOutcome.ADMITTED)
+
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    dispatcher = FairIntakeDispatcher(
+        [
+            IntakeClassSpec(
+                name="raw_materialization",
+                adapter=RawMaterializationIntakeAdapter(discovery.discover_pending_raw_ids, admit),
+                max_attempts=1,
+            )
+        ]
+    )
+
+    await dispatcher.run_once(budget=1)
+    await dispatcher.run_once(budget=1)
+    await dispatcher.run_once(budget=1)
+
+    assert dispatcher.isolated_items("raw_materialization") == frozenset({poison})
+    assert admitted == [healthy]
+
+
+def test_raw_discovery_resets_only_for_a_new_generation_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: reset the cursor every pass, or carry it into a replacement generation."""
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        first = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"first",
+            source_path="first.json",
+            acquired_at_ms=1,
+        )
+        second = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"second",
+            source_path="second.json",
+            acquired_at_ms=1,
+        )
+    frames = iter(
+        (
+            DerivationFrame(str(tmp_path), "index-v1", recipe_versions={"raw_observation": "recipe-v1"}),
+            DerivationFrame(str(tmp_path), "index-v1", recipe_versions={"raw_observation": "recipe-v1"}),
+            DerivationFrame(str(tmp_path), "index-v2", recipe_versions={"raw_observation": "recipe-v1"}),
+        )
+    )
+    cursors: list[str | None] = []
+
+    class FakeRawObservationDerivation:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def required_page(
+            self, _frame: object, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
+            cursors.append(cursor)
+            return ((first,), first) if cursor is None else ((second,), None)
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
+            return dict.fromkeys(keys, "missing")
+
+    monkeypatch.setattr(
+        "polylogue.operations.raw_observation_derivation.raw_observation_frame",
+        lambda _archive_root: next(frames),
+    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+
+    assert discovery.discover_pending_raw_ids(1)[0][0] == first
+    assert discovery.discover_pending_raw_ids(1)[0][0] == second
+    assert discovery.discover_pending_raw_ids(1)[0][0] == first
+    assert cursors == [None, first, None]
 
 
 @pytest.mark.asyncio

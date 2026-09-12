@@ -3359,8 +3359,8 @@ async def _run_daemon_services_under_active_writer_lease(
                     from polylogue.daemon.intake_adapters import (
                         DaemonIntakeContext,
                         DaemonIntakeService,
+                        RawMaterializationDiscovery,
                         build_intake_adapters,
-                        discover_pending_raw_ids,
                     )
 
                     intake_wakeup = asyncio.Event()
@@ -3393,12 +3393,17 @@ async def _run_daemon_services_under_active_writer_lease(
                             "maintenance.drive_catchup", _run_drive_source_catchup_safely
                         )
 
-                    def discover_raw_intake(limit: int) -> tuple[tuple[str, int], ...]:
-                        return discover_pending_raw_ids(
-                            archive_root_path,
-                            limit,
-                            max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+                    raw_intake_discovery = RawMaterializationDiscovery(
+                        archive_root_path,
+                        max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+                    )
+
+                    async def discover_raw_intake(limit: int) -> tuple[tuple[str, int], ...]:
+                        submitted = daemon_compute.submit(
+                            functools.partial(raw_intake_discovery.discover_pending_raw_ids, limit),
+                            admission_class="incremental-background",
                         )
+                        return await asyncio.wrap_future(submitted.future)
 
                     async def admit_raw_intake(raw_id: str) -> AdmissionResult:
                         from polylogue.daemon.derivation import Outcome
