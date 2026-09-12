@@ -24,6 +24,8 @@ payload text.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -31,7 +33,11 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.identity_law import session_id as archive_session_id
+from polylogue.core.sources import origin_from_provider
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.sqlite_export import logical_export_bytes
 from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
 from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD
 from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
@@ -39,7 +45,13 @@ from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.revision_application import assert_session_fts_exact_sync
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import (
+    bind_session_shard,
+    prepare_session_shard,
+    write_parsed_session_to_archive,
+)
+from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard, open_session_shard
+from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 from polylogue.storage.sqlite.runtime_indexes import (
     DEFERRED_SECONDARY_INDEX_NAMES,
     defer_secondary_indexes_sync,
@@ -48,7 +60,10 @@ from polylogue.storage.sqlite.runtime_indexes import (
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    # Shard transport attaches a read-only ``file:`` URI, as production's
+    # archive write connection does. Keeping this fixture URI-capable makes
+    # the combined fresh-shard path exercise SQLite's actual attachment mode.
+    conn = sqlite3.connect(path, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -106,6 +121,87 @@ def _session(session_id: str, *, n_pairs: int = 2) -> ParsedSession:
         title=f"session {session_id}",
         messages=messages,
     )
+
+
+def _archive_session_id(session: ParsedSession) -> str:
+    return archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
+
+
+def _reader_index_names(conn: sqlite3.Connection) -> tuple[str, ...]:
+    return tuple(
+        str(row[0])
+        for row in conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index' AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+            """
+        )
+    )
+
+
+def _logical_table_digests(path: Path, *, tables: tuple[str, ...] | None = None) -> dict[str, str]:
+    """Digest canonical typed row encodings without treating DDL whitespace as data."""
+    table_digests: dict[str, hashlib._Hash] = {}
+    active_digest: hashlib._Hash | None = None
+    for line in logical_export_bytes(path, tables=tables).splitlines(keepends=True):
+        record = json.loads(line)
+        if isinstance(record, dict) and "table" in record:
+            active_digest = hashlib.sha256()
+            table_digests[str(record["table"])] = active_digest
+        elif active_digest is not None:
+            active_digest.update(line)
+    return {table: digest.hexdigest() for table, digest in table_digests.items()}
+
+
+def _stable_finished_table_digests(path: Path) -> dict[str, str]:
+    """Digest archive rows, excluding FTS5 implementation and freshness bookkeeping."""
+    with sqlite3.connect(path) as conn:
+        tables = tuple(
+            str(name)
+            for name, sql in conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+            if not str(sql).lstrip().upper().startswith("CREATE VIRTUAL TABLE")
+            and not str(name).startswith(("messages_fts_", "blocks_command_trigram_"))
+            and str(name) != "fts_freshness_state"
+        )
+    return _logical_table_digests(path, tables=tables)
+
+
+def _finished_output_snapshot(path: Path) -> tuple[dict[str, str], list[tuple[object, ...]], list[tuple[object, ...]]]:
+    """The completed archive product, not FTS5's implementation tables."""
+    with sqlite3.connect(path) as conn:
+        return _stable_finished_table_digests(path), _fts_rows(conn), _trigram_rows(conn)
+
+
+def _finish_bulk_build(conn: sqlite3.Connection) -> None:
+    """Run the same reader-shape boundary the cold replay owns."""
+    rebuild_fts_index_sync(conn)
+    rebuild_command_trigram_index_sync(conn)
+    rebuild_all_action_pairs_sync(conn)
+    rebuild_all_delegation_facts_sync(conn)
+    conn.commit()
+
+
+def _write_fresh_shard_arm(conn: sqlite3.Connection, directory: Path, sessions: list[ParsedSession]) -> None:
+    dropped = defer_secondary_indexes_sync(conn)
+    assert set(dropped) == set(DEFERRED_SECONDARY_INDEX_NAMES)
+    shard = prepare_session_shard(directory, sessions)
+    seen: set[str] = set()
+    with attached_session_shard(conn, open_session_shard(shard.path)) as schema:
+        bindings = bind_session_shard(schema, shard)
+        for session in sessions:
+            write_parsed_session_to_archive(
+                conn,
+                session,
+                content_hash=str(session_content_hash(session)),
+                prepared=bindings[_archive_session_id(session)],
+                fresh_build=True,
+                fresh_build_batch=seen,
+                bulk_build=True,
+            )
 
 
 def _lineage_scenario(conn: sqlite3.Connection, *, bulk_fts: bool, bulk_build: bool) -> tuple[str, str]:
@@ -321,6 +417,21 @@ def test_fresh_build_batch_allows_distinct_sessions_after_empty_check(tmp_path: 
     conn.close()
 
 
+def test_fresh_build_skips_stale_replace_probe_but_keeps_its_absence_assertion(tmp_path: Path) -> None:
+    """Fresh mode must avoid compare work without turning its safety check into a hint."""
+    conn = _connect(tmp_path / "index.db")
+    statements: list[str] = []
+    session = _session("fresh-timestamp").model_copy(update={"updated_at": "2026-01-01T00:00:02Z"})
+    conn.set_trace_callback(statements.append)
+    write_parsed_session_to_archive(conn, session, fresh_build=True)
+    conn.set_trace_callback(None)
+
+    normalized = [statement.upper() for statement in statements]
+    assert not any("SELECT UPDATED_AT_MS FROM SESSIONS" in statement for statement in normalized)
+    assert any("SELECT 1 FROM SESSIONS WHERE SESSION_ID" in statement for statement in normalized)
+    conn.close()
+
+
 def test_deferred_secondary_indexes_round_trip_without_losing_rows(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     before = {
@@ -344,6 +455,73 @@ def test_deferred_secondary_indexes_round_trip_without_losing_rows(tmp_path: Pat
     assert set(DEFERRED_SECONDARY_INDEX_NAMES) <= after
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
     conn.close()
+
+
+def test_fresh_shard_build_finishes_equivalent_to_retained_indexes(tmp_path: Path) -> None:
+    """A small completed-build comparison for the combined B+C writer path.
+
+    The retained arm uses ordinary row binding and reader indexes throughout.
+    The fresh arm uses a sealed stage-A shard, has the writer ATTACH/C-copy it
+    while secondary indexes are deferred, then performs the normal reader
+    finalization. Canonical typed row digests compare every non-virtual table
+    after both arms are finished, while the reader-index comparison proves the
+    declared index set was restored.
+    """
+    sessions = [_session("equivalent-alpha"), _session("equivalent-beta", n_pairs=1)]
+
+    retained_path = tmp_path / "retained.db"
+    retained = _connect(retained_path)
+    for session in sessions:
+        write_parsed_session_to_archive(retained, session, content_hash=str(session_content_hash(session)))
+    _finish_bulk_build(retained)
+    retained_indexes = _reader_index_names(retained)
+    retained.close()
+
+    fresh_path = tmp_path / "fresh-shard.db"
+    fresh = _connect(fresh_path)
+    _write_fresh_shard_arm(fresh, tmp_path / "shards", sessions)
+
+    assert fresh.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+    assert fresh.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+    restore_deferred_secondary_indexes_sync(fresh)
+    _finish_bulk_build(fresh)
+    fresh_indexes = _reader_index_names(fresh)
+    fresh.close()
+
+    assert fresh_indexes == retained_indexes
+    assert _finished_output_snapshot(fresh_path) == _finished_output_snapshot(retained_path)
+    with sqlite3.connect(fresh_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == len(sessions)
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] > len(sessions)
+
+
+def test_fresh_shard_finished_output_comparison_rejects_missing_finalization_or_rows(tmp_path: Path) -> None:
+    """The completed-output witness fails for an unfinalized build and for a lost logical row."""
+    sessions = [_session("red-twin-alpha"), _session("red-twin-beta", n_pairs=1)]
+
+    retained_path = tmp_path / "retained.db"
+    retained = _connect(retained_path)
+    for session in sessions:
+        write_parsed_session_to_archive(retained, session, content_hash=str(session_content_hash(session)))
+    _finish_bulk_build(retained)
+    retained.close()
+    expected = _finished_output_snapshot(retained_path)
+    assert expected[1], "retained control produced no logical FTS rows"
+    assert expected[2], "retained control produced no logical trigram rows"
+
+    fresh_path = tmp_path / "fresh-shard.db"
+    fresh = _connect(fresh_path)
+    _write_fresh_shard_arm(fresh, tmp_path / "shards", sessions)
+    restore_deferred_secondary_indexes_sync(fresh)
+    fresh.close()
+    assert _finished_output_snapshot(fresh_path) != expected
+
+    fresh = _connect(fresh_path)
+    _finish_bulk_build(fresh)
+    fresh.execute("DELETE FROM blocks WHERE block_id = (SELECT block_id FROM blocks ORDER BY block_id LIMIT 1)")
+    fresh.commit()
+    fresh.close()
+    assert _finished_output_snapshot(fresh_path) != expected
 
 
 def test_bulk_build_anti_vacuity_repopulate_is_load_bearing(tmp_path: Path) -> None:

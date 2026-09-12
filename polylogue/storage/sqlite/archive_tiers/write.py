@@ -1101,7 +1101,7 @@ def write_parsed_session_to_archive(
     # evidence, so a genuinely older/stale replay of such a session is now
     # correctly skipped instead of always winning.
     incoming_freshness_ms = session_updated_at_ms or session_created_at_ms
-    if not force_replace and not merge_append and incoming_freshness_ms is not None:
+    if not fresh_build and not force_replace and not merge_append and incoming_freshness_ms is not None:
         row = conn.execute(
             "SELECT updated_at_ms FROM sessions WHERE session_id = ?",
             (session_id,),
