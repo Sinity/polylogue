@@ -51,6 +51,7 @@ ObjectRefKind: TypeAlias = Literal[
     "query",
     "query-run",
     "result-set",
+    "match-set",
     "finding",
     "cohort",
     "analysis",
@@ -64,6 +65,17 @@ ObjectRefKind: TypeAlias = Literal[
     "ranker",
     "elicitation-session",
     "experiment-analysis",
+    # Content-addressed analysis definitions and their typed execution
+    # artifacts.  These are definition/projection identities, not additional
+    # lifecycle stores; durable findings continue to use ``assertion`` rows.
+    "metric",
+    "pattern",
+    "experiment",
+    "improvement-loop",
+    "context-policy",
+    "relation",
+    "analysis-run",
+    "basket",
     # polylogue-lph4: delegation attempt identity, reusing the polylogue-y964
     # `delegations` view vocabulary. Two id shapes share this one kind:
     #   - action-observed (resolved/unresolved): object_id is the
@@ -133,6 +145,7 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "query": "query",
     "query-run": "query-run",
     "result-set": "result-set",
+    "match-set": "match-set",
     "finding": "finding",
     "cohort": "cohort",
     "analysis": "analysis",
@@ -142,6 +155,14 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "ranker": "ranker",
     "elicitation-session": "elicitation-session",
     "experiment-analysis": "experiment-analysis",
+    "metric": "metric",
+    "pattern": "pattern",
+    "experiment": "experiment",
+    "improvement-loop": "improvement-loop",
+    "context-policy": "context-policy",
+    "relation": "relation",
+    "analysis-run": "analysis-run",
+    "basket": "basket",
     "work-invocation": "work-invocation",
     "work-call": "work-call",
     "work-attempt": "work-attempt",
