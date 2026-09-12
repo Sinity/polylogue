@@ -3,9 +3,9 @@
 Codex keeps seven SQLite databases outside the JSONL rollout files that
 ``parsers/codex.py`` parses:
 
-    state_5.sqlite            threads, thread_spawn_edges, thread_dynamic_tools,
-                              remote_control_enrollments,
-                              external_agent_config_imports
+    state_5.sqlite            threads, thread_spawn_edges, thread_artifacts,
+                              thread_dynamic_tools, thread_sections, projects,
+                              project_roots, and operational bookkeeping
     goals_1.sqlite            thread_goals, thread_goal_continuation_deferrals
     memories_1.sqlite         stage1_outputs, jobs
     logs_2.sqlite             logs (runtime tracing: level/target/module_path/file/line)
@@ -14,9 +14,10 @@ Codex keeps seven SQLite databases outside the JSONL rollout files that
                               thread_history_projection_state
     queue_1.sqlite            queued_items, queued_thread_revisions
 
-``CODEX_STATE_FIDELITY`` states the disposition and the reason for each.
-Every one of them has a disposition: an undeclared database beside a declared
-one is a silent acquisition decision.
+``CODEX_STATE_FIDELITY`` states the disposition and the reason for each
+database. ``CODEX_STATE_TABLE_FIDELITY`` does the same for every observed
+``state_5.sqlite`` table. Every one has a disposition: an undeclared database
+or table beside a declared one is a silent acquisition decision.
 
 ``threads.title`` and ``thread_spawn_edges`` are evidence the JSONL rollout
 files never carry at all (verified empirically: no rollout ``session_meta``
@@ -60,6 +61,11 @@ CodexSqliteKind: TypeAlias = Literal[
 ]
 
 CodexAcquisitionDisposition: TypeAlias = Literal["acquire", "acquire-partial", "out-of-scope"]
+CodexTableDisposition: TypeAlias = Literal[
+    "retained-and-consumed",
+    "retained-for-later-consumption",
+    "deliberately-excluded",
+]
 
 # Required-table fingerprints used for classification. Checked in this order;
 # the first match wins. A file must have ALL tables in the tuple to match.
@@ -81,6 +87,15 @@ class CodexStateDbClassification:
     kind: CodexSqliteKind
     disposition: CodexAcquisitionDisposition
     filenames: tuple[str, ...]
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class CodexStateTableClassification:
+    """One ``state_5.sqlite`` table's retained-evidence disposition."""
+
+    table: str
+    disposition: CodexTableDisposition
     reason: str
 
 
@@ -174,6 +189,84 @@ CODEX_STATE_FIDELITY: tuple[CodexStateDbClassification, ...] = (
             "that has not happened yet, not evidence of a session. Both tables "
             "were empty on the install measured (2026-09-07)."
         ),
+    ),
+)
+
+
+#: Every table observed in ``state_5.sqlite`` on 2026-09-12. Retained tables
+#: become part of the member's canonical logical export, even when the only
+#: current consumer is durable raw evidence. The parallel OriginSpec table
+#: rules feed schema observation; tests keep both declarations aligned.
+CODEX_STATE_TABLE_FIDELITY: tuple[CodexStateTableClassification, ...] = (
+    CodexStateTableClassification(
+        "threads",
+        "retained-and-consumed",
+        "Curated titles and orchestration metadata feed the thread-state projection.",
+    ),
+    CodexStateTableClassification(
+        "thread_spawn_edges",
+        "retained-and-consumed",
+        "Codex orchestration parent/child edges feed the thread-state projection.",
+    ),
+    CodexStateTableClassification(
+        "thread_artifacts",
+        "retained-for-later-consumption",
+        "Artifact identity and payload are thread evidence with no typed projection yet.",
+    ),
+    CodexStateTableClassification(
+        "thread_dynamic_tools",
+        "retained-for-later-consumption",
+        "Dynamic tool descriptions and schemas are thread evidence with no typed projection yet.",
+    ),
+    CodexStateTableClassification(
+        "thread_sections",
+        "retained-for-later-consumption",
+        "Thread section definitions contextualize the retained thread section references.",
+    ),
+    CodexStateTableClassification(
+        "projects",
+        "retained-for-later-consumption",
+        "Project identity and metadata contextualize retained thread project references.",
+    ),
+    CodexStateTableClassification(
+        "project_roots",
+        "retained-for-later-consumption",
+        "Project roots contextualize retained project references without a typed projection yet.",
+    ),
+    CodexStateTableClassification(
+        "_sqlx_migrations",
+        "deliberately-excluded",
+        "Database migration bookkeeping is not session evidence.",
+    ),
+    CodexStateTableClassification(
+        "backfill_state",
+        "deliberately-excluded",
+        "Resumable backfill cursor state is operational bookkeeping, not session evidence.",
+    ),
+    CodexStateTableClassification(
+        "external_agent_config_imports",
+        "deliberately-excluded",
+        "External-agent configuration import status is operational configuration, not session evidence.",
+    ),
+    CodexStateTableClassification(
+        "project_idempotency_keys",
+        "deliberately-excluded",
+        "Project request deduplication keys are operational state, not session evidence.",
+    ),
+    CodexStateTableClassification(
+        "remote_control_enrollments",
+        "deliberately-excluded",
+        "Remote-control enrollment configuration can carry connection details and is not session evidence.",
+    ),
+    CodexStateTableClassification(
+        "rollout_migration_skipped_rollouts",
+        "deliberately-excluded",
+        "Rollout migration skip bookkeeping duplicates rollout discovery operational state.",
+    ),
+    CodexStateTableClassification(
+        "rollout_migration_state",
+        "deliberately-excluded",
+        "Rollout migration cursors are operational bookkeeping, not session evidence.",
     ),
 )
 
@@ -454,13 +547,16 @@ def parse_codex_memories_db(path: Path, *, immutable: bool = False) -> tuple[Cod
 __all__ = [
     "CODEX_STATE_DB_MARKER",
     "CODEX_STATE_FIDELITY",
+    "CODEX_STATE_TABLE_FIDELITY",
     "IN_SCOPE_KINDS",
     "CodexAcquisitionDisposition",
     "CodexMemoryRecord",
     "CodexSpawnEdge",
     "CodexSqliteKind",
     "CodexStateDbClassification",
+    "CodexStateTableClassification",
     "CodexStateSnapshot",
+    "CodexTableDisposition",
     "CodexThreadGoal",
     "CodexThreadRecord",
     "classify_codex_sqlite_path",
