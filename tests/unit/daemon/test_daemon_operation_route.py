@@ -404,6 +404,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
             from polylogue.archive.query.execution_control import QueryExecutionContext
             from polylogue.operations.daemon_protocol import DaemonOperationRequest
             from polylogue.operations.mutation_transaction import MutationPrincipal
+            from polylogue.operations.operation_context import OperationControlResult
 
             waiter_entered, waiter_released = threading.Event(), threading.Event()
             control = stack.runtime.control
@@ -414,7 +415,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
                 archive_identity: str,
                 *,
                 execution_context: QueryExecutionContext | None = None,
-            ) -> dict[str, object]:
+            ) -> OperationControlResult:
                 observing = request.request_id == "disconnected-await"
                 if observing:
                     waiter_entered.set()
@@ -629,3 +630,43 @@ def test_client_refuses_incoherent_authority_from_a_real_operation(
             changed["authority"]["fallback"] = "never"
         with pytest.raises(DaemonOperationProtocolError, match="incoherent"):
             DaemonClient._validate_operation_response(request, 200, changed)
+
+
+def test_control_result_metadata_comes_from_the_durable_receipt_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Using admission-time metadata after a recovery read returns the obsolete generation."""
+    from dataclasses import replace
+
+    import polylogue.operations.daemon_execution as execution
+    from polylogue.operations.operation_context import OperationControlRead, observe_control_authority
+
+    ids: tuple[str, ...] = ()
+
+    def seed(root: Path) -> None:
+        nonlocal ids
+        ids = _seed_sessions(root, count=1)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        accepted = stack.client.operation_to_completion(
+            "mutation.session.delete.preview",
+            {"session_ids": list(ids)},
+            archive_root=str(stack.archive_root),
+            request_id="receipt-authority",
+        )
+        assert accepted is not None and accepted["outcome"] == "completed"
+
+        def earlier_observation(root: Path) -> OperationControlRead:
+            snapshot = observe_control_authority(root)
+            return replace(snapshot, identity=replace(snapshot.identity, active_generation="prior-generation"))
+
+        monkeypatch.setattr(execution, "observe_control_authority", earlier_observation)
+        recovered = stack.client.operation(
+            "operation.await",
+            {"request_id": "receipt-authority", "after_sequence": 0, "timeout_ms": 100},
+            archive_root=str(stack.archive_root),
+        )
+        assert recovered is not None and recovered["outcome"] == "completed"
+        assert recovered["generation"]["id"] == accepted["generation"]["id"]
+        assert recovered["result"]["reference"] == accepted["accepted_reference"]

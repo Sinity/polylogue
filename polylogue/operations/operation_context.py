@@ -16,6 +16,7 @@ from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation,
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
+    from polylogue.operations.audit import AuditRepository
     from polylogue.operations.daemon_execution import OperationRuntime
     from polylogue.operations.daemon_reads import DaemonReadDependencies
 
@@ -61,6 +62,12 @@ class OperationControlRead:
     degraded_components: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class OperationControlResult:
+    state: dict[str, object]
+    snapshot: OperationControlRead | None
+
+
 def prepare_operation_journals(root: Path) -> None:
     """Establish live WAL policy under the writer before exposing readers.
 
@@ -91,17 +98,30 @@ def prepare_operation_journals(root: Path) -> None:
                 raise RuntimeError(f"machine operation tier {tier.value} did not enter WAL mode")
 
 
+@contextmanager
+def open_operation_control(root: Path, *, audit: AuditRepository | None = None) -> Iterator[OperationControlRead]:
+    """Bind receipt reads and their metadata to the same settled source/audit view."""
+    from polylogue.operations.audit import AuditRepository
+
+    repository = audit or AuditRepository.for_archive_root(root)
+    identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root))
+    with repository.settled_machine_read() as versions:
+        if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != identity:
+            raise ValueError("archive changed while observing operation control authority")
+        yield OperationControlRead(identity, versions, ())
+        if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != identity:
+            raise ValueError("archive changed while reading operation control result")
+
+
 def observe_control_authority(root: Path) -> OperationControlRead:
     """Read control provenance without waiting behind the operation actuator."""
-    from polylogue.operations.audit import AuditContinuityPendingError, AuditRepository
+    from polylogue.operations.audit import AuditContinuityPendingError
 
-    identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root))
     try:
-        with AuditRepository.for_archive_root(root).settled_machine_read() as versions:
-            if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != identity:
-                raise ValueError("archive changed while observing operation control authority")
-            return OperationControlRead(identity, versions, ())
+        with open_operation_control(root) as snapshot:
+            return snapshot
     except AuditContinuityPendingError:
+        identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root))
         return OperationControlRead(identity, {}, ("audit_continuity_pending",))
 
 

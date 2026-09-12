@@ -24,6 +24,7 @@ from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
     OperationContext,
     OperationControlRead,
+    OperationControlResult,
     PinnedOperationRead,
     observe_control_authority,
     open_operation_read,
@@ -73,7 +74,7 @@ class OperationRuntime(Protocol):
         archive_identity: str,
         *,
         execution_context: QueryExecutionContext | None = None,
-    ) -> dict[str, object]: ...
+    ) -> OperationControlResult: ...
 
     def observe_snapshot(self, request: DaemonOperationRequest, snapshot: PinnedOperationRead) -> None: ...
 
@@ -186,14 +187,16 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
             control_snapshot = observe_control_authority(context.archive_root)
             snapshot = control_snapshot
             _validate_identity(request, context, control_snapshot)
-            result = context.runtime.control(
+            control_result = context.runtime.control(
                 request,
                 context.principal,
                 control_snapshot.identity.authority_identity_digest,
                 execution_context=context.read_control,
             )
+            result = control_result.state
+            snapshot = control_result.snapshot
             validate_operation_result(request.operation, result)
-            return operation_envelope(request, context, snapshot=control_snapshot, started_at=started, result=result)
+            return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
 
         def execute(*, mutating: bool) -> DaemonOperationEnvelope:
             nonlocal snapshot

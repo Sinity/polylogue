@@ -32,7 +32,14 @@ from polylogue.operations.daemon_protocol import (
 from polylogue.operations.daemon_reads import DaemonReadDependencies
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
-from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, observe_control_authority
+from polylogue.operations.operation_context import (
+    OperationContext,
+    OperationControlRead,
+    OperationControlResult,
+    PinnedOperationRead,
+    observe_control_authority,
+    open_operation_control,
+)
 
 if TYPE_CHECKING:
     from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance
@@ -574,7 +581,7 @@ class DaemonOperationRuntime:
         archive_identity: str,
         *,
         execution_context: QueryExecutionContext | None = None,
-    ) -> dict[str, object]:
+    ) -> OperationControlResult:
         target = str(request.payload["request_id"])
         deadline = monotonic() + min(30.0, _operation_int(request.payload.get("timeout_ms", 0), field="timeout") / 1000)
         if execution_context is not None and execution_context.deadline_monotonic is not None:
@@ -624,7 +631,10 @@ class DaemonOperationRuntime:
                 try:
                     self._bridge.run_sync_with_timeout("operation.cancel", 2.0, fence)
                 except TimeoutError:
-                    return {"outcome": "indeterminate", "sequence": 0, "cancellation_requested": True}
+                    return OperationControlResult(
+                        {"outcome": "indeterminate", "sequence": 0, "cancellation_requested": True},
+                        None,
+                    )
                 self._notify()
         with self._condition:
             while True:
@@ -641,8 +651,11 @@ class DaemonOperationRuntime:
                 if exchange is not None and exchange.context.principal != principal:
                     raise PermissionError("operation reference belongs to another principal")
                 pending = False
+                snapshot: OperationControlRead | None = None
                 try:
-                    with audit.settled_machine_read():
+                    with open_operation_control(self.archive_root, audit=audit) as snapshot:
+                        if snapshot.identity.authority_identity_digest != archive_identity:
+                            raise ValueError("archive_identity_stale")
                         record = audit.machine_request_for_principal(archive_identity, target, principal.actor_ref)
                         state = machine_request_state(audit, record) if record is not None else None
                 except AuditContinuityPendingError:
@@ -653,11 +666,11 @@ class DaemonOperationRuntime:
                         raise ValueError("operation_reference_unknown")
                     state = {"outcome": "running", "sequence": 0}
                 if request.operation != "operation.await":
-                    return state
+                    return OperationControlResult(state, snapshot)
                 sequence = _operation_int(state["sequence"], field="state sequence")
                 if not pending and (sequence > after or state["outcome"] not in {"running", "accepted"}):
-                    return state
+                    return OperationControlResult(state, snapshot)
                 remaining = deadline - monotonic()
                 if remaining <= 0:
-                    return state
+                    return OperationControlResult(state, snapshot)
                 self._condition.wait(timeout=remaining)
