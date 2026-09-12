@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -270,6 +271,59 @@ def test_cancelled_queued_work_never_runs_and_returns_its_reservation() -> None:
         assert not ran.is_set()
 
 
+def test_background_dispatch_rotates_under_mixed_load() -> None:
+    """Both background lanes progress while interactive and control stay active.
+
+    Anti-vacuity: fixed incremental-first dispatch cannot start the first bulk
+    task while the incremental backlog remains. A 1:1 rotation fails the
+    declared two-incremental-per-bulk dispatch order.
+    """
+
+    holders = [_Blocker() for _ in range(4)]
+    foreground = _Blocker()
+    incremental = [_Blocker() for _ in range(4)]
+    bulk = [_Blocker() for _ in range(2)]
+    bodies = [*holders, foreground, *incremental, *bulk]
+    adapter = BoundedComputeAdapter(max_workers=8, queue_units=16)
+    try:
+        running = [adapter.submit(body, admission_class="incremental-background") for body in holders]
+        assert all(body.wait_started(1) for body in holders)
+        for _index in range(3):
+            adapter.submit(foreground, admission_class="interactive-read")
+        adapter.submit(foreground, admission_class="control")
+        assert foreground.wait_started(4)
+
+        queued_incremental = [adapter.submit(body, admission_class="incremental-background") for body in incremental]
+        queued_bulk = [adapter.submit(body, admission_class="bulk-candidate") for body in bulk]
+        assert adapter.snapshot().queued_units == 6
+        # Free one slot; every other worker remains occupied throughout the
+        # sequence, so each completion determines exactly one new dispatch.
+        holders[0].release.set()
+        running[0].future.result(timeout=5)
+        order = [
+            (bulk[0], queued_bulk[0]),
+            (incremental[0], queued_incremental[0]),
+            (incremental[1], queued_incremental[1]),
+            (bulk[1], queued_bulk[1]),
+            (incremental[2], queued_incremental[2]),
+            (incremental[3], queued_incremental[3]),
+        ]
+        for body, operation in order:
+            assert body.wait_started(1)
+            snapshot = adapter.snapshot()
+            assert snapshot.by_class("interactive-read").active_units == 3
+            assert snapshot.by_class("control").active_units == 1
+            assert snapshot.used_units <= snapshot.capacity_units
+            body.release.set()
+            operation.future.result(timeout=5)
+        assert adapter.snapshot().queued_units == 0
+    finally:
+        for body in bodies:
+            body.release.set()
+        adapter.shutdown(wait=True)
+    assert adapter.snapshot().used_units == 0
+
+
 def test_sequential_cancelled_reads_leave_capacity_unchanged() -> None:
     """N cancelled long reads must not erode capacity by a single unit.
 
@@ -304,3 +358,48 @@ def test_unknown_admission_class_is_refused() -> None:
     with _adapter(max_workers=1, queue_units=1) as adapter:
         with pytest.raises(ValueError, match="unknown daemon admission class"):
             adapter.submit(lambda: None, admission_class="interactive")  # type: ignore[arg-type]
+
+
+@pytest.mark.uses_real_clock("real UDS listener and coordinator bound mixed-load admission waits")
+def test_uds_status_uses_reserved_capacity_under_background_saturation(tmp_path: Path) -> None:
+    """The installed operation route shares the saturated background scheduler.
+
+    Anti-vacuity: dropping aggregate background reservations prevents status
+    dispatch before these explicitly blocked bodies release their workers.
+    """
+    from tests.infra.daemon_operations import running_daemon_operations
+
+    body = _Blocker()
+    with running_daemon_operations(tmp_path / "archive", compute_workers=8) as stack:
+        kernel = stack.execution_kernel
+        operations: list[SubmittedOperation[bool]] = []
+        try:
+            with pytest.raises(DaemonBackpressureError) as rejection:
+                for index in range(kernel.capacity_units):
+                    operations.append(
+                        kernel.submit(
+                            body,
+                            admission_class="incremental-background" if index % 2 else "bulk-candidate",
+                        )
+                    )
+            assert rejection.value.code == "compute_backpressure"
+            assert rejection.value.evidence["class_used_units"] == len(operations)
+            assert body.wait_started(4)
+            assert kernel.snapshot().queued_units > 0
+
+            for _index in range(3):
+                envelope = stack.client.operation("status", {}, archive_root=str(stack.archive_root))
+                assert envelope is not None
+                assert envelope["outcome"] == "completed"
+                assert envelope["authority"]["writes"] == "daemon-owned"
+                assert envelope["result"]["total_sessions"] == 0
+            snapshot = kernel.snapshot()
+            assert snapshot.by_class("interactive-read").dispatched == 3
+            assert snapshot.by_class("incremental-background").dispatched > 0
+            assert snapshot.by_class("bulk-candidate").dispatched > 0
+            assert snapshot.used_units == len(operations)
+        finally:
+            body.release.set()
+            for operation in operations:
+                operation.future.result(timeout=5)
+        assert kernel.snapshot().used_units == 0
