@@ -81,6 +81,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
+    LineageSignatureCache,
     _composed_db_signatures,
     _message_content_hash,
     _normalized_message_native_id,
@@ -892,13 +893,14 @@ def _write_session(
     payload: SessionWritePayload,
     *,
     force_write: bool = False,
-    signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+    signature_cache: LineageSignatureCache | dict[str, list[tuple[str, str]]] | None = None,
     stage_timings_s: dict[str, float] | None = None,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
+    attachment_owner_resolutions: list[dict[str, str]] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
 
@@ -1205,6 +1207,16 @@ def _write_session(
         return False, counts
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)
+    if attachment_owner_resolutions is not None and writer_outcomes:
+        for attachment_id, reason in writer_outcomes[0].unresolved_attachment_owners:
+            attachment_owner_resolutions.append(
+                {
+                    "raw_id": payload.raw_id or "",
+                    "session_id": payload.session_id,
+                    "attachment_id": attachment_id,
+                    "reason": reason.value,
+                }
+            )
     counts["sessions"] = 1
     counts["messages"] = len(session_to_write.messages)
     counts["attachments"] = len(session_to_write.attachments)
@@ -1303,7 +1315,7 @@ def _write_session_entry(
     *,
     summary: _IngestBatchSummary,
     force_write: bool = False,
-    signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+    signature_cache: LineageSignatureCache | dict[str, list[tuple[str, str]]] | None = None,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
@@ -1324,6 +1336,7 @@ def _write_session_entry(
             source_conn=source_conn,
             fresh_build=fresh_build,
             fresh_build_batch=fresh_build_batch,
+            attachment_owner_resolutions=summary.attachment_owner_resolutions,
         )
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
@@ -1454,7 +1467,10 @@ def _drain_ready_session_entries(
     # signatures so a parent with K fork-children is computed once, not K times
     # (#2475, hotspot 1). Entries are invalidated when their own rows are
     # rewritten or re-extracted in this same batch.
-    signature_cache: dict[str, list[tuple[str, str]]] = {}
+    # The cache carries own and composed lineage signatures with a weighted
+    # byte bound. A plain dict remains accepted by lower-level/test callers as
+    # the explicit unbounded compatibility path.
+    signature_cache = LineageSignatureCache()
     if fresh_build and fresh_build_batch is None:
         fresh_build_batch = set()
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):

@@ -75,6 +75,7 @@ class ParseBatchObservation(TypedDict, total=False):
     batch: int
     processed_raw: int
     excised_skips: int
+    attachment_owner_resolutions: list[dict[str, str]]
 
 
 class ParseBatchObservationSummary(TypedDict, total=False):

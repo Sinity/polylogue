@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import zipfile
 from pathlib import Path
 
@@ -46,6 +47,25 @@ def test_preflight_accepts_supported_json_file(tmp_path: Path) -> None:
     assert result.supported_count == 1
     assert result.providers == (Provider.CHATGPT,)
     assert result.error_code == ""
+
+
+def test_preflight_accepts_antigravity_trajectory_sqlite(tmp_path: Path) -> None:
+    source = tmp_path / "renamed-trajectory.sqlite"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            INSERT INTO trajectory_meta VALUES ('trajectory-preflight', 'cascade-preflight');
+            INSERT INTO steps VALUES (0, 'message', 'v1', '{"role":"user","text":"hello"}');
+            """
+        )
+
+    result = preflight_import_source(source)
+
+    assert result.status is ImportPreflightStatus.SUPPORTED
+    assert result.providers == (Provider.ANTIGRAVITY,)
+    assert result.supported_count == 1
 
 
 def test_preflight_rejects_unknown_json_shape(tmp_path: Path) -> None:
