@@ -518,6 +518,101 @@ class UsageCounters:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderUsageLanes:
+    """A non-overlapping provider-token ledger for one evidence stream.
+
+    Provider counters may overlap: Codex input includes cache reads and its
+    output includes reasoning. This projection retains those native totals as
+    evidence while exposing only disjoint billed lanes to ledger consumers.
+    Origins without exact provider counters are ``unavailable`` rather than a
+    zero-token observation.
+    """
+
+    state: Literal["reported", "unavailable"] = "unavailable"
+    input_semantics: Literal["inclusive_of_cache", "separate_cache_lane", "unavailable"] = "unavailable"
+    output_semantics: Literal["inclusive_of_reasoning", "separate_reasoning_lane", "unavailable"] = "unavailable"
+    uncached_input_tokens: int = 0
+    cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
+    completion_output_tokens: int = 0
+    reasoning_output_tokens: int = 0
+    provider_input_tokens: int = 0
+    provider_output_tokens: int = 0
+    provider_total_tokens: int = 0
+
+    @classmethod
+    def unavailable(cls) -> ProviderUsageLanes:
+        return cls()
+
+    @classmethod
+    def from_counters(
+        cls,
+        counters: UsageCounters,
+        *,
+        reported: bool,
+        input_includes_cache: bool,
+        output_includes_reasoning: bool,
+    ) -> ProviderUsageLanes:
+        if not reported:
+            return cls.unavailable()
+        cached = (
+            min(counters.cached_input_tokens, counters.input_tokens)
+            if input_includes_cache
+            else counters.cached_input_tokens
+        )
+        reasoning = (
+            min(counters.reasoning_output_tokens, counters.output_tokens)
+            if output_includes_reasoning
+            else counters.reasoning_output_tokens
+        )
+        return cls(
+            state="reported",
+            input_semantics="inclusive_of_cache" if input_includes_cache else "separate_cache_lane",
+            output_semantics="inclusive_of_reasoning" if output_includes_reasoning else "separate_reasoning_lane",
+            uncached_input_tokens=counters.input_tokens - cached if input_includes_cache else counters.input_tokens,
+            cached_input_tokens=cached,
+            cache_write_tokens=counters.cache_write_tokens,
+            completion_output_tokens=counters.output_tokens - reasoning,
+            reasoning_output_tokens=reasoning,
+            provider_input_tokens=counters.input_tokens,
+            provider_output_tokens=counters.output_tokens,
+            provider_total_tokens=counters.total_tokens,
+        )
+
+    def has_disjoint_partitions(self) -> bool:
+        """Return whether each labelled pair reconstructs its native total."""
+
+        if self.state != "reported":
+            return False
+        input_matches = (
+            self.uncached_input_tokens + self.cached_input_tokens == self.provider_input_tokens
+            if self.input_semantics == "inclusive_of_cache"
+            else self.uncached_input_tokens == self.provider_input_tokens
+        )
+        output_matches = (
+            self.completion_output_tokens + self.reasoning_output_tokens == self.provider_output_tokens
+            if self.output_semantics == "inclusive_of_reasoning"
+            else self.completion_output_tokens == self.provider_output_tokens
+        )
+        return input_matches and output_matches
+
+    def to_dict(self) -> dict[str, int | str]:
+        return {
+            "state": self.state,
+            "input_semantics": self.input_semantics,
+            "output_semantics": self.output_semantics,
+            "uncached_input_tokens": self.uncached_input_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "completion_output_tokens": self.completion_output_tokens,
+            "reasoning_output_tokens": self.reasoning_output_tokens,
+            "provider_input_tokens": self.provider_input_tokens,
+            "provider_output_tokens": self.provider_output_tokens,
+            "provider_total_tokens": self.provider_total_tokens,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class OriginUsageReport:
     """Usage evidence summary for one archive origin."""
 
@@ -551,6 +646,8 @@ class OriginUsageReport:
     stale_rollup_session_count: int = 0
     provider_request_usage: UsageCounters = field(default_factory=UsageCounters)
     provider_cumulative_usage: UsageCounters = field(default_factory=UsageCounters)
+    provider_request_lanes: ProviderUsageLanes = field(default_factory=ProviderUsageLanes.unavailable)
+    provider_cumulative_lanes: ProviderUsageLanes = field(default_factory=ProviderUsageLanes.unavailable)
     model_rollup_grain: str = "physical_session"
     model_rollup_usage: UsageCounters = field(default_factory=UsageCounters)
     logical_model_rollup_grain: str = "logical_session_model_high_water"
@@ -593,6 +690,8 @@ class OriginUsageReport:
             "stale_rollup_session_count": self.stale_rollup_session_count,
             "provider_request_usage": self.provider_request_usage.to_dict(),
             "provider_cumulative_usage": self.provider_cumulative_usage.to_dict(),
+            "provider_request_lanes": self.provider_request_lanes.to_dict(),
+            "provider_cumulative_lanes": self.provider_cumulative_lanes.to_dict(),
             "model_rollup_grain": self.model_rollup_grain,
             "model_rollup_usage": self.model_rollup_usage.to_dict(),
             "logical_model_rollup_grain": self.logical_model_rollup_grain,
@@ -1115,6 +1214,7 @@ def origin_usage_report_from_connection(
         provider_request_usage = events.get("provider_request_usage")
         if not isinstance(provider_request_usage, UsageCounters):
             provider_request_usage = UsageCounters()
+        provider_cumulative_usage = cumulative_by_origin.get(origin_name, UsageCounters())
         model_rollup_usage = model_by_origin.get(origin_name, UsageCounters())
         coverage = _coverage_for_origin(origin_name)
         session_count = _int(base.get("session_count"))
@@ -1180,7 +1280,19 @@ def origin_usage_report_from_connection(
                 estimated_model_row_count=_int(model_counts.get("estimated_model_row_count")),
                 stale_rollup_session_count=stale_rollup_session_count,
                 provider_request_usage=provider_request_usage,
-                provider_cumulative_usage=cumulative_by_origin.get(origin_name, UsageCounters()),
+                provider_cumulative_usage=provider_cumulative_usage,
+                provider_request_lanes=ProviderUsageLanes.from_counters(
+                    provider_request_usage,
+                    reported=_int(events.get("provider_event_count")) > 0,
+                    input_includes_cache=coverage.provider == Provider.CODEX.value,
+                    output_includes_reasoning=coverage.provider == Provider.CODEX.value,
+                ),
+                provider_cumulative_lanes=ProviderUsageLanes.from_counters(
+                    provider_cumulative_usage,
+                    reported=not provider_cumulative_usage.is_zero(),
+                    input_includes_cache=coverage.provider == Provider.CODEX.value,
+                    output_includes_reasoning=coverage.provider == Provider.CODEX.value,
+                ),
                 model_rollup_grain="physical_session",
                 model_rollup_usage=model_rollup_usage,
                 logical_model_rollup_grain="logical_session_model_high_water",
@@ -3036,6 +3148,7 @@ def session_usage_reconciliation_for_connection(
 __all__ = [
     "OriginUsageReport",
     "ProviderUsageCoverage",
+    "ProviderUsageLanes",
     "ProviderUsageReport",
     "SessionUsageCost",
     "UsageProjectionModel",

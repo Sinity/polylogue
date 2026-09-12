@@ -45,7 +45,7 @@ def test_session_reported_cost_metadata_is_not_read() -> None:
 
 
 def test_token_usage_prices_known_model_with_catalog_provenance() -> None:
-    """Per-message token usage prices a known model from the curated catalog.
+    """Per-message token usage prices a known model from the LiteLLM catalog.
 
     Token/model facts are sourced from the typed per-message
     ``model_name``/``input_tokens``/``output_tokens`` columns, not from a
@@ -183,25 +183,22 @@ def test_tokencost_is_not_a_dependency_or_import_anywhere() -> None:
     assert offenders == [], f"tokencost reference(s) found: {offenders}"
 
 
-def test_no_second_hardcoded_price_table_besides_the_curated_catalog_layer() -> None:
-    """polylogue-f2qv.4: exactly one $/token pricing dict feeds every lookup.
+def test_litellm_is_the_only_api_price_catalog_and_resolution_is_exact() -> None:
+    """polylogue-f2qv.4: API prices have one catalog and no fuzzy fallback.
 
-    ``PRICING`` is built from ``_load_litellm_catalog()`` (the vendored
-    LiteLLM map) overlaid with ``_CURATED_PRICING`` (hand-verified overrides
-    for the same catalog, not an independent source) — both merge into the
-    single dict every resolution path reads. This pins that composition so a
-    future change can't quietly add a second, parallel price map that drifts
-    from the vendored catalog.
+    An unrecognized model must be reported as unpriced. Letting it inherit a
+    predecessor's prefix rate, or adding a handwritten override map, turns a
+    dated estimate into an untraceable price claim.
     """
     from polylogue.archive.semantic import pricing as pricing_module
 
-    expected = {**pricing_module._load_litellm_catalog(), **pricing_module._CURATED_PRICING}
-    assert expected == pricing_module.PRICING
-    # The curated overrides are a layer on the same catalog, not a second
-    # source: every curated key must also resolve (by construction) through
-    # the one public resolver used everywhere else in the codebase.
-    for key in pricing_module._CURATED_PRICING:
-        assert _normalize_model(key) in pricing_module.PRICING
+    assert pricing_module._load_litellm_catalog() == pricing_module.PRICING
+    source = Path(pricing_module.__file__).read_text(encoding="utf-8")
+    assert "_CURATED_PRICING" not in source
+    assert source.count("ModelPricing(") == 1, "only the LiteLLM loader may construct API rates"
+
+    assert _normalize_model("router/tenant/openai/gpt-4o-2024-08-06") == "gpt-4o"
+    assert estimate_cost(1_000_000, 1_000_000, "gpt-4o-unpriced-variant") == 0.0
 
 
 def test_live_archive_shaped_models_resolve_or_are_labelled_unknown() -> None:
@@ -240,6 +237,7 @@ def test_live_archive_shaped_models_resolve_or_are_labelled_unknown() -> None:
 def test_model_normalization_accepts_provider_prefixes_and_version_suffixes() -> None:
     assert _normalize_model("openai/gpt-4o-2024-08-06") == "gpt-4o"
     assert _normalize_model("anthropic/claude-sonnet-4-5-20250929") == "claude-sonnet-4-5"
+    assert _normalize_model("marketplace/team/openai/gpt-4o-2024-08-06") == "gpt-4o"
     assert estimate_cost(1000, 500, "openai/gpt-4o-2024-08-06") == pytest.approx(0.0075)
 
 
@@ -249,8 +247,8 @@ def test_aistudio_drive_resource_path_model_prices_like_bare_form() -> None:
     see ``tests/unit/sources/test_gemini_drive_normalization_laws.py``), while
     gemini-cli-session uses the bare form for the same catalog model. Before
     the fix, ``_normalize_model`` never stripped ``models/`` and the
-    resource-path form failed both the exact-match and prefix-fallback catalog
-    lookups, so ``estimate_cost`` silently returned $0.0 for real,
+    resource-path form failed catalog lookup, so ``estimate_cost`` silently
+    returned $0.0 for real,
     substantial aistudio-drive token usage (105.7M tokens measured on the live
     archive) despite the catalog carrying a real rate for the underlying
     model.
@@ -269,8 +267,8 @@ def test_aistudio_drive_resource_path_model_prices_like_bare_form() -> None:
 def test_current_opus_flagships_are_priced_not_zero() -> None:
     """Opus 4.7/4.8 must be priced (regression: they fell through to $0).
 
-    The version-suffix prefix match cannot reach ``claude-opus-4-6`` from a
-    ``claude-opus-4-8`` model, so the current flagship needs its own entry.
+    A dated snapshot must resolve to its exact undated catalog model instead
+    of being mistaken for a nearby predecessor.
     """
     for version in ("claude-opus-4-7", "claude-opus-4-8"):
         assert _normalize_model(f"{version}-20260101") == version
@@ -520,41 +518,36 @@ def test_canonical_model_family_returns_none_for_empty_or_none() -> None:
 
 def test_canonical_model_family_does_not_leak_pricing_catalog_routing_tag() -> None:
     """polylogue-4c27 regression: canonical family is derived from the model
-    name, independently of catalog provenance. Curated entries use the
-    semantic vendor as their source label, while routed catalog entries may
-    retain a routing tag."""
+    name, independently of catalog provenance."""
     from polylogue.archive.semantic.pricing import PRICING, pricing_catalog_source
 
     routed_model = "vertex_ai/claude-fable-5"
     assert PRICING[routed_model].source_name == "vertex_ai-anthropic_models"
-    assert pricing_catalog_source(routed_model) != "anthropic"
+    assert pricing_catalog_source(routed_model) == pricing_catalog_source("claude-fable-5")
     assert canonical_model_family(routed_model) == "anthropic"
 
 
-def test_semantic_model_vendor_and_pricing_catalog_source_can_diverge() -> None:
-    """A marketplace/routed model name and its pricing-catalog provenance
-    are genuinely different axes. The same vendor model routed through
-    Vertex AI still has vendor=anthropic even though its pricing-catalog
-    source is the routing layer, not the vendor."""
+def test_semantic_model_vendor_is_independent_of_final_segment_price_lookup() -> None:
+    """A routed model keeps its semantic vendor even when pricing ignores the route."""
     from polylogue.archive.semantic.pricing import canonical_model_family, pricing_catalog_source, semantic_model_vendor
 
     routed_model = "vertex_ai/claude-fable-5"
     assert semantic_model_vendor(routed_model) == "anthropic"
     assert canonical_model_family(routed_model) == "anthropic"
-    assert pricing_catalog_source(routed_model) != "anthropic"
+    assert pricing_catalog_source(routed_model) == pricing_catalog_source("claude-fable-5")
 
 
 def test_resolve_model_identity_keeps_axes_distinct_across_fixtures() -> None:
     """polylogue-4c27 AC: known Fable, Opus, GPT, Gemini, marketplace, and
     unknown fixtures keep vendor, model line, exact model, pricing source,
     and attribution source distinct fields (not aliases of each other)."""
-    from polylogue.archive.semantic.pricing import resolve_model_identity
+    from polylogue.archive.semantic.pricing import pricing_catalog_source, resolve_model_identity
 
     fable = resolve_model_identity("claude-fable-5", attribution_source="dispatch_turn")
     assert fable.vendor == "anthropic"
     assert fable.model_line == "fable"
     assert fable.normalized_model == "claude-fable-5"
-    assert fable.pricing_source == "anthropic"
+    assert fable.pricing_source == pricing_catalog_source("claude-fable-5")
     assert fable.attribution_source == "dispatch_turn"
 
     opus = resolve_model_identity("claude-opus-4-8", attribution_source="child_observed")

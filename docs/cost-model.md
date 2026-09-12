@@ -14,8 +14,8 @@ non-authoritative caveat that governs every number displayed.
 
 Cost flows through four substrate-owned stages:
 
-1. **Estimate** — per-session token usage is priced against the
-   curated price map, an exact provider-reported total, or both
+1. **Estimate** — per-session token usage is priced against the vendored
+   LiteLLM API catalog, an exact provider-reported total, or both
    (`polylogue/archive/semantic/pricing.py`).
 2. **Materialize** — the estimate is folded into the typed
    `SessionCostInsight` and `CostRollupInsight` payloads
@@ -131,7 +131,7 @@ elsewhere:
   free, cache writes bill at the input rate, and output bills at 5x input
   (matching Anthropic's API rate ratio — a `MODEL_CREDIT_RATES` entry with
   `output_credits == input_credits` was a bug, fixed and regression-tested in
-  `tests/unit/storage/test_cost_queries.py`). It is `0.0` for models without
+  `tests/unit/core/test_current_model_pricing.py`). It is `0.0` for models without
   a declared credit rate (non-Claude models) — never a fabricated figure.
 
 Catalog coverage is explicit. When any model row lacks a catalog price, the
@@ -263,7 +263,7 @@ A single estimate carries cost on five independent axes
 | `provider_reported_usd` | Cost reported verbatim by the provider. Populated only when the source supplies an exact total. Preserved without rounding or scaling. |
 | `api_equivalent_usd` | What the same usage would cost against API pricing. Mirrors `provider_reported_usd` when an exact total is present; otherwise filled from catalog. |
 | `subscription_equivalent_usd` | What the same usage would cost against the user's subscription plan. Always zero unless the cost cluster is configured with a quota basis. |
-| `catalog_priced_usd` | Catalog-priced estimate from the curated LiteLLM-shaped seed (`polylogue/archive/semantic/pricing.py:PRICING`). |
+| `catalog_priced_usd` | Catalog-priced estimate from the vendored LiteLLM catalog (`polylogue/archive/semantic/pricing.py:PRICING`). |
 | `tool_surcharge_usd` | Tool/sidecar usage surcharge. Tracked separately so tool-heavy sessions don't silently inflate the headline cost. |
 
 **Bases are independent — they do not sum to `total_usd`.** The same

@@ -10,9 +10,7 @@ from polylogue.archive.semantic.subscription_pricing import get_credit_rate
 #: Anthropic list prices per million tokens: input, output, cache read,
 #: 5-minute cache write.
 _LIST_PRICES = {
-    "claude-opus-5": (5.0, 25.0, 0.5, 6.25),
     "claude-opus-4-8": (5.0, 25.0, 0.5, 6.25),
-    "claude-sonnet-5": (2.0, 10.0, 0.2, 2.5),
     "claude-sonnet-4-6": (3.0, 15.0, 0.3, 3.75),
     "claude-haiku-4-5": (1.0, 5.0, 0.1, 1.25),
     "claude-fable-5": (10.0, 50.0, 1.0, 12.5),
@@ -33,7 +31,7 @@ def test_catalog_matches_the_published_list_price(model: str, expected: tuple[fl
         pricing.output_usd_per_1m,
         pricing.cache_read_usd_per_1m,
         pricing.cache_write_usd_per_1m,
-    ) == expected
+    ) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize("model", sorted(_LIST_PRICES))
@@ -49,4 +47,6 @@ def test_subscription_credits_track_the_dollar_price(model: str) -> None:
     pricing = PRICING[model]
     assert rate.input_credits / rate.input_divisor == pytest.approx(pricing.input_usd_per_1m * 2 / 15)
     assert rate.output_credits / rate.output_divisor == pytest.approx(pricing.output_usd_per_1m * 2 / 15)
+    assert rate.output_credits == rate.input_credits * 5, "output credits must retain the 5x rate"
     assert rate.cache_read_credits == 0, "subscription cache reads are free"
+    assert rate.cache_write_credits == rate.input_credits
