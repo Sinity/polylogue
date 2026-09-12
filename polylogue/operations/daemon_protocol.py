@@ -335,8 +335,6 @@ class AcceptedOperationReference(_OperationPayload):
     artifact_ref: str = Field(min_length=1)
     accepted_at_ms: int = Field(ge=0)
     part_count: int = Field(ge=1, le=4096)
-    stop_reason: str | None
-    stopped_at_ms: int | None
     accepted_deadline_unix_ms: int | None
 
     @model_validator(mode="after")
@@ -347,6 +345,11 @@ class AcceptedOperationReference(_OperationPayload):
 
     def to_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")
+
+    @classmethod
+    def from_record(cls, record: Mapping[str, object]) -> AcceptedOperationReference:
+        """Project immutable acceptance facts from the mutable lifecycle row."""
+        return cls.model_validate({key: record[key] for key in cls.model_fields})
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,6 +437,10 @@ class DaemonOperationSpec:
     )
 
     def __post_init__(self) -> None:
+        if self.direct_allowed and self.authority is not DaemonAuthority.READ:
+            raise ValueError("only read operations may permit direct fallback")
+        if self.request_model is _OperationPayload or self.result_model is _OperationResult:
+            raise ValueError("operation declarations require concrete request and result models")
         if not self.handler:
             object.__setattr__(self, "handler", self.name.replace(".", "_"))
         if self.request_type and self.result_type:
@@ -683,12 +690,17 @@ MUTATION_OPERATION_NAMES: frozenset[str] = frozenset(
 if len({spec.name for spec in DAEMON_OPERATION_SPECS}) != len(DAEMON_OPERATION_SPECS):
     raise RuntimeError("daemon operation names must be unique")
 
-DAEMON_OPERATION_SCHEMA: dict[str, dict[str, object]] = {spec.name: spec.to_dict() for spec in DAEMON_OPERATION_SPECS}
-
 
 def daemon_operation_schema() -> dict[str, dict[str, object]]:
-    """Return a defensive copy used by clients, server discovery and tests."""
-    return {name: dict(metadata) for name, metadata in DAEMON_OPERATION_SCHEMA.items()}
+    """Derive wire schemas on discovery without adding work to client imports."""
+    return {
+        spec.name: {
+            **spec.to_dict(),
+            "request_schema": spec.request_model.model_json_schema(),
+            "result_schema": spec.result_model.model_json_schema(),
+        }
+        for spec in DAEMON_OPERATION_SPECS
+    }
 
 
 def daemon_operation_spec(name: str) -> DaemonOperationSpec | None:
@@ -756,6 +768,8 @@ class DaemonOperationRequest:
         spec = daemon_operation_spec(operation)
         if spec is None:
             raise ValueError(f"operation is not declared: {operation}")
+        if len(json.dumps(dict(raw), separators=(",", ":"), allow_nan=False).encode()) > spec.max_body_bytes:
+            raise ValueError("request_too_large")
         try:
             validated_payload = spec.request_model.model_validate(payload).model_dump(mode="json")
         except ValidationError as exc:
@@ -771,6 +785,17 @@ class DaemonOperationRequest:
         cancellation_token = raw.get("cancellation_token")
         if archive_root is not None and not isinstance(archive_root, str):
             raise ValueError("archive_root must be a string")
+        for name in (
+            "archive_root",
+            "daemon_version",
+            "expected_archive_identity",
+            "expected_generation_id",
+            "idempotency_key",
+            "cancellation_token",
+        ):
+            value = raw.get(name)
+            if isinstance(value, str) and len(value) > 4096:
+                raise ValueError(f"{name} exceeds 4096 characters")
         if schema is not None and (not isinstance(schema, int) or isinstance(schema, bool)):
             raise ValueError("index_schema_version must be an integer")
         if version is not None and not isinstance(version, str):
@@ -785,6 +810,8 @@ class DaemonOperationRequest:
             raise ValueError("expected_generation_id must be a non-empty string")
         if not isinstance(request_id, str) or not request_id.strip():
             raise ValueError("request_id must be a non-empty string")
+        if len(request_id) > 128:
+            raise ValueError("request_id exceeds 128 characters")
         if deadline_ms is not None and (
             not isinstance(deadline_ms, int) or isinstance(deadline_ms, bool) or deadline_ms <= 0
         ):
@@ -947,5 +974,4 @@ __all__ = [
     "archive_identity",
     "daemon_operation_spec",
     "daemon_operation_schema",
-    "DAEMON_OPERATION_SCHEMA",
 ]

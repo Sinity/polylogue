@@ -5218,6 +5218,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.operations.daemon_protocol import (
             MAX_DECLARED_OPERATION_BODY_BYTES,
             DaemonOperationRequest,
+            daemon_operation_spec,
         )
 
         if not self._check_auth(allow_web=False) or not self._check_cross_origin():
@@ -5244,6 +5245,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             request = DaemonOperationRequest.from_dict(json.loads(body))
         except (ValueError, TypeError, TimeoutError, OSError):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        spec = daemon_operation_spec(request.operation)
+        assert spec is not None
+        if length > spec.max_body_bytes:
+            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
             return
         self._send_daemon_operation(self._execute_daemon_operation(request))
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from polylogue.operations.audit import AuditRepository, MachineRequestBinding
+from polylogue.operations.daemon_protocol import AcceptedOperationReference
 from polylogue.operations.machine_receipts import encode_machine_receipt
 
 _RICH_HISTORICAL_RECEIPT_OPERATIONS = frozenset({"ingest", "maintenance.insights.rebuild"})
@@ -43,7 +44,11 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
     )
     parts = audit.machine_parts(binding)
     kind = str(record["artifact_kind"])
-    state: dict[str, object] = {"reference": record, "sequence": 1, "outcome": "completed"}
+    state: dict[str, object] = {
+        "reference": AcceptedOperationReference.from_record(record).to_dict(),
+        "sequence": 1,
+        "outcome": "completed",
+    }
     if kind == "source-generation":
         state["source_generation_id"] = record["artifact_ref"]
     if kind == "source-generation" and not parts:

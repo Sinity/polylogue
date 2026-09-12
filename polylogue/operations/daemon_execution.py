@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
@@ -14,6 +13,7 @@ from polylogue.archive.query.execution_control import QueryCancelledError, Query
 from polylogue.core.errors import SchemaRefusalError
 from polylogue.operations.audit import AuditRepository, MachineRequestRecoveredError
 from polylogue.operations.daemon_protocol import (
+    AcceptedOperationReference,
     AuthoritySnapshot,
     DaemonAuthority,
     DaemonOperationEnvelope,
@@ -25,6 +25,7 @@ from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
     OperationContext,
     OperationControlRead,
+    OperationControlResult,
     PinnedOperationRead,
     observe_control_authority,
     open_operation_read,
@@ -68,8 +69,13 @@ class OperationRuntime(Protocol):
     def audit_for_request(self, request: DaemonOperationRequest, context: OperationContext) -> AuditRepository: ...
 
     def control(
-        self, request: DaemonOperationRequest, principal: MutationPrincipal, archive_identity: str
-    ) -> dict[str, object]: ...
+        self,
+        request: DaemonOperationRequest,
+        principal: MutationPrincipal,
+        archive_identity: str,
+        *,
+        execution_context: QueryExecutionContext | None = None,
+    ) -> OperationControlResult: ...
 
     def observe_snapshot(self, request: DaemonOperationRequest, snapshot: PinnedOperationRead) -> None: ...
 
@@ -142,7 +148,9 @@ def operation_envelope(
         result=result,
         error=error,
         request_id=request.request_id,
-        accepted_reference=reference,
+        accepted_reference=AcceptedOperationReference.from_record(reference).to_dict()
+        if reference is not None
+        else None,
         authority_snapshot=authority.to_dict(),
     )
 
@@ -167,8 +175,6 @@ def validate_execution_request(request: DaemonOperationRequest, context: Operati
     request = DaemonOperationRequest.from_dict(request.to_dict())
     spec = daemon_operation_spec(request.operation)
     assert spec is not None
-    if len(json.dumps(request.to_dict(), separators=(",", ":")).encode()) > spec.max_body_bytes:
-        raise ValueError("request_too_large")
     if spec.capability not in context.principal.capabilities:
         raise PermissionError(f"operation requires capability {spec.capability}")
     if context.runtime is None and not spec.direct_allowed:
@@ -180,7 +186,7 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
     """Validate and execute the declared operation against explicit authority."""
 
     started = monotonic()
-    snapshot: PinnedOperationRead | None = None
+    snapshot: PinnedOperationRead | OperationControlRead | None = None
     try:
         request = validate_execution_request(request, context)
         spec = daemon_operation_spec(request.operation)
@@ -188,12 +194,18 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
         if request.operation.startswith("operation."):
             assert context.runtime is not None
             control_snapshot = observe_control_authority(context.archive_root)
+            snapshot = control_snapshot
             _validate_identity(request, context, control_snapshot)
-            result = context.runtime.control(
-                request, context.principal, control_snapshot.identity.authority_identity_digest
+            control_result = context.runtime.control(
+                request,
+                context.principal,
+                control_snapshot.identity.authority_identity_digest,
+                execution_context=context.read_control,
             )
+            result = control_result.state
+            snapshot = control_result.snapshot
             validate_operation_result(request.operation, result)
-            return operation_envelope(request, context, snapshot=control_snapshot, started_at=started, result=result)
+            return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
 
         def execute(*, mutating: bool) -> DaemonOperationEnvelope:
             nonlocal snapshot

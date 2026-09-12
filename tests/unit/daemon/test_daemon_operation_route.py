@@ -7,6 +7,7 @@ import os
 import queue
 import socket
 import threading
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -385,9 +386,70 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
                 {"request_id": execute_request_id},
                 archive_root=str(stack.archive_root),
             )
-            cancellation = stack.client.cancel(execute_request_id, archive_root=str(stack.archive_root))
             assert status is not None
             assert status["result"]["outcome"] in {"accepted", "running"}
+            from time import monotonic
+
+            started = monotonic()
+            timed_out = stack.client.operation(
+                "operation.await",
+                {"request_id": execute_request_id, "after_sequence": status["result"]["sequence"], "timeout_ms": 2_000},
+                archive_root=str(stack.archive_root),
+                deadline_ms=25,
+            )
+            assert timed_out is not None and timed_out["outcome"] == "timed-out"
+            assert monotonic() - started < 1.0
+            assert not release_apply.is_set()
+
+            from polylogue.archive.query.execution_control import QueryExecutionContext
+            from polylogue.operations.daemon_protocol import DaemonOperationRequest
+            from polylogue.operations.mutation_transaction import MutationPrincipal
+            from polylogue.operations.operation_context import OperationControlResult
+
+            waiter_entered, waiter_released = threading.Event(), threading.Event()
+            control = stack.runtime.control
+
+            def observe_waiter(
+                request: DaemonOperationRequest,
+                principal: MutationPrincipal,
+                archive_identity: str,
+                *,
+                execution_context: QueryExecutionContext | None = None,
+            ) -> OperationControlResult:
+                observing = request.request_id == "disconnected-await"
+                if observing:
+                    waiter_entered.set()
+                try:
+                    return control(request, principal, archive_identity, execution_context=execution_context)
+                finally:
+                    if observing:
+                        waiter_released.set()
+
+            monkeypatch.setattr(stack.runtime, "control", observe_waiter)
+            body = json.dumps(
+                DaemonOperationRequest(
+                    "operation.await",
+                    {
+                        "request_id": execute_request_id,
+                        "after_sequence": status["result"]["sequence"],
+                        "timeout_ms": 30_000,
+                    },
+                    request_id="disconnected-await",
+                ).to_dict()
+            ).encode()
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+                peer.connect(str(stack.socket_path))
+                peer.sendall(
+                    (
+                        "POST /api/operation HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+                        f"Content-Length: {len(body)}\r\n\r\n"
+                    ).encode()
+                    + body
+                )
+                assert waiter_entered.wait(timeout=2)
+            assert waiter_released.wait(timeout=2), "disconnected await retained its handler until the 30s deadline"
+            assert not release_apply.is_set()
+            cancellation = stack.client.cancel(execute_request_id, archive_root=str(stack.archive_root))
             assert cancellation is not None
 
             later_thread = threading.Thread(target=later_writer, name="later-delete-preview")
@@ -409,5 +471,205 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
         assert state["outcome"] == "cancelled"
         assert state["completed_chunks"] == 1
         assert state["not_attempted"] == [1]
+        assert state["stop_reason"] == "cancelled"
+        assert state["reference"] == accepted["accepted_reference"]
         assert all(not stack.session_exists(session_id) for session_id in session_ids[:-1])
         assert stack.session_exists(session_ids[-1])
+
+    with running_daemon_operations(tmp_path / "archive") as restarted:
+        replay = restarted.client.operation(
+            "mutation.session.delete.execute",
+            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            archive_root=str(restarted.archive_root),
+            request_id=execute_request_id,
+        )
+        assert replay is not None and replay["outcome"] == "cancelled"
+        assert replay["accepted_reference"] == accepted["accepted_reference"]
+        assert replay["result"]["not_attempted"] == [1]
+        assert restarted.session_exists(session_ids[-1])
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_status", "expected_code"),
+    [
+        ("partial", 400, "invalid_request"),
+        ("malformed", 400, "invalid_request"),
+        ("duplicate-json", 400, "invalid_request"),
+        ("nested-json", 400, "invalid_request"),
+        ("nonfinite", 400, "invalid_request"),
+        ("wrong-protocol", 400, "invalid_request"),
+        ("operation-bound", 400, "invalid_request"),
+        ("whitespace-bound", 413, "request_too_large"),
+        ("transport-bound", 413, "request_too_large"),
+        ("duplicate-length", 400, "invalid_framing"),
+        ("transfer-encoding", 400, "invalid_framing"),
+        ("wrong-type", 415, "unsupported_media_type"),
+        ("wrong-method", 405, "method_not_allowed"),
+        ("unknown-method", 501, "invalid_http_request"),
+        ("wrong-version", 505, "unsupported_http_version"),
+        ("browser-route", 404, "operation_endpoint_required"),
+    ],
+)
+def test_machine_ingress_faults_refuse_without_dispatch_and_release_connection(
+    tmp_path: Path,
+    case: str,
+    expected_status: int,
+    expected_code: str,
+) -> None:
+    """Removing an ingress guard admits invalid input or leaves no typed refusal."""
+    from http.client import HTTPResponse
+
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL, MAX_DECLARED_OPERATION_BODY_BYTES
+
+    errors: queue.SimpleQueue[str] = queue.SimpleQueue()
+    with running_daemon_operations(tmp_path / "archive", server_error_sink=errors) as stack:
+        body = json.dumps(
+            {
+                "protocol": DAEMON_OPERATION_PROTOCOL,
+                "operation": "status",
+                "request_id": "ingress-law",
+                "payload": {},
+            }
+        ).encode()
+        method, path, version = "POST", "/api/operation", "HTTP/1.1"
+        content_type = "application/json"
+        extra = ""
+        declared_length = len(body)
+        if case == "partial":
+            declared_length += 1
+        elif case == "malformed":
+            body = b"{"
+        elif case == "duplicate-json":
+            body = body[:-1] + b',"operation":"status"}'
+        elif case == "nested-json":
+            body = b"[" * 2000 + b"0" + b"]" * 2000
+        elif case == "nonfinite":
+            body = body.replace(b'"payload": {}', b'"payload": {"value": NaN}')
+        elif case == "wrong-protocol":
+            body = body.replace(DAEMON_OPERATION_PROTOCOL.encode(), b"unknown/v99")
+        elif case == "operation-bound":
+            body = json.dumps(
+                {
+                    "protocol": DAEMON_OPERATION_PROTOCOL,
+                    "operation": "completion",
+                    "request_id": "ingress-law",
+                    "payload": {"incomplete": "x" * (65 * 1024)},
+                }
+            ).encode()
+        elif case == "transport-bound":
+            declared_length = MAX_DECLARED_OPERATION_BODY_BYTES + 1
+        elif case == "whitespace-bound":
+            body += b" " * (65 * 1024)
+        elif case == "duplicate-length":
+            extra = f"Content-Length: {len(body)}\r\n"
+        elif case == "transfer-encoding":
+            extra = "Transfer-Encoding: chunked\r\n"
+        elif case == "wrong-type":
+            content_type = "text/plain"
+        elif case == "wrong-method":
+            method = "GET"
+        elif case == "unknown-method":
+            method = "TRACE"
+        elif case == "wrong-version":
+            version = "HTTP/1.0"
+        elif case == "browser-route":
+            path = "/api/health"
+        if case not in {"partial", "transport-bound"}:
+            declared_length = len(body)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+            peer.settimeout(2)
+            peer.connect(str(stack.socket_path))
+            peer.sendall(
+                (
+                    f"{method} {path} {version}\r\nHost: localhost\r\nContent-Type: {content_type}\r\n"
+                    f"Content-Length: {declared_length}\r\n{extra}\r\n"
+                ).encode()
+                + body
+            )
+            if case == "partial":
+                peer.shutdown(socket.SHUT_WR)
+            with HTTPResponse(peer) as response:
+                response.begin()
+                payload = json.loads(response.read())
+                assert response.status == expected_status
+                assert payload["outcome"] == "rejected"
+                assert payload["error"]["code"] == expected_code
+        assert not stack.runtime._exchanges
+        assert errors.empty()
+        recovered = stack.client.operation("status", {})
+        assert recovered is not None and recovered["outcome"] == "completed"
+
+
+@pytest.mark.parametrize("field", ["generation", "schemas", "archive", "served-by", "timing", "degraded", "fallback"])
+def test_client_refuses_incoherent_authority_from_a_real_operation(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    """Each mutant changes one copy of the observed authority without its peer."""
+    from polylogue.daemon_client import DaemonOperationProtocolError
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        request = DaemonOperationRequest("status", {}, request_id="authority-law")
+        response = stack.client.operation("status", {}, request_id="authority-law")
+        assert response is not None
+        changed = deepcopy(response)
+        if field == "generation":
+            changed["generation"]["id"] = "stale-generation"
+        elif field == "schemas":
+            changed["schema_versions"]["source"] += 1
+        elif field == "archive":
+            changed["archive"]["archive_identity"] = "other-archive"
+        elif field == "served-by":
+            changed["served_by"]["identity"] = "other-server"
+        elif field == "timing":
+            changed["authority_snapshot"]["queue_ms"] += 1
+        elif field == "degraded":
+            changed["readiness"]["degraded_components"] = ["missing-source"]
+        elif field == "fallback":
+            changed["authority"]["fallback"] = "never"
+        with pytest.raises(DaemonOperationProtocolError, match="incoherent"):
+            DaemonClient._validate_operation_response(request, 200, changed)
+
+
+def test_control_result_metadata_comes_from_the_durable_receipt_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Using admission-time metadata after a recovery read returns obsolete schema evidence."""
+    from dataclasses import replace
+
+    import polylogue.operations.daemon_execution as execution
+    from polylogue.operations.operation_context import OperationControlRead, observe_control_authority
+
+    ids: tuple[str, ...] = ()
+
+    def seed(root: Path) -> None:
+        nonlocal ids
+        ids = _seed_sessions(root, count=1)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        accepted = stack.client.operation_to_completion(
+            "mutation.session.delete.preview",
+            {"session_ids": list(ids)},
+            archive_root=str(stack.archive_root),
+            request_id="receipt-authority",
+        )
+        assert accepted is not None and accepted["outcome"] == "completed"
+
+        def earlier_observation(root: Path) -> OperationControlRead:
+            snapshot = observe_control_authority(root)
+            return replace(
+                snapshot, schema_versions={**snapshot.schema_versions, "source": snapshot.schema_versions["source"] - 1}
+            )
+
+        monkeypatch.setattr(execution, "observe_control_authority", earlier_observation)
+        recovered = stack.client.operation(
+            "operation.await",
+            {"request_id": "receipt-authority", "after_sequence": 0, "timeout_ms": 100},
+            archive_root=str(stack.archive_root),
+        )
+        assert recovered is not None and recovered["outcome"] == "completed"
+        assert recovered["generation"]["id"] == accepted["generation"]["id"]
+        assert recovered["schema_versions"] == {tier: accepted["schema_versions"][tier] for tier in ("source", "audit")}
+        assert recovered["result"]["reference"] == accepted["accepted_reference"]
