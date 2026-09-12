@@ -144,6 +144,9 @@ async def get_effective_context(
             SELECT boundary_start_position, boundary_end_position, boundary_message_id
             FROM session_events
             WHERE session_id = ? AND event_type = 'compaction'
+              AND boundary_start_position IS NOT NULL
+              AND boundary_end_position IS NOT NULL
+              AND boundary_message_id IS NOT NULL
               AND boundary_end_position < ?
             ORDER BY boundary_end_position DESC, position DESC
             LIMIT 1

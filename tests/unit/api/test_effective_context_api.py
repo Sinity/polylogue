@@ -114,6 +114,33 @@ async def test_effective_context_before_the_boundary_is_the_plain_prefix(
     assert missing is None
 
 
+@pytest.mark.asyncio
+async def test_effective_context_ignores_a_partial_stored_boundary(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A half-populated range is not precise context evidence."""
+    db_path = workspace_env["archive_root"] / "index.db"
+    _seed(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE session_events SET boundary_start_position = NULL WHERE event_type = 'compaction'")
+    conn.commit()
+    conn.close()
+
+    polylogue = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        effective = await polylogue.get_effective_context(_SESSION_ID, at_position=3)
+    finally:
+        await polylogue.close()
+
+    assert effective is not None
+    assert [message["text"] for message in effective] == [
+        "first ask",
+        "first answer",
+        "compaction summary",
+        "post-compaction ask",
+    ]
+
+
 def _seed_with_fork(db_path: Path) -> None:
     """Parent carrying a compaction boundary plus a fork that replays its prefix."""
     conn = sqlite3.connect(db_path)
