@@ -364,6 +364,10 @@ def test_lineage_validation_clean_archive_is_citable(tmp_path: Path) -> None:
     assert sample["sampled"] == 1
     assert sample["stored_messages"] == 1
     assert sample["composed_messages"] == 3
+    assert sample["inherited_prefix_messages"] == 2
+    assert sample["semantic_prefix_share_ratio"] == pytest.approx(2 / 3)
+    assert sample["complete"] is True
+    assert sample["measurement"] == "bounded canonical-message sample; excludes raw-byte and parser-CPU measurement"
     assert sample["rows"][0]["served_exceeds_stored"] is True
     topology = report["lineage"]["topology"]
     assert topology["empty_effective_status_count"] == 0
