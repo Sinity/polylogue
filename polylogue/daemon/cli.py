@@ -45,6 +45,7 @@ from polylogue.daemon.health import (
     format_health_lines,
     resolve_health_tiers,
 )
+from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
 from polylogue.daemon.lineage_startup import (
     ensure_lineage_startup_readiness_sync as _ensure_lineage_startup_readiness_sync,
 )
@@ -3228,10 +3229,6 @@ async def _run_daemon_services_under_active_writer_lease(
             gate = catch_up_complete_gate
             periodic_services: tuple[tuple[str, Callable[[], Coroutine[Any, Any, None]]], ...] = (
                 (
-                    "raw_materialization_convergence",
-                    lambda: _periodic_raw_materialization_convergence(catch_up_complete=gate),
-                ),
-                (
                     "convergence_check",
                     lambda: _periodic_convergence_check(
                         sources,
@@ -3263,7 +3260,6 @@ async def _run_daemon_services_under_active_writer_lease(
                     lambda: periodic_blob_publication_reconciliation_check(catch_up_complete=gate),
                 ),
                 ("secret_scan_sweep", lambda: periodic_secret_scan_sweep(catch_up_complete=gate)),
-                ("drive_source_catchup", lambda: _periodic_drive_source_catchup(catch_up_complete=gate)),
             )
             for service_name, service_factory in periodic_services:
                 supervisor.start(service_name, service_factory)
@@ -3295,10 +3291,17 @@ async def _run_daemon_services_under_active_writer_lease(
         # watcher runs acquire-only: raw acquisition proceeds, no
         # convergence coupling (polylogue-gbs02).
         try:
-            if enable_watch and not watcher_creation_blocked:
+            if not watcher_creation_blocked:
                 from polylogue.daemon.events import emit_catch_up_cycle
 
                 async with Polylogue() as polylogue:
+                    from polylogue.daemon.intake_adapters import (
+                        DaemonIntakeContext,
+                        DaemonIntakeService,
+                        build_intake_adapters,
+                        discover_pending_raw_ids,
+                    )
+
                     watcher = LiveWatcher(
                         polylogue,
                         sources,
@@ -3309,23 +3312,98 @@ async def _run_daemon_services_under_active_writer_lease(
                         write_coordinator=write_coordinator,
                         embedding_owner=_converge_ingest_embeddings_off_writer,
                         session_profile_callback=session_profile_callback,
+                        intake_hints_only=True,
                     )
                     watcher_holder.append(watcher)
-                    watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
-                    supervisor.start("watcher", watcher.run)
-                    if catch_up_complete_gate is not None and watcher_catch_up_complete is not None:
-                        supervisor.start(
-                            "catch_up_complete_bridge",
-                            lambda: _bridge_catch_up_complete(
-                                watcher_catch_up_complete,
-                                catch_up_complete_gate,
+
+                    async def run_intake_write(
+                        actor: str,
+                        function: Callable[..., Any],
+                        /,
+                        *args: Any,
+                        **kwargs: Any,
+                    ) -> Any:
+                        return await write_coordinator.run_sync(actor, function, *args, **kwargs)
+
+                    async def run_remote_intake() -> int:
+                        return await write_coordinator.run(
+                            "maintenance.drive_catchup", _run_drive_source_catchup_safely
+                        )
+
+                    def discover_raw_intake(limit: int) -> tuple[tuple[str, int], ...]:
+                        return discover_pending_raw_ids(
+                            archive_root_path,
+                            limit,
+                            max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+                        )
+
+                    async def admit_raw_intake(raw_id: str) -> int:
+                        from polylogue.config import Config
+                        from polylogue.maintenance import raw_authority
+                        from polylogue.paths import render_root
+
+                        config = Config(
+                            archive_root=archive_root_path,
+                            render_root=render_root(),
+                            sources=[],
+                        )
+                        result = await write_coordinator.run_sync(
+                            "maintenance.raw_materialization",
+                            functools.partial(
+                                raw_authority.converge_materialization,
+                                config,
+                                dry_run=False,
+                                raw_artifact_limit=1,
+                                max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+                                raw_artifact_id=raw_id,
+                                max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
                             ),
                         )
+                        return int(getattr(result, "repaired_count", 0) or 0)
+
+                    drive_sources_configured = False
+                    with contextlib.suppress(Exception):
+                        from polylogue.config import get_config
+
+                        drive_sources_configured = any(source.is_drive for source in get_config().sources)
+                    raw_materialization_available = not watcher_blocked and (archive_root_path / "source.db").exists()
+                    adapter_pairs = build_intake_adapters(
+                        DaemonIntakeContext(
+                            archive_root=archive_root_path,
+                            watcher=watcher,
+                            sources=sources,
+                            write_runner=run_intake_write,
+                        ),
+                        remote_callback=run_remote_intake
+                        if enable_source_catchup and drive_sources_configured
+                        else None,
+                        raw_callback=admit_raw_intake if raw_materialization_available else None,
+                        raw_discover=discover_raw_intake if raw_materialization_available else None,
+                    )
+                    dispatcher = FairIntakeDispatcher(
+                        tuple(IntakeClassSpec(name=name, adapter=adapter) for name, adapter in adapter_pairs),
+                        halts=halts,
+                        board=supervisor.board,
+                        frame=f"daemon:{os.getpid()}",
+                    )
+                    intake_service = DaemonIntakeService(dispatcher)
+                    supervisor.start("fair_intake", intake_service.run)
+                    if enable_watch:
+                        watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
+                        supervisor.start("watcher", watcher.run)
+                        if catch_up_complete_gate is not None and watcher_catch_up_complete is not None:
+                            supervisor.start(
+                                "catch_up_complete_bridge",
+                                lambda: _bridge_catch_up_complete(
+                                    watcher_catch_up_complete,
+                                    catch_up_complete_gate,
+                                ),
+                            )
                     if lifecycle_events_enabled:
                         await _emit_daemon_lifecycle_event(
                             "component_started",
                             archive_root_path=archive_root_path,
-                            component="watcher",
+                            component="intake",
                             payload={"source_count": len(sources), "debounce_s": debounce_s},
                         )
                     await supervisor.wait()
@@ -3338,7 +3416,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         archive_root_path=archive_root_path,
                         component="watcher",
                         payload={
-                            "reason": "schema_blocked" if watcher_creation_blocked else "disabled",
+                            "reason": "schema_blocked",
                             "watch_enabled": enable_watch,
                         },
                     )
