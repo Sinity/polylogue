@@ -432,7 +432,17 @@ class TestCodexRecordCompaction:
         assert record.has_replacement_history is False
 
     def test_turn_context_recognized(self) -> None:
-        record = CodexRecord(type="turn_context", payload={"context": "data"})
+        record = CodexRecord(
+            type="turn_context",
+            payload={
+                "approval_policy": "never",
+                "cwd": "/realm/project/polylogue",
+                "effort": "high",
+                "model": "gpt-5-codex",
+                "sandbox_policy": {"mode": "danger-full-access"},
+                "summary": "auto",
+            },
+        )
         assert record.is_turn_context is True
         assert record.is_message is False
         assert record.is_compaction is False
@@ -476,7 +486,17 @@ class TestCodexParserSessionEvents:
     def test_turn_context_emits_session_event(self) -> None:
         payload: list[object] = [
             {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2024-01-01"}},
-            {"type": "turn_context", "payload": {"context": "previous turn data"}},
+            {
+                "type": "turn_context",
+                "payload": {
+                    "approval_policy": "never",
+                    "cwd": "/realm/project/polylogue",
+                    "effort": "high",
+                    "model": "gpt-5-codex",
+                    "sandbox_policy": {"mode": "danger-full-access"},
+                    "summary": "auto",
+                },
+            },
             {
                 "type": "response_item",
                 "payload": {
@@ -487,9 +507,21 @@ class TestCodexParserSessionEvents:
             },
         ]
         result = parse_codex(payload, "fallback")
-        assert len(result.session_events) == 1
-        event = result.session_events[0]
+        assert len(result.session_events) == 2
+        policy_event, event = result.session_events
+        assert policy_event.event_type == "agent_policy"
+        assert policy_event.payload == {
+            "approval_policy": "never",
+            "sandbox_policy": "danger-full-access",
+        }
         assert event.event_type == "turn_context"
+        assert event.payload == {
+            "source_index": 2,
+            "cwd": "/realm/project/polylogue",
+            "model": "gpt-5-codex",
+            "effort": "high",
+            "reasoning_summary": "auto",
+        }
 
     def test_messages_still_extracted_alongside_compaction(self) -> None:
         """Compaction records must not break normal message extraction."""
@@ -512,7 +544,29 @@ class TestCodexParserSessionEvents:
                     "content": [{"type": "output_text", "text": "second message"}],
                 },
             },
-            {"type": "turn_context", "payload": {}},
+            {
+                "type": "turn_context",
+                "payload": {
+                    "approval_policy": "never",
+                    "cwd": "/realm/project/polylogue",
+                    "effort": "high",
+                    "model": "gpt-5-codex",
+                    "sandbox_policy": {
+                        "mode": "danger-full-access",
+                        "network_access": False,
+                        "exclude_slash_tmp": True,
+                        "exclude_tmpdir_env_var": False,
+                    },
+                    "summary": "auto",
+                    "personality": "pragmatic",
+                    "collaboration_mode": {
+                        "mode": "plan",
+                        "settings": {"model": "gpt-5-codex", "reasoning_effort": "high"},
+                    },
+                    "turn_id": "turn-123",
+                    "user_instructions": "Use the repository instructions.",
+                },
+            },
             {
                 "type": "response_item",
                 "payload": {
@@ -534,9 +588,28 @@ class TestCodexParserSessionEvents:
         ]
         assert result.messages[1].role == "system"
         assert result.messages[1].message_type.value == "summary"
-        assert len(result.session_events) == 2
+        assert len(result.session_events) == 3
         assert result.session_events[0].event_type == "compaction"
-        assert result.session_events[1].event_type == "turn_context"
+        assert result.session_events[1].event_type == "agent_policy"
+        assert result.session_events[1].payload == {
+            "approval_policy": "never",
+            "sandbox_policy": "danger-full-access",
+            "network_policy": "false",
+            "exclude_slash_tmp": True,
+            "exclude_tmpdir_env_var": False,
+        }
+        turn_event = result.session_events[2]
+        assert turn_event.event_type == "turn_context"
+        assert turn_event.payload == {
+            "source_index": 5,
+            "cwd": "/realm/project/polylogue",
+            "model": "gpt-5-codex",
+            "effort": "high",
+            "personality": "pragmatic",
+            "reasoning_summary": "auto",
+            "collaboration_mode": "plan",
+        }
+        assert result.instructions_text == "Use the repository instructions."
 
     def test_compaction_not_duplicated_in_provider_meta(self) -> None:
         """Compactions are session events, not session metadata."""
