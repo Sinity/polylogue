@@ -418,6 +418,7 @@ class LiveWatcher:
         parse_stage: LiveParseStage | None = None,
         embedding_owner: EmbeddingConvergenceOwner | None = None,
         session_profile_callback: SessionProfileConvergenceCallback | None = None,
+        intake_hints_only: bool = False,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
@@ -436,6 +437,10 @@ class LiveWatcher:
         # import (polylogue-c0l7n).
         self._embedding_owner = embedding_owner
         self._session_profile_callback = session_profile_callback
+        # The daemon's fair intake service owns acquisition when this is true.
+        # The watcher remains valuable as a low-latency wake/hint producer,
+        # but must not start a competing catch-up, debounce, or hook drain.
+        self._intake_hints_only = intake_hints_only
         self._catch_up_event_emitter = catch_up_event_emitter
         self._event_emitter = event_emitter
         self._published_source_halts: dict[str, str] = {}
@@ -545,13 +550,19 @@ class LiveWatcher:
         watch_task = asyncio.create_task(self._watch_changes(roots))
         await asyncio.sleep(0)
         try:
-            try:
-                await self._catch_up(roots)
-            finally:
+            if self._intake_hints_only:
+                # Discovery is deliberately owned by FairIntakeDispatcher.
+                # Mark the old gate ready so unrelated maintenance does not
+                # wait for an intake authority that is not this watcher.
                 self._catch_up_complete.set()
-            self._schedule_failed_retry_scan()
-            self._ensure_pending_scheduled()
-            self._periodic_catch_up_task = asyncio.create_task(self._periodic_catch_up(roots))
+            else:
+                try:
+                    await self._catch_up(roots)
+                finally:
+                    self._catch_up_complete.set()
+                self._schedule_failed_retry_scan()
+                self._ensure_pending_scheduled()
+                self._periodic_catch_up_task = asyncio.create_task(self._periodic_catch_up(roots))
 
             logger.info("live.watcher: watching %s", ", ".join(str(r) for r in roots))
             await watch_task
@@ -581,8 +592,9 @@ class LiveWatcher:
                         needs_first_envelope_retry = self._is_hook_spool_shard_directory(
                             observed_path
                         ) and not self._hook_spool_directory_has_envelope(observed_path)
-                        await self._drain_hook_spools()
-                        if needs_first_envelope_retry:
+                        if not self._intake_hints_only:
+                            await self._drain_hook_spools()
+                        if needs_first_envelope_retry and not self._intake_hints_only:
                             self._schedule_hook_spool_directory_retry(observed_path)
                         continue
                     self._enqueue_added_directory(observed_path)
@@ -593,7 +605,8 @@ class LiveWatcher:
                 if not self._source_accepts(path):
                     continue
                 if self._is_hook_spool_path(path):
-                    await self._drain_hook_spools()
+                    if not self._intake_hints_only:
+                        await self._drain_hook_spools()
                     self._cancel_hook_spool_directory_retry_if_acknowledged(path.parent)
                     continue
                 self._enqueue(path)

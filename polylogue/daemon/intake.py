@@ -274,7 +274,11 @@ class FairIntakeDispatcher:
             if item.item_id in runtime.isolated:
                 continue
             item_cost = max(1, int(item.estimated_cost))
-            if runtime.deficit < item_cost:
+            # A single item may be larger than the per-class byte budget. It
+            # still gets one bounded admission attempt; otherwise a large
+            # but valid source would wait forever while its siblings consume
+            # the deficit in later passes.
+            if runtime.deficit < item_cost and (admitted or duplicates or retried or isolated):
                 break
             # Charge the estimate before admission. An adapter cannot hide a
             # large item behind a cheap synthetic page identity.

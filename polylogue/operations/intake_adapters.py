@@ -41,8 +41,11 @@ __all__ = [
     "DaemonIntakeContext",
     "DaemonIntakeService",
     "FileIntakeAdapter",
+    "MultiplexIntakeAdapter",
     "HookSpoolIntakeAdapter",
     "CallbackIntakeAdapter",
+    "RawMaterializationIntakeAdapter",
+    "discover_pending_raw_ids",
     "build_intake_adapters",
 ]
 
@@ -76,29 +79,30 @@ def _bounded_source_paths(
     while pending and len(found) < limit:
         directory = pending.popleft()
         try:
-            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+            entries = os.scandir(directory)
         except OSError:
             continue
-        for entry in entries:
-            path = Path(entry.path)
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    pending.append(path)
+        with entries:
+            for entry in entries:
+                path = Path(entry.path)
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(path)
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                except OSError:
                     continue
-                if not entry.is_file(follow_symlinks=False):
+                if after is not None and str(path) <= after:
                     continue
-            except OSError:
-                continue
-            if after is not None and str(path) <= after:
-                continue
-            try:
-                if deepest_source_for_path(path, all_sources) is not source or not source.accepts(path):
+                try:
+                    if deepest_source_for_path(path, all_sources) is not source or not source.accepts(path):
+                        continue
+                except OSError:
                     continue
-            except OSError:
-                continue
-            found.append(path)
-            if len(found) >= limit:
-                break
+                found.append(path)
+                if len(found) >= limit:
+                    break
     return found
 
 
@@ -110,8 +114,21 @@ class FileIntakeAdapter(IntakeAdapter):
         self.source = source
         self.class_name = class_name or source.name
         self._after: str | None = None
+        self._last_root_mtime_ns: int | None = None
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        # A filesystem cursor is only a scheduling hint.  A producer may add
+        # an item lexicographically before the previous position; restart the
+        # bounded walk when the root changed so that insertion is revisited.
+        # Durable cursor/raw identity makes revisiting already admitted files
+        # harmless and avoids treating this hint as queue authority.
+        try:
+            root_mtime_ns = self.source.root.stat().st_mtime_ns
+        except OSError:
+            root_mtime_ns = None
+        if root_mtime_ns is not None and root_mtime_ns != self._last_root_mtime_ns:
+            self._after = None
+            self._last_root_mtime_ns = root_mtime_ns
         paths = _bounded_source_paths(self.source, self.context.sources, limit=limit, after=self._after)
         if paths:
             self._after = str(paths[-1])
@@ -138,9 +155,19 @@ class FileIntakeAdapter(IntakeAdapter):
         if not path.is_file():
             return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"source carrier vanished: {path}")
         try:
+            cursor = getattr(self.context.watcher, "_cursor", None)
+            run_writer_sync = getattr(self.context.watcher, "_run_writer_sync", None)
+            if cursor is not None and callable(run_writer_sync):
+                await run_writer_sync("watcher.intake.cursor_initialize", cursor.initialize)
             metrics = await self.context.watcher._ingest_files(
                 [path], queued_file_count=1, whole_archive_convergence=False
             )
+            converge_embeddings = getattr(self.context.watcher, "_converge_embeddings_off_writer", None)
+            if callable(converge_embeddings):
+                await converge_embeddings([path])
+            converge_profiles = getattr(self.context.watcher, "_converge_session_profiles_off_writer", None)
+            if callable(converge_profiles):
+                await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
         except (OSError, ValueError, RuntimeError) as exc:
             return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"{type(exc).__name__}: {exc}")
         succeeded = int(getattr(metrics, "succeeded_file_count", 0) or 0)
@@ -156,6 +183,52 @@ class FileIntakeAdapter(IntakeAdapter):
         # Files remain retained source carriers.  The live batch's durable
         # cursor/raw commit is the acknowledgement projection.
         return None
+
+
+class MultiplexIntakeAdapter(IntakeAdapter):
+    """Bounded round-robin over several configured local file roots.
+
+    The dispatcher has one logical ``configured_local`` class.  Keeping one
+    adapter per root would duplicate that class identity and make construction
+    order accidentally authoritative, so this adapter owns only a disposable
+    root position and delegates each item to its source adapter.
+    """
+
+    def __init__(self, adapters: Sequence[IntakeAdapter]) -> None:
+        if not adapters:
+            raise ValueError("at least one file adapter is required")
+        self.adapters = tuple(adapters)
+        self._next = 0
+        self._by_item: dict[str, IntakeAdapter] = {}
+
+    async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        if limit <= 0:
+            return ()
+        result: list[IntakeItem] = []
+        owners: list[IntakeAdapter] = []
+        start = self._next
+        for offset in range(len(self.adapters)):
+            adapter = self.adapters[(start + offset) % len(self.adapters)]
+            remaining = limit - len(result)
+            if remaining <= 0:
+                break
+            page = await adapter.discover(limit=remaining)
+            result.extend(page)
+            owners.extend([adapter] * len(page))
+        self._next = (start + 1) % len(self.adapters)
+        self._by_item.update({item.item_id: adapter for item, adapter in zip(result, owners, strict=True)})
+        return tuple(result[:limit])
+
+    async def admit(self, item: IntakeItem) -> AdmissionResult:
+        adapter = self._by_item.get(item.item_id)
+        if adapter is None:
+            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="configured source item lost its adapter")
+        return await adapter.admit(item)
+
+    async def acknowledge(self, item: IntakeItem) -> None:
+        adapter = self._by_item.pop(item.item_id, None)
+        if adapter is not None:
+            await adapter.acknowledge(item)
 
 
 class HookSpoolIntakeAdapter(IntakeAdapter):
@@ -238,11 +311,17 @@ class CallbackIntakeAdapter(IntakeAdapter):
     """One-shot bounded remote/raw adapter around an existing domain route."""
 
     def __init__(
-        self, class_name: str, callback: Callable[[], Awaitable[int] | int], *, estimated_cost: int = 1
+        self,
+        class_name: str,
+        callback: Callable[[], Awaitable[int] | int],
+        *,
+        estimated_cost: int = 1,
+        persistent: bool = True,
     ) -> None:
         self.class_name = class_name
         self.callback = callback
         self.estimated_cost = max(1, estimated_cost)
+        self.persistent = persistent
         self._pending = True
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
@@ -255,7 +334,7 @@ class CallbackIntakeAdapter(IntakeAdapter):
             changed = self.callback()
             if isinstance(changed, Awaitable):
                 changed = await changed
-            self._pending = False
+            self._pending = self.persistent
             return AdmissionResult(
                 AdmissionOutcome.ADMITTED if int(changed) else AdmissionOutcome.DUPLICATE,
                 actual_cost=self.estimated_cost,
@@ -264,7 +343,56 @@ class CallbackIntakeAdapter(IntakeAdapter):
             return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"{self.class_name}: {exc}")
 
     async def acknowledge(self, item: IntakeItem) -> None:
-        self._pending = False
+        if not self.persistent:
+            self._pending = False
+
+
+class RawMaterializationIntakeAdapter(IntakeAdapter):
+    """Bounded raw-id discovery delegated to the canonical derivation route."""
+
+    def __init__(
+        self,
+        discover_ids: Callable[[int], Sequence[tuple[str, int]]],
+        admit_id: Callable[[str], Awaitable[int] | int],
+    ) -> None:
+        self._discover_ids = discover_ids
+        self._admit_id = admit_id
+
+    async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        return tuple(
+            IntakeItem(raw_id, "raw_materialization", estimated_cost=max(1, int(cost)))
+            for raw_id, cost in self._discover_ids(limit)
+        )
+
+    async def admit(self, item: IntakeItem) -> AdmissionResult:
+        try:
+            changed = self._admit_id(item.item_id)
+            if isinstance(changed, Awaitable):
+                changed = await changed
+            return AdmissionResult(
+                AdmissionOutcome.ADMITTED if int(changed) else AdmissionOutcome.DUPLICATE,
+                actual_cost=item.estimated_cost,
+            )
+        except Exception as exc:
+            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"raw materialization: {exc}")
+
+    async def acknowledge(self, item: IntakeItem) -> None:
+        return None
+
+
+def discover_pending_raw_ids(archive_root: Path, limit: int, max_payload_bytes: int) -> tuple[tuple[str, int], ...]:
+    """Return a bounded read-only raw frontier page for the intake adapter."""
+    from polylogue.config import Config
+    from polylogue.paths import render_root
+    from polylogue.storage.raw_convergence import raw_materialization_pending_census_raw_ids
+
+    config = Config(archive_root=archive_root, render_root=render_root(), sources=[])
+    raw_ids = raw_materialization_pending_census_raw_ids(
+        config,
+        limit=limit,
+        max_payload_bytes=max_payload_bytes,
+    )
+    return tuple((raw_id, 1) for raw_id in raw_ids)
 
 
 class DaemonIntakeService:
@@ -285,22 +413,37 @@ def build_intake_adapters(
     context: DaemonIntakeContext,
     *,
     remote_callback: Callable[[], Awaitable[int] | int] | None = None,
-    raw_callback: Callable[[], Awaitable[int] | int] | None = None,
+    raw_callback: Callable[..., Awaitable[int] | int] | None = None,
+    raw_discover: Callable[[int], Sequence[tuple[str, int]]] | None = None,
 ) -> tuple[tuple[str, IntakeAdapter], ...]:
     """Compose browser, hook, local, remote, and admitted-raw classes."""
 
     result: list[tuple[str, IntakeAdapter]] = []
+    local: list[FileIntakeAdapter] = []
     for source in context.sources:
         if source.role in {"primary-writable", "legacy-read-only"}:
             continue
         if source.name == "browser-capture":
             result.append(("browser_capture", FileIntakeAdapter(context, source, class_name="browser_capture")))
         else:
-            result.append(("configured_local", FileIntakeAdapter(context, source, class_name="configured_local")))
-    for spec in hook_spool_sources():
-        result.append(("hook_spool", HookSpoolIntakeAdapter(context, spec)))
+            local.append(FileIntakeAdapter(context, source, class_name="configured_local"))
+    if local:
+        result.append(("configured_local", MultiplexIntakeAdapter(local)))
+    hooks = [HookSpoolIntakeAdapter(context, spec) for spec in hook_spool_sources()]
+    if hooks:
+        result.append(("hook_spool", MultiplexIntakeAdapter(hooks)))
     if remote_callback is not None:
         result.append(("configured_remote", CallbackIntakeAdapter("configured_remote", remote_callback)))
     if raw_callback is not None:
-        result.append(("raw_materialization", CallbackIntakeAdapter("raw_materialization", raw_callback)))
+        if raw_discover is None:
+            result.append(("raw_materialization", CallbackIntakeAdapter("raw_materialization", raw_callback)))
+        else:
+
+            async def admit_raw(raw_id: str) -> int:
+                value = raw_callback(raw_id)
+                if isinstance(value, Awaitable):
+                    value = await value
+                return int(value)
+
+            result.append(("raw_materialization", RawMaterializationIntakeAdapter(raw_discover, admit_raw)))
     return tuple(result)
