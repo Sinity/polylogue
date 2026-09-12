@@ -10,7 +10,7 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, converge
-from polylogue.operations.raw_observation_derivation import raw_observation_frame
+from polylogue.operations.raw_observation_derivation import converge_raw_observations, raw_observation_frame
 from polylogue.storage.derived.raw import RawObservationDerivation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -214,3 +214,28 @@ def test_discovery_budget_bounds_raw_enumeration(tmp_path: Path) -> None:
     assert report.work.discovered == 2
     assert report.work.computed == report.work.published == 0
     assert not report.cursor.position("raw_observation").swept
+
+
+@pytest.mark.parametrize("limit", [1, 2])
+def test_bounded_source_pass_publishes_every_selected_observation(tmp_path: Path, limit: int) -> None:
+    """Anti-vacuity: spending the inspection budget on discovery prevents all writes."""
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "source"
+    for index in range(limit):
+        _admit(tmp_path, (f"selected-{index}",), path=str(source / f"{index}.json"))
+    _admit(tmp_path, ("outside",), path=str(tmp_path / "outside.json"))
+
+    report = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit, max_payload_bytes=1_000_000)
+
+    assert report.failed == report.pending == 0
+    assert report.done == report.work.computed == report.work.published == limit
+    assert report.work.discovered == limit
+    assert report.work.inspected == 2 * limit
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [
+            (f"selected-{index}",) for index in range(limit)
+        ]
+    before = _snapshot(tmp_path)
+    unchanged = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit, max_payload_bytes=1_000_000)
+    assert unchanged.wrote_nothing
+    assert _snapshot(tmp_path) == before

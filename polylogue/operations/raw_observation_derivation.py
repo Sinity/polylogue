@@ -95,6 +95,8 @@ def converge_raw_observations(
     return converge(
         DerivationRegistry((adapter,)),
         raw_observation_frame(archive_root, source_roots=source_roots),
-        budget=Budget(page=min(128, limit), discovery=limit, inspection=limit, compute=limit, publication=limit),
+        # Each discovered key needs inspection before compute and again to
+        # certify publication. Discovery alone must not exhaust that budget.
+        budget=Budget(page=min(128, limit), discovery=limit, inspection=2 * limit, compute=limit, publication=limit),
         cursor=cursor,
     )
