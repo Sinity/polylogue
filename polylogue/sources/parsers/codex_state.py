@@ -299,15 +299,16 @@ class CodexThreadGoal:
 class CodexMemoryRecord:
     """One ``stage1_outputs`` row from ``memories_1.sqlite``.
 
-    ``raw_memory``/``rollout_summary`` text is intentionally not exposed here
-    -- see ``CODEX_STATE_FIDELITY``'s ``"memories"`` disposition
-    (acquire-partial: raw bytes are captured for durability, structured
-    consumption is deferred). Only structural facts are surfaced.
+    The text is provider-generated material, not a user assertion.  It is
+    exposed so the production material read route can retain it with explicit
+    Codex provenance; it is never promoted into a message or session row.
     """
 
     thread_id: str
     source_updated_at_ms: int
     generated_at_ms: int
+    raw_memory: str
+    rollout_summary: str
     usage_count: int | None
     has_rollout_slug: bool
     selected_for_phase2: bool
@@ -384,9 +385,30 @@ def parse_codex_goals_db(path: Path, *, immutable: bool = False) -> tuple[CodexT
     """Parse ``thread_goals`` from a Codex ``goals_1.sqlite`` snapshot."""
     with closing(_connect_readonly(path, immutable=immutable)) as conn:
         conn.row_factory = sqlite3.Row
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(thread_goals)")}
+
+        def col(name: str, fallback: str) -> str:
+            return name if name in columns else f"{fallback} AS {name}"
+
         rows = conn.execute(
-            "SELECT thread_id, goal_id, objective, status, token_budget, tokens_used, "
-            "time_used_seconds, created_at_ms, updated_at_ms FROM thread_goals ORDER BY thread_id"
+            "SELECT "
+            + ", ".join(
+                (
+                    col(name, fallback)
+                    for name, fallback in (
+                        ("thread_id", "''"),
+                        ("goal_id", "thread_id"),
+                        ("objective", "''"),
+                        ("status", "''"),
+                        ("token_budget", "NULL"),
+                        ("tokens_used", "0"),
+                        ("time_used_seconds", "0"),
+                        ("created_at_ms", "0"),
+                        ("updated_at_ms", "0"),
+                    )
+                )
+            )
+            + " FROM thread_goals ORDER BY thread_id"
         ).fetchall()
     return tuple(
         CodexThreadGoal(
@@ -406,14 +428,11 @@ def parse_codex_goals_db(path: Path, *, immutable: bool = False) -> tuple[CodexT
 
 
 def parse_codex_memories_db(path: Path, *, immutable: bool = False) -> tuple[CodexMemoryRecord, ...]:
-    """Parse structural facts from a Codex ``memories_1.sqlite`` snapshot.
-
-    See ``CodexMemoryRecord`` -- raw memory text is deliberately not surfaced.
-    """
+    """Parse generated memory content and accounting from a retained snapshot."""
     with closing(_connect_readonly(path, immutable=immutable)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT thread_id, source_updated_at, generated_at, usage_count, "
+            "SELECT thread_id, source_updated_at, generated_at, raw_memory, rollout_summary, usage_count, "
             "rollout_slug, selected_for_phase2 FROM stage1_outputs ORDER BY thread_id"
         ).fetchall()
     return tuple(
@@ -421,6 +440,8 @@ def parse_codex_memories_db(path: Path, *, immutable: bool = False) -> tuple[Cod
             thread_id=_row_str(row, "thread_id"),
             source_updated_at_ms=_row_int(row, "source_updated_at"),
             generated_at_ms=_row_int(row, "generated_at"),
+            raw_memory=_row_str(row, "raw_memory"),
+            rollout_summary=_row_str(row, "rollout_summary"),
             usage_count=_row_opt_int(row, "usage_count"),
             has_rollout_slug=_row_opt_str(row, "rollout_slug") is not None,
             selected_for_phase2=bool(_row_int(row, "selected_for_phase2")),
