@@ -334,6 +334,14 @@ def test_fidelity_declaration_covers_every_known_kind() -> None:
     assert declared_codex_sqlite_classification(Path("unknown.sqlite")) is None
 
 
+def test_goals_and_memories_declare_their_shared_material_consumer() -> None:
+    """The retained text has a current public route, not a deferred promise."""
+    reasons = {classification.kind: classification.reason for classification in CODEX_STATE_FIDELITY}
+    assert "shared material reader" in reasons["goals"]
+    assert "provider-generated material" in reasons["memories"]
+    assert "no parsed/typed consumption" not in reasons["memories"]
+
+
 def test_every_declared_codex_database_has_a_disposition_and_a_reason() -> None:
     """A database beside a declared one is a silent acquisition decision.
 

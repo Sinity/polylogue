@@ -120,8 +120,8 @@ CODEX_STATE_FIDELITY: tuple[CodexStateDbClassification, ...] = (
         reason=(
             "thread_goals.objective is stated task intent unavailable anywhere else, "
             "but the table is small (tens of rows) and low-churn; acquire the raw "
-            "snapshot for durability, no session_events wiring is included in this "
-            "change."
+            "snapshot for durability, then derive current values through the shared "
+            "material reader with source and thread provenance."
         ),
     ),
     CodexStateDbClassification(
@@ -132,8 +132,8 @@ CODEX_STATE_FIDELITY: tuple[CodexStateDbClassification, ...] = (
             "stage1_outputs.raw_memory is Codex-side memory with no archive "
             "representation, but its content is a derived summary over content "
             "Polylogue already ingests from the JSONL rollout; acquire the raw "
-            "snapshot for durability, no parsed/typed consumption is included in "
-            "this change."
+            "snapshot for durability, then retain it as explicitly provider-generated "
+            "material rather than a user assertion."
         ),
     ),
     CodexStateDbClassification(

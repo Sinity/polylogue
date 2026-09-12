@@ -1,6 +1,6 @@
 """End-to-end proof that Codex live SQLite state is acquired as one logical
-export and its evidence reaches the index tier, never as a session of its own
-and never as durable per-row material.
+export and its evidence reaches existing read models, never as a session of
+its own or a bespoke Codex durable table.
 
 Drives the real ``LiveBatchProcessor`` (acquire -> parse -> archive write),
 exactly the daemon's own full-ingest path -- not a mock of the join, not a
@@ -35,6 +35,7 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.materials import MaterialObservation
 
 _THREAD_ID = "66c7b83d-1b42-43a5-977c-870299c489a6"
 _CHILD_THREAD_ID = "449dd1eb-ea3d-4710-925b-7398a78fe3a7"
@@ -262,21 +263,245 @@ async def test_codex_out_of_scope_state_db_is_excluded_not_read(
         await archive.close()
 
 
-def _write_goals_1_sqlite(path: Path) -> None:
-    """``goals_1.sqlite`` (CODEX_STATE_FIDELITY: acquire-partial) -- a table
-    shape with no threads, so nothing but the raw snapshot itself is evidence."""
+def _write_goals_1_sqlite(
+    path: Path,
+    *,
+    objective: str = "synthetic objective",
+    status: str = "active",
+    token_budget: int | None = 100_000,
+    tokens_used: int = 4_200,
+) -> None:
+    """Write one current ``goals_1.sqlite`` logical export fixture."""
+    path.unlink(missing_ok=True)
     with sqlite3.connect(path) as conn:
         conn.executescript(
             """
-            CREATE TABLE thread_goals (thread_id TEXT PRIMARY KEY, objective TEXT, updated_at_ms INTEGER);
+            CREATE TABLE thread_goals (
+                thread_id TEXT PRIMARY KEY,
+                goal_id TEXT NOT NULL,
+                objective TEXT NOT NULL,
+                status TEXT NOT NULL,
+                token_budget INTEGER,
+                tokens_used INTEGER NOT NULL,
+                time_used_seconds INTEGER NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
             CREATE TABLE thread_goal_continuation_deferrals (thread_id TEXT, deferred_until_ms INTEGER);
             """
         )
         conn.execute(
-            "INSERT INTO thread_goals (thread_id, objective, updated_at_ms) VALUES (?, ?, ?)",
-            (_THREAD_ID, "synthetic objective", 1000),
+            "INSERT INTO thread_goals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (_THREAD_ID, "goal-1", objective, status, token_budget, tokens_used, 900, 1_000, 2_000),
         )
         conn.commit()
+
+
+def _write_memories_1_sqlite(
+    path: Path,
+    *,
+    raw_memory: str = "generated memory text",
+    rollout_summary: str = "generated rollout summary",
+    usage_count: int = 3,
+) -> None:
+    """Write one provider-generated ``memories_1.sqlite`` fixture."""
+    path.unlink(missing_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE stage1_outputs (
+                thread_id TEXT PRIMARY KEY,
+                source_updated_at INTEGER NOT NULL,
+                raw_memory TEXT NOT NULL,
+                rollout_summary TEXT NOT NULL,
+                rollout_slug TEXT,
+                generated_at INTEGER NOT NULL,
+                usage_count INTEGER,
+                last_usage INTEGER,
+                selected_for_phase2 INTEGER NOT NULL DEFAULT 0,
+                selected_for_phase2_source_updated_at INTEGER
+            );
+            CREATE TABLE jobs (id TEXT PRIMARY KEY, state TEXT);
+            """
+        )
+        conn.execute(
+            "INSERT INTO stage1_outputs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _THREAD_ID,
+                1_700_000_100,
+                raw_memory,
+                rollout_summary,
+                "synthetic-rollout",
+                1_700_000_110,
+                usage_count,
+                1_700_000_120,
+                1,
+                None,
+            ),
+        )
+        conn.commit()
+
+
+def _material_payloads(archive_root: Path) -> list[tuple[MaterialObservation, dict[str, object]]]:
+    """Read retained Codex content through the public material reader."""
+    from polylogue.storage.materials import list_materials, read_material
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        observations = list_materials(conn, evidence_ref=_CODEX_SESSION_ID)
+        return [
+            (
+                observation,
+                json.loads(read_material(conn, observation.material_id, blob_store=BlobStore(archive_root / "blob"))),
+            )
+            for observation in observations
+        ]
+
+
+@pytest.mark.asyncio
+async def test_codex_goals_and_memories_survive_as_scoped_public_materials(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Ordinary ingest derives public, provenance-bearing state evidence.
+
+    Anti-vacuity: removing the goals/memories branch from
+    ``record_codex_state_snapshot_terminal`` leaves this reader empty. The
+    native databases are removed before the final read, so this proves the
+    evidence comes from retained exports and generic material blobs.
+    """
+    from polylogue.storage.materials import list_material_links
+
+    archive, codex_root, codex_state_root = _make_processor(
+        workspace_env, "codex-home-materials", "codex-state-materials.db"
+    )
+    processor = LiveBatchProcessor(
+        archive,
+        (
+            WatchSource(name="codex", root=codex_root),
+            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+        ),
+        cursor=CursorStore(workspace_env["data_root"] / "codex-state-materials.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    archive_root = workspace_env["archive_root"]
+    try:
+        rollout_path = codex_root / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
+        overlapping_rollout = codex_root / f"rollout-2026-07-20T10-00-01-{_THREAD_ID}.jsonl"
+        _write_codex_rollout(rollout_path)
+        _write_codex_rollout(overlapping_rollout)
+        assert (
+            await processor.ingest_files([rollout_path, overlapping_rollout], emit_event=False)
+        ).failed_file_count == 0
+
+        goals_path = codex_state_root / "goals_1.sqlite"
+        memories_path = codex_state_root / "memories_1.sqlite"
+        _write_goals_1_sqlite(goals_path)
+        _write_memories_1_sqlite(memories_path)
+        state_metrics = await processor.ingest_files([goals_path, memories_path], emit_event=False)
+        assert state_metrics.failed_file_count == 0
+        assert state_metrics.ingested_session_count == 0
+
+        first = _material_payloads(archive_root)
+        assert len(first) == 2
+        first_by_generated = {payload["generated"]: (observation, payload) for observation, payload in first}
+        goal_observation, goal = first_by_generated[False]
+        memory_observation, memory = first_by_generated[True]
+        assert goal == {
+            "created_at_ms": 1_000,
+            "generated": False,
+            "goal_id": "goal-1",
+            "objective": "synthetic objective",
+            "provider": "codex",
+            "status": "active",
+            "thread_id": _THREAD_ID,
+            "time_used_seconds": 900,
+            "token_budget": 100_000,
+            "tokens_used": 4_200,
+            "updated_at_ms": 2_000,
+        }
+        assert memory["raw_memory"] == "generated memory text"
+        assert memory["rollout_summary"] == "generated rollout summary"
+        assert memory["usage_count"] == 3
+        assert memory["generated"] is True
+        encoded_scope = codex_state_root.as_posix().replace("/", "%2F")
+        assert f"scope={encoded_scope}" in goal_observation.source_uri
+        assert f"/{_THREAD_ID}/goal-1?" in goal_observation.source_uri
+        assert f"/{_THREAD_ID}/{_THREAD_ID}?" in memory_observation.source_uri
+
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            goal_links = list_material_links(conn, goal_observation.material_id)
+            assert {(link.relation, link.authority) for link in goal_links} == {
+                ("acquired_from", "provider"),
+                ("refers_to", "provider"),
+            }
+            assert {link.evidence_ref for link in goal_links if link.relation == "refers_to"} == {_CODEX_SESSION_ID}
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            assert conn.execute("SELECT count(*) FROM assertions").fetchone() == (0,)
+
+        # Replaying identical state and overlapping rollout evidence creates
+        # no second value and never sums Codex's source usage counter.
+        assert (
+            await processor.ingest_files([goals_path, memories_path, overlapping_rollout], emit_event=False)
+        ).failed_file_count == 0
+        replayed = _material_payloads(archive_root)
+        assert len(replayed) == 2
+        assert {payload.get("usage_count") for _observation, payload in replayed if payload["generated"]} == {3}
+
+        # Native deletion is only an absence observation. Public material reads
+        # remain byte-for-byte available from archive blobs.
+        goals_path.unlink()
+        memories_path.unlink()
+        retained = _material_payloads(archive_root)
+        assert [(observation.material_id, payload) for observation, payload in retained] == [
+            (observation.material_id, payload) for observation, payload in replayed
+        ]
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_codex_goal_materials_do_not_cross_supersede_source_roots(
+    workspace_env: dict[str, Path],
+) -> None:
+    """R3: equal Codex coordinates in distinct installs remain distinct."""
+    archive_root = workspace_env["archive_root"]
+    root_a = workspace_env["data_root"] / "codex-install-a"
+    root_b = workspace_env["data_root"] / "codex-install-b"
+    sessions_a = root_a / "sessions"
+    sessions_a.mkdir(parents=True)
+    root_b.mkdir()
+    archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "codex-state-scopes.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (
+            WatchSource(name="codex-a", root=sessions_a),
+            WatchSource(name="codex-state-a", root=root_a, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state-b", root=root_b, suffixes=(".sqlite", ".db")),
+        ),
+        cursor=CursorStore(workspace_env["data_root"] / "codex-state-scopes.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        rollout_path = sessions_a / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
+        _write_codex_rollout(rollout_path)
+        assert (await processor.ingest_files([rollout_path], emit_event=False)).failed_file_count == 0
+        goals_a = root_a / "goals_1.sqlite"
+        goals_b = root_b / "goals_1.sqlite"
+        _write_goals_1_sqlite(goals_a, objective="goal from install A")
+        _write_goals_1_sqlite(goals_b, objective="goal from install B")
+        assert (await processor.ingest_files([goals_a, goals_b], emit_event=False)).failed_file_count == 0
+
+        materials = _material_payloads(archive_root)
+        assert len(materials) == 2
+        assert {payload["objective"] for _observation, payload in materials} == {
+            "goal from install A",
+            "goal from install B",
+        }
+        assert {observation.source_uri for observation, _payload in materials} == {
+            f"codex://state/goal/{_THREAD_ID}/goal-1?scope={root_a.as_posix().replace('/', '%2F')}",
+            f"codex://state/goal/{_THREAD_ID}/goal-1?scope={root_b.as_posix().replace('/', '%2F')}",
+        }
+    finally:
+        await archive.close()
 
 
 def _cursor_authority_gap_states(archive_root: Path) -> list[str]:
