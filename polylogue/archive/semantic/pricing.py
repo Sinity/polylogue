@@ -47,7 +47,7 @@ CostBasis = Literal[
 ]
 
 LITELLM_PRICE_MAP_URL = "https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"
-CATALOG_PROVENANCE = "litellm-model-prices-vendored+polylogue-curated-overrides"
+CATALOG_PROVENANCE = "litellm-model-prices-vendored"
 CATALOG_EFFECTIVE_DATE = "2026-06-27"
 
 
@@ -202,47 +202,6 @@ class ModelPricing:
         )
 
 
-# Hand-verified overrides (USD per 1M tokens). These win over the vendored
-# LiteLLM catalog (built in `_load_litellm_catalog`), so Anthropic cache rates
-# we've checked stay exact even if upstream drifts. Provider-reported exact
-# archive costs still take precedence over both.
-_CURATED_PRICING: dict[str, ModelPricing] = {
-    # Anthropic list prices, cache-write column is the 5-minute rate (1.25x
-    # input); the 1-hour rate is 2x input and is not modelled separately.
-    "claude-fable-5": ModelPricing("anthropic", 10.0, 50.0, 1.0, 12.5),
-    "claude-mythos-5": ModelPricing("anthropic", 10.0, 50.0, 1.0, 12.5),
-    "claude-opus-5": ModelPricing("anthropic", 5.0, 25.0, 0.5, 6.25),
-    "claude-opus-4-8": ModelPricing("anthropic", 5.0, 25.0, 0.5, 6.25),
-    "claude-opus-4-7": ModelPricing("anthropic", 5.0, 25.0, 0.5, 6.25),
-    "claude-opus-4-6": ModelPricing("anthropic", 5.0, 25.0, 0.5, 6.25),
-    "claude-opus-4-5": ModelPricing("anthropic", 5.0, 25.0, 0.5, 6.25),
-    "claude-opus-4-1": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
-    "claude-sonnet-5": ModelPricing("anthropic", 2.0, 10.0, 0.2, 2.5),
-    "claude-sonnet-4-6": ModelPricing("anthropic", 3.0, 15.0, 0.3, 3.75),
-    "claude-sonnet-4-5": ModelPricing("anthropic", 3.0, 15.0, 0.3, 3.75),
-    "claude-haiku-4-5": ModelPricing("anthropic", 1.0, 5.0, 0.1, 1.25),
-    "claude-3-5-sonnet-20241022": ModelPricing("anthropic", 3.0, 15.0, 0.3, 3.75),
-    "claude-3-5-sonnet-20240620": ModelPricing("anthropic", 3.0, 15.0, 0.3, 3.75),
-    "claude-3-5-haiku-20241022": ModelPricing("anthropic", 0.8, 4.0, 0.08, 1.0),
-    "claude-3-opus-20240229": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
-    "claude-3-sonnet-20240229": ModelPricing("anthropic", 3.0, 15.0, 0.3, 3.75),
-    "claude-3-haiku-20240307": ModelPricing("anthropic", 0.25, 1.25, 0.03, 0.3),
-    "gpt-4o": ModelPricing("openai", 2.5, 10.0),
-    "gpt-4o-mini": ModelPricing("openai", 0.15, 0.6),
-    "gpt-4-turbo": ModelPricing("openai", 10.0, 30.0),
-    "gpt-4": ModelPricing("openai", 30.0, 60.0),
-    "gpt-3.5-turbo": ModelPricing("openai", 0.5, 1.5),
-    "o1": ModelPricing("openai", 15.0, 60.0),
-    "o1-mini": ModelPricing("openai", 3.0, 12.0),
-    "o3": ModelPricing("openai", 10.0, 40.0),
-    "o3-mini": ModelPricing("openai", 1.1, 4.4),
-    "gemini-1.5-pro": ModelPricing("google", 3.5, 10.5),
-    "gemini-1.5-flash": ModelPricing("google", 0.075, 0.3),
-    "gemini-2.0-flash": ModelPricing("google", 0.1, 0.4),
-    "gemini-2.5-pro": ModelPricing("google", 1.25, 10.0),
-}
-
-
 def _load_litellm_catalog() -> dict[str, ModelPricing]:
     """Build a ModelPricing catalog from the vendored LiteLLM price map.
 
@@ -255,8 +214,8 @@ def _load_litellm_catalog() -> dict[str, ModelPricing]:
           -o polylogue/archive/semantic/data/litellm_model_prices.json
 
     Keys are stored both fully-qualified (``openai/gpt-5.4``) and bare
-    (``gpt-5.4``); on a bare-name collision a non-Azure provider wins so
-    generic lookups get list pricing.
+    (``gpt-5.4``). A direct bare LiteLLM entry wins its final-segment lookup;
+    a routed alias supplies a bare key only when the catalog has no direct row.
     """
     path = Path(__file__).parent / "data" / "litellm_model_prices.json"
     try:
@@ -265,8 +224,8 @@ def _load_litellm_catalog() -> dict[str, ModelPricing]:
         return {}
     catalog: dict[str, ModelPricing] = {}
     for key, entry in raw.items():
-        # Skip the meta spec row and any blank key — an empty key would be a
-        # prefix of every model name and silently price unknown models.
+        # Skip the meta spec row and any blank key. Resolution uses an exact
+        # final path segment, so a blank key must never become a catch-all.
         if not key or not key.strip() or key == "sample_spec":
             continue
         if not isinstance(entry, dict):
@@ -283,19 +242,22 @@ def _load_litellm_catalog() -> dict[str, ModelPricing]:
             cache_read_usd_per_1m=float(entry.get("cache_read_input_token_cost") or 0.0) * 1_000_000,
             cache_write_usd_per_1m=float(entry.get("cache_creation_input_token_cost") or 0.0) * 1_000_000,
             source_url=LITELLM_PRICE_MAP_URL,
-            provenance="litellm-model-prices-vendored",
+            provenance=CATALOG_PROVENANCE,
         )
         catalog[key] = pricing
         bare = key.split("/")[-1]
-        if bare and (bare not in catalog or not provider.startswith("azure")):
+        # Exact bare LiteLLM entries are the canonical final-segment rate.
+        # A routed alias may provide the only entry for an otherwise absent
+        # model, but must not replace a direct model entry as files are read.
+        if bare and (bare not in catalog or key == bare):
             catalog[bare] = pricing
     return catalog
 
 
-# Full catalog: vendored LiteLLM map as the base, hand-verified entries override.
-PRICING: dict[str, ModelPricing] = {**_load_litellm_catalog(), **_CURATED_PRICING}
-
-_PRICING_KEYS_DESC = tuple(sorted(PRICING, key=len, reverse=True))
+# The vendored LiteLLM map is the only API-list price source. Subscription
+# credits live in their own explicitly labelled view and are not an API-rate
+# fallback. Keep all model-to-price resolution through this one catalog.
+PRICING: dict[str, ModelPricing] = _load_litellm_catalog()
 
 
 def _coerce_float(value: object) -> float | None:
@@ -332,32 +294,24 @@ def _record(value: object) -> Mapping[str, object]:
 
 
 def _normalize_model(model: str) -> str:
-    """Normalize a provider model name for catalog lookup."""
+    """Normalize a provider model name for exact LiteLLM catalog lookup.
+
+    Provider routes may prefix a model with arbitrary path segments. Pricing
+    identifies the model by its final path segment only, then removes a dated
+    snapshot suffix. It deliberately does not prefix-match a predecessor: an
+    unknown model must remain unpriced rather than inherit a nearby rate.
+    """
 
     candidate = model.strip()
     if not candidate:
         return candidate
-    lowered = candidate.casefold()
-    lowered = lowered.removeprefix("openai/")
-    lowered = lowered.removeprefix("anthropic/")
-    lowered = lowered.removeprefix("google/")
-    lowered = lowered.removeprefix("gemini/")
-    # aistudio-drive's parser stores the raw Gemini API resource-path model
-    # identifier verbatim (e.g. "models/gemini-2.5-pro") -- strip the
-    # "models/" resource-path segment so it normalizes to the same catalog
-    # key as gemini-cli-session's bare form (polylogue-6j9c).
-    lowered = lowered.removeprefix("models/")
+    lowered = candidate.casefold().rsplit("/", 1)[-1]
     # Canonicalize trailing date snapshots to the base model so cost rollups
     # don't fragment by release date (e.g. gpt-4o-2024-08-06 -> gpt-4o,
     # claude-opus-4-8-20260101 -> claude-opus-4-8). Done before the exact-match
     # lookup because the vendored LiteLLM catalog carries dated keys too.
     lowered = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", lowered)
     lowered = re.sub(r"-\d{8}$", "", lowered)
-    if lowered in PRICING:
-        return lowered
-    for key in _PRICING_KEYS_DESC:
-        if lowered.startswith(key):
-            return key
     return lowered
 
 

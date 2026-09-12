@@ -190,6 +190,71 @@ def test_origin_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_pa
     assert headline_row.logical_model_rollup_usage == row.logical_model_rollup_usage
 
 
+def test_provider_usage_ledger_keeps_cross_provider_lanes_disjoint(tmp_path: Path) -> None:
+    """Each ledger entry labels its overlapping provider counters before use.
+
+    Anti-vacuity: summing Codex's raw input with cache reads, or raw output
+    with reasoning, reproduces the historical multi-fold cost inflation.
+    Claude's cache lane is already separate, while ChatGPT export has no
+    provider counters and must stay unavailable rather than become a zero.
+    """
+    conn = _connect(tmp_path / "index.db")
+
+    def write_session(provider: Provider, session_id: str) -> str:
+        return write_parsed_session_to_archive(
+            conn,
+            ParsedSession(source_name=provider, provider_session_id=session_id, title=session_id, messages=[]),
+        )
+
+    codex_id = write_session(Provider.CODEX, "codex")
+    claude_id = write_session(Provider.CLAUDE_CODE, "claude")
+    write_session(Provider.CHATGPT, "chatgpt")
+    conn.executemany(
+        """
+        INSERT INTO session_provider_usage_events (
+            session_id, position, provider_event_type, model_name,
+            last_input_tokens, last_output_tokens, last_cached_input_tokens,
+            last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens
+        ) VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (codex_id, "token_count", "gpt-4o", 2500, 50, 2400, 0, 30, 2550),
+            (claude_id, "message_usage", "claude-sonnet-4-5", 100, 20, 40, 10, 0, 160),
+        ],
+    )
+
+    report = origin_usage_report_from_connection(conn, archive_root=tmp_path, limit=0)
+    origins = {row.origin: row for row in report.origins}
+    codex = origins["codex-session"].provider_request_lanes
+    claude = origins["claude-code-session"].provider_request_lanes
+    chatgpt = origins["chatgpt-export"].provider_request_lanes
+
+    assert codex.to_dict() == {
+        "state": "reported",
+        "input_semantics": "inclusive_of_cache",
+        "output_semantics": "inclusive_of_reasoning",
+        "uncached_input_tokens": 100,
+        "cached_input_tokens": 2400,
+        "cache_write_tokens": 0,
+        "completion_output_tokens": 20,
+        "reasoning_output_tokens": 30,
+        "provider_input_tokens": 2500,
+        "provider_output_tokens": 50,
+        "provider_total_tokens": 2550,
+    }
+    assert codex.has_disjoint_partitions()
+    assert claude.input_semantics == "separate_cache_lane"
+    assert claude.output_semantics == "separate_reasoning_lane"
+    assert claude.uncached_input_tokens == 100
+    assert claude.cached_input_tokens == 40
+    assert claude.completion_output_tokens == 20
+    assert claude.reasoning_output_tokens == 0
+    assert claude.has_disjoint_partitions()
+    assert chatgpt.state == "unavailable"
+    assert "input_tokens" not in codex.to_dict()
+    assert "output_tokens" not in codex.to_dict()
+
+
 def test_origin_report_pricing_lane_uses_provider_dollars() -> None:
     conn = _connect(Path(":memory:"))
     conn.execute(
@@ -435,7 +500,7 @@ def test_origin_usage_report_separates_priced_and_unpriced_repricing(tmp_path: P
     assert logical_lanes["unknown"].catalog_priced_subtotal_usd == pytest.approx(3.65)
     assert logical_lanes["unknown"].session_count == 2
     payload = report.to_dict()
-    assert payload["pricing_catalog_provenance"] == "litellm-model-prices-vendored+polylogue-curated-overrides"
+    assert payload["pricing_catalog_provenance"] == "litellm-model-prices-vendored"
     assert payload["stored_provider_priced_usd"] == pytest.approx(1.25)
     assert payload["catalog_api_equivalent_usd"] is None
     assert payload["catalog_priced_subtotal_usd"] == pytest.approx(4.9)
