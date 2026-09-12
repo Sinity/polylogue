@@ -343,7 +343,78 @@ async def test_sync_writer_cancellation_holds_gate_until_thread_finishes() -> No
     assert released.is_set()
     assert coordinator.snapshot().active_actor is None
     raw_release = next(event for event in events if event.phase == "released" and event.actor == "raw")
-    assert raw_release.outcome == "cancelled"
+    # The caller disconnected, but the admitted worker returned normally. The
+    # release receipt must preserve that terminal success rather than
+    # reporting the caller's cancellation as the writer's outcome.
+    assert raw_release.outcome == "success"
+
+
+@pytest.mark.asyncio
+async def test_transaction_receipt_distinguishes_commit_from_rollback_after_disconnect(tmp_path: Path) -> None:
+    """Terminal evidence comes from the admitted transaction, not its caller.
+
+    A disconnected caller must not relabel a transaction that later commits.
+    A transaction that rolls back and raises keeps the error evidence instead.
+    The SQLite rows make both outcomes deterministic and observable after the
+    coordinator has released ownership.
+    """
+    db = tmp_path / "terminal-evidence.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE writes (value TEXT NOT NULL)")
+        conn.commit()
+
+    events: list[DaemonWriteEvent] = []
+    commit_released = asyncio.Event()
+
+    def observe(event: DaemonWriteEvent) -> None:
+        events.append(event)
+        if event.actor == "transaction.commit" and event.phase == "released":
+            commit_released.set()
+
+    coordinator = DaemonWriteCoordinator(observer=observe)
+    worker_started = threading.Event()
+    allow_commit = threading.Event()
+
+    def commit_writer() -> None:
+        with sqlite3.connect(db) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT INTO writes VALUES ('committed')")
+            worker_started.set()
+            assert allow_commit.wait(timeout=1.0)
+            conn.commit()
+
+    caller = asyncio.create_task(coordinator.run_sync("transaction.commit", commit_writer))
+    assert await asyncio.to_thread(worker_started.wait, 1.0)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(caller, timeout=0.1)
+    allow_commit.set()
+    await commit_released.wait()
+
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT value FROM writes").fetchall() == [("committed",)]
+    commit_release = next(
+        event for event in events if event.actor == "transaction.commit" and event.phase == "released"
+    )
+    assert commit_release.outcome == "success"
+
+    def rollback_writer() -> None:
+        with sqlite3.connect(db) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT INTO writes VALUES ('rolled-back')")
+            conn.rollback()
+        raise RuntimeError("transaction rolled back")
+
+    with pytest.raises(RuntimeError, match="transaction rolled back"):
+        await coordinator.run_sync("transaction.rollback", rollback_writer)
+
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT value FROM writes").fetchall() == [("committed",)]
+    rollback_release = next(
+        event for event in events if event.actor == "transaction.rollback" and event.phase == "released"
+    )
+    assert rollback_release.outcome == "error"
+    assert await coordinator.shutdown(timeout=1.0)
 
 
 @pytest.mark.asyncio
