@@ -41,12 +41,20 @@ def _open_index(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def test_legacy_route_attachment_is_backfilled_and_bounded(tmp_path: Path) -> None:
-    """A ZIP-restored index row is fetched without Drive iterator enumeration."""
+def test_polylogue_ck5v_legacy_route_attachment_is_backfilled_and_bounded(tmp_path: Path) -> None:
+    """A ZIP-restored row is fetched without Drive iterator enumeration.
+
+    Anti-vacuity: this asserts durable attachment rows and source blob refs,
+    not a fetch-helper call. Removing the ``upload_origin='drive'`` production
+    guard (or restoring the iterator-only route) leaves the motivating row
+    unfetched and makes the public durable-state assertions fail.
+    """
     initialize_active_archive_root(tmp_path)
     index = _open_index(tmp_path / "index.db")
     session = _session("legacy-zip", file_id="drive-file-1")
     write_parsed_session_to_archive(index, session, raw_id="legacy-zip-raw")
+    negative = _session("negative-paste", upload_origin="paste", file_id="paste-file-1")
+    write_parsed_session_to_archive(index, negative, raw_id="negative-paste-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")
     source.row_factory = sqlite3.Row
@@ -59,6 +67,11 @@ def test_legacy_route_attachment_is_backfilled_and_bounded(tmp_path: Path) -> No
         calls.append(file_id)
         return payload
 
+    before = {
+        str(row["attachment_id"]): (row["blob_hash"], row["acquisition_status"])
+        for row in index.execute("SELECT attachment_id, blob_hash, acquisition_status FROM attachments")
+    }
+
     result = converge_drive_attachments(
         index,
         source,
@@ -67,16 +80,27 @@ def test_legacy_route_attachment_is_backfilled_and_bounded(tmp_path: Path) -> No
         limit=1,
     )
 
-    row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
+    rows = {
+        str(row["attachment_id"]): row
+        for row in index.execute("SELECT attachment_id, blob_hash, byte_count, acquisition_status FROM attachments")
+    }
     source_ref = source.execute(
         "SELECT blob_hash, ref_id, ref_type, size_bytes FROM blob_refs WHERE ref_type = 'attachment'"
     ).fetchone()
     assert result.acquired == 1
     assert result.complete
     assert calls == ["drive-file-1"]
-    assert row["acquisition_status"] == "acquired"
-    assert row["byte_count"] == len(payload)
-    assert bytes(row["blob_hash"]) == hashlib.sha256(payload).digest()
+    assert set(rows) == set(before)
+    assert len(rows) == 2
+    acquired = next(row for row in rows.values() if row["acquisition_status"] == "acquired")
+    assert before[str(acquired["attachment_id"])] == (None, "unfetched")
+    assert acquired["acquisition_status"] == "acquired"
+    assert acquired["byte_count"] == len(payload)
+    assert bytes(acquired["blob_hash"]) == hashlib.sha256(payload).digest()
+    negative_row = next(row for row in rows.values() if row["acquisition_status"] == "unfetched")
+    assert before[str(negative_row["attachment_id"])] == (None, "unfetched")
+    assert negative_row["blob_hash"] is None
+    assert negative_row["byte_count"] == 0
     assert bytes(source_ref["blob_hash"]) == hashlib.sha256(payload).digest()
     assert source_ref["ref_id"] == "legacy-zip-raw"
     assert source_ref["size_bytes"] == len(payload)
@@ -160,11 +184,17 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
 
+    calls: list[str] = []
+
+    def fetch(file_id: str) -> bytes:
+        calls.append(file_id)
+        raise DriveNotFoundError("deleted")
+
     result = converge_drive_attachments(
         index,
         source,
         archive_root=tmp_path,
-        download_bytes=lambda _file_id: (_ for _ in ()).throw(DriveNotFoundError("deleted")),
+        download_bytes=fetch,
     )
 
     row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
@@ -173,5 +203,13 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
     assert row["acquisition_status"] == "unavailable"
     assert row["blob_hash"] is None
     assert row["byte_count"] == 0
+    retry = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_bytes=fetch,
+    )
+    assert retry.inspected == 0
+    assert calls == ["deleted-file"]
     index.close()
     source.close()
