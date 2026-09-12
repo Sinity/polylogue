@@ -318,7 +318,7 @@ class CallbackIntakeAdapter(IntakeAdapter):
     def __init__(
         self,
         class_name: str,
-        callback: Callable[[], Awaitable[int] | int],
+        callback: Callable[[], Awaitable[AdmissionResult | int] | AdmissionResult | int],
         *,
         estimated_cost: int = 1,
         persistent: bool = True,
@@ -339,6 +339,8 @@ class CallbackIntakeAdapter(IntakeAdapter):
             changed = self.callback()
             if isinstance(changed, Awaitable):
                 changed = await changed
+            if isinstance(changed, AdmissionResult):
+                return changed
             self._pending = self.persistent
             return AdmissionResult(
                 AdmissionOutcome.ADMITTED if int(changed) else AdmissionOutcome.DUPLICATE,
@@ -358,7 +360,7 @@ class RawMaterializationIntakeAdapter(IntakeAdapter):
     def __init__(
         self,
         discover_ids: Callable[[int], Sequence[tuple[str, int]]],
-        admit_id: Callable[[str], Awaitable[int] | int],
+        admit_id: Callable[[str], Awaitable[AdmissionResult | int] | AdmissionResult | int],
     ) -> None:
         self._discover_ids = discover_ids
         self._admit_id = admit_id
@@ -374,6 +376,8 @@ class RawMaterializationIntakeAdapter(IntakeAdapter):
             changed = self._admit_id(item.item_id)
             if isinstance(changed, Awaitable):
                 changed = await changed
+            if isinstance(changed, AdmissionResult):
+                return changed
             return AdmissionResult(
                 AdmissionOutcome.ADMITTED if int(changed) else AdmissionOutcome.DUPLICATE,
                 actual_cost=item.estimated_cost,
@@ -455,7 +459,7 @@ def build_intake_adapters(
     context: DaemonIntakeContext,
     *,
     remote_callback: Callable[[], Awaitable[int] | int] | None = None,
-    raw_callback: Callable[..., Awaitable[int] | int] | None = None,
+    raw_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
     raw_discover: Callable[[int], Sequence[tuple[str, int]]] | None = None,
 ) -> tuple[tuple[str, IntakeAdapter], ...]:
     """Compose browser, hook, local, remote, and admitted-raw classes."""
@@ -481,11 +485,11 @@ def build_intake_adapters(
             result.append(("raw_materialization", CallbackIntakeAdapter("raw_materialization", raw_callback)))
         else:
 
-            async def admit_raw(raw_id: str) -> int:
+            async def admit_raw(raw_id: str) -> AdmissionResult | int:
                 value = raw_callback(raw_id)
                 if isinstance(value, Awaitable):
                     value = await value
-                return int(value)
+                return value
 
             result.append(("raw_materialization", RawMaterializationIntakeAdapter(raw_discover, admit_raw)))
     return tuple(result)

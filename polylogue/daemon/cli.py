@@ -45,7 +45,7 @@ from polylogue.daemon.health import (
     format_health_lines,
     resolve_health_tiers,
 )
-from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
+from polylogue.daemon.intake import AdmissionOutcome, AdmissionResult, FairIntakeDispatcher, IntakeClassSpec
 from polylogue.daemon.lineage_startup import (
     ensure_lineage_startup_readiness_sync as _ensure_lineage_startup_readiness_sync,
 )
@@ -1321,26 +1321,18 @@ def _raw_source_path(archive: Path, raw_id: str) -> str | None:
 
 
 def _raw_materialized_session_ids(archive: Path, raw_id: str) -> tuple[str, ...]:
-    """Return the current logical output of one admitted raw observation.
+    """Return every current session output in one admitted raw component.
 
     The query deliberately follows the active index generation after raw
     publication. It is not a raw-planning hint: this is the domain output
     that tells the session-profile derivation which partitions the completed
     replay may have changed. A raw may legitimately produce zero sessions or
-    split into several, so callers must preserve the complete ordered result.
+    split into several; canonical replay can also expand it into a membership
+    component, so callers must preserve every affected output partition.
     """
-    from contextlib import closing
+    from polylogue.operations.raw_observation_derivation import raw_observation_output_session_ids
 
-    from polylogue.storage.archive_identity import resolve_active_index_path
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-    index_db = resolve_active_index_path(archive)
-    with closing(open_readonly_connection(index_db, timeout=5.0)) as conn:
-        rows = conn.execute(
-            "SELECT session_id FROM sessions WHERE raw_id = ? ORDER BY session_id",
-            (raw_id,),
-        ).fetchall()
-    return tuple(str(row[0]) for row in rows)
+    return raw_observation_output_session_ids(archive, raw_id)
 
 
 async def _converge_raw_materialized_session_profiles(
@@ -3252,16 +3244,26 @@ async def _run_daemon_services_under_active_writer_lease(
             from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 
             if api_server is not None:
+                daemon_compute = api_server.execution_kernel
                 session_profile_callback = api_server.session_profile_callback
             else:
                 from polylogue.daemon.execution import daemon_compute_adapter
 
+                daemon_compute = daemon_compute_adapter()
                 session_profile_callback = compose_session_profile_callback(
                     archive_root_path,
-                    compute_adapter=daemon_compute_adapter(),
+                    compute_adapter=daemon_compute,
                     write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                     now=time.time,
                 )
+            from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+
+            raw_observation_owner = RawObservationConvergenceOwner(
+                archive_root_path,
+                compute_adapter=daemon_compute,
+                write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+            )
 
             fts_startup = await _run_startup_fts_readiness(write_coordinator)
             if lifecycle_events_enabled:
@@ -3398,36 +3400,37 @@ async def _run_daemon_services_under_active_writer_lease(
                             max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
                         )
 
-                    async def admit_raw_intake(raw_id: str) -> int:
-                        from polylogue.config import Config
-                        from polylogue.maintenance import raw_authority
-                        from polylogue.paths import render_root
+                    async def admit_raw_intake(raw_id: str) -> AdmissionResult:
+                        from polylogue.daemon.derivation import Outcome
 
-                        config = Config(
-                            archive_root=archive_root_path,
-                            render_root=render_root(),
-                            sources=[],
-                        )
-                        result = await write_coordinator.run_sync(
-                            "maintenance.raw_materialization",
-                            functools.partial(
-                                raw_authority.converge_materialization,
-                                config,
-                                dry_run=False,
-                                raw_artifact_limit=1,
-                                max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
-                                raw_artifact_id=raw_id,
-                                max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
-                            ),
-                        )
-                        repaired_count = int(getattr(result, "repaired_count", 0) or 0)
-                        if repaired_count:
+                        report = await raw_observation_owner.converge_raw_id(raw_id)
+                        outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key == raw_id)
+                        failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
+                        if failed is not None:
+                            return AdmissionResult(
+                                AdmissionOutcome.RETRYABLE,
+                                reason=failed.error or "raw observation derivation failed",
+                            )
+                        pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
+                        if pending is not None:
+                            return AdmissionResult(
+                                AdmissionOutcome.RETRYABLE,
+                                reason=pending.reason.value
+                                if pending.reason is not None
+                                else "raw observation pending",
+                            )
+                        if report.done:
                             await _converge_raw_materialized_session_profiles(
                                 archive_root_path,
                                 raw_id,
                                 session_profile_callback,
                             )
-                        return repaired_count
+                            return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=1)
+                        # A concurrent publisher may have made the inspected
+                        # raw valid between discovery and this exact pass.
+                        # Dispatcher acknowledgement is then warranted, but
+                        # only because the canonical output relation said so.
+                        return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=1)
 
                     drive_sources_configured = False
                     with contextlib.suppress(Exception):
