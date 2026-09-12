@@ -1,16 +1,15 @@
-"""A managed pytest run is sized to what its job may take, not what the host has.
+"""A managed pytest run is sized to the pytest pool it owns after admission.
 
-Two bounds apply at once. The host's ``MemAvailable`` was the only one read,
-so jobs 1793, 1804 and 1836 were killed at eight workers inside the pytest
-pool's cgroup while roughly 10 GiB was free on the host -- 1836 while it was
-the only pytest task. A killed run measures nothing; a narrower run that
-finishes measures everything.
+The host's ``MemAvailable`` used to narrow a corpus after the pool had already
+admitted it.  That lets unrelated agent work collapse an otherwise valid
+pytest width.  AgentCTL backpressure decides host admission; this module keeps
+the command within ``agentctl-pytest.slice`` and records host memory only as
+diagnostic evidence.
 
 Anti-vacuity:
-- make ``cgroup_available_mib`` return ``None`` unconditionally and both
-  ``test_the_pytest_slice_bounds_a_host_with_memory_to_spare`` and
-  ``test_a_hosted_verify_launch_stays_inside_the_pytest_slice`` go red -- the
-  width returns to the host-only one the OOM daemon killed;
+- replace ``pytest_slot_available_mib`` with the generic ancestor walk and
+  ``test_the_pytest_slice_ignores_shared_agent_slice_usage`` goes red -- a
+  busy agent slice once stole the pytest pool's independent budget;
 - read only ``memory.max`` and ``test_a_soft_ceiling_bounds_as_firmly_as_a_hard_one``
   goes red, which is the production shape: the pytest slice's ``memory.max`` is
   8 GiB and its ``memory.high`` 6 GiB, and systemd-oomd kills on the pressure
@@ -162,21 +161,17 @@ def test_an_idle_host_runs_the_full_width(tmp_path: Path) -> None:
 
 
 def test_a_loaded_host_runs_narrower(tmp_path: Path) -> None:
-    """The measured condition of the first killed runs: about 4.7 GiB available."""
+    """Host pressure is an admission concern, never a post-admission resize."""
     workers, basis = memory_bounded_worker_cap(meminfo=_meminfo(tmp_path, 4707), **_unbounded_cgroup(tmp_path))
-    assert workers < CORPUS_MAX_WORKERS
-    # The chosen width fits the headroom-adjusted budget; the fixed one does not.
-    assert _peak_mib(workers) <= 4707 * 0.8
-    assert _peak_mib(CORPUS_MAX_WORKERS) > 4707 * 0.8
-    assert basis["basis"] == "mem_available"
-    assert basis["narrowed"] is True
-    assert basis["available_mib"] == 4707
+    assert workers == CORPUS_MAX_WORKERS
+    assert basis["basis"] == "unmeasured"
+    assert basis["host_available_mib"] == 4707
 
 
 def test_a_starved_host_still_runs_one_worker(tmp_path: Path) -> None:
-    """A slow run beats a killed run; it never resolves to zero workers."""
+    """A starved host is held before launch; it does not rewrite a command."""
     workers, _basis = memory_bounded_worker_cap(meminfo=_meminfo(tmp_path, 200), **_unbounded_cgroup(tmp_path))
-    assert workers == 1
+    assert workers == CORPUS_MAX_WORKERS
 
 
 def test_an_unreadable_meminfo_does_not_narrow_silently(tmp_path: Path) -> None:
@@ -370,13 +365,14 @@ def test_the_pytest_slice_bounds_a_host_with_memory_to_spare(tmp_path: Path) -> 
     assert host_only == CORPUS_MAX_WORKERS
 
 
-def test_the_tighter_bound_decides_when_the_host_is_the_tighter_one(tmp_path: Path) -> None:
-    """A roomy cgroup does not license a run the host cannot hold."""
+def test_the_pytest_slice_ignores_shared_agent_slice_usage(tmp_path: Path) -> None:
+    """The local pytest pool, rather than host or shared parent use, decides."""
     paths = _pytest_slice(tmp_path, current_mib=350)
     workers, basis = memory_bounded_worker_cap(meminfo=_meminfo(tmp_path, 2500), **paths)
-    assert basis["basis"] == "mem_available"
-    assert basis["available_mib"] == 2500
-    assert _peak_mib(workers) <= 2500 * (1.0 - MEMORY_HEADROOM_FRACTION)
+    assert basis["basis"] == "cgroup_budget"
+    assert basis["available_mib"] == PYTEST_SLICE_HIGH_MIB - 350
+    assert basis["host_available_mib"] == 2500
+    assert workers == CORPUS_MAX_WORKERS
 
 
 def test_a_hosted_verify_launch_stays_inside_the_pytest_slice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -408,7 +404,9 @@ def test_a_hosted_verify_launch_stays_inside_the_pytest_slice(tmp_path: Path, mo
 
 def test_resize_narrows_the_worker_argument_in_place(tmp_path: Path) -> None:
     argv = ["python", "-m", "pytest", "--dist=loadgroup", "-n", "8", "tests"]
-    resized, basis = resize_worker_argument(argv, meminfo=_meminfo(tmp_path, 4707), **_unbounded_cgroup(tmp_path))
+    resized, basis = resize_worker_argument(
+        argv, meminfo=_meminfo(tmp_path, 28000), **_pytest_slice(tmp_path, current_mib=1500)
+    )
     assert basis is not None and basis["narrowed"] is True
     assert resized[resized.index("-n") + 1] == str(basis["workers"])
     # Only the count changes; the rest of the command is untouched.

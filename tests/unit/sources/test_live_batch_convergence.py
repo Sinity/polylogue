@@ -118,7 +118,7 @@ class _GateTrackingCoordinator:
 
 
 @pytest.mark.asyncio
-async def test_live_flush_runs_the_embedding_owner_after_releasing_the_writer_gate(
+async def test_live_flush_runs_lease_free_owners_after_releasing_the_writer_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -139,10 +139,14 @@ async def test_live_flush_runs_the_embedding_owner_after_releasing_the_writer_ga
 
     coordinator = _GateTrackingCoordinator()
     observed: list[tuple[str, bool, tuple[Path, ...]]] = []
+    session_observed: list[tuple[bool, tuple[str, ...]]] = []
 
     async def owner(index_db_path: Path, paths: Sequence[Path], /) -> bool:
         observed.append(("embedding_owner", coordinator.held, tuple(paths)))
         return True
+
+    async def session_owner(session_ids: Sequence[str], /) -> None:
+        session_observed.append((coordinator.held, tuple(session_ids)))
 
     watcher = live_watcher.LiveWatcher(
         MagicMock(archive_root=tmp_path),
@@ -150,11 +154,16 @@ async def test_live_flush_runs_the_embedding_owner_after_releasing_the_writer_ga
         cursor=CursorStore(index_db),
         write_coordinator=cast(Any, coordinator),
         embedding_owner=owner,
+        session_profile_callback=session_owner,
     )
 
-    async def fake_ingest_files(paths: list[Path], **_kwargs: object) -> None:
+    async def fake_ingest_files(paths: list[Path], **_kwargs: object) -> object:
         observed.append(("ingest", coordinator.held, tuple(paths)))
-        return None
+        return SimpleNamespace(
+            changed_session_ids=("session-1", "session-1", "session-2"),
+            succeeded_file_count=1,
+            failed_file_count=0,
+        )
 
     monkeypatch.setattr(watcher, "_ingest_files", fake_ingest_files)
     monkeypatch.setattr(watcher, "_needs_work_from_state", lambda *_a, **_k: True)
@@ -169,3 +178,4 @@ async def test_live_flush_runs_the_embedding_owner_after_releasing_the_writer_ga
         ("ingest", True, (source,)),
         ("embedding_owner", False, (source,)),
     ]
+    assert session_observed == [(False, ("session-1", "session-2"))]

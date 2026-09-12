@@ -1074,7 +1074,7 @@ class TestEmitDeleteMachineModeNoPrompt:
             ),
         )
         monkeypatch.setattr(archive_query, "_daemon_disabled", lambda **_kwargs: False)
-        monkeypatch.setattr("polylogue.cli.daemon_client.DaemonClient", Client)
+        monkeypatch.setattr("polylogue.daemon_client.DaemonClient", Client)
         monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: tmp_path / "daemon.sock")
         monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
 
@@ -1120,7 +1120,7 @@ class TestEmitDeleteMachineModeNoPrompt:
             ),
         )
         monkeypatch.setattr(archive_query, "_daemon_disabled", lambda **_kwargs: False)
-        monkeypatch.setattr("polylogue.cli.daemon_client.DaemonClient", Client)
+        monkeypatch.setattr("polylogue.daemon_client.DaemonClient", Client)
         monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda root: root / "daemon.sock")
         monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
 

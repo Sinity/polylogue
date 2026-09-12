@@ -85,11 +85,13 @@ class UserOverlayAudit:
         )
 
 
-def audit_user_overlay_storage(conn: sqlite3.Connection) -> UserOverlayAudit:
+def audit_user_overlay_storage(conn: sqlite3.Connection, *, schema: str = "main") -> UserOverlayAudit:
     """Return the live user-overlay storage audit for a user-tier connection."""
 
     surfaces: list[UserOverlayAuditSurface] = []
-    kind_counts = _assertion_counts_by_kind(conn)
+    if schema not in {"main", "user_tier"}:
+        raise ValueError("unsupported user overlay reader schema")
+    kind_counts = _assertion_counts_by_kind(conn, schema=schema)
     for surface_name, kind in _ASSERTION_BACKED_SURFACES.items():
         counts = kind_counts.get(kind.value, {})
         total = sum(counts.values())
@@ -111,13 +113,13 @@ def audit_user_overlay_storage(conn: sqlite3.Connection) -> UserOverlayAudit:
     return UserOverlayAudit(surfaces=tuple(surfaces))
 
 
-def _assertion_counts_by_kind(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
-    if not _table_exists(conn, "assertions"):
+def _assertion_counts_by_kind(conn: sqlite3.Connection, *, schema: str = "main") -> dict[str, dict[str, int]]:
+    if not _table_exists(conn, "assertions", schema=schema):
         return {}
     rows = conn.execute(
-        """
+        f"""
         SELECT kind, COALESCE(status, '') AS status, COUNT(*) AS count
-        FROM assertions
+        FROM {schema}.assertions
         GROUP BY kind, COALESCE(status, '')
         """
     ).fetchall()

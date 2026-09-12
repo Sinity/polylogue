@@ -11,8 +11,10 @@ from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
     DAEMON_OPERATION_SPECS,
     DaemonOperationRequest,
+    OperationResultContractError,
     StatusRequest,
     archive_identity,
+    validate_operation_result,
 )
 
 
@@ -67,6 +69,60 @@ def test_operation_specs_bind_concrete_payload_models() -> None:
                 "payload": {"unexpected": True},
                 "request_id": "bad-status",
             }
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "payload"),
+    [
+        ("status", {"include_archive_readiness": "true"}),
+        ("mutation.session.metadata", {"session_ids": ["codex:one"], "pairs": [["key"]]}),
+        ("mutation.session.metadata", {"session_ids": ["codex:one"], "pairs": [[" ", "value"]]}),
+        ("mutation.session.delete.execute", {"authorization_refs": ["same", "same"]}),
+    ],
+)
+def test_request_contract_rejects_coercion_and_ambiguous_mutation_inputs(
+    operation: str,
+    payload: dict[str, object],
+) -> None:
+    """Removing strict validation or reference uniqueness admits these inputs."""
+    with pytest.raises(ValueError):
+        DaemonOperationRequest.from_dict(
+            {
+                "protocol": DAEMON_OPERATION_PROTOCOL,
+                "request_id": "contract-request",
+                "operation": operation,
+                "payload": payload,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "operation", ["cli.query", "query.units", "completion", "facets", "status", "operation.status"]
+)
+def test_declared_result_contracts_reject_empty_placeholders(operation: str) -> None:
+    """An empty permissive model would accept a result with no product evidence."""
+    with pytest.raises(OperationResultContractError):
+        validate_operation_result(operation, {})
+
+
+def test_mutation_result_requires_exact_authorization_reference_shape() -> None:
+    validate_operation_result(
+        "mutation.session.delete.authorize",
+        {
+            "status": "authorized",
+            "authorization_ref": "one",
+            "authorization_refs": ["one", "two"],
+        },
+    )
+    with pytest.raises(OperationResultContractError):
+        validate_operation_result(
+            "mutation.session.delete.authorize",
+            {
+                "status": "authorized",
+                "authorization_ref": "other",
+                "authorization_refs": ["one", "two"],
+            },
         )
 
 

@@ -17,9 +17,11 @@ contract either way.
 
 from __future__ import annotations
 
+import bisect
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import aiosqlite
 
@@ -33,6 +35,8 @@ from polylogue.storage.sqlite.write_lease import write_lease
 __all__ = [
     "SESSION_PARTITION_INSPECT_CHUNK",
     "SESSION_PROFILE_DOMAIN",
+    "SessionProfileMarkerLoweringError",
+    "SessionProfilePartFacts",
     "SessionProfileDerivation",
     "SessionProfileReplacement",
     "SESSION_PROFILE_RECIPE_VERSION",
@@ -42,6 +46,7 @@ __all__ = [
     "inspect_session_profiles",
     "inspect_session_profiles_async",
     "publish_session_profile",
+    "publish_prepared_session_profile",
     "stored_session_profile_binding",
 ]
 
@@ -51,6 +56,77 @@ SESSION_PROFILE_RECIPE_VERSION = SESSION_INPUT_RECIPE_VERSION
 _VALID = "valid"
 _MISSING = "missing"
 _STALE = "stale"
+
+
+class SessionProfileMarkerLoweringError(RuntimeError):
+    """A user-tier marker publication failed after a known index outcome.
+
+    ``index_family_committed`` records an index-tier replacement committed by
+    *this* invocation.  A valid existing profile with a missing marker may
+    still need user-tier recovery, but a failed recovery attempt has not
+    committed a new index replacement and must not claim one.
+    """
+
+    def __init__(self, *, index_family_committed: bool) -> None:
+        super().__init__("session profile marker lowering failed after index publication")
+        self.index_family_committed = index_family_committed
+
+
+def _marker_assertion_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
+    from polylogue.markers.lowering import assertion_id_for_marker
+    from polylogue.storage.derived.session.rebuild import marker_candidates_for_session_sync
+
+    return tuple(
+        assertion_id
+        for candidate in marker_candidates_for_session_sync(conn, session_id)
+        if (assertion_id := assertion_id_for_marker(candidate)) is not None
+    )
+
+
+def _marker_assertions_present(conn: sqlite3.Connection, assertion_ids: Sequence[str]) -> bool:
+    if not assertion_ids:
+        return True
+    placeholders = ",".join("?" * len(assertion_ids))
+    found = conn.execute(
+        f"SELECT COUNT(*) FROM assertions WHERE assertion_id IN ({placeholders})",
+        tuple(assertion_ids),
+    ).fetchone()
+    return found is not None and int(found[0]) == len(assertion_ids)
+
+
+def _lower_prepared_markers(
+    marker_write_connection: Callable[[], sqlite3.Connection],
+    prepared: object,
+) -> None:
+    """Publish marker candidates after the index family has committed.
+
+    The user tier cannot share SQLite atomicity with the derived index tier.
+    It is deliberately a separate, idempotent assertion transaction; restart
+    inspection above re-discovers a missing lowering without relying on a
+    volatile ingest hint.
+    """
+    from polylogue.markers import lower_markers
+    from polylogue.storage.derived.session.rebuild import PreparedSessionInsightPartition
+
+    if not isinstance(prepared, PreparedSessionInsightPartition) or prepared.bundle is None:
+        return
+    candidates = prepared.bundle.marker_candidates
+    if not candidates:
+        return
+    conn = marker_write_connection()
+    try:
+        lower_markers(conn, candidates)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _connection_generation(conn: sqlite3.Connection) -> str:
+    """Return the physical main-database path a writer actually opened."""
+    for _sequence, name, filename in conn.execute("PRAGMA database_list"):
+        if name == "main" and filename:
+            return str(Path(str(filename)).resolve())
+    raise RuntimeError("session profile writer has no main database generation")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +144,25 @@ class _StoredPartition:
 
 
 _ABSENT_PARTITION = _StoredPartition(present=False, materializer_version=None, input_binding=None)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionProfilePartFacts:
+    """One exact session-family observation for a sealed owner target.
+
+    This stays storage-owned because it is a direct read of the index and user
+    tiers. The daemon owner translates it into its transport-neutral receipt
+    types without giving a maintenance surface a connection or a publisher.
+    """
+
+    session_present: bool
+    status: str
+    input_binding: str | None
+    output_binding: str | None
+    profiles: int
+    work_events: int
+    phases: int
+
 
 #: The partition's sibling relations, read back per session. They are written
 #: inside the same replacement as the profile row, so a partition whose siblings
@@ -234,6 +329,41 @@ SESSION_PARTITION_INSPECT_CHUNK = 500
 _ARCHIVE_SESSION_IDS_SQL = "SELECT session_id FROM sessions ORDER BY session_id"
 
 
+def _session_id_page(
+    conn: sqlite3.Connection,
+    *,
+    cursor: str | None,
+    limit: int,
+) -> tuple[tuple[str, ...], str | None]:
+    rows = conn.execute(
+        "SELECT session_id FROM sessions WHERE session_id > COALESCE(?, '') ORDER BY session_id LIMIT ?",
+        (cursor, limit + 1),
+    ).fetchall()
+    keys = tuple(str(row[0]) for row in rows[:limit])
+    return keys, (keys[-1] if len(rows) > limit and keys else None)
+
+
+def _excess_page(
+    conn: sqlite3.Connection,
+    *,
+    cursor: str | None,
+    limit: int,
+) -> tuple[tuple[str, ...], str | None]:
+    rows = conn.execute(
+        """
+        SELECT sp.session_id
+        FROM session_profiles AS sp
+        LEFT JOIN sessions AS s ON s.session_id = sp.session_id
+        WHERE s.session_id IS NULL AND sp.session_id > COALESCE(?, '')
+        ORDER BY sp.session_id
+        LIMIT ?
+        """,
+        (cursor, limit + 1),
+    ).fetchall()
+    keys = tuple(str(row[0]) for row in rows[:limit])
+    return keys, (keys[-1] if len(rows) > limit and keys else None)
+
+
 def _chunked(values: Sequence[str], size: int) -> Iterator[tuple[str, ...]]:
     for start in range(0, len(values), size):
         yield tuple(values[start : start + size])
@@ -355,6 +485,41 @@ def publish_session_profile(
     return True
 
 
+def publish_prepared_session_profile(
+    conn: sqlite3.Connection,
+    prepared: object,
+    *,
+    generation_is_current: Callable[[], bool] | None = None,
+) -> bool:
+    """Refresh usage then atomically publish a lease-free prepared partition.
+
+    Usage refresh precedes the exact-value check.  This preserves the #4855
+    order (message evidence, reconciliation, provider evidence, repricing)
+    while refusing a bundle prepared from the previous rollup.  A later pass
+    reads that canonical rollup outside the writer and can publish it whole.
+    """
+    from polylogue.storage.derived.session.rebuild import (
+        PreparedSessionInsightPartition,
+        _refresh_provider_usage_rollup,
+        publish_prepared_session_insight_partition,
+    )
+
+    if not isinstance(prepared, PreparedSessionInsightPartition):
+        raise TypeError(f"expected PreparedSessionInsightPartition, got {type(prepared).__name__}")
+    if generation_is_current is not None and not generation_is_current():
+        return False
+    if prepared.bundle is not None:
+        _refresh_provider_usage_rollup(conn, prepared.session_id)
+        # The canonical usage rollup is independently derived from persisted
+        # evidence.  Commit it before the prepared partition transaction: a
+        # changed rollup must survive a binding refusal so the next lease-free
+        # preparation reads the exact values that publication will verify.
+        conn.commit()
+    if generation_is_current is not None and not generation_is_current():
+        return False
+    return publish_prepared_session_insight_partition(conn, prepared)
+
+
 #: One partition's publication is a bounded transaction over one session. A hold
 #: longer than the storage busy timeout can starve a writer that is not on the
 #: daemon's gate, so the budget names that boundary rather than a preference.
@@ -385,9 +550,13 @@ class SessionProfileDerivation:
         write_connection: Callable[[], sqlite3.Connection],
         *,
         materializer_version: int,
-        session_scope: Callable[[object], Sequence[str]],
+        session_scope: Callable[[object], Sequence[str] | None],
         page_size: int = 200,
         quiet_keys: Callable[[object], frozenset[str]] | None = None,
+        quiet_key: Callable[[object, str], bool] | None = None,
+        marker_read_connection: Callable[[], sqlite3.Connection] | None = None,
+        marker_write_connection: Callable[[], sqlite3.Connection] | None = None,
+        generation_binding: Callable[[], str] | None = None,
     ) -> None:
         self._read_connection = read_connection
         self._write_connection = write_connection
@@ -395,42 +564,167 @@ class SessionProfileDerivation:
         self._session_scope = session_scope
         self._page_size = page_size
         self._quiet_keys = quiet_keys
+        self._quiet_key = quiet_key
+        self._marker_read_connection = marker_read_connection
+        self._marker_write_connection = marker_write_connection
+        self._generation_binding = generation_binding
 
-    def required(self, frame: object) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(self._session_scope(frame)))
+    def required_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
+        """Keyset-page archive work; bounded incremental scopes stay bounded too."""
+        scope = self._session_scope(frame)
+        if scope is None:
+            conn = self._read_connection()
+            try:
+                return _session_id_page(conn, cursor=cursor, limit=limit)
+            finally:
+                conn.close()
+        keys = tuple(sorted(dict.fromkeys(str(key) for key in scope)))
+        start = bisect.bisect(keys, cursor) if cursor is not None else 0
+        page = keys[start : start + limit]
+        return page, (page[-1] if start + len(page) < len(keys) and page else None)
 
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         conn = self._read_connection()
         try:
-            return inspect_session_profiles(conn, keys, materializer_version=self._materializer_version)
+            statuses = dict(inspect_session_profiles(conn, keys, materializer_version=self._materializer_version))
+            if self._marker_read_connection is None:
+                return statuses
+            marker_ids_by_session = {
+                key: _marker_assertion_ids(conn, key) for key, status in statuses.items() if status == _VALID
+            }
         finally:
             conn.close()
+        if not marker_ids_by_session:
+            return statuses
+        marker_conn = self._marker_read_connection()
+        try:
+            for key, assertion_ids in marker_ids_by_session.items():
+                if not _marker_assertions_present(marker_conn, assertion_ids):
+                    statuses[key] = _STALE
+        finally:
+            marker_conn.close()
+        return statuses
 
-    def excess_candidates(self, frame: object) -> tuple[str, ...]:
+    def selected_part_facts(self, frame: object, session_id: str) -> SessionProfilePartFacts:
+        """Read the exact family facts a sealed owner target may certify.
+
+        The ordinary adapter contract intentionally exposes statuses only.
+        Maintenance needs neither discovery nor a connection escape hatch, but
+        it must retain the current source binding, stored binding, and actual
+        partition counts beside its one-key receipt. Keep that inspection in
+        the storage adapter so marker presence remains part of the same
+        validity definition used by recurring convergence.
+        """
+        marker_read_connection = self._marker_read_connection
+        conn = self._read_connection()
+        marker_ids: tuple[str, ...] = ()
+        try:
+            # A read transaction freezes every field in this receipt to one
+            # index snapshot.  Without it a concurrent replacement can mix a
+            # profile from one commit with sibling counts from another.
+            conn.execute("BEGIN")
+            session_present = (
+                conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is not None
+            )
+            stored = _stored_partitions(conn, (session_id,))[session_id]
+            input_binding = session_input_bindings(conn, (session_id,)).get(session_id) if session_present else None
+            # Do not infer sibling cardinalities from ``session_profiles``.
+            # A sealed excess receipt must report the actual family even when
+            # a partial historical/corrupt relation has no profile parent.
+            # The publisher then gets a chance to retire that exact key rather
+            # than falsely certifying the part absent.
+            profiles = _count(
+                conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0]
+            )
+            work_events = _count(
+                conn.execute("SELECT COUNT(*) FROM session_work_events WHERE session_id = ?", (session_id,)).fetchone()[
+                    0
+                ]
+            )
+            phases = _count(
+                conn.execute("SELECT COUNT(*) FROM session_phases WHERE session_id = ?", (session_id,)).fetchone()[0]
+            )
+            status = _classify_partition(
+                stored,
+                input_binding,
+                materializer_version=self._materializer_version,
+            )
+            if status == _VALID and marker_read_connection is not None:
+                marker_ids = _marker_assertion_ids(conn, session_id)
+        finally:
+            conn.close()
+        if marker_ids and marker_read_connection is not None:
+            marker_conn = marker_read_connection()
+            try:
+                if not _marker_assertions_present(marker_conn, marker_ids):
+                    status = _STALE
+            finally:
+                marker_conn.close()
+        return SessionProfilePartFacts(
+            session_present=session_present,
+            status=status,
+            input_binding=input_binding,
+            output_binding=stored.input_binding,
+            profiles=profiles,
+            work_events=work_events,
+            phases=phases,
+        )
+
+    def selected_frame_is_current(self, frame: object) -> bool:
+        """Whether a sealed frame still names this adapter's active generation."""
+        if self._generation_binding is None:
+            return True
+        generation = self._generation_binding()
+        return getattr(frame, "source_revision", None) == f"index-generation:{generation}"
+
+    def excess_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
         conn = self._read_connection()
         try:
-            return excess_session_profiles(conn)
+            return _excess_page(conn, cursor=cursor, limit=limit)
         finally:
             conn.close()
 
     def quiet(self, frame: object, key: str) -> bool:
+        if self._quiet_key is not None:
+            return self._quiet_key(frame, key)
         return key in self._quiet_keys(frame) if self._quiet_keys is not None else False
 
-    def compute(self, frame: object, key: str) -> SessionProfileReplacement:
-        """Read the binding this replacement is computed against, lease-free.
+    def prerequisite_keys(self, frame: object, key: str) -> tuple[()]:
+        """Session profiles have no derivation-kernel prerequisite domain."""
+        del frame, key
+        return ()
 
-        The profile row build still happens inside ``publish`` through the
-        existing writer; moving row construction out of the lease is a separate
-        change from making staleness value-complete. What matters here is that
-        the binding read outside the lease is the one publication revalidates,
-        so a computation that raced an ingest is refused rather than published.
-        """
+    def compute(self, frame: object, key: str) -> SessionProfileReplacement:
+        """Prepare the complete replacement from a lease-free read frame."""
+        from polylogue.storage.derived.session.rebuild import prepare_session_insight_partition
+
+        generation = self._generation_binding() if self._generation_binding is not None else None
+        expected_generation = f"index-generation:{generation}" if generation is not None else None
+        source_revision = getattr(frame, "source_revision", None)
+        if (
+            expected_generation is not None
+            and isinstance(source_revision, str)
+            and source_revision.startswith("index-generation:")
+            and source_revision != expected_generation
+        ):
+            raise RuntimeError("session profile frame names a retired index generation")
         conn = self._read_connection()
         try:
-            binding = session_input_bindings(conn, (key,)).get(key, "")
+            conn.row_factory = sqlite3.Row
+            # One read transaction pins every session/message/attachment/event
+            # query in this preparation to the same observed generation.
+            conn.execute("BEGIN")
+            prepared = prepare_session_insight_partition(conn, key)
         finally:
             conn.close()
-        return SessionProfileReplacement(key=key, input_binding=binding, payload=key)
+        if generation is not None and self._generation_binding is not None and self._generation_binding() != generation:
+            raise RuntimeError("active index generation changed while session profile was prepared")
+        return SessionProfileReplacement(
+            key=key,
+            input_binding=prepared.input_binding,
+            payload=prepared,
+            generation_binding=generation,
+        )
 
     def publish(self, frame: object, replacement: object) -> bool:
         """Typed ``object`` because the kernel's protocol admits any replacement.
@@ -440,17 +734,54 @@ class SessionProfileDerivation:
         since at runtime the kernel hands back exactly what ``compute`` made.
         """
         assert isinstance(replacement, SessionProfileReplacement)
+        generation_binding = self._generation_binding
         with write_lease(f"derivation.{self.domain}", max_hold_seconds=_PUBLISH_HOLD_BUDGET_S):
+            if (
+                replacement.generation_binding is not None
+                and generation_binding is not None
+                and generation_binding() != replacement.generation_binding
+            ):
+                return False
             conn = self._write_connection()
+            index_family_committed = False
             try:
-                return publish_session_profile(
-                    conn,
-                    replacement.key,
-                    input_binding=replacement.input_binding,
-                    page_size=self._page_size,
-                )
+                if (
+                    replacement.generation_binding is not None
+                    and _connection_generation(conn) != replacement.generation_binding
+                ):
+                    return False
+                if (
+                    inspect_session_profiles(
+                        conn,
+                        (replacement.key,),
+                        materializer_version=self._materializer_version,
+                    )[replacement.key]
+                    == _VALID
+                ):
+                    published = True
+                else:
+                    published = publish_prepared_session_profile(
+                        conn,
+                        replacement.payload,
+                        generation_is_current=(
+                            None
+                            if replacement.generation_binding is None or generation_binding is None
+                            else lambda: generation_binding() == replacement.generation_binding
+                        ),
+                    )
+                    index_family_committed = published
             finally:
                 conn.close()
+            if published and self._marker_write_connection is not None:
+                try:
+                    _lower_prepared_markers(self._marker_write_connection, replacement.payload)
+                except Exception as exc:
+                    # The index transaction has already committed and cannot
+                    # share atomicity with user assertions.  Preserve that
+                    # fact for the owner; normal inspection will rediscover
+                    # the missing marker lowering for a later idempotent pass.
+                    raise SessionProfileMarkerLoweringError(index_family_committed=index_family_committed) from exc
+            return published
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,5 +790,6 @@ class SessionProfileReplacement:
 
     key: str
     input_binding: str
-    payload: str
+    payload: object
+    generation_binding: str | None = None
     empty: bool = False

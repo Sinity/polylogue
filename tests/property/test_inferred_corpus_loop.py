@@ -20,7 +20,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import make_derived_stage, make_fts_stage
+from polylogue.daemon.convergence_stages import make_fts_stage
 from polylogue.maintenance.archive_verification import verify_archive
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
@@ -28,14 +28,13 @@ from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.models import SyntheticSchemaSelection
 from polylogue.schemas.synthetic.wire_formats import build_wire_support_receipt
-from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_canonical_snapshot import archive_snapshot, assert_archives_equivalent
-from tests.infra.convergence_harness import set_debt_retry_at
+from tests.infra.convergence_harness import converge_session_profiles
 from tests.infra.inferred_corpus import (
     assert_inferred_corpus_convergence_handoff_complete,
     build_inferred_corpus_convergence_handoff,
@@ -70,17 +69,17 @@ def _assert_fts_match(conn: sqlite3.Connection, token: str) -> None:
     assert rows, f"FTS MATCH returned no blocks for generated token {token!r}"
 
 
-def _run_retry_in_fresh_process(index_db: Path) -> int:
-    """Exercise the production debt drain after a real interpreter restart."""
+def _run_session_profile_sweep_in_fresh_process(index_db: Path, archive_root: Path) -> None:
+    """Exercise the typed no-hint owner after a real interpreter restart."""
     repo_root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(repo_root) if not existing_pythonpath else f"{repo_root}{os.pathsep}{existing_pythonpath}"
-    env["POLYLOGUE_ARCHIVE_ROOT"] = str(index_db.parent)
     script = (
         "from pathlib import Path\n"
-        "from polylogue.daemon.cli import _drain_convergence_debt_once\n"
-        f"print('RETRIED=' + str(_drain_convergence_debt_once(Path({str(index_db)!r}))))\n"
+        "from tests.infra.convergence_harness import converge_session_profiles\n"
+        f"converge_session_profiles(Path({str(index_db)!r}), Path({str(archive_root)!r}), None, now=lambda: 0.0)\n"
+        "print('CONVERGED=1')\n"
     )
     completed = subprocess.run(
         [sys.executable, "-c", script],
@@ -92,12 +91,9 @@ def _run_retry_in_fresh_process(index_db: Path) -> int:
         check=False,
     )
     assert completed.returncode == 0, (
-        f"fresh-process convergence retry failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        f"fresh-process session-profile owner failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
     )
-    for line in reversed(completed.stdout.splitlines()):
-        if line.startswith("RETRIED="):
-            return int(line.removeprefix("RETRIED="))
-    raise AssertionError(f"fresh-process convergence retry emitted no result marker: {completed.stdout!r}")
+    assert "CONVERGED=1" in completed.stdout
 
 
 def _inferred_selection() -> tuple[CorpusSpec, SyntheticSchemaSelection]:
@@ -139,10 +135,9 @@ def _ingest_and_converge_sources(
     assert backfill.adoption_deferred == 0
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-    states, _timings = DaemonConverger(
-        (make_fts_stage(archive_root / "index.db"), make_derived_stage(archive_root / "index.db"))
-    ).converge_sessions(session_ids)
+    states, _timings = DaemonConverger((make_fts_stage(archive_root / "index.db"),)).converge_sessions(session_ids)
     assert states and all(state.converged and state.last_error is None for state in states.values())
+    converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
     with sqlite3.connect(archive_root / "index.db") as conn:
         record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
     return session_ids
@@ -207,10 +202,19 @@ def _build_lineage_archive(
     )
 
 
+@pytest.mark.timeout(180)
 def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Exercise the full catalog path under its calibrated behavior-test bound.
+
+    The default suite guard is 120 seconds.  This complete generated-manifest
+    ingest, FTS, and profile-convergence route has a recorded successful
+    107.6-second run under load, so its local 180-second allowance preserves
+    the coverage without changing the suite-wide hang policy.  It is not a
+    latency target or an attribution of a particular I/O stall.
+    """
     registry = SchemaRegistry(storage_root=SCHEMA_DIR)
     manifest = compile_inferred_corpus_manifest(
         registry=registry,
@@ -244,11 +248,10 @@ def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-    converger = DaemonConverger(
-        (make_fts_stage(archive_root / "index.db"), make_derived_stage(archive_root / "index.db"))
-    )
+    converger = DaemonConverger((make_fts_stage(archive_root / "index.db"),))
     states, _timings = converger.converge_sessions(session_ids)
     assert states and all(state.converged and state.last_error is None for state in states.values())
+    converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
@@ -376,10 +379,9 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-    states, _timings = DaemonConverger(
-        (make_fts_stage(archive_root / "index.db"), make_derived_stage(archive_root / "index.db"))
-    ).converge_sessions(session_ids)
+    states, _timings = DaemonConverger((make_fts_stage(archive_root / "index.db"),)).converge_sessions(session_ids)
     assert states and all(state.converged and state.last_error is None for state in states.values())
+    converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
     with sqlite3.connect(archive_root / "index.db") as conn:
         conn.execute("ANALYZE")
 
@@ -398,8 +400,13 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
     assert check.status is OutcomeStatus.ERROR
 
 
-@pytest.mark.uses_real_clock("fresh-process debt recovery crosses a subprocess wall-clock retry boundary")
-def test_inferred_selection_debt_recovers_in_a_fresh_process(tmp_path: Path) -> None:
+def test_inferred_selection_profiles_recover_in_a_fresh_process(tmp_path: Path) -> None:
+    """A restarted owner fully discovers and restores inferred corpus profiles.
+
+    Anti-vacuity: replace the no-hint owner sweep with a legacy debt retry or
+    a changed-session callback and a partition not supplied by that callback
+    stays absent after restart.
+    """
     spec, selection = _inferred_selection()
     source_root = tmp_path / "recovery-source"
     written = SyntheticCorpus.write_selection_artifacts(selection, spec, source_root, prefix="recovery")
@@ -415,24 +422,7 @@ def test_inferred_selection_debt_recovers_in_a_fresh_process(tmp_path: Path) -> 
             session_ids,
         )
         conn.commit()
-    cursor = CursorStore(archive_root / "index.db")
-    for session_id in session_ids:
-        cursor.record_convergence_debt(
-            stage="insights",
-            subject_type="session_id",
-            subject_id=session_id,
-            error="inferred-corpus convergence interruption",
-        )
-        set_debt_retry_at(
-            archive_root / "ops.db",
-            stage="insights",
-            subject_type="session_id",
-            subject_id=session_id,
-            retry_at="1970-01-01T00:00:00+00:00",
-        )
-
-    assert _run_retry_in_fresh_process(archive_root / "index.db") == len(session_ids)
-    assert CursorStore(archive_root / "index.db").list_convergence_debt(limit=100) == []
+    _run_session_profile_sweep_in_fresh_process(archive_root / "index.db", archive_root)
     assert archive_snapshot(archive_root, session_ids=session_ids) == baseline
 
 

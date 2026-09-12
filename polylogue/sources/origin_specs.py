@@ -986,6 +986,13 @@ def replay_routing_fingerprint() -> str:
     return _fingerprint_sources(_REPLAY_ROUTING_FINGERPRINT_PATHS, namespace="raw-replay-routing")
 
 
+def retained_enumeration_fingerprint() -> str:
+    """Bind accepted input enumeration to the actual decoder/coordinate closure."""
+    return _fingerprint_sources(
+        ("polylogue/sources/retained_acquisition.py",), namespace="retained-source-enumeration-v1"
+    )
+
+
 def materializer_fingerprint() -> str:
     """Fingerprint the session-insight materializer used by index replay."""
     return _fingerprint_sources(_MATERIALIZER_FINGERPRINT_PATHS, namespace="session-materializer")

@@ -1,7 +1,8 @@
 """Real-SQLite fixtures and independent facts for convergence survivor tests.
 
-This module adapts the production archive writers, daemon stages, and ops
-ledger. It deliberately owns no alternate convergence state machine.
+This module adapts the production archive writers, FTS stage, typed
+session-profile owner, and ops ledger. It deliberately owns no alternate
+convergence state machine.
 
 The harness starts at the production ``ParsedSession`` boundary. Its
 deterministic JSON payload gives the raw writer real bytes to retain, but does
@@ -13,10 +14,11 @@ support.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -28,9 +30,17 @@ import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.outcomes import OutcomeStatus
-from polylogue.daemon.convergence import DaemonConverger, SessionState
-from polylogue.daemon.convergence_stages import make_derived_stage, make_fts_stage
+from polylogue.daemon.convergence import (
+    DaemonConverger,
+    SessionProfileConvergenceOwner,
+    SessionState,
+)
+from polylogue.daemon.convergence_stages import make_fts_stage
+from polylogue.daemon.derivation import DerivationReport
+from polylogue.daemon.execution import BoundedComputeAdapter
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
+from polylogue.operations.session_profile_convergence import make_session_profile_derivation, make_session_profile_frame
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
@@ -309,19 +319,63 @@ def ingest_composed_sources(
     return ConvergenceArchive(root, composed, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
 
 
+def converge_session_profiles(
+    index_db: Path,
+    archive_root: Path,
+    session_ids: Sequence[str] | None,
+    *,
+    now: Callable[[], float],
+) -> DerivationReport:
+    """Converge session profiles through the typed owner and derivation kernel."""
+
+    async def run() -> DerivationReport:
+        compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+        coordinator = DaemonWriteCoordinator()
+        try:
+            adapter = make_session_profile_derivation(
+                index_db,
+                archive_root=archive_root,
+                now=now,
+            )
+            converger = DaemonConverger((), derivations=[adapter])
+            owner = SessionProfileConvergenceOwner(
+                converger,
+                compute_adapter=compute,
+                write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            )
+            frame = make_session_profile_frame(
+                index_db,
+                archive_root=archive_root,
+                scope=None if session_ids is None else tuple(session_ids),
+            )
+            return await owner.converge(frame)
+        finally:
+            compute.shutdown(wait=True)
+            await coordinator.shutdown(timeout=1.0)
+
+    report = asyncio.run(run())
+    if getattr(report, "failed", 0) or getattr(report, "pending", 0):
+        raise AssertionError(
+            "typed session-profile convergence left pending work: "
+            f"failed={getattr(report, 'failed', None)} pending={getattr(report, 'pending', None)}"
+        )
+    if session_ids is None and not report.cursor.position("session_profile").swept:
+        raise AssertionError("no-hint session-profile sweep stopped before required and excess enumeration completed")
+    return report
+
+
 def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, SessionState]:
-    """Run the real FTS and insight debt stages for the materialized sessions."""
+    """Run FTS plus typed session-profile convergence for materialized sessions."""
     with sqlite3.connect(archive.root / "index.db") as conn:
         persisted_session_ids = tuple(
             str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id")
         )
-    converger = DaemonConverger(
-        (make_fts_stage(archive.root / "index.db"), make_derived_stage(archive.root / "index.db"))
-    )
+    converger = DaemonConverger((make_fts_stage(archive.root / "index.db"),))
     states, _timings = converger.converge_sessions(persisted_session_ids)
     not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
     if not_converged:
         raise AssertionError(f"production convergence left pending work: {not_converged}")
+    converge_session_profiles(archive.root / "index.db", archive.root, persisted_session_ids, now=lambda: 0.0)
     _analyze_registry_tables(archive.root / "index.db")
     return states
 
@@ -963,6 +1017,7 @@ __all__ = [
     "assert_derived_readiness_equivalent",
     "build_converged_archive",
     "converge_convergence_archive",
+    "converge_session_profiles",
     "debt_ledger_row",
     "derived_readiness_snapshot",
     "ingest_composed_sources",

@@ -87,8 +87,10 @@ from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
     from polylogue.config import Config
+    from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.parse_prefetch import DaemonParseStage
+    from polylogue.daemon.session_profile_composition import SessionProfileCallback
     from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion, RawMaterializationCounts
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
@@ -984,6 +986,7 @@ async def _periodic_convergence_check(
     *,
     catch_up_complete: asyncio.Event | None = None,
     catch_up_active: Callable[[], bool] | None = None,
+    session_profile_callback: Callable[[tuple[str, ...] | None], Awaitable[object]] | None = None,
 ) -> None:
     """Periodically retry recorded derived convergence debt.
 
@@ -998,6 +1001,8 @@ async def _periodic_convergence_check(
         await _retry_convergence_debt_once(db)
         if catch_up_active is None or not catch_up_active():
             await _run_periodic_fts_convergence_once(db)
+            if session_profile_callback is not None:
+                await session_profile_callback(None)
         await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
 
 
@@ -2200,7 +2205,9 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     due_debt = [
         debt
         for debt in cursor.list_convergence_debt(limit=limit)
-        if debt.subject_type in {"source_path", "session_id", "fts_surface"} and _debt_retry_due(debt, now=now)
+        if debt.subject_type in {"source_path", "session_id", "fts_surface"}
+        and debt.stage != "derived"
+        and _debt_retry_due(debt, now=now)
     ]
     if not due_debt:
         return 0
@@ -3053,7 +3060,7 @@ async def _run_daemon_services_under_active_writer_lease(
     supervisor.start("health_check", _periodic_health_check)
     supervisor.start("schema_preflight_recheck", _periodic_schema_preflight_recheck)
 
-    api_server: ThreadingHTTPServer | None = None
+    api_server: DaemonAPIHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
     uds_server: Any | None = None
     uds_server_task: asyncio.Task[None] | None = None
@@ -3061,6 +3068,7 @@ async def _run_daemon_services_under_active_writer_lease(
     server_task: asyncio.Task[None] | None = None
     watcher: LiveWatcher | None = None
     converger: DaemonConverger | None = None
+    session_profile_callback: SessionProfileCallback | None = None
     catch_up_complete_gate: asyncio.Event | None = None
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
@@ -3115,6 +3123,12 @@ async def _run_daemon_services_under_active_writer_lease(
                 )
 
         if enable_api:
+            if not durable_schema_mismatch:
+                from polylogue.operations.operation_context import prepare_operation_journals
+
+                await write_coordinator.run_sync(
+                    "daemon.operation_journals.startup", prepare_operation_journals, archive_root_path
+                )
             from polylogue.daemon.http import (
                 DaemonAPIHandler,
                 DaemonAPIHTTPServer,
@@ -3126,6 +3140,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 auth_token=resolved_api_auth_token,
                 api_host=api_host,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                archive_root=archive_root_path,
             )
             # Daemon-internal lease-free work shares the capacity the API
             # server already owns rather than standing up a second pool
@@ -3139,12 +3154,11 @@ async def _run_daemon_services_under_active_writer_lease(
 
             uds_server = DaemonAPIUnixHTTPServer(
                 daemon_socket_path(archive_root_path),
-                # The UDS server creates its own one-route handler.  This
-                # class supplies canonical operation semantics only; it is
-                # not the handler installed on the machine socket.
-                DaemonAPIHandler,
+                archive_root=archive_root_path,
                 auth_token=resolved_api_auth_token,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                execution_kernel=api_server.execution_kernel,
+                operation_runtime=api_server.operation_runtime,
             )
             uds_server_task = supervisor.start(
                 "uds_server",
@@ -3175,6 +3189,19 @@ async def _run_daemon_services_under_active_writer_lease(
             )
             from polylogue.daemon.judgment_automation import periodic_judgment_automation_sweep
             from polylogue.daemon.secret_scan_sweep import periodic_secret_scan_sweep
+            from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+
+            if api_server is not None:
+                session_profile_callback = api_server.session_profile_callback
+            else:
+                from polylogue.daemon.execution import daemon_compute_adapter
+
+                session_profile_callback = compose_session_profile_callback(
+                    archive_root_path,
+                    compute_adapter=daemon_compute_adapter(),
+                    write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                    now=time.time,
+                )
 
             fts_startup = await _run_startup_fts_readiness(write_coordinator)
             if lifecycle_events_enabled:
@@ -3210,6 +3237,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         sources,
                         catch_up_complete=gate,
                         catch_up_active=lambda: bool(watcher_holder and watcher_holder[0].catch_up_active),
+                        session_profile_callback=session_profile_callback,
                     ),
                 ),
                 ("wal_checkpoint", _periodic_wal_checkpoint),
@@ -3280,6 +3308,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         catch_up_event_emitter=emit_catch_up_cycle,
                         write_coordinator=write_coordinator,
                         embedding_owner=_converge_ingest_embeddings_off_writer,
+                        session_profile_callback=session_profile_callback,
                     )
                     watcher_holder.append(watcher)
                     watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
@@ -3350,6 +3379,8 @@ async def _run_daemon_services_under_active_writer_lease(
                 await _shutdown_server_if_serving(api_server, api_server_task, label="api")
             if uds_server is not None:
                 await _shutdown_server_if_serving(uds_server, uds_server_task, label="uds")
+            if api_server is not None:
+                await api_server.operation_runtime.shutdown()
 
             # Cancel orphaned debounced watcher child tasks.
             if watcher is not None:

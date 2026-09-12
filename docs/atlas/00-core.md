@@ -41,7 +41,7 @@ source acquisition → detection → parsing → archive write → derived reads
 
 The parsed-session write choke point computes public origin, native identity,
 session identity, and parser fingerprints before lowering records
-(`polylogue/storage/sqlite/archive_tiers/write.py:574-730`). The daemon owns
+(`polylogue/storage/sqlite/archive_tiers/write.py:578-730`). The daemon owns
 the normal live write path and serializes admitted mutations; read surfaces
 adapt through operations and insights (`polylogue/daemon/write_coordinator.py:280-340`).
 
@@ -58,7 +58,7 @@ duplicated in caller metadata:
 outcomes use the canonical `blocks.tool_outcome` enum; deliberate unknown
 outcomes preserve `tool_result_outcome_unknown_reason`. Lineage
 children physically store only their divergent tail and reads recompose the
-parent prefix (`polylogue/storage/sqlite/archive_tiers/write.py:731-812`).
+parent prefix (`polylogue/storage/sqlite/archive_tiers/write.py:735-812`).
 
 ## Where to start
 
@@ -89,4 +89,4 @@ not rotted.
 - Tests use synthetic fixtures and managed `devtools test` commands; ambient
   personal archives never enter tracked files.
 
-verified: 83ffd21c3 2026-09-11
+verified: f6df6366a 2026-09-11

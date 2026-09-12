@@ -25,6 +25,7 @@ from polylogue.storage.backup_attestation import (
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite import migration_runner
+from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL, AUDIT_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL, SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -338,6 +339,80 @@ def _create_source_v1(path: Path) -> None:
             """
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _create_audit_v2(path: Path) -> None:
+    """Create the exact pre-machine-request durable audit tier."""
+
+    path.unlink(missing_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        # Start from the canonical DDL so this fixture remains representative
+        # of the current authority journal, then remove only the v3 rider.
+        conn.executescript(AUDIT_DDL)
+        conn.execute("DROP INDEX IF EXISTS idx_machine_request_parts_authorization")
+        conn.execute("DROP TABLE IF EXISTS machine_request_parts")
+        conn.execute("DROP INDEX IF EXISTS idx_machine_requests_artifact")
+        conn.execute("DROP TABLE IF EXISTS machine_requests")
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _audit_schema_sql(conn: sqlite3.Connection) -> tuple[tuple[object, ...], ...]:
+    rows = conn.execute(
+        """
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_schema
+        WHERE name NOT LIKE 'sqlite_%'
+        ORDER BY type, name
+        """
+    ).fetchall()
+    return tuple((row[0], row[1], row[2], _normalize_schema_sql(str(row[3]))) for row in rows)
+
+
+def test_audit_tier_v2_migrates_to_current_with_verified_backup_and_fresh_ddl_parity(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_path = workspace_env["archive_root"] / "audit.db"
+    _create_audit_v2(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(MigrationError, match="verified backup manifest"):
+            migrate_archive_tier(conn, ArchiveTier.AUDIT, backup_manifest=None)
+        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
+
+    manifest = _verified_backup_manifest(tmp_path / "audit-backup", profile="user_overlays")
+    conn = sqlite3.connect(db_path)
+    try:
+        result = migrate_archive_tier(conn, ArchiveTier.AUDIT, backup_manifest=manifest)
+        assert result.from_version == 2
+        assert result.to_version == AUDIT_SCHEMA_VERSION == 3
+        assert result.applied_versions == (3,)
+        assert result.backup_receipt == manifest.with_name("verification-receipt.json")
+        assert conn.execute("PRAGMA user_version").fetchone() == (3,)
+        assert conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'machine_requests'"
+        ).fetchone() == ("machine_requests",)
+        assert conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'idx_machine_requests_artifact'"
+        ).fetchone() == ("idx_machine_requests_artifact",)
+        assert conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'machine_request_parts'"
+        ).fetchone() == ("machine_request_parts",)
+        assert conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'idx_machine_request_parts_authorization'"
+        ).fetchone() == ("idx_machine_request_parts_authorization",)
+
+        fresh_db = tmp_path / "fresh-audit-v3.db"
+        initialize_archive_database(fresh_db, ArchiveTier.AUDIT)
+        with sqlite3.connect(fresh_db) as fresh_conn:
+            assert fresh_conn.execute("PRAGMA user_version").fetchone() == (3,)
+            assert _audit_schema_sql(conn) == _audit_schema_sql(fresh_conn)
     finally:
         conn.close()
 
@@ -2393,6 +2468,88 @@ def test_historical_source_projection_matches_every_supported_train_target(
                     fresh_connection=projected,
                     evidence_ref=f"test:source-projection-matrix:v{target_version}",
                 )
+        assert parity.matches, parity
+
+
+def test_source_tier_v42_migration_043_preserves_members_and_matches_fresh_ddl(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    """v42 source rows survive the enumeration/member schema transition."""
+    db_path = workspace_env["archive_root"] / "source.db"
+    db_path.unlink(missing_ok=True)
+    raw_blob_hash, raw_blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(
+        b"synthetic-v43-raw"
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SOURCE_DDL)
+        reset_source_fixture_to_version(conn, SOURCE_SCHEMA_VERSION - 1)
+        conn.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION - 1}")
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('v42-raw', 'codex-session', '/v42.json', ?, ?, 1)
+            """,
+            (bytes.fromhex(raw_blob_hash), raw_blob_size),
+        )
+        conn.execute(
+            """
+            INSERT INTO source_generations (
+                source_generation_id, manifest_digest, addressing_mode, item_count, created_at_ms
+            ) VALUES ('v42-generation', ?, 'fixture', 1, 1)
+            """,
+            ("0" * 64,),
+        )
+        conn.execute(
+            """
+            INSERT INTO source_items (
+                source_generation_id, source_item_id, logical_coordinate, addressing_mode,
+                origin, disposition, outcome_code, stage, raw_id, observed_at_ms, updated_at_ms
+            ) VALUES ('v42-generation', 'v42-item', 'fixture:0', 'fixture', 'codex-session',
+                      'admitted', 'success', 'fixture', 'v42-raw', 1, 1)
+            """
+        )
+        conn.commit()
+
+    manifest = _verified_backup_manifest(tmp_path / "source-v42-backup")
+    with sqlite3.connect(db_path) as migrated:
+        migrated.execute("PRAGMA foreign_keys = ON")
+        result = migrate_archive_tier(migrated, ArchiveTier.SOURCE, backup_manifest=manifest)
+        assert result.from_version == SOURCE_SCHEMA_VERSION - 1
+        assert result.applied_versions == (SOURCE_SCHEMA_VERSION,)
+        assert migrated.execute("SELECT raw_id FROM source_items").fetchone() == ("v42-raw",)
+        assert migrated.execute(
+            "SELECT enumeration_fingerprint, enumerated_record_count, enumeration_digest, enumerated_at_ms "
+            "FROM source_items"
+        ).fetchone() == (None, None, None, None)
+
+        migrated.executemany(
+            """
+            INSERT INTO source_item_raw_members (
+                source_generation_id, source_item_id, record_coordinate, raw_id, raw_blob_hash
+            ) VALUES ('v42-generation', 'v42-item', ?, 'v42-raw', ?)
+            """,
+            [("record:0", b"a" * 32), ("record:1", b"b" * 32)],
+        )
+        assert migrated.execute("SELECT COUNT(*) FROM source_item_raw_members WHERE raw_id = 'v42-raw'").fetchone() == (
+            2,
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            migrated.execute(
+                "INSERT INTO source_item_raw_members VALUES ('v42-generation', 'v42-item', 'record:0', 'v42-raw', ?)",
+                (b"c" * 32,),
+            )
+
+        with sqlite3.connect(":memory:") as fresh:
+            fresh.executescript(SOURCE_DDL)
+            fresh.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+            parity = migration_runner.prove_durable_fresh_ddl_parity(
+                ArchiveTier.SOURCE,
+                SOURCE_SCHEMA_VERSION,
+                migrated_connection=migrated,
+                fresh_connection=fresh,
+                evidence_ref="test:source-v43:enumeration-membership-parity",
+            )
         assert parity.matches, parity
 
 

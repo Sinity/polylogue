@@ -37,6 +37,8 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionRows,
     prepare_session_rows,
+    prepare_session_write,
+    read_archive_session_envelope,
     write_parsed_session_to_archive,
 )
 
@@ -329,3 +331,66 @@ def test_prepare_session_rows_is_pure_and_reusable(tmp_path: Path) -> None:
     assert first.session_content_hash == second.session_content_hash
     assert first.message_rows == second.message_rows
     assert first.block_rows == second.block_rows
+
+
+def test_prepared_write_preserves_prefix_sharing_context_without_writer_lowering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prepared fork retains only its divergent tail and composes its parent.
+
+    Anti-vacuity: replacing normalization, prefix extraction, and both row
+    builders after preparation proves publication consumes the exact prepared
+    carrier rather than falling back inside the writer.
+    """
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="prepared-parent",
+        messages=[
+            ParsedMessage(provider_message_id="a", role=Role.USER, text="A"),
+            ParsedMessage(provider_message_id="b", role=Role.ASSISTANT, text="B"),
+        ],
+    )
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="prepared-child",
+        parent_session_provider_id="prepared-parent",
+        messages=[
+            ParsedMessage(provider_message_id="a", role=Role.USER, text="A"),
+            ParsedMessage(provider_message_id="b", role=Role.ASSISTANT, text="B"),
+            ParsedMessage(provider_message_id="c", role=Role.USER, text="C"),
+        ],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        write_parsed_session_to_archive(conn, parent, content_hash=str(session_content_hash(parent)))
+        prepared = prepare_session_write(conn, child, merge_append=False)
+
+        def _boom(*args: object, **kwargs: object) -> object:
+            raise AssertionError("prepared lineage write must not lower inside the writer")
+
+        monkeypatch.setattr(archive_tier_write, "_normalized_messages", _boom)
+        monkeypatch.setattr(archive_tier_write, "_extract_prefix_tail", _boom)
+        monkeypatch.setattr(archive_tier_write, "_build_message_rows", _boom)
+        monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
+        child_id = write_parsed_session_to_archive(
+            conn,
+            child,
+            content_hash=str(session_content_hash(child)),
+            prepared_write=prepared,
+            prepared_required=True,
+        )
+        assert [row[0] for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (child_id,))] == [
+            "c"
+        ]
+        link = conn.execute(
+            "SELECT branch_point_message_id, inheritance FROM session_links WHERE src_session_id = ?", (child_id,)
+        ).fetchone()
+        assert tuple(link) == ("codex-session:prepared-parent:n:b", "prefix-sharing")
+        envelope = read_archive_session_envelope(conn, child_id)
+        assert ["".join(block.text or "" for block in message.blocks) for message in envelope.messages] == [
+            "A",
+            "B",
+            "C",
+        ]
+    finally:
+        conn.close()

@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from polylogue.operations.daemon_protocol import (
+    DAEMON_OPERATION_PROTOCOL,
     MAX_OPERATION_RESULT_BYTES,
-    DaemonAuthority,
     DaemonOperationSpec,
     OperationStatus,
     daemon_operation_spec,
@@ -96,28 +96,26 @@ class OperationResult:
 
 
 OperationCall = Callable[[OperationRequest], Mapping[str, Any] | None]
-DirectCall = Callable[[OperationRequest], object]
 
 
 class OperationKernel:
     """Dispatch one declared operation without changing its semantics.
 
     ``daemon_call`` returns a protocol envelope or ``None`` when the daemon is
-    unavailable.  Only read operations may then use ``direct_call``.  A
+    unavailable. The canonical client owns any permitted direct read. A
     daemon response containing an error is final: falling through to a local
     executor would turn a typed server result into an unsafe semantic retry.
     """
 
-    def __init__(self, daemon_call: OperationCall, direct_call: DirectCall | None = None) -> None:
+    def __init__(self, daemon_call: OperationCall) -> None:
         self._daemon_call = daemon_call
-        self._direct_call = direct_call
 
     def execute(self, request: OperationRequest) -> OperationResult:
         spec = request.spec
         try:
             envelope = self._daemon_call(request)
-        except (TimeoutError, ConnectionError, OSError):
-            envelope = None
+        except (TimeoutError, ConnectionError, OSError) as exc:
+            raise OperationFailedError("daemon_transport_error", str(exc)) from exc
         except Exception as exc:
             # The stdlib daemon client uses typed transport errors. Keep those
             # distinctions visible to callers while preserving direct fallback
@@ -131,6 +129,15 @@ class OperationKernel:
         if envelope is not None:
             if envelope.get("operation") not in (None, request.operation):
                 raise OperationEnvelopeError("daemon returned a different operation")
+            outcome = envelope.get("outcome", OperationStatus.COMPLETED.value)
+            # An explanatory error cannot demote accepted, unresolved effects
+            # to an ordinary failure that callers may safely retry.
+            if outcome in {"indeterminate", "disconnected-after-acceptance", "restarted"}:
+                raise OperationIndeterminateError(
+                    f"{request.operation} requires receipt recovery for request {envelope.get('request_id')}"
+                )
+            if outcome in {"cancelled", OperationStatus.INTERRUPTED.value}:
+                raise OperationCancelledError(request.operation, envelope.get("result") or envelope.get("detail"))
             error = envelope.get("error")
             if isinstance(error, Mapping):
                 code = error.get("code")
@@ -142,11 +149,11 @@ class OperationKernel:
                 )
             if error is not None:
                 raise OperationEnvelopeError("daemon returned a malformed error envelope")
-            outcome = envelope.get("outcome", OperationStatus.COMPLETED.value)
-            if outcome == OperationStatus.INTERRUPTED.value:
-                raise OperationCancelledError(request.operation, envelope.get("detail"))
             if outcome not in {OperationStatus.COMPLETED.value, OperationStatus.ACCEPTED.value}:
-                raise OperationFailedError(str(outcome), envelope.get("detail"))
+                result = envelope.get("result")
+                raise OperationFailedError(
+                    str(outcome), envelope.get("detail"), result if isinstance(result, Mapping) else None
+                )
             if "result" not in envelope:
                 raise OperationEnvelopeError("daemon response omitted the operation result")
             value = envelope.get("result")
@@ -167,16 +174,61 @@ class OperationKernel:
                 envelope,
             )
 
-        if not spec.direct_allowed or spec.authority is not DaemonAuthority.READ or self._direct_call is None:
-            raise OperationUnavailableError(f"daemon is unavailable for operation: {request.operation}")
-        value = self._direct_call(request)
-        if _result_size(value) > MAX_OPERATION_RESULT_BYTES:
-            raise OperationFailedError("result_too_large", "direct operation result exceeds the bounded size")
-        return OperationResult(
-            request.operation,
-            value,
-            {"mode": "direct", "class": spec.authority.value, "fallback": spec.fallback.value},
+        raise OperationUnavailableError(f"daemon is unavailable for operation: {request.operation}")
+
+
+def configured_read_operation(
+    config: Any,
+    operation: str,
+    payload: dict[str, object],
+    *,
+    daemon_disabled: bool = False,
+) -> OperationResult:
+    """Adapt explicit CLI configuration to the canonical read executor."""
+    import uuid
+    from time import time
+
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+    from polylogue.operations.daemon_execution import execute_operation
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.operations.daemon_reads import DaemonReadDependencies, vector_binding_from_config
+    from polylogue.operations.operation_context import OperationContext
+
+    context = OperationContext.direct_read(
+        config.archive_root,
+        read_dependencies=DaemonReadDependencies(
+            vector_binding=vector_binding_from_config(config),
+            status_now_ms=int(time() * 1000),
+            status_config=config,
+        ),
+    )
+    if daemon_disabled:
+        request = DaemonOperationRequest.from_dict(
+            {
+                "protocol": DAEMON_OPERATION_PROTOCOL,
+                "operation": operation,
+                "payload": payload,
+                "request_id": uuid.uuid4().hex,
+                "archive_root": str(config.archive_root),
+            }
         )
+        envelope = execute_operation(request, context).to_dict()
+    else:
+        spec = daemon_operation_spec(operation)
+        if spec is None:
+            raise OperationKernelError(f"operation is not declared: {operation}")
+        client = DaemonClient(
+            daemon_socket_path(config.archive_root),
+            timeout_s=spec.deadline_s,
+            auth_token=resolve_api_auth_token(
+                getattr(config, "api_auth_token", None),
+                allow_no_auth=getattr(config, "api_allow_no_auth", False),
+            ),
+        )
+        envelope = client.operation_with_direct_fallback(operation, payload, context=context)
+    return OperationKernel(lambda _request: envelope).execute(OperationRequest(operation, payload))
 
 
 __all__ = [

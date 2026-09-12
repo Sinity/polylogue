@@ -92,7 +92,7 @@ class _FakeReport(SimpleNamespace):
         )
 
 
-def _plugin(tmp_path: Path) -> StreamingReport:
+def _plugin(tmp_path: Path, *, report_path: Path | None = None) -> StreamingReport:
     """A ``StreamingReport`` whose hook lookups answer with the phase category."""
 
     def report_teststatus(*, report: Any, config: Any) -> tuple[str, str, str]:
@@ -104,7 +104,7 @@ def _plugin(tmp_path: Path) -> StreamingReport:
         hook=SimpleNamespace(pytest_report_teststatus=report_teststatus),
         rootpath=tmp_path,
     )
-    plugin = StreamingReport(config, tmp_path / "report.json")
+    plugin = StreamingReport(config, report_path or tmp_path / "report.json")
     plugin.pytest_sessionstart(object())
     return plugin
 
@@ -185,6 +185,31 @@ def test_a_leftover_spool_is_named_for_removal(tmp_path: Path) -> None:
     (tmp_path / "unrelated.json").write_text("{}", encoding="utf-8")
 
     assert spool_paths(report) == (leftover,)
+
+
+def test_cleaning_a_later_run_never_removes_an_active_run_spool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent focused run cannot erase teardown evidence before assembly.
+
+    Anti-vacuity: make cleanup use the checkout-global ``PYTEST_REPORT_PATH``
+    again and it removes ``first`` despite being asked to clean ``second``.
+    That is the exact teardown-before-controller-assembly race from job 519.
+    """
+
+    first = tmp_path / "runs" / "first" / "pytest-report.json"
+    second = tmp_path / "runs" / "second" / "pytest-report.json"
+    plugin = _plugin(first.parent, report_path=first)
+    _drive(plugin, "tests/test_a.py::test_one")
+    assert plugin._spool_path.exists()
+
+    monkeypatch.setattr(run_tests, "PYTEST_REPORT_PATH", first)
+    run_tests._clear_pytest_report(second)
+
+    assert plugin._spool_path.exists()
+    plugin.pytest_sessionfinish(SimpleNamespace(testscollected=1), 0)
+    report = json.loads(first.read_text(encoding="utf-8"))
+    assert [test["nodeid"] for test in report["tests"]] == ["tests/test_a.py::test_one"]
 
 
 def test_an_xdist_worker_does_not_write_the_controller_report(tmp_path: Path) -> None:

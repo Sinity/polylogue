@@ -1,13 +1,15 @@
-"""Size an xdist run to the memory the run may actually take when it starts.
+"""Size an xdist run from the pytest slot it owns.
 
-Two bounds apply at once and the tighter one decides. The host's
-``MemAvailable`` is what the kernel will hand any new workload; the job's
-cgroup is what this run in particular may take before it is throttled or
-killed, and it can be far tighter than the host while the host looks idle.
+The pytest pool admits work under host-pressure control before its command
+starts.  Once admitted, the width belongs to ``agentctl-pytest.slice``: using
+host-wide ``MemAvailable`` (or a shared ancestor slice's current use) lets
+unrelated agents silently shrink an already-admitted corpus.  The local
+cgroup ceiling remains a hard bound; unavailable host memory is retained in
+the receipt as an observation, not misused as a second scheduler.
 
 The reading is taken inside the pytest slot rather than when the command was
-built: a run can sit in the queue for hours, and the memory that mattered is
-the memory present when its workers start.
+built: a run can sit in the queue for hours, and its own remaining cgroup
+budget is what matters when workers start.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ __all__ = [
     "available_memory_mib",
     "cgroup_available_mib",
     "memory_bounded_worker_cap",
+    "pytest_slot_available_mib",
     "resize_worker_argument",
     "width_within",
 ]
@@ -164,6 +167,28 @@ def cgroup_available_mib(*, process_cgroup: Path = CGROUP_PROCESS_PATH, root: Pa
     return min(budgets) if budgets else None
 
 
+def pytest_slot_available_mib(*, process_cgroup: Path = CGROUP_PROCESS_PATH, root: Path = CGROUP_ROOT) -> int | None:
+    """Return the local pytest-pool budget, excluding shared parent slices.
+
+    ``agentctl.slice`` also contains agent workers.  Its *current* use is a
+    host-admission concern, not capacity already consumed by this pytest
+    command.  Stop at the named pytest pool when present.  A different runtime
+    layout has no such proof, so fall back to every applicable cgroup limit.
+    """
+    budgets: list[int] = []
+    found_pytest_pool = False
+    for directory in _cgroup_directories(process_cgroup, root):
+        limits = [value for name in _CGROUP_LIMIT_FILES if (value := _cgroup_bytes(directory / name)) is not None]
+        if limits:
+            budgets.append(max(0, min(limits) // _MIB - _cgroup_usage_mib(directory)))
+        if directory.name == "agentctl-pytest.slice":
+            found_pytest_pool = True
+            break
+    if found_pytest_pool:
+        return min(budgets) if budgets else None
+    return cgroup_available_mib(process_cgroup=process_cgroup, root=root)
+
+
 def memory_bounded_worker_cap(
     *,
     requested: int = CORPUS_MAX_WORKERS,
@@ -171,17 +196,27 @@ def memory_bounded_worker_cap(
     process_cgroup: Path = CGROUP_PROCESS_PATH,
     cgroup_root: Path = CGROUP_ROOT,
 ) -> tuple[int, dict[str, Any]]:
-    """The widest run this job may hold right now, and the basis for it."""
+    """The widest run this job's pytest cgroup may hold right now.
+
+    Host availability is deliberately diagnostic-only.  Admission owns the
+    host-wide decision; folding it into this calculation made a queued corpus
+    lose its allocated width merely because unrelated agent work was active.
+    """
     host = available_memory_mib(meminfo=meminfo)
-    cgroup = cgroup_available_mib(process_cgroup=process_cgroup, root=cgroup_root)
-    measured = [value for value in (host, cgroup) if value is not None]
-    if not measured:
-        return requested, {"basis": "unmeasured", "workers": requested, "requested_workers": requested}
-    available = min(measured)
-    workers = max(1, min(requested, width_within(available)))
+    cgroup = pytest_slot_available_mib(process_cgroup=process_cgroup, root=cgroup_root)
+    if cgroup is None:
+        return requested, {
+            "basis": "unmeasured",
+            "host_available_mib": host,
+            "cgroup_available_mib": None,
+            "workers": requested,
+            "requested_workers": requested,
+            "narrowed": False,
+        }
+    workers = max(1, min(requested, width_within(cgroup)))
     return workers, {
-        "basis": "cgroup_budget" if cgroup is not None and cgroup == available else "mem_available",
-        "available_mib": available,
+        "basis": "cgroup_budget",
+        "available_mib": cgroup,
         "host_available_mib": host,
         "cgroup_available_mib": cgroup,
         "headroom_fraction": MEMORY_HEADROOM_FRACTION,

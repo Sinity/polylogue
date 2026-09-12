@@ -282,11 +282,11 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
 def _bare_tty_daemon_rows(config: Config) -> list[SelectSessionRow] | None:
     """Fetch the minimal recent-session page from a config-matched daemon."""
 
-    from polylogue.cli.daemon_client import DaemonClient
     from polylogue.cli.operation_kernel import OperationKernel, OperationKernelError, OperationRequest
     from polylogue.cli.select import SelectSessionRow
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
 
     client = DaemonClient(
         daemon_socket_path(config.archive_root),

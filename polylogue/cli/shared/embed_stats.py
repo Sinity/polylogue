@@ -122,8 +122,9 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     _render_field("Voyage key", "present" if payload["has_voyage_api_key"] else "missing")
     _render_field("Daemon stage", "enabled" if payload["daemon_stage_enabled"] else "disabled")
     _render_field("Configured model", f"{payload['configured_model']} ({payload['configured_dimension']}d)")
-    if payload["monthly_cost_cap_usd"] > 0:
-        _render_field("Monthly cost cap", f"${payload['monthly_cost_cap_usd']:.2f}")
+    monthly_cost_cap_usd = payload["monthly_cost_cap_usd"]
+    if monthly_cost_cap_usd is not None and monthly_cost_cap_usd > 0:
+        _render_field("Monthly cost cap", f"${monthly_cost_cap_usd:.2f}")
     else:
         _render_field("Monthly cost cap", "unbounded")
     _render_field("Status", payload["status"])

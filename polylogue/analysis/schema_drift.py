@@ -9,8 +9,12 @@ stdlib-light keeps the daemon health path independent from the CLI surface.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.ops_write import SchemaDriftOriginSummary
 
 # polylogue-da1: format-drift sentinel window. Windowed since a date, not
 # lifetime, so an archive with years of clean history does not permanently
@@ -27,6 +31,72 @@ def _drift_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _schema_drift_status_from_summaries(
+    summaries: Iterable[SchemaDriftOriginSummary],
+    *,
+    since_ms: int,
+    window_ms: int,
+) -> dict[str, Any]:
+    origins = []
+    for summary in summaries:
+        risky_rate = summary.risky_rate
+        if summary.total < SCHEMA_DRIFT_MIN_SAMPLE:
+            severity = "ok"
+        elif risky_rate >= SCHEMA_DRIFT_RISKY_ERROR_RATE:
+            severity = "error"
+        elif risky_rate >= SCHEMA_DRIFT_RISKY_WARN_RATE:
+            severity = "warning"
+        else:
+            severity = "ok"
+        origins.append(
+            {
+                "origin": summary.origin,
+                "total": summary.total,
+                "risky": summary.risky,
+                "benign": summary.benign,
+                "risky_rate": round(risky_rate, 4),
+                "severity": severity,
+                "example_native_ids": list(summary.example_native_ids),
+            }
+        )
+    return {
+        "available": True,
+        "since_ms": since_ms,
+        "window_days": window_ms // (24 * 60 * 60 * 1000),
+        "origins": origins,
+    }
+
+
+def schema_drift_status_from_connection(
+    conn: sqlite3.Connection | None,
+    *,
+    now_ms: int,
+    window_ms: int = SCHEMA_DRIFT_WINDOW_MS,
+    schema: str = "ops_tier",
+) -> dict[str, Any]:
+    """Project format drift from a supplied, already-pinned ops reader."""
+
+    if conn is None:
+        return {"available": False, "reason": "missing_ops_tier"}
+    if schema not in {"main", "ops_tier"}:
+        raise ValueError(f"unsupported schema-drift reader schema: {schema!r}")
+    if (
+        conn.execute(
+            f"SELECT 1 FROM {schema}.sqlite_schema WHERE type = 'table' AND name = 'schema_drift_samples'"
+        ).fetchone()
+        is None
+    ):
+        return {"available": False, "reason": "missing_schema_drift_samples"}
+    from polylogue.storage.sqlite.archive_tiers.ops_write import summarize_schema_drift_since
+
+    since_ms = now_ms - window_ms
+    return _schema_drift_status_from_summaries(
+        summarize_schema_drift_since(conn, since_ms=since_ms, schema=schema),
+        since_ms=since_ms,
+        window_ms=window_ms,
+    )
 
 
 def schema_drift_status(active_root: Path, *, now_ms: int, window_ms: int = SCHEMA_DRIFT_WINDOW_MS) -> dict[str, Any]:
@@ -57,31 +127,4 @@ def schema_drift_status(active_root: Path, *, now_ms: int, window_ms: int = SCHE
     finally:
         conn.close()
 
-    origins = []
-    for summary in summaries:
-        risky_rate = summary.risky_rate
-        if summary.total < SCHEMA_DRIFT_MIN_SAMPLE:
-            severity = "ok"
-        elif risky_rate >= SCHEMA_DRIFT_RISKY_ERROR_RATE:
-            severity = "error"
-        elif risky_rate >= SCHEMA_DRIFT_RISKY_WARN_RATE:
-            severity = "warning"
-        else:
-            severity = "ok"
-        origins.append(
-            {
-                "origin": summary.origin,
-                "total": summary.total,
-                "risky": summary.risky,
-                "benign": summary.benign,
-                "risky_rate": round(risky_rate, 4),
-                "severity": severity,
-                "example_native_ids": list(summary.example_native_ids),
-            }
-        )
-    return {
-        "available": True,
-        "since_ms": since_ms,
-        "window_days": window_ms // (24 * 60 * 60 * 1000),
-        "origins": origins,
-    }
+    return _schema_drift_status_from_summaries(summaries, since_ms=since_ms, window_ms=window_ms)

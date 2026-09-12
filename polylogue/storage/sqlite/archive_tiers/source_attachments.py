@@ -45,6 +45,7 @@ def record_source_attachments(
     source_generation_id: str,
     attachments: tuple[SourceAttachment, ...],
     observed_at_ms: int,
+    commit: bool = True,
 ) -> None:
     """Record the complete current-source attachment denominator idempotently.
 
@@ -98,7 +99,8 @@ def record_source_attachments(
                 observed_at_ms,
             ),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def source_attachment_census(conn: sqlite3.Connection, source_generation_id: str) -> dict[str, object]:

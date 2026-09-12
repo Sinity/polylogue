@@ -642,9 +642,10 @@ class _DriveRevisionGovernanceAdapter:
     actually read by anything this adapter is used for.
     """
 
-    def __init__(self, source_conn: sqlite3.Connection, blob_publisher: ArchiveBlobPublisher | None) -> None:
+    def __init__(self, source_conn: sqlite3.Connection, blob_publisher: ArchiveBlobPublisher) -> None:
         self._source_conn = source_conn
-        self._blob_publisher = blob_publisher
+        self._blob_publisher: ArchiveBlobPublisher | None = blob_publisher
+        self.archive_root = blob_publisher.source_db_path.parent
         self._inactive_candidate_durable_read_only = False
         # Never read by bind_raw_revision/classify_raw_revision_cohort; see
         # class docstring for why this is a harmless placeholder value.

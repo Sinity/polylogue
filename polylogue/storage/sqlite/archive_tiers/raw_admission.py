@@ -289,8 +289,12 @@ def plan_raw_admission(request: RawAdmissionRequest) -> RawAdmissionPlan:
     )
 
 
-def execute_raw_admission_plan_sync(conn: sqlite3.Connection, plan: RawAdmissionPlan) -> RawAdmissionResult:
+def execute_raw_admission_plan_sync(
+    conn: sqlite3.Connection, plan: RawAdmissionPlan, *, manage_transaction: bool = True
+) -> RawAdmissionResult:
     """Apply a precomputed plan through the canonical synchronous writer."""
+    if not manage_transaction and not conn.in_transaction:
+        raise ValueError("participating raw admission requires an existing source transaction")
     request = plan.request
     if _assert_existing_raw_observation_identity(
         conn,
@@ -318,10 +322,84 @@ def execute_raw_admission_plan_sync(conn: sqlite3.Connection, plan: RawAdmission
         raw_id=plan.raw_id,
         blob_publication_receipt_id=request.blob_publication_receipt_id,
         revision=plan.revision,
-        manage_transaction=True,
+        manage_transaction=manage_transaction,
         policy_snapshot=request.policy_snapshot,
     )
     return RawAdmissionResult(arm=plan.arm, raw_id=admitted_raw_id)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceItemAdmission:
+    """Exact frozen-input membership joined to one raw admission."""
+
+    source_generation_id: str
+    source_item_id: str
+    record_coordinate: str
+    entry_ordinal: int | None = None
+    split_index: int | None = None
+    addressing_mode: str | None = None
+
+
+def execute_source_item_admission(
+    conn: sqlite3.Connection, plan: RawAdmissionPlan, member: SourceItemAdmission
+) -> RawAdmissionResult:
+    """Publish raw, exact membership and receipt consumption as one source effect.
+
+    The savepoint prevents a caught membership conflict from committing an
+    unbound raw row. It never commits the caller's source transaction.
+    """
+    from polylogue.storage.blob_publication import consume_blob_publication_receipt
+    from polylogue.storage.sqlite.archive_tiers.source_items import record_source_item_raw_member
+    from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
+
+    if not conn.in_transaction:
+        raise ValueError("source-item admission requires the caller's source transaction")
+    conn.execute("SAVEPOINT source_item_raw_admission")
+    try:
+        existing = conn.execute(
+            "SELECT raw_id, raw_blob_hash FROM source_item_raw_members WHERE source_generation_id=? "
+            "AND source_item_id=? AND record_coordinate=?",
+            (member.source_generation_id, member.source_item_id, member.record_coordinate),
+        ).fetchone()
+        if existing is not None and existing[0] is None:
+            raise ValueError("source member raw was retired; readmission is forbidden")
+        if existing is not None:
+            retained = conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id=?", (existing[0],)).fetchone()
+            if existing[1] != plan.request.blob_hash or retained is None or retained[0] != existing[1]:
+                raise ValueError("accepted source member content changed")
+            # Parsing may have refined this raw's origin or revision authority.
+            # Its immutable input edge proves admission; do not replay the
+            # original pending-admission plan over those later domain facts.
+            result = RawAdmissionResult(arm=RawAdmissionArm.SKIP_DUPLICATE, raw_id=str(existing[0]))
+        else:
+            result = execute_raw_admission_plan_sync(conn, plan, manage_transaction=False)
+        record_source_item_raw_member(
+            conn,
+            source_generation_id=member.source_generation_id,
+            source_item_id=member.source_item_id,
+            record_coordinate=member.record_coordinate,
+            raw_id=result.raw_id,
+            raw_blob_hash=plan.request.blob_hash,
+        )
+        if member.entry_ordinal is not None:
+            if member.split_index is None or member.addressing_mode is None:
+                raise ValueError("ZIP source member requires its complete container coordinate")
+            record_raw_container_coordinate(
+                conn,
+                result.raw_id,
+                coordinate_format="zip-v2",
+                entry_ordinal=member.entry_ordinal,
+                split_index=member.split_index,
+                addressing_mode=member.addressing_mode,
+                manage_transaction=False,
+            )
+        consume_blob_publication_receipt(conn, plan.request.blob_publication_receipt_id, plan.request.blob_hash)
+    except BaseException:
+        conn.execute("ROLLBACK TO source_item_raw_admission")
+        conn.execute("RELEASE source_item_raw_admission")
+        raise
+    conn.execute("RELEASE source_item_raw_admission")
+    return result
 
 
 def _classify_bytes(payload: bytes, prior_head_payload: bytes) -> _ByteRelation:

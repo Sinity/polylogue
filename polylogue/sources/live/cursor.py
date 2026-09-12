@@ -48,7 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     upsert_ingest_cursor as upsert_archive_ingest_cursor,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 
 _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
 _FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S = 60
@@ -327,6 +327,19 @@ class CursorStore:
         try:
             with conn:
                 yield conn
+        finally:
+            conn.close()
+
+    @contextmanager
+    def _connect_ops_readonly(self) -> Iterator[sqlite3.Connection]:
+        """Read retry scheduling state without taking the daemon writer lease."""
+        conn = open_readonly_connection(
+            self._ops_db_path,
+            tier=ArchiveTier.OPS,
+            timeout_class="background-read",
+        )
+        try:
+            yield conn
         finally:
             conn.close()
 
@@ -1541,7 +1554,7 @@ class CursorStore:
         count because a source that is still appending is healthy, but it does
         need a timed archive-reconciliation wakeup if filesystem events stop.
         """
-        with self._connect_ops() as conn:
+        with self._connect_ops_readonly() as conn:
             rows = conn.execute(
                 """
                 SELECT

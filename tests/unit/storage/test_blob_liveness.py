@@ -22,6 +22,10 @@ from polylogue.storage.blob_liveness import (
 from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_items import (
+    publish_source_generation,
+    record_source_item_raw_member,
+)
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
 
 
@@ -29,6 +33,81 @@ def _archive(tmp_path: Path) -> tuple[Path, bytes]:
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     return root, b"x" * 32
+
+
+@pytest.mark.uses_real_clock("backdates frozen input bytes to exercise the production GC age gate")
+def test_pending_frozen_input_survives_gc_before_raw_admission(tmp_path: Path) -> None:
+    """Removing source_items from BLOB_OWNERS would delete accepted input bytes."""
+    root, _ = _archive(tmp_path)
+    store = BlobStore(root / "blob")
+    blob_hash, _ = store.write_from_bytes(b"synthetic frozen input")
+    old = time.time() - 3600
+    os.utime(store.blob_path(blob_hash), (old, old))
+    with sqlite3.connect(root / "source.db") as source:
+        publish_source_generation(
+            source,
+            source_generation_id="pending-input",
+            manifest_digest="a" * 64,
+            addressing_mode="physical-file-v1",
+            coordinates=("export.json",),
+            input_blob_hashes={"export.json": bytes.fromhex(blob_hash)},
+            enumeration_fingerprint="b" * 64,
+            observed_at_ms=1,
+        )
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        decision = inspect_blob_liveness(source, blob_hash)
+        assert decision.state is LivenessState.LIVE
+        assert "source.db.source_items" in decision.surfaces
+    report = run_blob_gc_report(root / "source.db", store.root)
+    assert report.blocked_reason is None
+    assert report.deleted_count == 0
+    assert store.exists(blob_hash)
+
+
+def test_generation_projection_includes_exact_many_raw_edges_and_only_its_input(tmp_path: Path) -> None:
+    root, _ = _archive(tmp_path)
+    with sqlite3.connect(root / "source.db") as source:
+        for generation, input_hash in (("one", b"1" * 32), ("two", b"2" * 32)):
+            (item,) = publish_source_generation(
+                source,
+                source_generation_id=generation,
+                manifest_digest="a" * 64,
+                addressing_mode="physical-file-v1",
+                coordinates=("export.json",),
+                input_blob_hashes={"export.json": input_hash},
+                enumeration_fingerprint="b" * 64,
+                observed_at_ms=1,
+            )
+            if generation == "one":
+                source.execute(
+                    "INSERT INTO raw_sessions(raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+                    "VALUES ('raw', 'codex-session', '/synthetic/export.json', ?, 1, 1)",
+                    (b"r" * 32,),
+                )
+                for coordinate in ("record:0", "record:1"):
+                    record_source_item_raw_member(
+                        source,
+                        source_generation_id=generation,
+                        source_item_id=item,
+                        record_coordinate=coordinate,
+                        raw_id="raw",
+                        raw_blob_hash=b"r" * 32,
+                    )
+        projection = project_live_blob_hashes(source, source_generation_id="one")
+        assert not projection.blockers
+        assert projection.live_hashes == frozenset({(b"1" * 32).hex(), (b"r" * 32).hex()})
+
+
+def test_archives_predating_source_items_remain_inspectable(tmp_path: Path) -> None:
+    root, blob_hash = _archive(tmp_path)
+    with sqlite3.connect(root / "source.db") as source:
+        source.execute("DROP VIEW source_item_reconciliation")
+        source.execute("DROP TABLE source_item_raw_members")
+        source.execute("DROP TABLE source_items")
+        decision = inspect_blob_liveness(source, blob_hash.hex())
+        projection = project_live_blob_hashes(source, source_generation_id="not-present")
+        assert decision.state is LivenessState.UNREFERENCED
+        assert not projection.blockers
 
 
 @pytest.mark.parametrize(

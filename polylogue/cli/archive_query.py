@@ -1377,53 +1377,21 @@ def _fetch_daemon_payload(
     *,
     disabled: bool = False,
 ) -> dict[str, object] | None:
-    """Run one declared read operation against this archive's daemon over UDS.
+    """Run the identical declared read over UDS or an explicitly pinned local reader."""
+    from polylogue.cli.operation_kernel import OperationEnvelopeError, configured_read_operation
 
-    The request is the operation and its parameters. There is no URL to build:
-    the daemon reads ``params`` straight off the operation envelope, coercing
-    each value to the ``list[str]`` its handler expects, so encoding the
-    parameters into a query string only to parse them back would be the one
-    place a read could change shape in transit.
-    """
-    if _daemon_disabled(flag=disabled):
-        return None
-    from polylogue.cli.daemon_client import DaemonClient
-    from polylogue.cli.operation_kernel import (
-        OperationKernel,
-        OperationKernelError,
-        OperationRequest,
+    result = configured_read_operation(
+        config,
+        operation,
+        {"params": dict(params)},
+        daemon_disabled=_daemon_disabled(flag=disabled),
     )
-    from polylogue.daemon.api_auth import resolve_api_auth_token
-    from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-    from polylogue.version import POLYLOGUE_VERSION
-
-    client = DaemonClient(
-        daemon_socket_path(config.archive_root),
-        auth_token=resolve_api_auth_token(
-            getattr(config, "api_auth_token", None),
-            allow_no_auth=getattr(config, "api_allow_no_auth", False),
-        ),
-    )
-    kernel = OperationKernel(
-        lambda request: client.operation(
-            request.operation,
-            dict(request.payload),
-            archive_root=str(config.archive_root),
-            index_schema_version=INDEX_SCHEMA_VERSION,
-            daemon_version=POLYLOGUE_VERSION,
-        )
-    )
-    try:
-        operation_result = kernel.execute(OperationRequest(operation, {"params": dict(params)}))
-    except OperationKernelError:
-        return None
-    payload = operation_result.value
-    if not isinstance(payload, dict):
-        return None
-    if client.last_elapsed_ms is not None:
-        payload = dict(payload)
-        payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
+    if not isinstance(result.value, dict):
+        raise OperationEnvelopeError(f"{operation} returned a non-object result")
+    payload = dict(result.value)
+    timing = result.envelope.get("timing") if result.envelope is not None else None
+    if isinstance(timing, Mapping):
+        payload["_daemon_elapsed_ms"] = timing.get("elapsed_ms", 0)
     return payload
 
 
@@ -1440,7 +1408,6 @@ def _submit_mutation_operation(
     on the socket, an absent receipt is indeterminate, never a retryable
     absence.
     """
-    from polylogue.cli.daemon_client import DaemonClient
     from polylogue.cli.operation_kernel import (
         OperationKernel,
         OperationRequest,
@@ -1448,9 +1415,8 @@ def _submit_mutation_operation(
     )
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
     from polylogue.operations.daemon_protocol import MUTATION_OPERATION_NAMES
-    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-    from polylogue.version import POLYLOGUE_VERSION
 
     if operation not in MUTATION_OPERATION_NAMES:
         raise RuntimeError(f"operation is not a declared mutation: {operation}")
@@ -1467,12 +1433,10 @@ def _submit_mutation_operation(
         ),
     )
     kernel = OperationKernel(
-        lambda request: client.operation(
+        lambda request: client.operation_to_completion(
             request.operation,
             dict(request.payload),
             archive_root=str(mutation_root),
-            index_schema_version=INDEX_SCHEMA_VERSION,
-            daemon_version=POLYLOGUE_VERSION,
         )
     )
     result = kernel.execute(OperationRequest(operation, payload))
@@ -2176,12 +2140,12 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
         return
     except OperationKernelError as exc:
         raise _delete_refusal(exc, "authorize") from exc
-    daemon_authorization_tokens = _delete_authorization_tokens(daemon_authorization, len(daemon_preview_refs))
+    daemon_authorization_refs = _delete_authorization_refs(daemon_authorization, len(daemon_preview_refs))
     try:
         daemon_payload = _submit_mutation_operation(
             config,
             "mutation.session.delete.execute",
-            {"authorization_tokens": list(daemon_authorization_tokens)},
+            {"authorization_refs": list(daemon_authorization_refs)},
         )
     except OperationKernelError as exc:
         raise _delete_refusal(exc, "execute") from exc
@@ -2243,14 +2207,14 @@ def _delete_refusal(exc: Exception, stage: str) -> click.ClickException:
     return click.ClickException(f"delete {stage} failed: {exc}")
 
 
-def _delete_authorization_tokens(daemon_authorization: dict[str, object], expected: int) -> tuple[str, ...]:
-    """Read the daemon's one-time tokens; a count mismatch is not authorization."""
+def _delete_authorization_refs(daemon_authorization: dict[str, object], expected: int) -> tuple[str, ...]:
+    """Read authenticated durable references; a count mismatch is not authorization."""
 
-    tokens = daemon_authorization.get("authorization_tokens")
+    tokens = daemon_authorization.get("authorization_refs")
     if isinstance(tokens, list) and all(isinstance(token, str) and token for token in tokens):
         issued = tuple(tokens)
     else:
-        token = daemon_authorization.get("authorization_token")
+        token = daemon_authorization.get("authorization_ref")
         if not isinstance(token, str) or not token:
             raise click.ClickException("daemon returned an invalid delete authorization")
         issued = (token,)

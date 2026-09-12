@@ -48,7 +48,7 @@ __all__ = [
 #: Bumped when the meaning of a session-scoped derivation changes without the
 #: projection changing. Every stored binding compares unequal afterwards, which
 #: is the whole invalidation mechanism: there is no separate freshness ledger.
-SESSION_INPUT_RECIPE_VERSION = "1"
+SESSION_INPUT_RECIPE_VERSION = "2"
 
 #: The exact session-row columns session-scoped aggregates read. The profile
 #: caches several of these directly (``source_sort_key``, ``source_updated_at``,
@@ -109,6 +109,35 @@ SESSION_INPUT_PROJECTION_COLUMNS: tuple[str, ...] = (
     "stop_reason",
     "is_active_path",
     "content_hash",
+)
+
+# ``load_sync_batch`` hydrates these attachment values directly.  They live in
+# two relations, so neither the message hash nor the session row can certify a
+# prepared profile after one changes.
+SESSION_ATTACHMENT_PROJECTION_COLUMNS: tuple[str, ...] = (
+    "attachment_id",
+    "display_name",
+    "media_type",
+    "byte_count",
+    "source_url",
+    "caption",
+    "upload_origin",
+    "message_id",
+)
+
+# ``sync_session_events_batch`` maps precisely these event values into the
+# profile runtime, and the compaction count is a function of ``event_type``.
+# ``summary`` is intentionally absent: the hydrator does not read it.
+SESSION_EVENT_PROJECTION_COLUMNS: tuple[str, ...] = (
+    "source_message_id",
+    "source_message_provider_id",
+    "position",
+    "event_type",
+    "payload_json",
+    "occurred_at_ms",
+    "boundary_start_position",
+    "boundary_end_position",
+    "boundary_message_id",
 )
 
 #: Every ``sessions`` column the projection deliberately leaves out, with the
@@ -202,6 +231,45 @@ ORDER BY m.session_id, m.position, m.variant_index, m.message_id
 """
 
 
+def session_attachment_binding_sql(session_count: int) -> str:
+    """Ordered attachment projection consumed by session hydration."""
+    if session_count < 1:
+        raise ValueError("session_attachment_binding_sql requires at least one session")
+    placeholders = ",".join("?" * session_count)
+    return f"""
+SELECT
+    r.session_id,
+    a.attachment_id,
+    a.display_name,
+    a.media_type,
+    a.byte_count,
+    r.source_url,
+    r.caption,
+    r.upload_origin,
+    r.message_id
+FROM attachment_refs r
+JOIN attachments a ON a.attachment_id = r.attachment_id
+WHERE r.session_id IN ({placeholders})
+ORDER BY r.session_id, r.message_id, r.position, a.attachment_id
+"""
+
+
+def session_event_binding_sql(session_count: int) -> str:
+    """Ordered session-event projection consumed by profile construction."""
+    if session_count < 1:
+        raise ValueError("session_event_binding_sql requires at least one session")
+    placeholders = ",".join("?" * session_count)
+    projected = ",\n    ".join(f"se.{column}" for column in SESSION_EVENT_PROJECTION_COLUMNS)
+    return f"""
+SELECT
+    se.session_id,
+    {projected}
+FROM session_events se
+WHERE se.session_id IN ({placeholders})
+ORDER BY se.session_id, se.position
+"""
+
+
 class SessionInputDigest:
     """Accumulates one binding per session from projection rows, in order.
 
@@ -226,6 +294,17 @@ class SessionInputDigest:
         digest = self._digests.get(session_id)
         if digest is None:  # pragma: no cover - IN () cannot return an unasked id
             return
+        digest.update(b"\x1e")
+        digest.update(b"\x1f".join(b"" if value is None else str(value).encode("utf-8") for value in row[1:]))
+
+    def add_related_row(self, relation: str, row: Sequence[object]) -> None:
+        """Add one ordered value row from a non-message input relation."""
+        session_id = str(row[0])
+        digest = self._digests.get(session_id)
+        if digest is None:  # pragma: no cover - IN () cannot return an unasked id
+            return
+        digest.update(b"\x1d")
+        digest.update(relation.encode("utf-8"))
         digest.update(b"\x1e")
         digest.update(b"\x1f".join(b"" if value is None else str(value).encode("utf-8") for value in row[1:]))
 
@@ -255,6 +334,16 @@ def session_input_bindings(
                 digest.add_row(row)
         finally:
             cursor.close()
+    for relation, sql in (
+        ("attachments", session_attachment_binding_sql(len(unique))),
+        ("session_events", session_event_binding_sql(len(unique))),
+    ):
+        cursor = conn.execute(sql, unique)
+        try:
+            for row in cursor:
+                digest.add_related_row(relation, row)
+        finally:
+            cursor.close()
     return digest.result()
 
 
@@ -277,4 +366,11 @@ async def session_input_bindings_async(
         async with conn.execute(sql, unique) as cursor:
             async for row in cursor:
                 digest.add_row(row)
+    for relation, sql in (
+        ("attachments", session_attachment_binding_sql(len(unique))),
+        ("session_events", session_event_binding_sql(len(unique))),
+    ):
+        async with conn.execute(sql, unique) as cursor:
+            async for row in cursor:
+                digest.add_related_row(relation, row)
     return digest.result()

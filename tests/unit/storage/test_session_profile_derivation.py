@@ -313,6 +313,219 @@ def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
     assert _status(index_db, session_id) == "valid"
 
 
+def test_prepared_partition_refuses_a_value_binding_that_moved_before_publish(
+    archive: tuple[Path, str],
+) -> None:
+    """A prepared four-table replacement never publishes after its frame moves.
+
+    Anti-vacuity: move record construction back into ``publish`` or omit the
+    source/value binding comparison and this writes a profile whose message
+    values no longer match the prepared projection.
+    """
+    from polylogue.daemon.derivation import DerivationFrame
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+
+    index_db, session_id = archive
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+    )
+    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
+    prepared = adapter.compute(frame, session_id)
+
+    _mutate(index_db, session_id, "word_count", "word_count + 1")
+
+    assert adapter.publish(frame, prepared) is False
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        assert [
+            conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0]
+            for table in ("session_profiles", "session_work_events", "session_phases", "session_latency_profiles")
+        ] == [0, 0, 0, 0]
+
+
+@pytest.mark.parametrize("input_kind", ("attachment", "session_event"))
+def test_prepared_partition_refuses_related_input_that_moved_before_publish(
+    archive: tuple[Path, str],
+    input_kind: str,
+) -> None:
+    """Every related value consumed by hydration binds a prepared replacement.
+
+    Anti-vacuity: remove either related projection from ``session_input_bindings``
+    and this accepts the stale prepared family although the session runtime has
+    changed. ``root_session_id`` is already a session-row binding; no unconsumed
+    ``session_links`` relation is smuggled into this contract.
+    """
+    from polylogue.daemon.derivation import DerivationFrame
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+
+    index_db, session_id = archive
+    with write_lease("test.seed-related"), closing(_write_connection(index_db)) as conn:
+        message_id = str(
+            conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1",
+                (session_id,),
+            ).fetchone()[0]
+        )
+        if input_kind == "attachment":
+            conn.execute(
+                "INSERT INTO attachments (attachment_id, display_name, media_type, byte_count) VALUES (?, ?, ?, ?)",
+                ("related-input", "before.txt", "text/plain", 5),
+            )
+            conn.execute(
+                """
+                INSERT INTO attachment_refs
+                    (attachment_id, session_id, message_id, position, source_url, caption)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ("related-input", session_id, message_id, 0, "file://before", "before"),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO session_events
+                    (session_id, source_message_id, position, event_type, summary, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, message_id, 0, "compaction", "before", '{"state":"before"}'),
+            )
+        conn.commit()
+
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+    )
+    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
+    prepared = adapter.compute(frame, session_id)
+
+    with write_lease("test.mutate-related"), closing(_write_connection(index_db)) as conn:
+        if input_kind == "attachment":
+            conn.execute("UPDATE attachment_refs SET caption = ? WHERE attachment_id = ?", ("after", "related-input"))
+        else:
+            conn.execute(
+                "UPDATE session_events SET payload_json = ? WHERE session_id = ? AND position = 0",
+                ('{"state":"after"}', session_id),
+            )
+        conn.commit()
+
+    assert adapter.publish(frame, prepared) is False
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        assert [
+            conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0]
+            for table in ("session_profiles", "session_work_events", "session_phases", "session_latency_profiles")
+        ] == [0, 0, 0, 0]
+
+
+def test_marker_recovery_retries_without_replacing_a_valid_index_partition(
+    archive: tuple[Path, str],
+) -> None:
+    """Marker absence is restart-discoverable and never authorizes index rewrites.
+
+    Anti-vacuity: omit marker inspection and a post-crash user-tier assertion
+    stays absent forever; remove the valid-profile fast path and recovery
+    changes the already-valid index partition just to retry user-tier work.
+    """
+    from polylogue.markers import lower_markers
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+    from polylogue.storage.derived.session.rebuild import marker_candidates_for_session_sync
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    index_db, session_id = archive
+    user_db = index_db.with_name("user.db")
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    with write_lease("test.seed-marker"), closing(_write_connection(index_db)) as conn:
+        conn.execute(
+            "UPDATE blocks SET text = ? WHERE message_id = (SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1)",
+            ("::finding: recover from the separate user tier", session_id),
+        )
+        conn.commit()
+
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+        marker_read_connection=lambda: sqlite3.connect(f"file:{user_db}?mode=ro", uri=True),
+        marker_write_connection=lambda: sqlite3.connect(user_db),
+    )
+    frame = type("Frame", (), {"scope": (session_id,)})()
+    first = adapter.compute(frame, session_id)
+    assert adapter.publish(frame, first) is True
+    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        materialized_at = conn.execute(
+            "SELECT materialized_at FROM session_profiles WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+    with closing(sqlite3.connect(user_db)) as conn:
+        assertion_id = conn.execute("SELECT assertion_id FROM assertions").fetchone()[0]
+        conn.execute("DELETE FROM assertions WHERE assertion_id = ?", (assertion_id,))
+        conn.commit()
+
+    assert adapter.inspect(frame, (session_id,))[session_id] == "stale"
+    retry = adapter.compute(frame, session_id)
+    assert adapter.publish(frame, retry) is True
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        assert (
+            conn.execute("SELECT materialized_at FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[
+                0
+            ]
+            == materialized_at
+        )
+    with closing(sqlite3.connect(user_db)) as conn:
+        conn.execute(
+            "UPDATE assertions SET author_kind = ?, body_text = ? WHERE assertion_id = ?",
+            ("user", "keep", assertion_id),
+        )
+        conn.commit()
+    with closing(_write_connection(index_db)) as index_conn, closing(sqlite3.connect(user_db)) as marker_conn:
+        lower_markers(marker_conn, marker_candidates_for_session_sync(index_conn, session_id))
+        marker_conn.commit()
+    with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)) as conn:
+        assert conn.execute(
+            "SELECT author_kind, body_text FROM assertions WHERE assertion_id = ?", (assertion_id,)
+        ).fetchone() == ("user", "keep")
+
+
+def test_prepared_generation_refuses_when_the_active_anchor_promotes(
+    archive: tuple[Path, str],
+) -> None:
+    """A prepared partition cannot publish through a promoted index anchor.
+
+    Anti-vacuity: freeze ``index_db_path.resolve()`` in the factory or omit
+    the generation checks and this writes the prepared family after its
+    admitted generation has been retired.
+    """
+    from polylogue.daemon.derivation import DerivationFrame
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+
+    index_db, session_id = archive
+    active_generation = {"path": str(index_db.resolve())}
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+        generation_binding=lambda: active_generation["path"],
+    )
+    frame = DerivationFrame(
+        archive_root=str(index_db.parent),
+        source_revision=f"index-generation:{index_db.resolve()}",
+        scope=(session_id,),
+    )
+    prepared = adapter.compute(frame, session_id)
+    active_generation["path"] = "retired-generation"
+
+    assert adapter.publish(frame, prepared) is False
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
+        )
+
+
 def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path, str]) -> None:
     """Policy deferral leaves the profile absent and the key rediscoverable."""
     from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, Outcome, PendingReason, converge

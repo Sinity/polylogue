@@ -2,7 +2,7 @@
 
 Deliberately stdlib-only, with no archive/storage imports, so it stays cheap
 to import from the CLI's daemon-probe hot path (mirrors the constraint
-documented on :mod:`polylogue.cli.daemon_client`).
+documented on :mod:`polylogue.daemon_client`).
 
 Historically the daemon's UDS path was derived from ``XDG_RUNTIME_DIR`` alone
 (``$XDG_RUNTIME_DIR/polylogue/daemon.sock``), with no archive-root component.

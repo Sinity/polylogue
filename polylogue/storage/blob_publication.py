@@ -171,6 +171,20 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending_by_hash[prepared.hash_hex] = prepared
         return prepared.hash_hex, prepared.size_bytes
 
+    def queue_prepared(self, prepared: PreparedBlob) -> tuple[str, int]:
+        """Queue bytes prepared by shared compute for writer-owned publication.
+
+        This performs no source-tier mutation.  The admitted archive writer
+        still owns ``flush()``, which reserves the receipt and publishes the
+        staged file together under the publisher exclusion protocol.
+        """
+        staging_root = (self._store.root / ".staging").resolve()
+        try:
+            prepared.temporary_path.resolve().relative_to(staging_root)
+        except ValueError as exc:
+            raise ValueError("prepared blob must belong to this archive's private staging root") from exc
+        return self._queue(prepared)
+
     def write_from_path(self, source: Path, *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_path(source, heartbeat=heartbeat))
 

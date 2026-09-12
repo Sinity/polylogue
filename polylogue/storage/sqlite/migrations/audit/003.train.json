@@ -1,0 +1,89 @@
+{
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "train_id": "train:audit:v3",
+  "tier": "audit",
+  "current_version": 2,
+  "target_version": 3,
+  "slot": 3,
+  "owner_ref": "polylogue-bp12n.3",
+  "migration": {
+    "tier": "audit",
+    "target_version": 3,
+    "slot": 3,
+    "path": "003_machine_requests.sql",
+    "owner_ref": "polylogue-bp12n.3",
+    "sql_sha256": "28e11a7fb93230f23db245278c3ba79a3530d143975b6b82d75a473fa5fe53fe",
+    "requires_backup": true
+  },
+  "riders": [
+    {
+      "rider_id": "rider:machine-requests",
+      "owner_ref": "polylogue-bp12n.3",
+      "schema_objects": [
+        "table:machine_requests",
+        "index:idx_machine_requests_artifact",
+        "table:machine_request_parts",
+        "index:idx_machine_request_parts_authorization"
+      ],
+      "runtime_consumers": [
+        {
+          "consumer_id": "machine-request-reader",
+          "production_ref": "polylogue/operations/audit.py:AuditRepository.machine_request",
+          "behavior_proof_ref": "proof:test_machine_request_and_domain_run_replay_atomically",
+          "roles": ["read"]
+        },
+        {
+          "consumer_id": "machine-request-parts-reader",
+          "production_ref": "polylogue/operations/audit.py:AuditRepository.machine_parts",
+          "behavior_proof_ref": "proof:test_machine_request_and_domain_run_replay_atomically",
+          "roles": ["read"]
+        },
+        {
+          "consumer_id": "machine-request-binding",
+          "production_ref": "polylogue/operations/audit.py:AuditRepository.bind_machine_request",
+          "behavior_proof_ref": "proof:test_machine_request_and_domain_run_replay_atomically",
+          "roles": ["write"]
+        },
+        {
+          "consumer_id": "machine-request-writer",
+          "production_ref": "polylogue/operations/audit.py:AuditRepository._bind_machine_result",
+          "behavior_proof_ref": "proof:test_authenticated_authorization_reference_survives_restart_and_is_one_shot",
+          "roles": ["write"]
+        },
+        {
+          "consumer_id": "machine-request-batch-writer",
+          "production_ref": "polylogue/operations/audit.py:AuditRepository._bind_machine_batch",
+          "behavior_proof_ref": "proof:test_machine_request_and_domain_run_replay_atomically",
+          "roles": ["write"]
+        }
+      ],
+      "behavior_proof_refs": [
+        "proof:test_machine_request_and_domain_run_replay_atomically",
+        "proof:test_authenticated_authorization_reference_survives_restart_and_is_one_shot"
+      ],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "ordering_constraints": [],
+  "drop_constraints": [],
+  "row_change_allowances": [],
+  "backup_plan_ref": "backup-profile:audit-tier",
+  "state": "declared",
+  "revision": 0,
+  "declared_at_ms": 0,
+  "admitted_at_ms": null,
+  "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
+  "apply_evidence": null,
+  "proof": null,
+  "failure": null,
+  "released_at_ms": null,
+  "release_evidence_ref": null,
+  "proof_refs": [],
+  "source_continuity_evidence": null,
+  "manifest_sha256": "9bfa39b01b201607fedf001b1e28901c7dfa6a806c0fde2d8b009ec4b674ffc4"
+}

@@ -5,8 +5,10 @@ from __future__ import annotations
 import pytest
 
 from polylogue.cli.operation_kernel import (
+    OperationCancelledError,
     OperationEnvelopeError,
     OperationFailedError,
+    OperationIndeterminateError,
     OperationKernel,
     OperationRequest,
     OperationUnavailableError,
@@ -20,24 +22,16 @@ def test_daemon_envelope_is_validated_before_renderer_handoff() -> None:
 
 
 def test_failed_outcome_is_typed_and_never_directly_retried() -> None:
-    called = False
-
-    def direct(_request: OperationRequest) -> object:
-        nonlocal called
-        called = True
-        return {"items": []}
-
-    with pytest.raises(OperationFailedError, match="cancelled"):
-        OperationKernel(lambda _request: {"outcome": "cancelled", "result": None}, direct).execute(
+    with pytest.raises(OperationCancelledError):
+        OperationKernel(lambda _request: {"outcome": "cancelled", "result": None}).execute(
             OperationRequest("cli.query", {})
         )
-    assert called is False
 
 
 def test_daemon_and_direct_reads_share_the_result_contract() -> None:
     request = OperationRequest("cli.query", {"params": {"query": ("needle",)}})
     daemon = OperationKernel(lambda _request: {"result": {"items": [1]}, "authority": {"mode": "daemon"}})
-    direct = OperationKernel(lambda _request: None, lambda _request: {"items": [1]})
+    direct = OperationKernel(lambda _request: {"result": {"items": [1]}, "authority": {"mode": "direct"}})
 
     daemon_result = daemon.execute(request)
     direct_result = direct.execute(request)
@@ -48,45 +42,20 @@ def test_daemon_and_direct_reads_share_the_result_contract() -> None:
 
 
 def test_typed_daemon_error_does_not_fall_through_to_direct_execution() -> None:
-    called = False
-
-    def direct(_request: OperationRequest) -> object:
-        nonlocal called
-        called = True
-        return {"unsafe": True}
-
     with pytest.raises(OperationFailedError, match="bad_query"):
         OperationKernel(
             lambda _request: {"error": {"code": "bad_query", "detail": "invalid"}},
-            direct,
         ).execute(OperationRequest("cli.query", {}))
-    assert called is False
 
 
 def test_non_read_operation_cannot_use_direct_fallback() -> None:
-    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS, DaemonAuthority, DaemonFallback
-
-    original = tuple(DAEMON_OPERATION_SPECS)
-    try:
-        # Declared writes use ``DaemonFallback.NEVER``; this law proves the
-        # guard holds even for a write that names a direct fallback.
-        from polylogue.operations import daemon_protocol
-
-        daemon_protocol.DAEMON_OPERATION_SPECS = original + (
-            daemon_protocol.DaemonOperationSpec("test.write", DaemonAuthority.WRITE, DaemonFallback.DIRECT_READ),
-        )
-        with pytest.raises(OperationUnavailableError):
-            OperationKernel(lambda _request: None, lambda _request: {"written": True}).execute(
-                OperationRequest("test.write", {})
-            )
-    finally:
-        daemon_protocol.DAEMON_OPERATION_SPECS = original
+    with pytest.raises(OperationUnavailableError):
+        OperationKernel(lambda _request: None).execute(OperationRequest("mutation.session.tag", {}))
 
 
 @pytest.mark.parametrize(
     ("envelope", "code"),
     [
-        ({"outcome": "cancelled", "result": None}, "cancelled"),
         ({"outcome": "timeout", "result": None}, "timeout"),
         ({"generation": {"state": "stale"}, "result": {}}, "stale_generation"),
     ],
@@ -107,10 +76,19 @@ def test_oversized_result_is_rejected_before_rendering() -> None:
     assert exc_info.value.code == "result_too_large"
 
 
-def test_timeout_falls_back_to_direct_read() -> None:
-    result = OperationKernel(
-        lambda _request: (_ for _ in ()).throw(TimeoutError("deadline")),
-        lambda _request: {"items": []},
-    ).execute(OperationRequest("cli.query", {}))
-    assert result.value == {"items": []}
-    assert result.authority["mode"] == "direct"
+def test_timeout_is_not_evidence_of_daemon_absence() -> None:
+    with pytest.raises(OperationFailedError, match="daemon_transport_error"):
+        OperationKernel(
+            lambda _request: (_ for _ in ()).throw(TimeoutError("deadline")),
+        ).execute(OperationRequest("cli.query", {}))
+
+
+def test_error_detail_cannot_demote_indeterminate_effects_to_retryable_failure() -> None:
+    with pytest.raises(OperationIndeterminateError, match="accepted-request"):
+        OperationKernel(
+            lambda _request: {
+                "outcome": "indeterminate",
+                "request_id": "accepted-request",
+                "error": {"code": "after_commit_failure", "detail": "receipt reconciliation required"},
+            }
+        ).execute(OperationRequest("mutation.session.tag", {}))

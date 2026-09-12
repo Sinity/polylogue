@@ -5,12 +5,13 @@ import contextlib
 import functools
 import hashlib
 import inspect
+import json
 import os
 import sqlite3
 import stat
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -23,12 +24,17 @@ from polylogue.config import Config
 from polylogue.core.json import JSONDocument, loads
 from polylogue.daemon.cli import main
 from polylogue.daemon.convergence import ConvergenceStage
+from polylogue.daemon.derivation import DerivationReport
+from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
+from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
+from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.raw_retention import RawFrontierBlockedPaths
+from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -166,6 +172,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
         ("source.db", ArchiveTier.SOURCE),
         ("index.db", ArchiveTier.INDEX),
         ("user.db", ArchiveTier.USER),
+        ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
         initialize_archive_database(tmp_path / filename, tier)
@@ -195,13 +202,14 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     assert storage["schema_mismatches"] == []
     assert storage["archive_schema_ready"] is True
     assert storage["archive_ready"] is True
-    assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "ops"]
+    assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "audit", "ops"]
     tiers = cast(list[dict[str, object]], storage["tiers"])
     assert {tier["name"]: tier["user_version"] for tier in tiers} == {
         "source": SOURCE_SCHEMA_VERSION,
         "index": INDEX_SCHEMA_VERSION,
         "embeddings": EMBEDDINGS_SCHEMA_VERSION,
         "user": USER_SCHEMA_VERSION,
+        "audit": AUDIT_SCHEMA_VERSION,
         "ops": 1,
     }
     assert {tier["name"]: tier["version_status"] for tier in tiers} == {
@@ -209,6 +217,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
         "index": "ok",
         "embeddings": "ok",
         "user": "ok",
+        "audit": "ok",
         "ops": "ok",
     }
 
@@ -219,6 +228,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
         ("index.db", ArchiveTier.INDEX),
         ("embeddings.db", ArchiveTier.EMBEDDINGS),
         ("user.db", ArchiveTier.USER),
+        ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
         initialize_archive_database(tmp_path / filename, tier)
@@ -273,7 +283,7 @@ def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None
         result = CliRunner().invoke(main, ["status"])
 
     assert result.exit_code == 1
-    assert "Storage: archive_file_set (source, index); missing embeddings, user, ops" in result.output
+    assert "Storage: archive_file_set (source, index); missing embeddings, user, audit, ops" in result.output
 
 
 def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None:
@@ -282,6 +292,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
         ("index.db", ArchiveTier.INDEX),
         ("embeddings.db", ArchiveTier.EMBEDDINGS),
         ("user.db", ArchiveTier.USER),
+        ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
         initialize_archive_database(tmp_path / filename, tier)
@@ -297,7 +308,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
 
     assert result.exit_code == 1
     assert (
-        "Storage: archive_file_set (source, index, embeddings, user, ops); final split complete; schema mismatch index"
+        "Storage: archive_file_set (source, index, embeddings, user, audit, ops); final split complete; schema mismatch index"
         in result.output
     )
 
@@ -335,8 +346,9 @@ def test_drain_convergence_debt_migrates_retired_insights_stage(
         retried = daemon_cli._drain_convergence_debt_once(db)
         debt_after = cursor.list_convergence_debt()
 
-    assert retried == 1
-    assert debt_after == []
+    assert retried == 0
+    assert len(debt_after) == 1
+    assert debt_after[0].stage == "derived"
     assert cursor.get_record(source) is None
 
 
@@ -351,7 +363,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     db = tmp_path / "index.db"
     cursor = CursorStore(db)
     cursor.record_convergence_debt(
-        stage="derived",
+        stage="convergence",
         subject_type="session_id",
         subject_id="conv-1",
         error="initial failure",
@@ -463,12 +475,16 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
+    async def noop_embedding_debt(_db: Path) -> None:
+        return None
+
     with (
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
             return_value=SimpleNamespace(run_sync=fake_run_sync),
         ),
+        patch.object(daemon_cli, "_converge_embedding_debt_off_writer", noop_embedding_debt),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
@@ -1265,7 +1281,11 @@ def test_raw_materialization_fts_failure_records_durable_debt(
         ) -> None:
             calls.append((stage, subject_type, subject_id, error))
 
-    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda _db: True)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_raw_materialization_fts_needs_repair",
+        lambda _db, *, archive_root: True,
+    )
     monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: False)
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
@@ -1304,7 +1324,11 @@ def test_raw_materialization_fts_success_clears_prior_debt(
         def record_convergence_debt(self, **_kwargs: object) -> None:
             raise AssertionError("successful FTS repair must not record debt")
 
-    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda _db: True)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_raw_materialization_fts_needs_repair",
+        lambda _db, *, archive_root: True,
+    )
     monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: True)
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
@@ -1333,7 +1357,11 @@ def test_raw_materialization_fts_exception_becomes_explicit_debt(
         def record_convergence_debt(self, *, error: str | None = None, **_kwargs: object) -> None:
             errors.append(error)
 
-    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda _db: True)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_raw_materialization_fts_needs_repair",
+        lambda _db, *, archive_root: True,
+    )
     monkeypatch.setattr(
         "polylogue.daemon.convergence_stages.repair_fts_surface",
         lambda *_args: (_ for _ in ()).throw(RuntimeError("injected FTS failure")),
@@ -1925,13 +1953,20 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
 
     db = tmp_path / "index.db"
     db.touch()
-    calls: list[str] = []
+    actors: list[str] = []
+    profile_scopes: list[tuple[str, ...] | None] = []
     drained = asyncio.Event()
 
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        calls.append("fts" if _actor == "maintenance.fts_convergence" else "drain")
+        actors.append(_actor)
         drained.set()
+        if _actor == "maintenance.embedding_debt_scan":
+            return (), ()
         return 0
+
+    async def fake_session_profiles(scope: tuple[str, ...] | None) -> object:
+        profile_scopes.append(scope)
+        return SimpleNamespace()
 
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
@@ -1942,9 +1977,16 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
             lambda: SimpleNamespace(run_sync=fake_run_sync),
         )
         monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
-        task = asyncio.create_task(daemon_cli._periodic_convergence_check((), catch_up_complete=catch_up_complete))
+        task = asyncio.create_task(
+            daemon_cli._periodic_convergence_check(
+                (),
+                catch_up_complete=catch_up_complete,
+                session_profile_callback=fake_session_profiles,
+            )
+        )
         await asyncio.sleep(0)
-        assert calls == []
+        assert actors == []
+        assert profile_scopes == []
         catch_up_complete.set()
         await asyncio.wait_for(drained.wait(), timeout=1)
         task.cancel()
@@ -1953,7 +1995,12 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
 
     asyncio.run(exercise())
 
-    assert calls == ["drain", "fts"]
+    assert actors == [
+        "maintenance.embedding_debt_scan",
+        "maintenance.convergence_debt",
+        "maintenance.fts_convergence",
+    ]
+    assert profile_scopes == [None]
 
 
 def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -> None:
@@ -1965,12 +2012,16 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise RuntimeError("unexpected convergence retry failure")
 
+    async def noop_embedding_debt(_db: Path) -> None:
+        return None
+
     with (
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
             return_value=SimpleNamespace(run_sync=fake_run_sync),
         ),
+        patch.object(daemon_cli, "_converge_embedding_debt_off_writer", noop_embedding_debt),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
@@ -3548,11 +3599,15 @@ def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path:
 
 def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.convergence import DaemonConverger
+    from polylogue.daemon.execution import BoundedComputeAdapter, reset_daemon_compute_adapter
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
     events: list[str] = []
     lifecycle_payloads: list[dict[str, object]] = []
     watcher_coordinators: list[object] = []
+    watcher_profile_callbacks: list[object] = []
+    periodic_profile_callbacks: list[object] = []
     ok_schema = HealthAlert(
         check_name="schema_version",
         tier=HealthTier.FAST,
@@ -3572,6 +3627,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         def __init__(self, *_args: object, **kwargs: object) -> None:
             self.catch_up_complete = asyncio.Event()
             watcher_coordinators.append(kwargs["write_coordinator"])
+            watcher_profile_callbacks.append(kwargs["session_profile_callback"])
 
         async def run(self) -> None:
             events.append("watcher")
@@ -3606,23 +3662,29 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     def fake_operation_recovery(_archive_root_path: Path) -> None:
         events.append("operation-recovery")
 
+    def recording_converger(
+        stages: Iterable[ConvergenceStage], *, derivations: Iterable[object] = ()
+    ) -> DaemonConverger:
+        events.append("converger")
+        return DaemonConverger(stages, derivations=derivations)
+
     async def fake_loop(name: str) -> None:
         events.append(name)
         await asyncio.Event().wait()
 
-    class FakeConverger:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            events.append("converger")
-
     class FakeAPIServer:
         def __init__(self) -> None:
-            # The production daemon publishes this adapter to daemon-internal
-            # work immediately after binding. Keep the fake's shutdown shape
-            # aligned so a lifecycle test fails at the real boundary.
-            from polylogue.daemon.execution import BoundedComputeAdapter
-
-            self.execution_kernel = BoundedComputeAdapter(max_workers=1, queue_units=1)
             self.stopped = threading.Event()
+            self.session_profile_callback = object()
+            self.execution_kernel = BoundedComputeAdapter(
+                max_workers=1,
+                queue_units=0,
+                thread_name_prefix="test-daemon-api",
+            )
+            self.operation_runtime = SimpleNamespace(shutdown=self._shutdown_operation_runtime)
+
+        async def _shutdown_operation_runtime(self) -> None:
+            events.append("operation-runtime-shutdown")
 
         def serve_forever(self, _poll_interval: float) -> None:
             self.stopped.wait(timeout=2.0)
@@ -3634,6 +3696,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
             self.execution_kernel.shutdown(wait=False, cancel_futures=True)
             return None
 
+    reset_daemon_compute_adapter()
     api_server = FakeAPIServer()
 
     def make_api_server(*_args: object, **_kwargs: object) -> FakeAPIServer:
@@ -3647,6 +3710,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         lifecycle_payloads.append(cast(dict[str, object], kwargs["payload"]))
 
     with contextlib.ExitStack() as stack:
+        stack.callback(reset_daemon_compute_adapter)
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
         stack.enter_context(
@@ -3686,11 +3750,12 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
             )
         )
         stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")))
-        stack.enter_context(
-            patch.object(
-                daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: fake_loop("convergence")
-            )
-        )
+
+        def fake_periodic_convergence(_sources: tuple[WatchSource, ...], **kwargs: object) -> object:
+            periodic_profile_callbacks.append(kwargs["session_profile_callback"])
+            return fake_loop("convergence")
+
+        stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", fake_periodic_convergence))
         stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", lambda: fake_loop("health")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")))
@@ -3703,10 +3768,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
                 lambda **_kwargs: fake_loop("embedding"),
             )
         )
-        stack.enter_context(patch("polylogue.daemon.convergence.DaemonConverger", FakeConverger))
         stack.enter_context(
             patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=())
         )
+        stack.enter_context(patch("polylogue.daemon.convergence.DaemonConverger", recording_converger))
         stack.enter_context(patch("polylogue.daemon.http.DaemonAPIHTTPServer", api_server_factory))
         stack.enter_context(patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event))
         stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
@@ -3753,6 +3818,189 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     assert len(watcher_coordinators) == 1
     bridge = api_server_factory.call_args.kwargs["write_bridge"]
     assert bridge._coordinator is watcher_coordinators[0]
+    assert watcher_profile_callbacks == [api_server.session_profile_callback]
+    assert periodic_profile_callbacks == [api_server.session_profile_callback]
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("drives the real filesystem watcher through a controlled daemon lifecycle")
+async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_path: Path) -> None:
+    """A real daemon lifecycle restores profiles from configured-source evidence.
+
+    Each pass enters ``run_daemon_services`` with the production watcher and
+    composition callback. The first pass catches up a physical JSONL source;
+    the second starts after a synthetic, output-only profile removal. Both
+    passes terminate only after the real periodic convergence loop invokes
+    its post-catch-up no-hint callback. No manual operation invokes the owner.
+
+    Anti-vacuity: omit the watcher callback, run the sweep before catch-up,
+    replace it with a scoped live-source call, or retain output rows across
+    restart, and the recorded ``None`` scope or repaired durable profile fails.
+    """
+    from polylogue import Polylogue as RealPolylogue
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import session_profile_composition
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.daemon.services import ServiceProfile
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    archive_root = tmp_path / "archive"
+    source_root = tmp_path / "configured-source"
+    source_root.mkdir()
+    native_session_id = "aaaa0000-0000-0000-0000-000000000001"
+    session_id = f"claude-code-session:{native_session_id}"
+    source = source_root / "fresh-session.jsonl"
+    source.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in (
+                {
+                    "parentUuid": None,
+                    "sessionId": native_session_id,
+                    "type": "user",
+                    "message": {"role": "user", "content": "synthetic startup prompt"},
+                    "uuid": "message-1",
+                    "timestamp": "2026-05-16T00:00:00.000Z",
+                    "cwd": "/workspace",
+                    "version": "1.0.6",
+                    "isSidechain": False,
+                    "userType": "external",
+                },
+                {
+                    "parentUuid": "message-1",
+                    "sessionId": native_session_id,
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": "synthetic startup reply"},
+                    "uuid": "message-2",
+                    "timestamp": "2026-05-16T00:00:01.000Z",
+                    "cwd": "/workspace",
+                    "version": "1.0.6",
+                    "isSidechain": False,
+                    "userType": "external",
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(source, (1.0, 1.0))
+
+    observed_scopes: list[tuple[str, ...] | None] = []
+    sweep_complete = asyncio.Event()
+    current_coordinator: DaemonWriteCoordinator | None = None
+    real_compose = session_profile_composition.compose_session_profile_callback
+
+    async def idle_loop(**_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    async def noop_periodic_work(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def compose_with_oracle(
+        root: Path,
+        *,
+        compute_adapter: BoundedComputeAdapter,
+        write_bridge: DaemonWriteThreadBridge,
+        now: Callable[[], float],
+    ) -> ComposedSessionProfiles:
+        composed = real_compose(
+            root,
+            compute_adapter=compute_adapter,
+            write_bridge=write_bridge,
+            now=now,
+        )
+
+        async def observe(scope: Sequence[str] | None) -> DerivationReport:
+            report = await composed(scope)
+            if scope is None:
+                observed_scopes.append(scope)
+                sweep_complete.set()
+            return report
+
+        return session_profile_composition.ComposedSessionProfiles(observe, composed.maintenance)
+
+    def daemon_coordinator() -> DaemonWriteCoordinator:
+        assert current_coordinator is not None
+        return current_coordinator
+
+    def profile_exists() -> bool:
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            return (
+                conn.execute("SELECT 1 FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()
+                is not None
+            )
+
+    async def run_until_observed_sweep() -> None:
+        nonlocal current_coordinator
+        current_coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+        sweep_complete.clear()
+        task = asyncio.create_task(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="configured", root=source_root),),
+                debounce_s=0.01,
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                enable_api=False,
+                service_profile=ServiceProfile.PRODUCTION,
+            )
+        )
+        try:
+            await asyncio.wait_for(sweep_complete.wait(), timeout=20.0)
+            assert profile_exists()
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=10.0)
+
+    try:
+        with contextlib.ExitStack() as stack:
+            _daemon_startup_stubs(stack, daemon_cli, archive_root)
+            stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
+            stack.enter_context(patch.object(daemon_cli, "daemon_write_coordinator", daemon_coordinator))
+            stack.enter_context(
+                patch.object(session_profile_composition, "compose_session_profile_callback", compose_with_oracle)
+            )
+            stack.enter_context(patch.object(daemon_cli, "_retry_convergence_debt_once", noop_periodic_work))
+            stack.enter_context(patch.object(daemon_cli, "_run_periodic_fts_convergence_once", noop_periodic_work))
+            for attribute in (
+                "_periodic_lifecycle_heartbeat",
+                "_periodic_health_check",
+                "_periodic_wal_checkpoint",
+                "_periodic_fts_merge",
+                "_periodic_heartbeat",
+                "_periodic_db_optimize",
+                "_periodic_status_snapshot_refresh",
+                "_periodic_raw_materialization_convergence",
+                "_periodic_drive_source_catchup",
+            ):
+                stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
+            for target in (
+                "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
+                "polylogue.daemon.embedding_backlog.periodic_embedding_orphan_reconcile_check",
+                "polylogue.daemon.judgment_automation.periodic_judgment_automation_sweep",
+                "polylogue.daemon.blob_gc_periodic.periodic_blob_gc_check",
+                "polylogue.daemon.blob_gc_periodic.periodic_blob_publication_reconciliation_check",
+                "polylogue.daemon.secret_scan_sweep.periodic_secret_scan_sweep",
+            ):
+                stack.enter_context(patch(target, idle_loop))
+
+            await run_until_observed_sweep()
+            with sqlite3.connect(archive_root / "index.db") as conn:
+                assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+                for table in ("session_work_events", "session_phases", "session_latency_profiles", "session_profiles"):
+                    conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+                conn.commit()
+            assert not profile_exists()
+
+            await run_until_observed_sweep()
+    finally:
+        reset_daemon_compute_adapter()
+
+    assert observed_scopes == [None, None]
+    assert profile_exists()
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
@@ -3907,6 +4155,7 @@ async def _await_server_readiness_or_daemon_exit(
                 # external test timeout.
                 if task.done():
                     await task
+                    raise AssertionError("daemon exited before server readiness")
                 await asyncio.sleep(0.01)
     except BaseException:
         if not task.done():
@@ -3932,11 +4181,6 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         close_called = False
 
         def __init__(self) -> None:
-            from polylogue.daemon.execution import BoundedComputeAdapter
-
-            # The API server publishes this at bind time.  Keep this fake at
-            # the production startup seam so a missing adapter fails here.
-            self.execution_kernel = BoundedComputeAdapter(max_workers=1, queue_units=1)
             self.ready = threading.Event()
             self._stopped = threading.Event()
 
@@ -3951,6 +4195,14 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
 
         def server_close(self) -> None:
             self.close_called = True
+
+    class APIBlockingServer(BlockingServer):
+        execution_kernel: BoundedComputeAdapter
+        session_profile_callback: None
+        operation_runtime: SimpleNamespace
+
+        def server_close(self) -> None:
+            super().server_close()
             self.execution_kernel.shutdown(wait=False, cancel_futures=True)
 
     class FakeConverger:
@@ -3969,7 +4221,20 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         await asyncio.Event().wait()
 
     browser_server = BlockingServer()
-    api_server = BlockingServer()
+    api_server = APIBlockingServer()
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+
+    api_server.execution_kernel = BoundedComputeAdapter(
+        max_workers=1,
+        queue_units=0,
+        thread_name_prefix="test-daemon-api",
+    )
+    api_server.session_profile_callback = None
+
+    async def shutdown_operation_runtime() -> None:
+        return None
+
+    api_server.operation_runtime = SimpleNamespace(shutdown=shutdown_operation_runtime)
     interrupted_cleanup_calls = 0
 
     def mark_interrupted_cleanup() -> None:
@@ -4000,7 +4265,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=2.0)
 
-    with (
+    patches = (
         patch.object(daemon_cli, "make_server", return_value=browser_server),
         patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", noop_sync),
         patch.object(daemon_cli, "_run_startup_fts_readiness", lambda _coordinator: noop()),
@@ -4025,8 +4290,15 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         patch("polylogue.daemon.convergence.DaemonConverger", return_value=FakeConverger()),
         patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
         patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=api_server),
-    ):
-        asyncio.run(exercise())
+    )
+    with contextlib.ExitStack() as stack:
+        for scoped_patch in patches:
+            stack.enter_context(scoped_patch)
+        reset_daemon_compute_adapter()
+        try:
+            asyncio.run(exercise())
+        finally:
+            reset_daemon_compute_adapter()
 
     assert browser_server.shutdown_called is True
     assert browser_server.close_called is True
@@ -4948,7 +5220,6 @@ def _daemon_startup_stubs(
         patch("polylogue.operations.mutation_transaction.recover_interrupted_operations", lambda _root: None)
     )
     stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
-    stack.enter_context(patch("polylogue.daemon.convergence.DaemonConverger", lambda *a, **k: object()))
     stack.enter_context(patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()))
 
 
