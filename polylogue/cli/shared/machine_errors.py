@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Literal, NotRequired, TypedDict
 
 from polylogue.core.json import JSONDocument, require_json_document
+from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 
 
 class MachineErrorEnvelope(TypedDict):
@@ -18,6 +19,7 @@ class MachineErrorEnvelope(TypedDict):
     message: str
     command: NotRequired[list[str]]
     details: NotRequired[JSONDocument]
+    outcome: NotRequired[JSONDocument]
 
 
 class MachineSuccessEnvelope(TypedDict):
@@ -47,6 +49,7 @@ class MachineError:
     message: str
     command: tuple[str, ...] | list[str] = ()
     details: Mapping[str, object] = field(default_factory=dict)
+    outcome: OutcomeEnvelope | None = None
     status: Literal["error"] = "error"
 
     def to_dict(self) -> MachineErrorEnvelope:
@@ -59,6 +62,8 @@ class MachineError:
             payload["command"] = list(self.command)
         if self.details:
             payload["details"] = require_json_document(dict(self.details), context="machine error details")
+        if self.outcome is not None:
+            payload["outcome"] = require_json_document(self.outcome.to_dict(), context="machine error outcome")
         return payload
 
     def to_json(self, *, exclude_none: bool = False) -> str:
@@ -210,6 +215,7 @@ def error_no_results(
         message=message,
         command=tuple(command or ()),
         details=details,
+        outcome=decide_outcome(matched=0),
     )
 
 

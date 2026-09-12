@@ -111,6 +111,19 @@ class TestMachineSuccessEnvelope:
         assert result["result"] == result_data
 
 
+def test_no_results_error_carries_the_canonical_empty_outcome() -> None:
+    """Legacy no-result adapters cannot collapse an empty scope to a bare error."""
+    from polylogue.cli.shared.machine_errors import error_no_results
+
+    payload = error_no_results("No sessions matched.").to_dict()
+    assert payload["code"] == "no_results"
+    assert payload["outcome"] == {
+        "state": "empty",
+        "reason": "no_rows_in_scope",
+        "detail": {},
+    }
+
+
 # --- Error builder specs ---
 
 # Each spec: (builder_fn, expected_code, optional_kwarg_name)
