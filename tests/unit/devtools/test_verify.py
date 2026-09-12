@@ -363,11 +363,74 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     assert affected["exec"] == ["devtools", "verify"]
     assert affected["pool"] == "pytest"
     assert affected["result"] == "pytest"
+    assert affected["cache"] == "tree+environment"
+    assert affected["timeout_seconds"] == 7200
     assert complete["exec"] == ["devtools", "verify", "--all"]
     assert complete["checkout"] == "default"
-    assert complete["pool"] == "pytest"
+    assert complete["pool"] == "pytest-heavy"
+    assert complete["result"] == "pytest"
+    assert complete["cache"] == "tree+environment"
+    assert complete["timeout_seconds"] == 14400
     assert projection["kind"] == "polylogue.verification-result"
     assert projection["operation"] == "verify_quick"
+
+
+def test_agentctl_parser_preserves_distinct_verification_pools() -> None:
+    """The production descriptor parser sees affected and corpus pool policy."""
+    repository_root = Path(__file__).resolve().parents[3]
+    sinnix_root = Path("/realm/project/sinnix")
+    package_root = sinnix_root / "pkgs" / "agentctl"
+    parser_program = """
+import json
+import sys
+from pathlib import Path
+
+from agentctl.projects import load_project_adapter
+
+adapter = load_project_adapter(Path(sys.argv[1]))
+affected = adapter.operation("verify_affected")
+complete = adapter.operation("verify_all")
+print(json.dumps({
+    "affected": {
+        "command": affected.command,
+        "pool": affected.pool,
+        "result": affected.result,
+        "timeout": affected.timeout_seconds,
+    },
+    "complete": {
+        "command": complete.command,
+        "pool": complete.pool,
+        "result": complete.result,
+        "timeout": complete.timeout_seconds,
+        "checkout": complete.checkout,
+    },
+}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", parser_program, str(repository_root)],
+        cwd=sinnix_root,
+        env=os.environ | {"PYTHONPATH": str(package_root)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "affected": {
+            "command": ["devtools", "verify"],
+            "pool": "pytest",
+            "result": "pytest",
+            "timeout": 7200,
+        },
+        "complete": {
+            "command": ["devtools", "verify", "--all"],
+            "pool": "pytest-heavy",
+            "result": "pytest",
+            "timeout": 14400,
+            "checkout": "default",
+        },
+    }
 
 
 def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testmon() -> None:
