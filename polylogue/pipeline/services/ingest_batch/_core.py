@@ -899,6 +899,7 @@ def _write_session(
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
+    attachment_owner_resolutions: list[dict[str, str]] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
 
@@ -1205,6 +1206,16 @@ def _write_session(
         return False, counts
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)
+    if attachment_owner_resolutions is not None and writer_outcomes:
+        for attachment_id, reason in writer_outcomes[0].unresolved_attachment_owners:
+            attachment_owner_resolutions.append(
+                {
+                    "raw_id": payload.raw_id or "",
+                    "session_id": payload.session_id,
+                    "attachment_id": attachment_id,
+                    "reason": reason.value,
+                }
+            )
     counts["sessions"] = 1
     counts["messages"] = len(session_to_write.messages)
     counts["attachments"] = len(session_to_write.attachments)
@@ -1324,6 +1335,7 @@ def _write_session_entry(
             source_conn=source_conn,
             fresh_build=fresh_build,
             fresh_build_batch=fresh_build_batch,
+            attachment_owner_resolutions=summary.attachment_owner_resolutions,
         )
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s

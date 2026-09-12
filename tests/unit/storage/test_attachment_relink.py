@@ -260,6 +260,7 @@ def test_orphan_with_no_matching_raw_is_reported_unrecoverable_not_guessed(tmp_p
     assert plan.unrecoverable_samples[0].attachment_id == "ghost-attachment-id"
     assert "no raw session" in plan.unrecoverable_samples[0].reason
     assert plan.unrecoverable_samples[0].reason_kind is UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW
+    assert plan.unrecoverable_samples[0].reason_kind.value == "source_omitted"
 
     exec_result = relink_orphaned_attachments(
         index_conn, source_conn, archive_root=tmp_path, blob_root=blob_store.root, dry_run=False

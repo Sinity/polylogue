@@ -30,6 +30,7 @@ from polylogue.sources.parsers.base import (
     ParsedPasteEvidence,
     ParsedSession,
 )
+from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.sqlite.action_relation import action_relation_select_sql
 from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveQueryUnitAggregateRow,
@@ -59,6 +60,37 @@ def test_active_archive_root_creation_is_private_under_permissive_umask(tmp_path
         os.umask(previous_umask)
 
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
+
+
+def test_replay_result_reports_typed_unresolved_attachment_owner(tmp_path: Path) -> None:
+    """The production raw acquisition/replay result retains owner evidence."""
+    session = ParsedSession(
+        source_name=Provider.GEMINI,
+        provider_session_id="replay-owner-receipt",
+        messages=[
+            ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same"),
+            ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same"),
+        ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="replay-ambiguous",
+                message_position=0,
+                name="ambiguous.txt",
+                mime_type="text/plain",
+            )
+        ],
+    )
+
+    with ArchiveStore(tmp_path / "archive") as archive:
+        result = archive.write_raw_and_parsed_result(
+            session,
+            payload=b"replay-owner-receipt",
+            source_path="/tmp/replay-owner-receipt.json",
+            acquired_at_ms=1_767_000_000_000,
+        )
+
+    assert result.unresolved_attachment_owners
+    assert result.unresolved_attachment_owners[0][1] is AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
 
 
 def test_read_open_rejects_stale_index_with_generation_and_lifecycle_action(tmp_path: Path) -> None:

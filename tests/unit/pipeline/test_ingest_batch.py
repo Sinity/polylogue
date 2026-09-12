@@ -26,6 +26,7 @@ from polylogue.core.errors import DatabaseError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.types import SessionId
 from polylogue.daemon.status import RawFailureSample, raw_failure_info_for_root
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services import ingest_worker as ingest_worker_mod
 from polylogue.pipeline.services.ingest_batch import (
@@ -190,6 +191,14 @@ def test_stale_observation_repair_derives_created_time_from_session_event(tmp_pa
 
 def test_parse_batch_observation_reports_unsupported_write_mode() -> None:
     summary = _IngestBatchSummary()
+    summary.attachment_owner_resolutions.append(
+        {
+            "raw_id": "raw-owner-test",
+            "session_id": "gemini:owner-test",
+            "attachment_id": "attachment-owner-test",
+            "reason": "owner_ambiguous",
+        }
+    )
 
     observation = _build_parse_batch_observation(
         batch_summary=summary,
@@ -207,6 +216,57 @@ def test_parse_batch_observation_reports_unsupported_write_mode() -> None:
     assert observation["archive_write_mode"] == "unsupported"
     assert "archive_sync_target" not in observation
     assert "archive_sync_elapsed_ms" not in observation
+    assert observation["attachment_owner_resolutions"] == [
+        {
+            "raw_id": "raw-owner-test",
+            "session_id": "gemini:owner-test",
+            "attachment_id": "attachment-owner-test",
+            "reason": "owner_ambiguous",
+        }
+    ]
+
+
+def test_batch_writer_carries_typed_attachment_owner_resolution(tmp_path: Path) -> None:
+    """The normal acquisition writer does not discard unresolved-owner evidence."""
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    conn = ingest_batch_core._open_sync_connection(archive_root / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.GEMINI,
+            provider_session_id="batch-owner-receipt",
+            messages=[
+                ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same"),
+                ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same"),
+            ],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="batch-ambiguous",
+                    message_position=0,
+                    name="ambiguous.txt",
+                    mime_type="text/plain",
+                )
+            ],
+        )
+        payload = SessionWritePayload(
+            session_id=str(make_session_id(session.source_name, session.provider_session_id)),
+            content_hash=str(session_content_hash(session)),
+            parsed_session=session,
+            raw_id="raw-batch-owner-receipt",
+        )
+        summary = _IngestBatchSummary()
+
+        assert ingest_batch_core._write_session_entry(conn, "raw-batch-owner-receipt", payload, summary=summary)
+        assert summary.attachment_owner_resolutions == [
+            {
+                "raw_id": "raw-batch-owner-receipt",
+                "session_id": payload.session_id,
+                "attachment_id": _attachment_id(payload.session_id, session.attachments[0]),
+                "reason": "owner_ambiguous",
+            }
+        ]
+    finally:
+        conn.close()
 
 
 def test_sync_index_connection_ensures_runtime_indexes(tmp_path: Path) -> None:
