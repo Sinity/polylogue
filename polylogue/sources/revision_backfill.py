@@ -2902,6 +2902,24 @@ def backfill_historical_revision_evidence(
 
             stamp_derived_schema_identity(archive._conn, "index")
             archive.commit()
+        elif replayed and not adoption_deferred:
+            # Scoped replay repair deliberately leaves the archive-wide FTS
+            # ledger STALE: a changed session is not evidence that every
+            # ``blocks`` row still agrees with ``messages_fts``.  Once this
+            # retained replay has applied every selected cohort with no
+            # adoption work deferred, publish the same exact archive-wide
+            # snapshot used by convergence readiness. This is the terminal
+            # boundary for this production replay route; callers must not
+            # need to (and tests must not) repair the ledger themselves after
+            # a successful replay.
+            from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+            from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+
+            fts_snapshot = fts_invariant_snapshot_sync(archive._conn)
+            record_fts_invariant_snapshot_sync(archive._conn, fts_snapshot)
+            if not fts_snapshot.messages.ready:
+                raise RuntimeError("retained replay FTS readiness publication found messages_fts out of sync")
+            archive.commit()
         if stage_timings:
             stage_timings["total"] = time.perf_counter() - census_started
             _LOGGER.info(
