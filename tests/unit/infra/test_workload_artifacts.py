@@ -173,6 +173,30 @@ def test_named_workload_profiles_are_semantic_and_build_deterministic_provider_s
         named_workload_profile("unknown")
 
 
+def test_profile_name_and_purpose_are_part_of_artifact_identity() -> None:
+    """Changing a declared profile cannot reuse an identical cache recipe.
+
+    The profile's name and purpose are operational declaration metadata, not
+    semantic expected output. They still need to reach the provider-shaped
+    ``CorpusSpec`` identity: otherwise a profile renamed or re-purposed while
+    retaining its family/tokens would silently reuse a stale artifact.
+    """
+    import dataclasses
+
+    profile = named_workload_profile("cli-chatgpt")
+    shapes = tuple(
+        WorkloadSessionShape(provider, count, profile.messages_min, profile.messages_max)
+        for provider, count in profile.provider_session_counts
+    )
+    baseline = seeded_archive_key(profile.workload.corpus_specs(shapes))
+
+    renamed = dataclasses.replace(profile.workload, name="cli-chatgpt-renamed")
+    repurposed = dataclasses.replace(profile.workload, purpose="cli-write")
+
+    assert seeded_archive_key(renamed.corpus_specs(shapes)).value != baseline.value
+    assert seeded_archive_key(repurposed.corpus_specs(shapes)).value != baseline.value
+
+
 def test_seeded_archive_manifest_is_the_canonical_corpus_artifact_manifest(
     tmp_path: Path,
 ) -> None:
