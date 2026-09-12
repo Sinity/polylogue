@@ -803,8 +803,6 @@ class CursorStore:
         """Update an in-flight attempt without waiting for batch completion."""
         now_ms = _required_epoch_ms(datetime.now(UTC).isoformat())
         parsed_raw_count = succeeded_file_count if succeeded_file_count is not None else None
-        if parsed_raw_count is None and failed_file_count is not None:
-            parsed_raw_count = failed_file_count
         storage_route = _storage_route_from_payload(stage_payload)
 
         def write() -> None:
