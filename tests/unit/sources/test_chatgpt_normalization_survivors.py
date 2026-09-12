@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from copy import deepcopy
@@ -16,7 +17,9 @@ from polylogue.sources import dispatch
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import browser_capture, chatgpt
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.runtime import AttachmentRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 _FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "chatgpt"
 _NATIVE_FIXTURE = _FIXTURE_DIR / "native-conversation-v1.json"
@@ -33,6 +36,89 @@ def _parse_one(payload: JSONDocument) -> ParsedSession:
     sessions = parse_payload(provider, payload, "fixture-fallback")
     assert len(sessions) == 1
     return sessions[0]
+
+
+def _chatgpt_av_replay_payload(*, include_incremental_output: bool) -> JSONDocument:
+    """Build one clean/replay pair with native audio, realtime A/V, and output media."""
+    mapping: dict[str, object] = {
+        "user-media": {
+            "id": "user-media",
+            "parent": None,
+            "children": ["assistant-media"] if include_incremental_output else [],
+            "message": {
+                "id": "user-media-message",
+                "author": {"role": "user"},
+                "create_time": 1_700_000_000.0,
+                "content": {
+                    "content_type": "multimodal_text",
+                    "parts": [
+                        {
+                            "content_type": "audio_asset_pointer",
+                            "asset_pointer": "file-service://file-replay-audio",
+                            "mime_type": "audio/wav",
+                        },
+                        {
+                            "content_type": "real_time_user_audio_video_asset_pointer",
+                            "video_container_asset_pointer": {
+                                "asset_pointer": "sediment://file-replay-video",
+                                "mime_type": "video/mp4",
+                            },
+                            "frames_asset_pointers": [
+                                {"asset_pointer": "sediment://file-replay-frame", "mime_type": "image/jpeg"}
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+    }
+    if include_incremental_output:
+        mapping["assistant-media"] = {
+            "id": "assistant-media",
+            "parent": "user-media",
+            "children": [],
+            "message": {
+                "id": "assistant-media-message",
+                "author": {"role": "assistant"},
+                "create_time": 1_700_000_001.0,
+                "content": {
+                    "content_type": "multimodal_text",
+                    "parts": [
+                        {
+                            "content_type": "video_asset_pointer",
+                            "asset_pointer": "sediment://file-replay-output",
+                            "mime_type": "video/mp4",
+                        }
+                    ],
+                },
+            },
+        }
+    return cast(
+        "JSONDocument",
+        {
+            "id": "media-replay-conversation",
+            "conversation_id": "media-replay-conversation",
+            "title": "media replay",
+            "create_time": 1_700_000_000.0,
+            "current_node": "assistant-media" if include_incremental_output else "user-media",
+            "mapping": mapping,
+        },
+    )
+
+
+def _assert_av_reference_conservation(session: ParsedSession, expected: set[str]) -> None:
+    constructs = {
+        construct.asset_pointer
+        for message in session.messages
+        for block in message.blocks
+        for construct in block.web_constructs
+        if construct.asset_pointer is not None
+    }
+    attachment_ids = {attachment.provider_attachment_id for attachment in session.attachments}
+    assert constructs == expected
+    # This is the anti-vacuity seam: dropping either a construct pointer or its
+    # attachment row makes the two independently-produced identity sets differ.
+    assert attachment_ids == expected
 
 
 def test_chatgpt_native_wire_fixture_survives_dispatch_and_semantic_normalization() -> None:
@@ -235,6 +321,100 @@ def test_chatgpt_media_pointers_survive_dispatch_with_typed_unavailable_assets()
     assert attachments["sediment://file-video-output"].producer_ref == "message:video-message"
     assert attachments["sediment://file-video-output"].precomputed_blob is None
     assert all(attachment.provider_file_id for attachment in attachments.values())
+
+
+def test_chatgpt_media_pointers_survive_archive_write_public_read_and_replay(tmp_path: Path) -> None:
+    """Clean and incremental archive replay preserve A/V identity and absence honestly.
+
+    This drives the parsed A/V references through the production archive writer
+    and the public attachment query. The clean replay must skip the unchanged
+    projection; the incremental replay adds one output pointer without
+    duplicating the three existing references. The pointer/attachment set
+    equality is intentionally anti-vacuous: removing either side makes this
+    contract red, even when a DOCUMENT construct still exists.
+    """
+    initial_payload = _chatgpt_av_replay_payload(include_incremental_output=False)
+    incremental_payload = _chatgpt_av_replay_payload(include_incremental_output=True)
+    initial = _parse_one(initial_payload)
+    clean = _parse_one(initial_payload)
+    incremental = _parse_one(incremental_payload)
+    initial_pointers = {
+        "file-service://file-replay-audio",
+        "sediment://file-replay-video",
+        "sediment://file-replay-frame",
+    }
+    final_pointers = initial_pointers | {"sediment://file-replay-output"}
+    _assert_av_reference_conservation(initial, initial_pointers)
+    _assert_av_reference_conservation(incremental, final_pointers)
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as archive:
+        first = archive.write_raw_and_parsed_result(
+            initial,
+            payload=json.dumps(initial_payload, sort_keys=True).encode(),
+            source_path="/fixture/chatgpt-media-initial.json",
+            acquired_at_ms=1_800_000_000_000,
+        )
+        clean_result = archive.write_raw_and_parsed_result(
+            clean,
+            payload=b"same normalized media, different raw observation",
+            source_path="/fixture/chatgpt-media-clean-replay.json",
+            acquired_at_ms=1_800_000_000_001,
+        )
+        incremental_result = archive.write_raw_and_parsed_result(
+            incremental,
+            payload=json.dumps(incremental_payload, sort_keys=True).encode(),
+            source_path="/fixture/chatgpt-media-incremental.json",
+            acquired_at_ms=1_800_000_000_002,
+        )
+        envelope = archive.read_session(first.session_id)
+
+    assert clean_result.content_changed is False
+    assert clean_result.counts["skipped_sessions"] == 1
+    assert incremental_result.content_changed is True
+    assert incremental_result.counts["sessions"] == 1
+    assert len(envelope.messages) == 2
+    assert sum(len(message.attachments) for message in envelope.messages) == len(final_pointers)
+    assert all(
+        attachment.acquisition_status == "unfetched"
+        for message in envelope.messages
+        for attachment in message.attachments
+    )
+
+    with sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True) as conn:
+        construct_rows = conn.execute(
+            "SELECT asset_pointer, mime_type FROM web_content_constructs WHERE session_id = ?",
+            (first.session_id,),
+        ).fetchall()
+        attachment_rows = conn.execute(
+            """
+            SELECT a.blob_hash, a.acquisition_status
+            FROM attachments AS a
+            JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id
+            WHERE r.session_id = ?
+            """,
+            (first.session_id,),
+        ).fetchall()
+    assert {str(pointer) for pointer, _mime_type in construct_rows} == final_pointers
+    assert len(attachment_rows) == len(final_pointers)
+    assert all(blob_hash is None and status == "unfetched" for blob_hash, status in attachment_rows)
+
+    async def read_public_attachments() -> list[AttachmentRecord]:
+        backend = SQLiteBackend(db_path=root / "index.db")
+        try:
+            return list(await backend.get_attachments(first.session_id))
+        finally:
+            await backend.close()
+
+    public_attachments = asyncio.run(read_public_attachments())
+    assert {attachment.attachment_native_id for attachment in public_attachments} == final_pointers
+    assert {attachment.file_native_id for attachment in public_attachments} == {
+        "file-replay-audio",
+        "file-replay-video",
+        "file-replay-frame",
+        "file-replay-output",
+    }
+    assert all(attachment.acquisition_status == "unfetched" for attachment in public_attachments)
 
 
 def test_timing_only_provider_node_rehomes_duration_to_the_last_emitted_branch_message() -> None:
