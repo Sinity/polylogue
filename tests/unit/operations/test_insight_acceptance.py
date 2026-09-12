@@ -144,6 +144,7 @@ def test_seal_preserves_over_ten_thousand_exact_targets_without_late_rediscovery
             targets=targets,
         )
         preview = acceptance.stage_preview(plan)
+        assert acceptance.stage_preview(plan) == preview
         authorization = acceptance.ensure_staged_authorization(executor, binding, preview)
         assert authorization.authorization_id is not None
         previews.append(preview)

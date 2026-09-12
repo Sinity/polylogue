@@ -214,7 +214,29 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         if not self._connections.acquire(blocking=False):
             try:
                 request.settimeout(0.1)
-                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                # Admission failed before a handler could read or execute the
+                # request. Preserve that certainty for mutation clients.
+                body = json.dumps(
+                    {
+                        "protocol": DAEMON_OPERATION_PROTOCOL,
+                        "outcome": "rejected",
+                        "error": {
+                            "code": "connection_backpressure",
+                            "detail": "machine connection capacity is exhausted",
+                            "retryable": True,
+                        },
+                    },
+                    separators=(",", ":"),
+                ).encode()
+                headers = (
+                    "HTTP/1.1 503 Service Unavailable\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+                ).encode()
+                request.sendall(headers + body)
+            except OSError:
+                # An already-disconnected caller must not stop the accept loop.
+                pass
             finally:
                 self.shutdown_request(request)
             return

@@ -117,6 +117,28 @@ def test_authentication_refusal_is_not_an_indeterminate_mutation(tmp_path: Path)
         assert not stack.runtime._exchanges
 
 
+@pytest.mark.parametrize("operation", ["status", "mutation.session.delete.preview"])
+def test_connection_saturation_refuses_before_acceptance_and_recovers(tmp_path: Path, operation: str) -> None:
+    """An empty 503 or bypassed admission loses the explicit no-execution guarantee."""
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        # Reserve the real ingress budget without a timing-dependent fleet of
+        # slow sockets. The next request still traverses the production listener.
+        for _ in range(stack.server.request_queue_size):
+            assert stack.server._connections.acquire(blocking=False)
+        try:
+            payload: dict[str, object] = {} if operation == "status" else {"session_ids": ["codex:absent"]}
+            with pytest.raises(DaemonOperationRejectedError) as rejected:
+                stack.client.operation(operation, payload)
+            assert rejected.value.outcome == "connection_backpressure"
+            assert not stack.runtime._exchanges
+        finally:
+            for _ in range(stack.server.request_queue_size):
+                stack.server._connections.release()
+
+        recovered = stack.client.operation("status", {}, archive_root=str(stack.archive_root))
+        assert recovered is not None and recovered["outcome"] == "completed"
+
+
 def test_changed_intent_cannot_reuse_a_durable_request_id(tmp_path: Path) -> None:
     """Mutation: ignore the durable fingerprint and a changed selection inherits prior authority."""
     ids: tuple[str, ...] = ()

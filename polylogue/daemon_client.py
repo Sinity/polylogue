@@ -233,14 +233,19 @@ class DaemonClient:
             return None
         status, response = raw
         if (
-            status == 401
+            status in {401, 503}
             and isinstance(response, dict)
             and response.get("protocol") == DAEMON_OPERATION_PROTOCOL
             and response.get("outcome") == "rejected"
             and isinstance(response.get("error"), dict)
-            and response["error"].get("code") in {"unauthorized", "peer_authentication_unavailable"}
+            and (status, response["error"].get("code"))
+            in {
+                (401, "unauthorized"),
+                (401, "peer_authentication_unavailable"),
+                (503, "connection_backpressure"),
+            }
         ):
-            # The bounded ingress rejects authentication before dispatch. This
+            # The bounded ingress rejects these requests before dispatch. This
             # is a known refusal, not absence or a possibly committed mutation.
             raise DaemonOperationRejectedError(str(response["error"]["code"]))
         try:
