@@ -1193,7 +1193,7 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
             version = int(row[0] or 0) if row is not None else 0
         finally:
             conn.close()
-    except sqlite3.Error as exc:
+    except (OSError, sqlite3.Error) as exc:
         return ReadinessCheck(name, VerifyStatus.ERROR, summary=str(exc))
 
     expected = ARCHIVE_VERSION_BY_TIER[tier]
