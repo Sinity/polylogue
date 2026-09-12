@@ -332,11 +332,20 @@ def snapshot_sqlite_to_blob(
     hash -- sha256 over exactly the exported bytes -- is the member's logical
     revision with nothing to recompute.
     """
+    # Capture the mutable filesystem observation *before* opening the export
+    # transaction.  A WAL writer can commit after the logical export finishes
+    # but before the old implementation sampled this token.  Recording that
+    # post-export token alongside the older retained bytes lets the cursor
+    # claim that it already observed the newer commit, and the watcher then
+    # silently skips it.  The pre-export token is conservative: a commit that
+    # races the export remains dirty on the next pass, while a commit that was
+    # already present is either included in the export or causes one harmless
+    # extra acquisition when the token was sampled just before it.
+    source_fingerprint = sqlite_source_revision(source)
     temporary_path = blob_store.allocate_staging_path(prefix=".sqlite-export.", suffix=".jsonl")
     try:
         with temporary_path.open("wb") as handle:
             write_logical_export(source, handle, scope=member_export_scope(source))
-        source_fingerprint = sqlite_source_revision(source)
         blob_hash, blob_size = blob_store.write_from_path(temporary_path, heartbeat=heartbeat)
         from polylogue.storage.blob_publication import publication_receipt_id
 

@@ -28,7 +28,7 @@ from polylogue import Polylogue
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.watcher import LiveWatcher
 from polylogue.sources.origin_specs import database_capability_for_provider
 from polylogue.sources.sqlite_export import (
@@ -462,6 +462,72 @@ def test_a_commit_during_the_export_cannot_enter_it(tmp_path: Path) -> None:
     with closing(open_logical_source(export)) as conn:
         ids = {str(row[0]) for row in conn.execute("SELECT id FROM sessions")}
     assert ids == {"session-0", "session-1"}
+
+
+def test_commit_after_export_cannot_authorize_a_cursor_skip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bind the filesystem observation to bytes no newer than the export.
+
+    A WAL commit immediately after the export completes is outside the
+    retained logical revision.  Sampling ``source_fingerprint`` afterwards
+    used to stamp the old export with the new WAL observation, allowing the
+    live watcher to treat the commit as already acquired.  The production
+    snapshot and watcher routes must leave that source eligible for the next
+    pass.
+    """
+    source = tmp_path / "state_5.sqlite"
+    _write_thread_state_db(source, title="old")
+    with closing(sqlite3.connect(source)) as setup_conn:
+        setup_conn.execute("PRAGMA journal_mode=WAL")
+    writer = sqlite3.connect(source)
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    store = _blob_store(tmp_path)
+
+    original_export = sqlite_export.write_logical_export
+    committed = False
+
+    def export_then_commit(handle_source: Path, handle: Any, **kwargs: Any) -> None:
+        nonlocal committed
+        original_export(handle_source, handle, **kwargs)
+        writer.execute("UPDATE threads SET title = 'new' WHERE id = 'thread-0'")
+        writer.commit()
+        committed = True
+
+    try:
+        # ``snapshot_sqlite_to_blob`` resolves the writer through the
+        # sqlite_snapshot module, so patching its imported symbol exercises
+        # the actual acquisition route rather than a test-only wrapper.
+        monkeypatch.setattr(sqlite_snapshot, "write_logical_export", export_then_commit)
+        snapshot = snapshot_sqlite_to_blob(source, store)
+
+        assert committed
+        with closing(open_logical_source(store.blob_path(snapshot.blob_hash))) as conn:
+            assert list(conn.execute("SELECT title FROM threads")) == [("old-0",)]
+
+        current_stat = source.stat()
+        cursor = CursorRecord(
+            source_path=str(source),
+            byte_size=current_stat.st_size,
+            byte_offset=current_stat.st_size,
+            last_complete_newline=current_stat.st_size,
+            record_count=1,
+            updated_at="2026-01-01T00:00:00Z",
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+            content_fingerprint=snapshot.source_revision,
+            tail_hash=snapshot.source_fingerprint,
+            source_name="codex",
+            st_dev=current_stat.st_dev,
+            st_ino=current_stat.st_ino,
+            mtime_ns=current_stat.st_mtime_ns,
+        )
+        watcher = LiveWatcher.__new__(LiveWatcher)
+        watcher._sources = (WatchSource(name="codex-state", root=tmp_path, suffixes=(".sqlite",)),)
+        watcher._archived_cursor_index_untrusted = False
+
+        assert snapshot.source_revision != sqlite_member_revision(source)
+        assert snapshot.source_fingerprint != sqlite_source_revision(source)
+        assert watcher._needs_work_from_state(source, stat=current_stat, cursor=cursor) is True
+    finally:
+        writer.close()
 
 
 def test_a_corrupt_database_fails_typed_and_publishes_nothing(tmp_path: Path) -> None:
