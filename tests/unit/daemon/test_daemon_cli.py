@@ -4265,7 +4265,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=2.0)
 
-    with (
+    patches = (
         patch.object(daemon_cli, "make_server", return_value=browser_server),
         patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", noop_sync),
         patch.object(daemon_cli, "_run_startup_fts_readiness", lambda _coordinator: noop()),
@@ -4290,7 +4290,10 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         patch("polylogue.daemon.convergence.DaemonConverger", return_value=FakeConverger()),
         patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()),
         patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=api_server),
-    ):
+    )
+    with contextlib.ExitStack() as stack:
+        for scoped_patch in patches:
+            stack.enter_context(scoped_patch)
         reset_daemon_compute_adapter()
         try:
             asyncio.run(exercise())
