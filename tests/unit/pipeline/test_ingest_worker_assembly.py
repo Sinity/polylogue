@@ -353,6 +353,49 @@ def _retained_artifact_kinds(archive_root: Path) -> dict[str, str]:
 
 
 @pytest.mark.asyncio
+async def test_codex_retained_root_sidecar_titles_survive_without_a_live_tree(
+    blob_store: BlobStore, tmp_path: Path
+) -> None:
+    """Retained Codex root sidecars title one rollout without minting another.
+
+    The live source only admits the two exact root coordinates despite having
+    no JSONL suffix intake. Once those bytes and the rollout disappear, the
+    canonical ingest worker must resolve the title from the archive itself.
+    """
+    from polylogue.sources.live import WatchSource
+
+    archive_root = tmp_path / "archive"
+    session_id = "retained-codex-sidecar-thread"
+    content = _codex_stream(session_id, "opening prompt must not win")
+    rollout = _codex_runtime_root(tmp_path, session_id, content)
+    codex_root = rollout.parents[2]
+    index_path = codex_root / "session_index.jsonl"
+    history_path = codex_root / "history.jsonl"
+    index_path.write_text(json.dumps({"id": session_id, "thread_name": "Retained curated title"}) + "\n")
+    history_path.write_text(json.dumps({"session_id": session_id, "ts": 1, "text": "Retained history title"}) + "\n")
+
+    source = WatchSource(name="codex-state", root=codex_root, suffixes=(".sqlite", ".db"))
+    assert source.accepts(index_path)
+    assert source.accepts(history_path)
+    assert not source.accepts(codex_root / "sessions" / "nested" / "session_index.jsonl")
+    await _acquire_evidence(archive_root, source, [index_path, history_path])
+    assert _retained_artifact_kinds(archive_root) == {
+        str(history_path): "prompt_history_log",
+        str(index_path): "session_index",
+    }
+
+    for path in (index_path, history_path, rollout):
+        path.unlink()
+    record = _record(blob_store, content, source_path=str(rollout))
+    result = ingest_record(record, str(archive_root), "advisory", blob_root_str=str(blob_store.root))
+
+    assert result.error is None, result.error
+    assert len(result.sessions) == 1
+    assert result.sessions[0].parsed_session.title == "Retained curated title"
+    assert result.sessions[0].parsed_session.title_source is TitleSource.ORIGIN
+
+
+@pytest.mark.asyncio
 async def test_claude_index_and_history_resolve_with_the_original_tree_gone(
     blob_store: BlobStore, tmp_path: Path
 ) -> None:

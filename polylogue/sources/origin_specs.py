@@ -2046,6 +2046,41 @@ def _codex_spec() -> OriginSpec:
                 # Path-scoped: the Codex roots must not admit ``.md`` globally.
                 watch_suffixes=(),
             ),
+            OriginArtifactRule(
+                kind="session_index",
+                # Root-scoped: this is Codex's install-level append-only
+                # title map, not an invitation to admit arbitrary JSONL files
+                # beneath sessions or another sibling tree.
+                path_pattern=r"(?:^|/)\.codex/session_index\.jsonl$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="session_index",
+                fidelity_note=(
+                    "Codex appends thread-name observations at ~/.codex/session_index.jsonl. "
+                    "The file is retained as root-scoped raw evidence and rebuilt only for a rollout "
+                    "from that same install; it never creates a session of its own."
+                ),
+                path_suffixes=(".jsonl",),
+                # The Codex state root stays suffix-narrow. Its path-rule
+                # escape hatch admits only this declared exact coordinate.
+                watch_suffixes=(),
+            ),
+            OriginArtifactRule(
+                kind="prompt_history_log",
+                # Same install-level scope as session_index.jsonl. A history
+                # log under sessions/ or a project directory is not a Codex
+                # sidecar and must not enter by suffix alone.
+                path_pattern=r"(?:^|/)\.codex/history\.jsonl$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="prompt_history_log",
+                fidelity_note=(
+                    "Codex records operator prompt history at ~/.codex/history.jsonl. Its retained bytes "
+                    "supply a title only to rollouts from the same install and are never parsed as sessions."
+                ),
+                path_suffixes=(".jsonl",),
+                watch_suffixes=(),
+            ),
         ),
         display_description="Codex CLI local sessions (lab: OpenAI)",
         # polylogue-0jf4 acceptance criterion 1: classify each of the five
