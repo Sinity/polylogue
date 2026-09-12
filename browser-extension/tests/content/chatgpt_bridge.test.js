@@ -810,6 +810,86 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(result.envelope.session.attachments).toHaveLength(1);
   });
 
+  it("settles an unchanged terminal freshness claim from the intercepted payload", async () => {
+    const adapter = syntheticEndpointAdapter();
+    const harness = installFullCapture(adapter, { url: "https://chatgpt.com/c/conversation-1" });
+    const cachedPayload = {
+      ...conversationPayload(),
+      update_time: 1781366460,
+      mapping: {
+        "assistant-node": {
+          ...conversationPayload().mapping["assistant-node"],
+          message: {
+            ...conversationPayload().mapping["assistant-node"].message,
+            status: "finished_successfully",
+          },
+        },
+      },
+    };
+
+    harness.dom.window.postMessage({
+      type: "polylogue.chatgpt.nativeCapture",
+      capture: {
+        ok: true,
+        status: 200,
+        contentType: "application/json",
+        url: "https://chatgpt.com/backend-api/conversation/conversation-1",
+        body: JSON.stringify(cachedPayload),
+      },
+    });
+    await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 0));
+
+    const result = await harness.sendRuntimeMessage({
+      type: "polylogue.capturePage",
+      reason: "freshness_convergence",
+      providerSessionId: "conversation-1",
+      providerUpdatedAt: "2026-06-13T00:01:00.000Z",
+    });
+
+    expect(result).toMatchObject({ ok: true, envelope: { session: { provider_session_id: "conversation-1" } } });
+    expect(adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1")).toHaveLength(0);
+  });
+
+  it("fetches when freshness claims a revision newer than the intercepted payload", async () => {
+    const adapter = syntheticEndpointAdapter();
+    const harness = installFullCapture(adapter, { url: "https://chatgpt.com/c/conversation-1" });
+    const cachedPayload = {
+      ...conversationPayload(),
+      update_time: 1781366460,
+      current_node: "assistant-node",
+      mapping: {
+        "assistant-node": {
+          ...conversationPayload().mapping["assistant-node"],
+          message: {
+            ...conversationPayload().mapping["assistant-node"].message,
+            status: "finished_successfully",
+          },
+        },
+      },
+    };
+    harness.dom.window.postMessage({
+      type: "polylogue.chatgpt.nativeCapture",
+      capture: {
+        ok: true,
+        status: 200,
+        contentType: "application/json",
+        url: "https://chatgpt.com/backend-api/conversation/conversation-1",
+        body: JSON.stringify(cachedPayload),
+      },
+    });
+    await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 0));
+
+    const result = await harness.sendRuntimeMessage({
+      type: "polylogue.capturePage",
+      reason: "freshness_convergence",
+      providerSessionId: "conversation-1",
+      providerUpdatedAt: "2026-06-13T17:02:00.000Z",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1")).toHaveLength(1);
+  });
+
   it("carries background-observed lifecycle evidence into the exact native envelope", async () => {
     const harness = installFullCapture(syntheticEndpointAdapter(), { url: "https://chatgpt.com/" });
     const observation = {

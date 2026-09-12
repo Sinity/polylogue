@@ -185,6 +185,7 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
                 message: {
                   id: "assistant",
                   author: { role: "assistant" },
+                  status: "finished_successfully",
                   content: { parts: ["[file](sandbox:/mnt/data/never-fetch.zip)"] },
                 },
               },
