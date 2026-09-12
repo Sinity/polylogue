@@ -27,7 +27,7 @@ def test_archive_tier_schema_assembly_publishes_complete_disposition() -> None:
 def test_audit_disposition_covers_canonical_ddl_exactly_once() -> None:
     rows = audit_column_dispositions()
     assert_complete_audit_disposition(rows)
-    assert len(rows) == len(canonical_audit_columns()) == 134
+    assert len(rows) == len(canonical_audit_columns()) == 153
     assert len({row.ref for row in rows}) == len(rows)
     assert {row.disposition for row in rows} == {"KEEP"}
     for row in rows:
@@ -90,6 +90,18 @@ def test_six_tier_disposition_is_ddl_derived_and_settles_special_groups() -> Non
     assert by_ref["index:table:delegation_facts"].disposition == "KEEP"
     assert all(f"index:table:{name}" not in by_ref for name in ("threads", "thread_sessions", "session_tag_rollups"))
     assert by_ref["user:table:holdout_access_receipts"].disposition == "COMPLETE"
+    assert by_ref["source:table:source_item_raw_members"].disposition == "KEEP"
+    assert by_ref["source:index:idx_source_item_raw_members_raw"].disposition == "KEEP"
+    assert by_ref["source:view:source_item_reconciliation"].disposition == "KEEP"
+    assert {
+        by_ref[f"source:column:source_items.{column}"].disposition
+        for column in (
+            "enumeration_fingerprint",
+            "enumerated_record_count",
+            "enumeration_digest",
+            "enumerated_at_ms",
+        )
+    } == {"KEEP"}
     assert all(row.semantic_owner and row.implementation_bead for row in rows)
 
 

@@ -242,6 +242,63 @@ def _active_index_raw_authority(
     return session_raw_ids, heads, eligible_receipts
 
 
+def _active_index_raw_authority_from_connection(
+    conn: sqlite3.Connection,
+) -> tuple[frozenset[str], tuple[_IndexRawRevisionHead, ...], tuple[_EligibleRawReceipt, ...]]:
+    """Read the retention authority from an already-observed index tier."""
+
+    session_rows = conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
+    head_rows = conn.execute(
+        """SELECT logical_source_key, accepted_raw_id, accepted_source_revision,
+                      accepted_frontier_kind, accepted_frontier,
+                      acquisition_generation, append_end_offset
+               FROM raw_revision_heads"""
+    ).fetchall()
+    eligible_rows = conn.execute(
+        """SELECT DISTINCT application.raw_id,
+                      application.logical_source_key,
+                      application.source_revision,
+                      application.baseline_raw_id,
+                      application.predecessor_raw_id
+               FROM raw_revision_applications AS application
+               JOIN raw_revision_heads AS head
+                 ON head.logical_source_key = application.logical_source_key
+                AND head.session_id = application.session_id
+                AND head.accepted_raw_id = application.accepted_raw_id
+                AND head.accepted_source_revision = application.accepted_source_revision
+                AND head.accepted_content_hash = application.accepted_content_hash
+                AND head.acquisition_generation = application.acquisition_generation
+                AND head.append_end_offset IS application.append_end_offset
+                AND head.decided_at_ms = application.decided_at_ms
+               WHERE application.decision = 'superseded'
+                 AND head.accepted_frontier_kind = 'byte'"""
+    ).fetchall()
+    session_raw_ids = frozenset(str(row[0]) for row in session_rows if row[0] is not None and str(row[0]))
+    heads = tuple(
+        _IndexRawRevisionHead(
+            logical_source_key=str(row[0]),
+            accepted_raw_id=str(row[1]),
+            accepted_source_revision=str(row[2]),
+            accepted_frontier_kind=str(row[3]),
+            accepted_frontier=int(row[4]),
+            acquisition_generation=int(row[5]),
+            append_end_offset=int(row[6]) if row[6] is not None else None,
+        )
+        for row in head_rows
+    )
+    eligible_receipts = tuple(
+        _EligibleRawReceipt(
+            raw_id=str(row[0]),
+            logical_source_key=str(row[1]),
+            source_revision=str(row[2]),
+            baseline_raw_id=str(row[3]) if row[3] is not None else None,
+            predecessor_raw_id=str(row[4]) if row[4] is not None else None,
+        )
+        for row in eligible_rows
+    )
+    return session_raw_ids, heads, eligible_receipts
+
+
 def _raw_revision_rows(
     conn: sqlite3.Connection,
     raw_ids: set[str],
@@ -1492,6 +1549,81 @@ def raw_frontier_integrity_snapshot(
         conn.row_factory = original_row_factory
 
 
+def raw_frontier_integrity_snapshot_from_connections(
+    source_conn: sqlite3.Connection,
+    *,
+    index_conn: sqlite3.Connection,
+    ops_conn: sqlite3.Connection,
+    ops_schema: str = "ops_tier",
+    sample_limit: int = 10,
+) -> RawFrontierIntegritySnapshot:
+    """Run the frontier proof over already-pinned tier readers.
+
+    Operation reads have a fixed publication snapshot.  Opening the index or
+    ops path here would silently compare source evidence with a later
+    generation, so this variant deliberately accepts the three observed
+    handles instead.  It is otherwise the same proof as
+    :func:`raw_frontier_integrity_snapshot`.
+    """
+
+    original_row_factory = source_conn.row_factory
+    source_conn.row_factory = sqlite3.Row
+    try:
+        try:
+            session_raw_ids, heads, _eligible = _active_index_raw_authority_from_connection(index_conn)
+        except RawRetentionSafetyError as exc:
+            return _unavailable_frontier_integrity_snapshot(str(exc))
+
+        source_reason = _source_tier_unavailable_reason(source_conn)
+        if source_reason is not None:
+            return _unavailable_frontier_integrity_snapshot(source_reason)
+
+        broken_status, broken_count, broken_checked, broken_samples, broken_reason = _check_broken_active_chains(
+            source_conn,
+            session_raw_ids,
+            heads,
+            sample_limit=sample_limit,
+        )
+        (
+            cursor_status,
+            cursor_count,
+            cursor_checked,
+            cursor_comparisons,
+            cursor_ahead_comparisons,
+            cursor_samples,
+            cursor_gap_count,
+            cursor_gap_samples,
+            cursor_deferred_count,
+            cursor_reason,
+        ) = _check_cursor_ahead_of_accepted(
+            source_conn,
+            None,
+            heads,
+            sample_limit=sample_limit,
+            ops_conn=ops_conn,
+            ops_schema=ops_schema,
+        )
+        return RawFrontierIntegritySnapshot(
+            broken_head_status=broken_status,
+            broken_head_count=broken_count,
+            broken_head_checked_count=broken_checked,
+            broken_head_samples=broken_samples,
+            broken_head_reason=broken_reason,
+            cursor_ahead_status=cursor_status,
+            cursor_ahead_count=cursor_count,
+            cursor_ahead_checked_count=cursor_checked,
+            cursor_head_comparison_count=cursor_comparisons,
+            cursor_ahead_comparison_count=cursor_ahead_comparisons,
+            cursor_ahead_samples=cursor_samples,
+            cursor_authority_gap_count=cursor_gap_count,
+            cursor_authority_gap_samples=cursor_gap_samples,
+            cursor_authority_deferred_count=cursor_deferred_count,
+            cursor_ahead_reason=cursor_reason,
+        )
+    finally:
+        source_conn.row_factory = original_row_factory
+
+
 def _unavailable_frontier_integrity_snapshot(reason: str) -> RawFrontierIntegritySnapshot:
     return RawFrontierIntegritySnapshot(
         broken_head_status="unknown",
@@ -1602,10 +1734,12 @@ def _check_broken_active_chains(
 
 def _check_cursor_ahead_of_accepted(
     conn: sqlite3.Connection,
-    ops_db_path: Path,
+    ops_db_path: Path | None,
     heads: tuple[_IndexRawRevisionHead, ...],
     *,
     sample_limit: int,
+    ops_conn: sqlite3.Connection | None = None,
+    ops_schema: str = "main",
 ) -> tuple[
     RawFrontierIntegrityStatus,
     int,
@@ -1619,7 +1753,11 @@ def _check_cursor_ahead_of_accepted(
     str,
 ]:
     try:
-        cursor_map = _ops_cursor_byte_offsets(ops_db_path)
+        cursor_map = (
+            _ops_cursor_byte_offsets_from_connection(ops_conn, schema=ops_schema)
+            if ops_conn is not None
+            else _ops_cursor_byte_offsets(_required_ops_path(ops_db_path))
+        )
     except RawRetentionSafetyError as exc:
         return "unknown", 0, 0, 0, 0, (), 0, (), 0, str(exc)
 
@@ -1962,6 +2100,44 @@ def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, _OpsCursorAuthority
             ).fetchall()
     except (OSError, sqlite3.Error) as exc:
         raise RawRetentionSafetyError(f"ops tier raw cursor authority is unreadable: {exc}") from exc
+    return {
+        str(row[0]): _OpsCursorAuthority(
+            source_path=str(row[0]),
+            byte_offset=int(row[1]),
+            deferred_end_offset=int(row[2]) if row[2] is not None else None,
+        )
+        for row in rows
+        if row[1] is not None
+    }
+
+
+def _required_ops_path(path: Path | None) -> Path:
+    if path is None:
+        raise RawRetentionSafetyError("ops tier is unavailable")
+    return path
+
+
+def _ops_cursor_byte_offsets_from_connection(
+    conn: sqlite3.Connection,
+    *,
+    schema: str = "main",
+) -> dict[str, _OpsCursorAuthority]:
+    """Read cursor authority from an operation's pinned ops handle."""
+
+    if schema not in {"main", "ops_tier"}:
+        raise ValueError(f"unsupported ops cursor reader schema: {schema!r}")
+    has_table = conn.execute(
+        f"SELECT 1 FROM {schema}.sqlite_schema WHERE type = 'table' AND name = 'ingest_cursor'"
+    ).fetchone()
+    if has_table is None:
+        raise RawRetentionSafetyError("ops tier has no ingest_cursor table")
+    rows = conn.execute(
+        f"""
+        SELECT source_path, byte_offset, deferred_end_offset
+        FROM {schema}.ingest_cursor
+        WHERE COALESCE(excluded, 0) = 0 AND byte_offset IS NOT NULL
+        """
+    ).fetchall()
     return {
         str(row[0]): _OpsCursorAuthority(
             source_path=str(row[0]),

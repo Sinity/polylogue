@@ -14,12 +14,16 @@ so we skip unchanged files entirely.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypeGuard, cast, runtime_checkable
 
 from polylogue.daemon.derivation import (
     Budget,
@@ -28,11 +32,661 @@ from polylogue.daemon.derivation import (
     DerivationRegistry,
     DerivationReport,
     PassCursor,
+    ReplacementLike,
     converge,
 )
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
+
+MAX_SELECTED_BINDING_RETRIES = 1
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedSessionTarget:
+    """One sealed session-family target supplied by maintenance planning."""
+
+    session_id: str
+    expected: Literal["required", "excess"]
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedSessionCounts:
+    """Actual index-family row counts certified for one selected target."""
+
+    profiles: int
+    work_events: int
+    phases: int
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedSessionOutcome:
+    """An uncapped, ordered receipt for exactly one sealed target."""
+
+    session_id: str
+    state: Literal["already_satisfied", "published", "pending", "stale", "failed", "unknown"]
+    input_binding: str | None
+    output_binding: str | None
+    certified_counts: SelectedSessionCounts
+    publication_known_committed: bool
+    reason: str | None = None
+
+
+@runtime_checkable
+class _SelectedSessionFacts(Protocol):
+    session_present: bool
+    status: str
+    input_binding: str | None
+    output_binding: str | None
+    profiles: int
+    work_events: int
+    phases: int
+
+
+@runtime_checkable
+class _PublicationCommitKnown(Protocol):
+    """Failure contract for an adapter that knows whether its index write committed."""
+
+    index_family_committed: bool
+
+
+class _SelectedSessionAdapter(Protocol):
+    recipe_version: str
+
+    def selected_part_facts(self, frame: DerivationFrame, session_id: str) -> _SelectedSessionFacts: ...
+
+    def selected_frame_is_current(self, frame: DerivationFrame) -> bool: ...
+
+    def quiet(self, frame: DerivationFrame, session_id: str) -> bool: ...
+
+    def compute(self, frame: DerivationFrame, session_id: str) -> ReplacementLike: ...
+
+    def publish(self, frame: DerivationFrame, replacement: ReplacementLike) -> bool: ...
+
+
+if TYPE_CHECKING:
+    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+
+
+class _DerivationAdmission:
+    """Bridge one short publish from a compute worker to the daemon writer."""
+
+    def __init__(self, bridge: DaemonWriteThreadBridge, *, loop_thread_id: int) -> None:
+        self._bridge = bridge
+        self._loop_thread_id = loop_thread_id
+
+    def __call__(self, domain: str, publish: Callable[[], bool]) -> bool:
+        if threading.get_ident() == self._loop_thread_id:
+            raise RuntimeError("session derivation publish was invoked on the daemon event loop thread")
+        # The bridge owns the coordinator until the transaction really returns;
+        # a caller-side timeout must not admit a second archive writer.
+        return self._bridge.run_sync_with_timeout(f"derivation.{domain}", None, publish)
+
+
+class SessionProfileConvergenceOwner:
+    """Run the registered session domain on daemon-shared lease-free compute.
+
+    Composition supplies the already-constructed converger and its one
+    session-profile adapter.  This owner deliberately does not construct a
+    pool or a writer: it borrows the process adapter and bridges only each
+    short publication back to the daemon's coordinator.
+    """
+
+    def __init__(
+        self,
+        converger: DaemonConverger,
+        *,
+        compute_adapter: BoundedComputeAdapter,
+        write_bridge: DaemonWriteThreadBridge,
+    ) -> None:
+        self._converger = converger
+        self._compute_adapter = compute_adapter
+        self._write_bridge = write_bridge
+        # The kernel retains a process-local pagination cursor.  One owner may
+        # receive a periodic no-hint sweep and a watcher-targeted pass at once;
+        # serialize their scheduling without extending any writer hold.
+        self._converge_lock = asyncio.Lock()
+
+    async def converge(
+        self,
+        frame: DerivationFrame,
+        *,
+        budget: Budget | int | None = None,
+        deadline_s: float | None = None,
+        resume: bool = True,
+    ) -> DerivationReport:
+        async with self._converge_lock:
+            return await self._converge_serialized(
+                frame,
+                budget=budget,
+                deadline_s=deadline_s,
+                resume=resume,
+            )
+
+    async def converge_selected(
+        self,
+        frame: DerivationFrame,
+        *,
+        targets: tuple[SelectedSessionTarget, ...],
+        expected_generation: str,
+        expected_recipe: str,
+        stop_requested: Callable[[], str | None],
+    ) -> tuple[SelectedSessionOutcome, ...]:
+        """Converge exactly the sealed maintenance targets in caller order.
+
+        This is intentionally separate from the paging kernel: maintenance
+        admits a bounded, reviewed part and needs every target's receipt, not
+        an archive cursor or a sampled report. It still borrows the same owner
+        lock, compute adapter, and bridged writer as recurring convergence.
+        """
+        seen: set[str] = set()
+        for target in targets:
+            if not target.session_id or target.session_id in seen:
+                raise ValueError("selected session targets must be non-empty and unique")
+            if target.expected not in {"required", "excess"}:
+                raise ValueError(f"unsupported selected session disposition: {target.expected!r}")
+            seen.add(target.session_id)
+        if frame.scope != tuple(target.session_id for target in targets):
+            raise ValueError("selected session frame scope must exactly match its sealed target order")
+        async with self._converge_lock:
+            return await self._converge_selected_serialized(
+                frame,
+                targets=targets,
+                expected_generation=expected_generation,
+                expected_recipe=expected_recipe,
+                stop_requested=stop_requested,
+            )
+
+    async def _converge_serialized(
+        self,
+        frame: DerivationFrame,
+        *,
+        budget: Budget | int | None = None,
+        deadline_s: float | None = None,
+        resume: bool = True,
+    ) -> DerivationReport:
+        from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+        if daemon_write_lease_active():
+            raise RuntimeError("session profile convergence must start after the daemon writer lease is released")
+        loop = asyncio.get_running_loop()
+        admission = _DerivationAdmission(self._write_bridge, loop_thread_id=threading.get_ident())
+        # A targeted ingest scope is not a continuation of archive keyset
+        # paging: reusing the archive cursor could skip an earlier changed id.
+        # Only no-hint archive sweeps retain their own cursor across passes.
+        pass_resume = resume if frame.scope is None else False
+        submitted = self._compute_adapter.submit(
+            partial(
+                self._converger.converge_derivations,
+                frame,
+                budget=budget,
+                deadline_s=deadline_s,
+                domains=("session_profile",),
+                resume=pass_resume,
+                publisher=admission,
+            ),
+            admission_class="incremental-background",
+        )
+        operation = asyncio.wrap_future(submitted.future, loop=loop)
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            # A caller may stop awaiting this sweep, but cannot let a compute
+            # worker that already owns a bridged publication outlive owner
+            # shutdown.  Settle it before propagating cancellation so the
+            # composition layer can drain the coordinator safely.
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(operation)
+            raise
+
+    async def _converge_selected_serialized(
+        self,
+        frame: DerivationFrame,
+        *,
+        targets: tuple[SelectedSessionTarget, ...],
+        expected_generation: str,
+        expected_recipe: str,
+        stop_requested: Callable[[], str | None],
+    ) -> tuple[SelectedSessionOutcome, ...]:
+        from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+        if daemon_write_lease_active():
+            raise RuntimeError("selected session convergence must start after the daemon writer lease is released")
+        candidate = self._converger._derivation_adapter("session_profile")
+        if not callable(getattr(candidate, "selected_part_facts", None)):
+            raise TypeError("registered session profile derivation does not expose sealed-part facts")
+        if not callable(getattr(candidate, "selected_frame_is_current", None)):
+            raise TypeError("registered session profile derivation does not validate a sealed frame generation")
+        if not callable(getattr(candidate, "compute", None)) or not callable(getattr(candidate, "publish", None)):
+            raise TypeError("registered session profile derivation cannot compute and publish sealed parts")
+        if not callable(getattr(candidate, "quiet", None)):
+            raise TypeError("registered session profile derivation has no selected-part quiet policy")
+        recipe_version = getattr(candidate, "recipe_version", None)
+        if not isinstance(recipe_version, str):
+            raise TypeError("registered session profile derivation has no canonical recipe version")
+        adapter = cast("_SelectedSessionAdapter", candidate)
+        loop = asyncio.get_running_loop()
+        admission = _DerivationAdmission(self._write_bridge, loop_thread_id=threading.get_ident())
+        submitted = self._compute_adapter.submit(
+            partial(
+                _converge_selected_session_parts_sync,
+                frame,
+                targets=targets,
+                expected_generation=expected_generation,
+                expected_recipe=expected_recipe,
+                adapter=adapter,
+                adapter_recipe=recipe_version,
+                stop_requested=stop_requested,
+                admission=admission,
+            ),
+            admission_class="incremental-background",
+        )
+        operation = asyncio.wrap_future(submitted.future, loop=loop)
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            # As for recurring passes, a task cancellation cannot detach a
+            # bridged writer admission from owner shutdown.
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(operation)
+            raise
+
+
+def _selected_session_facts(
+    adapter: _SelectedSessionAdapter,
+    frame: DerivationFrame,
+    session_id: str,
+) -> _SelectedSessionFacts:
+    facts: object = adapter.selected_part_facts(frame, session_id)
+    if not _is_selected_session_facts(facts):
+        raise TypeError("sealed-part facts carry invalid field types")
+    return facts
+
+
+def _is_selected_session_facts(value: object) -> TypeGuard[_SelectedSessionFacts]:
+    """Validate the complete storage-to-owner selected-part fact interface."""
+    if not isinstance(value, _SelectedSessionFacts):
+        return False
+    session_present: object = value.session_present
+    status: object = value.status
+    input_binding: object = value.input_binding
+    output_binding: object = value.output_binding
+    profiles: object = value.profiles
+    work_events: object = value.work_events
+    phases: object = value.phases
+    return (
+        isinstance(session_present, bool)
+        and isinstance(status, str)
+        and isinstance(input_binding, str | None)
+        and isinstance(output_binding, str | None)
+        and isinstance(profiles, int)
+        and not isinstance(profiles, bool)
+        and isinstance(work_events, int)
+        and not isinstance(work_events, bool)
+        and isinstance(phases, int)
+        and not isinstance(phases, bool)
+    )
+
+
+def _publication_commit_known(exc: BaseException) -> bool | None:
+    """Return the adapter's explicit committed-publication fact, if supplied."""
+    if not isinstance(exc, _PublicationCommitKnown):
+        return None
+    committed: object = exc.index_family_committed
+    return committed if isinstance(committed, bool) else None
+
+
+def _selected_counts(facts: _SelectedSessionFacts) -> SelectedSessionCounts:
+    return SelectedSessionCounts(
+        profiles=int(facts.profiles),
+        work_events=int(facts.work_events),
+        phases=int(facts.phases),
+    )
+
+
+def _selected_outcome(
+    target: SelectedSessionTarget,
+    state: Literal["already_satisfied", "published", "pending", "stale", "failed", "unknown"],
+    facts: _SelectedSessionFacts | None,
+    *,
+    input_binding: str | None = None,
+    publication_known_committed: bool = False,
+    reason: str | None = None,
+) -> SelectedSessionOutcome:
+    if facts is None:
+        return SelectedSessionOutcome(
+            session_id=target.session_id,
+            state=state,
+            input_binding=input_binding,
+            output_binding=None,
+            certified_counts=SelectedSessionCounts(0, 0, 0),
+            publication_known_committed=publication_known_committed,
+            reason=reason,
+        )
+    return SelectedSessionOutcome(
+        session_id=target.session_id,
+        state=state,
+        input_binding=input_binding if input_binding is not None else facts.input_binding,
+        output_binding=facts.output_binding,
+        certified_counts=_selected_counts(facts),
+        publication_known_committed=publication_known_committed,
+        reason=reason,
+    )
+
+
+def _selected_disposition_moved(target: SelectedSessionTarget, facts: _SelectedSessionFacts) -> str | None:
+    session_present = facts.session_present
+    profiles = facts.profiles
+    if target.expected == "required" and not session_present:
+        return "required target no longer names a session"
+    if target.expected == "excess" and session_present:
+        return "excess target names a live session"
+    if target.expected == "excess" and profiles > 1:
+        return "excess target has an invalid profile cardinality"
+    return None
+
+
+def _selected_satisfied(target: SelectedSessionTarget, facts: _SelectedSessionFacts) -> bool:
+    if target.expected == "required":
+        return facts.session_present and facts.status == "valid"
+    return not facts.session_present and facts.profiles == facts.work_events == facts.phases == 0
+
+
+def _selected_frame_is_current(adapter: _SelectedSessionAdapter, frame: DerivationFrame) -> bool:
+    return adapter.selected_frame_is_current(frame)
+
+
+def _selected_recipe_is_current(
+    adapter: _SelectedSessionAdapter,
+    frame: DerivationFrame,
+    expected_recipe: str,
+) -> bool:
+    return frame.recipe_version("session_profile") == expected_recipe and adapter.recipe_version == expected_recipe
+
+
+def _converge_selected_session_parts_sync(
+    frame: DerivationFrame,
+    *,
+    targets: tuple[SelectedSessionTarget, ...],
+    expected_generation: str,
+    expected_recipe: str,
+    adapter: _SelectedSessionAdapter,
+    adapter_recipe: str,
+    stop_requested: Callable[[], str | None],
+    admission: _DerivationAdmission,
+) -> tuple[SelectedSessionOutcome, ...]:
+    """Compute and certify only sealed session targets on the shared worker.
+
+    Unlike the ordinary derivation kernel this never calls required/excess
+    paging and never stores a cursor. The caller supplied both the ordered
+    targets and their required/excess disposition; this function verifies that
+    admission rather than widening it from archive state.
+    """
+    if frame.source_revision != expected_generation:
+        return tuple(
+            _selected_outcome(
+                target,
+                "stale",
+                None,
+                reason="selected part generation does not match its frame",
+            )
+            for target in targets
+        )
+    frame_recipe = frame.recipe_version("session_profile")
+    if expected_recipe != frame_recipe or expected_recipe != adapter_recipe:
+        return tuple(
+            _selected_outcome(
+                target,
+                "stale",
+                None,
+                reason="selected part recipe does not match the active session profile recipe",
+            )
+            for target in targets
+        )
+
+    outcomes: list[SelectedSessionOutcome] = []
+    for target in targets:
+        if stop_requested() is not None:
+            break
+        if not _selected_recipe_is_current(adapter, frame, expected_recipe):
+            outcomes.append(_selected_outcome(target, "stale", None, reason="selected part recipe is no longer active"))
+            continue
+        if not _selected_frame_is_current(adapter, frame):
+            outcomes.append(
+                _selected_outcome(target, "stale", None, reason="selected part generation is no longer active")
+            )
+            continue
+        try:
+            before = _selected_session_facts(adapter, frame, target.session_id)
+        except Exception as exc:
+            outcomes.append(_selected_outcome(target, "failed", None, reason=f"inspect: {exc}"))
+            continue
+        if (moved := _selected_disposition_moved(target, before)) is not None:
+            outcomes.append(_selected_outcome(target, "stale", before, reason=moved))
+            continue
+        if _selected_satisfied(target, before):
+            outcomes.append(_selected_outcome(target, "already_satisfied", before))
+            continue
+        try:
+            if adapter.quiet(frame, target.session_id):
+                outcomes.append(_selected_outcome(target, "pending", before, reason="quiet"))
+                continue
+        except Exception as exc:
+            outcomes.append(_selected_outcome(target, "failed", before, reason=f"quiet: {exc}"))
+            continue
+
+        for attempt in range(MAX_SELECTED_BINDING_RETRIES + 1):
+            if stop_requested() is not None:
+                return tuple(outcomes)
+            if not _selected_recipe_is_current(adapter, frame, expected_recipe):
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "stale",
+                        before,
+                        reason="selected part recipe changed before compute",
+                    )
+                )
+                break
+            if not _selected_frame_is_current(adapter, frame):
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "stale",
+                        before,
+                        reason="selected part generation changed before compute",
+                    )
+                )
+                break
+            try:
+                replacement = adapter.compute(frame, target.session_id)
+            except Exception as exc:
+                outcomes.append(_selected_outcome(target, "failed", before, reason=f"compute: {exc}"))
+                break
+            prepared_binding = replacement.input_binding if target.expected == "required" else None
+            try:
+                before_publication = _selected_session_facts(adapter, frame, target.session_id)
+            except Exception as exc:
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "failed",
+                        before,
+                        input_binding=prepared_binding,
+                        reason=f"pre-publication inspection: {exc}",
+                    )
+                )
+                break
+            if (moved := _selected_disposition_moved(target, before_publication)) is not None:
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "stale",
+                        before_publication,
+                        input_binding=prepared_binding,
+                        reason=moved,
+                    )
+                )
+                break
+            if _selected_satisfied(target, before_publication):
+                outcomes.append(_selected_outcome(target, "already_satisfied", before_publication))
+                break
+            if target.expected == "required" and before_publication.input_binding != prepared_binding:
+                if attempt == MAX_SELECTED_BINDING_RETRIES:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "pending",
+                            before_publication,
+                            input_binding=prepared_binding,
+                            reason="binding_moved",
+                        )
+                    )
+                    break
+                before = before_publication
+                continue
+            # Do not admit the bridge after a stop request. A stop received
+            # while the bridge is running is settled below before this worker
+            # returns, because ``run_sync_with_timeout`` is synchronous here.
+            if stop_requested() is not None:
+                return tuple(outcomes)
+            if not _selected_recipe_is_current(adapter, frame, expected_recipe):
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "stale",
+                        before_publication,
+                        input_binding=prepared_binding,
+                        reason="selected part recipe changed before publication",
+                    )
+                )
+                break
+            if not _selected_frame_is_current(adapter, frame):
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "stale",
+                        before,
+                        input_binding=prepared_binding,
+                        reason="selected part generation changed before publication",
+                    )
+                )
+                break
+            try:
+                accepted = admission("session_profile", partial(adapter.publish, frame, replacement))
+            except Exception as exc:
+                if (index_family_committed := _publication_commit_known(exc)) is not None:
+                    # Index and user tiers deliberately do not share a
+                    # transaction. A marker failure can therefore follow an
+                    # already-committed index replacement. Preserve that
+                    # effect and certify its actual family facts; ordinary
+                    # inspection keeps the missing marker retryable.
+                    try:
+                        after_marker_failure = _selected_session_facts(adapter, frame, target.session_id)
+                    except Exception as facts_exc:
+                        outcomes.append(
+                            _selected_outcome(
+                                target,
+                                "unknown",
+                                None,
+                                input_binding=prepared_binding,
+                                publication_known_committed=index_family_committed,
+                                reason=f"marker lowering and post-failure certification: {facts_exc}",
+                            )
+                        )
+                    else:
+                        outcomes.append(
+                            _selected_outcome(
+                                target,
+                                "failed",
+                                after_marker_failure,
+                                input_binding=prepared_binding,
+                                publication_known_committed=index_family_committed,
+                                reason="marker lowering failed after index publication",
+                            )
+                        )
+                    break
+                outcomes.append(
+                    _selected_outcome(
+                        target, "failed", before, input_binding=prepared_binding, reason=f"publish: {exc}"
+                    )
+                )
+                break
+            if not _selected_frame_is_current(adapter, frame):
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "stale",
+                        before,
+                        input_binding=prepared_binding,
+                        publication_known_committed=accepted,
+                        reason="selected part generation changed after publication",
+                    )
+                )
+                break
+            try:
+                after = _selected_session_facts(adapter, frame, target.session_id)
+            except Exception as exc:
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "unknown",
+                        None,
+                        input_binding=prepared_binding,
+                        publication_known_committed=accepted,
+                        reason=f"post-publication certification unavailable: {exc}",
+                    )
+                )
+                break
+            if (moved := _selected_disposition_moved(target, after)) is not None:
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "stale",
+                        after,
+                        input_binding=prepared_binding,
+                        publication_known_committed=accepted,
+                        reason=moved,
+                    )
+                )
+                break
+            if _selected_satisfied(target, after):
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "published" if accepted else "already_satisfied",
+                        after,
+                        input_binding=prepared_binding,
+                        publication_known_committed=accepted,
+                    )
+                )
+                break
+            if accepted:
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "failed",
+                        after,
+                        input_binding=prepared_binding,
+                        publication_known_committed=accepted,
+                        reason="publication returned success without output certification",
+                    )
+                )
+                break
+            if attempt == MAX_SELECTED_BINDING_RETRIES:
+                outcomes.append(
+                    _selected_outcome(
+                        target,
+                        "pending",
+                        after,
+                        input_binding=prepared_binding,
+                        reason="binding_moved",
+                    )
+                )
+                break
+            before = after
+    return tuple(outcomes)
 
 
 def _stage_false_error(stage_name: str, *, scope: str) -> str:
@@ -195,6 +849,10 @@ class DaemonConverger:
     def derivation_domains(self) -> tuple[str, ...]:
         return tuple(adapter.domain for adapter in self._derivations.ordered())
 
+    def _derivation_adapter(self, domain: str) -> DerivationAdapter:
+        """Return one registered adapter for owner-internal sealed work."""
+        return self._derivations.get(domain)
+
     def converge_derivations(
         self,
         frame: DerivationFrame,
@@ -203,6 +861,7 @@ class DaemonConverger:
         deadline_s: float | None = None,
         domains: Sequence[str] | None = None,
         resume: bool = True,
+        publisher: Callable[[str, Callable[[], bool]], bool] | None = None,
     ) -> DerivationReport:
         """Converge the migrated domains from their own output relations.
 
@@ -226,8 +885,15 @@ class DaemonConverger:
             deadline_s=deadline_s,
             domains=domains,
             cursor=self._derivation_cursor if resume else None,
+            publisher=publisher,
         )
-        self._derivation_cursor = report.cursor
+        # A targeted ingest frame always starts fresh so an archive keyset
+        # position cannot skip an earlier changed key.  It must likewise leave
+        # the archive sweep's retained position alone: replacing it with the
+        # targeted frame's terminal cursor would discard fairness for the
+        # no-hint pass that follows.
+        if frame.scope is None:
+            self._derivation_cursor = report.cursor
         return report
 
     @property

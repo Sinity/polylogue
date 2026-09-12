@@ -863,7 +863,7 @@ def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path
 
 
 def test_session_insight_rebuild_reprices_existing_usage_rows(tmp_path: Path) -> None:
-    """Catalog pricing is repaired even when source evidence is no longer present."""
+    """Catalog pricing repairs token rows retained by provider usage evidence."""
     db_path = tmp_path / "profile-stale-catalog-cost.db"
     with open_connection(db_path) as conn:
         store_records(
@@ -887,6 +887,15 @@ def test_session_insight_rebuild_reprices_existing_usage_rows(tmp_path: Path) ->
             conn=conn,
         )
         session_id = _sid("conv-stale-catalog-cost", "codex-session")
+        conn.execute(
+            """
+            INSERT INTO session_provider_usage_events (
+                session_id, position, provider_event_type, model_name,
+                last_input_tokens, last_output_tokens
+            ) VALUES (?, 99, 'token_count', 'gpt-5.5', ?, ?)
+            """,
+            (session_id, 1_000, 100),
+        )
         conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         conn.execute(
             "UPDATE session_model_usage SET input_tokens = 1_000, output_tokens = 100, catalog_cost_usd = NULL WHERE session_id = ?",
@@ -991,11 +1000,11 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     ]
 
 
-def test_derived_stage_lowers_declared_markers_to_user_assertions(tmp_path: Path) -> None:
-    """The daemon's production derived stage reaches the marker lowering seam."""
-    from polylogue.daemon.convergence_stages import _archive_insights_execute_ids
+def test_session_profile_owner_lowers_declared_markers_to_user_assertions(tmp_path: Path) -> None:
+    """The typed session-profile owner reaches the marker lowering seam."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from tests.infra.convergence_harness import converge_session_profiles
 
     archive_root = tmp_path / "marker-materialization"
     initialize_active_archive_root(archive_root)
@@ -1021,9 +1030,7 @@ def test_derived_stage_lowers_declared_markers_to_user_assertions(tmp_path: Path
         )
         conn.commit()
 
-    with open_connection(index_db) as conn:
-        result = _archive_insights_execute_ids(conn, [session_id], archive_root=archive_root)
-        assert result
+    converge_session_profiles(index_db, archive_root, (session_id,), now=lambda: 0.0)
 
     with sqlite3.connect(archive_root / "user.db") as conn:
         row = conn.execute(

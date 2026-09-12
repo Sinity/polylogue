@@ -590,6 +590,7 @@ def summarize_schema_drift_since(
     *,
     since_ms: int,
     example_limit: int = 5,
+    schema: str = "main",
 ) -> tuple[SchemaDriftOriginSummary, ...]:
     """Return one windowed drift-rate summary per origin since ``since_ms``.
 
@@ -603,18 +604,21 @@ def summarize_schema_drift_since(
     """
     from polylogue.schemas.drift_sentinel import RISKY_CLASSIFICATIONS
 
+    if schema not in {"main", "ops_tier"}:
+        raise ValueError(f"unsupported schema-drift reader schema: {schema!r}")
+    table = f"{schema}.schema_drift_samples"
     origins = [
         str(row[0])
         for row in conn.execute(
-            "SELECT DISTINCT origin FROM schema_drift_samples WHERE observed_at_ms >= ? ORDER BY origin",
+            f"SELECT DISTINCT origin FROM {table} WHERE observed_at_ms >= ? ORDER BY origin",
             (since_ms,),
         ).fetchall()
     ]
     summaries: list[SchemaDriftOriginSummary] = []
     for origin in origins:
         rows = conn.execute(
-            """
-            SELECT classification, native_id_example FROM schema_drift_samples
+            f"""
+            SELECT classification, native_id_example FROM {table}
             WHERE origin = ? AND observed_at_ms >= ?
             ORDER BY observed_at_ms DESC
             """,
@@ -1260,16 +1264,19 @@ def list_embedding_catchup_runs(
     conn: sqlite3.Connection,
     *,
     status: OperationStatus | str | None = None,
+    schema: str = "main",
 ) -> tuple[ArchiveEmbeddingCatchupRun, ...]:
     """Return embedding catchup runs ordered by newest start first."""
-    outcome_columns = _embedding_catchup_run_outcome_columns(conn)
+    if schema not in {"main", "ops_tier"}:
+        raise ValueError(f"unsupported embedding catchup reader schema: {schema!r}")
+    outcome_columns = _embedding_catchup_run_outcome_columns(conn, schema=schema)
     query = """
         SELECT
             run_id, started_at_ms, finished_at_ms, status, origin,
             scanned_sessions, {embedded_sessions}, {skipped_sessions}, {error_count},
             embedded_messages, estimated_cost_usd, error_message
-        FROM embedding_catchup_runs
-    """.format(**outcome_columns)
+        FROM {schema}.embedding_catchup_runs
+    """.format(schema=schema, **outcome_columns)
     params: tuple[object, ...] = ()
     if status is not None:
         query += " WHERE status = ?"
@@ -1396,8 +1403,12 @@ def _rebuild_ops_status_table_if_stale(
         conn.execute(index_ddl)
 
 
-def _embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> dict[str, str]:
-    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_catchup_runs)")}
+def _embedding_catchup_run_outcome_columns(
+    conn: sqlite3.Connection,
+    *,
+    schema: str = "main",
+) -> dict[str, str]:
+    existing = {str(row[1]) for row in conn.execute(f"PRAGMA {schema}.table_info(embedding_catchup_runs)")}
     return {
         "embedded_sessions": "embedded_sessions" if "embedded_sessions" in existing else "0 AS embedded_sessions",
         "skipped_sessions": "skipped_sessions" if "skipped_sessions" in existing else "0 AS skipped_sessions",

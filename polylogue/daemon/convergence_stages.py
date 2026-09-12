@@ -8,7 +8,6 @@ repair and refresh post-ingest archive state.
 - fts: inspect and converge message-FTS session partitions through the domain
   adapter; source-path checks remain scoped to the affected sessions
 - embed: optional vectorization for changed sessions
-- derived: refresh session-derived tables
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
 )
-from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
+from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.daemon.write_coordinator import daemon_write_lease_active
 from polylogue.logging import get_logger
@@ -39,15 +38,12 @@ from polylogue.operations.raw_authority_verdict_cache import (
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.derived.session.runtime import session_profile_candidates
 from polylogue.storage.introspection import table_exists as _table_exists
-from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.source_sessions import (
     session_ids_for_source_path,
     session_ids_for_source_paths,
 )
 from polylogue.storage.sqlite.connection_profile import (
-    open_connection,
     open_daemon_connection,
     open_isolated_write_connection,
     open_readonly_connection,
@@ -60,7 +56,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_DAEMON_INSIGHT_REBUILD_PAGE_SIZE = 10
 _HOT_INSIGHT_SOURCE_BYTES = 64 * 1024 * 1024
 _HOT_INSIGHT_QUIET_SECONDS = 60.0
 _DAEMON_EMBED_MAX_SESSIONS = 25
@@ -128,7 +123,7 @@ class _FtsRepairNeeds:
 # ── Stage: FTS ─────────────────────────────────────────────────────
 
 
-def make_fts_stage(db_path: Path) -> ConvergenceStage:
+def make_fts_stage(db_path: Path, *, archive_root: Path | None = None) -> ConvergenceStage:
     """Converge the FTS domain through its session-partition adapter.
 
     The stage is only an adapter for the generic source/debt scheduler. FTS
@@ -211,7 +206,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
         try:
             from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
 
-            result = FtsConvergenceOwner(database, archive_root=db_path.parent).run_once_sync(
+            result = FtsConvergenceOwner(database, archive_root=archive_root or db_path.parent).run_once_sync(
                 reason=FtsRunReason.PERIODIC,
                 partition_keys=tuple(keys) if keys else None,
             )
@@ -509,232 +504,6 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
         check_many=check_many,
         execute_many=execute_many,
         whole_archive=True,
-    )
-
-
-# ── Stage: derived ────────────────────────────────────────────────
-
-
-def make_derived_stage(db_path: Path) -> ConvergenceStage:
-    """Refresh session-derived tables for sessions missing them."""
-
-    def check(path: Path) -> bool:
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_insights_check(archive_db, path, archive_root=db_path.parent)
-        if not db_path.exists():
-            return False
-        try:
-            conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
-            try:
-                if not _table_exists(conn, "session_profiles"):
-                    return False
-                session_ids = _session_ids_for_source_path(conn, path)
-                if session_ids:
-                    return bool(_stale_session_profile_ids(conn, session_ids))
-                total_conv = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
-                if total_conv == 0:
-                    return False
-                profiled = int(conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0])
-                return profiled < total_conv
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning("convergence freshness probe %s errored; treating as needs-work", "check", exc_info=True)
-            return True
-
-    def execute(path: Path) -> StageExecuteReturn:
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_insights_execute(archive_db, path, archive_root=db_path.parent)
-        from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
-
-        try:
-            with open_connection(db_path, archive_root=db_path.parent) as conn:
-                session_ids = _session_ids_for_source_path(conn, path) or _session_ids_missing_profiles(conn)
-                hot_ids = _hot_insight_session_ids(conn, session_ids)
-                if hot_ids:
-                    logger.info(
-                        "insights: deferring hot source rebuild sessions=%d quiet_s=%.0f",
-                        len(hot_ids),
-                        _HOT_INSIGHT_QUIET_SECONDS,
-                    )
-                    session_ids = [session_id for session_id in session_ids if session_id not in hot_ids]
-                    if not session_ids:
-                        return False
-                counts = rebuild_session_insights_sync(
-                    conn,
-                    session_ids=session_ids,
-                    page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
-                )
-                conn.commit()
-                logger.info(
-                    "insights: refreshed sessions=%d profiles=%d work_events=%d phases=%d threads=%d",
-                    len(session_ids),
-                    counts.profiles,
-                    counts.work_events,
-                    counts.phases,
-                    counts.threads,
-                )
-                if hot_ids:
-                    return False
-            return True
-        except Exception:
-            logger.warning("insights: rebuild failed", exc_info=True)
-            raise
-
-    def check_many(paths: Sequence[Path]) -> set[Path]:
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_insights_check_many(archive_db, paths, archive_root=db_path.parent)
-        if not db_path.exists() or not paths:
-            return set()
-        try:
-            conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
-            try:
-                if not _table_exists(conn, "session_profiles"):
-                    return set()
-                by_path = _session_ids_for_source_paths(conn, paths)
-                paths_with_sessions = {
-                    path
-                    for path, session_ids in by_path.items()
-                    if session_ids and _stale_session_profile_ids(conn, session_ids)
-                }
-                if paths_with_sessions:
-                    return paths_with_sessions
-                if _session_ids_missing_profiles(conn):
-                    return {Path(paths[0])}
-                return set()
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning(
-                "convergence freshness probe %s errored; treating as needs-work", "check_many", exc_info=True
-            )
-            return set(paths)
-
-    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_insights_execute_many(archive_db, paths, archive_root=db_path.parent)
-        from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
-
-        try:
-            with open_connection(db_path, archive_root=db_path.parent) as conn:
-                by_path = _session_ids_for_source_paths(conn, paths)
-                session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
-                if not session_ids:
-                    session_ids = _session_ids_missing_profiles(conn)
-                hot_ids = _hot_insight_session_ids(conn, session_ids)
-                if hot_ids:
-                    logger.info(
-                        "insights: deferring hot source batch rebuild sessions=%d quiet_s=%.0f",
-                        len(hot_ids),
-                        _HOT_INSIGHT_QUIET_SECONDS,
-                    )
-                    session_ids = [session_id for session_id in session_ids if session_id not in hot_ids]
-                    if not session_ids:
-                        return False
-                counts = rebuild_session_insights_sync(
-                    conn,
-                    session_ids=session_ids,
-                    page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
-                )
-                conn.commit()
-                logger.info(
-                    "insights: batch refreshed paths=%d sessions=%d profiles=%d work_events=%d phases=%d threads=%d",
-                    len(paths),
-                    len(session_ids),
-                    counts.profiles,
-                    counts.work_events,
-                    counts.phases,
-                    counts.threads,
-                )
-                if hot_ids:
-                    return False
-            return True
-        except Exception:
-            logger.warning("insights: batch rebuild failed", exc_info=True)
-            raise
-
-    def check_sessions(session_ids: Sequence[str]) -> set[str]:
-        if not session_ids:
-            return set()
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_insights_check_sessions(archive_db, session_ids)
-        if not db_path.exists():
-            return set()
-        try:
-            conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
-            try:
-                if not _table_exists(conn, "session_profiles"):
-                    return set()
-                return set(_stale_session_profile_ids(conn, tuple(dict.fromkeys(session_ids))))
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning(
-                "convergence freshness probe %s errored; treating as needs-work", "check_sessions", exc_info=True
-            )
-            return set(session_ids)
-
-    def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_insights_execute_sessions(archive_db, session_ids, archive_root=db_path.parent)
-        from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
-
-        try:
-            with open_connection(db_path, archive_root=db_path.parent) as conn:
-                ids = _existing_session_ids(conn, tuple(dict.fromkeys(session_ids)))
-                if not ids:
-                    return True
-                hot_ids = _hot_insight_session_ids(conn, ids)
-                if hot_ids:
-                    logger.info(
-                        "insights: deferring hot source session rebuild sessions=%d quiet_s=%.0f",
-                        len(hot_ids),
-                        _HOT_INSIGHT_QUIET_SECONDS,
-                    )
-                    ids = [session_id for session_id in ids if session_id not in hot_ids]
-                    if not ids:
-                        return False
-                counts = rebuild_session_insights_sync(
-                    conn,
-                    session_ids=ids,
-                    page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
-                )
-                conn.commit()
-                remaining = _stale_session_profile_ids(conn, ids)
-                logger.info(
-                    "insights: refreshed session debt sessions=%d profiles=%d work_events=%d phases=%d threads=%d remaining=%d",
-                    len(ids),
-                    counts.profiles,
-                    counts.work_events,
-                    counts.phases,
-                    counts.threads,
-                    len(remaining),
-                )
-                if remaining:
-                    return False
-                if hot_ids:
-                    return False
-            return True
-        except Exception:
-            logger.warning("insights: session rebuild failed", exc_info=True)
-            raise
-
-    return ConvergenceStage(
-        name="derived",
-        description="Refresh session-derived tables for new sessions",
-        check=check,
-        execute=execute,
-        check_many=check_many,
-        execute_many=execute_many,
-        check_sessions=check_sessions,
-        execute_sessions=execute_sessions,
-        false_means_pending=True,
     )
 
 
@@ -1276,11 +1045,13 @@ def make_default_convergence_stages(
         (
             make_raw_parse_recovery_stage(db_path, archive_root=archive_root()),
             make_raw_authority_verdict_cache_stage(db_path),
-            make_fts_stage(db_path),
+            make_fts_stage(db_path, archive_root=archive_root()),
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
             make_delegation_work_evidence_stage(db_path),
-            make_derived_stage(db_path),
+            # Session-profile publication is no longer a generic stage.  The
+            # daemon's typed session owner runs it through the derivation
+            # kernel after ingest and from its no-hint periodic sweep.
             make_fts_readiness_stage(db_path),
             make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
         )
@@ -1581,83 +1352,6 @@ def _record_fts_freshness_after_insights(conn: sqlite3.Connection) -> bool:
     return bool(snapshot.messages.ready)
 
 
-def _session_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
-    """Cold sessions with no profile built by the current materializer.
-
-    The archive-wide fallback scope, reached only when a changed source path
-    resolves to no session of its own. It answers "what was never built", which
-    a row's absence settles outright; whether a built partition is still current
-    is decided per session by :func:`_stale_session_profile_ids`, against the
-    input values rather than against a sort key.
-    """
-    from polylogue.storage.derived.session.status import SESSION_PROFILE_UNBUILT_CANDIDATES_SQL
-    from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
-
-    rows = conn.execute(SESSION_PROFILE_UNBUILT_CANDIDATES_SQL, (SESSION_INSIGHT_MATERIALIZER_VERSION,)).fetchall()
-    return [str(row[0]) for row in rows]
-
-
-def _existing_session_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
-    unique_ids = tuple(dict.fromkeys(session_ids))
-    if not unique_ids or not _table_exists(conn, "sessions"):
-        return []
-    placeholders = ", ".join("?" for _ in unique_ids)
-    rows = conn.execute(
-        f"""
-        SELECT session_id
-        FROM sessions
-        WHERE session_id IN ({placeholders})
-        ORDER BY session_id
-        """,
-        unique_ids,
-    ).fetchall()
-    return [str(row[0]) for row in rows]
-
-
-def _hot_insight_session_ids(
-    conn: sqlite3.Connection,
-    session_ids: Sequence[str],
-    *,
-    now: float | None = None,
-) -> set[str]:
-    """Return stale sessions whose source file is too hot for full insight rebuild.
-
-    Live archive writes and targeted FTS repair must stay immediate. Session
-    insight rebuilds can require rehydrating an entire session; for huge
-    actively-appending agent sessions that turns every small append into a
-    multi-GB read cycle. Returning False from the stage records durable
-    convergence debt, so this is a quiet-window deferral, not a scope reduction.
-    """
-
-    unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-    if not unique_ids or not _table_exists(conn, "sessions"):
-        return set()
-    raw_table = "raw_sessions"
-    if not _table_exists(conn, raw_table):
-        raw_table = "source_tier.raw_sessions"
-        if not _ensure_source_tier_attached(conn):
-            return set()
-    placeholders = ", ".join("?" for _ in unique_ids)
-    rows = conn.execute(
-        f"""
-        SELECT DISTINCT c.session_id, r.source_path
-        FROM sessions AS c
-        JOIN {raw_table} AS r ON r.raw_id = c.raw_id
-        WHERE c.session_id IN ({placeholders})
-          AND r.source_path IS NOT NULL
-          AND r.source_path != ''
-        ORDER BY c.session_id
-        """,
-        unique_ids,
-    ).fetchall()
-    current = time.time() if now is None else now
-    hot: set[str] = set()
-    for session_id, source_path in rows:
-        if _source_path_is_hot_for_insights(Path(str(source_path)), now=current):
-            hot.add(str(session_id))
-    return hot
-
-
 def _source_path_is_hot_for_insights(path: Path, *, now: float | None = None) -> bool:
     try:
         stat = path.stat()
@@ -1667,30 +1361,6 @@ def _source_path_is_hot_for_insights(path: Path, *, now: float | None = None) ->
         return False
     current = time.time() if now is None else now
     return current - stat.st_mtime < _HOT_INSIGHT_QUIET_SECONDS
-
-
-def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
-    """The sessions whose partition is not valid. The only freshness authority.
-
-    Value-complete: it recomputes each session's input binding from the message
-    projection the profile reads, and checks the partition's sibling relations
-    against what the profile declares. Both the source-path route and the
-    archive route land here, so the two cannot disagree about whether a
-    partition is current.
-
-    Cost is bounded by the caller's session set, which is what makes an
-    authoritative check affordable on the ingest path.
-    """
-    unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-    if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
-        return []
-    if not _table_exists(conn, "messages"):
-        return []
-    return session_profile_candidates(
-        conn,
-        unique_ids,
-        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
-    )
 
 
 # ── Archive file-set helpers ─────────────────────────────────────
@@ -1763,8 +1433,8 @@ def _schema_archive_session_ids_for_source_paths(
             return {path: [] for path in normalized_paths}
         # Deliberately let sqlite3.Error from the attach above propagate
         # instead of swallowing it into an empty result here (polylogue-co8b):
-        # every caller of this helper (_archive_embed_check[_many],
-        # _archive_insights_check[_many], _sinex_session_ids_for_paths) wraps
+        # every caller of this helper (_archive_embed_check[_many] and
+        # _sinex_session_ids_for_paths) wraps
         # its own call in a broad try/except that fails OPEN -- "treating as
         # needs-work" -- matching every other freshness probe in this file.
         # Swallowing the error here instead made the outer probe see a clean
@@ -2501,191 +2171,6 @@ def _archive_hot_insight_session_ids(
     }
 
 
-def _archive_insights_check(db_path: Path, path: Path, *, archive_root: Path | None = None) -> bool:
-    try:
-        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
-        try:
-            session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
-            return bool(session_ids) and bool(_stale_session_profile_ids(conn, session_ids))
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning(
-            "convergence freshness probe %s errored; treating as needs-work", "_archive_insights_check", exc_info=True
-        )
-        return True
-
-
-def _archive_insights_execute(db_path: Path, path: Path, *, archive_root: Path) -> StageExecuteReturn:
-    try:
-        conn = _open_archive_insight_write_connection(db_path, archive_root=archive_root)
-        try:
-            session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
-            if not session_ids:
-                logger.info("insights: archive skipped path refresh with no resolved sessions path=%s", path)
-                return True
-            return _archive_insights_execute_ids(conn, session_ids, archive_root=archive_root)
-        finally:
-            conn.close()
-    except Exception as exc:
-        if _is_transient_sqlite_lock(exc):
-            logger.info("insights: archive refresh deferred because sqlite is busy: %s", exc)
-            return False
-        logger.warning("insights: archive refresh failed", exc_info=True)
-        raise
-
-
-def _archive_insights_check_many(
-    db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None
-) -> set[Path]:
-    if not paths:
-        return set()
-    try:
-        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
-        try:
-            by_path = _schema_archive_session_ids_for_source_paths(conn, paths, archive_root=archive_root)
-            result = {
-                path
-                for path, session_ids in by_path.items()
-                if session_ids and _stale_session_profile_ids(conn, session_ids)
-            }
-            return result
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning(
-            "convergence freshness probe %s errored; treating as needs-work",
-            "_archive_insights_check_many",
-            exc_info=True,
-        )
-        return set(paths)
-
-
-def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path], *, archive_root: Path) -> StageExecuteReturn:
-    try:
-        conn = _open_archive_insight_write_connection(db_path, archive_root=archive_root)
-        try:
-            by_path = _schema_archive_session_ids_for_source_paths(conn, paths, archive_root=archive_root)
-            session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
-            if not session_ids:
-                logger.info(
-                    "insights: archive skipped batch path refresh with no resolved sessions paths=%d", len(paths)
-                )
-                return True
-            return _archive_insights_execute_ids(conn, session_ids, archive_root=archive_root)
-        finally:
-            conn.close()
-    except Exception as exc:
-        if _is_transient_sqlite_lock(exc):
-            logger.info("insights: archive batch refresh deferred because sqlite is busy: %s", exc)
-            return False
-        logger.warning("insights: archive batch refresh failed", exc_info=True)
-        raise
-
-
-def _archive_insights_check_sessions(db_path: Path, session_ids: Sequence[str]) -> set[str]:
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-        try:
-            ids = _archive_existing_session_ids(conn, session_ids)
-            return set(_stale_session_profile_ids(conn, ids))
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning(
-            "convergence freshness probe %s errored; treating as needs-work",
-            "_archive_insights_check_sessions",
-            exc_info=True,
-        )
-        return set(session_ids)
-
-
-def _archive_insights_execute_sessions(
-    db_path: Path, session_ids: Sequence[str], *, archive_root: Path
-) -> StageExecuteReturn:
-    try:
-        conn = _open_archive_insight_write_connection(db_path, archive_root=archive_root)
-        try:
-            ids = _archive_existing_session_ids(conn, session_ids)
-            return _archive_insights_execute_ids(conn, ids, archive_root=archive_root)
-        finally:
-            conn.close()
-    except Exception as exc:
-        if _is_transient_sqlite_lock(exc):
-            logger.info("insights: archive session refresh deferred because sqlite is busy: %s", exc)
-            return False
-        logger.warning("insights: archive session refresh failed", exc_info=True)
-        raise
-
-
-def _archive_insights_execute_ids(
-    conn: sqlite3.Connection, session_ids: Sequence[str], *, archive_root: Path | None = None
-) -> StageExecuteReturn:
-    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
-
-    session_ids = list(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-    if not session_ids:
-        return True
-    hot_ids = _archive_hot_insight_session_ids(conn, session_ids, archive_root=archive_root)
-    if hot_ids:
-        logger.info(
-            "insights: deferring hot archive source rebuild sessions=%d quiet_s=%.0f",
-            len(hot_ids),
-            _HOT_INSIGHT_QUIET_SECONDS,
-        )
-        session_ids = [session_id for session_id in session_ids if session_id not in hot_ids]
-        if not session_ids:
-            return False
-    # The canonical rebuild function requires row-factory access on the
-    # connection (name-based column reads throughout). The archive callers
-    # use plain sqlite3.connect() without row_factory, so set it here.
-    conn.row_factory = sqlite3.Row
-    stage_timings_s: dict[str, float] = {}
-    marker_conn: sqlite3.Connection | None = None
-    if archive_root is not None:
-        user_db = archive_root / "user.db"
-        if user_db.exists():
-            marker_conn = _open_archive_insight_write_connection(user_db, archive_root=archive_root)
-    try:
-        if marker_conn is None:
-            counts = rebuild_session_insights_sync(
-                conn,
-                session_ids=list(session_ids),
-                page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix="derived",
-            )
-        else:
-            counts = rebuild_session_insights_sync(
-                conn,
-                session_ids=list(session_ids),
-                marker_conn=marker_conn,
-                page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix="derived",
-            )
-    finally:
-        if marker_conn is not None:
-            marker_conn.close()
-    # The rebuild commits its own rows; the exact archive-wide FTS audit is
-    # published once per whole-archive pass by ``make_fts_readiness_stage``.
-    conn.commit()
-    remaining = _stale_session_profile_ids(conn, list(session_ids))
-    logger.info(
-        "insights: archive refreshed sessions=%d profiles=%d work_events=%d phases=%d threads=%d remaining=%d",
-        len(tuple(dict.fromkeys(session_ids))),
-        counts.profiles,
-        counts.work_events,
-        counts.phases,
-        counts.threads,
-        len(remaining),
-    )
-    return StageExecutionResult(
-        success=not hot_ids and not remaining,
-        stage_timings_s=stage_timings_s,
-    )
-
-
 __all__ = [
     "make_claude_workflow_stage",
     "make_delegation_work_evidence_stage",
@@ -2693,7 +2178,6 @@ __all__ = [
     "make_embed_stage",
     "make_fts_readiness_stage",
     "make_fts_stage",
-    "make_derived_stage",
     "make_raw_authority_verdict_cache_stage",
     "make_raw_parse_recovery_stage",
     "make_sinex_publication_stage",

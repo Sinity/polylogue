@@ -13,8 +13,10 @@ from polylogue.storage.archive_identity import archive_file_set_root
 
 if TYPE_CHECKING:
     from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.archive.query.search_contract import LaneFailure
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.config import Config
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 
 DEFAULT_SEARCH_SNIPPET_MAX_CHARS = 320
 DEFAULT_TITLE_MAX_CHARS = 96
@@ -345,6 +347,18 @@ async def search_hits_for_plan(
         projection="search-hits",
         workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
     )
+    return project_search_hits(plan, paired, resolved_lane, vector_failure=vector_failure)
+
+
+def project_search_hits(
+    plan: SessionQueryPlan,
+    paired: list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]],
+    resolved_lane: str,
+    *,
+    vector_failure: LaneFailure | None = None,
+) -> SearchHitResults:
+    """Hydrate and describe actual executing lanes once for every surface."""
+    query_text = plan.similar_text or plan_search_query_text(plan)
     query_terms = (query_text,) if query_text else ()
     terms = search_terms(query_terms)
     hits: list[SessionSearchHit] = []
@@ -370,9 +384,14 @@ async def search_hits_for_plan(
                 else None,
             )
         )
+    needs_vector = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane == "hybrid")
     execution = SearchExecution(
-        requested_lanes=("text", "action", "vector") if plan.retrieval_lane == "hybrid" else ("vector",),
-        executed_lanes=("text",) if plan.retrieval_lane == "hybrid" and vector_failure else ("vector",),
+        requested_lanes=("text", "vector")
+        if plan.retrieval_lane == "hybrid"
+        else (("vector",) if needs_vector else ("text",)),
+        executed_lanes=("text", "vector")
+        if resolved_lane == "hybrid"
+        else (("vector",) if resolved_lane == "semantic" else ("text",)),
         unavailable_lanes=("vector",) if vector_failure and vector_failure.kind == "unavailable" else (),
         failed_lanes=(vector_failure,) if vector_failure and vector_failure.kind != "unavailable" else (),
     )
@@ -383,7 +402,6 @@ def _archive_summary_to_domain(summary: object) -> SessionSummary:
     """Accept an already-hydrated summary or route a raw row through hydration."""
     from polylogue.archive.hydration import archive_summary_to_domain
     from polylogue.archive.session.domain_models import SessionSummary as _SessionSummary
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 
     if isinstance(summary, _SessionSummary):
         return summary
@@ -406,6 +424,7 @@ __all__ = [
     "primary_lane_evidence",
     "search_hit_surface",
     "search_hits_for_plan",
+    "project_search_hits",
     "search_query_text",
     "search_terms",
 ]

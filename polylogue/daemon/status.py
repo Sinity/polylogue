@@ -313,8 +313,11 @@ class RawFrontierIntegrity(BaseModel):
     cursor_ahead_reason: str = ""
 
 
+ArchiveTierName = Literal["source", "index", "embeddings", "user", "audit", "ops"]
+
+
 class ArchiveTierStatus(BaseModel):
-    name: Literal["source", "index", "embeddings", "user", "ops"]
+    name: ArchiveTierName
     path: str
     resolved_path: str = ""
     device: int | None = None
@@ -672,8 +675,9 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         root = active_db.parent if active_db.name == "index.db" else configured_root
         location = ArchiveLocation.resolve(root)
         conflicts = archive_identity_conflicts(configured_root=configured_root, active_root=root)
-    tier_paths: dict[Literal["source", "index", "embeddings", "user", "ops"], Path] = {
-        name: location.active_tier(name).configured_path for name in ("source", "index", "embeddings", "user", "ops")
+    tier_paths: dict[ArchiveTierName, Path] = {
+        name: location.active_tier(name).configured_path
+        for name in ("source", "index", "embeddings", "user", "audit", "ops")
     }
     identity = ArchiveIdentity.resolve_location(location)
     tiers = [_archive_tier_status(name, path) for name, path in tier_paths.items()]
@@ -721,7 +725,7 @@ def _archive_storage_info() -> ArchiveStorageStatus:
 
 
 def _archive_tier_status(
-    name: Literal["source", "index", "embeddings", "user", "ops"],
+    name: ArchiveTierName,
     path: Path,
 ) -> ArchiveTierStatus:
     # Existence/size/``PRAGMA user_version`` facts come from the shared

@@ -340,7 +340,7 @@ def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> li
     return ["--dist=loadgroup"]
 
 
-def build_pytest_cmd(selection: list[str]) -> list[str]:
+def build_pytest_cmd(selection: list[str], *, report_path: Path = PYTEST_REPORT_PATH) -> list[str]:
     """Compose the pytest command for a focused selection."""
     worker_args = _worker_args(selection)
     collection_args = () if _selection_targets_benchmarks(selection) else IGNORED_COLLECTION_ARGS
@@ -353,7 +353,7 @@ def build_pytest_cmd(selection: list[str]) -> list[str]:
         SUITE_COST_PLUGIN_NAME,
         *managed_plugin_args(testmon=False, xdist=_has_worker_flag(selection)),
         CLEAR_CONFIGURED_ADDOPTS,
-        report_file_argument(PYTEST_REPORT_PATH),
+        report_file_argument(report_path),
         *collection_args,
         *selection,
         *worker_args,
@@ -375,16 +375,11 @@ def _selection_targets_benchmarks(selection: list[str]) -> bool:
     return any("tests/benchmarks" in argument for argument in selection)
 
 
-def _clear_pytest_report(_cmd: list[str]) -> None:
+def _clear_pytest_report(report_path: Path) -> None:
     """Remove this focused invocation's stale pytest-domain artifacts."""
     for path in (
-        PYTEST_REPORT_PATH,
-        *spool_paths(PYTEST_REPORT_PATH),
-        PYTEST_PROGRESS_PATH,
-        PYTEST_EVENTS_PATH,
-        PYTEST_EVENTS_DIR,
-        PYTEST_SELECTION_PATH,
-        PYTEST_SUMMARY_PATH,
+        report_path,
+        *spool_paths(report_path),
     ):
         if not path.exists():
             continue
@@ -454,10 +449,18 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
 
 
-def _copy_focused_pytest_report(artifacts: PytestStepArtifacts) -> None:
-    report_path = ROOT / PYTEST_REPORT_PATH
+def _publish_last_focused_pytest_report(report_path: Path) -> None:
+    """Refresh the convenience report without making it receipt authority.
+
+    Concurrent focused runs each write their receipt-local report.  This
+    legacy location remains useful to interactive callers, but it is only a
+    last-writer-wins copy and is never read while deciding a run's result.
+    """
+
     if report_path.is_file():
-        shutil.copyfile(report_path, artifacts.step_dir / "pytest-report.json")
+        destination = ROOT / PYTEST_REPORT_PATH
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(report_path, destination)
 
 
 def absent_selection_paths(selection: list[str], *, root: Path) -> list[str]:
@@ -510,7 +513,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    cmd = build_pytest_cmd(selection)
+    run = VerifyRun(
+        tier="focused-test",
+        argv=selection,
+        git_head=git_head(ROOT),
+        root=ROOT,
+    )
+    # The report and its PID-named spool must live with this receipt.  A
+    # checkout-global spool lets a later focused run delete an earlier run's
+    # completed tests between teardown and controller-side assembly.
+    report_path = run.run_dir / "steps" / "01-pytest-focused" / "pytest-report.json"
+    cmd = build_pytest_cmd(selection, report_path=report_path)
     # Owning the basetemp here means the run can dispose of it when it is no
     # longer needed instead of relying on pytest's "keep the last three runs"
     # pruning, which never fires because each shell starts a fresh root. A
@@ -522,13 +535,7 @@ def main(argv: list[str] | None = None) -> int:
     remove_temp_tree(run_temp)
     _prepare_nodatacow_parent(run_temp)
     cmd = [*cmd, "--basetemp", str(run_temp)]
-    _clear_pytest_report(cmd)
-    run = VerifyRun(
-        tier="focused-test",
-        argv=selection,
-        git_head=git_head(ROOT),
-        root=ROOT,
-    )
+    _clear_pytest_report(report_path)
     artifacts = run.start_step(label="pytest focused", cmd=cmd)
     started = time.monotonic()
     try:
@@ -548,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
             run=run,
             runner=runner,
         )
-        _copy_focused_pytest_report(artifacts)
+        _publish_last_focused_pytest_report(report_path)
         metadata["testmon_preselection"] = {
             "status": graph.status.value,
             "reason": graph.reason,

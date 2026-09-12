@@ -80,7 +80,8 @@ writer_modules:
         - tier: source
           durability: durable
           interruption: atomic
-      entrypoints: [publish_source_generation, seal_source_generation, transition_source_item]
+      entrypoints: [publish_source_generation, seal_source_generation, transition_source_item,
+        record_source_item_raw_member, complete_source_item_enumeration, prepare_frozen_source_manifest]
     - path: polylogue/storage/sqlite/archive_tiers/source_attachments.py
       surfaces:
         - tier: source

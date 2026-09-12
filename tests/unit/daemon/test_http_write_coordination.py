@@ -5,17 +5,18 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import queue
 import socket
 import sqlite3
 import threading
 from collections.abc import Awaitable, Callable, Iterator
+from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
-from os import getpid
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
 
 import pytest
 
@@ -24,6 +25,12 @@ from polylogue.daemon.http import (
     DaemonAPIHTTPServer,
 )
 from polylogue.daemon.web_auth import WebCredentialScope
+from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
+from tests.infra.daemon_operations import running_daemon_operations
+
+
+class _DeleteDaemonClient(DaemonClient):
+    archive_root: Path
 
 
 class _RecordingBridge:
@@ -53,13 +60,13 @@ def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
         return True
 
     handler = object.__new__(DaemonAPIHandler)
-    handler.server = SimpleNamespace(write_bridge=_RecordingBridge(timeline))  # type: ignore[assignment]
+    object.__setattr__(handler, "server", SimpleNamespace(write_bridge=_RecordingBridge(timeline)))
     handler.path = "/" + "/".join(path)
-    handler._parse_path = lambda: (path, {})  # type: ignore[method-assign]
-    handler._check_host_admission = allow_host  # type: ignore[method-assign]
-    handler._check_auth = allow_auth  # type: ignore[method-assign]
-    handler._check_cross_origin = lambda: True  # type: ignore[method-assign]
-    handler._send_error = lambda *_args: timeline.append("error")  # type: ignore[method-assign]
+    object.__setattr__(handler, "_parse_path", lambda: (path, {}))
+    object.__setattr__(handler, "_check_host_admission", allow_host)
+    object.__setattr__(handler, "_check_auth", allow_auth)
+    object.__setattr__(handler, "_check_cross_origin", lambda: True)
+    object.__setattr__(handler, "_send_error", lambda *_args: timeline.append("error"))
     return handler
 
 
@@ -67,7 +74,6 @@ def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
     ("path", "handler_name", "actor"),
     [
         (["api", "reset"], "_handle_reset", "http.reset"),
-        (["api", "ingest"], "_handle_ingest", "http.ingest"),
     ],
 )
 def test_authenticated_write_route_holds_gate_around_handler(path: list[str], handler_name: str, actor: str) -> None:
@@ -78,6 +84,15 @@ def test_authenticated_write_route_holds_gate_around_handler(path: list[str], ha
     handler._do_post_impl()
 
     assert timeline == [f"enter:{actor}", "body", f"exit:{actor}"]
+
+
+def test_ingest_route_delegates_publication_ownership_to_operation_runtime() -> None:
+    """An outer lease deadlocks runtime publication and keeps preparation under the writer."""
+    timeline: list[str] = []
+    handler = _handler(["api", "ingest"], timeline)
+    object.__setattr__(handler, "_handle_ingest", lambda: timeline.append("runtime"))
+    handler._do_post_impl()
+    assert timeline == ["runtime"]
 
 
 def _seed_delete_authority_archive(root: Path, count: int) -> tuple[str, ...]:
@@ -110,48 +125,41 @@ def _seed_delete_authority_archive(root: Path, count: int) -> tuple[str, ...]:
 
 
 @contextlib.contextmanager
-def _delete_authority_daemon(monkeypatch: pytest.MonkeyPatch, archive_root: Path) -> Iterator[object]:
-    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
-    from polylogue.daemon_client import DaemonClient
-
+def _delete_authority_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+    archive_root: Path,
+    *,
+    server_error_sink: queue.SimpleQueue[str] | None = None,
+) -> Iterator[_DeleteDaemonClient]:
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
-    socket_path = Path("/tmp") / f"polylogue-delete-authority-{getpid()}-{uuid4().hex}.sock"
-    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        try:
-            probe.bind(str(socket_path))
-        except PermissionError:
-            pytest.skip("sandbox denies AF_UNIX listeners required for the production daemon route")
-    finally:
-        probe.close()
-        socket_path.unlink(missing_ok=True)
-    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
-    server.auth_token = "delete-authority-token"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with running_daemon_operations(archive_root, server_error_sink=server_error_sink) as stack:
+        stack.server.auth_token = "delete-authority-token"
+        stack.client.auth_token = "delete-authority-token"
+        client = cast(_DeleteDaemonClient, stack.client)
+        object.__setattr__(client, "archive_root", archive_root)
         # These routes delete hundreds of sessions through a real daemon. The
         # client budget bounds one request, not the test: at two seconds it
         # measured how loaded the host was. A genuine hang is still caught by
         # the suite-wide pytest timeout.
-        yield DaemonClient(socket_path, timeout_s=60.0, auth_token="delete-authority-token")
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+        client.timeout_s = 60.0
+        yield client
 
 
-def _delete_operation(client: object, step: str, body: dict[str, object]) -> dict[str, object]:
+def _delete_operation(client: _DeleteDaemonClient, step: str, body: dict[str, object]) -> dict[str, object]:
     """Drive one delete-lifecycle step over the declared operation envelope.
 
     ``step`` is the lifecycle stage — ``preview``, ``authorize``, ``cancel``
     or ``execute``. A typed envelope error is re-raised in the shape the
     surrounding assertions read.
     """
-    from polylogue.daemon_client import DaemonClient, DaemonResponseError
+    from polylogue.daemon_client import DaemonResponseError
 
-    assert isinstance(client, DaemonClient)
-    envelope = client.operation(f"mutation.session.delete.{step}", body)
+    operation = f"mutation.session.delete.{step}"
+    envelope = client.operation_to_completion(
+        operation,
+        body,
+        archive_root=str(client.archive_root),
+    )
     assert envelope is not None, f"daemon did not answer {step}"
     error = envelope.get("error")
     if error:
@@ -167,13 +175,13 @@ def _delete_operation(client: object, step: str, body: dict[str, object]) -> dic
     return result
 
 
-def _prepare_authorize(client: object, session_ids: tuple[str, ...]) -> str:
+def _prepare_authorize(client: _DeleteDaemonClient, session_ids: tuple[str, ...]) -> str:
     preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
     assert preview is not None
     assert preview["session_ids"] == list(session_ids)
     authorization = _delete_operation(client, "authorize", {"preview_ref": preview["preview_ref"]})
     assert authorization is not None
-    return str(authorization["authorization_token"])
+    return str(authorization["authorization_ref"])
 
 
 def _assert_session_exists(archive_root: Path, session_id: str, *, expected: bool) -> None:
@@ -196,52 +204,57 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
     archive_root.mkdir()
     success_id, replay_id, substitute_id, stale_a, stale_b, expiry_id = _seed_delete_authority_archive(archive_root, 6)
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        success_token = _prepare_authorize(client, (success_id,))
-        result = _delete_operation(client, "execute", {"authorization_token": success_token})
-        assert result == {"status": "deleted", "operation": "delete", "session_count": 1, "affected_count": 1}
+        success_ref = _prepare_authorize(client, (success_id,))
+        result = _delete_operation(client, "execute", {"authorization_ref": success_ref})
+        _assert_completed_delete(result, affected=1, chunks=1)
         _assert_session_exists(archive_root, success_id, expected=False)
 
-        with pytest.raises(DaemonResponseError):
+        with pytest.raises(ValueError, match="invalid DeleteExecuteRequest payload"):
             _delete_operation(client, "execute", {"session_ids": [replay_id]})
         _assert_session_exists(archive_root, replay_id, expected=True)
 
-        replay_token = _prepare_authorize(client, (replay_id,))
-        _delete_operation(client, "execute", {"authorization_token": replay_token})
+        replay_ref = _prepare_authorize(client, (replay_id,))
+        _delete_operation(client, "execute", {"authorization_ref": replay_ref})
         with pytest.raises(DaemonResponseError):
-            _delete_operation(client, "execute", {"authorization_token": replay_token})
+            _delete_operation(client, "execute", {"authorization_ref": replay_ref})
         _assert_session_exists(archive_root, substitute_id, expected=True)
 
-        substitute_token = _prepare_authorize(client, (substitute_id,))
-        with pytest.raises(DaemonResponseError):
-            _delete_operation(client, "execute", {"authorization_token": substitute_token, "session_ids": [stale_a]})
+        substitute_ref = _prepare_authorize(client, (substitute_id,))
+        with pytest.raises(ValueError, match="invalid DeleteExecuteRequest payload"):
+            _delete_operation(client, "execute", {"authorization_ref": substitute_ref, "session_ids": [stale_a]})
         _assert_session_exists(archive_root, substitute_id, expected=True)
-        _delete_operation(client, "execute", {"authorization_token": substitute_token})
+        _delete_operation(client, "execute", {"authorization_ref": substitute_ref})
 
-        stale_token = _prepare_authorize(client, (stale_a, stale_b))
+        stale_ref = _prepare_authorize(client, (stale_a, stale_b))
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             archive.delete_sessions((stale_a,))
-        with pytest.raises(DaemonResponseError) as stale_error:
-            _delete_operation(client, "execute", {"authorization_token": stale_token})
-        assert stale_error.value.status == HTTPStatus.CONFLICT
-        assert stale_error.value.code == "delete_authorization_denied"
-        assert stale_error.value.detail == "selection_changed_after_authorization"
+        # Selection validation runs after durable batch acceptance. Its
+        # refusal is a recoverable no-effect result, not an HTTP rejection.
+        stale_result = _delete_operation(client, "execute", {"authorization_ref": stale_ref})
+        assert stale_result["outcome"] == "failed"
+        assert stale_result["effect"] == "no-effect"
+        assert stale_result["completed_chunks"] == 0
+        assert stale_result["affected_count"] == 0
+        assert stale_result["not_attempted"] == [0]
+        assert stale_result["parts"] == []
+        assert stale_result["stop_reason"] == "refused"
         _assert_session_exists(archive_root, stale_b, expected=True)
 
-        expiry_token = _prepare_authorize(client, (expiry_id,))
+        expiry_ref = _prepare_authorize(client, (expiry_id,))
         with pytest.raises(DeleteAuthorizationError):
             consume_cli_delete(
                 archive_root,
-                expiry_token,
+                expiry_ref,
                 MutationPrincipal("daemon:bearer:other", frozenset({"archive.delete_session"}), "cli", "write"),
             )
         _assert_session_exists(archive_root, expiry_id, expected=True)
         with sqlite3.connect(archive_root / "audit.db") as conn:
             conn.execute(
-                "UPDATE operation_authorizations SET issued_at_ms = 0, expires_at_ms = 1 WHERE token_sha256 = ?",
-                (hashlib.sha256(expiry_token.encode()).hexdigest(),),
+                "UPDATE operation_authorizations SET issued_at_ms = 0, expires_at_ms = 1 WHERE authorization_id = ?",
+                (expiry_ref,),
             )
         with pytest.raises(DaemonResponseError):
-            _delete_operation(client, "execute", {"authorization_token": expiry_token})
+            _delete_operation(client, "execute", {"authorization_ref": expiry_ref})
         _assert_session_exists(archive_root, expiry_id, expected=True)
 
     expected_actor = f"daemon:bearer:{hashlib.sha256(b'delete-authority-token').hexdigest()}"
@@ -296,11 +309,21 @@ def test_matched_session_mutation_runs_under_the_daemon_authority(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     session_ids = _seed_delete_authority_archive(archive_root, 2)
+    server_errors: queue.SimpleQueue[str] = queue.SimpleQueue()
 
-    with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        envelope = client.operation(  # type: ignore[attr-defined]
-            operation, {"session_ids": list(session_ids), payload_key: values}
-        )
+    with _delete_authority_daemon(monkeypatch, archive_root, server_error_sink=server_errors) as client:
+        try:
+            envelope = client.operation_to_completion(
+                operation,
+                {"session_ids": list(session_ids), payload_key: values},
+                archive_root=str(archive_root),
+            )
+        except DaemonMutationIndeterminateError as exc:
+            try:
+                server_error = server_errors.get(timeout=1)
+            except queue.Empty:
+                raise exc from None
+            pytest.fail(f"machine operation handler failed:\n{server_error}")
 
     assert envelope is not None
     assert envelope.get("error") is None, envelope
@@ -317,12 +340,18 @@ def test_matched_session_mutation_refuses_a_malformed_selection(
     _seed_delete_authority_archive(archive_root, 1)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        envelope = client.operation(  # type: ignore[attr-defined]
-            "mutation.session.tag", {"session_ids": [], "tags": ["triage"]}
-        )
+        with patch.object(
+            client,
+            "_request_json_response",
+            side_effect=AssertionError("client-side payload validation must precede the daemon request"),
+        ):
+            with pytest.raises(ValueError, match="invalid SessionTagRequest payload"):
+                client.operation_to_completion(
+                    "mutation.session.tag",
+                    {"session_ids": [], "tags": ["triage"]},
+                    archive_root=str(archive_root),
+                )
 
-    assert envelope is not None
-    assert envelope["error"]["code"] == "invalid_request"
     assert _operation_runs(archive_root) == []
 
 
@@ -342,7 +371,7 @@ def test_cli_delete_real_daemon_route_cancels_an_unconfirmed_preview(
         assert preview is not None
         preview_ref = str(preview["preview_ref"])
         cancelled = _delete_operation(client, "cancel", {"preview_ref": preview_ref})
-        assert cancelled == {"status": "cancelled", "preview_ref": preview_ref}
+        assert cancelled == {"status": "cancelled", "preview_ref": preview_ref, "preview_refs": [preview_ref]}
         with pytest.raises(DaemonResponseError) as authorization_error:
             _delete_operation(client, "authorize", {"preview_ref": preview_ref})
 
@@ -375,7 +404,7 @@ def test_cli_delete_real_daemon_route_cancels_an_expired_preview(
 
         cancelled = _delete_operation(client, "cancel", {"preview_ref": preview_ref})
 
-    assert cancelled == {"status": "cancelled", "preview_ref": preview_ref}
+    assert cancelled == {"status": "cancelled", "preview_ref": preview_ref, "preview_refs": [preview_ref]}
     _assert_session_exists(archive_root, session_id, expected=True)
     with sqlite3.connect(archive_root / "audit.db") as conn:
         assert conn.execute("SELECT state FROM operation_previews WHERE preview_id = ?", (preview_ref,)).fetchone() == (
@@ -387,11 +416,30 @@ def _operation_handler(timeline: list[str], body: bytes, *, content_length: int 
     """Build a real handler for ``POST /api/operation`` over a fake socket."""
 
     handler = _handler(["api", "operation"], timeline)
-    handler.headers = {  # type: ignore[assignment]
-        "Content-Type": "application/json",
-        "Content-Length": str(len(body) if content_length is None else content_length),
-    }
-    handler.rfile = BytesIO(body)
+    connection, peer = socket.socketpair()
+
+    class _RecordingOperationRuntime:
+        def call(self, request: object, _principal: object, **_kwargs: object) -> dict[str, object]:
+            timeline.append(f"runtime:{getattr(request, 'operation', 'unknown')}")
+            return {"outcome": "completed"}
+
+    object.__setattr__(
+        handler,
+        "server",
+        SimpleNamespace(write_bridge=_RecordingBridge(timeline), operation_runtime=_RecordingOperationRuntime()),
+    )
+    object.__setattr__(handler, "connection", connection)
+    # Retain the other endpoint so the disconnect observer sees an open peer.
+    object.__setattr__(handler, "_test_peer", peer)
+    object.__setattr__(
+        handler,
+        "headers",
+        Message(),
+    )
+    headers = handler.headers
+    headers["Content-Type"] = "application/json"
+    headers["Content-Length"] = str(len(body) if content_length is None else content_length)
+    object.__setattr__(handler, "rfile", BytesIO(body))
     return handler
 
 
@@ -408,15 +456,15 @@ def _preview_operation_body(session_ids: list[str]) -> bytes:
     ).encode()
 
 
-def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_gate(
+def test_delete_preview_operation_bounds_body_bytes_and_reads_before_runtime_dispatch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The selection bound is the operation's own, and the gate opens after the read.
+    """The selection bound is the operation's own, and dispatch starts after the read.
 
     Anti-vacuity: raising ``mutation.session.delete.preview``'s
     ``max_body_bytes`` above the transport's declared maximum makes the
-    oversize case read a body it must refuse; entering the writer gate before
-    the body read reorders ``slow_timeline``.
+    oversize case read a body it must refuse; dispatching before the body read
+    reorders ``slow_timeline``.
     """
     from polylogue.operations.daemon_protocol import (
         MAX_DECLARED_OPERATION_BODY_BYTES,
@@ -434,17 +482,16 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_
 
     oversize_timeline: list[str] = []
     oversize = _operation_handler(oversize_timeline, b"", content_length=MAX_DECLARED_OPERATION_BODY_BYTES + 1)
-    oversize.rfile = _ExplodingBody()  # type: ignore[assignment]
+    object.__setattr__(oversize, "rfile", _ExplodingBody())
     oversize._do_post_impl()
     assert oversize_timeline == ["error"]
 
     large_timeline: list[str] = []
     large_body = _preview_operation_body([f"codex-session:{index}" for index in range(257)])
     large = _operation_handler(large_timeline, large_body)
-    large._sync_run = lambda _operation: {"status": "prepared"}  # type: ignore[assignment]
-    large._send_json = lambda *_args, **_kwargs: large_timeline.append("response")  # type: ignore[method-assign]
+    object.__setattr__(large, "_send_json", lambda *_args, **_kwargs: large_timeline.append("response"))
     large._do_post_impl()
-    assert large_timeline == ["enter:http.cli.delete.prepare", "exit:http.cli.delete.prepare", "response"]
+    assert large_timeline == ["runtime:mutation.session.delete.preview", "response"]
 
     slow_timeline: list[str] = []
     slow_body = _preview_operation_body(["codex-session:slow"])
@@ -452,18 +499,16 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_
     class _SlowBody:
         def read(self, _size: int) -> bytes:
             slow_timeline.append("body-read")
-            assert not any(item.startswith("enter:") for item in slow_timeline)
+            assert not any(item.startswith("runtime:") for item in slow_timeline)
             return slow_body
 
     slow = _operation_handler(slow_timeline, b"", content_length=len(slow_body))
-    slow.rfile = _SlowBody()  # type: ignore[assignment]
-    slow._sync_run = lambda _operation: {"status": "prepared"}  # type: ignore[assignment]
-    slow._send_json = lambda *_args, **_kwargs: slow_timeline.append("response")  # type: ignore[method-assign]
+    object.__setattr__(slow, "rfile", _SlowBody())
+    object.__setattr__(slow, "_send_json", lambda *_args, **_kwargs: slow_timeline.append("response"))
     slow._do_post_impl()
     assert slow_timeline == [
         "body-read",
-        "enter:http.cli.delete.prepare",
-        "exit:http.cli.delete.prepare",
+        "runtime:mutation.session.delete.preview",
         "response",
     ]
 
@@ -471,35 +516,47 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_
 def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A conflicting retry responds without replacing the accepted request.
+    """A conflicting retry maps the resident runtime rejection to HTTP 409.
 
-    Anti-vacuity: sending the duplicate error while ``operation_ids_lock`` is
-    held deadlocks because response recording needs that same lock.
+    Anti-vacuity: a legacy fake server without ``operation_runtime`` turns this
+    current conflict contract into an internal server error instead.
     """
-    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL, DaemonOperationRequest
+    from polylogue.daemon.execution import CancellationHandle
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+
+    class _OperationConflictRuntime:
+        def __init__(self) -> None:
+            self.calls: list[DaemonOperationRequest] = []
+
+        def call(
+            self,
+            request: DaemonOperationRequest,
+            principal: MutationPrincipal,
+            *,
+            client_disconnect: CancellationHandle | None = None,
+        ) -> dict[str, object]:
+            del principal, client_disconnect
+            self.calls.append(request)
+            return {
+                "outcome": "rejected",
+                "error": {"code": "request_identity_conflict", "retryable": False},
+            }
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-    (tmp_path / "index.db").write_bytes(b"index")
-    original = DaemonOperationRequest(
-        operation="status",
-        payload={},
-        request_id="request-id-reused",
+    conflicting = DaemonOperationRequest.from_dict(
+        DaemonOperationRequest(
+            operation="completion",
+            payload={"incomplete": "x"},
+            request_id="request-id-reused",
+        ).to_dict()
     )
-    conflicting = DaemonOperationRequest(
-        operation="completion",
-        payload={"prefix": "x"},
-        request_id="request-id-reused",
-    )
-    request_id = original.request_id
-    assert request_id is not None
     body = json.dumps(conflicting.to_dict()).encode()
     handler = _operation_handler([], body)
-    accepted_payload: dict[str, object] = {"protocol": DAEMON_OPERATION_PROTOCOL, "request_id": request_id}
-    handler.server.operation_ids_seen = {request_id}
-    handler.server.operation_results = {request_id: (original.fingerprint, 200, accepted_payload)}
-    handler.server.operation_ids_lock = threading.Lock()
+    runtime = _OperationConflictRuntime()
+    object.__setattr__(handler.server, "operation_runtime", runtime)
     responses: list[tuple[HTTPStatus, object]] = []
-    handler._send_json = lambda status, payload, **_kwargs: responses.append((status, payload))  # type: ignore[method-assign]
+    object.__setattr__(handler, "_send_json", lambda status, payload, **_kwargs: responses.append((status, payload)))
 
     failure: list[BaseException] = []
 
@@ -516,13 +573,28 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
     assert not thread.is_alive(), "conflicting duplicate request id deadlocked the machine endpoint"
     assert failure == []
     assert responses and responses[0][0] is HTTPStatus.CONFLICT
+    assert runtime.calls == [conflicting]
     response = responses[0][1]
     assert isinstance(response, dict)
     assert response["error"] == {
-        "code": "duplicate_request_id_conflict",
-        "detail": "request_id was already used for a different request",
+        "code": "request_identity_conflict",
+        "retryable": False,
     }
-    assert handler.server.operation_results[request_id] == (original.fingerprint, 200, accepted_payload)
+
+
+def _assert_completed_delete(result: dict[str, object], *, affected: int, chunks: int) -> None:
+    assert result["outcome"] == "completed"
+    assert result["effect"] == "committed"
+    assert result["affected_count"] == affected
+    assert result["completed_chunks"] == chunks
+    assert result["not_attempted"] == []
+    assert result["stop_reason"] is None
+    parts = result["parts"]
+    assert isinstance(parts, list)
+    assert [(part["ordinal"], part["outcome"]) for part in parts] == [
+        (ordinal, "completed") for ordinal in range(chunks)
+    ]
+    assert all(part["operation_id"] for part in parts)
 
 
 def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap(
@@ -540,12 +612,12 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
         assert len(preview_refs) == 3
         authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
         assert authorization is not None
-        tokens = authorization["authorization_tokens"]
+        tokens = authorization["authorization_refs"]
         assert isinstance(tokens, list)
         assert len(tokens) == 3
-        result = _delete_operation(client, "execute", {"authorization_tokens": tokens})
+        result = _delete_operation(client, "execute", {"authorization_refs": tokens})
 
-    assert result == {"status": "deleted", "operation": "delete", "session_count": 513, "affected_count": 513}
+    _assert_completed_delete(result, affected=513, chunks=3)
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -553,8 +625,10 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
 def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from polylogue.daemon_client import DaemonResponseError
-    from polylogue.operations.delete_authorization import DeleteAuthorizationError, consume_cli_delete
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.machine_lifecycle import machine_request_state
+    from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
+    from polylogue.operations.mutation_transaction import MutationPlan, MutationReceipt
 
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
@@ -567,27 +641,58 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
         assert isinstance(preview_refs, list)
         authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
         assert authorization is not None
-        tokens = authorization["authorization_tokens"]
+        tokens = authorization["authorization_refs"]
         assert isinstance(tokens, list)
 
-        def consume_with_failure(root: Path, token: str, principal: object) -> object:
-            if tokens.index(token) < 2:
-                return consume_cli_delete(root, token, principal)  # type: ignore[arg-type]
-            error = DeleteAuthorizationError("selection_changed_after_authorization")
-            error.completed_chunks = 2  # type: ignore[attr-defined]
-            error.affected_count = 512  # type: ignore[attr-defined]
-            raise error
+        original_apply = SessionDeleteActuator.apply
+        completed_applies = 0
 
-        with patch(
-            "polylogue.operations.delete_authorization.consume_cli_delete",
-            side_effect=consume_with_failure,
-        ):
-            with pytest.raises(DaemonResponseError) as error:
-                _delete_operation(client, "execute", {"authorization_tokens": tokens})
+        def fail_third_apply(
+            actuator: SessionDeleteActuator, plan: MutationPlan, args: SessionDeleteArgs
+        ) -> MutationReceipt:
+            nonlocal completed_applies
+            if completed_applies == 2:
+                raise RuntimeError("synthetic third delete chunk failure")
+            completed_applies += 1
+            return original_apply(actuator, plan, args)
 
-    assert getattr(error.value, "code", None) == "delete_partially_applied"
-    assert getattr(error.value, "completed_chunks", None) == 2
-    assert getattr(error.value, "affected_count", None) == 512
+        # The daemon executes the declared SessionDeleteActuator through the
+        # audited machine lifecycle, not the retired direct helper.  A fault
+        # after two durable effects leaves the final attempt unknown rather
+        # than inventing a retry-safe HTTP refusal.
+        with patch.object(SessionDeleteActuator, "apply", new=fail_third_apply):
+            result = _delete_operation(client, "execute", {"authorization_refs": tokens})
+
+    assert completed_applies == 2
+    assert result["outcome"] == "indeterminate"
+    assert result["effect"] == "indeterminate"
+    assert result["completed_chunks"] == 2
+    assert result["affected_count"] == 512
+    # An indeterminate reply can precede the batch's final suffix fence. After
+    # daemon teardown drains the writer, recovery must retain both the known
+    # effects and that fence, without making the unknown part retry-safe.
+    reference = result["reference"]
+    assert isinstance(reference, dict)
+    audit = AuditRepository.for_archive_root(archive_root)
+    with audit.settled_machine_read():
+        record = audit.machine_request_for_principal(
+            reference["archive_identity"], reference["request_id"], reference["principal_ref"]
+        )
+        assert record is not None
+        settled = machine_request_state(audit, record)
+    assert settled["outcome"] == "indeterminate"
+    assert settled["effect"] == "indeterminate"
+    assert settled["completed_chunks"] == 2
+    assert settled["affected_count"] == 512
+    assert settled["not_attempted"] == []
+    assert settled["stop_reason"] == "refused"
+    parts = settled["parts"]
+    assert isinstance(parts, list)
+    assert [(part["ordinal"], part["outcome"]) for part in parts] == [
+        (0, "completed"),
+        (1, "completed"),
+        (2, "indeterminate"),
+    ]
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
@@ -597,25 +702,24 @@ def test_cli_delete_real_daemon_route_refuses_selection_beyond_preview_work_budg
 ) -> None:
     """The durable preview route must bound target work independently of request bytes.
 
-    This sends 10,001 ordinary IDs through the real UDS client and daemon
-    handler. Before the repair, the route entered the sole-writer gate and
-    attempted resolution until it encountered a stale ID, because no target
-    work budget existed. The repaired route rejects the request before any
-    archive lookup or durable preview write.
+    The typed UDS client rejects 10,001 IDs before opening a request because
+    the protocol contract caps this list at 10,000. This must happen before
+    any archive lookup or durable preview write.
     """
-    from polylogue.daemon_client import DaemonResponseError
-
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     _seed_delete_authority_archive(archive_root, 0)
     selection = [f"codex-session:over-budget-{index}" for index in range(10_001)]
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        with pytest.raises(DaemonResponseError) as error:
-            _delete_operation(client, "preview", {"session_ids": selection})
+        with patch.object(
+            client,
+            "_request_json_response",
+            side_effect=AssertionError("client-side payload validation must precede the daemon request"),
+        ):
+            with pytest.raises(ValueError, match="invalid DeletePreviewRequest payload"):
+                _delete_operation(client, "preview", {"session_ids": selection})
 
-    assert error.value.status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-    assert error.value.code == "selection_exceeds_preview_work_budget"
     with sqlite3.connect(archive_root / "audit.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM operation_previews").fetchone() == (0,)
 
@@ -752,9 +856,9 @@ def test_cli_delete_preserves_audit_finalization_failure_after_effect(tmp_path: 
 
 def test_no_auth_cli_principal_ignores_attacker_selected_bearer_text() -> None:
     handler = _handler(["api", "cli", "delete", "prepare"], [])
-    handler.headers = {"Authorization": "Bearer attacker-selected"}  # type: ignore[assignment]
+    object.__setattr__(handler, "headers", {"Authorization": "Bearer attacker-selected"})
 
-    principal = handler._cli_delete_principal()
+    principal = handler._cli_mutation_principal("archive.delete_session")
 
     assert principal.actor_ref == "daemon:unauthenticated-loopback"
     assert principal.role_label == "daemon-loopback-no-auth"
@@ -835,8 +939,8 @@ def test_coordinated_mutation_uses_control_admission_without_the_read_timeout() 
     async def mutation(_polylogue: object) -> str:
         return "persisted"
 
-    handler._run_archive_query = run_direct  # type: ignore[assignment]
-    handler.server = SimpleNamespace(execution_kernel=kernel)  # type: ignore[assignment]
+    object.__setattr__(handler, "_run_archive_query", run_direct)
+    object.__setattr__(handler, "server", SimpleNamespace(execution_kernel=kernel))
 
     try:
         assert handler._sync_run(mutation) == "persisted"

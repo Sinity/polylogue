@@ -56,6 +56,10 @@ class AuditContinuityError(RuntimeError):
     """Audit and source durable control state cannot prove one continuity head."""
 
 
+class AuditContinuityPendingError(AuditContinuityError):
+    """A reader cannot acknowledge an in-flight or unreconciled transition."""
+
+
 @dataclass(frozen=True, slots=True)
 class AuditMutation:
     """One typed audit command with generated identity and replay inputs."""
@@ -201,7 +205,8 @@ class AuditContinuityCoordinator:
             # handler runs. Clear this exact source WAL entry only when the
             # audit head still proves no commit happened, so validation rejects
             # cannot wedge every later audit mutation.
-            self._abort_prepared(prepared)
+            if mutation.kind != "accept_ingest":
+                self._abort_prepared(prepared)
             raise
         self._phase("after_audit_commit", mutation)
         self._promote(prepared)
@@ -213,6 +218,30 @@ class AuditContinuityCoordinator:
 
         with self._execution_lock:
             self._reconcile_serialized(apply)
+
+    @contextmanager
+    def settled_read(self) -> Iterator[dict[str, int]]:
+        """Observe audit receipts only after the source control head agrees.
+
+        This never repairs state or waits behind a writer. The resident owner
+        notifies waiters after promotion, allowing bounded control requests.
+        """
+        if not self._execution_lock.acquire(blocking=False):
+            raise AuditContinuityPendingError("audit continuity transition is in flight")
+        try:
+            if not self.is_available() or self._pending() is not None:
+                raise AuditContinuityPendingError("audit continuity requires owner reconciliation")
+            self._assert_committed_head_matches_audit()
+            with (
+                _open_source_read_connection(self.source_path) as source,
+                open_verified_audit_read_connection(self.audit_path) as audit,
+            ):
+                yield {
+                    "source": int(source.execute("PRAGMA user_version").fetchone()[0]),
+                    "audit": int(audit.execute("PRAGMA user_version").fetchone()[0]),
+                }
+        finally:
+            self._execution_lock.release()
 
     def _reconcile_serialized(self, apply: Callable[[sqlite3.Connection, AuditMutation], object]) -> None:
         """Recover continuity without racing an in-flight writer."""
@@ -477,6 +506,17 @@ class AuditContinuityCoordinator:
             prepared = prepared_audit_continuity_command(
                 mutation, prior_generation=int(row[0]), prior_head_sha256=str(row[1])
             )
+            if mutation.kind == "accept_ingest":
+                from polylogue.storage.sqlite.archive_tiers.source_items import (
+                    FrozenSourceManifest,
+                    prepare_frozen_source_manifest,
+                )
+
+                prepare_frozen_source_manifest(
+                    conn,
+                    FrozenSourceManifest.from_dict(mutation.payload.get("manifest")),
+                    prepared_at_ms=mutation.created_at_ms,
+                )
             payload_json = _canonical_json(prepared)
             conn.execute(
                 """
@@ -590,6 +630,11 @@ class AuditContinuityCoordinator:
         """Discard a rejected WAL command after proving its audit transaction rolled back."""
 
         mutation = AuditMutation.from_command(prepared["command"])
+        if mutation.kind == "accept_ingest":
+            # Source prepare already committed both retained input authority
+            # and this accepted identity. Erasing the WAL would lose the only
+            # recoverable audit binding while leaving that durable work behind.
+            return
         prior = (cast(int, prepared["prior_generation"]), str(prepared["prior_head_sha256"]))
         target = (cast(int, prepared["next_generation"]), str(prepared["next_head_sha256"]))
         with open_verified_audit_connection(self.audit_path) as audit:

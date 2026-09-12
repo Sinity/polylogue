@@ -63,6 +63,7 @@ def make_raw_record(
     *,
     blob_root: Path | None = None,
     blob_store: BlobStore | None = None,
+    acquired_at: str | None = None,
 ) -> RawSessionRecord:
     """Prepare a raw session record from acquisition data.
 
@@ -88,7 +89,7 @@ def make_raw_record(
     else:
         raise ValueError("RawSessionData has neither blob_hash nor raw_bytes")
 
-    acquired_at = datetime.now(timezone.utc).isoformat()
+    acquired_at = acquired_at if acquired_at is not None else datetime.now(timezone.utc).isoformat()
     source_capture_mode = Provider.from_string(canonical_acquisition_provider(None, source_name=source_name))
     source_name = canonical_acquisition_provider(
         str(raw_data.provider_hint) if raw_data.provider_hint is not None else None,

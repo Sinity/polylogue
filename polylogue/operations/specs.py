@@ -180,7 +180,23 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         surfaces=("daemon", "reprocess", "ingest"),
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
-        executor_status="declared-not-routed",
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+        allowed_surfaces=("cli", "api", "mcp", "daemon"),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="ingest-generation",
+                target_kinds=("source",),
+                required_capabilities=("archive.ingest",),
+                destructive_class="additive",
+                required_confirmation="role_only",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("reconcile_required",),
+            ),
+        ),
+        affected_tiers=("source", "index", "user"),
+        idempotency="convergent",
+        resumable=True,
     ),
     OperationSpec(
         name="index-message-fts",
@@ -646,8 +662,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="mutate-rebuild-insights",
         kind=OperationKind.MAINTENANCE,
         description=(
-            "Rebuild durable session-insight read models for the requested session set. The canonical "
-            "materializer runs through OperationExecutor/InsightsRebuildActuator with a typed receipt."
+            "Converge the exact accepted session-insight target manifest through the daemon's shared "
+            "profile owner, with phased OperationExecutor authorization and historical receipts."
         ),
         surfaces=("facade", "mcp"),
         mutates_state=True,
@@ -656,7 +672,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
-        allowed_surfaces=("api",),
+        allowed_surfaces=("cli", "api", "mcp", "daemon"),
         target_authority=(
             TargetAuthorityPolicy(
                 key="insights-rebuild",

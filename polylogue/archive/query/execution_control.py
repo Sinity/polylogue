@@ -460,17 +460,6 @@ class InterruptibleSQLiteRead:
         """Execute ``work`` against a dedicated read-only store (worker thread)."""
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        ctx = self._ctx
-        ctx.receipt.state = "running"
-        started = time.monotonic()
-        progress_opcodes = PROGRESS_GUARD_OPCODES
-        if ctx.sqlite_vm_step_budget is not None:
-            progress_opcodes = min(progress_opcodes, max(1, ctx.sqlite_vm_step_budget))
-
-        def _guard() -> int:
-            ctx.record_sqlite_progress(progress_opcodes)
-            return 1 if ctx.should_abort() else 0
-
         if store_factory is not None and (index_path is not None or opened_main_fd is not None):
             raise ValueError("store_factory cannot be combined with a pinned archive index")
         store = (
@@ -483,17 +472,39 @@ class InterruptibleSQLiteRead:
                 opened_main_fd=opened_main_fd,
             )
         )
+        try:
+            with self.control_store(store):
+                store.begin_read_snapshot()
+                return work(store)
+        finally:
+            _close_store(store, clear_progress_guard=False)
+
+    @contextmanager
+    def control_store(self, store: ArchiveStore) -> Iterator[ArchiveStore]:
+        """Control an explicitly supplied store without reopening or closing it.
+
+        Its owner pins and releases the snapshot. Daemon callers have already
+        entered shared compute admission; this scope adds no second scheduler.
+        """
+        ctx = self._ctx
+        ctx.receipt.state = "running"
+        started = time.monotonic()
+        progress_opcodes = PROGRESS_GUARD_OPCODES
+        if ctx.sqlite_vm_step_budget is not None:
+            progress_opcodes = min(progress_opcodes, max(1, ctx.sqlite_vm_step_budget))
+
+        def guard() -> int:
+            ctx.record_sqlite_progress(progress_opcodes)
+            return 1 if ctx.should_abort() else 0
+
         with self._store_lock:
             self._store = store
         try:
-            _set_progress_guard(store, _guard, n_opcodes=progress_opcodes)
-            # An abort that landed before ownership begins must not start the
-            # caller's statement or acquire a read snapshot.
+            _set_progress_guard(store, guard, n_opcodes=progress_opcodes)
             if ctx.should_abort():
                 raise _abort_error(ctx)
             try:
-                store.begin_read_snapshot()
-                result = work(store)
+                yield store
             except Exception as exc:
                 if ctx.should_abort() and _is_interrupt_error(exc):
                     ctx.receipt.interrupted = True
@@ -507,12 +518,13 @@ class InterruptibleSQLiteRead:
                 if ctx.should_abort():
                     raise _abort_error(ctx)
                 ctx.receipt.state = "completed"
-                return result
         finally:
             ctx.receipt.run_s = time.monotonic() - started
             with self._store_lock:
                 self._store = None
-            _close_store(store)
+            clear_guard = getattr(store, "clear_read_progress_guard", None)
+            if callable(clear_guard):
+                clear_guard()
             ctx.mark_cleanup_complete()
 
     @contextmanager
@@ -553,7 +565,14 @@ class InterruptibleSQLiteRead:
 def _is_interrupt_error(exc: Exception) -> bool:
     import sqlite3
 
-    return isinstance(exc, sqlite3.OperationalError) and "interrupt" in str(exc).lower()
+    cause: BaseException | None = exc
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, sqlite3.OperationalError) and "interrupt" in str(cause).lower():
+            return True
+        cause = cause.__cause__
+    return False
 
 
 def _set_progress_guard(
@@ -564,10 +583,10 @@ def _set_progress_guard(
         setter(guard, n_opcodes=n_opcodes)
 
 
-def _close_store(store: ArchiveStore) -> None:
+def _close_store(store: ArchiveStore, *, clear_progress_guard: bool = True) -> None:
     """Clear read state and close full stores while tolerating test doubles."""
     clear_guard = getattr(store, "clear_read_progress_guard", None)
-    if callable(clear_guard):
+    if clear_progress_guard and callable(clear_guard):
         clear_guard()
     end_snapshot = getattr(store, "end_read_snapshot", None)
     if callable(end_snapshot):

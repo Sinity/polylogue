@@ -27,6 +27,8 @@ def test_audit_tier_bootstrap_has_current_authority_tables_and_is_durable(tmp_pa
         "operation_runs",
         "operation_events",
         "audit_continuity_head",
+        "machine_requests",
+        "machine_request_parts",
     } <= tables
     assert ArchiveTier.AUDIT in DURABLE_MIGRATION_TIERS
     assert ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT] == ARCHIVE_TIER_SPECS[ArchiveTier.AUDIT].version

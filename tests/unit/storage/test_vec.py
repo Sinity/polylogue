@@ -16,6 +16,8 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
+from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
 
 Embedding: TypeAlias = list[float]
 
@@ -57,6 +59,117 @@ def mock_provider(tmp_path: Path) -> MutableSqliteVecProvider:
     provider._vec_available = None
     provider._tables_ensured = True
     return provider
+
+
+def test_operation_snapshot_provider_never_closes_or_writes_its_supplied_handle() -> None:
+    """Mutation: make snapshot reads open/close their own connection and this fails."""
+
+    connection = sqlite3.connect(":memory:")
+    provider = SqliteVecProvider.from_vector_read_snapshot(
+        voyage_key="test-voyage-key",
+        connection=connection,
+        model="voyage-4",
+    )
+
+    assert provider._get_connection() is connection
+    provider._release_connection(connection)
+    assert connection.execute("SELECT 1").fetchone() == (1,)
+    with pytest.raises(SqliteVecError, match="read-only"):
+        provider.upsert("session", [])
+    assert connection.execute("SELECT 1").fetchone() == (1,)
+    connection.close()
+
+
+def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: resolve the active index instead of the supplied path and this fails."""
+
+    embeddings_path = tmp_path / "pinned-embeddings.db"
+    pinned_index_path = tmp_path / "pinned-index.db"
+    embeddings = sqlite3.connect(embeddings_path)
+    embeddings.execute("PRAGMA journal_mode = WAL")
+    embeddings.execute("CREATE TABLE snapshot_probe (value INTEGER NOT NULL)")
+    embeddings.execute("INSERT INTO snapshot_probe VALUES (1)")
+    embeddings.commit()
+    embeddings.close()
+    index = sqlite3.connect(pinned_index_path)
+    try:
+        index.execute("PRAGMA journal_mode = WAL")
+        index.executescript(
+            """
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL);
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                role TEXT NOT NULL,
+                material_origin TEXT NOT NULL,
+                word_count INTEGER NOT NULL
+            );
+            CREATE TABLE blocks (
+                message_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                block_type TEXT NOT NULL,
+                text TEXT
+            );
+            INSERT INTO sessions VALUES ('session-1', 'test');
+            INSERT INTO messages VALUES ('message-1', 'session-1', 'message', 'user', 'human_authored', 6);
+            INSERT INTO blocks VALUES ('message-1', 0, 'text', 'a sufficiently long pinned snapshot message');
+            """
+        )
+        index.commit()
+    finally:
+        index.close()
+
+    import polylogue.storage.search_providers.sqlite_vec_runtime as runtime
+
+    def unexpected_active_index_resolution(*args: object, **kwargs: object) -> Path:
+        raise AssertionError("snapshot reader must not resolve an active index")
+
+    monkeypatch.setattr(runtime, "resolve_active_index_path", unexpected_active_index_resolution)
+    monkeypatch.setattr(runtime, "try_load_sqlite_vec", lambda connection: (True, None))
+    configure_projection = runtime._configure_current_embedding_messages
+
+    def publish_after_pin(
+        connection: sqlite3.Connection,
+        *,
+        index_path: Path | None = None,
+        model: str,
+        attach_index: bool = True,
+        register_identity: bool = True,
+    ) -> None:
+        # A TEMP setup executescript would implicitly commit, admitting these
+        # later writes into the allegedly pinned semantic snapshot.
+        assert index_path is None
+        with sqlite3.connect(embeddings_path) as writer:
+            writer.execute("UPDATE snapshot_probe SET value = 2")
+        assert attach_index is False
+        assert register_identity is False
+        with sqlite3.connect(pinned_index_path) as writer:
+            writer.execute("UPDATE messages SET role = 'system'")
+        configure_projection(
+            connection,
+            model=model,
+            attach_index=attach_index,
+            register_identity=register_identity,
+        )
+
+    monkeypatch.setattr(runtime, "_configure_current_embedding_messages", publish_after_pin)
+
+    connection = open_vector_read_snapshot(
+        embeddings_path=embeddings_path,
+        index_path=pinned_index_path,
+        model="voyage-4",
+    )
+    try:
+        assert connection.in_transaction
+        assert connection.execute("PRAGMA query_only").fetchone()[0] == 1
+        assert connection.execute("SELECT value FROM snapshot_probe").fetchone()[0] == 1
+        assert connection.execute("SELECT message_id FROM current_embedding_messages").fetchone()[0] == "message-1"
+    finally:
+        connection.close()
 
 
 def test_get_embeddings_request_contract(mock_provider: MutableSqliteVecProvider) -> None:

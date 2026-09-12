@@ -1942,9 +1942,10 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
 
 
 def test_daemon_and_direct_status_share_zero_head_unavailable_ops_semantics(tmp_path: Path) -> None:
-    """Both status routes consume the canonical projection, including zero-head unknowns."""
+    """Daemon and CLI operation routes consume the same pinned projection."""
 
-    from polylogue.cli.commands.status import _direct_raw_frontier_integrity
+    from polylogue.cli.operation_kernel import configured_read_operation
+    from polylogue.config import Config
     from polylogue.daemon.status import RawMaterializationReadiness, _raw_frontier_integrity_info
 
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
@@ -1953,7 +1954,10 @@ def test_daemon_and_direct_status_share_zero_head_unavailable_ops_semantics(tmp_
 
     with patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"):
         daemon_payload = _raw_frontier_integrity_info(readiness).model_dump()
-    direct_payload = _direct_raw_frontier_integrity(tmp_path, readiness.model_dump())
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
+    operation_result = configured_read_operation(config, "status", {}, daemon_disabled=True)
+    direct_result = cast(dict[str, object], operation_result.value)
+    direct_payload = cast(dict[str, object], direct_result["raw_frontier_integrity"])
 
     assert daemon_payload == direct_payload
     assert daemon_payload["broken_head_status"] == "healthy"
@@ -2041,8 +2045,8 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
         assert any("Raw failures:" in line for line in lines)
 
 
-def test_daemon_and_direct_claim_guard_share_mixed_frontier_summary(tmp_path: Path) -> None:
-    from polylogue.cli.commands.status import _direct_claim_guard
+def test_daemon_and_shared_claim_guard_share_mixed_frontier_summary(tmp_path: Path) -> None:
+    from polylogue.readiness.claim_guard import derive_claim_guard
 
     integrity = status_module.RawFrontierIntegrity(
         available=False,
@@ -2074,20 +2078,22 @@ def test_daemon_and_direct_claim_guard_share_mixed_frontier_summary(tmp_path: Pa
         live_ingest_attempts=status_module.LiveIngestAttemptSummary(),
         convergence=status_module.ConvergenceDebtSummary(),
     )
-    direct_guard = _direct_claim_guard(
-        archive_tiers={
-            tier: {"exists": True, "version_status": "ok"} for tier in ("source", "index", "embeddings", "user", "ops")
-        },
-        raw_materialization_readiness=raw_readiness.model_dump(),
-        raw_frontier_integrity=integrity.model_dump(),
-        component_readiness={
-            "raw_materialization": {"state": "ready", "summary": "ready"},
-            "raw_frontier_integrity": {"state": "poisoned", "summary": "raw frontier integrity violated"},
-            "search": {"state": "ready", "summary": "ready"},
-        },
-        ingest_workload={"available": True, "actively_ingesting": False, "running_count": 0},
-        convergence=status_module.ConvergenceDebtSummary(),
-    )
+    direct_guard = derive_claim_guard(
+        archive_schema_ready=True,
+        schema_mismatches=[],
+        missing_tiers=[],
+        raw_materialization_ready=True,
+        raw_materialization_summary="ready",
+        raw_frontier_integrity_ready=False,
+        raw_frontier_integrity_summary="accepted head metadata drift; ops cursor authority unavailable",
+        search_ready=True,
+        search_summary="ready",
+        active_writer=False,
+        active_writer_summary="",
+        convergence_debt_available=True,
+        convergence_debt_pending=False,
+        convergence_debt_summary="no pending convergence debt",
+    ).to_dict()
 
     daemon_converged = cast(dict[str, object], daemon_guard["converged"])
     assert daemon_converged == direct_guard["converged"]

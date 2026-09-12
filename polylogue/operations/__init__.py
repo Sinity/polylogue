@@ -3,7 +3,7 @@
 Re-exports are lazy (PEP 562 module ``__getattr__``): ``.archive`` alone pulls
 in the whole insights registry (``insights.archive`` -> ``storage.raw_convergence`` and
 friends), so a caller that only needs e.g. ``OperationStatus`` from
-``.operation_contract`` -- reached simply by importing a *submodule* of this
+``.operation_status`` -- reached simply by importing a *submodule* of this
 package, which Python resolves by running this ``__init__`` first -- used to
 pay for every sibling submodule's full import weight too (polylogue-8s70).
 """
@@ -25,10 +25,8 @@ if TYPE_CHECKING:
         bounded_failure_samples,
     )
     from .import_operations import (
-        ImportAck,
         ImportRequest,
     )
-    from .operation_contract import OperationFollowUp
     from .operation_status import OperationStatus
     from .specs import (
         OperationCatalog,
@@ -48,9 +46,7 @@ def __getattr__(name: str) -> object:
         "ImportOperation": (".import_contracts", "ImportOperation"),
         "RawFailureSample": (".import_contracts", "RawFailureSample"),
         "bounded_failure_samples": (".import_contracts", "bounded_failure_samples"),
-        "ImportAck": (".import_operations", "ImportAck"),
         "ImportRequest": (".import_operations", "ImportRequest"),
-        "OperationFollowUp": (".operation_contract", "OperationFollowUp"),
         "OperationStatus": (".operation_status", "OperationStatus"),
         "OperationCatalog": (".specs", "OperationCatalog"),
         "OperationKind": (".specs", "OperationKind"),
@@ -71,11 +67,9 @@ __all__ = [
     "ArchiveDebtInsight",
     "ArchiveStats",
     "CompletionAggregate",
-    "ImportAck",
     "ImportOperation",
     "ImportRequest",
     "OperationCatalog",
-    "OperationFollowUp",
     "OperationKind",
     "OperationSpec",
     "OperationStatus",

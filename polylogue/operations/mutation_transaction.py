@@ -48,6 +48,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, runtime_checkable
 
+from polylogue.operations.machine_receipts import MachineHistoricalReceipt, encode_machine_receipt
+
 if TYPE_CHECKING:
     from polylogue.operations.audit import AuditRepository
     from polylogue.operations.bindings import OperationBinding
@@ -548,6 +550,9 @@ class MutationReceipt:
     receipt_ref: str | None
     applied_at: str
     domain_receipt: Mapping[str, object] = field(default_factory=dict)
+    # Generic domain data never becomes audit history.  This closed field is
+    # the opt-in checkpoint for machine operations only.
+    historical_receipt: MachineHistoricalReceipt | None = None
     operation_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -561,8 +566,26 @@ class MutationReceipt:
             "receipt_ref": self.receipt_ref,
             "applied_at": self.applied_at,
             "domain_receipt": dict(self.domain_receipt),
+            "historical_receipt": (
+                None if self.historical_receipt is None else encode_machine_receipt(self.historical_receipt)
+            ),
             "operation_id": self.operation_id,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class StartedBoundMutation:
+    """Durable intent produced by the shared bound-execution preflight.
+
+    The daemon may release its writer lease after :meth:`OperationExecutor.begin_bound`
+    and before it obtains a domain result.  This object deliberately contains
+    only the authenticated plan and the durable operation reference; it is not
+    an authority to re-resolve targets or invoke an actuator on its own.
+    """
+
+    plan: MutationPlan
+    authorization: MutationAuthorization
+    operation_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -849,11 +872,58 @@ class OperationExecutor:
     ) -> MutationReceipt:
         """Consume a bound token, journal intent, apply, and finalize honestly."""
 
+        started = self.begin_bound(binding, preview, authorization, args)
+        active_executions = self._prevalidated_executions.get()
+        scope_token = self._prevalidated_executions.set((*active_executions, (binding.actuator, started.plan)))
+        try:
+            receipt = self.execute(binding.actuator, started.plan, authorization, args)
+        except Exception as exc:
+            self.finalize_bound(
+                started,
+                error_summary=str(exc)[:512],
+                unknown_reason="actuator exception after durable intent",
+            )
+            raise
+        finally:
+            self._prevalidated_executions.reset(scope_token)
+        completed = self.finalize_bound(started, receipt=receipt)
+        assert completed is not None
+        return completed
+
+    def begin_bound(
+        self,
+        binding: OperationBinding[ArgsT, object],
+        preview: MutationPreview,
+        authorization: MutationAuthorization,
+        args: ArgsT,
+    ) -> StartedBoundMutation:
+        """Validate a bound execution and record durable intent before domain work.
+
+        This is the first of the reusable execution phases.  It performs the
+        same fresh-plan, archive-identity, principal, expiry, overlap, and
+        one-shot checks that :meth:`execute_bound` historically performed.
+        Callers that later await a domain owner must use the returned exact
+        plan; they must not call ``prepare`` again after this point.
+        """
+
         binding.validate()
+        if binding.spec.name == "mutate-rebuild-insights":
+            # A rebuild-insights preview may be an immutable, replayable
+            # staging page, but it has no execution authority until the
+            # complete page chain is sealed into exact machine parts.  Letting
+            # the generic one-plan path consume it would make
+            # ``stage_preview -> authorize -> execute_bound`` a bypass around
+            # the source-WAL seal.  This family starts only through
+            # ``begin_accepted_insight_part`` under a bound machine ordinal.
+            raise MutationTransactionError(
+                "insight maintenance requires a sealed accepted machine part; use begin_accepted_insight_part"
+            )
         validate_mutation_plan_integrity(preview.plan)
-        if authorization.preview_ref != preview.preview_ref or authorization.token is None:
+        if authorization.preview_ref != preview.preview_ref or (
+            authorization.token is None and (self._audit is None or authorization.authorization_id is None)
+        ):
             raise AuthorizationMismatchError("authorization is not bound to this preview")
-        issued = self._issued_authorizations.get(authorization.token)
+        issued = self._issued_authorizations.get(authorization.token or "")
         if self._audit is None and (issued is None or issued != authorization):
             raise AuthorizationMismatchError("authorization token was not issued for this executor")
         if (
@@ -893,7 +963,7 @@ class OperationExecutor:
         # Tokens are one-shot even for daemonless/library executors. Durable
         # audit rows enforce this in production; this local consume closes
         # the equivalent replay path when no audit repository is configured.
-        self._issued_authorizations.pop(authorization.token, None)
+        self._issued_authorizations.pop(authorization.token or "", None)
         if self._audit is not None:
             self._recover_overlapping_operations(binding.actuator, args, fresh_plan)
             # polylogue-39pdi: the ``recovered_applied`` barrier records that a
@@ -922,35 +992,106 @@ class OperationExecutor:
         operation_id: str | None = None
         if self._audit is not None:
             operation_id = self._audit.consume_authorization_and_start(preview, authorization)
-        active_executions = self._prevalidated_executions.get()
-        scope_token = self._prevalidated_executions.set((*active_executions, (binding.actuator, fresh_plan)))
+        return StartedBoundMutation(plan=fresh_plan, authorization=authorization, operation_id=operation_id)
+
+    def finalize_bound(
+        self,
+        started: StartedBoundMutation,
+        *,
+        receipt: MutationReceipt | None = None,
+        error_summary: str | None = None,
+        unknown_reason: str | None = None,
+    ) -> MutationReceipt | None:
+        """Finalize one previously begun execution without inventing an effect.
+
+        A successful domain result must be exactly bound to the plan recorded
+        by :meth:`begin_bound`.  Supplying no receipt records an indeterminate
+        attempt, which is the only truthful outcome for a post-intent failure
+        whose domain commit cannot be established.
+        """
+
+        if (receipt is None) == (unknown_reason is None):
+            raise ValueError("finalization requires exactly one of receipt or unknown_reason")
+        if receipt is not None and (
+            receipt.operation != started.plan.operation
+            or receipt.plan_hash != started.plan.plan_hash
+            or receipt.target_refs != started.plan.target_refs
+        ):
+            raise AuthorizationMismatchError("domain receipt does not match the started exact plan")
+        if self._audit is None or started.operation_id is None:
+            return receipt
         try:
-            result = self.execute(binding.actuator, fresh_plan, authorization, args)
-        except Exception as exc:
-            if self._audit is not None and operation_id is not None:
+            if receipt is None:
                 self._audit.finalize_attempt(
-                    operation_id,
+                    started.operation_id,
                     status="unknown",
-                    error_summary=str(exc)[:512],
-                    unknown_reason="actuator exception after durable intent",
+                    error_summary=error_summary,
+                    unknown_reason=unknown_reason,
                 )
-            raise
-        finally:
-            self._prevalidated_executions.reset(scope_token)
-        receipt = result
-        if self._audit is not None and operation_id is not None:
-            try:
-                self._audit.finalize_attempt(operation_id, status=receipt.status, receipt=receipt)
-            except Exception as exc:
-                raise AuditFinalizationError(
-                    "domain effect is not reported completed without audit finalization"
-                ) from exc
-            receipt = replace(
-                receipt,
-                receipt_ref=f"mutation-operation:{operation_id}",
-                operation_id=operation_id,
-            )
-        return receipt
+                return None
+            self._audit.finalize_attempt(started.operation_id, status=receipt.status, receipt=receipt)
+        except Exception as exc:
+            if receipt is None:
+                raise
+            raise AuditFinalizationError("domain effect is not reported completed without audit finalization") from exc
+        return replace(
+            receipt,
+            receipt_ref=f"mutation-operation:{started.operation_id}",
+            operation_id=started.operation_id,
+        )
+
+    def begin_accepted_insight_part(
+        self,
+        binding: OperationBinding[ArgsT, object],
+        accepted: object,
+        *,
+        principal: MutationPrincipal,
+        machine_part: int,
+        args: ArgsT,
+    ) -> StartedBoundMutation:
+        """Start one sealed insight page without reopening its accepted scope.
+
+        This is intentionally narrower than :meth:`begin_bound`: it is only
+        usable when an existing audit machine part has reserved the exact
+        authorization, and it reloads the immutable plan from that authority.
+        It therefore cannot be used by a public caller to turn ``None`` or a
+        fresh archive scan into an accepted full sweep after the fact.
+        """
+
+        from polylogue.operations.insight_acceptance import AcceptedInsightPart, accepted_part_from_plan
+
+        if not isinstance(accepted, AcceptedInsightPart):
+            raise TypeError("accepted insight execution requires a sealed AcceptedInsightPart")
+        if self._audit is None:
+            raise MutationTransactionError("accepted insight execution requires durable audit authority")
+        binding.validate()
+        preview, authorization = self._audit.authorization_for_principal(accepted.authorization_ref, principal)
+        durable = accepted_part_from_plan(
+            preview.plan,
+            preview_ref=preview.preview_ref,
+            authorization_ref=accepted.authorization_ref,
+        )
+        if durable != accepted:
+            raise AuthorizationMismatchError("accepted insight part differs from its durable preview authority")
+        if accepted.ordinal != machine_part:
+            raise AuthorizationMismatchError("accepted insight page ordinal differs from its machine reservation")
+        if preview.plan.operation != binding.spec.name or authorization.plan_hash != preview.plan.plan_hash:
+            raise AuthorizationMismatchError("accepted insight authority does not match this operation binding")
+        if self._archive_root is not None:
+            from polylogue.storage.archive_identity import ArchiveIdentity
+
+            live_identity = ArchiveIdentity.resolve(self._archive_root).authority_identity_digest
+            if live_identity != preview.plan.archive_identity_digest:
+                raise PlanStaleError("archive identity changed after the insight manifest was accepted")
+        self._recover_overlapping_operations(binding.actuator, args, preview.plan)
+        if preview.plan.destructive_class != "delete":
+            recovered_effect = self._audit.has_recovered_effect(preview.plan)
+            if recovered_effect is not None:
+                raise RecoveryBlockedError(
+                    f"operation {recovered_effect!r} already proved this semantic effect applied; refusing duplicate effect"
+                )
+        operation_id = self._audit.consume_authorization_and_start(preview, authorization)
+        return StartedBoundMutation(plan=preview.plan, authorization=authorization, operation_id=operation_id)
 
     def _recover_overlapping_operations(
         self,
@@ -1163,10 +1304,15 @@ class OperationExecutor:
         i.e. the live target set moved between AUTHORIZE and EXECUTE.
         """
 
+        if actuator.operation == "mutate-rebuild-insights":
+            raise MutationTransactionError("insight maintenance runs only through a sealed accepted machine part owner")
         if (
             plan.targets
             and plan.destructive_class in {"reset", "delete", "excise"}
-            and (authorization.token is None or authorization.confirmation_strength != "bound_token")
+            and (
+                (authorization.token is None and not self._prevalidated_executions.get())
+                or authorization.confirmation_strength != "bound_token"
+            )
         ):
             raise ConfirmationRequiredError("destructive execution requires a bound preview token")
         if authorization.plan_hash != plan.plan_hash:
@@ -1308,6 +1454,7 @@ __all__ = [
     "RecoveryPolicy",
     "Surface",
     "SurfaceDeniedError",
+    "StartedBoundMutation",
     "TargetAuthorityPolicy",
     "TargetDurability",
     "TokenConsumedError",

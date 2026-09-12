@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.embeddings.identity import (
@@ -15,8 +16,136 @@ from polylogue.storage.embeddings.identity import (
     register_embedding_identity_sql,
 )
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, logger
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+
+@contextmanager
+def _vector_projection_errors() -> Iterator[None]:
+    """Translate SQLite acquisition/projection failure at the provider seam."""
+    try:
+        yield
+    except sqlite3.Error as exc:
+        raise SqliteVecError("embedding projection could not bind its declared databases") from exc
+
+
+def _configure_current_embedding_messages(
+    conn: sqlite3.Connection,
+    *,
+    index_path: Path | None = None,
+    model: str,
+    attach_index: bool = True,
+    register_identity: bool = True,
+) -> None:
+    """Bind the current-index projection on an already-open vector reader."""
+
+    if register_identity:
+        register_embedding_identity_sql(conn)
+    if attach_index:
+        if index_path is None:
+            raise ValueError("embedding projection attachment requires an explicit index path")
+        conn.execute("ATTACH DATABASE ? AS archive_index", (str(index_path),))
+    conn.execute(
+        """
+        CREATE TEMP TABLE current_embedding_messages (
+            message_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            vector_derivation_hash BLOB NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        f"""
+        INSERT INTO current_embedding_messages (
+            message_id, session_id, origin, vector_derivation_hash
+        )
+        SELECT eligible.message_id, eligible.session_id, eligible.origin,
+               {VECTOR_DERIVATION_HASH_SQL_FUNCTION}(?, eligible.text)
+        FROM (
+            SELECT m.message_id, m.session_id, s.origin,
+                   (
+                       SELECT GROUP_CONCAT(prose.text, char(10) || char(10))
+                       FROM (
+                           SELECT b.text
+                           FROM archive_index.blocks b
+                           WHERE b.message_id = m.message_id
+                             AND b.block_type = 'text'
+                             AND b.text IS NOT NULL
+                           ORDER BY b.position
+                       ) AS prose
+                   ) AS text
+            FROM archive_index.messages m
+            JOIN archive_index.sessions s ON s.session_id = m.session_id
+            WHERE m.message_type = 'message'
+              AND m.role IN ('user', 'assistant')
+              AND m.material_origin IN ('human_authored', 'assistant_authored')
+              AND m.word_count > 0
+        ) AS eligible
+        WHERE LENGTH(TRIM(COALESCE(eligible.text, ''))) >= 20
+        """,
+        (model,),
+    )
+
+
+def open_vector_read_snapshot(
+    *,
+    embeddings_path: Path,
+    index_path: Path,
+    model: str,
+    configure_connection: Callable[[sqlite3.Connection], None] | None = None,
+    defer_projection: bool = False,
+) -> sqlite3.Connection:
+    """Open one explicit, read-only vector snapshot for a pinned operation.
+
+    Callers choose and hold both paths under their publication barrier before
+    calling this function.  No configured root, active-generation resolver,
+    or provider default participates here.
+    """
+
+    if not index_path.is_file():
+        raise SqliteVecError(f"pinned vector snapshot found no index at {index_path}")
+    with _vector_projection_errors():
+        conn = open_readonly_connection(embeddings_path, validate_schema=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        if configure_connection is not None:
+            configure_connection(conn)
+        with _vector_projection_errors():
+            loaded, error = try_load_sqlite_vec(conn)
+            if not loaded:
+                raise SqliteVecError(f"sqlite-vec extension failed to load: {error or 'unknown error'}")
+            register_embedding_identity_sql(conn)
+            # Each persistent database has its own read-only URI.
+            conn.execute("ATTACH DATABASE ? AS archive_index", (f"file:{quote(str(index_path))}?mode=ro",))
+            conn.execute("BEGIN")
+            conn.execute("SELECT rootpage FROM main.sqlite_schema LIMIT 1").fetchone()
+            conn.execute("SELECT rootpage FROM archive_index.sqlite_schema LIMIT 1").fetchone()
+            if not defer_projection:
+                prepare_vector_read_projection(conn, model=model)
+        return conn
+    except BaseException:
+        conn.close()
+        raise
+
+
+def prepare_vector_read_projection(connection: sqlite3.Connection, *, model: str) -> None:
+    """Build the derived lookup after publication exclusion has been released."""
+    if not connection.in_transaction:
+        raise SqliteVecError("semantic projection requires an already pinned read transaction")
+    with _vector_projection_errors():
+        # Persistent databases remain mode=ro. Only TEMP needs write permission;
+        # single-statement execute preserves both pinned read transactions.
+        connection.execute("PRAGMA query_only = OFF")
+        try:
+            _configure_current_embedding_messages(
+                connection,
+                model=model,
+                attach_index=False,
+                register_identity=False,
+            )
+        finally:
+            connection.execute("PRAGMA query_only = ON")
 
 
 class SqliteVecRuntimeMixin:
@@ -31,8 +160,11 @@ class SqliteVecRuntimeMixin:
         archive_root: Path | None
         _legacy_compatibility: bool
         _admitted_db_identity: tuple[int, int] | None
+        _snapshot_connection: sqlite3.Connection | None
 
     def _assert_lifecycle_binding(self) -> None:
+        if self._snapshot_connection is not None:
+            return
         if getattr(self, "_legacy_compatibility", False):
             return
         if self.archive_root is None:
@@ -58,6 +190,9 @@ class SqliteVecRuntimeMixin:
     @contextmanager
     def _lifecycle_admission(self) -> Iterator[None]:
         """Bind managed provider use to the resolved archive path and inode."""
+        if self._snapshot_connection is not None:
+            yield
+            return
         if getattr(self, "_legacy_compatibility", False):
             yield
             return
@@ -69,6 +204,8 @@ class SqliteVecRuntimeMixin:
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get connection with sqlite-vec extension loaded if available."""
+        if self._snapshot_connection is not None:
+            return self._snapshot_connection
         self._assert_lifecycle_binding()
         conn = open_connection(self.db_path.resolve(strict=False))
         conn.row_factory = sqlite3.Row
@@ -91,7 +228,6 @@ class SqliteVecRuntimeMixin:
             except sqlite3.Error:
                 conn.execute("DROP TABLE IF EXISTS temp.current_embedding_messages")
         elif self.archive_root is not None:
-            register_embedding_identity_sql(conn)
             index_path = resolve_active_index_path(self.archive_root).resolve(strict=False)
             if index_path != self.db_path.resolve(strict=False):
                 # ATTACH creates the file when it does not exist, so a missing
@@ -102,51 +238,11 @@ class SqliteVecRuntimeMixin:
                     conn.close()
                     raise SqliteVecError(f"managed embedding projection found no active index at {index_path}")
                 try:
-                    conn.execute("ATTACH DATABASE ? AS archive_index", (str(index_path),))
-                    conn.executescript(
-                        """
-                        CREATE TEMP TABLE current_embedding_messages (
-                            message_id TEXT PRIMARY KEY,
-                            session_id TEXT NOT NULL,
-                            origin TEXT NOT NULL,
-                            vector_derivation_hash BLOB NOT NULL
-                        );
-                        """
-                    )
-                    conn.execute(
-                        f"""
-                        INSERT INTO current_embedding_messages (
-                            message_id, session_id, origin, vector_derivation_hash
-                        )
-                        SELECT eligible.message_id, eligible.session_id, eligible.origin,
-                               {VECTOR_DERIVATION_HASH_SQL_FUNCTION}(?, eligible.text)
-                        FROM (
-                            SELECT m.message_id, m.session_id, s.origin,
-                                   (
-                                       SELECT GROUP_CONCAT(prose.text, char(10) || char(10))
-                                       FROM (
-                                           SELECT b.text
-                                           FROM archive_index.blocks b
-                                           WHERE b.message_id = m.message_id
-                                             AND b.block_type = 'text'
-                                             AND b.text IS NOT NULL
-                                           ORDER BY b.position
-                                       ) AS prose
-                                   ) AS text
-                            FROM archive_index.messages m
-                            JOIN archive_index.sessions s ON s.session_id = m.session_id
-                            WHERE m.message_type = 'message'
-                              AND m.role IN ('user', 'assistant')
-                              AND m.material_origin IN ('human_authored', 'assistant_authored')
-                              AND m.word_count > 0
-                        ) AS eligible
-                        WHERE LENGTH(TRIM(COALESCE(eligible.text, ''))) >= 20
-                        """,
-                        (self.model,),
-                    )
-                except sqlite3.Error as exc:
+                    with _vector_projection_errors():
+                        _configure_current_embedding_messages(conn, index_path=index_path, model=self.model)
+                except BaseException:
                     conn.close()
-                    raise SqliteVecError("managed embedding projection could not bind the active index") from exc
+                    raise
 
         if self._vec_available is None:
             loaded, error = try_load_sqlite_vec(conn)
@@ -168,16 +264,24 @@ class SqliteVecRuntimeMixin:
 
         return conn
 
+    def _release_connection(self, conn: sqlite3.Connection) -> None:
+        """Release ordinary provider handles without closing an operation snapshot."""
+
+        if conn is not self._snapshot_connection:
+            conn.close()
+
     def _ensure_vec_available(self) -> None:
         """Ensure sqlite-vec is available, raising error if not."""
         if self._vec_available is None:
             conn = self._get_connection()
-            conn.close()
+            self._release_connection(conn)
         if not self._vec_available:
             raise SqliteVecError("sqlite-vec extension not available. Install with: pip install sqlite-vec")
 
     def _ensure_tables(self) -> None:
         """Create required tables under lifecycle admission for managed tiers."""
+        if self._snapshot_connection is not None:
+            return
         if getattr(self, "_legacy_compatibility", False) or self.db_path.name != "embeddings.db":
             self._ensure_tables_unlocked()
             return
@@ -209,7 +313,7 @@ class SqliteVecRuntimeMixin:
             conn.commit()
             self._tables_ensured = True
         finally:
-            conn.close()
+            self._release_connection(conn)
 
     def _stored_embedding_dimension(self) -> int | None:
         """Return the dimension stored in message_embeddings_meta, if any."""
@@ -225,7 +329,7 @@ class SqliteVecRuntimeMixin:
         except (sqlite3.OperationalError, TypeError, ValueError):
             return None
         finally:
-            conn.close()
+            self._release_connection(conn)
 
 
 def _vec0_table_dimension(conn: sqlite3.Connection) -> int | None:
@@ -263,4 +367,4 @@ def _reconcile_vec0_dimension(conn: sqlite3.Connection, configured_dimension: in
         conn.commit()
 
 
-__all__ = ["SqliteVecRuntimeMixin", "_reconcile_vec0_dimension"]
+__all__ = ["SqliteVecRuntimeMixin", "_reconcile_vec0_dimension", "open_vector_read_snapshot"]

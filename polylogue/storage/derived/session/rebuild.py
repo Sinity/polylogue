@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import json as _json
 import sqlite3
 import threading
@@ -11,7 +12,7 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiosqlite
@@ -388,6 +389,23 @@ class SessionInsightRecordBundle:
     @property
     def phase_count(self) -> int:
         return len(self.phase_records)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSessionInsightPartition:
+    """One lease-free session-family replacement.
+
+    ``compute_binding`` is deliberately wider than the profile's persisted
+    input binding: the profile reads the canonical model-usage rollup as well
+    as source rows.  The latter is refreshed immediately before publication,
+    so a preparation made against an old rollup is refused instead of being
+    made authoritative by a later stamp.
+    """
+
+    session_id: str
+    input_binding: str
+    compute_binding: str
+    bundle: SessionInsightRecordBundle | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -826,6 +844,35 @@ def _marker_candidates_for_session(
             candidates.extend(scan_block(str(message.id), block_id, text))
             seen_block_ids.add(block_id)
     return tuple(candidates)
+
+
+def marker_candidates_for_session_sync(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> tuple[MarkerCandidate, ...]:
+    """Read exactly the marker text evidence for one session.
+
+    Marker publication is a user-tier projection, so restart inspection must
+    rediscover its deterministic candidates without trusting an ingest hint or
+    an index-side success receipt.
+    """
+    rows = conn.execute(
+        """
+        SELECT message_id, block_id, text
+        FROM blocks
+        WHERE session_id = ? AND text IS NOT NULL
+        ORDER BY message_id, position
+        """,
+        (session_id,),
+    )
+    from polylogue.markers import scan_block
+
+    return tuple(
+        candidate
+        for message_id, block_id, text in rows
+        if isinstance(text, str) and text
+        for candidate in scan_block(str(message_id), str(block_id), text)
+    )
 
 
 def build_session_insight_records(
@@ -1538,8 +1585,10 @@ def _refresh_provider_usage_rollup(conn: sqlite3.Connection, session_id: str) ->
     ``messages``, which are already persisted archive tables independent of
     any in-flight ``ParsedSession`` — so calling them here re-derives the
     rollup the same way ingest does, without needing the original parse. A
-    final pass reprices any surviving token rows whose source evidence is no
-    longer available.
+    final pass reprices surviving token rows. Reconciliation removes a row
+    with neither message nor provider-usage-event evidence, while a
+    provider-event-backed row remains priceable if its source message has
+    since disappeared.
     """
     from polylogue.storage.sqlite.archive_tiers.write import (
         _aggregate_message_tokens_into_model_usage,
@@ -1601,6 +1650,125 @@ def _lower_marker_candidates(
         return
     lower_markers(marker_conn, candidates)
     marker_conn.commit()
+
+
+def session_insight_compute_binding(conn: sqlite3.Connection, session_id: str) -> str:
+    """Bind a prepared profile to every value it reads from canonical usage.
+
+    ``session_model_usage`` is a derived cache, but it is the canonical cost
+    projection consumed by profile construction.  Its rows are refreshed by
+    the short publication phase; including their ordered values here makes a
+    preparation from before that refresh fail closed instead of publishing a
+    profile whose cost columns describe the previous rollup.
+    """
+    source_binding = session_input_bindings(conn, (session_id,)).get(session_id, "")
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(source_binding.encode("utf-8"))
+    for row in conn.execute(
+        """
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, catalog_cost_usd
+        FROM session_model_usage
+        WHERE session_id = ?
+        ORDER BY model_name
+        """,
+        (session_id,),
+    ):
+        digest.update(b"\x1e")
+        digest.update(b"\x1f".join(b"" if value is None else str(value).encode("utf-8") for value in row))
+    return digest.hexdigest()
+
+
+def prepare_session_insight_partition(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> PreparedSessionInsightPartition:
+    """Build one complete session family from a read-only frame.
+
+    This is the non-mutating half of session-profile convergence.  It hydrates
+    and computes the exact records before the daemon writer is admitted; the
+    companion publisher only revalidates and replaces the four-table
+    partition.  An absent session is a prepared retirement rather than an
+    error, which keeps excess output convergent.
+    """
+    row = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    if row is None:
+        return PreparedSessionInsightPartition(session_id, "", "", None)
+
+    input_binding = session_input_bindings(conn, (session_id,))[session_id]
+    compute_binding = session_insight_compute_binding(conn, session_id)
+    heavy = session_id in _heavy_session_ids_sync(conn, (session_id,))
+    if heavy:
+        root_id = thread_root_ids_sync(conn, (session_id,)).get(session_id)
+        bundle = build_large_session_insight_record_bundle_sync(
+            conn,
+            session_id,
+            logical_session_id=root_id,
+            marker_blocks=load_marker_blocks_sync(conn, (session_id,)).get(session_id, ()),
+        )
+    else:
+        batch = load_sync_batch(conn, (session_id,))
+        hydrated = hydrate_sessions(batch)
+        if len(hydrated) != 1:
+            raise KeyError(f"session disappeared from prepared read frame: {session_id}")
+        root_id = thread_root_ids_sync(conn, (session_id,)).get(session_id)
+        bundle = build_session_insight_record_bundles(
+            hydrated,
+            compaction_counts_by_session=batch.compaction_counts_by_session,
+            logical_session_ids_by_session={session_id: root_id} if root_id is not None else {},
+            model_usage_by_session=batch.model_usage_by_session,
+            marker_blocks_by_session=batch.marker_blocks_by_session,
+            input_content_hash_by_session={session_id: input_binding},
+        )[0]
+    # Marker inspection and publication must see the identical complete text
+    # evidence.  In particular, a heavy session cannot silently omit a
+    # marker-looking non-text block that restart inspection would demand.
+    bundle = replace(bundle, marker_candidates=marker_candidates_for_session_sync(conn, session_id))
+    return PreparedSessionInsightPartition(session_id, input_binding, compute_binding, bundle)
+
+
+def publish_prepared_session_insight_partition(
+    conn: sqlite3.Connection,
+    prepared: PreparedSessionInsightPartition,
+) -> bool:
+    """Atomically replace a prepared profile family after exact revalidation.
+
+    The caller has already acquired the daemon writer.  This function owns no
+    internal commits: either all profile/work-event/phase/latency rows move in
+    one ``BEGIN IMMEDIATE`` transaction, or none do.  Marker lowering remains
+    intentionally outside this index-tier transaction because user assertions
+    are a separate durable owner and are idempotent by provenance.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (prepared.session_id,)).fetchone()
+        if prepared.bundle is None:
+            if exists is not None:
+                conn.rollback()
+                return False
+            for table in ("session_work_events", "session_phases", "session_latency_profiles", "session_profiles"):
+                conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (prepared.session_id,))
+            conn.commit()
+            return True
+        if exists is None:
+            conn.rollback()
+            return False
+        current_input = session_input_bindings(conn, (prepared.session_id,)).get(prepared.session_id, "")
+        if (
+            current_input != prepared.input_binding
+            or session_insight_compute_binding(conn, prepared.session_id) != prepared.compute_binding
+        ):
+            conn.rollback()
+            return False
+        bundle = prepared.bundle
+        replace_session_profiles_bulk_sync(conn, (bundle.profile_record,))
+        replace_session_latency_profiles_bulk_sync(conn, (bundle.latency_profile_record,))
+        replace_session_work_events_bulk_sync(conn, {str(bundle.session_id): bundle.work_event_records})
+        replace_session_phases_bulk_sync(conn, {str(bundle.session_id): bundle.phase_records})
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
+    return True
 
 
 def _empty_rebuild_counts() -> SessionInsightCounts:

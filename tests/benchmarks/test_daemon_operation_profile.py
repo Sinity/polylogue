@@ -22,8 +22,8 @@ from time import perf_counter, sleep
 
 import pytest
 
-from polylogue.cli.daemon_client import DaemonClient
 from polylogue.daemon.execution import MAX_BACKGROUND_STARVATION_S, DaemonBackpressureError
+from polylogue.daemon_client import DaemonClient
 from tests.benchmarks.cli_profile import INTERACTION_WORKLOADS, record_metrics
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
 

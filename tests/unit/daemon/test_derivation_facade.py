@@ -13,16 +13,26 @@ authority, and never durable.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+import asyncio
+import contextlib
+import threading
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import cast
 
-from polylogue.daemon.convergence import DaemonConverger
+import pytest
+
+from polylogue.daemon.convergence import DaemonConverger, SessionProfileConvergenceOwner
 from polylogue.daemon.derivation import (
     BaseDerivation,
     Budget,
     DerivationFrame,
     DerivationKey,
+    Outcome,
+    PendingReason,
     Replacement,
 )
+from polylogue.daemon.execution import BoundedComputeAdapter
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 
 FRAME = DerivationFrame(archive_root="/archive", source_revision="r1")
 
@@ -78,6 +88,243 @@ def test_the_facade_converges_a_registered_domain_and_reports_its_order() -> Non
     report = converger.converge_derivations(FRAME)
     assert report.done == 2
     assert sorted(adapter.output) == ["a", "b"]
+
+
+def test_the_facade_routes_only_publication_through_the_owner_admission() -> None:
+    """Compute stays in the caller while each publish uses the injected bridge.
+
+    Anti-vacuity: acquire the writer around ``converge_derivations`` or ignore
+    ``publisher`` and this records no per-key publication admission.
+    """
+    adapter = StringStatusDerivation()
+    converger = DaemonConverger([], derivations=[adapter])
+    admissions: list[str] = []
+
+    def publisher(domain: str, publish: object) -> bool:
+        admissions.append(domain)
+        return bool(cast(Callable[[], bool], publish)())
+
+    assert converger.converge_derivations(FRAME, publisher=publisher).done == 2
+    assert admissions == ["strings", "strings"]
+
+
+def test_a_required_key_that_disappears_after_discovery_is_binding_moved() -> None:
+    """Correct retirement during a required pass is pending, not a false failure.
+
+    Anti-vacuity: classify a post-publish MISSING relation as FAILED and this
+    loses the retryable moved-input distinction although the old output was
+    correctly removed.
+    """
+
+    class VanishingDerivation(BaseDerivation):
+        domain = "vanishing"
+        prerequisites: tuple[str, ...] = ()
+
+        def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
+            return ("gone",)
+
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, str]:
+            return dict.fromkeys(keys, "missing")
+
+        def compute(self, frame: DerivationFrame, key: str) -> Replacement:
+            return Replacement(key=DerivationKey(self.domain, key), input_binding="before", payload=key)
+
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            return True
+
+    report = DaemonConverger([], derivations=[VanishingDerivation()]).converge_derivations(FRAME)
+    outcome = report.by_outcome(Outcome.PENDING)
+    assert len(outcome) == 1
+    assert outcome[0].reason is PendingReason.BINDING_MOVED
+
+
+@pytest.mark.asyncio
+async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() -> None:
+    """A targeted earlier id cannot inherit an archive sweep's page cursor.
+
+    Anti-vacuity: pass ``resume=True`` through an incremental scope and the
+    archive pass below leaves its cursor after ``a``; the targeted repair of
+    ``a`` is then skipped despite the output relation reporting it missing.
+    """
+    adapter = StringStatusDerivation(("a", "b"))
+    adapter.domain = "session_profile"
+    converger = DaemonConverger([], derivations=[adapter])
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        converger,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    try:
+        archive = DerivationFrame(archive_root="/archive", source_revision="r1")
+        assert (await owner.converge(archive, budget=Budget(page=1, compute=1))).done == 1
+        assert adapter.output == {"a": "b0"}
+
+        adapter.output.pop("a")
+        targeted = DerivationFrame(archive_root="/archive", source_revision="r2", scope=("a",))
+        assert (await owner.converge(targeted, budget=Budget(page=1, compute=1))).done == 1
+        assert adapter.output == {"a": "b0"}
+        assert converger._derivation_cursor.position("session_profile").page_cursor == "1"
+        assert (await owner.converge(archive, budget=Budget(page=1, compute=1))).done == 1
+        assert adapter.output == {"a": "b0", "b": "b0"}
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_no_hint_owner_reports_quiet_work_without_certifying_a_complete_sweep() -> None:
+    """A terminal cursor does not clear debt while a quiet key remains pending.
+
+    Anti-vacuity: clear legacy derived debt from ``cursor.swept`` alone and
+    this no-hint owner report is treated as complete despite its output
+    relation retaining ``a`` as missing.
+    """
+
+    class QuietArchiveDerivation(StringStatusDerivation):
+        domain = "session_profile"
+
+        def quiet(self, frame: DerivationFrame, key: str) -> bool:
+            del frame
+            return key == "a"
+
+    adapter = QuietArchiveDerivation(("a", "b"))
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger([], derivations=[adapter]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    try:
+        report = await owner.converge(DerivationFrame(archive_root="/archive", source_revision="no-hint"))
+        assert report.cursor.position("session_profile").swept
+        assert report.pending == 1
+        assert report.failed == 0
+        assert adapter.output == {"b": "b0"}
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_session_owner_cancellation_waits_for_an_admitted_publication() -> None:
+    """Cancellation cannot abandon a worker holding the bridged writer gate.
+
+    Anti-vacuity: return immediately from ``CancelledError`` and this task
+    finishes while the publisher below is still active, allowing composition
+    shutdown to treat the writer as drained when it is not.
+    """
+
+    class BlockingDerivation(StringStatusDerivation):
+        domain = "session_profile"
+
+        def __init__(self) -> None:
+            super().__init__(("a",))
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            self.started.set()
+            assert self.release.wait(timeout=2.0)
+            return super().publish(frame, replacement)
+
+    adapter = BlockingDerivation()
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger([], derivations=[adapter]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    task = asyncio.create_task(owner.converge(DerivationFrame(archive_root="/archive", source_revision="r1")))
+    try:
+        assert await asyncio.to_thread(adapter.started.wait, 1.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert coordinator.snapshot().active_actor == "derivation.session_profile"
+
+        adapter.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert coordinator.snapshot().active_actor is None
+    finally:
+        adapter.release.set()
+        if not task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_session_owner_serializes_a_sweep_and_targeted_callback() -> None:
+    """Concurrent owner callers cannot race one mutable kernel cursor.
+
+    Anti-vacuity: remove the owner-local coroutine lock and the targeted
+    callback reaches its publisher while the blocked no-hint sweep still owns
+    the same converger. Replace the retained archive cursor with the targeted
+    terminal cursor and the final assertion loses the archive resume point.
+    """
+
+    class ScopedDerivation(StringStatusDerivation):
+        domain = "session_profile"
+
+        def __init__(self) -> None:
+            super().__init__(("a", "b"))
+            self.a_started = threading.Event()
+            self.release_a = threading.Event()
+
+        def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
+            scope = frame.scope
+            return ("a", "b") if scope is None else iter(cast(tuple[str, ...], scope))
+
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            if replacement.payload == "a":
+                self.a_started.set()
+                assert self.release_a.wait(timeout=2.0)
+            return super().publish(frame, replacement)
+
+    adapter = ScopedDerivation()
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=2)
+    coordinator = DaemonWriteCoordinator()
+    converger = DaemonConverger([], derivations=[adapter])
+    owner = SessionProfileConvergenceOwner(
+        converger,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    sweep = asyncio.create_task(
+        owner.converge(
+            DerivationFrame(archive_root="/archive", source_revision="sweep"),
+            budget=Budget(page=1, compute=1),
+        )
+    )
+    try:
+        assert await asyncio.to_thread(adapter.a_started.wait, 1.0)
+        targeted = asyncio.create_task(
+            owner.converge(DerivationFrame(archive_root="/archive", source_revision="target", scope=("a",)))
+        )
+        await asyncio.sleep(0)
+        assert adapter.output == {}
+        adapter.release_a.set()
+        assert (await sweep).done == 1
+        assert (await targeted).done == 0
+        assert adapter.output == {"a": "b0"}
+        assert converger._derivation_cursor.position("session_profile").page_cursor == "1"
+        assert (
+            await owner.converge(
+                DerivationFrame(archive_root="/archive", source_revision="resume"),
+                budget=Budget(page=1, compute=1),
+            )
+        ).done == 1
+        assert adapter.output == {"a": "b0", "b": "b0"}
+    finally:
+        adapter.release_a.set()
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
 
 
 def test_the_facade_reconstructs_the_pending_set_on_every_call() -> None:

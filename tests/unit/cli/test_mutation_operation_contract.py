@@ -12,7 +12,6 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import click
@@ -68,7 +67,7 @@ class TestDeclaredMutationAuthority:
             return {"written": True}
 
         with pytest.raises(OperationUnavailableError):
-            OperationKernel(lambda _request: None, direct).execute(OperationRequest(operation, {}))
+            OperationKernel(lambda _request: None).execute(OperationRequest(operation, {}))
         assert executed is False
 
 
@@ -83,7 +82,7 @@ class TestDeleteChokePoint:
             if operation.endswith(".preview"):
                 return {"status": "prepared", "preview_ref": "preview:1", "session_ids": ["s1"]}
             if operation.endswith(".authorize"):
-                return {"status": "authorized", "authorization_token": "token-1"}
+                return {"status": "authorized", "authorization_ref": "authorization:1"}
             return {"status": "deleted", "affected_count": 1}
 
         with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served):
@@ -126,7 +125,7 @@ class TestDeleteChokePoint:
                     "preview_refs": ["preview:1", "preview:2"],
                     "session_ids": ["s1", "s2"],
                 }
-            return {"status": "authorized", "authorization_token": "token-1"}
+            return {"status": "authorized", "authorization_ref": "authorization:1"}
 
         with (
             patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
@@ -226,7 +225,7 @@ class TestUserMutationRefusal:
     """The matched-page tag/metadata route has no offline write path."""
 
     def test_absent_daemon_refuses_the_tag_write(self, tmp_path: Path) -> None:
-        archive: Any = MagicMock()
+        archive = MagicMock()
         env = _env()
         with (
             patch(

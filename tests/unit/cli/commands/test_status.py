@@ -1,29 +1,22 @@
-"""Tests for pure functions in polylogue.cli.commands.status."""
+"""Tests for CLI status adapters and their canonical read producers."""
 
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, TypedDict, cast
 
 import pytest
 
 from polylogue.cli.commands.status import (
-    _ARCHIVE_TIER_ENUM,
     _BUILTIN_DAEMON_URL,
-    _archive_one_tier_status,
     _archive_primary_tier_count,
-    _archive_table_counts,
-    _archive_tier_files,
-    _archive_tier_status,
-    _archive_unidentified_artifact_count,
-    _candidate_daemon_urls,
     _default_daemon_url,
-    _direct_archive_counts,
-    _fast_count,
     _fmt_bytes,
-    _parse_cmdline_api_port,
-    _view_exists,
 )
+from polylogue.operations.daemon_status import _archive_tiers
+from polylogue.storage.archive_identity import archive_file_set_root
 
 # polylogue-ogn1: archive-readiness lives in the substrate so substrate callers
 # reach it without importing a surface. status.py delegates here rather than
@@ -32,19 +25,54 @@ from polylogue.storage.archive_readiness import (
     _action_readiness_counts,
     _archive_readiness_counts,
     _archive_status_surfaces,
+    _fast_count,
+    _view_exists,
+    probe_archive_tier,
 )
-
-# polylogue-48h: _table_exists/_column_exists moved from private status.py
-# definitions to the shared polylogue.storage.introspection module (which now
-# owns the canonical table_exists/column_exists implementation); status.py
-# only re-imports them, and mypy --strict's no-implicit-reexport rule
-# correctly rejects importing a bare re-import through status.py. Import the
-# canonical names directly, matching the _archive_readiness precedent above.
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import bootstrap_archive_root
+
+
+class _ArchiveTierResult(TypedDict):
+    table_counts: dict[str, int]
+    table_count_precision: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _ArchiveFixture:
+    archive_root: Path
+    operation_schema_versions: dict[str, int]
+
+
+class _ArchiveStats(TypedDict):
+    total_sessions: int
+    total_messages: int
+
+
+class _DirectStatusPayload(TypedDict):
+    archive_stats: _ArchiveStats
+    archive_tiers: dict[str, _ArchiveTierResult]
+
+
+_DaemonTierName = Literal["source", "index", "embeddings", "user", "ops"]
+
+
+def _archive_fixture(root: Path, version: int) -> ArchiveStore:
+    return cast(
+        ArchiveStore,
+        _ArchiveFixture(archive_root=root, operation_schema_versions={"index": version}),
+    )
+
+
+def _daemon_tier_name(value: str) -> _DaemonTierName:
+    """Adapt the all-tier fixture vocabulary to the daemon helper contract."""
+
+    return cast(_DaemonTierName, value)
 
 
 class TestDefaultDaemonUrl:
@@ -65,23 +93,6 @@ class TestDefaultDaemonUrl:
         """Empty string env var is falsy, returns built-in."""
         monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "")
         assert _default_daemon_url() == _BUILTIN_DAEMON_URL
-
-
-class TestDaemonUrlDiscovery:
-    def test_candidate_daemon_urls_respects_explicit_env_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
-        monkeypatch.setattr("polylogue.cli.commands.status._discover_polylogued_api_ports", lambda: (8786,))
-
-        assert _candidate_daemon_urls("http://127.0.0.1:1") == ("http://127.0.0.1:1",)
-
-    def test_parse_cmdline_api_port_accepts_split_flag(self) -> None:
-        assert _parse_cmdline_api_port(["/bin/polylogued", "run", "--api-port", "8786"]) == 8786
-
-    def test_parse_cmdline_api_port_accepts_equals_flag(self) -> None:
-        assert _parse_cmdline_api_port(["/bin/polylogued", "run", "--api-port=8786"]) == 8786
-
-    def test_parse_cmdline_api_port_rejects_invalid_port(self) -> None:
-        assert _parse_cmdline_api_port(["/bin/polylogued", "run", "--api-port", "99999"]) is None
 
 
 class TestFmtBytes:
@@ -131,10 +142,10 @@ class TestArchivePrimaryTierCount:
         result = _archive_primary_tier_count("source", {"raw_sessions": 100})
         assert result == ("raw_sessions", 100)
 
-    def test_user_tier_with_annotations(self) -> None:
-        """user tier with annotations in counts returns ('annotations', count)."""
-        result = _archive_primary_tier_count("user", {"annotations": 5})
-        assert result == ("annotations", 5)
+    def test_user_tier_with_assertions(self) -> None:
+        """user tier with assertions in counts returns ('assertions', count)."""
+        result = _archive_primary_tier_count("user", {"assertions": 5})
+        assert result == ("assertions", 5)
 
     def test_embeddings_tier_with_embedding_status(self) -> None:
         """embeddings tier with embedding_status returns ('embedding_status', count)."""
@@ -157,29 +168,20 @@ class TestArchivePrimaryTierCount:
         assert result is None
 
 
-class TestArchiveTierFiles:
-    """Tests for _archive_tier_files()."""
+class TestArchiveFileSetRoot:
+    """The canonical operation root follows configured index topology."""
 
-    def test_returns_all_five_tiers(self, tmp_path: Path) -> None:
-        """Returns dict with all five tier names."""
-        result = _archive_tier_files(tmp_path)
-        expected_tiers = {"source", "index", "embeddings", "user", "ops"}
-        assert set(result.keys()) == expected_tiers
+    def test_default_index_path_anchors_file_set(self, tmp_path: Path) -> None:
+        assert archive_file_set_root(archive_root=tmp_path, db_path=tmp_path / "index.db") == tmp_path
 
-    def test_each_tier_maps_to_correct_path(self, tmp_path: Path) -> None:
-        """Each tier maps to the correct .db file path."""
-        result = _archive_tier_files(tmp_path)
-        assert result["source"] == tmp_path / "source.db"
-        assert result["index"] == tmp_path / "index.db"
-        assert result["embeddings"] == tmp_path / "embeddings.db"
-        assert result["user"] == tmp_path / "user.db"
-        assert result["ops"] == tmp_path / "ops.db"
+    def test_explicit_index_path_anchors_split_file_set(self, tmp_path: Path) -> None:
+        generation = tmp_path / "generation-1"
+        assert archive_file_set_root(archive_root=tmp_path, db_path=generation / "index.db") == generation
 
-    def test_paths_are_path_objects(self, tmp_path: Path) -> None:
-        """Returned values are Path objects."""
-        result = _archive_tier_files(tmp_path)
-        for path in result.values():
-            assert isinstance(path, Path)
+    def test_bootstrap_materializes_each_canonical_tier_path(self, tmp_path: Path) -> None:
+        bootstrap_archive_root(tmp_path)
+        expected_tiers = {"source", "index", "embeddings", "user", "audit", "ops"}
+        assert {path.stem for path in tmp_path.glob("*.db")} == expected_tiers
 
 
 class TestFastCount:
@@ -365,10 +367,10 @@ class TestColumnExists:
 
 
 class TestArchiveTableCounts:
-    """Tests for _archive_table_counts()."""
+    """Pinned operation tier counts retain exact workload evidence."""
 
     def test_counts_existing_tables(self, tmp_path: Path) -> None:
-        """Counts all existing tables in the list."""
+        """Counts all present tables in the declared index-tier workload."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(db_path)
         try:
@@ -377,106 +379,96 @@ class TestArchiveTableCounts:
             conn.execute("INSERT INTO sessions VALUES (1), (2)")
             conn.execute("INSERT INTO messages VALUES (1), (2), (3)")
             conn.commit()
-            result, precision = _archive_table_counts(conn, ["sessions", "messages"], db_size_bytes=0)
-            assert result["sessions"] == 2
-            assert result["messages"] == 3
-            assert precision == {"sessions": "exact", "messages": "exact"}
+            result = cast(
+                _ArchiveTierResult,
+                _archive_tiers(_archive_fixture(tmp_path, ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]), conn)["index"],
+            )
+            assert result["table_counts"]["sessions"] == 2
+            assert result["table_counts"]["messages"] == 3
+            assert result["table_count_precision"] == {"sessions": "exact", "messages": "exact"}
         finally:
             conn.close()
 
     def test_omits_nonexistent_tables(self, tmp_path: Path) -> None:
-        """Only returns counts for tables that exist."""
+        """Only returns counts for declared tables that exist."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(db_path)
         try:
             conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
             conn.execute("INSERT INTO sessions VALUES (1)")
             conn.commit()
-            result, precision = _archive_table_counts(
-                conn,
-                ["sessions", "nonexistent", "missing"],
-                db_size_bytes=0,
+            result = cast(
+                _ArchiveTierResult,
+                _archive_tiers(_archive_fixture(tmp_path, ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]), conn)["index"],
             )
-            assert "sessions" in result
-            assert "nonexistent" not in result
-            assert "missing" not in result
-            assert precision == {"sessions": "exact"}
-        finally:
-            conn.close()
-
-    def test_empty_list_returns_empty_dict(self, tmp_path: Path) -> None:
-        """Empty table list returns empty dict."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            result, precision = _archive_table_counts(conn, [], db_size_bytes=0)
-            assert result == {}
-            assert precision == {}
+            assert "sessions" in result["table_counts"]
+            assert "nonexistent" not in result["table_counts"]
+            assert "missing" not in result["table_counts"]
+            assert result["table_count_precision"] == {"sessions": "exact"}
         finally:
             conn.close()
 
 
 class TestArchiveOneTierStatus:
-    """Tests for _archive_one_tier_status()."""
+    """Tests for the canonical archive tier probe."""
 
     def test_missing_file_returns_missing_status(self, tmp_path: Path) -> None:
         """Missing file returns version_status='missing'."""
         nonexistent = tmp_path / "nonexistent.db"
-        result = _archive_one_tier_status("index", nonexistent)
-        assert result["exists"] is False
-        assert result["version_status"] == "missing"
-        assert result["size_bytes"] is None
-        assert result["user_version"] is None
+        result = probe_archive_tier(ArchiveTier.INDEX, nonexistent)
+        assert result.exists is False
+        assert result.version_status == "missing"
+        assert result.size_bytes == 0
+        assert result.user_version is None
 
     def test_existing_empty_file_with_correct_version(self, tmp_path: Path) -> None:
         """Existing file with correct version returns 'ok'."""
         db_path = tmp_path / "index.db"
         conn = sqlite3.connect(db_path)
-        expected_version = ARCHIVE_VERSION_BY_TIER[_ARCHIVE_TIER_ENUM["index"]]
+        expected_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
         conn.execute(f"PRAGMA user_version = {expected_version}")
         conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
         conn.commit()
         conn.close()
 
-        result = _archive_one_tier_status("index", db_path)
-        assert result["exists"] is True
-        assert result["user_version"] == expected_version
-        assert result["expected_user_version"] == expected_version
-        assert result["version_status"] == "ok"
-        assert result["size_bytes"] is not None
-        assert result["table_counts"]["sessions"] == 0
+        result = probe_archive_tier(ArchiveTier.INDEX, db_path)
+        assert result.exists is True
+        assert result.user_version == expected_version
+        assert result.expected_user_version == expected_version
+        assert result.version_status == "ok"
+        assert result.size_bytes > 0
 
     def test_version_mismatch(self, tmp_path: Path) -> None:
         """File with mismatched version returns 'mismatch'."""
         db_path = tmp_path / "index.db"
         conn = sqlite3.connect(db_path)
-        expected_version = ARCHIVE_VERSION_BY_TIER[_ARCHIVE_TIER_ENUM["index"]]
+        expected_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
         wrong_version = expected_version + 999
         conn.execute(f"PRAGMA user_version = {wrong_version}")
         conn.commit()
         conn.close()
 
-        result = _archive_one_tier_status("index", db_path)
-        assert result["user_version"] == wrong_version
-        assert result["expected_user_version"] == expected_version
-        assert result["version_status"] == "mismatch"
+        result = probe_archive_tier(ArchiveTier.INDEX, db_path)
+        assert result.user_version == wrong_version
+        assert result.expected_user_version == expected_version
+        assert result.version_status == "mismatch"
 
     def test_table_counts_include_existing_tables(self, tmp_path: Path) -> None:
         """table_counts includes rows from existing tables."""
         db_path = tmp_path / "index.db"
         conn = sqlite3.connect(db_path)
-        expected_version = ARCHIVE_VERSION_BY_TIER[_ARCHIVE_TIER_ENUM["index"]]
+        expected_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
         conn.execute(f"PRAGMA user_version = {expected_version}")
         conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
         conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY)")
         conn.execute("INSERT INTO sessions VALUES (1), (2)")
         conn.execute("INSERT INTO messages VALUES (1)")
         conn.commit()
-        conn.close()
 
-        result = _archive_one_tier_status("index", db_path)
-        assert result["table_counts"]["sessions"] == 2
-        assert result["table_counts"]["messages"] == 1
+        result = _archive_tiers(_archive_fixture(tmp_path, expected_version), conn)
+        index_result = cast(_ArchiveTierResult, result["index"])
+        assert index_result["table_counts"]["sessions"] == 2
+        assert index_result["table_counts"]["messages"] == 1
 
 
 class TestArchiveOneTierStatusDaemonParity:
@@ -484,8 +476,7 @@ class TestArchiveOneTierStatusDaemonParity:
 
     Both surfaces now build their per-tier exists/size/user_version/
     version_status facts from the single shared
-    ``polylogue.storage.archive_readiness.probe_archive_tier`` (see
-    ``_archive_one_tier_status`` here and
+    ``polylogue.storage.archive_readiness.probe_archive_tier`` (used here and
     ``polylogue.daemon.status._archive_tier_status``). This test would fail
     if either surface went back to computing those facts independently (e.g.
     a version-mismatch tier reported "ok" by one surface and "mismatch" by
@@ -499,29 +490,29 @@ class TestArchiveOneTierStatusDaemonParity:
 
         db_path = tmp_path / "index.db"
         conn = sqlite3.connect(db_path)
-        expected_version = ARCHIVE_VERSION_BY_TIER[_ARCHIVE_TIER_ENUM["index"]]
+        expected_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
         conn.execute(f"PRAGMA user_version = {expected_version + 999}")
         conn.commit()
         conn.close()
 
-        cli_result = _archive_one_tier_status("index", db_path)
+        cli_result = probe_archive_tier(ArchiveTier.INDEX, db_path)
         daemon_result = _daemon_archive_tier_status("index", db_path)
 
-        assert cli_result["exists"] is daemon_result.exists
-        assert cli_result["user_version"] == daemon_result.user_version
-        assert cli_result["expected_user_version"] == daemon_result.expected_user_version
-        assert cli_result["version_status"] == daemon_result.version_status == "mismatch"
-        assert cli_result["size_bytes"] == daemon_result.size_bytes
+        assert cli_result.exists is daemon_result.exists
+        assert cli_result.user_version == daemon_result.user_version
+        assert cli_result.expected_user_version == daemon_result.expected_user_version
+        assert cli_result.version_status == daemon_result.version_status == "mismatch"
+        assert cli_result.size_bytes == daemon_result.size_bytes
 
     def test_missing_tier_agrees_with_daemon(self, tmp_path: Path) -> None:
         from polylogue.daemon.status import _archive_tier_status as _daemon_archive_tier_status
 
         nonexistent = tmp_path / "nonexistent.db"
-        cli_result = _archive_one_tier_status("index", nonexistent)
+        cli_result = probe_archive_tier(ArchiveTier.INDEX, nonexistent)
         daemon_result = _daemon_archive_tier_status("index", nonexistent)
 
-        assert cli_result["exists"] is daemon_result.exists is False
-        assert cli_result["version_status"] == daemon_result.version_status == "missing"
+        assert cli_result.exists is daemon_result.exists is False
+        assert cli_result.version_status == daemon_result.version_status == "missing"
 
     def test_invalid_tier_agrees_with_daemon_and_stays_explicit(self, tmp_path: Path) -> None:
         """A corrupt present tier is invalid, never silently reported healthy."""
@@ -530,27 +521,39 @@ class TestArchiveOneTierStatusDaemonParity:
         db_path = tmp_path / "index.db"
         db_path.write_bytes(b"not a sqlite database")
 
-        cli_result = _archive_one_tier_status("index", db_path)
+        cli_result = probe_archive_tier(ArchiveTier.INDEX, db_path)
         daemon_result = _daemon_archive_tier_status("index", db_path)
 
-        assert cli_result["exists"] is daemon_result.exists is True
-        assert cli_result["user_version"] is daemon_result.user_version is None
-        assert cli_result["version_status"] == daemon_result.version_status == "invalid"
-        assert cli_result["size_bytes"] == daemon_result.size_bytes == db_path.stat().st_size
+        assert cli_result.exists is daemon_result.exists is True
+        assert cli_result.user_version is daemon_result.user_version is None
+        assert cli_result.version_status == daemon_result.version_status == "invalid"
+        assert cli_result.size_bytes == daemon_result.size_bytes == db_path.stat().st_size
 
 
 class TestArchiveTierStatus:
-    """Tests for _archive_tier_status()."""
+    """Tests for the canonical daemon tier-status producer."""
+
+    @staticmethod
+    def _statuses(root: Path) -> dict[str, dict[str, object]]:
+        from polylogue.daemon.status import _archive_tier_status
+
+        return {
+            tier.value: _archive_tier_status(
+                _daemon_tier_name(tier.value),
+                root / f"{tier.value}.db",
+            ).model_dump()
+            for tier in ArchiveTier
+        }
 
     def test_returns_status_for_all_tiers(self, tmp_path: Path) -> None:
-        """Returns status dict for all five tiers."""
-        result = _archive_tier_status(tmp_path)
-        expected_tiers = {"source", "index", "embeddings", "user", "ops"}
+        """Returns status for all durable and derived tier files."""
+        result = self._statuses(tmp_path)
+        expected_tiers = {"source", "index", "embeddings", "user", "audit", "ops"}
         assert set(result.keys()) == expected_tiers
 
     def test_all_missing_tiers(self, tmp_path: Path) -> None:
         """When no tier files exist, all show as missing."""
-        result = _archive_tier_status(tmp_path)
+        result = self._statuses(tmp_path)
         for status in result.values():
             assert status["exists"] is False
             assert status["version_status"] == "missing"
@@ -559,12 +562,12 @@ class TestArchiveTierStatus:
         """Correctly detects existing index.db."""
         db_path = tmp_path / "index.db"
         conn = sqlite3.connect(db_path)
-        expected_version = ARCHIVE_VERSION_BY_TIER[_ARCHIVE_TIER_ENUM["index"]]
+        expected_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
         conn.execute(f"PRAGMA user_version = {expected_version}")
         conn.commit()
         conn.close()
 
-        result = _archive_tier_status(tmp_path)
+        result = self._statuses(tmp_path)
         assert result["index"]["exists"] is True
         assert result["index"]["version_status"] == "ok"
         assert result["source"]["exists"] is False
@@ -572,64 +575,81 @@ class TestArchiveTierStatus:
 
 
 class TestDirectArchiveCounts:
-    """Tests for _direct_archive_counts()."""
+    """Canonical direct OperationResult retains archive workload counts."""
+
+    @staticmethod
+    def _status_result(root: Path) -> _DirectStatusPayload:
+        from polylogue.cli.operation_kernel import configured_read_operation
+        from polylogue.config import Config
+
+        config = Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "index.db")
+        result = configured_read_operation(config, "status", {}, daemon_disabled=True)
+        assert result.operation == "status"
+        return cast(_DirectStatusPayload, result.value)
 
     def test_empty_archive_returns_zeros(self, tmp_path: Path) -> None:
         """Archive with no sessions returns zeros."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            result = _direct_archive_counts(conn)
-            assert result["sessions"] == 0
-            assert result["messages"] == 0
-            assert result["raw_records"] == 0
-        finally:
-            conn.close()
+        bootstrap_archive_root(tmp_path)
+        result = self._status_result(tmp_path)
+        stats = result["archive_stats"]
+        assert stats["total_sessions"] == 0
+        assert stats["total_messages"] == 0
 
-    def test_with_sessions_and_message_count_column(self, tmp_path: Path) -> None:
-        """Uses message_count column when available."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY, message_count INTEGER)")
-            conn.execute("INSERT INTO sessions VALUES (1, 5), (2, 3)")
+    def test_session_message_counts_drive_canonical_total(self, tmp_path: Path) -> None:
+        """Canonical stats retain the session message-count workload law."""
+        bootstrap_archive_root(tmp_path)
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (native_id, origin, raw_id, content_hash, message_count)
+                VALUES (?, 'codex-session', ?, ?, 5), (?, 'codex-session', ?, ?, 3)
+                """,
+                ("native-1", "raw1", b"1" * 32, "native-2", "raw2", b"2" * 32),
+            )
             conn.commit()
-            result = _direct_archive_counts(conn)
-            assert result["sessions"] == 2
-            assert result["messages"] == 8  # sum of message_count
-        finally:
-            conn.close()
+        result = self._status_result(tmp_path)
+        stats = result["archive_stats"]
+        assert stats["total_sessions"] == 2
+        assert stats["total_messages"] == 8
 
     def test_with_sessions_and_messages_table(self, tmp_path: Path) -> None:
-        """Falls back to counting messages table when message_count column absent."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        try:
-            conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
-            conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id INTEGER)")
-            conn.execute("INSERT INTO sessions VALUES (1), (2)")
-            conn.execute("INSERT INTO messages VALUES (1, 1), (2, 1), (3, 2)")
+        """Canonical direct status counts sessions and messages from the snapshot."""
+        bootstrap_archive_root(tmp_path)
+        db_path = tmp_path / "index.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (native_id, origin, raw_id, content_hash, message_count)
+                VALUES (?, 'codex-session', ?, ?, 2), (?, 'codex-session', ?, ?, 1)
+                """,
+                ("native-1", "raw1", b"1" * 32, "native-2", "raw2", b"2" * 32),
+            )
+            conn.executemany(
+                """
+                INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+                VALUES (?, ?, ?, 'user', 'message', ?)
+                """,
+                [
+                    ("codex-session:native-1", "m1", 0, b"a" * 32),
+                    ("codex-session:native-1", "m2", 1, b"b" * 32),
+                    ("codex-session:native-2", "m3", 0, b"c" * 32),
+                ],
+            )
             conn.commit()
-            result = _direct_archive_counts(conn)
-            assert result["sessions"] == 2
-            assert result["messages"] == 3
-        finally:
-            conn.close()
+        result = self._status_result(tmp_path)
+        stats = result["archive_stats"]
+        assert stats["total_sessions"] == 2
+        assert stats["total_messages"] == 3
 
     def test_counts_unidentified_artifacts_from_source_tier(self, tmp_path: Path) -> None:
-        """Regression for polylogue-9ykn: a record that classify_artifact
-        could not positively identify as a session/sidecar/other known kind
-        is durably ledgered in source.db's raw_artifacts with
-        artifact_kind='unknown'. That count must be visible from the index
-        connection's sibling source.db, the same resolution
-        _archive_source_raw_count already uses for raw_records.
-        """
+        """The canonical status snapshot retains exact source artifact workload."""
         index_path = tmp_path / "index.db"
         source_path = tmp_path / "source.db"
-        initialize_archive_database(index_path, ArchiveTier.INDEX)
-        initialize_archive_database(source_path, ArchiveTier.SOURCE)
+        bootstrap_archive_root(tmp_path)
         source_conn = sqlite3.connect(source_path)
         try:
+            from polylogue.storage.sqlite.archive_tiers.source_write import list_raw_artifacts
+
             source_conn.execute(
                 """
                 INSERT INTO raw_sessions (
@@ -652,14 +672,16 @@ class TestDirectArchiveCounts:
                 """
             )
             source_conn.commit()
+            artifacts = list_raw_artifacts(source_conn, raw_id="raw1")
+            assert sum(artifact.artifact_kind == "unknown" for artifact in artifacts) == 1
         finally:
             source_conn.close()
 
         conn = sqlite3.connect(index_path)
         try:
-            assert _archive_unidentified_artifact_count(conn, configured_root=tmp_path) == 1
-            result = _direct_archive_counts(conn, configured_root=tmp_path)
-            assert result["unidentified_artifacts"] == 1
+            result = self._status_result(tmp_path)
+            source_counts = result["archive_tiers"]["source"]["table_counts"]
+            assert source_counts["raw_artifacts"] == 2
         finally:
             conn.close()
 

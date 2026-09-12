@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
+from urllib.parse import quote
 
 from polylogue.analysis.affordance_usage import (
     clean_patterns as _clean_affordance_patterns,
@@ -308,6 +309,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionWorkEvent,
     PreparedRows,
     PreparedSessionShardRows,
+    PreparedSessionWrite,
     bind_session_shard,
     read_archive_session_envelope,
     read_archive_session_page,
@@ -761,6 +763,13 @@ class ArchiveStore:
         validate_index_layout: bool = True,
     ) -> None:
         self.archive_root = archive_root
+        from polylogue.storage.archive_identity import ArchiveIdentity
+
+        self.operation_identity: ArchiveIdentity | None = None
+        self.operation_vector_connection: sqlite3.Connection | None = None
+        self._operation_read_guard: tuple[Callable[[], int], int] | None = None
+        self.operation_schema_versions: dict[str, int] | None = None
+        self.operation_degraded_components: tuple[str, ...] = ()
         self.source_db_path = archive_root / "source.db"
         self.embeddings_db_path = archive_root / "embeddings.db"
         self.user_db_path = archive_root / "user.db"
@@ -1002,22 +1011,82 @@ class ArchiveStore:
         raw connection.
         """
         self._conn.set_progress_handler(guard, n_opcodes)
+        self._operation_read_guard = (guard, n_opcodes)
+        for connection in (self._source_conn, self.operation_vector_connection):
+            if connection is not None:
+                connection.set_progress_handler(guard, n_opcodes)
+
+    def configure_operation_read_connection(self, connection: sqlite3.Connection) -> None:
+        """Extend the current read budget to a newly acquired sibling handle."""
+        if self._operation_read_guard is not None:
+            guard, opcodes = self._operation_read_guard
+            connection.set_progress_handler(guard, opcodes)
 
     def clear_read_progress_guard(self) -> None:
         """Remove the index connection's progress handler before ownership ends."""
 
         self._conn.set_progress_handler(None, 0)
+        self._operation_read_guard = None
+        for connection in (self._source_conn, self.operation_vector_connection):
+            if connection is not None:
+                connection.set_progress_handler(None, 0)
 
     def begin_read_snapshot(self) -> None:
         """Begin the owned read transaction used by one controlled query call."""
 
         self._conn.execute("BEGIN")
 
+    def pin_operation_snapshot(self) -> tuple[dict[str, int], tuple[str, ...]]:
+        """Pin every available tier while the caller holds publication exclusion.
+
+        SQLite starts each attached database snapshot on its first read. The
+        caller's short publication barrier must cover all these reads; the
+        returned versions then describe the handles serving the operation.
+        """
+
+        if not self._read_only:
+            raise RuntimeError("operation snapshots require a read-only archive")
+        attached = {str(row[1]) for row in self._conn.execute("PRAGMA database_list")}
+        schemas = {"index": "main", "user": "user_tier"}
+        degraded: list[str] = []
+        for tier in ("source", "embeddings", "ops", "audit"):
+            path = self.archive_root / f"{tier}.db"
+            if not path.is_file():
+                degraded.append(tier)
+                continue
+            alias = f"{tier}_tier"
+            if alias not in attached:
+                self._conn.execute(f"ATTACH DATABASE ? AS {alias}", (f"file:{quote(str(path))}?mode=ro",))
+            schemas[tier] = alias
+        if "user_tier" not in attached:
+            schemas.pop("user")
+            degraded.append("user")
+        if not self._conn.in_transaction:
+            self.begin_read_snapshot()
+        versions: dict[str, int] = {}
+        for tier, alias in schemas.items():
+            self._conn.execute(f"SELECT rootpage FROM {alias}.sqlite_schema LIMIT 1").fetchone()
+            versions[tier] = int(self._conn.execute(f"PRAGMA {alias}.user_version").fetchone()[0])
+        if "source" in schemas:
+            source = self.source_connection
+            if not source.in_transaction:
+                source.execute("BEGIN")
+            source.execute("SELECT rootpage FROM sqlite_schema LIMIT 1").fetchone()
+        self.operation_schema_versions = versions
+        self.operation_degraded_components = tuple(degraded)
+        return versions, tuple(degraded)
+
     def end_read_snapshot(self) -> None:
         """Release the owned read snapshot without ever committing read work."""
 
         if self._conn.in_transaction:
             self._conn.rollback()
+        if self._source_conn is not None and self._source_conn.in_transaction:
+            self._source_conn.rollback()
+        if self.operation_vector_connection is not None:
+            self.operation_vector_connection.rollback()
+            self.operation_vector_connection.close()
+            self.operation_vector_connection = None
 
     def interrupt_reads(self) -> None:
         """Interrupt any statement active on the index read connection.
@@ -1026,6 +1095,10 @@ class ArchiveStore:
         is explicitly cross-thread callable).
         """
         self._conn.interrupt()
+        if self._source_conn is not None:
+            self._source_conn.interrupt()
+        if self.operation_vector_connection is not None:
+            self.operation_vector_connection.interrupt()
 
     @property
     def index_connection(self) -> sqlite3.Connection | None:
@@ -1061,13 +1134,14 @@ class ArchiveStore:
         """Return the persistent source.db connection, opening it lazily."""
         if self._source_conn is None:
             if self._read_only or self._inactive_candidate_durable_read_only:
-                conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
+                conn = sqlite3.connect(f"file:{quote(str(self.source_db_path))}?mode=ro", uri=True)
                 conn.execute("PRAGMA query_only = ON")
             else:
                 require_write_lease(f"ArchiveStore(source={self.source_db_path})", archive_root=self.archive_root)
                 conn = sqlite3.connect(self.source_db_path)
             conn.execute("PRAGMA foreign_keys = ON")
             self._source_conn = conn
+            self.configure_operation_read_connection(conn)
         return self._source_conn
 
     def _open_user_write_connection(self, *, initialize: bool = False) -> sqlite3.Connection:
@@ -1115,6 +1189,9 @@ class ArchiveStore:
             self._source_conn.rollback()
 
     def close(self) -> None:
+        if self.operation_vector_connection is not None:
+            self.operation_vector_connection.close()
+            self.operation_vector_connection = None
         if self._blob_publisher is not None:
             self._blob_publisher.discard_pending()
         if self._deferred_secondary_indexes and not self._read_only:
@@ -1803,12 +1880,13 @@ class ArchiveStore:
     def replace_raw_membership_census(
         self,
         raw_id: str,
-        sessions: list[ParsedSession] | None,
+        sessions: Sequence[ParsedSession] | None,
         *,
         parser_fingerprint: str,
         censused_at_ms: int,
         detail: str = "",
         retire_full_revision_governance: bool = False,
+        projections: Sequence[SessionRevisionProjection] | None = None,
         manage_transaction: bool = True,
     ) -> None:
         self._require_writable("replace source.db membership census")
@@ -1820,6 +1898,7 @@ class ArchiveStore:
             censused_at_ms=censused_at_ms,
             detail=detail,
             retire_full_revision_governance=retire_full_revision_governance,
+            projections=projections,
             manage_transaction=manage_transaction,
         )
 
@@ -1904,6 +1983,13 @@ class ArchiveStore:
         defer_fts: bool = False,
         skip_already_applied: bool = False,
         prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
+        prepared_required_raw_ids: frozenset[str] = frozenset(),
+        preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[int, tuple[bytes | None, int, str]]] | None = None,
+        preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
+        prepared_aggregate_session: ParsedSession | None = None,
+        prepared_pending_session: ParsedSession | None = None,
+        prepared_write: PreparedSessionWrite | None = None,
+        prepared_aggregate_content_hash: bytes | None = None,
     ) -> tuple[str, tuple[str, ...]]:
         self._require_writable("apply source.db revision replay")
         return apply_raw_revision_replay(
@@ -1919,6 +2005,13 @@ class ArchiveStore:
             defer_fts=defer_fts,
             skip_already_applied=skip_already_applied,
             prepared_by_raw_id=prepared_by_raw_id,
+            prepared_required_raw_ids=prepared_required_raw_ids,
+            preacquired_attachment_blobs_by_raw_id=preacquired_attachment_blobs_by_raw_id,
+            preacquired_attachment_refs_by_raw_id=preacquired_attachment_refs_by_raw_id,
+            prepared_aggregate_session=prepared_aggregate_session,
+            prepared_pending_session=prepared_pending_session,
+            prepared_write=prepared_write,
+            prepared_aggregate_content_hash=prepared_aggregate_content_hash,
         )
 
     def apply_raw_membership_classification(
@@ -1935,6 +2028,9 @@ class ArchiveStore:
         bulk_fts: bool = False,
         bulk_build: bool = False,
         defer_fts: bool = False,
+        preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
+        preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
+        prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
     ) -> str | None:
         self._require_writable("apply source.db membership classification")
         return apply_raw_membership_classification(
@@ -1950,6 +2046,9 @@ class ArchiveStore:
             bulk_fts=bulk_fts,
             bulk_build=bulk_build,
             defer_fts=defer_fts,
+            preacquired_attachment_blobs=preacquired_attachment_blobs,
+            preacquired_attachment_refs=preacquired_attachment_refs,
+            prepared_by_raw_id=prepared_by_raw_id,
         )
 
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:

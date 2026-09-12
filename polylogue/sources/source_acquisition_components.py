@@ -54,6 +54,7 @@ class SourceReadContext:
     blob_store: BlobStore
     observation_callback: ObservationCallback | None = None
     status_callback: StatusCallback | None = None
+    retained_blob: ArtifactIdentity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,8 +347,14 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
 
     stage_timings = AcquisitionStageTimings()
     sqlite_path = is_sqlite_path(context.path)
-    original_source_path = original_sqlite_source_path(context.path) if sqlite_path else None
-    if (context.provider_hint is Provider.HERMES or original_source_path is not None) and sqlite_path:
+    original_source_path = (
+        original_sqlite_source_path(context.path) if sqlite_path and context.retained_blob is None else None
+    )
+    if (
+        context.retained_blob is None
+        and (context.provider_hint is Provider.HERMES or original_source_path is not None)
+        and sqlite_path
+    ):
         heartbeat = make_status_heartbeat(
             context.status_callback,
             source_name=context.source.name,
@@ -360,12 +367,17 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             detected_provider = Provider.HERMES
             detection_evidence = "sqlite_snapshot.snapshot_sqlite_to_blob (Hermes sqlite state/sidecar)"
     else:
-        blob_hash, blob_size = stream_path_to_blob(
-            context.blob_store,
-            context.path,
-            status_callback=context.status_callback,
-            source_name=context.source.name,
-        )
+        if context.retained_blob is None:
+            blob_hash, blob_size = stream_path_to_blob(
+                context.blob_store,
+                context.path,
+                status_callback=context.status_callback,
+                source_name=context.source.name,
+            )
+        else:
+            # The path is acquisition identity only after acceptance. Every
+            # byte read below comes from the retained content-addressed input.
+            blob_hash, blob_size = context.retained_blob.sha256, context.retained_blob.size_bytes
         prefix = context.blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
         with stage_timings.stage("detect"):
             detected_provider, detection_evidence = detect_provider_from_raw_bytes_evidence(
@@ -424,10 +436,12 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         blob_size=blob_size,
         blob_publication_receipt_id=publication_id,
     )
-    try:
-        file_mtime_epoch: float | None = context.path.stat().st_mtime
-    except OSError:
-        file_mtime_epoch = None
+    file_mtime_epoch: float | None = None
+    if context.retained_blob is None:
+        try:
+            file_mtime_epoch = context.path.stat().st_mtime
+        except OSError:
+            file_mtime_epoch = None
     log_file_acquisition_decision(
         path=context.path,
         size=blob_size,
