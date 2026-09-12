@@ -30,6 +30,7 @@ from polylogue.schemas.synthetic.wire_formats import UnsupportedSyntheticWireRou
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 from tests.infra import wire_support as wire_support_infra
 from tests.infra.wire_support import shared_wire_generation, shared_wire_support_receipt
@@ -1428,6 +1429,68 @@ def test_wire_support_run_cache_rejects_corrupt_content(tmp_path: Path) -> None:
     cache_path.write_text("not json", encoding="utf-8")
 
     assert wire_support_infra._read_cached_receipt(cache_path) is None
+
+
+def test_shared_wire_generation_parser_memo_returns_fresh_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unchanged payload parses once, while callers receive independent models."""
+    original_parse_payload = dispatch_module.parse_payload
+    calls = 0
+
+    def counted_parse_payload(
+        provider: str | Provider,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+        sidecar_resolver: SidecarResolver | None = None,
+    ) -> list[ParsedSession]:
+        nonlocal calls
+        calls += 1
+        return original_parse_payload(
+            provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+            sidecar_resolver=sidecar_resolver,
+        )
+
+    # Make the memo recognize this wrapper as the unmodified route.  This
+    # keeps the test on the production cache path without weakening the
+    # separate parser-mutation tests, which intentionally remain uncached.
+    monkeypatch.setattr(dispatch_module, "parse_payload", counted_parse_payload)
+    monkeypatch.setattr(wire_support_infra, "_ORIGINAL_PARSE_PAYLOAD", counted_parse_payload)
+    wire_support_infra._PARSED_PAYLOADS.clear()
+    payload: JSONValue = {
+        "mapping": {
+            "root": {
+                "message": {
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["memo body"]},
+                },
+                "children": [],
+            }
+        },
+        "current_node": "root",
+        "title": "memo fixture",
+    }
+
+    try:
+        with shared_wire_generation():
+            first = dispatch_module.parse_payload("chatgpt", payload, "memo")
+            assert first and first[0].messages
+            first[0].messages.clear()
+            second = dispatch_module.parse_payload("chatgpt", payload, "memo")
+    finally:
+        wire_support_infra._PARSED_PAYLOADS.clear()
+
+    assert calls == 1
+    assert second and second[0].messages
 
 
 def test_wire_support_run_cache_is_reused_by_a_second_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
