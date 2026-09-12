@@ -159,17 +159,17 @@ class ApiExpressionSurface:
     async def execute(self, request: ModelRequest) -> SurfaceQueryFacts:
         from polylogue.archive.query.expression import compile_expression
 
-        # An expression may carry its own window; the API leg reports the
-        # unpaginated match set and cuts the request's window itself, so its
-        # ``total`` is the pre-window count every other surface's ``total``
-        # field claims to be.
-        spec = replace(compile_expression(request.expression), limit=None, offset=0)
+        # The adapter supplies the requested window to the product route. It
+        # may observe the result, but must not implement pagination by
+        # fetching an unbounded set and slicing ids itself.
+        spec = replace(compile_expression(request.expression), limit=request.limit, offset=request.offset)
         sessions = await self._archive.list_sessions_for_spec(spec)
         ids = tuple(str(session.id) for session in sessions)
-        window = ids[request.offset :]
-        if request.limit is not None:
-            window = window[: request.limit]
-        return SurfaceQueryFacts(surface=self.name, request=request, session_ids=window, total=len(ids))
+        # Count through the same product plan without its display window.
+        # This preserves the envelope contract that ``total`` names matches
+        # before paging, while the page itself remains entirely product-owned.
+        total = await replace(spec, limit=None, offset=0).count(self._archive.config)
+        return SurfaceQueryFacts(surface=self.name, request=request, session_ids=ids, total=total)
 
     async def close(self) -> None:
         await self._archive.close()
@@ -299,9 +299,7 @@ def mcp_session_filters(expression: str) -> dict[str, object] | None:
 class McpExpressionSurface:
     """``query(projection="sessions", ...)`` on the registered tool.
 
-    The session projection has no offset parameter, so a request with an
-    offset is answered unwindowed and reports that weaker request in its
-    facts; a request whose filter MCP cannot express is not answered at all.
+    A request whose filter MCP cannot express is not answered at all.
     """
 
     name = "mcp"
@@ -323,14 +321,13 @@ class McpExpressionSurface:
         filters = mcp_session_filters(request.expression)
         if filters is None:
             return None
-        asked = request if request.offset == 0 else replace(request, limit=None, offset=0)
-        limit = asked.limit if asked.limit is not None else MCP_EXHAUSTIVE_LIMIT
-        payload = await self._tool("query")(projection="sessions", limit=limit, **filters)
+        limit = request.limit if request.limit is not None else MCP_EXHAUSTIVE_LIMIT
+        payload = await self._tool("query")(projection="sessions", limit=limit, offset=request.offset, **filters)
         rows, total = _rows_and_total(json.loads(payload))
         session_ids, rows_are_sessions = _ids_from_rows(rows)
         return SurfaceQueryFacts(
             surface=self.name,
-            request=asked,
+            request=request,
             session_ids=session_ids,
             total=total,
             rows_are_sessions=rows_are_sessions,
