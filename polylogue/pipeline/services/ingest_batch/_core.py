@@ -1587,20 +1587,35 @@ def _iter_ingest_results_chunk(
                 if heartbeat is not None:
                     heartbeat()
                 if time.monotonic() - last_progress_at >= _INGEST_RESULT_PROGRESS_DEADLINE_S:
-                    stalled = True
-                    unfinished = tuple(futures.items())
-                    logger.warning(
-                        "ingest worker progress deadline exceeded; refusing %d unfinished raw item(s)",
-                        len(unfinished),
-                    )
-                    for future, raw_id in unfinished:
-                        future.cancel()
-                        yield IngestRecordResult(
-                            raw_id=raw_id,
-                            error="worker progress deadline exceeded; retryable stalled/refused result",
+                    # A completion may race the timed wait (and test doubles
+                    # are allowed to report an empty ``done`` set). Re-check
+                    # readiness before refusing anything so a result that was
+                    # completed inside the deadline is never replaced by a
+                    # retryable timeout outcome.
+                    done = {future for future in futures if future.done()}
+                    if not done:
+                        stalled = True
+                        unfinished = tuple(futures.items())
+                        logger.warning(
+                            "ingest worker progress deadline exceeded; refusing %d unfinished raw item(s)",
+                            len(unfinished),
                         )
-                    futures.clear()
-                continue
+                        for future, raw_id in unfinished:
+                            future.cancel()
+                            yield IngestRecordResult(
+                                raw_id=raw_id,
+                                error="worker progress deadline exceeded; retryable stalled/refused result",
+                            )
+                        futures.clear()
+                        if progress is not None:
+                            # Refused work is no longer owned by this
+                            # coordinator. Leaving these ids in the progress
+                            # snapshot would make a settled batch look as if
+                            # its source cursor were still in flight.
+                            progress.in_flight_raw_ids.clear()
+                        continue
+                else:
+                    continue
             last_progress_at = time.monotonic()
             for future in done:
                 raw_id = futures.pop(future)
