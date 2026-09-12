@@ -1749,6 +1749,13 @@ def extract_messages_from_mapping(
                                 ),
                                 provider_key=content_type,
                                 mime_type=media_mime_type,
+                                # A media-shaped part without a provider
+                                # pointer is still source evidence, but it
+                                # cannot identify or claim acquired bytes.
+                                # Make that absence explicit instead of
+                                # emitting a construct whose only useful
+                                # fields are its type and provider spelling.
+                                status="unavailable",
                             )
                         )
                     content_blocks.append(

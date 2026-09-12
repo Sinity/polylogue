@@ -453,6 +453,32 @@ def test_standalone_video_pointer_is_typed_and_keeps_provider_metadata() -> None
     assert attachment.producer_ref == "message:video-msg"
 
 
+def test_media_part_without_pointer_is_typed_unavailable_without_attachment() -> None:
+    """Missing provider identity is unavailable evidence, never an asset row."""
+    messages, attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "missing-audio-msg",
+                    "author": {"role": "user"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [{"content_type": "audio_asset_pointer", "mime_type": "audio/wav"}],
+                    },
+                },
+            }
+        }
+    )
+
+    construct = messages[0].blocks[0].web_constructs[0]
+    assert construct.provider_key == "audio_asset_pointer"
+    assert construct.asset_pointer is None
+    assert construct.status == "unavailable"
+    assert attachments == []
+
+
 def test_chatgpt_shared_conversation_index_shell_is_tagged() -> None:
     session = chatgpt_parse(
         {
