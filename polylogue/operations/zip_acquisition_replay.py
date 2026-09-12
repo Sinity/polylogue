@@ -53,6 +53,11 @@ class MemberCandidate:
         except (JSONDecodeError, ValueError, TypeError):
             return hashlib.sha256(self.payload_bytes).hexdigest()
 
+    @property
+    def byte_identity(self) -> str:
+        """Legacy raw-byte identity retained for pre-migration rows."""
+        return hashlib.sha256(self.payload_bytes).hexdigest()
+
 
 @dataclass(frozen=True, slots=True)
 class MemberResolution:
@@ -92,10 +97,10 @@ def resolve_member_candidate(
         return MemberResolution(None, "ambiguous", "content_identity:unavailable")
 
     hinted = _hinted_candidate(candidates, hint_mode=hint_mode, hint_index=hint_index)
-    if hinted is not None and _digest(hinted) == expected_digest:
+    if hinted is not None and _matches_expected(hinted, expected_digest):
         return MemberResolution(hinted.payload_bytes, "hint_verified", None)
 
-    matching = [candidate for candidate in candidates if _digest(candidate) == expected_digest]
+    matching = [candidate for candidate in candidates if _matches_expected(candidate, expected_digest)]
     if not matching:
         return MemberResolution(None, "unmatched", "content_identity:unmatched")
     # Every match carries identical bytes, so the recovered value is the same
@@ -106,7 +111,11 @@ def resolve_member_candidate(
 
 
 def _digest(candidate: MemberCandidate) -> str:
-    return hashlib.sha256(candidate.payload_bytes).hexdigest()
+    return candidate.content_identity
+
+
+def _matches_expected(candidate: MemberCandidate, expected_digest: str) -> bool:
+    return candidate.content_identity == expected_digest or candidate.byte_identity == expected_digest
 
 
 def _hinted_candidate(
@@ -215,6 +224,14 @@ def zip_reacquisition_payload(
 
 
 def _expected_digest(row: Mapping[str, object]) -> str | None:
+    for key in ("content_identity", "content_digest"):
+        value = row.get(key)
+        if isinstance(value, str) and len(value) == 64:
+            try:
+                bytes.fromhex(value)
+            except ValueError:
+                continue
+            return value.lower()
     blob_hash = row.get("blob_hash")
     if isinstance(blob_hash, (bytes, bytearray)) and len(blob_hash) == 32:
         return bytes(blob_hash).hex()
@@ -224,6 +241,9 @@ def _expected_digest(row: Mapping[str, object]) -> str | None:
         bytes.fromhex(blob_hash)
     except ValueError:
         return None
+    # Legacy rows predate the durable structural digest.  Their raw byte hash
+    # remains a safe compatibility identity (and is never used for migrated
+    # rows, which carry ``content_identity``).
     return blob_hash.lower()
 
 

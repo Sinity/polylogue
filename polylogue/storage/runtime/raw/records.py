@@ -22,6 +22,7 @@ class RawSessionRecord(BaseModel):
     # tier records how this payload is addressed rather than inferring it
     # from a position that cannot express a whole-member document.
     addressing_mode: MemberAddressingMode | None = Field(default=None, exclude=True)
+    content_identity: str | None = Field(default=None, exclude=True)
     blob_size: int
     acquired_at: str
     file_mtime: str | None = None

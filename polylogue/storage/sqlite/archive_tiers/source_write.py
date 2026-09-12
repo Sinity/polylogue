@@ -297,6 +297,7 @@ def record_raw_container_coordinate(
     entry_ordinal: int,
     split_index: int,
     addressing_mode: MemberAddressingMode | str | None,
+    content_identity: str | None = None,
     manage_transaction: bool = True,
 ) -> None:
     """Persist one content-independent container coordinate for a raw row.
@@ -309,6 +310,13 @@ def record_raw_container_coordinate(
     """
     if entry_ordinal < 0 or split_index < 0:
         raise ValueError("container entry ordinal and split index must be non-negative")
+    if content_identity is not None:
+        if len(content_identity) != 64:
+            raise ValueError("content_identity must be a 64-character digest")
+        try:
+            bytes.fromhex(content_identity)
+        except ValueError as exc:
+            raise ValueError("content_identity must be hexadecimal") from exc
     mode = (
         require_vocabulary(addressing_mode, MemberAddressingMode, field="addressing_mode")
         if addressing_mode is not None
@@ -318,10 +326,10 @@ def record_raw_container_coordinate(
         conn.execute(
             """
             INSERT OR IGNORE INTO raw_container_coordinates (
-                raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode
-            ) VALUES (?, ?, ?, ?, ?)
+                raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (raw_id, coordinate_format, entry_ordinal, split_index, mode),
+            (raw_id, coordinate_format, entry_ordinal, split_index, mode, content_identity),
         )
         if mode is not None:
             # A row written before the mode existed carries the same
@@ -336,7 +344,7 @@ def record_raw_container_coordinate(
             )
         stored = conn.execute(
             """
-            SELECT coordinate_format, entry_ordinal, split_index, addressing_mode
+            SELECT coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity
             FROM raw_container_coordinates
             WHERE raw_id = ?
             """,
@@ -348,6 +356,13 @@ def record_raw_container_coordinate(
             raise ValueError(f"raw container coordinate changed for {raw_id}")
         if mode is not None and stored_tuple[3] != mode:
             raise ValueError(f"raw container addressing mode changed for {raw_id}")
+        if content_identity is not None and stored_tuple[4] not in {None, content_identity}:
+            raise ValueError(f"raw container content identity changed for {raw_id}")
+        if content_identity is not None and stored_tuple[4] is None:
+            conn.execute(
+                "UPDATE raw_container_coordinates SET content_identity = ? WHERE raw_id = ?",
+                (content_identity, raw_id),
+            )
 
 
 def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> CaptureModeResolution:

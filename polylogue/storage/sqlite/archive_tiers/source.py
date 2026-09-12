@@ -10,7 +10,7 @@ from typing import Final
 
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-SOURCE_SCHEMA_VERSION = 43
+SOURCE_SCHEMA_VERSION = 44
 
 # ddl-lifecycle-waiver: benign CREATE TABLE source_generations vocabulary membership moves to typed write validation; structural checks remain in DDL.
 # These objects may remain in a migrated historical source tier. Fresh source
@@ -290,7 +290,10 @@ CREATE TABLE IF NOT EXISTS raw_container_coordinates (
     -- Which reading of the member this coordinate addresses. NULL is a row
     -- acquired before the mode was recorded: unknown, never a default
     -- reading. Vocabulary is validated at the write boundary.
-    addressing_mode    TEXT
+    addressing_mode    TEXT,
+    -- Digest of the decoded provider value (or opaque bytes for raw-only
+    -- members).  Coordinates and source_index are hints only.
+    content_identity   TEXT CHECK(content_identity IS NULL OR length(content_identity) = 64)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_origin

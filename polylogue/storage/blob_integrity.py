@@ -906,6 +906,11 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
         if has_container_coordinates and _column_exists(conn, "raw_container_coordinates", "addressing_mode")
         else "NULL"
     )
+    content_identity_column = (
+        "coordinate.content_identity"
+        if has_container_coordinates and _column_exists(conn, "raw_container_coordinates", "content_identity")
+        else "NULL"
+    )
     blob_size_column = "blob_size" if _column_exists(conn, "raw_sessions", "blob_size") else "0"
     parse_error_column = "parse_error" if _column_exists(conn, "raw_sessions", "parse_error") else "NULL"
     validation_status_column = (
@@ -935,6 +940,7 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
                {entry_ordinal_column} AS entry_ordinal,
                {split_index_column} AS split_index,
                {addressing_mode_column} AS addressing_mode,
+               {content_identity_column} AS content_identity,
                1 AS ref_id_has_raw_session
         FROM raw_sessions
         {coordinate_join}
@@ -1347,6 +1353,11 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
         if has_container_coordinates and _column_exists(conn, "raw_container_coordinates", "addressing_mode")
         else "NULL"
     )
+    content_identity_column = (
+        "coordinate.content_identity"
+        if has_container_coordinates and _column_exists(conn, "raw_container_coordinates", "content_identity")
+        else "NULL"
+    )
     rows = conn.execute(
         f"""
         SELECT lower(hex(blob_hash)) AS blob_hash,
@@ -1363,6 +1374,7 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
                {entry_ordinal_column} AS entry_ordinal,
                {split_index_column} AS split_index,
                {addressing_mode_column} AS addressing_mode
+               ,{content_identity_column} AS content_identity
         FROM raw_sessions
         {coordinate_join}
         WHERE blob_hash IS NOT NULL
@@ -1415,7 +1427,9 @@ def _member_payload_by_content(
     *,
     split_index: int,
     blob_hash: str | None,
-    positional_when_content_is_gone: bool,
+    content_identity: str | None = None,
+    addressing_mode: str | None = None,
+    positional_when_content_is_gone: bool = False,
 ) -> bytes:
     """Return the member value the recorded reference names.
 
@@ -1428,7 +1442,9 @@ def _member_payload_by_content(
     recanonicalizing a row onto whatever its source holds now. Every caller
     that is proving a recorded reference leaves it false.
     """
-    if isinstance(decoded_payload, list):
+    if addressing_mode == "whole_member":
+        elements = [decoded_payload]
+    elif isinstance(decoded_payload, list):
         elements = list(decoded_payload)
     elif split_index == 0:
         elements = [decoded_payload]
@@ -1437,17 +1453,25 @@ def _member_payload_by_content(
     hinted: bytes | None = None
     if 0 <= split_index < len(elements):
         hinted = json_dumps_bytes(elements[split_index])
-        if blob_hash is None or hashlib.sha256(hinted).hexdigest() == blob_hash:
+        if _payload_matches(hinted, blob_hash=blob_hash, content_identity=content_identity):
             return hinted
     elif blob_hash is None:
         raise IndexError(f"source_index {split_index} outside member array")
     for element in elements:
         encoded = json_dumps_bytes(element)
-        if hashlib.sha256(encoded).hexdigest() == blob_hash:
+        if _payload_matches(encoded, blob_hash=blob_hash, content_identity=content_identity):
             return encoded
     if positional_when_content_is_gone and hinted is not None:
         return hinted
     raise IndexError(f"no member value matches the content identity of {blob_hash}")
+
+
+def _payload_matches(payload: bytes, *, blob_hash: str | None, content_identity: str | None) -> bool:
+    if content_identity is not None:
+        from polylogue.core.content_identity import payload_content_identity
+
+        return payload_content_identity(payload) == content_identity
+    return blob_hash is None or hashlib.sha256(payload).hexdigest() == blob_hash
 
 
 def _current_raw_payload_bytes(
@@ -1456,6 +1480,8 @@ def _current_raw_payload_bytes(
     *,
     raw_id: str | None = None,
     blob_hash: str | None = None,
+    content_identity: str | None = None,
+    addressing_mode: str | None = None,
     zip_coordinate: tuple[int, int] | None = None,
     source_bytes_cache: dict[str, bytes] | None = None,
     decoded_payload_cache: dict[str, object] | None = None,
@@ -1549,6 +1575,8 @@ def _current_raw_payload_bytes(
                 decoded_payload,
                 split_index=int(split_index),
                 blob_hash=blob_hash,
+                content_identity=content_identity,
+                addressing_mode=addressing_mode,
                 positional_when_content_is_gone=positional_when_content_is_gone,
             )
         except (IndexError, CoreJSONDecodeError, UnicodeDecodeError) as exc:
@@ -1886,6 +1914,8 @@ def replace_raw_backed_blob_reference_debt_from_source(
                 int(row["source_index"]) if row.get("source_index") is not None else None,
                 raw_id=raw_id,
                 blob_hash=old_blob_hash,
+                content_identity=_optional_str(row.get("content_identity")),
+                addressing_mode=_optional_str(row.get("addressing_mode")),
                 zip_coordinate=zip_coordinate,
                 source_bytes_cache=source_bytes_cache,
                 decoded_payload_cache=decoded_payload_cache,
@@ -1986,6 +2016,8 @@ def replace_raw_backed_blob_reference_debt_from_source(
                 int(row["source_index"]) if row.get("source_index") is not None else None,
                 raw_id=str(row["raw_id"]),
                 blob_hash=str(row.get("blob_hash") or ""),
+                content_identity=_optional_str(row.get("content_identity")),
+                addressing_mode=_optional_str(row.get("addressing_mode")),
                 zip_coordinate=zip_coordinate,
                 source_bytes_cache=apply_source_bytes_cache,
                 decoded_payload_cache=apply_decoded_payload_cache,

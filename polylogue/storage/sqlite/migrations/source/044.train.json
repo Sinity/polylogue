@@ -1,0 +1,63 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": "backup-profile:source-tier",
+  "current_version": 43,
+  "declared_at_ms": 0,
+  "drop_constraints": [],
+  "failure": null,
+  "fresh_ddl_parity": null,
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "manifest_sha256": "1fe50cfc6f92a0cf08af235f7181b58d5a8b84ce67ff5b0534c80ca7808194c7",
+  "migration": {
+    "owner_ref": "polylogue-wzgpf",
+    "path": "044_raw_container_content_identity.sql",
+    "requires_backup": true,
+    "slot": 44,
+    "sql_sha256": "eacabd1eb980d0e39a8891174d25d1298d4405ccd466165e9d7958b639589587",
+    "target_version": 44,
+    "tier": "source"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "polylogue-wzgpf",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": ["proof:source-v44:member-content-identity"],
+      "owner_ref": "polylogue-wzgpf",
+      "rider_id": "rider:raw-container-content-identity",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:source-v44:member-content-identity",
+          "consumer_id": "member-content-identity-write",
+          "production_ref": "polylogue.storage.sqlite.archive_tiers.source_write:record_raw_container_coordinate",
+          "roles": ["write"]
+        },
+        {
+          "behavior_proof_ref": "proof:source-v44:member-content-identity",
+          "consumer_id": "member-content-identity-replay",
+          "production_ref": "polylogue.operations.zip_acquisition_replay:resolve_member_candidate",
+          "roles": ["read"]
+        }
+      ],
+      "schema_objects": ["column:raw_container_coordinates.content_identity"],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "slot": 44,
+  "source_continuity_evidence": null,
+  "state": "declared",
+  "target_version": 44,
+  "tier": "source",
+  "train_id": "train:source:v44"
+}
