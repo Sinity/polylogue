@@ -157,25 +157,8 @@ _RAW_MATERIALIZATION_MAX_PASS_SECONDS = 20.0
 # An additional root is content-detected by the ordinary export route. SQLite
 # remains admitted only by typed provider sources such as Hermes and Codex.
 _ADDITIONAL_SOURCE_SUFFIXES = (".json", ".jsonl", ".ndjson", ".zip")
-# polylogue-qlae: the same bounded-hold technique applied to the daemon's
-# other unbounded writer-holding actor. Journal aggregation (2026-07-29 to
-# 2026-07-31) measured `maintenance.drive_catchup` hold_max=18,623s -- a
-# single `coordinator.run("maintenance.drive_catchup", ...)` call wraps the
-# whole Drive acquire+parse pass with no internal checkpoint, so a large
-# first-run or post-outage backlog holds the writer for its entire duration
-# regardless of `_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS`. `ParsingService
-# .ingest_sources`'s parse stage (`parse_from_raw`) already batches raw ids
-# by `raw_batch_size`/blob-byte limit -- a genuine transaction-boundary
-# checkpoint identical in shape to raw-materialization's per-component
-# checkpoint -- so the same `max_pass_seconds` parameter, threaded through
-# `ingest_sources` -> `parse_from_raw`, bounds this actor's hold the same
-# way. Raw ids left unattempted this call remain ordinary parse backlog,
-# recomputed by `collect_parse_backlog`/`collect_validation_backlog` on the
-# next `_periodic_drive_source_catchup` tick. This does NOT bound the
-# acquire stage (network/filesystem walk across configured Drive sources,
-# which runs before the parse stage and is not chunked at a granularity this
-# checkpoint can safely cover) -- see the drive_catchup follow-up note where
-# this constant is used.
+# Parse passes checkpoint between raw batches. Acquisition has no pass-time
+# limit, but its downloads and preparation hold no archive writer lease.
 _DRIVE_CATCHUP_MAX_PASS_SECONDS = 20.0
 # polylogue-t93b: escalation-tier envelope for the whale pass. A component
 # permanently resource-blocked at the ordinary fast-path limit above
@@ -751,6 +734,7 @@ async def _run_drive_source_catchup_once() -> int:
     the staged acquisition pipeline explicitly.
     """
     from polylogue.config import get_config
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
     from polylogue.pipeline.services.ingest_batch import refresh_session_insights_bulk
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.services import build_runtime_services
@@ -764,10 +748,12 @@ async def _run_drive_source_catchup_once() -> int:
     try:
         repository = services.get_repository()
         backend = services.get_backend()
+        execution = DriveCatchupExecution(daemon_write_coordinator())
         parser = ParsingService(
             repository=repository,
             archive_root=config.archive_root,
             config=config,
+            execution=execution,
         )
         result = await parser.ingest_sources(
             sources=sources,
@@ -777,7 +763,7 @@ async def _run_drive_source_catchup_once() -> int:
         )
         session_ids = sorted(result.parse_result.processed_ids)
         if session_ids:
-            await refresh_session_insights_bulk(backend, session_ids)
+            await execution.publish("insights", lambda: refresh_session_insights_bulk(backend, session_ids))
         if result.parse_result.time_budget_exceeded:
             logger.info(
                 "daemon: Drive catch-up pass yielded at time-budget checkpoint "
@@ -822,8 +808,7 @@ async def _periodic_drive_source_catchup(
     await _await_catch_up_gate(catch_up_complete, loop_name="drive source catch-up")
 
     while True:
-        coordinator = daemon_write_coordinator()
-        changed = await coordinator.run("maintenance.drive_catchup", _run_drive_source_catchup_safely)
+        changed = await _run_drive_source_catchup_safely()
         if changed:
             logger.info("daemon: Drive catch-up refreshed %d session(s)", changed)
         await asyncio.sleep(_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS)
@@ -3389,9 +3374,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         return await write_coordinator.run_sync(actor, function, *args, **kwargs)
 
                     async def run_remote_intake() -> int:
-                        return await write_coordinator.run(
-                            "maintenance.drive_catchup", _run_drive_source_catchup_safely
-                        )
+                        return await _run_drive_source_catchup_safely()
 
                     raw_intake_discovery = RawMaterializationDiscovery(
                         archive_root_path,

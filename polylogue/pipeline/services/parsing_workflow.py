@@ -201,7 +201,7 @@ async def ingest_sources(
     if skip_acquire:
         acquire_result = AcquireResult()
     else:
-        acquire_result = await AcquisitionService(backend=backend).acquire_sources(
+        acquire_result = await AcquisitionService(backend=backend, execution=service.execution).acquire_sources(
             sources,
             ui=ui,
             progress_callback=progress_callback,
@@ -337,19 +337,10 @@ async def parse_from_raw(
     transform + write in one pass). Derived session-insight materialization
     happens in an explicit downstream pipeline stage.
 
-    ``max_pass_seconds`` (polylogue-qlae, default ``None`` = unbounded,
-    byte-for-byte unchanged for existing callers) bounds this call's own
-    wall-clock duration -- and therefore the writer-coordinator hold a caller
-    (e.g. the daemon's Drive catch-up actor) runs it under. Mirrors
-    ``converge_raw_materialization``'s ``max_pass_seconds`` (polylogue-de2a):
-    elapsed time is checked only *between* raw-id batches, the same point
-    this loop already commits and would naturally recompute a backlog on the
-    next call -- not a mid-write yield (a mid-batch transaction cannot safely
-    release the write lock without releasing the real DB-level lock). Each
-    branch always completes at least one batch before checking the budget,
-    so a single slower-than-budget batch still makes forward progress
-    instead of stalling. Raw ids left unattempted this call remain ordinary
-    backlog candidates for the caller's next call.
+    ``max_pass_seconds`` checks elapsed time between raw batches, after at
+    least one batch completes. Unattempted raw IDs remain ordinary backlog.
+    With phased execution, each completed raw unit has its own admitted
+    publication; download and parser preparation do not hold that admission.
     """
     from polylogue.pipeline.services.ingest_batch import process_ingest_batch, repair_message_fts_bulk
 
@@ -402,7 +393,7 @@ async def parse_from_raw(
                 result,
                 progress_callback,
                 force_write=force_write,
-                repair_message_fts=False,
+                repair_message_fts=service.execution is not None and repair_message_fts,
                 suspend_fts_triggers=batch_blob_bytes >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
@@ -465,7 +456,7 @@ async def parse_from_raw(
                 result,
                 progress_callback,
                 force_write=force_write,
-                repair_message_fts=False,
+                repair_message_fts=service.execution is not None and repair_message_fts,
                 suspend_fts_triggers=batch_blob_bytes >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
@@ -489,7 +480,7 @@ async def parse_from_raw(
                     rate=round(len(batch_ids) / batch_elapsed, 1) if batch_elapsed > 0 else 0,
                 )
 
-    if repair_message_fts and batches_processed > 0:
+    if repair_message_fts and batches_processed > 0 and service.execution is None:
         await repair_message_fts_bulk(backend, result.changed_session_ids)
 
     elapsed = time.perf_counter() - t_start

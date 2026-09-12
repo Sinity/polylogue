@@ -21,6 +21,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, wait
 from contextlib import AsyncExitStack, closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -102,6 +103,7 @@ from polylogue.storage.sqlite.connection_profile import (
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 if TYPE_CHECKING:
+    from polylogue.archive.write_effects import WriteEffect, WriteEffectContext
     from polylogue.core.protocols import ProgressCallback
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.pipeline.services.parsing_models import ParseResult
@@ -122,8 +124,10 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _IngestBatchSummary,
     _IngestWorkerRequest,
     _ParsingServiceRawStateLike,
+    _PreparedIngestUnit,
     _RawIngestOutcome,
     _SessionEntry,
+    _SourceSnapshot,
 )
 from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
 from polylogue.pipeline.services.ingest_batch._summary import (
@@ -833,6 +837,20 @@ def _bind_drive_revision_lineage(
         return None
     if session_to_write.source_name is not Provider.GEMINI:
         return None
+    if source_conn.execute("PRAGMA query_only").fetchone()[0]:
+        with closing(
+            open_isolated_write_connection(
+                blob_publisher.source_db_path,
+                purpose="Drive revision lineage",
+                archive_root=blob_publisher.source_db_path.parent,
+            )
+        ) as writer:
+            return _bind_drive_revision_lineage(
+                session_to_write,
+                raw_id=raw_id,
+                source_conn=writer,
+                blob_publisher=blob_publisher,
+            )
     logical_source_key = (
         f"{origin_from_provider(session_to_write.source_name).value}:{session_to_write.provider_session_id}"
     )
@@ -901,6 +919,7 @@ def _write_session(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     attachment_owner_resolutions: list[dict[str, str]] | None = None,
+    drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
 
@@ -947,11 +966,15 @@ def _write_session(
     freshness_force_replace = False
     browser_precedence: BrowserCapturePrecedence = "default"
 
-    drive_revision_plan = _bind_drive_revision_lineage(
-        session_to_write,
-        raw_id=payload.raw_id,
-        source_conn=source_conn,
-        blob_publisher=blob_publisher,
+    drive_revision_plan = (
+        drive_plans.get(payload.session_id)
+        if drive_plans is not None
+        else _bind_drive_revision_lineage(
+            session_to_write,
+            raw_id=payload.raw_id,
+            source_conn=source_conn,
+            blob_publisher=blob_publisher,
+        )
     )
     # polylogue-sp72 AC2: once real byte-prefix lineage evidence has proven
     # this raw is the classifier's accepted chain head for its logical
@@ -1321,6 +1344,7 @@ def _write_session_entry(
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
+    drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
 ) -> bool:
     try:
         t_write = time.perf_counter()
@@ -1337,6 +1361,7 @@ def _write_session_entry(
             fresh_build=fresh_build,
             fresh_build_batch=fresh_build_batch,
             attachment_owner_resolutions=summary.attachment_owner_resolutions,
+            drive_plans=drive_plans,
         )
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
@@ -1451,6 +1476,7 @@ def _drain_ready_session_entries(
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
+    drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
 ) -> int:
     if not fresh_build:
         _delete_stale_sessions_for_raw_entries(conn, ready_entries)
@@ -1486,6 +1512,7 @@ def _drain_ready_session_entries(
             source_conn=source_conn,
             fresh_build=fresh_build,
             fresh_build_batch=fresh_build_batch,
+            drive_plans=drive_plans,
         )
         discard_session_data_payload(cdata)
         if not wrote:
@@ -1759,6 +1786,7 @@ def _drain_ingest_result(
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
+    drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
 ) -> None:
     _record_outcome(summary, ir)
     _observe_current_rss(summary)
@@ -1818,6 +1846,7 @@ def _drain_ingest_result(
         source_conn=source_conn,
         fresh_build=fresh_build,
         fresh_build_batch=fresh_build_batch,
+        drive_plans=drive_plans,
     )
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
@@ -1938,14 +1967,20 @@ def _commit_sync_ingest_side_effects(
     db_path: Path,
     changed_session_ids: Sequence[str],
     repair_message_fts: bool = True,
+    settle_deferred_effects: bool = False,
 ) -> None:
     """Run post-ingest side effects through the canonical write-effects path."""
+
+    def settle_effect(effect: WriteEffect, context: WriteEffectContext) -> None:
+        effect.run(context)
+
     ArchiveWriteGateway(db_path).commit_write_sync(
         WriteOperation.INGEST,
         {
             "_connection": conn,
             "changed_session_ids": tuple(changed_session_ids),
             "repair_message_fts": repair_message_fts,
+            **({"deferred_scheduler": settle_effect} if settle_deferred_effects else {}),
         },
     )
 
@@ -1971,6 +2006,210 @@ def _resolve_codex_sidecar_snapshots(
             record.sidecar_snapshot = {}
 
 
+_DRIVE_REVISION_COLUMNS = (
+    "logical_source_key",
+    "revision_kind",
+    "source_revision",
+    "predecessor_source_revision",
+    "predecessor_raw_id",
+    "baseline_raw_id",
+    "append_start_offset",
+    "append_end_offset",
+    "acquisition_generation",
+    "revision_authority",
+)
+_DRIVE_COHORT_MAX_ROWS = 1000
+_DRIVE_COHORT_MAX_BYTES = 128 * 1024 * 1024
+
+
+def _source_snapshot(
+    conn: sqlite3.Connection, table: str, predicate: str, parameters: tuple[str, ...]
+) -> _SourceSnapshot:
+    cursor = conn.execute(f"SELECT * FROM {table} WHERE {predicate} LIMIT 0", parameters)
+    columns = tuple(column[0] for column in cursor.description)
+    order = ", ".join(str(index + 1) for index in range(len(columns)))
+    rows = conn.execute(
+        f"SELECT * FROM {table} WHERE {predicate} ORDER BY {order} LIMIT ?",
+        (*parameters, _DRIVE_COHORT_MAX_ROWS + 1),
+    ).fetchall()
+    return _SourceSnapshot(table, predicate, parameters, columns, tuple(tuple(row) for row in rows))
+
+
+def _ingest_index_binding(db_path: Path) -> tuple[str, int, int]:
+    resolved = db_path.resolve(strict=True)
+    stat = resolved.stat()
+    return str(resolved), stat.st_dev, stat.st_ino
+
+
+def _ingest_policy_binding(archive_root: Path) -> tuple[object, ...]:
+    with closing(open_readonly_connection(archive_root / "user.db", validate_schema=False)) as user:
+        epoch = tuple(user.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1").fetchone())
+    with closing(open_readonly_connection(archive_root / "audit.db", validate_schema=False)) as audit:
+        head = audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head WHERE singleton=1").fetchone()
+    return (*epoch, *(tuple(head) if head is not None else (None, None)))
+
+
+def _ingest_revision_heads(db_path: Path, keys: tuple[str, ...]) -> tuple[tuple[object, ...], ...]:
+    if not keys:
+        return ()
+    marks = ",".join("?" for _ in keys)
+    with closing(open_readonly_connection(db_path, validate_schema=False)) as index:
+        return tuple(
+            tuple(row)
+            for row in index.execute(
+                f"SELECT * FROM raw_revision_heads WHERE logical_source_key IN ({marks}) "
+                f"OR session_id IN ({marks}) ORDER BY logical_source_key",
+                (*keys, *keys),
+            )
+        )
+
+
+def _prepare_ingest_unit_sync(
+    raw_id: str,
+    *,
+    db_path: Path,
+    archive_root: Path,
+    validation_mode: str,
+    publication_mode: PublicationMode,
+    measure_ingest_result_size: bool,
+) -> _PreparedIngestUnit | None:
+    """Finish one parser result and Drive comparison with all readers closed."""
+    from polylogue.storage.sqlite.queries.mappers import _row_to_raw_session
+    from polylogue.storage.sqlite.write_lease import current_write_lease
+
+    if current_write_lease() is not None:
+        raise RuntimeError("ingest preparation requires a lease-free caller")
+    index_binding = _ingest_index_binding(db_path)
+    policy_binding = _ingest_policy_binding(archive_root)
+    with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source:
+        source.row_factory = sqlite3.Row
+        row = source.execute("SELECT * FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone()
+        if row is None:
+            return None
+        input_row = tuple(row)
+        record = _row_to_raw_session(row)
+    request = _make_ingest_worker_request(
+        archive_root_str=str(archive_root),
+        blob_root_str=str(archive_root / "blob"),
+        validation_mode=validation_mode,
+        measure_ingest_result_size=measure_ingest_result_size,
+    )
+    _resolve_codex_sidecar_snapshots([record], archive_root=archive_root)
+    results = list(_iter_ingest_results_sync([record], request=request, worker_count=1))
+    if len(results) != 1:
+        raise RuntimeError("one raw input must produce exactly one completed ingest result")
+    result = results[0]
+    keys = tuple(sorted({payload.session_id for payload in result.sessions}))
+    marks = ",".join("?" for _ in keys) or "NULL"
+    with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source:
+        source.execute("BEGIN")
+        raw = _source_snapshot(source, "raw_sessions", f"raw_id=? OR logical_source_key IN ({marks})", (raw_id, *keys))
+        members = _source_snapshot(
+            source, "raw_session_memberships", f"raw_id=? OR logical_source_key IN ({marks})", (raw_id, *keys)
+        )
+        cohort_ids = tuple(sorted({raw_id, *(str(row[members.columns.index("raw_id")]) for row in members.rows)}))
+        cohort_marks = ",".join("?" for _ in cohort_ids)
+        census = _source_snapshot(source, "raw_membership_census", f"raw_id IN ({cohort_marks})", cohort_ids)
+        artifacts = _source_snapshot(source, "raw_artifacts", "raw_id=?", (raw_id,))
+    snapshots = (raw, members, census, artifacts)
+    raw_id_position = raw.columns.index("raw_id")
+    stale = not any(row[raw_id_position] == raw_id and row == input_row for row in raw.rows)
+    stale |= any(len(snapshot.rows) > _DRIVE_COHORT_MAX_ROWS for snapshot in snapshots)
+    stale |= (
+        sum(int(cast(int, row[raw.columns.index("blob_size")])) for row in raw.rows if row[raw_id_position] != raw_id)
+        > _DRIVE_COHORT_MAX_BYTES
+    )
+    plans: dict[str, RevisionReplayPlan | None] = {}
+    updates: tuple[tuple[object, ...], ...] = ()
+    if not stale:
+        # This private, bounded scratch relation lets the existing Drive
+        # governance code calculate its exact updates without an archive writer.
+        # Only the revision column delta survives; no SQL or connection escapes.
+        with closing(sqlite3.connect(":memory:")) as scratch:
+            for snapshot in snapshots:
+                columns = ",".join(_quote_identifier(column) for column in snapshot.columns)
+                scratch.execute(f"CREATE TABLE {snapshot.table} ({columns})")
+                values = ",".join("?" for _ in snapshot.columns)
+                scratch.executemany(f"INSERT INTO {snapshot.table} VALUES ({values})", snapshot.rows)
+            scratch.commit()
+            publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+            for payload in result.sessions:
+                plans[payload.session_id] = _bind_drive_revision_lineage(
+                    payload.parsed_session,
+                    raw_id=raw_id,
+                    source_conn=scratch,
+                    blob_publisher=publisher,
+                )
+            revision_positions = tuple(raw.columns.index(column) for column in _DRIVE_REVISION_COLUMNS)
+            before = {row[raw_id_position]: tuple(row[pos] for pos in revision_positions) for row in raw.rows}
+            revision_columns = ",".join(_DRIVE_REVISION_COLUMNS)
+            updates = tuple(
+                tuple(row)
+                for row in scratch.execute(f"SELECT {revision_columns}, raw_id FROM raw_sessions")
+                if tuple(row[:-1]) != before[row[-1]]
+            )
+    return _PreparedIngestUnit(
+        result,
+        snapshots,
+        index_binding,
+        policy_binding,
+        _ingest_revision_heads(db_path, keys),
+        keys,
+        plans,
+        updates,
+        validation_mode,
+        publication_mode.value,
+        stale,
+    )
+
+
+def _prepared_ingest_is_current(
+    prepared: _PreparedIngestUnit,
+    *,
+    db_path: Path,
+    archive_root: Path,
+    validation_mode: str,
+    publication_mode: PublicationMode,
+) -> bool:
+    if (
+        prepared.stale
+        or prepared.validation_mode != validation_mode
+        or prepared.publication_mode != publication_mode.value
+    ):
+        return False
+    if (
+        _ingest_index_binding(db_path) != prepared.index_binding
+        or _ingest_policy_binding(archive_root) != prepared.policy_binding
+    ):
+        return False
+    if _ingest_revision_heads(db_path, prepared.logical_keys) != prepared.revision_heads:
+        return False
+    with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source:
+        source.execute("BEGIN")
+        return all(
+            _source_snapshot(source, snapshot.table, snapshot.predicate, snapshot.parameters) == snapshot
+            for snapshot in prepared.source_snapshots
+        )
+
+
+def _publish_drive_revision_updates(prepared: _PreparedIngestUnit, archive_root: Path) -> None:
+    if not prepared.drive_revision_updates:
+        return
+    assignments = ",".join(f"{column}=?" for column in _DRIVE_REVISION_COLUMNS)
+    with (
+        closing(
+            open_isolated_write_connection(
+                archive_root / "source.db",
+                purpose="prepared Drive lineage",
+                archive_root=archive_root,
+            )
+        ) as source,
+        source,
+    ):
+        source.execute("BEGIN IMMEDIATE")
+        source.executemany(f"UPDATE raw_sessions SET {assignments} WHERE raw_id=?", prepared.drive_revision_updates)
+
+
 def _process_ingest_batch_sync(
     raw_artifacts: list[RawSessionRecord],
     *,
@@ -1989,6 +2228,7 @@ def _process_ingest_batch_sync(
     suspend_fts_triggers: bool = False,
     force_process_pool: bool = False,
     fresh_build: bool = False,
+    prepared_unit: _PreparedIngestUnit | None = None,
 ) -> _IngestBatchSummary:
     if progress is None:
         progress = _WorkerProgress()
@@ -2001,6 +2241,18 @@ def _process_ingest_batch_sync(
     )
     t_start = time.perf_counter()
     archive_root = Path(archive_root_str)
+    if prepared_unit is not None:
+        if not _prepared_ingest_is_current(
+            prepared_unit,
+            db_path=db_path,
+            archive_root=archive_root,
+            validation_mode=validation_mode,
+            publication_mode=publication_mode,
+        ):
+            discard_ingest_result_payload(prepared_unit.result)
+            logger.info("Drive preparation became stale; leaving raw state for a fresh pass")
+            return summary
+        _publish_drive_revision_updates(prepared_unit, archive_root)
     _resolve_codex_sidecar_snapshots(raw_artifacts, archive_root=archive_root)
     primary_publication_service = (
         PublicationService(
@@ -2036,26 +2288,53 @@ def _process_ingest_batch_sync(
     _observe_current_rss(summary)
     transaction_started = False
     try:
-        transaction_started = _consume_ingest_results(
-            conn,
-            raw_artifacts,
-            worker_request=worker_request,
-            summary=summary,
-            materialized_ids=materialized_ids,
-            publication_mode=publication_mode,
-            primary_publication_service=primary_publication_service,
-            force_write=force_write,
-            heartbeat=heartbeat,
-            progress=progress,
-            ingest_result_chunk_size=ingest_result_chunk_size,
-            suspend_fts_triggers=suspend_fts_triggers,
-            mark_fts_stale_on_suspend=suspend_fts_triggers and not repair_message_fts,
-            force_process_pool=force_process_pool,
-            blob_publisher=blob_publisher,
-            pending_attachment_receipts=pending_attachment_receipts,
-            source_conn=source_conn,
-            fresh_build=fresh_build,
-        )
+        if prepared_unit is not None:
+
+            def begin_prepared_transaction() -> None:
+                nonlocal transaction_started
+                if not transaction_started:
+                    conn.execute("BEGIN IMMEDIATE")
+                    transaction_started = True
+
+            try:
+                _drain_ingest_result(
+                    conn,
+                    prepared_unit.result,
+                    summary=summary,
+                    materialized_ids=materialized_ids,
+                    publication_mode=publication_mode,
+                    primary_publication_service=primary_publication_service,
+                    ensure_index_transaction=begin_prepared_transaction,
+                    force_write=force_write,
+                    blob_publisher=blob_publisher,
+                    pending_attachment_receipts=pending_attachment_receipts,
+                    source_conn=source_conn,
+                    fresh_build=fresh_build,
+                    drive_plans=prepared_unit.drive_plans,
+                )
+            finally:
+                discard_ingest_result_payload(prepared_unit.result)
+        else:
+            transaction_started = _consume_ingest_results(
+                conn,
+                raw_artifacts,
+                worker_request=worker_request,
+                summary=summary,
+                materialized_ids=materialized_ids,
+                publication_mode=publication_mode,
+                primary_publication_service=primary_publication_service,
+                force_write=force_write,
+                heartbeat=heartbeat,
+                progress=progress,
+                ingest_result_chunk_size=ingest_result_chunk_size,
+                suspend_fts_triggers=suspend_fts_triggers,
+                mark_fts_stale_on_suspend=suspend_fts_triggers and not repair_message_fts,
+                force_process_pool=force_process_pool,
+                blob_publisher=blob_publisher,
+                pending_attachment_receipts=pending_attachment_receipts,
+                source_conn=source_conn,
+                fresh_build=fresh_build,
+            )
         _flush_ingest_results(
             conn,
             summary=summary,
@@ -2079,6 +2358,7 @@ def _process_ingest_batch_sync(
                 db_path=db_path,
                 changed_session_ids=tuple(fts_repair_ids),
                 repair_message_fts=repair_message_fts,
+                **({"settle_deferred_effects": True} if prepared_unit is not None else {}),
             )
             if pending_attachment_receipts:
                 # Receipt consumption is a real source-tier mutation and must
@@ -2169,6 +2449,7 @@ async def process_ingest_batch(
     ingest_result_chunk_size: int = 0,
     suspend_fts_triggers: bool = False,
     fresh_build: bool = False,
+    prepared_unit: _PreparedIngestUnit | None = None,
 ) -> ParseBatchObservation | None:
     """Process a batch of raw records through the unified ingest pipeline.
 
@@ -2181,6 +2462,45 @@ async def process_ingest_batch(
     results in the process pool and drain loop.
     """
     import asyncio
+
+    if service.execution is not None and prepared_unit is None:
+        from polylogue.config import load_polylogue_config
+
+        settings = load_polylogue_config()
+        last_observation = None
+        for raw_id in batch_ids:
+            unit = await service.execution.prepare(
+                partial(
+                    _prepare_ingest_unit_sync,
+                    raw_id,
+                    db_path=backend.db_path,
+                    archive_root=service.archive_root,
+                    validation_mode=settings.schema_validation,
+                    publication_mode=PublicationMode.from_string(settings.sinex_mode),
+                    measure_ingest_result_size=service.measure_ingest_result_size,
+                )
+            )
+            if unit is None:
+                continue
+
+            async def publish(raw_id: str = raw_id, unit: _PreparedIngestUnit = unit) -> ParseBatchObservation | None:
+                return await process_ingest_batch(
+                    service,
+                    backend,
+                    [raw_id],
+                    result,
+                    progress_callback,
+                    force_write=force_write,
+                    repair_message_fts=repair_message_fts,
+                    fresh_build=fresh_build,
+                    prepared_unit=unit,
+                )
+
+            try:
+                last_observation = await service.execution.publish("ingest", publish)
+            finally:
+                discard_ingest_result_payload(unit.result)
+        return last_observation
 
     raw_artifacts = await service.repository.get_raw_sessions_batch(batch_ids)
     if not raw_artifacts:
@@ -2216,11 +2536,19 @@ async def process_ingest_batch(
     }
     if fresh_build:
         sync_kwargs["fresh_build"] = True
-    batch_summary = await asyncio.to_thread(
-        cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync),
-        raw_artifacts,
-        **sync_kwargs,
-    )
+    if prepared_unit is not None:
+        sync_kwargs["prepared_unit"] = prepared_unit
+    if service.execution is None:
+        batch_summary = await asyncio.to_thread(
+            cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync),
+            raw_artifacts,
+            **sync_kwargs,
+        )
+    else:
+        batch_summary = await service.execution.publish_sync(
+            "index",
+            lambda: cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync)(raw_artifacts, **sync_kwargs),
+        )
     heavy_batch = (
         batch_summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD
         or batch_summary.total_msgs >= INGEST_RELEASE_MESSAGE_THRESHOLD

@@ -1479,7 +1479,10 @@ def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
 
     calls: list[str] = []
 
-    async def fake_run(_actor: str, _func: object, *_args: object, **_kwargs: object) -> int:
+    async def fake_run() -> int:
+        from polylogue.storage.sqlite.write_lease import current_write_lease
+
+        assert current_write_lease() is None
         calls.append("drive")
         raise asyncio.CancelledError
 
@@ -1487,8 +1490,8 @@ def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
         catch_up_complete = asyncio.Event()
         monkeypatch.setattr(
             daemon_cli,
-            "daemon_write_coordinator",
-            lambda: SimpleNamespace(run=fake_run),
+            "_run_drive_source_catchup_safely",
+            fake_run,
         )
         task = asyncio.create_task(daemon_cli._periodic_drive_source_catchup(catch_up_complete=catch_up_complete))
         await asyncio.sleep(0)
@@ -2335,7 +2338,10 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
             events.append("close")
 
     class FakeParser:
-        def __init__(self, *, repository: object, archive_root: Path, config: Config) -> None:
+        def __init__(self, *, repository: object, archive_root: Path, config: Config, execution: object) -> None:
+            from polylogue.daemon.drive_catchup import DriveCatchupExecution
+
+            assert isinstance(execution, DriveCatchupExecution)
             events.append(("parser", repository, archive_root, config))
 
         async def ingest_sources(
@@ -2351,7 +2357,7 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
                 acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0),
                 parse_result=SimpleNamespace(
                     processed_ids={"session-b", "session-a"},
-                    counts={"sessions": 2},
+                    counts={"sessions": 0},
                     time_budget_exceeded=False,
                 ),
             )
@@ -3673,6 +3679,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         events.append("blob-publications")
 
     async def fake_drive_catchup() -> int:
+        from polylogue.storage.sqlite.write_lease import current_write_lease
+
+        assert current_write_lease() is None
         events.append("drive-once")
         return 0
 

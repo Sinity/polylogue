@@ -36,6 +36,14 @@ There is no generic derived-tables stage in this list. Session profiles are a se
 - Batch execution rechecks subjects after a false result from a `false_means_pending` stage, so completed siblings can become done while remaining work stays pending (`polylogue/daemon/convergence.py:470-530`).
 - Session-scoped stage convergence uses the same ordered stage and barrier model rather than a second stage engine (`polylogue/daemon/convergence.py:796-900`). Typed session-profile convergence instead pages required keys, inspects output validity, computes outside the writer lease, and admits each publication through the bridge (`polylogue/daemon/convergence.py:62-143`; `polylogue/daemon/derivation.py:1-180`).
 
+## Drive catch-up
+
+Both periodic and fair-intake Drive callbacks run the existing acquisition and parsing services with `DriveCatchupExecution`. A sequential acquisition thread lists, downloads, hashes, and stages bytes. Blob reservation/publication and raw persistence use separate bounded coordinator admissions. Artifact inspection, parser iteration, and Drive structural comparison finish outside those admissions (`polylogue/daemon/drive_catchup.py:1-49`; `polylogue/pipeline/services/acquisition_streams.py:100-155`).
+
+Each completed raw unit binds the input row, active index file, user/audit policy state, revision heads, membership census, and Drive sibling cohort. The admitted publisher rechecks these facts before applying the prepared lineage delta and canonical session writes. Stale or oversized cohorts retain their raw state for another pass. Source snapshots close before parser/structural work, and only completed results reach publication. FTS repair and deferred insight invalidation settle within that publication; the caller refreshes insights for every successful processed ID, including raw-link-only updates. Cancellation waits for acquisition, preparation, or admitted publication to settle before closing its resources (`polylogue/pipeline/services/ingest_execution.py:1-20`; `polylogue/pipeline/services/ingest_batch/_core.py:2010-2440`).
+
+The parse-pass budget still checkpoints between raw batches. Acquisition has no pass-time limit and does not hold the archive writer while waiting on Drive.
+
 ## Quiet-window deferral
 
 - Session-profile quietness is now a domain-owner policy: the factory injects a clock and checks each candidate source key, while `SessionProfileDerivation.quiet` lets the kernel retain that key as `PENDING` (`polylogue/daemon/convergence.py:145-223`; `polylogue/storage/derived/session/derivation.py:494-583`; `polylogue/daemon/derivation.py:181-360`).
