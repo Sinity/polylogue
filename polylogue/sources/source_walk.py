@@ -119,6 +119,11 @@ def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
         and artifact_rule_for_path(provider, str(path)) is not None
     ):
         return True
+    if provider is Provider.ANTIGRAVITY and path.suffix.lower() in _HERMES_SQLITE_EXTENSIONS:
+        # The trajectory store has no stable basename.  Enumerate SQLite
+        # candidates, then let the schema recognizer distinguish it from
+        # unrelated databases.
+        return True
     # Declared artifact paths can use formats that have no reliable suffix,
     # such as Claude Code tool-result sidecars. Let the owning declaration
     # admit those paths while keeping ordinary source discovery suffix-bound.

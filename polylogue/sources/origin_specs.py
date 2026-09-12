@@ -593,6 +593,8 @@ def recognize_source_class(
             return SourceClassRecognition("session", "Antigravity declared conversation source class")
         if classification.role.value != "unknown":
             return SourceClassRecognition("non_session", "Antigravity declared artifact source class")
+        if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} and antigravity.looks_like_trajectory_db_path(path):
+            return SourceClassRecognition("session", "Antigravity trajectory SQLite schema signature")
 
     if path.suffix.lower() == ".zip":
         return None
@@ -2252,6 +2254,7 @@ def _antigravity_spec() -> OriginSpec:
                 coverage_role="conversation_protobuf",
                 fidelity_note="Opaque conversation protobufs are converted only by Antigravity's language server.",
                 path_suffixes=(".pb",),
+                watch_suffixes=(".pb", ".db", ".sqlite", ".sqlite3"),
             ),
             OriginArtifactRule(
                 kind="agent_sidecar_meta",

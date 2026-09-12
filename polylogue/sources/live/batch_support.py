@@ -29,7 +29,7 @@ from polylogue.core.json import loads as json_loads
 from polylogue.core.write_hold import check_write_hold_budget
 from polylogue.pipeline.services.process_pool import select_ingest_worker_count
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider, is_jsonl_source_path
-from polylogue.sources.parsers import hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
 from polylogue.storage.runtime import RawSessionRecord
 
 _LARGE_FULL_PARSE_PROGRESS_BYTES = 64 * 1024 * 1024
@@ -820,6 +820,8 @@ def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONVa
 
 
 def _detect_provider_from_path_sample(path: Path, fallback_provider: Provider) -> Provider:
+    if fallback_provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path):
+        return Provider.ANTIGRAVITY
     if hermes_state.looks_like_state_db_path(path) or hermes_verification.looks_like_verification_evidence_db_path(
         path
     ):
@@ -862,6 +864,8 @@ def _jsonl_provider_and_session_artifact(
 
 
 def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
+    if provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path):
+        return True
     if provider is Provider.HERMES and (
         hermes_state.looks_like_state_db_path(path)
         or hermes_verification.looks_like_verification_evidence_db_path(path)
@@ -924,6 +928,8 @@ def _large_non_jsonl_path_can_stream(path: Path, *, provider: Provider) -> bool:
 
 
 def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:
+    if provider is Provider.ANTIGRAVITY and path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+        return antigravity.looks_like_trajectory_db_path(path)
     if provider is Provider.HERMES and path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
         # polylogue-hbtj2: this used to be a bare extension match, which
         # would accept ANY ".db"/".sqlite"/".sqlite3" file under a
