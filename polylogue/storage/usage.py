@@ -124,6 +124,28 @@ def _projection_value(row: Mapping[str, object], name: str) -> object:
         return row[name]
 
 
+def provider_usage_event_identity(row: Mapping[str, object]) -> tuple[str, str, str, str] | None:
+    """Return the strongest stable identity available for one usage event.
+
+    Provider usage rows currently have no native event-id column.  A resolved
+    source-message id is therefore the only durable anchor that can identify
+    the same observation across independent acquisitions; event type and model
+    keep a model switch from being merged into its predecessor.  Unanchored
+    rows deliberately return ``None``: their positional/temporal coordinates
+    are parser measurements, not proof of identity, so callers must reconcile
+    them with an explicit bounded rule (or retain them as ambiguous evidence)
+    rather than silently adding duplicate observations.
+    """
+    source_message_id = _projection_value(row, "source_message_id")
+    if not source_message_id:
+        return None
+    event_type = str(_projection_value(row, "provider_event_type") or "")
+    model_name = _normalize_model_name(_projection_value(row, "model_name"))
+    if not event_type:
+        return None
+    return ("source_message", str(source_message_id), event_type, model_name)
+
+
 def _projection_event_lanes(row: Mapping[str, object]) -> tuple[int, int, int, int]:
     """Return disjoint lanes for one event, preferring provider lane totals."""
     total_input = _projection_int(row, "total_input_tokens")

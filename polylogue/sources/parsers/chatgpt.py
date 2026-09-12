@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 
@@ -805,6 +805,8 @@ def _append_asset_attachment(
         ParsedAttachment(
             provider_attachment_id=pointer,
             message_provider_id=message_provider_id,
+            name=_string_value(record, "name", "filename", "file_name"),
+            mime_type=_string_value(record, "mime_type", "media_type"),
             # Read off the URI: the id space the export's asset members and
             # ``library_files.json`` keys share.
             provider_file_id=file_id,
@@ -814,6 +816,80 @@ def _append_asset_attachment(
             producer_ref=producer_ref,
         )
     )
+
+
+def _iter_asset_pointer_records(
+    value: object,
+    *,
+    parent_record: Mapping[str, object],
+) -> Iterator[tuple[str, Mapping[str, object]]]:
+    """Yield pointer strings and their closest provider metadata record.
+
+    Ordinary image/audio parts use ``asset_pointer`` directly. Realtime A/V
+    parts instead carry ``audio_asset_pointer``,
+    ``video_container_asset_pointer`` and ``frames_asset_pointers``; the
+    latter two have appeared both as scalar values and nested/list records.
+    Keep the traversal deliberately scoped to those pointer-bearing fields so
+    neighbouring media metadata (``mime_type``, dimensions, etc.) cannot be
+    mistaken for an asset identity.
+    """
+    if isinstance(value, str):
+        if value:
+            yield value, parent_record
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for item in value:
+            yield from _iter_asset_pointer_records(item, parent_record=parent_record)
+        return
+    if not isinstance(value, Mapping):
+        return
+
+    for key in ("asset_pointer", "pointer"):
+        pointer = value.get(key)
+        if isinstance(pointer, str) and pointer:
+            record = dict(parent_record)
+            record.update(value)
+            yield pointer, record
+            return
+
+    # Some realtime exports use a keyed frame map rather than a list. Its
+    # values are still pointer records; skip ordinary metadata keys while
+    # recursing through the map.
+    for key, child in value.items():
+        if key in {"mime_type", "media_type", "size_bytes", "width", "height", "name", "filename"}:
+            continue
+        yield from _iter_asset_pointer_records(child, parent_record=parent_record)
+
+
+def _chatgpt_media_asset_pointers(
+    part: Mapping[str, object],
+    content_type: str,
+) -> Iterator[tuple[str, Mapping[str, object], str]]:
+    """Yield ``(pointer, metadata, pointer_field)`` for an audio/A/V part."""
+    fields: tuple[str, ...]
+    if content_type == "audio_asset_pointer":
+        fields = ("asset_pointer",)
+    else:
+        # ``asset_pointer`` is retained as a compatibility fallback for
+        # captures that used the ordinary image/audio spelling for realtime
+        # media. The observed export uses the type-specific fields.
+        fields = (
+            "audio_asset_pointer",
+            "video_container_asset_pointer",
+            "frames_asset_pointers",
+            "asset_pointer",
+        )
+    for field in fields:
+        for pointer, record in _iter_asset_pointer_records(part.get(field), parent_record=part):
+            yield pointer, record, field
+
+
+def _chatgpt_media_attachment_kind(pointer_field: str) -> str:
+    if pointer_field == "video_container_asset_pointer":
+        return "video_asset"
+    if pointer_field == "frames_asset_pointers":
+        return "video_frame_asset"
+    return "audio_asset"
 
 
 # ChatGPT embeds inline citation anchors in assistant text as private-use
@@ -1602,23 +1678,57 @@ def extract_messages_from_mapping(
                 }:
                     part_text = part.get("text")
                     content_type = str(part.get("content_type"))
+                    media_mime_type = _string_value(part, "mime_type", "media_type")
+                    media_constructs: list[ParsedWebConstruct] = []
+                    for pointer, pointer_record, pointer_field in _chatgpt_media_asset_pointers(part, content_type):
+                        pointer_mime_type = _string_value(pointer_record, "mime_type", "media_type") or media_mime_type
+                        media_constructs.append(
+                            ParsedWebConstruct(
+                                construct_type=(
+                                    WebConstructType.AUDIO_TRANSCRIPTION
+                                    if content_type == "audio_transcription"
+                                    else WebConstructType.AUDIO_ASSET
+                                ),
+                                provider_key=content_type,
+                                asset_pointer=pointer,
+                                mime_type=pointer_mime_type,
+                            )
+                        )
+                        media_direction, media_producer = derive_attachment_provenance(role, str(msg_id))
+                        _append_asset_attachment(
+                            attachments,
+                            pointer_record,
+                            pointer=pointer,
+                            message_provider_id=str(msg_id),
+                            attachment_kind=_chatgpt_media_attachment_kind(pointer_field),
+                            direction=media_direction,
+                            producer_ref=media_producer,
+                            dedupe_from=message_attachment_start,
+                        )
+                    if not media_constructs:
+                        media_constructs.append(
+                            ParsedWebConstruct(
+                                construct_type=(
+                                    WebConstructType.AUDIO_TRANSCRIPTION
+                                    if content_type == "audio_transcription"
+                                    else WebConstructType.AUDIO_ASSET
+                                ),
+                                provider_key=content_type,
+                                mime_type=media_mime_type,
+                            )
+                        )
                     content_blocks.append(
                         ParsedContentBlock(
                             type=BlockType.DOCUMENT,
                             text=part_text if isinstance(part_text, str) and part_text else None,
-                            media_type=_string_value(part, "mime_type", "media_type"),
+                            media_type=media_mime_type,
                             web_constructs=[
-                                ParsedWebConstruct(
-                                    construct_type=(
-                                        WebConstructType.AUDIO_TRANSCRIPTION
-                                        if content_type == "audio_transcription"
-                                        else WebConstructType.AUDIO_ASSET
-                                    ),
-                                    provider_key=content_type,
-                                    text=part_text if isinstance(part_text, str) and part_text else None,
-                                    asset_pointer=_string_value(part, "asset_pointer"),
-                                    mime_type=_string_value(part, "mime_type", "media_type"),
+                                construct.model_copy(
+                                    update={
+                                        "text": part_text if isinstance(part_text, str) and part_text else None,
+                                    }
                                 )
+                                for construct in media_constructs
                             ],
                         )
                     )

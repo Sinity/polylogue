@@ -19,6 +19,7 @@ from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to
 from polylogue.storage.usage import (
     origin_usage_report_from_connection,
     provider_usage_coverage_matrix,
+    provider_usage_event_identity,
 )
 
 
@@ -55,6 +56,23 @@ def _write_blob(archive_root: Path, payload: str) -> bytes:
     blob_path.parent.mkdir(parents=True, exist_ok=True)
     blob_path.write_bytes(content)
     return digest
+
+
+def test_provider_usage_event_identity_requires_a_message_anchor() -> None:
+    identity = provider_usage_event_identity(
+        {
+            "source_message_id": "codex-session:s:n:m1",
+            "provider_event_type": "token_count",
+            "model_name": " gpt-5-codex ",
+        }
+    )
+    assert identity == ("source_message", "codex-session:s:n:m1", "token_count", "gpt-5-codex")
+    assert (
+        provider_usage_event_identity(
+            {"source_message_id": None, "provider_event_type": "token_count", "model_name": "gpt-5-codex"}
+        )
+        is None
+    )
 
 
 def test_origin_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_path: Path) -> None:
