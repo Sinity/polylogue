@@ -51,6 +51,12 @@ OriginLifecycle = Literal["executable", "reserved", "unsupported", "compatibilit
 OriginCompletenessMaturity = Literal["accepted", "proposed", "reserved", "unsupported"]
 ArtifactParsePolicy = Literal["session", "fact", "raw-only"]
 SourceClass = Literal["session", "non_session", "unsupported"]
+SchemaObservationStrategy = Literal[
+    "structured-records",
+    "structured-documents",
+    "logical-database-schema",
+    "opaque-non-applicable",
+]
 TopologyCapabilityState = Literal["carried", "positive-derived", "structurally-absent", "unknown"]
 TopologyCapabilityDimension = Literal[
     "message_parent",
@@ -438,9 +444,40 @@ class OriginArtifactRule:
     # Suffixes safe to project onto a whole watched root. Path-scoped forms
     # such as opaque sidecars stay governed by ``path_pattern``.
     watch_suffixes: tuple[str, ...] | None = None
+    # Schema admission is intentionally independent from session admission.
+    # ``raw-only`` JSON sidecars can still contribute privacy-safe structure;
+    # opaque bytes have a typed, explicit non-applicability outcome.
+    schema_observation_strategy: SchemaObservationStrategy | None = None
+    schema_non_applicability_reason: str | None = None
 
     def matches(self, source_path: str) -> bool:
         return re.search(self.path_pattern, source_path.replace("\\", "/")) is not None
+
+    @property
+    def observation_strategy(self) -> SchemaObservationStrategy:
+        """Return the declared strategy used by schema/source observation.
+
+        Older declarations did not carry this field. Their format and parse
+        policy provide a safe compatibility default, while new declarations
+        may make the choice explicit. This keeps the admission registry the
+        one source of truth without making old third-party fixtures invalid.
+        """
+        if self.schema_observation_strategy is not None:
+            return self.schema_observation_strategy
+        if self.parse_policy == "session":
+            return "structured-records"
+        if any(suffix in {".json", ".jsonl", ".ndjson"} for suffix in self.path_suffixes):
+            return "structured-documents"
+        return "opaque-non-applicable"
+
+    @property
+    def observation_reason(self) -> str | None:
+        if self.observation_strategy != "opaque-non-applicable":
+            return None
+        return self.schema_non_applicability_reason or (
+            "opaque or binary artifact bytes have no privacy-safe structural schema adapter; "
+            "retain the raw artifact and report non-applicability"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -889,6 +926,11 @@ class DatabaseSourceCapability:
     def filenames(self) -> frozenset[str]:
         return frozenset(item.filename for item in self.members)
 
+    @property
+    def observation_strategy(self) -> SchemaObservationStrategy:
+        """SQLite members are observed from logical table/column shape only."""
+        return "logical-database-schema"
+
 
 @dataclass(frozen=True, slots=True)
 class OriginSpec:
@@ -1066,6 +1108,25 @@ class OriginSpecDiagnostic:
     repair_command: str
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactObservationContract:
+    """Privacy-safe observation contract for one declared source family.
+
+    This is an inventory surface, not a parser registry. It deliberately
+    exposes the family and retention decision while omitting paths, payloads,
+    and provider rows. Database members use ``member`` as their family name;
+    their table-level dispositions remain in the member declaration.
+    """
+
+    origin: Origin
+    provider: Provider
+    family: str
+    strategy: SchemaObservationStrategy
+    disposition: str
+    reason: str
+    consumer: str | None = None
+
+
 #: Provider-wire token values. A public origin name that collides with one of
 #: these would let a raw provider-wire spelling masquerade as public origin
 #: vocabulary (docs/provider-origin-identity.md's doctrine). No current
@@ -1117,6 +1178,14 @@ class OriginSpecRegistry:
             for rule in spec.artifact_rules:
                 if rule.parse_policy != "raw-only" and rule.parser_path is None:
                     raise ValueError(f"{spec.origin.value}: {rule.kind} requires a parser binding")
+                if rule.observation_strategy == "opaque-non-applicable" and not rule.observation_reason:
+                    raise ValueError(
+                        f"{spec.origin.value}: {rule.kind} requires an explicit schema non-applicability reason"
+                    )
+                if rule.parse_policy != "raw-only" and rule.observation_strategy == "opaque-non-applicable":
+                    raise ValueError(
+                        f"{spec.origin.value}: admitted {rule.kind} must have a structured observation strategy"
+                    )
                 if not rule.path_suffixes:
                     raise ValueError(f"{spec.origin.value}: {rule.kind} requires acquisition suffixes")
                 if any(
@@ -1431,6 +1500,11 @@ def _claude_code_spec() -> OriginSpec:
                 # path-scoped and must not widen the Claude root globally.
                 path_suffixes=(".json", ".txt", ".html", ""),
                 watch_suffixes=(".json",),
+                schema_observation_strategy="opaque-non-applicable",
+                schema_non_applicability_reason=(
+                    "Tool output is provider payload, not a stable sidecar record contract; retain bytes and join "
+                    "to the owning tool result without inferring a public schema."
+                ),
             ),
             OriginArtifactRule(
                 kind="workflow_run_snapshot",
@@ -1524,6 +1598,10 @@ def _claude_code_spec() -> OriginSpec:
                 parse_policy="raw-only",
                 parser_path=None,
                 coverage_role="agent_memory_document",
+                schema_observation_strategy="opaque-non-applicable",
+                schema_non_applicability_reason=(
+                    "Harness-authored Markdown is retained as source evidence; no JSON/schema adapter applies."
+                ),
                 fidelity_note=(
                     "Memory documents are retained verbatim as source bytes and never parsed into a "
                     "session or promoted to a user assertion: the harness authored them, so their "
@@ -1788,6 +1866,11 @@ def _chatgpt_spec() -> OriginSpec:
                 # Path-scoped by id-bearing member name: no suffix family may
                 # be projected onto a whole watched root from this rule.
                 watch_suffixes=(),
+                schema_observation_strategy="opaque-non-applicable",
+                schema_non_applicability_reason=(
+                    "Export attachment bytes are heterogeneous payloads; preserve the content-addressed bytes and "
+                    "attachment coordinate rather than treating a JSON-looking attachment as a schema family."
+                ),
             ),
         ),
         fixture_paths=("tests/unit/sources/test_parsers_chatgpt.py", "tests/data/golden/chatgpt-simple.md"),
@@ -1948,6 +2031,10 @@ def _codex_spec() -> OriginSpec:
                 parse_policy="raw-only",
                 parser_path=None,
                 coverage_role="agent_memory_document",
+                schema_observation_strategy="opaque-non-applicable",
+                schema_non_applicability_reason=(
+                    "Harness-authored Markdown is retained as source evidence; no JSON/schema adapter applies."
+                ),
                 fidelity_note=(
                     "Codex memory documents are retained verbatim as source bytes and never parsed "
                     "into a session or promoted to a user assertion. ``memories_1.sqlite`` is Codex's "
@@ -2260,6 +2347,11 @@ def _gemini_cli_spec() -> OriginSpec:
                 # directory shape is the whole admission evidence.
                 path_suffixes=(".txt", ".json", ".md", ".log", ""),
                 watch_suffixes=(),
+                schema_observation_strategy="opaque-non-applicable",
+                schema_non_applicability_reason=(
+                    "Tool output is provider payload, not a stable sidecar record contract; retain bytes and join "
+                    "to the owning tool result without inferring a public schema."
+                ),
             ),
         ),
         fidelity_notes=(
@@ -2400,6 +2492,7 @@ def _antigravity_spec() -> OriginSpec:
                 parse_policy="raw-only",
                 parser_path=None,
                 coverage_role="brain_metadata_sidecar",
+                schema_observation_strategy="structured-documents",
                 fidelity_note="Brain metadata is retained as typed artifact evidence and never creates a session.",
                 path_suffixes=(".metadata.json",),
             ),
@@ -2409,6 +2502,10 @@ def _antigravity_spec() -> OriginSpec:
                 parse_policy="raw-only",
                 parser_path=None,
                 coverage_role="brain_document",
+                schema_observation_strategy="opaque-non-applicable",
+                schema_non_applicability_reason=(
+                    "Vendor Markdown brain documents are retained as raw evidence; no reviewed schema adapter applies."
+                ),
                 fidelity_note="Brain documents are retained as typed artifacts and never create a session.",
                 path_suffixes=(".md",),
             ),
@@ -3258,6 +3355,50 @@ def origin_specs() -> tuple[OriginSpec, ...]:
     return ORIGIN_SPECS
 
 
+def artifact_observation_contracts(
+    specs: Sequence[OriginSpec] | None = None,
+) -> tuple[ArtifactObservationContract, ...]:
+    """Project every declared artifact/member into an inspectable census.
+
+    Session admission is not used as the denominator here. Every path family
+    and every declared database member gets either a structural observation
+    strategy or a typed opaque/non-applicable reason. The projection carries
+    only declaration metadata, so it is safe to use in reports and tests.
+    """
+    rows: list[ArtifactObservationContract] = []
+    for spec in ORIGIN_SPECS if specs is None else specs:
+        provider = spec.provider_wires[0] if spec.provider_wires else Provider.UNKNOWN
+        for rule in spec.artifact_rules:
+            rows.append(
+                ArtifactObservationContract(
+                    origin=spec.origin,
+                    provider=provider,
+                    family=rule.kind,
+                    strategy=rule.observation_strategy,
+                    disposition=rule.parse_policy,
+                    reason=rule.observation_reason or rule.fidelity_note,
+                )
+            )
+        capability = spec.database_capability
+        if capability is None:
+            continue
+        for member in capability.members:
+            rows.append(
+                ArtifactObservationContract(
+                    origin=spec.origin,
+                    provider=provider,
+                    family=member.filename,
+                    strategy=capability.observation_strategy
+                    if member.disposition != "out-of-scope"
+                    else "opaque-non-applicable",
+                    disposition=member.disposition,
+                    reason=member.reason,
+                    consumer=member.consumer,
+                )
+            )
+    return tuple(sorted(rows, key=lambda row: (row.origin.value, row.family)))
+
+
 def tool_outcome_unknown_reasons_for_origin(origin: Origin) -> frozenset[ToolResultUnknownReason]:
     """Return the unknown-outcome reasons this origin's parsers can derive."""
 
@@ -3401,6 +3542,8 @@ __all__ = [
     "frontier_kind_for_origin",
     "ORIGIN_SPEC_REGISTRY",
     "ArtifactParsePolicy",
+    "SchemaObservationStrategy",
+    "ArtifactObservationContract",
     "DroppedValueVocabulary",
     "OriginArtifactRule",
     "DatabaseMemberRule",
@@ -3429,6 +3572,7 @@ __all__ = [
     "public_origin_meanings",
     "public_origin_tokens",
     "artifact_rule_for_path",
+    "artifact_observation_contracts",
     "path_declaration_refuses_session",
     "artifact_suffixes_for_provider",
     "recognize_source_class",
