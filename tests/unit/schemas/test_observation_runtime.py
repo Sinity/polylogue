@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from polylogue.core.enums import Provider
+from polylogue.schemas.generation.evidence import SchemaEvidence
 from polylogue.schemas.observation import ProviderConfig, extract_schema_units_from_payload
+from polylogue.schemas.source_inference import _collect_candidate, _SourceCandidate
 
 
 class TestExtractSchemaUnitsFromPayload:
@@ -84,3 +89,16 @@ class TestExtractSchemaUnitsFromPayload:
         assert len(units) == 1
         assert units[0].artifact_kind == "agent_sidecar_meta"
         assert units[0].schema_samples[0]["new_field"] == {"enabled": True}
+
+    def test_declared_sidecar_reaches_source_evidence_through_normal_collection(self, tmp_path: Path) -> None:
+        """A fact sidecar is not silently discarded by session admission."""
+        path = tmp_path / "subagents" / "run" / "agent-1.meta.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"agent_id": "agent-1", "new_field": {"enabled": True}}), encoding="utf-8")
+
+        collected = _collect_candidate(_SourceCandidate("claude-code", tmp_path, path, "sidecar-source"))
+
+        assert collected.terminal.outcome == "included"
+        assert len(collected.contributions) == 1
+        evidence = SchemaEvidence.from_json(collected.contributions[0].evidence_by_element["agent_sidecar_meta"])
+        assert "new_field" in json.dumps(evidence.structure)

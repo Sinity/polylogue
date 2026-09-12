@@ -48,12 +48,19 @@ from polylogue.schemas.source_recipe import (
 from polylogue.sources.decoder_zip import ZipBombError, ZipEntryValidator, open_bounded_zip_entry
 from polylogue.sources.live.watcher import WatchSource, default_sources
 from polylogue.sources.origin_specs import (
+    DatabaseMemberBinding,
     _fingerprint_sources,
+    artifact_rule_for_path,
     artifact_suffixes_for_provider,
+    database_member_for_filename,
     recognize_source_class,
 )
 from polylogue.sources.source_walk import _iter_source_entries
-from polylogue.sources.sqlite_export import looks_like_logical_export_path, open_logical_source
+from polylogue.sources.sqlite_export import (
+    looks_like_logical_export_path,
+    open_logical_source,
+    read_export_header,
+)
 from polylogue.sources.sqlite_snapshot import declared_database_member
 
 SourceOutcome = Literal[
@@ -596,6 +603,13 @@ def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
         return SourceTerminal("intentionally_excluded", byte_count, reason="antigravity_markdown_sidecar")
     recognition = recognize_source_class(provider, candidate.path)
     if recognition is not None and recognition.source_class != "session":
+        # Fact artifacts are structured, declared non-session inputs.  They
+        # still have a schema-observation route; admission and observation are
+        # separate decisions.  Opaque/raw-only families retain their typed
+        # non-applicability outcome instead of being fed to a JSON reducer.
+        rule = artifact_rule_for_path(provider, str(candidate.path))
+        if recognition.source_class == "non_session" and rule is not None and rule.parse_policy == "fact":
+            return None
         return SourceTerminal(
             "intentionally_excluded" if recognition.source_class == "non_session" else "unsupported",
             byte_count,
@@ -607,10 +621,28 @@ def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
         # Declared database members have a format-specific schema adapter
         # (logical table/column observation below).  Unknown members retain
         # the previous explicit unsupported outcome.
-        binding = declared_database_member(candidate.path)
+        binding = _declared_database_binding(candidate.path)
         if binding is None or binding.member.disposition == "out-of-scope":
             return SourceTerminal("unsupported", byte_count, reason="sqlite_value_inference_not_supported")
     return None
+
+
+def _declared_database_binding(path: Path) -> DatabaseMemberBinding | None:
+    """Resolve a database member from its source path or export header.
+
+    Source inference normally sees the original ``state_5.sqlite`` path.  A
+    retained logical export may instead arrive as a staged ``.jsonl`` blob;
+    its header is the durable source/member scope and must not be discarded
+    merely because the staging filename no longer carries the member basename.
+    """
+    binding = declared_database_member(path)
+    if binding is not None or not looks_like_logical_export_path(path):
+        return binding
+    try:
+        member = read_export_header(path).member
+    except (OSError, ValueError):
+        return None
+    return database_member_for_filename(member) if isinstance(member, str) and member else None
 
 
 def _terminal_reason_code(terminal: SourceTerminal) -> str | None:
@@ -894,9 +926,17 @@ def _collect_payload_evidence(
             payload_replay.close()
             raise
         if not artifact.schema_eligible:
-            payload_replay.close()
-            return (), 0, (), False
-        admitted_artifact_kind = artifact.cohort
+            # A declared ``fact`` artifact is intentionally non-session, but
+            # its structured shape is still schema evidence.  Do not assign
+            # an admission cohort here: each record is classified through the
+            # strong path rule below, preserving the sidecar family even when
+            # its values happen to resemble a transcript.
+            rule = artifact_rule_for_path(provider, str(candidate.path))
+            if rule is None or rule.parse_policy != "fact":
+                payload_replay.close()
+                return (), 0, (), False
+        else:
+            admitted_artifact_kind = artifact.cohort
         for record in payload_replay:
             declared = _native_source_id(provider, record, "", source_path=candidate.path)
             if declared:
@@ -1243,7 +1283,7 @@ def _collect_database_schema_candidate(
     evidence.  Out-of-scope members are rejected by preflight and therefore
     retain their explicit non-applicability outcome.
     """
-    binding = declared_database_member(candidate.path)
+    binding = _declared_database_binding(candidate.path)
     if binding is None or binding.member.disposition == "out-of-scope":
         terminal = SourceTerminal("unsupported", revision.byte_count, reason="sqlite_value_inference_not_supported")
         return _CollectedCandidate(candidate, revision, terminal)
