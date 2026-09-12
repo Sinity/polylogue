@@ -8,6 +8,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources import codex_state_projection
@@ -24,6 +25,7 @@ def _upsert_codex_material(
     archive: Any,
     *,
     raw_id: str,
+    source_path: str,
     thread_id: str,
     kind: str,
     item_id: str,
@@ -32,7 +34,16 @@ def _upsert_codex_material(
 ) -> None:
     """Retain one generated Codex record through the shared material route."""
     conn = archive.source_connection
-    source_uri = f"codex://state/{kind}/{item_id}"
+    # A Codex install is the scope of state-database observations.  Names in
+    # different installs are not competing revisions: R3 requires each to
+    # remain independently readable.  The thread is part of the logical
+    # coordinate too; it prevents a provider reusing a goal id from joining
+    # two unrelated sessions.
+    source_scope = str(Path(source_path).parent)
+    source_uri = (
+        f"codex://state/{kind}/{quote(thread_id, safe='')}/{quote(item_id, safe='')}"
+        f"?scope={quote(source_scope, safe='')}"
+    )
     referrer_ref = f"codex-session:{thread_id}"
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     previous = conn.execute(
@@ -82,6 +93,7 @@ def materialize_codex_state_content(
     raw_id: str,
     *,
     state_path: Path,
+    source_path: str,
     state_kind: str,
     acquired_at_ms: int,
 ) -> None:
@@ -91,6 +103,7 @@ def materialize_codex_state_content(
             _upsert_codex_material(
                 archive,
                 raw_id=raw_id,
+                source_path=source_path,
                 thread_id=goal.thread_id,
                 kind="goal",
                 item_id=goal.goal_id,
@@ -114,6 +127,7 @@ def materialize_codex_state_content(
             _upsert_codex_material(
                 archive,
                 raw_id=raw_id,
+                source_path=source_path,
                 thread_id=memory.thread_id,
                 kind="memory",
                 item_id=memory.thread_id,
@@ -162,6 +176,7 @@ def record_codex_state_snapshot_terminal(
             archive,
             raw_id,
             state_path=state_path,
+            source_path=source_path,
             state_kind=state_kind,
             acquired_at_ms=acquired_at_ms,
         )
