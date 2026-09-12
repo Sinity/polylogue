@@ -186,6 +186,73 @@ def test_owned_empty_generation_uses_cold_build_policy_and_finishes_ready(
     assert stamped_tiers == ["index"]
 
 
+def test_retained_replay_terminal_fts_readiness_publishes_exact_nonempty_ledger(tmp_path: Path) -> None:
+    """A settled retained replay replaces its scoped STALE ledger with exact READY.
+
+    Anti-vacuity: this fixture seeds the historical zero-count STALE shape
+    and invokes only the ordinary retained replay route. Removing its terminal
+    snapshot/record publication leaves that ledger stale and makes the READY
+    assertions below fail; the test never publishes readiness itself.
+    """
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("retained-readiness", "retained source", "retained reply")),
+            source_path="export/conversations.json",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                logical_source_key="chatgpt-export:retained-readiness",
+                kind=RawRevisionKind.FULL,
+                source_revision="retained-readiness-v1",
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:retained-readiness")
+        # Model the retained archive's prior scoped-repair ledger: it is
+        # explicitly stale and has no exact population evidence yet.
+        from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_sync
+
+        record_fts_surface_state_sync(
+            archive._conn,
+            surface="messages_fts",
+            state=STALE,
+            detail="seeded stale retained replay ledger",
+        )
+        archive.commit()
+
+    census_historical_revision_evidence(tmp_path)
+    result = backfill_historical_revision_evidence(tmp_path)
+    assert result.replayed_logical_sources == 1
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        readiness = conn.execute(
+            """
+            SELECT state, verification_kind, source_rows, indexed_rows,
+                   missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows
+            FROM fts_freshness_state
+            WHERE surface = 'messages_fts'
+            """
+        ).fetchone()
+
+    assert readiness is not None
+    (
+        state,
+        verification_kind,
+        source_rows,
+        indexed_rows,
+        missing_rows,
+        excess_rows,
+        duplicate_rows,
+        identity_mismatch_rows,
+    ) = readiness
+    assert state == "ready"
+    assert verification_kind == "exact"
+    assert source_rows == indexed_rows > 0
+    assert (missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows) == (0, 0, 0, 0)
+
+
 def test_owned_nonempty_generation_refuses_cold_build_deferral(tmp_path: Path) -> None:
     """A resumed candidate is never silently treated as a fresh writer target."""
     bootstrap_archive_root(tmp_path)
