@@ -12,9 +12,11 @@ import pytest
 from devtools import run_tests
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
-    DEVTOOLS_PLUGIN_ARGS,
     IGNORED_COLLECTION_ARGS,
-    MANAGED_PLUGIN_ARGS,
+    SUITE_COST_PLUGIN_NAME,
+    TESTMON_RETENTION_PLUGIN_NAME,
+    devtools_plugin_args,
+    managed_plugin_args,
 )
 from devtools.pytest_slot import SlotOutcome
 from devtools.verify_runs import (
@@ -50,7 +52,7 @@ def test_build_pytest_cmd_defaults_to_single_process() -> None:
         "devtools.pytest_progress_plugin",
     ]
     assert "tests/unit/pipeline" in cmd
-    assert cmd[-2:] == ["-n", "0"]
+    assert "-n" not in cmd
 
 
 def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
@@ -62,10 +64,17 @@ def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
     """
     cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
 
-    devtools_start = cmd.index(DEVTOOLS_PLUGIN_ARGS[0])
-    assert [*DEVTOOLS_PLUGIN_ARGS] == cmd[devtools_start : devtools_start + len(DEVTOOLS_PLUGIN_ARGS)]
-    managed_start = devtools_start + len(DEVTOOLS_PLUGIN_ARGS)
-    assert [*MANAGED_PLUGIN_ARGS] == cmd[managed_start : managed_start + len(MANAGED_PLUGIN_ARGS)]
+    focused_plugins = devtools_plugin_args(testmon=False)
+    devtools_start = cmd.index(focused_plugins[0])
+    assert [*focused_plugins] == cmd[devtools_start : devtools_start + len(focused_plugins)]
+    managed_start = devtools_start + len(focused_plugins)
+    assert cmd[managed_start : managed_start + 2] == ["-p", SUITE_COST_PLUGIN_NAME]
+    managed_start += 2
+    serial_plugins = managed_plugin_args(testmon=False, xdist=False)
+    assert [*serial_plugins] == cmd[managed_start : managed_start + len(serial_plugins)]
+    assert TESTMON_RETENTION_PLUGIN_NAME not in cmd
+    assert "pytest-testmon" not in cmd
+    assert "xdist" not in cmd
     assert CLEAR_CONFIGURED_ADDOPTS in cmd
     ignored_start = cmd.index(IGNORED_COLLECTION_ARGS[0])
     assert [*IGNORED_COLLECTION_ARGS] == cmd[ignored_start : ignored_start + len(IGNORED_COLLECTION_ARGS)]
@@ -82,6 +91,7 @@ def test_build_pytest_cmd_respects_explicit_worker_flag() -> None:
     # No injected -n when the caller already chose one.
     assert cmd.count("-n") == 1
     assert cmd[-3:] == ["-n", "4", "--dist=loadgroup"]
+    assert "xdist" in cmd
 
 
 @pytest.mark.parametrize(
@@ -107,10 +117,10 @@ def test_build_pytest_cmd_forwards_exactly_one_xdist_worker_request(
     assert pytest_command_worker_request(command) == expected_request
 
 
-def test_build_pytest_cmd_honors_workers_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_pytest_cmd_ignores_workers_env_for_focused_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "8")
     cmd = run_tests.build_pytest_cmd(["tests/unit"])
-    assert cmd[-3:] == ["-n", "8", "--dist=loadgroup"]
+    assert "-n" not in cmd
 
 
 def test_build_pytest_cmd_preserves_explicit_xdist_distribution() -> None:
@@ -251,6 +261,32 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     assert captured["history"]["verification_scope"] == "affected"
     assert captured["history"]["status"] == "success"
     assert captured["evidence"] == captured["history"]
+
+
+@pytest.mark.parametrize("runner", ["managed", "isolated"])
+def test_run_uses_the_requested_runner(monkeypatch: pytest.MonkeyPatch, runner: str) -> None:
+    """Managed remains the default; isolation is an explicit CI route."""
+    called: list[str] = []
+
+    def managed(*_args: Any, **_kwargs: Any) -> SlotOutcome:
+        called.append("managed")
+        return SlotOutcome(returncode=0, slot="managed")
+
+    def isolated(*_args: Any, **_kwargs: Any) -> SlotOutcome:
+        called.append("isolated")
+        return SlotOutcome(returncode=0, slot="isolated")
+
+    monkeypatch.setattr(run_tests, "run_pytest", managed)
+    monkeypatch.setattr(run_tests, "run_pytest_isolated", isolated)
+    monkeypatch.setattr(run_tests, "write_run_receipt", lambda _path: None)
+
+    exit_code, _elapsed, metadata = run_tests._run(
+        "pytest focused", ["pytest"], cwd=".", env={}, run=cast(VerifyRun, None), runner=runner
+    )
+
+    assert exit_code == 0
+    assert called == [runner]
+    assert metadata["pytest_slot"] == runner
 
 
 def test_main_preserves_relative_selection_from_subdirectory(
@@ -635,15 +671,15 @@ def test_absent_paths_are_resolved_against_the_checkout_not_the_caller_cwd(
     assert run_tests.absent_selection_paths(selection, root=checkout) == ["tests/unit/test_deleted.py"]
 
 
-def test_nested_managed_run_never_traces_into_the_checkout_datafile(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity: tracing unconditionally lets a test that spawns
-    `devtools test` reset the outer corpus run's graph (2026-09-05: a full
-    corpus left a one-test datafile)."""
-    from devtools.agent_env import HARNESS_RUN_ENV
-    from devtools.run_tests import _testmon_args
+def test_focused_run_never_loads_or_names_a_testmon_graph(tmp_path: Path) -> None:
+    """Focused checks preserve the broad graph rather than making a scratch one."""
+    run = VerifyRun(tier="focused-test", argv=["tests"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest"])
 
-    assert "--testmon" in _testmon_args({})
-    assert tuple(_testmon_args({HARNESS_RUN_ENV: "run-1"})) == ("-p", "no:testmon")
+    environment = run_tests.focused_pytest_env(run=run, artifacts=artifacts)
+
+    assert "TESTMON_DATAFILE" not in environment
+    assert not (tmp_path / ".cache" / "testmon").exists()
 
 
 def _focused_run(
@@ -660,7 +696,6 @@ def _focused_run(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "sync_testmon_graph", lambda _root: None)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     original_start = VerifyRun.start_step

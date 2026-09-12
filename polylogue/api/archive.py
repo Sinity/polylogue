@@ -111,6 +111,7 @@ if TYPE_CHECKING:
     from polylogue.analysis.fable_packet import FableDelegationPacket
     from polylogue.analysis.hermes_integration_health import HermesIntegrationHealth
     from polylogue.analysis.judgment.types import ComparativeJudgment
+    from polylogue.analysis.orchestration_evidence import SessionOrchestrationEvidence
     from polylogue.analysis.pathology import PathologyReport
     from polylogue.analysis.portfolio import PortfolioBundle
     from polylogue.analysis.postmortem import PostmortemBundle
@@ -6319,6 +6320,43 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             return None
         messages = await self.repository.get_effective_context(target, at_position)
         return [message.model_dump(mode="json", exclude_none=True) for message in messages]
+
+    async def get_session_orchestration(self, session_id: str) -> SessionOrchestrationEvidence | None:
+        """Return versioned orchestration evidence from the archive's stored records."""
+        from polylogue.analysis.orchestration_evidence import build_session_orchestration
+        from polylogue.operations.orchestration import read_orchestration_usage
+
+        resolved = await self.repository.resolve_id(session_id)
+        session = await self.repository.get(str(resolved) if resolved is not None else session_id)
+        if session is None:
+            return None
+        resolved_id = str(session.id)
+        topology = await cast("Polylogue", self).get_session_topology(resolved_id)
+        artifacts, _ = await self.get_raw_artifacts_for_session(resolved_id, limit=1)
+        acquisition = artifacts[0] if artifacts else None
+        usage_rows = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.orchestration.usage",
+            arguments={"session_id": resolved_id},
+            work=lambda archive: read_orchestration_usage(archive._conn, resolved_id),
+            projection="orchestration-usage",
+            stable_order="position",
+        )
+        delegations = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.orchestration.delegations",
+            arguments={"session_id": resolved_id},
+            work=lambda archive: archive.query_delegations(_archive_context_session_predicate(resolved_id), limit=1001),
+            projection="orchestration-delegations",
+            stable_order="parent_session_id,instruction_tool_use_block_id,child_session_id",
+        )
+        return build_session_orchestration(
+            session,
+            topology,
+            acquisition=acquisition,
+            delegations=delegations,
+            usage_rows=usage_rows,
+        )
 
     async def get_session_events(
         self,

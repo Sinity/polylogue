@@ -83,9 +83,12 @@ class SuiteCostRecorder:
         directory: Path,
         worker_id: str,
         basetemp: Path | Callable[[], Path | None] | None,
+        *,
+        role: str = "worker",
     ) -> None:
         self._directory = directory
         self._worker_id = worker_id
+        self._role = role
         self._basetemp_source = basetemp
         self._started_at = time.monotonic()
         self._io_start = _read_io()
@@ -125,6 +128,7 @@ class SuiteCostRecorder:
         io_delta = {name: io_end[name] - self._io_start[name] for name in io_end if name in self._io_start}
         return {
             "worker_id": self._worker_id,
+            "role": self._role,
             "tests": self._tests,
             "duration_s": round(time.monotonic() - self._started_at, 3),
             "io": io_delta,
@@ -150,17 +154,16 @@ def pytest_configure(config: pytest.Config) -> None:
     if not directory:
         return
     worker_id = getattr(config, "workerinput", {}).get("workerid", "master")
-    # Under xdist every archive is built in a worker; the controller only
-    # collects and dispatches. Its receipt would be counted as a worker with no
-    # tests, dividing the run's write bytes by one process too many.
-    if worker_id == "master" and getattr(config.option, "numprocesses", 0):
-        return
+    # The controller's collection and worker warm-up are part of the run's
+    # elapsed time. Record it separately rather than pretending its duration
+    # is another worker's active time.
+    role = "controller" if worker_id == "master" and getattr(config.option, "numprocesses", 0) else "worker"
 
     def resolve_basetemp() -> Path | None:
         factory = getattr(config, "_tmp_path_factory", None)
         return None if factory is None else Path(factory.getbasetemp())
 
-    _RECORDER = SuiteCostRecorder(Path(directory), worker_id, resolve_basetemp)
+    _RECORDER = SuiteCostRecorder(Path(directory), worker_id, resolve_basetemp, role=role)
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
@@ -179,17 +182,19 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 
 def aggregate_suite_cost(directory: Path) -> dict[str, Any]:
-    """Sum every worker receipt in ``directory`` into one run-level receipt."""
-    workers: list[dict[str, Any]] = []
+    """Aggregate run cost without inventing overlap that was not measured."""
+    records: list[dict[str, Any]] = []
     for path in sorted(Path(directory).glob("*.json")):
         if path.name == RUN_RECEIPT_NAME:
             continue
         with contextlib.suppress(OSError, ValueError):
-            workers.append(json.loads(path.read_text()))
+            records.append(json.loads(path.read_text()))
+    controllers = [record for record in records if record.get("role") == "controller"]
+    workers = [record for record in records if record.get("role") != "controller"]
     tests = sum(int(worker.get("tests", 0)) for worker in workers)
     io_total: dict[str, int] = {}
     tier_total: dict[str, int] = {}
-    for worker in workers:
+    for worker in records:
         for name, value in dict(worker.get("io", {})).items():
             io_total[name] = io_total.get(name, 0) + int(value)
         for name, value in dict(worker.get("tier_init", {})).items():
@@ -198,15 +203,30 @@ def aggregate_suite_cost(directory: Path) -> dict[str, Any]:
     return {
         "workers": len(workers),
         "tests": tests,
-        # Wall clock is the longest worker, not the sum: they run concurrently.
-        "wall_clock_s": max((float(worker.get("duration_s", 0.0)) for worker in workers), default=0.0),
+        # The controller spans collection, worker warmup and shutdown. Where
+        # it is available that is the run elapsed time; old receipts fall back
+        # to the longest worker. Never sum concurrent durations.
+        "wall_clock_s": max(
+            (float(controller.get("duration_s", 0.0)) for controller in controllers),
+            default=max((float(worker.get("duration_s", 0.0)) for worker in workers), default=0.0),
+        ),
+        "controller_duration_s": max(
+            (float(controller.get("duration_s", 0.0)) for controller in controllers), default=None
+        ),
+        "worker_active_s": sum(float(worker.get("duration_s", 0.0)) for worker in workers),
         "io": io_total,
         "write_bytes_per_test": round(write_bytes / tests, 1) if tests else 0.0,
         "tier_init": dict(sorted(tier_total.items())),
         "archive_tier_initializations": sum(tier_total.values()),
-        "peak_scratch_apparent_bytes": sum(int(w.get("peak_scratch_apparent_bytes", 0)) for w in workers),
-        "peak_scratch_allocated_bytes": sum(int(w.get("peak_scratch_allocated_bytes", 0)) for w in workers),
+        # Per-process peaks have no shared sampling clock. A sum would claim a
+        # simultaneous suite peak we did not observe, so expose the largest
+        # worker peak and retain every individual measurement below.
+        "peak_scratch_apparent_bytes": max((int(w.get("peak_scratch_apparent_bytes", 0)) for w in workers), default=0),
+        "peak_scratch_allocated_bytes": max(
+            (int(w.get("peak_scratch_allocated_bytes", 0)) for w in workers), default=0
+        ),
         "per_worker": workers,
+        "controller": controllers,
     }
 
 

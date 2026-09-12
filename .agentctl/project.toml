@@ -30,19 +30,13 @@ retain_artifacts = [
 # corpus scan) runs through the `scratch` operation in the bulk pool, never
 # inside the agent's own process.
 agent_memory_max = "3000M"
-# Wave policy: a candidate lands on its verification alone; the corpus run on
-# master per wave is the correctness backstop.
+# Review is intentionally omitted; the hosted candidate gate is the publication
+# check. Focused and complete suites remain explicit manual operations below.
 review = "none"
-# Workers and candidates pass on the static gates and merge when the hosted
-# quick gate is green; pytest runs once on master per landing wave (verify_all)
-# and at the nightly boundary. A worker may still run one focused test file
-# through pytest_focused when its bead names one.
-verify = { focused = "verify_quick", candidate = "verify_quick", corpus = "verify_all" }
+verify = { candidate = "hosted:ci/circleci: quick-gate" }
 publish = "pr"
 
-# Bounded selections run in their own pool so they never queue behind an
-# affected or corpus run; the pool's 3G slice sizes them to about two
-# workers through devtools' cgroup sizing.
+# Manual bounded selections and broad suites use the declared operations below.
 [operations.pytest_focused]
 description = "Run one managed pytest launch file, or a devtools test selection, in the host's quick pytest pool"
 exec = ["python", "-m", "devtools.pytest_slot"]
@@ -51,7 +45,6 @@ result = "pytest"
 cache = "none"
 timeout_seconds = 7200
 
-# Manual: the pull request's hosted `verify` check runs this for a candidate.
 [operations.verify_affected]
 description = "Run Polylogue's affected-test verification plan"
 exec = ["devtools", "verify"]
@@ -88,12 +81,7 @@ timeout_seconds = 900
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
 exec = ["devtools", "verify", "--all"]
-# The corpus graph is published from the main checkout; a lane worktree
-# cannot start it.
 checkout = "default"
-# Nightly master-boundary corpus: failures reach the coordinator through the
-# events spool; green nights stay silent. Off-peak, odd minute by convention.
-schedule = "*-*-* 03:17:00"
 pool = "pytest"
 result = "pytest"
 cache = "tree+environment"
@@ -123,8 +111,6 @@ result = "json"
 cache = "none"
 timeout_seconds = 180
 
-# Integration helpers for the wave; verification and publication policy remain
-# controlled by the project settings above.
 [packets.review]
 backend = "codex"
 model = "gpt-5.6-luna"

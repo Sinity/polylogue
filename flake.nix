@@ -45,6 +45,207 @@
       python = pkgs.python314FreeThreading;
       pythonPackages = python.pkgs;
 
+      # Polylogue uses the MCPServer API introduced by MCP 2.x.  nixpkgs'
+      # free-threaded package set still supplies MCP 1.x, which imports but
+      # has no ``mcp.server.mcpserver`` module and consequently fails only
+      # when the stdio server starts.  Keep this small pinned SDK closure in
+      # step with the authoritative uv.lock resolution instead of adding an
+      # import compatibility layer for two incompatible APIs.
+      mkPinnedPythonPackage =
+        {
+          pname,
+          version,
+          hash,
+          dependencies,
+          build-system,
+          pythonRelaxDeps ? [ ],
+          pythonImportsCheck ? [ ],
+        }:
+        pythonPackages.buildPythonPackage {
+          inherit
+            pname
+            version
+            dependencies
+            build-system
+            pythonRelaxDeps
+            pythonImportsCheck
+            ;
+          pyproject = true;
+          src = pkgs.fetchPypi { inherit pname version hash; };
+          env.UV_DYNAMIC_VERSIONING_BYPASS = version;
+          doCheck = false;
+        };
+
+      uv-dynamic-versioning2 = mkPinnedPythonPackage {
+        pname = "uv_dynamic_versioning";
+        version = "0.14.1";
+        hash = "sha256-hkLbaGzlxQQXA156JXrHO35cOnoywz5FvX42uiLutkg=";
+        dependencies = with pythonPackages; [
+          dunamai2
+          hatchling
+          jinja2
+          tomlkit
+        ];
+        build-system = with pythonPackages; [
+          hatchling
+        ];
+      };
+
+      dunamai2 = mkPinnedPythonPackage {
+        pname = "dunamai";
+        version = "1.26.1";
+        hash = "sha256-O0YAe9ZbALSCTq0KGu42X9ItDsK5whlJfU/Uj1KGDIs=";
+        dependencies = with pythonPackages; [
+          packaging
+        ];
+        build-system = with pythonPackages; [
+          poetry-core
+        ];
+      };
+
+      httpcore2 = mkPinnedPythonPackage {
+        pname = "httpcore2";
+        version = "2.12.0";
+        hash = "sha256-kpNSK7oKp8TI6ePwQMFldb2IaOFVp3+jDHqQhaXq5kg=";
+        dependencies = with pythonPackages; [
+          h11
+          truststore2
+        ];
+        build-system = with pythonPackages; [
+          hatch-fancy-pypi-readme
+          hatchling
+          uv-dynamic-versioning2
+        ];
+      };
+
+      # nixpkgs' truststore derivation currently propagates its documentation
+      # and test client stack.  The lockfile's truststore 0.10.4 distribution
+      # has no runtime dependencies, so package that authoritative runtime
+      # artifact directly for the MCP HTTP client closure.
+      truststore2 = mkPinnedPythonPackage {
+        pname = "truststore";
+        version = "0.10.4";
+        hash = "sha256-nZG9Q2RjrV5O5KunZmKN1s1wEM8+JGF1azMDcQ7rwwE=";
+        dependencies = [ ];
+        build-system = with pythonPackages; [
+          flit-core
+        ];
+      };
+
+      httpx2 = mkPinnedPythonPackage {
+        pname = "httpx2";
+        version = "2.12.0";
+        hash = "sha256-djH+mIeooidfSiVA4FOqZw/MUHQoZKmufGbmCf3PEs8=";
+        dependencies = with pythonPackages; [
+          anyio
+          httpcore2
+          idna
+          truststore2
+        ];
+        build-system = with pythonPackages; [
+          hatch-fancy-pypi-readme
+          hatchling
+          uv-dynamic-versioning2
+        ];
+        pythonRelaxDeps = [ "idna" ];
+      };
+
+      mcp-types = mkPinnedPythonPackage {
+        pname = "mcp_types";
+        version = "2.1.1";
+        hash = "sha256-d9y+SPunPMpxpnPyZGpfA3oBe3oKB6yJzsERMCiJDto=";
+        dependencies = with pythonPackages; [
+          pydantic
+          typing-extensions
+        ];
+        build-system = with pythonPackages; [
+          hatchling
+          uv-dynamic-versioning2
+        ];
+      };
+
+      withoutSphinxDocs =
+        package:
+        package.overridePythonAttrs (old: {
+          doCheck = false;
+          doInstallCheck = false;
+          nativeBuildInputs = builtins.filter (
+            input: !(lib.hasInfix "sphinx" (input.pname or (input.name or "")))
+          ) (old.nativeBuildInputs or [ ]);
+          postInstall = (old.postInstall or "") + ''
+            mkdir -p "$doc"
+          '';
+        });
+
+      # MCP 2.x uses PyJWT's crypto extra.  In the free-threaded package set
+      # PyJWT's nixpkgs derivation unconditionally builds Sphinx docs, whose
+      # test-only dependency chain is not compatible with Python 3.14t.  The
+      # deployed SDK needs the runtime wheel and crypto dependency, not docs.
+      pyjwtNoDocs = withoutSphinxDocs pythonPackages.pyjwt;
+
+      # opentelemetry-api reaches the same incompatible Sphinx chain through
+      # its runtime dependency `deprecated`.  Rewire that one propagated
+      # dependency rather than broadening the MCP SDK closure with test/docs
+      # tooling it does not execute.
+      wraptNoDocs = withoutSphinxDocs pythonPackages.wrapt;
+
+      # Consumers may follow a different nixpkgs revision. Preserve whichever
+      # dependency arguments that revision actually declares, including their
+      # Python module metadata, rather than assuming one spelling.
+      replacePythonDependency =
+        package: dependencyName: replacement:
+        package.overridePythonAttrs (
+          old:
+          lib.genAttrs
+            (builtins.filter (field: builtins.hasAttr field old) [
+              "dependencies"
+              "propagatedBuildInputs"
+            ])
+            (
+              field:
+              builtins.map (
+                input: if (input.pname or (input.name or "")) == dependencyName then replacement else input
+              ) old.${field}
+            )
+        );
+
+      deprecatedNoDocs =
+        replacePythonDependency (withoutSphinxDocs pythonPackages.deprecated) "wrapt"
+          wraptNoDocs;
+
+      opentelemetryApiNoDocs =
+        replacePythonDependency pythonPackages.opentelemetry-api "deprecated"
+          deprecatedNoDocs;
+
+      mcp-sdk = mkPinnedPythonPackage {
+        pname = "mcp";
+        version = "2.1.1";
+        hash = "sha256-ULe6HrvhFwCOp73SiCNAQ+acILQD1oUdGWYebUMade8=";
+        dependencies = with pythonPackages; [
+          anyio
+          cryptography
+          httpx2
+          jsonschema
+          mcp-types
+          opentelemetryApiNoDocs
+          pydantic
+          pyjwtNoDocs
+          python-multipart
+          sse-starlette
+          starlette
+          typing-extensions
+          typing-inspection
+          uvicorn
+        ];
+        build-system = with pythonPackages; [
+          hatchling
+          uv-dynamic-versioning2
+        ];
+        pythonImportsCheck = [
+          "mcp.server.mcpserver"
+        ];
+      };
+
       # Script body lives in nix/devtools-wrapper.sh so it can be unit-tested
       # directly (see tests/unit/devtools/test_cli_wrapper.py).
       devtoolsCli = pkgs.writeShellScriptBin "devtools" (builtins.readFile ./nix/devtools-wrapper.sh);
@@ -116,10 +317,11 @@
           structlog
           pydantic
           aiosqlite
-          mcp
+          mcp-sdk
           pyyaml
           watchfiles
           msgspec
+          nh3
         ];
 
         doCheck = false;
@@ -225,9 +427,22 @@
       mkNoCheckOverride =
         argsOrFn:
         if builtins.isFunction argsOrFn then
-          (finalAttrs: (argsOrFn finalAttrs) // { doCheck = false; doInstallCheck = false; })
+          (
+            finalAttrs:
+            (argsOrFn finalAttrs)
+            // {
+              doCheck = false;
+              doInstallCheck = false;
+            }
+          )
         else
-          (argsOrFn // { doCheck = false; doInstallCheck = false; });
+          (
+            argsOrFn
+            // {
+              doCheck = false;
+              doInstallCheck = false;
+            }
+          );
       # Applied as a top-level `pkgs` overlay (see the `pkgs` binding above) so
       # every package in `python314FreeThreading.pkgs` -- including ones never
       # named here, like `sphinx` or `defusedxml` -- is *constructed* with
@@ -347,41 +562,42 @@
       # Sanitized api-python: the python binary is wrapped with the same env
       # sanitization as the CLI binaries so downstream consumers (sinnix) don't
       # need their own wrapper.
-      polylogueApiPythonWrapped = pkgs.runCommand "polylogue-api-python-wrapped"
-        {
-          buildInputs = [ pkgs.makeWrapper ];
-        }
-        ''
-          mkdir -p "$out/bin"
-          for f in ${polylogueApiPython}/bin/*; do
-            name=$(basename "$f")
-            case "$name" in
-              python|python3|python3.*)
-                # Same sanitization as the `polylogue` derivation's postFixup
-                # above, including the _PYTHON_SYSCONFIGDATA_NAME/
-                # _PYTHON_HOST_PLATFORM scrub (polylogue-xikl) -- a caller
-                # devshell for a different interpreter can leak these in just
-                # as easily here.
-                makeWrapper "$f" "$out/bin/$name" \
-                  --unset PYTHONPATH \
-                  --unset PYTHONHOME \
-                  --unset PYTHONBREAKPOINT \
-                  --unset PYTHONUSERBASE \
-                  --unset VIRTUAL_ENV \
-                  --unset _PYTHON_SYSCONFIGDATA_NAME \
-                  --unset _PYTHON_HOST_PLATFORM
-                ;;
-              *)
-                ln -s "$f" "$out/bin/$name"
-                ;;
-            esac
-          done
-          for d in lib include share; do
-            if [ -d "${polylogueApiPython}/$d" ]; then
-              ln -s "${polylogueApiPython}/$d" "$out/$d"
-            fi
-          done
-        '';
+      polylogueApiPythonWrapped =
+        pkgs.runCommand "polylogue-api-python-wrapped"
+          {
+            buildInputs = [ pkgs.makeWrapper ];
+          }
+          ''
+            mkdir -p "$out/bin"
+            for f in ${polylogueApiPython}/bin/*; do
+              name=$(basename "$f")
+              case "$name" in
+                python|python3|python3.*)
+                  # Same sanitization as the `polylogue` derivation's postFixup
+                  # above, including the _PYTHON_SYSCONFIGDATA_NAME/
+                  # _PYTHON_HOST_PLATFORM scrub (polylogue-xikl) -- a caller
+                  # devshell for a different interpreter can leak these in just
+                  # as easily here.
+                  makeWrapper "$f" "$out/bin/$name" \
+                    --unset PYTHONPATH \
+                    --unset PYTHONHOME \
+                    --unset PYTHONBREAKPOINT \
+                    --unset PYTHONUSERBASE \
+                    --unset VIRTUAL_ENV \
+                    --unset _PYTHON_SYSCONFIGDATA_NAME \
+                    --unset _PYTHON_HOST_PLATFORM
+                  ;;
+                *)
+                  ln -s "$f" "$out/bin/$name"
+                  ;;
+              esac
+            done
+            for d in lib include share; do
+              if [ -d "${polylogueApiPython}/$d" ]; then
+                ln -s "${polylogueApiPython}/$d" "$out/$d"
+              fi
+            done
+          '';
     in
     {
       packages.${system} = {
@@ -545,85 +761,170 @@
       };
 
       checks.${system} = {
-        default = pkgs.runCommand "polylogue-smoke"
-          {
-            nativeBuildInputs = [
-              polylogue
-            ];
-          }
-          ''
-            export HOME=$TMPDIR
-            polylogue --help >/dev/null
-            polylogued --help >/dev/null
-            polylogue-mcp --help >/dev/null
-            touch $out
-          '';
+        default =
+          pkgs.runCommand "polylogue-smoke"
+            {
+              nativeBuildInputs = [
+                polylogue
+              ];
+            }
+            ''
+              export HOME=$TMPDIR
+              polylogue --help >/dev/null
+              polylogued --help >/dev/null
+              polylogue-mcp --help >/dev/null
+              touch $out
+            '';
+
+        # This starts the packaged MCP executable, completes a real stdio
+        # initialization request, and then terminates it.  It deliberately
+        # uses a fresh archive root and disabled daemon routing: packaging
+        # checks must not read or mutate a caller's archive.  In particular,
+        # this reaches Polylogue's `from mcp.server.mcpserver import
+        # MCPServer` at the production startup seam rather than merely
+        # checking that the CLI help text can render.
+        mcp-stdio-init =
+          pkgs.runCommand "polylogue-mcp-stdio-init"
+            {
+              nativeBuildInputs = [
+                polylogue
+              ];
+            }
+            ''
+              export HOME="$TMPDIR/home"
+              export XDG_CONFIG_HOME="$TMPDIR/config"
+              export XDG_DATA_HOME="$TMPDIR/data"
+              export XDG_STATE_HOME="$TMPDIR/state"
+              export POLYLOGUE_ARCHIVE_ROOT="$TMPDIR/archive"
+              export POLYLOGUE_DAEMON=off
+              mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$POLYLOGUE_ARCHIVE_ROOT"
+
+              python - <<'PY'
+              import json
+              import os
+              import select
+              import subprocess
+
+              request = {
+                  "jsonrpc": "2.0",
+                  "id": 1,
+                  "method": "initialize",
+                  "params": {
+                      "protocolVersion": "2025-06-18",
+                      "capabilities": {},
+                      "clientInfo": {"name": "polylogue-package-check", "version": "1"},
+                  },
+              }
+              process = subprocess.Popen(
+                  ["polylogue-mcp"],
+                  stdin=subprocess.PIPE,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  text=True,
+                  env=os.environ.copy(),
+              )
+              try:
+                  assert process.stdin is not None
+                  assert process.stdout is not None
+                  process.stdin.write(json.dumps(request) + "\n")
+                  process.stdin.flush()
+                  readable, _, _ = select.select([process.stdout], [], [], 60)
+                  if not readable:
+                      raise RuntimeError("polylogue-mcp did not answer initialize")
+                  response = json.loads(process.stdout.readline())
+                  if response.get("id") != 1 or "result" not in response:
+                      raise RuntimeError(f"unexpected MCP initialize response: {response!r}")
+                  if response["result"].get("serverInfo", {}).get("name") != "polylogue":
+                      raise RuntimeError(f"unexpected MCP server identity: {response!r}")
+              finally:
+                  process.terminate()
+                  try:
+                      process.wait(timeout=10)
+                  except subprocess.TimeoutExpired:
+                      process.kill()
+                      process.wait(timeout=10)
+                  if process.returncode not in (0, -15):
+                      stderr = process.stderr.read() if process.stderr is not None else ""
+                      raise RuntimeError(f"polylogue-mcp exited {process.returncode}: {stderr}")
+              PY
+              touch $out
+            '';
 
         # Package-level proof (polylogue-6rvt) that the full revision the
         # running artifact reports actually matches this flake's `self`
         # input, not just a plausible-looking string. Fails loudly if a
         # future edit reintroduces truncation (e.g. reverting to
         # `self.shortRev`) or drops the embedded metadata module.
-        build-info = pkgs.runCommand "polylogue-build-info"
-          {
-            nativeBuildInputs = [
-              polylogue
-            ];
-          }
-          ''
-            build_info="${polylogue}/${python.sitePackages}/polylogue/_build_info.py"
-            echo "checking $build_info" >&2
-            grep -qxF 'BUILD_COMMIT = "${buildRevision}"' "$build_info" || {
-              echo "embedded BUILD_COMMIT does not match flake self.rev/self.dirtyRev (${buildRevision})" >&2
-              cat "$build_info" >&2
-              exit 1
+        build-info =
+          pkgs.runCommand "polylogue-build-info"
+            {
+              nativeBuildInputs = [
+                polylogue
+              ];
             }
-            grep -qxF 'BUILD_DIRTY = ${if buildDirty then "True" else "False"}' "$build_info" || {
-              echo "embedded BUILD_DIRTY does not match flake dirty state (${if buildDirty then "True" else "False"})" >&2
-              cat "$build_info" >&2
-              exit 1
-            }
-            ${if buildRevision != "unknown" then ''
-              revision_len=$(printf '%s' "${buildRevision}" | wc -c)
-              [ "$revision_len" -eq 40 ] || {
-                echo "flake revision is not a full 40-character commit hash: ${buildRevision}" >&2
+            ''
+              build_info="${polylogue}/${python.sitePackages}/polylogue/_build_info.py"
+              echo "checking $build_info" >&2
+              grep -qxF 'BUILD_COMMIT = "${buildRevision}"' "$build_info" || {
+                echo "embedded BUILD_COMMIT does not match flake self.rev/self.dirtyRev (${buildRevision})" >&2
+                cat "$build_info" >&2
                 exit 1
               }
-            '' else ""}
-            export HOME=$TMPDIR
-            polylogue --version | grep -qF "${builtins.substring 0 8 buildRevision}" || {
-              echo "polylogue --version does not surface the short prefix of the embedded revision" >&2
-              polylogue --version >&2
-              exit 1
+              grep -qxF 'BUILD_DIRTY = ${if buildDirty then "True" else "False"}' "$build_info" || {
+                echo "embedded BUILD_DIRTY does not match flake dirty state (${
+                  if buildDirty then "True" else "False"
+                })" >&2
+                cat "$build_info" >&2
+                exit 1
+              }
+              ${
+                if buildRevision != "unknown" then
+                  ''
+                    revision_len=$(printf '%s' "${buildRevision}" | wc -c)
+                    [ "$revision_len" -eq 40 ] || {
+                      echo "flake revision is not a full 40-character commit hash: ${buildRevision}" >&2
+                      exit 1
+                    }
+                  ''
+                else
+                  ""
+              }
+              export HOME=$TMPDIR
+              polylogue --version | grep -qF "${builtins.substring 0 8 buildRevision}" || {
+                echo "polylogue --version does not surface the short prefix of the embedded revision" >&2
+                polylogue --version >&2
+                exit 1
+              }
+              touch $out
+            '';
+
+        format =
+          pkgs.runCommand "polylogue-format"
+            {
+              nativeBuildInputs = [
+                pkgs.ruff
+              ];
             }
-            touch $out
-          '';
+            ''
+              export RUFF_CACHE_DIR=$TMPDIR/.ruff-cache
+              cd ${self}
+              ruff format --check polylogue/ tests/ devtools/
+              touch $out
+            '';
 
-        format = pkgs.runCommand "polylogue-format"
-          {
-            nativeBuildInputs = [
-              pkgs.ruff
-            ];
-          }
-          ''
-            export RUFF_CACHE_DIR=$TMPDIR/.ruff-cache
-            cd ${self}
-            ruff format --check polylogue/ tests/ devtools/
-            touch $out
-          '';
-
-        lint = pkgs.runCommand "polylogue-lint"
-          {
-            nativeBuildInputs = [
-              pkgs.ruff
-            ];
-          }
-          ''
-            export RUFF_CACHE_DIR=$TMPDIR/.ruff-cache
-            cd ${self}
-            ruff check polylogue/ tests/ devtools/
-            touch $out
-          '';
+        lint =
+          pkgs.runCommand "polylogue-lint"
+            {
+              nativeBuildInputs = [
+                pkgs.ruff
+              ];
+            }
+            ''
+              export RUFF_CACHE_DIR=$TMPDIR/.ruff-cache
+              cd ${self}
+              ruff check polylogue/ tests/ devtools/
+              touch $out
+            '';
       };
 
       formatter.${system} = pkgs.nixfmt;

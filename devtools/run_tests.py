@@ -6,8 +6,8 @@ This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
 
 - the repository's managed environment (``POLYLOGUE_ROOT`` and friends, a
   repo-local pycache prefix);
-- an eight-worker default (``-n 8``), overridable
-  with ``-n`` in the selection or ``POLYLOGUE_PYTEST_WORKERS``;
+- a single-process default; parallelism is an explicit ``-n``
+  request and is narrowed at the admitted pytest pool when necessary;
 - the same pytest progress ledger, JSON report, and typed outcome receipt used
   by ``devtools verify``.
 
@@ -27,38 +27,37 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
-from devtools.agent_env import HARNESS_RUN_ENV, agent_worker_cap, inside_agent_job
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
 )
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
-    DEVTOOLS_PLUGIN_ARGS,
     IGNORED_COLLECTION_ARGS,
-    MANAGED_PLUGIN_ARGS,
     SUITE_COST_PLUGIN_NAME,
+    devtools_plugin_args,
+    effective_hypothesis_profile,
+    managed_plugin_args,
 )
 from devtools.pytest_slot import (
     PytestSlotUnavailableError,
     basetemp_root,
     remove_temp_tree,
     run_pytest,
+    run_pytest_isolated,
 )
 from devtools.pytest_stream_report import report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
-from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT
+from devtools.testmon_provision import TESTMON_COVERAGE_CORE, inspect_testmon_graph
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
     PytestStepArtifacts,
     VerifyRun,
     append_verification_evidence,
     append_verify_history,
-    configured_pytest_worker_request,
     env_for_pytest_step,
     git_head,
     prune_successful_verify_runs,
@@ -189,6 +188,28 @@ def _parse_outliers(selection: list[str]) -> tuple[int | None, list[str]]:
     return limit, remaining
 
 
+def _parse_runner(selection: list[str]) -> tuple[str, list[str]]:
+    """Consume the runner mode without forwarding it to pytest."""
+    runner = "managed"
+    remaining: list[str] = []
+    index = 0
+    while index < len(selection):
+        argument = selection[index]
+        if argument == "--runner":
+            index += 1
+            if index == len(selection):
+                raise ValueError("--runner expects managed or isolated")
+            runner = selection[index]
+        elif argument.startswith("--runner="):
+            runner = argument.split("=", 1)[1]
+        else:
+            remaining.append(argument)
+        index += 1
+    if runner not in {"managed", "isolated"}:
+        raise ValueError("--runner expects managed or isolated")
+    return runner, remaining
+
+
 def _verbose_output() -> bool:
     """Whether the caller asked for the full preamble and artifact footer."""
     return "--verbose" in sys.argv[1:] or bool(os.environ.get("POLYLOGUE_DEVTOOLS_VERBOSE"))
@@ -296,52 +317,16 @@ def _has_worker_flag(selection: list[str]) -> bool:
     return any(arg.startswith(("-n", "--numprocesses")) for arg in selection)
 
 
-def _capped_selection(selection: list[str]) -> list[str]:
-    """Rewrite an explicit worker request that exceeds the agent-job cap.
-
-    An agent job shares the host. A caller-supplied ``-n`` used to skip the
-    cap entirely, so an explicit request could claim the whole machine that
-    the cap exists to protect.
-    """
-    if not inside_agent_job(os.environ):
-        return selection
-    request = pytest_command_worker_request(selection)
-    if request is None:
-        return selection
-    try:
-        requested = int(request)
-    except ValueError:
-        return selection
-    capped = agent_worker_cap(requested, os.environ)
-    if capped is None or capped == requested:
-        return selection
-    rewritten: list[str] = []
-    skip_next = False
-    for argument in selection:
-        if skip_next:
-            skip_next = False
-            continue
-        if argument in {"-n", "--numprocesses"}:
-            skip_next = True
-            continue
-        if argument.startswith("--numprocesses=") or (argument.startswith("-n") and len(argument) > 2):
-            continue
-        rewritten.append(argument)
-    return [*rewritten, "-n", str(capped)]
-
-
 def _worker_args(selection: list[str]) -> list[str]:
     """Default focused runs to a single process; honor an explicit override.
 
-    The override is read through the shared resolver rather than straight from
-    the environment, so the cloud worker pin is scrubbed here exactly as it is
-    for `devtools verify`. Reading it raw gave focused runs two processes where
-    the policy intends one.
+    An ambient worker setting belongs to broad verification, not an inner-loop
+    selection. The runner that owns the requested pool narrows an explicit
+    request using its live cgroup budget.
     """
     if _has_worker_flag(selection):
         return []
-    requested = agent_worker_cap(configured_pytest_worker_request(os.environ), os.environ)
-    return ["-n", str(requested if requested is not None else 0)]
+    return []
 
 
 def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> list[str]:
@@ -357,54 +342,32 @@ def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> li
 
 def build_pytest_cmd(selection: list[str], *, report_path: Path = PYTEST_REPORT_PATH) -> list[str]:
     """Compose the pytest command for a focused selection."""
-    selection = _capped_selection(selection)
     worker_args = _worker_args(selection)
     collection_args = () if _selection_targets_benchmarks(selection) else IGNORED_COLLECTION_ARGS
     return [
         venv_python(root=ROOT),
         "-m",
         "pytest",
-        *DEVTOOLS_PLUGIN_ARGS,
+        *devtools_plugin_args(testmon=False),
         "-p",
         SUITE_COST_PLUGIN_NAME,
-        *MANAGED_PLUGIN_ARGS,
+        *managed_plugin_args(testmon=False, xdist=_has_worker_flag(selection)),
         CLEAR_CONFIGURED_ADDOPTS,
         report_file_argument(report_path),
         *collection_args,
-        # A focused run never selects: the caller already named what to run.
-        # It traces into the scratch graph `focused_pytest_env` points it at,
-        # and a run spawned from inside another managed run does not trace at
-        # all.
-        *_testmon_args(os.environ),
         *selection,
         *worker_args,
         *_xdist_distribution_args(selection, worker_args),
     ]
 
 
-def _testmon_args(env: Mapping[str, str]) -> tuple[str, ...]:
-    """testmon flags for a focused run; none when nested in a managed run."""
-    if env.get(HARNESS_RUN_ENV):
-        return ("-p", "no:testmon")
-    return ("--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", "--testmon-noselect")
-
-
 def focused_pytest_env(*, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
     """The environment a focused run executes under.
 
-    A focused run traces its own scratch graph, never the checkout's. testmon
-    prunes whichever datafile it opens down to that run's own collection:
-    every recorded test the run neither collected nor found stable is deleted.
-    A focused run pointed at the checkout's graph therefore replaced a corpus
-    with its handful of tests, and the next selecting run re-executed
-    everything. Only a run whose collection is the corpus writes that file.
-
-    The scratch graph lives in the run's own step directory, so it is removed
-    with the receipt it belongs to.
+    Focused runs deliberately do not load testmon. They must not create a
+    scratch graph, mutate the corpus graph, or load testmon's retention hook.
     """
-    env = env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts)
-    env["TESTMON_DATAFILE"] = str(artifacts.step_dir / "focused-testmondata")
-    return env
+    return env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts, testmon=False)
 
 
 def _selection_targets_benchmarks(selection: list[str]) -> bool:
@@ -433,12 +396,14 @@ def _run(
     cwd: str,
     env: dict[str, str],
     run: VerifyRun,
+    runner: str = "managed",
 ) -> tuple[int, float, dict[str, Any]]:
     """Run focused pytest through the host's pytest slot, preserving its receipt."""
     del label, run
     started = time.monotonic()
     try:
-        outcome = run_pytest(command, cwd=cwd, env=env, root=ROOT)
+        executor = run_pytest if runner == "managed" else run_pytest_isolated
+        outcome = executor(command, cwd=cwd, env=env, root=ROOT)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
         return (
@@ -478,9 +443,9 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env.pop("PYTEST_XDIST_WORKER", None)
     env.pop("PYTEST_CURRENT_TEST", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    # A focused green stands for the same property budget the corpus runs
-    # under; a reduced Hypothesis profile would make it claim more than it ran.
-    env["HYPOTHESIS_PROFILE"] = "default"
+    # The CLI profile wins over this environment; absent both, focused runs
+    # use the bounded verify profile (registered in tests/conftest.py).
+    env.setdefault("HYPOTHESIS_PROFILE", "verify")
     env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
 
 
@@ -521,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
     selection = list(sys.argv[1:] if argv is None else argv)
     try:
         outlier_count, selection = _parse_outliers(selection)
+        runner, selection = _parse_runner(selection)
     except ValueError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
         return 2
@@ -575,15 +541,29 @@ def main(argv: list[str] | None = None) -> int:
     try:
         pytest_env = focused_pytest_env(run=run, artifacts=artifacts)
         pytest_env.pop("POLYLOGUE_PYTEST_CONTAINMENT_PATH", None)
+        pytest_env.pop("POLYLOGUE_BROAD_PREWARM", None)
         _normalize_managed_pytest_environment(pytest_env)
+        hypothesis_profile, hypothesis_profile_source = effective_hypothesis_profile(
+            selection, pytest_env, default="verify"
+        )
+        graph = inspect_testmon_graph(ROOT)
         rc, elapsed, metadata = _run(
             "pytest focused",
             cmd,
             cwd=str(ROOT),
             env=pytest_env,
             run=run,
+            runner=runner,
         )
         _publish_last_focused_pytest_report(report_path)
+        metadata["testmon_preselection"] = {
+            "status": graph.status.value,
+            "reason": graph.reason,
+            "cause": graph.full_rerun_cause,
+        }
+        metadata["hypothesis_profile"] = hypothesis_profile
+        metadata["hypothesis_profile_source"] = hypothesis_profile_source
+        metadata["runner"] = runner
     except KeyboardInterrupt:
         rc = 130
         elapsed = time.monotonic() - started

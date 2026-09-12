@@ -3693,6 +3693,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
             self.stopped.set()
 
         def server_close(self) -> None:
+            self.execution_kernel.shutdown(wait=False, cancel_futures=True)
             return None
 
     reset_daemon_compute_adapter()
@@ -4142,6 +4143,28 @@ def test_shutdown_server_runs_even_when_to_thread_task_is_cancelled() -> None:
     assert server.shutdown_called is True
 
 
+async def _await_server_readiness_or_daemon_exit(
+    task: asyncio.Task[None], servers: tuple[threading.Event, ...]
+) -> None:
+    """Bound test startup readiness and preserve the daemon's original failure."""
+    try:
+        async with asyncio.timeout(0.75):
+            while not all(server.is_set() for server in servers):
+                # A service that dies during startup must surface its failure
+                # now, rather than leaving this probe spinning until an
+                # external test timeout.
+                if task.done():
+                    await task
+                    raise AssertionError("daemon exited before server readiness")
+                await asyncio.sleep(0.01)
+    except BaseException:
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        raise
+
+
 @pytest.mark.parametrize(
     ("received_signal_name", "expected_interrupted_cleanup_calls"),
     [(None, 1), ("SIGTERM", 0)],
@@ -4177,6 +4200,10 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         execution_kernel: BoundedComputeAdapter
         session_profile_callback: None
         operation_runtime: SimpleNamespace
+
+        def server_close(self) -> None:
+            super().server_close()
+            self.execution_kernel.shutdown(wait=False, cancel_futures=True)
 
     class FakeConverger:
         pass
@@ -4229,11 +4256,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
                 api_port=8766,
             )
         )
-        while not (browser_server.ready.is_set() and api_server.ready.is_set()):
-            if task.done():
-                await task
-                raise AssertionError("daemon exited before server readiness")
-            await asyncio.sleep(0.01)
+        await _await_server_readiness_or_daemon_exit(task, (browser_server.ready, api_server.ready))
         if received_signal_name is not None:
             lifecycle = daemon_cli._daemon_lifecycle
             assert lifecycle is not None
@@ -4279,6 +4302,22 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     assert api_server.shutdown_called is True
     assert api_server.close_called is True
     assert interrupted_cleanup_calls == expected_interrupted_cleanup_calls
+
+
+def test_daemon_shutdown_readiness_surfaces_startup_failure_without_spinning() -> None:
+    """A startup exception reaches the shutdown test before its short bound expires."""
+
+    async def failed_daemon() -> None:
+        raise RuntimeError("api startup failed")
+
+    async def exercise() -> None:
+        task = asyncio.create_task(failed_daemon())
+        never_ready = threading.Event()
+        with pytest.raises(RuntimeError, match="api startup failed"):
+            await _await_server_readiness_or_daemon_exit(task, (never_ready,))
+        assert task.done()
+
+    asyncio.run(exercise())
 
 
 def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() -> None:

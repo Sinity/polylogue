@@ -5535,15 +5535,14 @@ def _next_session_event_position(conn: sqlite3.Connection, session_id: str) -> i
     return int(row[0] or 0) if row is not None else 0
 
 
-# Event types whose full evidence already lives durably in a sibling typed
-# table -- materializing a second copy into ``session_events`` is a pure,
-# zero-evidence-loss duplication (polylogue-bo9n consumer audit, 2026-07-19):
+# Event types lowered into sibling typed tables or represented by dialogue
+# messages. Independent wire evidence must have its own retained event:
 #
-# - ``token_count`` / ``message_usage``: fully re-derivable from
-#   ``session_provider_usage_events`` (the cost model's sole read path,
-#   ``storage/usage.py``); every field the writer would otherwise copy into
-#   ``session_events.payload_json`` is already unpacked into that table's
-#   typed columns.
+# - ``token_count`` / ``message_usage``: numeric usage is retained in
+#   ``session_provider_usage_events`` (the cost model's read path,
+#   ``storage/usage.py``). This table does not retain arbitrary wire fields.
+#   Codex quota windows are preserved by a separate ``rate_limits`` event;
+#   historical rows written before that parser change do not contain them.
 # - ``agent_policy``: fully re-derivable from ``session_agent_policies``
 #   (dedicated typed table, identical fields, sole confirmed reader
 #   ``read_session_agent_policies``).

@@ -5,7 +5,7 @@
 # lockfile pins the package set, and the interpreter must match it exactly or
 # testmon records a different environment and re-executes everything.
 [[pre-start]]
-venv = "uv sync --extra dev --group audit --frozen --python \"$(readlink -f \"{{ primary_worktree_path }}/.venv/bin/python\")\""
+venv = "env -u _PYTHON_SYSCONFIGDATA_NAME uv sync --extra dev --group audit --frozen --python \"$(readlink -f \"{{ primary_worktree_path }}/.venv/bin/python\")\""
 
 # The testmon graph is keyed by content and repo-relative path, so the
 # primary checkout's datafile is valid here as soon as it is snapshotted. The

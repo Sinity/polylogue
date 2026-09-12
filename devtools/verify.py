@@ -28,9 +28,10 @@ from devtools.pytest_invocation import (
     MANAGED_PLUGIN_ARGS,
     REPORT_PLUGIN_ARGS,
     SUITE_COST_PLUGIN_NAME,
+    effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
+from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest, run_pytest_isolated
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
 from devtools.required_gate import executable_gate_result
@@ -173,7 +174,9 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     return ["--dist=loadgroup", "-n", str(workers)]
 
 
-def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[str, list[str]]]:
+def _pytest_steps(
+    *, selection: str, worker_args: Sequence[str], hypothesis_profile: str | None = None
+) -> list[tuple[str, list[str]]]:
     """Build one complete collection, or an affected collection, both tracing.
 
     Both tiers load testmon so every managed corpus or affected run advances the
@@ -203,6 +206,7 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
         *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", select_flag] if testmon else []),
         "-p",
         "no:randomly",
+        *([f"--hypothesis-profile={hypothesis_profile}"] if hypothesis_profile else []),
         *worker_args,
         *(DESCRIPTOR_CONTRACT_TESTS if selection == "descriptor" else []),
         # Never under pytest-cov: testmon owns the tracer, and refuses to share
@@ -215,11 +219,17 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
 NON_BLOCKING_LABELS: frozenset[str] = frozenset(gate.label for gate in quick_gates() if not gate.blocking)
 
 
-def build_verify_steps(*, quick: bool, selection: str = "all") -> list[tuple[str, list[str]]]:
+def build_verify_steps(
+    *, quick: bool, selection: str = "all", hypothesis_profile: str | None = None
+) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in quick_gates()]
     if not quick and selection != "none":
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=CORPUS_MAX_WORKERS))
+        steps += _pytest_steps(
+            selection=selection,
+            worker_args=_pytest_worker_args(maximum=CORPUS_MAX_WORKERS),
+            hypothesis_profile=hypothesis_profile,
+        )
     return steps
 
 
@@ -298,9 +308,11 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    # Property tests run under one full profile so a reduced Hypothesis budget
-    # cannot quietly narrow what a recorded green stands for.
-    env["HYPOTHESIS_PROFILE"] = "default"
+    # Broad verification defaults to the complete profile. An explicit
+    # environment value remains an intentional local policy and the CLI option
+    # takes precedence inside pytest itself.
+    env.setdefault("HYPOTHESIS_PROFILE", "default")
+    env["POLYLOGUE_BROAD_PREWARM"] = "1"
     env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
     env.pop("POLYLOGUE_CI", None)
 
@@ -352,7 +364,9 @@ def _report_nodeid_to_selector(nodeid: str) -> str:
     return nodeid
 
 
-def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifacts: Any) -> dict[str, Any] | None:
+def _rerun_failed_once(
+    command: Sequence[str], *, env: Mapping[str, str], artifacts: Any, runner: str = "managed"
+) -> dict[str, Any] | None:
     """Rerun exactly the failed tests once, alone and unselected.
 
     A test that fails twice is red and decides the step. A test that passes
@@ -394,7 +408,8 @@ def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifa
     # The rerun is pytest too, so it holds the host's pytest slot like the run
     # it is adjudicating.
     try:
-        rerun_completed = run_pytest(rerun_command, cwd=str(ROOT), env=rerun_env, root=ROOT, stdout=sys.stderr)
+        executor = run_pytest if runner == "managed" else run_pytest_isolated
+        rerun_completed = executor(rerun_command, cwd=str(ROOT), env=rerun_env, root=ROOT, stdout=sys.stderr)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"\n  rerun could not acquire the pytest slot: {exc}\n")
         return {"attempted": failed, "still_failed": failed, "flaky": [], "rerun_report": None, "rerun_exit": 125}
@@ -501,13 +516,17 @@ def _subprocess_env() -> dict[str, str]:
     return {**os.environ, "POLYLOGUE_ROOT": str(ROOT), "PYTHONPYCACHEPREFIX": str(ROOT / ".cache" / "pycache")}
 
 
-def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float, dict[str, Any]]:
+def _run(
+    label: str, command: list[str], *, run: VerifyRun, runner: str = "managed"
+) -> tuple[int, float, dict[str, Any]]:
     started = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
     pytest_step = label.startswith("pytest")
     artifacts = run.start_step(label=label, cmd=command)
     env = _subprocess_env()
+    hypothesis_profile: str | None = None
+    hypothesis_profile_source: str | None = None
     completed: subprocess.CompletedProcess[Any]
     rerun: dict[str, Any] | None = None
     executable_result = executable_gate_result(command, gate=label, env=env)
@@ -530,8 +549,10 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         _clear_pytest_report(command)
         _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+        hypothesis_profile, hypothesis_profile_source = effective_hypothesis_profile(command, env, default="default")
         try:
-            outcome = run_pytest(command, cwd=str(ROOT), env=env, root=ROOT, stdout=sys.stderr)
+            executor = run_pytest if runner == "managed" else run_pytest_isolated
+            outcome = executor(command, cwd=str(ROOT), env=env, root=ROOT, stdout=sys.stderr)
         except PytestSlotUnavailableError as exc:
             early_metadata = {"diagnosis": "pytest_slot_unavailable", "error": str(exc)}
             run.finish_step(
@@ -547,7 +568,11 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         # Exit 2 (interrupted), 3 (internal error), 4 (usage) and the signal
         # codes describe the run itself; recovering them would report a
         # broken run as a recovered flake.
-        rerun = _rerun_failed_once(command, env=env, artifacts=artifacts) if completed.returncode == 1 else None
+        rerun = (
+            _rerun_failed_once(command, env=env, artifacts=artifacts, runner=runner)
+            if completed.returncode == 1
+            else None
+        )
     else:
         try:
             completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
@@ -565,6 +590,9 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
     }
     if pytest_step:
         metadata["pytest_slot"] = slot
+        metadata["hypothesis_profile"] = hypothesis_profile
+        metadata["hypothesis_profile_source"] = hypothesis_profile_source
+        metadata["runner"] = runner
         if metadata_receipt is not None:
             metadata["pytest_slot_receipt"] = metadata_receipt
         suite_cost_receipt = write_run_receipt(env.get(SUITE_COST_DIR_ENV))
@@ -832,6 +860,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         help="the static gates plus the complete corpus; the default selects from the testmon graph instead",
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--hypothesis-profile", help="profile passed to pytest; overrides HYPOTHESIS_PROFILE")
+    parser.add_argument("--runner", choices=("managed", "isolated"), default="managed")
     args = parser.parse_args(argv)
     _anchor_verification_paths()
     validate_authority_matrix()
@@ -903,12 +933,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 sys.stderr.write(
                     f"verify: {graph.full_rerun_cause} since the graph was written: this run re-executes every test.\n"
                 )
-    steps = build_verify_steps(quick=args.quick, selection=selection)
+    steps = build_verify_steps(quick=args.quick, selection=selection, hypothesis_profile=args.hypothesis_profile)
     try:
         results: list[dict[str, Any]] = []
         exit_code = 0
         for label, command in steps:
-            rc, elapsed, metadata = _run(label, command, run=run)
+            rc, elapsed, metadata = _run(label, command, run=run, runner=args.runner)
             blocking = label not in NON_BLOCKING_LABELS
             results.append(
                 {"name": label, "duration_s": round(elapsed, 2), "exit": rc, "blocking": blocking, **metadata}

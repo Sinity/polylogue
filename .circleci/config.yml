@@ -1,8 +1,7 @@
 version: 2.1
 
-# CircleCI free-tier CI while GitHub Actions is billing-locked (and a cheap
-# second opinion afterwards). Credit budget: ~30k credits/month on the free
-# plan. Design keeps the per-push cost low and the heavy work nightly:
+# CircleCI free-tier CI while GitHub Actions is billing-locked. Design keeps
+# the per-push cost low:
 #   - quick-gate (PRs + master pushes): `devtools verify --quick` itself (not a
 #     hand-picked subset of its steps -- see
 #     polylogue-ze5i: this job used to reimplement ruff/mypy/render-all as
@@ -12,19 +11,19 @@ version: 2.1
 #     every other check added to that block over time never ran in real CI
 #     even though `.github/workflows/ci.yml` referenced them -- that GHA
 #     workflow does not execute, only CircleCI does). No pytest; the test
-#     suite's pre-merge gate remains local `devtools verify`, same
-#     as the repo's GitHub-era policy where the heavy suite ran post-merge
-#     only.
+#     suite's pre-merge gate remains the explicitly selected local or hosted
+#     verification; this job is the publication gate.
 #   - policy-checks (scheduled pipeline named "nightly"): policy checks that
 #     are not cheap/deterministic enough for every push (timestamp-doctrine).
-#     Runs nightly so a policy that fails continuously is at
-#     least visible somewhere, per polylogue-ze5i AC2.
-#   - full-suite (scheduled pipeline named "nightly"): full coverage suite +
-#     dependency audit on a larger executor.
+#     Runs nightly so a policy that fails continuously is at least visible
+#     somewhere.
+#   - dependency-audit (scheduled pipeline named "nightly"): dependency
+#     security maintenance.
 #   - release-verify (v* tags): build artifacts and store them.
 # Operator setup (one-time, UI): Project Settings → Advanced → "Only build
 # pull requests" ON; add a scheduled pipeline named "nightly" (master,
-# 03:00 UTC). Publishing to PyPI stays a manual local act.
+# 03:00 UTC). Publishing to PyPI stays a manual local act. Complete-corpus
+# runs remain explicit, never a scheduled publication prerequisite.
 
 commands:
   bootstrap:
@@ -84,25 +83,16 @@ jobs:
           name: policy timestamp-doctrine
           command: ~/.local/bin/uv run devtools gate timestamp-doctrine
           when: always
-  full-suite:
+  dependency-audit:
     docker:
       - image: cimg/python:3.14
-    resource_class: large
-    environment:
-      <<: *polylogue_ci_env
-      POLYLOGUE_PYTEST_WORKERS: "4"
+    resource_class: medium
+    environment: *polylogue_ci_env
     steps:
       - bootstrap
       - run:
-          name: Coverage suite
-          command: ~/.local/bin/uv run devtools verify --all
-          no_output_timeout: 30m
-      - run:
-          name: Dependency audit
+          name: Dependency security audit
           command: ~/.local/bin/uv run pip-audit --skip-editable || true
-      - store_artifacts:
-          path: .cache/verify
-          destination: verify
 
   release-verify:
     docker:
@@ -142,5 +132,5 @@ workflows:
         - equal: [scheduled_pipeline, << pipeline.trigger_source >>]
         - equal: [nightly, << pipeline.schedule.name >>]
     jobs:
-      - full-suite
+      - dependency-audit
       - lab-policies

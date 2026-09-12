@@ -37,6 +37,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [MCP Reference](mcp-reference.md) | MCP tools, capability opt-ins, and client setup. |
 | [Library API](library-api.md) | Async archive API, filters, and query patterns. |
 | [MCP Integration](mcp-integration.md) | Model Context Protocol server setup and usage. |
+| [Session Orchestration Evidence](orchestration-evidence.md) | Stored session topology, executor observations, usage, and provenance gaps through the API and MCP. |
 | [Agent Integration Reference](agent-integration-reference.md) | Generated typed contract, recipes, client delivery, and cutover reconciliation reference. |
 | [Configuration](configuration.md) | XDG paths, environment variables, and runtime configuration. |
 | [Glossary](glossary.md) | Plain-language translation of the internal taxonomy. |

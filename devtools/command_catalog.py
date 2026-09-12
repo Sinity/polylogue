@@ -138,6 +138,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "verification-export",
+        "verification",
+        "Export one managed verification receipt as stable versioned JSON.",
+        "devtools.verification_export",
+        json_flag=True,
+        use_when="A consumer needs bounded verification evidence without reading devtools cache internals.",
+        examples=("devtools verification-export <run-id> --json",),
+    ),
+    CommandSpec(
         "verify blob-conservation",
         "verification",
         "Report blob/reference conservation in both directions against an archive root.",

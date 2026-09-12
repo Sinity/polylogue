@@ -188,16 +188,15 @@ are not independently anchor-checked; durable citations belong in
   a lane with SQLite backup, replacing unusable lane copies. If no seed is
   available, the run reports a full seed run; `--all` runs every test and
   updates fingerprints, and `--quick` is the static gates alone.
-- Every managed pytest run executes inside its declared host test pool.
-  A job already admitted to the appropriate pool runs in
-  place; every other caller, lanes included, submits `pytest_focused` through
-  `agentctl job start`, waits, reads the captured log the run prints, and
-  refuses if the runtime is unreachable. A job id is never slot ownership.
-- Read `.agentctl/project.toml` for `workspace.verify`, review policy, and
-  operation-to-pool mappings on the current candidate. `pytest_focused` runs
-  bounded tests; `verify_affected` runs affected verification; `verify_all`
-  runs the corpus. A static-only wave policy does not establish pytest success
-  or make every hosted check required. Check actual branch requirements.
+- `devtools test <selection>` submits workstation pytest through its declared
+  host pool and refuses if admission is unavailable. `--runner isolated` is
+  explicit for CI without agentctl, not a workstation fallback. A job id is
+  never slot ownership.
+- Read `.agentctl/project.toml` for the hosted candidate gate, review policy,
+  and operation-to-pool mappings on the current candidate. `pytest_focused`,
+  `verify_affected`, and `verify_all` are manual operations for explicitly
+  selected scopes; none is a per-worker, per-wave, or nightly requirement.
+  Check actual branch requirements.
 - `devtools why` — explain the last run before reading receipts by hand.
 - `devtools gate <name>` — one named invariant check (`gate --list`);
   `verify --quick` is the fast subset. `status`, `render [<surface>|all]
@@ -207,11 +206,12 @@ are not independently anchor-checked; durable citations belong in
   grep for `out of sync`.
 
 Testmon is an accelerator: a selected green proves the selected scope only,
-and the receipt names which selection ran. Every managed run — `devtools test`
-included — traces into the same datafile, so the graph is advanced, never
-recomputed. The corpus runs as one collection; partitioning it would drop the
-edges of every test the last shard did not collect. A test names its anti-vacuity
-condition — what mutation or bypass would make it red.
+and the receipt names which selection ran. Focused `devtools test` runs do
+not load testmon or change its graph. Explicitly requested affected/full runs
+advance the broad graph. When `--all` is requested, the corpus runs as one
+collection; partitioning it would drop the edges of every test the last shard
+did not collect. A test names its anti-vacuity condition — what mutation or
+bypass would make it red.
 Fixtures are generated and deterministic (`tests/infra/`: SessionBuilder,
 seeded archives, pathology composer, corpus programs); timestamp-sensitive
 tests use `frozen_clock` (an autouse guard rejects wall-clock reads). Keep
