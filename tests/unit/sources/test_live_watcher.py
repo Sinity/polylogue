@@ -1702,6 +1702,40 @@ def test_watch_filter_accepts_directories_but_not_unmatched_files_under_broad_ro
     assert watcher._watch_filter(object(), str(child_directory)) is True
 
 
+@pytest.mark.asyncio
+async def test_hints_only_enqueue_does_not_scan_or_retain_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring debounce or recursive directory admission violates hint ownership."""
+    root = tmp_path / "source"
+    root.mkdir()
+    wakeup = asyncio.Event()
+    source = WatchSource(name="configured", root=root)
+    sibling = WatchSource(name="sibling", root=tmp_path / "sibling")
+    watcher = LiveWatcher(
+        SimpleNamespace(archive_root=tmp_path),
+        (source, sibling),
+        intake_hints_only=True,
+        intake_wakeup=wakeup,
+    )
+
+    def unexpected_walk(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("watcher hints must not enumerate source directories")
+
+    monkeypatch.setattr("polylogue.sources.live.watcher.os.walk", unexpected_walk)
+    try:
+        for index in range(100):
+            watcher._enqueue(root / f"{index}.jsonl")
+        watcher._enqueue_added_directory(root)
+        assert wakeup.is_set()
+        assert watcher._pending_paths == set()
+        assert watcher._drain_task is None
+        assert watcher.intake_revision(source) == 101
+        assert watcher.intake_revision(sibling) == 0
+    finally:
+        watcher.stop()
+
+
 def test_added_directory_scan_rejects_file_symlinks_escaping_source_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

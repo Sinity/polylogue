@@ -10,6 +10,7 @@ one of them red.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -58,6 +59,41 @@ class FakeAdapter:
         # Atomic and idempotent: acknowledging twice releases one entry.
         if item.item_id in self.pending:
             self.pending.remove(item.item_id)
+
+
+@pytest.mark.asyncio
+async def test_intake_coalesces_hints_received_during_discovery() -> None:
+    """Clearing a wake after discovery loses the event and waits sixty seconds."""
+    from polylogue.daemon.intake_adapters import DaemonIntakeService
+
+    wakeup = asyncio.Event()
+    rediscovered = asyncio.Event()
+
+    class HintingAdapter(FakeAdapter):
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+            self.discover_calls.append(limit)
+            if len(self.discover_calls) == 1:
+                for _ in range(20):
+                    wakeup.set()
+            else:
+                rediscovered.set()
+            return ()
+
+    adapter = HintingAdapter("local", [])
+    service = DaemonIntakeService(
+        FairIntakeDispatcher([IntakeClassSpec(name="local", adapter=adapter)]),
+        wakeup=wakeup,
+        idle_delay_s=60,
+    )
+    task = asyncio.create_task(service.run())
+    try:
+        await asyncio.wait_for(rediscovered.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert len(adapter.discover_calls) == 2
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 @pytest.mark.asyncio

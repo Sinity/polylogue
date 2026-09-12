@@ -3352,6 +3352,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         discover_pending_raw_ids,
                     )
 
+                    intake_wakeup = asyncio.Event()
                     watcher = LiveWatcher(
                         polylogue,
                         sources,
@@ -3363,6 +3364,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         embedding_owner=_converge_ingest_embeddings_off_writer,
                         session_profile_callback=session_profile_callback,
                         intake_hints_only=True,
+                        intake_wakeup=intake_wakeup,
                     )
                     watcher_holder.append(watcher)
 
@@ -3443,7 +3445,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         board=supervisor.board,
                         frame=f"daemon:{os.getpid()}",
                     )
-                    intake_service = DaemonIntakeService(dispatcher)
+                    intake_service = DaemonIntakeService(dispatcher, wakeup=intake_wakeup)
                     supervisor.start("fair_intake", intake_service.run)
                     if enable_watch:
                         watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)

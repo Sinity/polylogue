@@ -45,6 +45,11 @@ from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
 
 
+class _NoIntakeHints:
+    def intake_revision(self, source: WatchSource) -> int:
+        return 0
+
+
 def _resolved_config(**overrides: object) -> Any:
     """Return a ``load_polylogue_config`` stand-in answering every config key.
 
@@ -2544,7 +2549,7 @@ def test_run_live_watcher_stops_on_keyboard_interrupt(
             shutdown_timeouts.append(timeout)
             return True
 
-    class FakeWatcher:
+    class FakeWatcher(_NoIntakeHints):
         stopped = False
 
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -2616,7 +2621,7 @@ def test_live_watcher_cancellation_during_drain_retains_rebuild_exclusion(
         async def __aexit__(self, *exc: object) -> None:
             return None
 
-    class FakeWatcher:
+    class FakeWatcher(_NoIntakeHints):
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
@@ -3012,7 +3017,7 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
 
     stopped: list[bool] = []
 
-    class FakeWatcher:
+    class FakeWatcher(_NoIntakeHints):
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
@@ -3119,7 +3124,7 @@ def test_daemon_cleanup_failure_retains_rebuild_exclusion_until_process_exit(
         async def __aexit__(self, *exc: object) -> None:
             return None
 
-    class FakeWatcher:
+    class FakeWatcher(_NoIntakeHints):
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
@@ -3623,7 +3628,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         async def __aexit__(self, *exc: object) -> None:
             return None
 
-    class FakeWatcher:
+    class FakeWatcher(_NoIntakeHints):
         def __init__(self, *_args: object, **kwargs: object) -> None:
             self.catch_up_complete = asyncio.Event()
             watcher_coordinators.append(kwargs["write_coordinator"])
@@ -3798,12 +3803,11 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     assert events.index("lineage") < events.index("blob-publications") < events.index("watcher")
     assert "blob-gc" in events
     assert "blob-publication-reconciliation" in events
-    # Drive catch-up is background work: it must never gate the watcher or
-    # the local convergence loops on serial network I/O.
+    # Source acquisition belongs to fair intake after startup readiness.
     assert "drive-once" not in events
     assert events.index("lineage") < events.index("convergence")
-    assert events.index("lineage") < events.index("raw-materialization")
-    assert events.index("lineage") < events.index("drive")
+    assert "raw-materialization" not in events
+    assert "drive" not in events
     assert events.index("lineage") < events.index("converger")
     assert events.count("convergence") == 1
     lifecycle_phases = [str(payload["phase"]) for payload in lifecycle_payloads]
@@ -3812,7 +3816,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     assert lifecycle_phases[-1] == "shutdown_started"
     assert "shutdown_complete" not in lifecycle_phases
     lifecycle_components = {payload.get("component") for payload in lifecycle_payloads}
-    assert {"embedding_lifecycle_startup", "fts", "lineage_startup", "converger", "watcher"}.issubset(
+    assert {"embedding_lifecycle_startup", "fts", "lineage_startup", "converger", "intake"}.issubset(
         lifecycle_components
     )
     assert len(watcher_coordinators) == 1
@@ -3912,7 +3916,7 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
 
         async def observe(scope: Sequence[str] | None) -> DerivationReport:
             report = await composed(scope)
-            if scope is None:
+            if scope is None and profile_exists():
                 observed_scopes.append(scope)
                 sweep_complete.set()
             return report
@@ -3925,6 +3929,8 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
 
     def profile_exists() -> bool:
         with sqlite3.connect(archive_root / "index.db") as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'session_profiles'").fetchone():
+                return False
             return (
                 conn.execute("SELECT 1 FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()
                 is not None
@@ -3965,6 +3971,7 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
             )
             stack.enter_context(patch.object(daemon_cli, "_retry_convergence_debt_once", noop_periodic_work))
             stack.enter_context(patch.object(daemon_cli, "_run_periodic_fts_convergence_once", noop_periodic_work))
+            stack.enter_context(patch.object(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 0.05))
             for attribute in (
                 "_periodic_lifecycle_heartbeat",
                 "_periodic_health_check",
@@ -4001,6 +4008,227 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
 
     assert observed_scopes == [None, None]
     assert profile_exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("runs supervised intake and threaded derivation with controlled filesystem events")
+@pytest.mark.parametrize("source_name", ["configured", "browser-capture"])
+@pytest.mark.parametrize("directory_event", [False, True])
+async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
+    tmp_path: Path, source_name: str, directory_event: bool
+) -> None:
+    """Only fair intake admits created/updated sources and derives their profiles.
+
+    Anti-vacuity: restore watcher debounce admission, omit the wake connection,
+    or bypass the canonical profile kernel, and task ownership, bounded wake,
+    or the persisted profile fails. JSONL prefix growth derives a second profile;
+    a competing browser snapshot retains the canonical raw frontier deferral.
+    Other maintenance cannot repair the output.
+    """
+    from watchfiles import Change
+
+    from polylogue import Polylogue as RealPolylogue
+    from polylogue.archive.revision_authority import RawRevisionAuthority
+    from polylogue.archive.session_revision_membership import MembershipDecision
+    from polylogue.browser_capture.models import BrowserCaptureEnvelope
+    from polylogue.browser_capture.receiver import write_capture_envelope
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.convergence import DaemonConverger
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.daemon.intake import FairIntakeDispatcher
+    from polylogue.daemon.intake_adapters import DaemonIntakeService
+    from polylogue.daemon.supervisor import DaemonSupervisor
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from polylogue.sources.live.watcher import LiveWatcher
+
+    archive_root = tmp_path / "archive"
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    first_pass = asyncio.Event()
+    first_admission = asyncio.Event()
+    completed = asyncio.Event()
+    intake_tasks: list[object] = []
+    admission_tasks: list[object] = []
+    admission_metrics: list[object] = []
+    kernel_reports: list[DerivationReport] = []
+    passes: list[object] = []
+    carriers: list[Path] = []
+    browser = source_name == "browser-capture"
+    native_id = "aaaa0000-0000-0000-0000-000000000001"
+    session_id = "chatgpt-export:intake-law" if browser else f"claude-code-session:{native_id}"
+    real_start = DaemonSupervisor.start
+    real_pass = FairIntakeDispatcher.run_once
+    real_ingest = LiveWatcher._ingest_files
+    real_kernel = DaemonConverger.converge_derivations
+
+    async def idle() -> None:
+        await asyncio.Event().wait()
+
+    def start(self: DaemonSupervisor, name: str, factory: Any, **kwargs: Any) -> Any:
+        return real_start(self, name, factory if name in {"watcher", "fair_intake"} else idle, **kwargs)
+
+    async def dispatch(self: FairIntakeDispatcher, **kwargs: Any) -> Any:
+        intake_tasks.append(asyncio.current_task())
+        result = await real_pass(self, **kwargs)
+        passes.append(result)
+        first_pass.set()
+        if result.progressed:
+            if first_admission.is_set():
+                completed.set()
+            else:
+                first_admission.set()
+        return result
+
+    async def ingest(self: LiveWatcher, *args: Any, **kwargs: Any) -> Any:
+        admission_tasks.append(asyncio.current_task())
+        metrics = await real_ingest(self, *args, **kwargs)
+        admission_metrics.append(metrics)
+        return metrics
+
+    def kernel(self: DaemonConverger, *args: Any, **kwargs: Any) -> DerivationReport:
+        report = real_kernel(self, *args, **kwargs)
+        kernel_reports.append(report)
+        return report
+
+    def claude_record(role: str, uuid: str, parent: str | None, text: str) -> str:
+        return (
+            json.dumps(
+                {
+                    "parentUuid": parent,
+                    "sessionId": native_id,
+                    "type": role,
+                    "message": {"role": role, "content": text},
+                    "uuid": uuid,
+                    "timestamp": "2026-04-24T00:00:00.000Z",
+                    "cwd": "/workspace",
+                    "version": "1.0.6",
+                    "isSidechain": False,
+                    "userType": "external",
+                }
+            )
+            + "\n"
+        )
+
+    async def watch_events(*_args: Any, **_kwargs: Any) -> Any:
+        await first_pass.wait()
+        envelope = BrowserCaptureEnvelope.model_validate(
+            {
+                "polylogue_capture_kind": "browser_llm_session",
+                "schema_version": 1,
+                "capture_id": "chatgpt:intake-law",
+                "provenance": {
+                    "source_url": "https://chatgpt.com/c/intake-law",
+                    "page_title": "Intake law",
+                    "captured_at": "2026-04-24T00:00:00+00:00",
+                    "adapter_name": "chatgpt-dom-v1",
+                    "capture_mode": "snapshot",
+                },
+                "session": {
+                    "provider": "chatgpt",
+                    "provider_session_id": "intake-law",
+                    "title": "Intake law",
+                    "turns": [{"provider_turn_id": "u1", "role": "user", "text": "Synthetic", "ordinal": 0}],
+                },
+            }
+        )
+        spool = source_root / "new-directory" if directory_event else source_root
+        if browser:
+            artifact = write_capture_envelope(envelope, spool_path=spool).path
+        else:
+            spool.mkdir(exist_ok=True)
+            artifact = spool / "session.jsonl"
+            artifact.write_text(claude_record("user", "u1", None, "Synthetic"), encoding="utf-8")
+        os.utime(artifact, (1.0, 1.0))
+        carriers.append(artifact)
+        yield {(Change.added, str(spool if directory_event else artifact))}
+        await first_admission.wait()
+        root_mtime = source_root.stat().st_mtime_ns
+        if browser:
+            payload = envelope.model_dump(mode="json")
+            payload["session"]["turns"][0]["text"] = "Competing synthetic revision"
+            payload["session"]["turns"].append(
+                {"provider_turn_id": "a1", "role": "assistant", "text": "Synthetic reply", "ordinal": 1}
+            )
+            assert (
+                write_capture_envelope(BrowserCaptureEnvelope.model_validate(payload), spool_path=spool).path
+                == artifact
+            )
+        else:
+            with artifact.open("a", encoding="utf-8") as stream:
+                stream.write(claude_record("assistant", "a1", "u1", "Synthetic reply"))
+        os.utime(artifact, (2.0, 2.0))
+        assert source_root.stat().st_mtime_ns == root_mtime
+        yield {(Change.modified, str(artifact))}
+        await idle()
+
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+    reset_daemon_compute_adapter()
+    try:
+        with contextlib.ExitStack() as stack:
+            _daemon_startup_stubs(stack, daemon_cli, archive_root)
+            stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
+            stack.enter_context(patch.object(daemon_cli, "daemon_write_coordinator", return_value=coordinator))
+            stack.enter_context(patch.object(DaemonSupervisor, "start", start))
+            stack.enter_context(patch.object(FairIntakeDispatcher, "run_once", dispatch))
+            stack.enter_context(patch.object(LiveWatcher, "_ingest_files", ingest))
+            stack.enter_context(patch.object(DaemonConverger, "converge_derivations", kernel))
+            stack.enter_context(patch("watchfiles.awatch", watch_events))
+            stack.enter_context(
+                patch(
+                    "polylogue.daemon.intake_adapters.DaemonIntakeService",
+                    lambda dispatcher, **kwargs: DaemonIntakeService(
+                        dispatcher, budget=4096, idle_delay_s=60, **kwargs
+                    ),
+                )
+            )
+            task = asyncio.create_task(
+                daemon_cli.run_daemon_services(
+                    sources=(
+                        WatchSource(name=source_name, root=source_root, suffixes=(".json" if browser else ".jsonl",)),
+                    ),
+                    debounce_s=0.01,
+                    enable_watch=True,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                    enable_api=False,
+                    enable_source_catchup=False,
+                )
+            )
+            try:
+                try:
+                    await asyncio.wait_for(completed.wait(), timeout=20)
+                except TimeoutError:
+                    if task.done():
+                        await task
+                    pytest.fail(
+                        f"intake did not complete: passes={passes}, carriers={carriers}, admissions={admission_tasks}"
+                    )
+                assert admission_tasks and all(item is intake_tasks[0] for item in admission_tasks)
+                expected_versions = 1 if browser else 2
+                with sqlite3.connect(archive_root / "source.db") as conn:
+                    evidence = conn.execute(
+                        "SELECT decision, revision_authority FROM raw_session_memberships WHERE logical_source_key = ?",
+                        (session_id,),
+                    ).fetchall()
+                assert sum(report.done == 1 for report in kernel_reports) == expected_versions, str(
+                    ([(report.frame.scope, report.done) for report in kernel_reports], admission_metrics, evidence)
+                )
+                with sqlite3.connect(archive_root / "index.db") as conn:
+                    assert conn.execute("SELECT session_id FROM session_profiles").fetchall() == [(session_id,)]
+                    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (expected_versions,)
+                if browser:
+                    assert (
+                        evidence == [(MembershipDecision.AMBIGUOUS.value, RawRevisionAuthority.QUARANTINED.value)] * 2
+                    )
+                assert all(path.is_file() for path in carriers)
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=10)
+    finally:
+        reset_daemon_compute_adapter()
 
 
 def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
@@ -4058,7 +4286,7 @@ def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> No
         async def __aexit__(self, *exc: object) -> None:
             return None
 
-    class FakeWatcher:
+    class FakeWatcher(_NoIntakeHints):
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
@@ -5271,7 +5499,7 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
         async def __aexit__(self, *exc: object) -> None:
             return None
 
-    class FakeWatcher:
+    class FakeWatcher(_NoIntakeHints):
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             self.catch_up_complete = asyncio.Event()
 

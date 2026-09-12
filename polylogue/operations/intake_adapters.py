@@ -115,8 +115,13 @@ class FileIntakeAdapter(IntakeAdapter):
         self.class_name = class_name or source.name
         self._after: str | None = None
         self._last_root_mtime_ns: int | None = None
+        self._last_hint_revision = context.watcher.intake_revision(source)
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        hint_revision = self.context.watcher.intake_revision(self.source)
+        if hint_revision != self._last_hint_revision:
+            self._after = None
+            self._last_hint_revision = hint_revision
         # A filesystem cursor is only a scheduling hint.  A producer may add
         # an item lexicographically before the previous position; restart the
         # bounded walk when the root changed so that insertion is revisited.
@@ -398,15 +403,28 @@ def discover_pending_raw_ids(archive_root: Path, limit: int, max_payload_bytes: 
 class DaemonIntakeService:
     """Supervisor-owned bounded loop; scheduler owns all policy."""
 
-    def __init__(self, dispatcher: FairIntakeDispatcher, *, budget: int = 64, idle_delay_s: float = 5.0) -> None:
+    def __init__(
+        self,
+        dispatcher: FairIntakeDispatcher,
+        *,
+        budget: int = 64,
+        idle_delay_s: float = 5.0,
+        wakeup: asyncio.Event | None = None,
+    ) -> None:
         self.dispatcher = dispatcher
         self.budget = max(1, budget)
         self.idle_delay_s = max(0.05, idle_delay_s)
+        self._wakeup = wakeup if wakeup is not None else asyncio.Event()
 
     async def run(self) -> None:
         while True:
+            self._wakeup.clear()
             result = await self.dispatcher.run_once(budget=self.budget)
-            await asyncio.sleep(0.05 if result.progressed else self.idle_delay_s)
+            try:
+                async with asyncio.timeout(0.05 if result.progressed else self.idle_delay_s):
+                    await self._wakeup.wait()
+            except TimeoutError:
+                pass
 
 
 def build_intake_adapters(
