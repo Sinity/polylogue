@@ -189,6 +189,32 @@ def test_bulk_saturation_cannot_consume_interactive_or_control_capacity() -> Non
             blocker.release.set()
 
 
+def test_background_classes_share_one_reserve() -> None:
+    """Bulk and incremental work cannot duplicate the aggregate background reserve.
+
+    Anti-vacuity: allowing each background class its own ceiling lets the two
+    queues occupy every worker and makes the interactive submission below
+    wait behind background work instead of receiving reserved capacity.
+    """
+
+    blocker = _Blocker()
+    with _adapter(max_workers=8, queue_units=0) as adapter:
+        try:
+            bulk_ceiling = adapter.snapshot().by_class("bulk-candidate").ceiling_units
+            bulk = [adapter.submit(blocker, admission_class="bulk-candidate") for _index in range(bulk_ceiling)]
+            assert len(bulk) == bulk_ceiling
+            with pytest.raises(DaemonBackpressureError) as rejection:
+                adapter.submit(blocker, admission_class="incremental-background")
+            assert rejection.value.admission_class == "incremental-background"
+            assert rejection.value.evidence["class_used_units"] == bulk_ceiling
+
+            interactive = adapter.submit(blocker, admission_class="interactive-read")
+            assert adapter.snapshot().by_class("interactive-read").dispatched == 1
+            assert interactive.queue_delay_s < 0.1
+        finally:
+            blocker.release.set()
+
+
 def test_background_work_keeps_a_slot_while_interactive_load_saturates() -> None:
     """Mixed-load progress: background dispatch is bounded, not eventual.
 
