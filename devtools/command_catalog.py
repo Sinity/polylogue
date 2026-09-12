@@ -138,6 +138,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "verify provider-completeness",
+        "verification",
+        "Report provider/importer package completeness from OriginSpec declarations.",
+        "devtools.verify_provider_completeness",
+        json_flag=True,
+        flags=(("--check", "Fail when an accepted package has missing or partial required evidence."),),
+        use_when=(
+            "Check detector, parser, fixture, schema, query, read, explain, privacy, and documentation evidence "
+            "before accepting a source or citing origin coverage."
+        ),
+        examples=(
+            "devtools verify provider-completeness --json",
+            "devtools verify provider-completeness --origin codex-session --check",
+        ),
+    ),
+    CommandSpec(
         "verification-export",
         "verification",
         "Export one managed verification receipt as stable versioned JSON.",
