@@ -112,6 +112,7 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
     copy_shard_session_rows,
 )
 from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_session
+from polylogue.storage.usage import provider_usage_event_identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -1344,6 +1345,10 @@ def write_parsed_session_to_archive(
                 ambiguous_source_provider_ids=event_duplicate_message_native_ids,
             )
             add_timing("index.session_events", t0)
+            if projection_carry_forward is not None:
+                t0 = time.perf_counter()
+                _restore_captured_provider_usage_rows(conn, projection_carry_forward)
+                add_timing("index.restore_provider_usage", t0)
             t0 = time.perf_counter()
             _write_working_dirs(conn, session_id, session.working_directories)
             add_timing("index.working_dirs", t0)
@@ -3012,6 +3017,7 @@ class _CapturedProjections:
     paste_spans: list[tuple[object, ...]]
     file_edits: list[tuple[object, ...]]
     web_content_constructs: list[tuple[object, ...]]
+    provider_usage_events: list[tuple[object, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -3019,6 +3025,7 @@ class _ProjectionCarryForward:
     captured: _CapturedProjections
     block_id_remap: dict[str, str]
     live_message_ids: frozenset[str]
+    message_id_remap: dict[str, str | None]
 
 
 def _capture_session_projection_rows(conn: sqlite3.Connection, session_id: str) -> _CapturedProjections:
@@ -3052,12 +3059,22 @@ def _capture_session_projection_rows(conn: sqlite3.Connection, session_id: str) 
         "task_id, task_type, rank, start_index, end_index FROM web_content_constructs WHERE session_id = ?",
         (session_id,),
     ).fetchall()
+    provider_usage_events = conn.execute(
+        "SELECT session_id, source_message_id, position, provider_event_type, model_name, "
+        "last_input_tokens, last_output_tokens, last_cached_input_tokens, last_cache_write_tokens, "
+        "last_reasoning_output_tokens, last_total_tokens, total_input_tokens, total_output_tokens, "
+        "total_cached_input_tokens, total_cache_write_tokens, total_reasoning_output_tokens, "
+        "total_tokens, occurred_at_ms FROM session_provider_usage_events WHERE session_id = ? "
+        "ORDER BY position",
+        (session_id,),
+    ).fetchall()
     return _CapturedProjections(
         attachment_refs=[tuple(r) for r in attachment_refs],
         attachment_native_ids=[tuple(r) for r in attachment_native_ids],
         paste_spans=[tuple(r) for r in paste_spans],
         file_edits=[tuple(r) for r in file_edits],
         web_content_constructs=[tuple(r) for r in web_content_constructs],
+        provider_usage_events=[tuple(r) for r in provider_usage_events],
     )
 
 
@@ -3157,6 +3174,147 @@ def _restore_captured_projection_rows(
                 ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row[0], message_id, new_block_id, *row[3:]),
             )
+
+
+_PROVIDER_USAGE_EVENT_COLUMNS = (
+    "session_id",
+    "source_message_id",
+    "position",
+    "provider_event_type",
+    "model_name",
+    "last_input_tokens",
+    "last_output_tokens",
+    "last_cached_input_tokens",
+    "last_cache_write_tokens",
+    "last_reasoning_output_tokens",
+    "last_total_tokens",
+    "total_input_tokens",
+    "total_output_tokens",
+    "total_cached_input_tokens",
+    "total_cache_write_tokens",
+    "total_reasoning_output_tokens",
+    "total_tokens",
+    "occurred_at_ms",
+)
+
+
+def _provider_usage_event_key(
+    row: tuple[object, ...],
+    occurrence_by_base: dict[tuple[str, ...], int],
+) -> tuple[str, ...]:
+    values = dict(zip(_PROVIDER_USAGE_EVENT_COLUMNS, row, strict=True))
+    stable = provider_usage_event_identity(values)
+    if stable is not None:
+        base: tuple[str, ...] = stable
+    else:
+        # An unanchored row has no provider-issued identity. Its event type,
+        # model, and ordinal are the narrowest bounded reconciliation rule;
+        # unmatched rows are retained rather than inferred into a duplicate.
+        base = (
+            "ambiguous",
+            str(values.get("provider_event_type") or ""),
+            str(values.get("model_name") or "").strip(),
+        )
+    occurrence = occurrence_by_base.get(base, 0)
+    occurrence_by_base[base] = occurrence + 1
+    return (*base, str(occurrence))
+
+
+def _merge_provider_usage_event_rows(
+    incoming: tuple[object, ...],
+    existing: tuple[object, ...],
+) -> tuple[object, ...]:
+    """Keep the richer observation for one reconciled usage-event identity."""
+    merged = list(incoming)
+    for index in (1, 4, 17):
+        if merged[index] is None:
+            merged[index] = existing[index]
+    # Zero is a measured/omitted value in the wire shapes that reach this
+    # table. Across proven-distinct acquisitions keep the richer non-zero
+    # counter; same-acquisition reparses never get here and can retract it.
+    for index in range(5, 17):
+        new_value = merged[index]
+        old_value = existing[index]
+        if isinstance(new_value, (int, float)) and isinstance(old_value, (int, float)):
+            merged[index] = max(int(new_value), int(old_value))
+        elif new_value is None:
+            merged[index] = old_value
+    return tuple(merged)
+
+
+def _restore_captured_provider_usage_rows(
+    conn: sqlite3.Connection,
+    carry_forward: _ProjectionCarryForward,
+) -> None:
+    """Union provider usage evidence after the incoming event write.
+
+    Usage rows are a sibling typed projection, not part of the message/block
+    union. Reconcile anchored rows by source-message/type/model and retain
+    unmatched older rows at a fresh position. This preserves richer evidence
+    when a poorer acquisition omits it or reports zero, without turning a
+    cumulative observation or model switch into an additive delta.
+    """
+    captured = carry_forward.captured.provider_usage_events
+    if not captured:
+        return
+    session_id = cast(str, captured[0][0])
+    incoming_rows = [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT "
+            + ", ".join(_PROVIDER_USAGE_EVENT_COLUMNS)
+            + " FROM session_provider_usage_events WHERE session_id = ? ORDER BY position",
+            (session_id,),
+        ).fetchall()
+    ]
+    incoming_by_key: dict[tuple[str, ...], tuple[object, ...]] = {}
+    incoming_key_order: list[tuple[str, ...]] = []
+    incoming_occurrences: dict[tuple[str, ...], int] = {}
+    for row in incoming_rows:
+        key = _provider_usage_event_key(row, incoming_occurrences)
+        incoming_by_key[key] = row
+        incoming_key_order.append(key)
+    captured_by_key: dict[tuple[str, ...], tuple[object, ...]] = {}
+    captured_key_order: list[tuple[str, ...]] = []
+    captured_occurrences: dict[tuple[str, ...], int] = {}
+    for old_row in captured:
+        key = _provider_usage_event_key(old_row, captured_occurrences)
+        captured_by_key[key] = old_row
+        captured_key_order.append(key)
+
+    # Rebuild the tiny typed projection in merged event order.  Appending an
+    # unmatched old cumulative row would make it look newer than an incoming
+    # model-switch observation and would misattribute the session high-water.
+    merged_rows: list[tuple[object, ...]] = []
+    ordered_keys = _splice_merge_keys(
+        cast(list[object], captured_key_order),
+        cast(list[object], incoming_key_order),
+    )
+    for source, raw_key in ordered_keys:
+        key = cast(tuple[str, ...], raw_key)
+        if source == "new":
+            row = incoming_by_key[key]
+            matched_old_row = captured_by_key.get(key)
+            if matched_old_row is not None:
+                row = _merge_provider_usage_event_rows(row, matched_old_row)
+        else:
+            row_list = list(captured_by_key[key])
+            row_list[1] = carry_forward.message_id_remap.get(cast(str, row_list[1]), row_list[1])
+            row = tuple(row_list)
+        row_list = list(row)
+        row_list[0] = session_id
+        row_list[2] = len(merged_rows)
+        merged_rows.append(tuple(row_list))
+
+    conn.execute("DELETE FROM session_provider_usage_events WHERE session_id = ?", (session_id,))
+    conn.executemany(
+        "INSERT INTO session_provider_usage_events ("
+        + ", ".join(_PROVIDER_USAGE_EVENT_COLUMNS)
+        + ") VALUES ("
+        + ", ".join("?" for _ in _PROVIDER_USAGE_EVENT_COLUMNS)
+        + ")",
+        merged_rows,
+    )
 
 
 def _union_with_existing_rows(
@@ -3462,10 +3620,20 @@ def _union_with_existing_rows(
 
     # --- Capture sidecar projection rows for restoration after the incoming
     # rebuild (PR review P1 write.py:2433) ---
+    message_id_remap: dict[str, str | None] = {}
+    for nid, old_row in existing_by_native_id.items():
+        old_message_id = archive_message_id(
+            session_id,
+            nid,
+            position=cast(int, old_row[position_idx]),
+            variant_index=cast(int, old_row[variant_idx] or 0),
+        )
+        message_id_remap[old_message_id] = merged_message_ids.get(nid)
     carry_forward = _ProjectionCarryForward(
         captured=_capture_session_projection_rows(conn, session_id),
         block_id_remap=block_id_remap,
         live_message_ids=live_message_ids,
+        message_id_remap=message_id_remap,
     )
 
     return recomputed_message_rows, merged_block_rows, carry_forward
