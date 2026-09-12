@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
+
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.pipeline.ids import session_revision_projection
-from polylogue.sources.parsers.antigravity import AntigravitySessionSummary, _mark_active_leaf, parse_markdown_export
+from polylogue.sources.parsers.antigravity import (
+    AntigravitySessionSummary,
+    _mark_active_leaf,
+    looks_like_trajectory_db_path,
+    parse_markdown_export,
+    parse_trajectory_db,
+)
 from polylogue.sources.parsers.base import ParsedMessage
 
 
@@ -124,3 +133,68 @@ def test_parse_markdown_export_has_no_degraded_flag() -> None:
     session = parse_markdown_export(markdown, summary)
 
     assert session.ingest_flags == []
+
+
+def _trajectory_db(path: Path, *, malformed: bool = False) -> Path:
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+        CREATE TABLE steps (
+            idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT,
+            status TEXT, error_details TEXT
+        );
+        CREATE TABLE conversation_summaries (cascade_id TEXT, title TEXT, last_modified_time TEXT);
+        CREATE TABLE parent_references (cascade_id TEXT, parent_id TEXT);
+        """
+    )
+    connection.execute("INSERT INTO trajectory_meta VALUES (?, ?)", ("trajectory-1", "cascade-1"))
+    connection.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, ?)",
+        ("cascade-1", "Trajectory title", "2026-03-05T04:21:34Z"),
+    )
+    connection.execute("INSERT INTO parent_references VALUES (?, ?)", ("cascade-1", "parent-1"))
+    connection.executemany(
+        "INSERT INTO steps VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (0, "message", "v1", '{"role":"user","text":"hello"}', None, None),
+            (1, "terminal_command", "v1", '{"tool_name":"shell","command":"printf hi"}', None, None),
+            (2, "tool_result", "v1", '{"tool_name":"shell","output":"hi","status":"success"}', None, None),
+            (3, "file_edit", "v1", '{"path":"README.md","old_string":"old","new_string":"new"}', None, None),
+            (4, "future_step", "future", '{"opaque":true}' if not malformed else "not-json", None, None),
+        ],
+    )
+    connection.commit()
+    connection.close()
+    return path
+
+
+def test_trajectory_sqlite_parser_preserves_identity_order_tools_and_summary(tmp_path: Path) -> None:
+    path = _trajectory_db(tmp_path / "conversation.db")
+
+    assert looks_like_trajectory_db_path(path)
+    sessions = list(parse_trajectory_db(path))
+
+    assert len(sessions) == 1
+    session = sessions[0]
+    assert session.provider_session_id == "trajectory-1"
+    assert session.provider_session_aliases == ["cascade-1"]
+    assert session.title == "Trajectory title"
+    assert [message.position for message in session.messages] == [0, 1, 2, 3]
+    assert session.messages[1].blocks[0].tool_name == "shell"
+    assert session.messages[1].blocks[0].tool_input == {"command": "printf hi"}
+    result = session.messages[2].blocks[0]
+    assert result.text == "hi"
+    assert result.is_error is False
+    assert session.messages[3].blocks[0].file_edit is not None
+    assert any(event.event_type == "antigravity_parent_reference" for event in session.session_events)
+
+
+def test_trajectory_sqlite_parser_refuses_malformed_step_without_fabricating_text(tmp_path: Path) -> None:
+    path = _trajectory_db(tmp_path / "conversation.db", malformed=True)
+
+    session = list(parse_trajectory_db(path))[0]
+
+    assert len(session.messages) == 4
+    assert any(event.event_type == "antigravity_unsupported_step" for event in session.session_events)
+    assert "degraded:unsupported-trajectory-steps" in session.ingest_flags

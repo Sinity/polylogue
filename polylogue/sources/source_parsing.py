@@ -270,6 +270,7 @@ def parse_one_source_path(
     provider_hint = Provider.from_string(source_name)
     if (
         provider_hint is Provider.ANTIGRAVITY
+        and path.suffix.lower() == ".pb"
         and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
     ):
         yield from iter_antigravity_language_server_sessions(
@@ -279,6 +280,32 @@ def parse_one_source_path(
             blob_store=blob_store,
             only_cascade_ids=frozenset({path.stem}),
         )
+        return
+    if provider_hint is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path):
+        if blob_root is None:
+            from polylogue.paths import blob_store_root
+
+            blob_root = blob_store_root()
+        resolved_store = blob_store or BlobStore(blob_root)
+        snapshot = snapshot_sqlite_to_blob(path, resolved_store)
+        from polylogue.storage.blob_publication import flush_blob_publications
+
+        flush_blob_publications(resolved_store)
+        retained_path = resolved_store.blob_path(snapshot.blob_hash)
+        raw_data = None
+        if capture_raw:
+            raw_data = RawSessionData(
+                raw_bytes=b"",
+                source_path=str(original_sqlite_source_path(path) or path),
+                source_index=None,
+                file_mtime=file_mtime,
+                provider_hint=provider_hint,
+                blob_hash=snapshot.blob_hash,
+                blob_size=snapshot.blob_size,
+                blob_publication_receipt_id=snapshot.blob_publication_receipt_id,
+            )
+        for session in antigravity.parse_trajectory_db(retained_path, fallback_id=path.stem, immutable=True):
+            yield (raw_data, session)
         return
     source_class = recognize_source_class(provider_hint, path)
     if (

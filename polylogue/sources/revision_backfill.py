@@ -4400,6 +4400,10 @@ def _parse_one_raw(
                     profile_root=Path(source_path).parent,
                     immutable=True,
                 )
+    if provider is Provider.ANTIGRAVITY and looks_like_logical_source_bytes(payload):
+        with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
+            if antigravity.looks_like_trajectory_db_path(sqlite_path, immutable=True):
+                return list(antigravity.parse_trajectory_db(sqlite_path, fallback_id=fallback_id, immutable=True))
     rule = artifact_rule_for_path(provider, source_path)
     declared_path_session_evidence = False
     if rule is not None and rule.parse_policy != "session" and is_jsonl_source_path(source_path):

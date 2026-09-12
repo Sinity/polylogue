@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
 import socket
+import sqlite3
 import stat as stat_module
 import subprocess
 import time
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -29,14 +31,33 @@ from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
 
 from .base import (
+    AdmissionDisposition,
+    AdmissionOutcome,
+    AdmissionRefusalReason,
+    AdmissionUnit,
+    AdmissionUnknownReason,
+    ParseAccounting,
     ParsedContentBlock,
+    ParsedFileEdit,
     ParsedMessage,
     ParsedSession,
+    ParsedSessionEvent,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
     parser_admission,
     synthetic_message_id,
 )
+
+_TRAJECTORY_REQUIRED_META_COLUMNS = frozenset({"trajectory_id", "cascade_id"})
+_TRAJECTORY_REQUIRED_STEP_COLUMNS = frozenset({"idx", "step_type", "step_format", "step_payload"})
+_TRAJECTORY_DB_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
+
+
+def trajectory_raw_id(source_path: Path | str, logical_revision: str) -> str:
+    """Stable raw identity for one Antigravity trajectory-store revision."""
+    identity = f"antigravity-trajectory\0{Path(source_path).expanduser().resolve()}\0{logical_revision}"
+    return hashlib.sha256(identity.encode("utf-8", errors="surrogateescape")).hexdigest()
+
 
 _SEARCH_ENDPOINT = "/exa.language_server_pb.LanguageServerService/SearchConversations"
 _MARKDOWN_ENDPOINT = "/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown"
@@ -353,6 +374,16 @@ class AntigravityExportOutcome:
 def classify_source_path(source_path: str | Path) -> AntigravitySourceClassification:
     """Classify every Antigravity path into a session, artifact, or unknown role."""
     path = Path(source_path)
+    if path.suffix.lower() in _TRAJECTORY_DB_SUFFIXES and looks_like_trajectory_db_path(path):
+        # Keep the established session role vocabulary for source-frontier
+        # accounting.  The parser path (and not this compatibility role name)
+        # distinguishes protobuf export from SQLite trajectory acquisition.
+        return AntigravitySourceClassification(
+            AntigravitySourceRole.CONVERSATION_PROTOBUF,
+            True,
+            ArtifactKind.SESSION_DOCUMENT,
+            "verified Antigravity trajectory SQLite schema",
+        )
     from polylogue.sources.origin_specs import artifact_rule_for_path
 
     rule = artifact_rule_for_path(Provider.ANTIGRAVITY, str(path))
@@ -396,6 +427,450 @@ class AntigravitySessionSummary:
             snippet=_string(payload.get("snippet")),
             last_modified_time=_string(payload.get("lastModifiedTime")),
         )
+
+
+def _sqlite_columns(connection: sqlite3.Connection, table: str) -> frozenset[str]:
+    """Return a table's declared columns without trusting a filename.
+
+    Antigravity has used several database names over its lifetime.  The
+    trajectory schema, rather than ``.db`` suffixes or a machine-specific
+    directory, is the admission identity.
+    """
+    try:
+        quoted = '"' + table.replace('"', '""') + '"'
+        return frozenset(str(row[1]) for row in connection.execute(f"PRAGMA table_info({quoted})"))
+    except Exception as error:
+        if _is_trajectory_storage_error(error):
+            return frozenset()
+        raise
+
+
+def _trajectory_schema_matches(connection: sqlite3.Connection) -> bool:
+    tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not _sqlite_columns(connection, "trajectory_meta") >= _TRAJECTORY_REQUIRED_META_COLUMNS:
+        return False
+    return "trajectory_meta" in tables and _sqlite_columns(connection, "steps") >= _TRAJECTORY_REQUIRED_STEP_COLUMNS
+
+
+def looks_like_trajectory_db_path(path: Path, *, immutable: bool = False) -> bool:
+    """Recognize the Antigravity trajectory store by its verified schema."""
+    if path.suffix.lower() not in _TRAJECTORY_DB_SUFFIXES:
+        return False
+    try:
+        from polylogue.sources.sqlite_export import open_logical_source
+
+        connection = open_logical_source(path, immutable=immutable)
+        try:
+            return _trajectory_schema_matches(connection)
+        finally:
+            connection.close()
+    except Exception as error:
+        if _is_trajectory_storage_error(error):
+            return False
+        raise
+
+
+def _is_trajectory_storage_error(error: BaseException) -> bool:
+    """Classify expected read/probe failures at the Antigravity adapter seam."""
+    return isinstance(error, (OSError, sqlite3.Error, ValueError))
+
+
+def _json_mapping(value: object) -> dict[str, object] | None:
+    if isinstance(value, Mapping):
+        return {str(key): item for key, item in value.items()}
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        if isinstance(decoded, dict):
+            return {str(key): item for key, item in decoded.items()}
+    return None
+
+
+def _step_text(payload: Mapping[str, object]) -> str | None:
+    for key in ("text", "content", "message", "body", "output", "result"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, (Mapping, list)):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return None
+
+
+def _step_timestamp(row: Mapping[str, object], payload: Mapping[str, object]) -> str | None:
+    # Only source-declared timing is retained.  In particular, do not replace
+    # an absent step timestamp with the database mtime or import time.
+    for values in (payload, row):
+        for key in ("timestamp", "occurred_at", "occurred_at_ms", "created_at", "createdAt", "updated_at"):
+            value = values.get(key)
+            if isinstance(value, (str, int, float)) and str(value).strip():
+                return str(value)
+    return None
+
+
+def _tool_outcome(
+    payload: Mapping[str, object], row: Mapping[str, object]
+) -> tuple[bool | None, int | None, str | None]:
+    status = payload.get("status", row.get("status"))
+    error = payload.get("error", row.get("error"))
+    error_details = payload.get("error_details", row.get("error_details"))
+    exit_code = payload.get("exit_code", payload.get("exitCode"))
+    if isinstance(exit_code, bool):
+        exit_code = None
+    if isinstance(exit_code, (int, float)):
+        code = int(exit_code)
+        return code != 0, code, None
+    if isinstance(error, bool):
+        return error, None, None
+    if isinstance(status, str):
+        normalized = status.strip().lower()
+        if normalized in {"ok", "success", "succeeded", "completed", "complete", "done"}:
+            return False, None, None
+        if normalized in {"error", "failed", "failure", "cancelled", "canceled", "aborted"}:
+            return True, None, None
+    if error_details not in (None, "", {}, []):
+        return True, None, None
+    return None, None, "unsupported_construct"
+
+
+def _tool_input(payload: Mapping[str, object]) -> dict[str, object]:
+    for key in ("input", "arguments", "args", "parameters"):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            return {str(name): item for name, item in value.items()}
+        if isinstance(value, str):
+            return {key: value}
+    values = {
+        key: payload[key] for key in ("command", "cmd", "path", "file_path", "query", "url", "patch") if key in payload
+    }
+    return values
+
+
+def _normalized_step_payload(row: Mapping[str, object]) -> dict[str, object] | None:
+    payload = _json_mapping(row.get("step_payload"))
+    if payload is None:
+        return None
+    # Some versions wrap the actual step under ``payload``.  Unwrap only a
+    # mapping; opaque values remain refused rather than guessed into text.
+    nested = payload.get("payload")
+    if isinstance(nested, Mapping):
+        return {str(key): value for key, value in nested.items()}
+    return payload
+
+
+def _trajectory_message(
+    *,
+    row: Mapping[str, object],
+    payload: Mapping[str, object],
+    position: int,
+    step_type: str,
+    step_format: str,
+) -> ParsedMessage | None:
+    normalized_type = step_type.strip().lower().replace("-", "_")
+    role_value = payload.get("role", row.get("role"))
+    if isinstance(role_value, str):
+        role = Role.normalize(role_value)
+    elif normalized_type.startswith(("user", "human", "prompt")):
+        role = Role.USER
+    elif normalized_type in {"tool_result", "tool_output", "command_result"}:
+        role = Role.TOOL
+    else:
+        role = Role.ASSISTANT
+    native_step_id = row.get("step_id") or row.get("id") or position
+    provider_message_id = f"{row.get('trajectory_id') or row.get('cascade_id') or 'trajectory'}:step:{native_step_id}"
+    timestamp = _step_timestamp(row, payload)
+    text = _step_text(payload)
+    if normalized_type in {"plan", "plan_step", "planner", "planning"} and text is None:
+        plan = payload.get("plan") or payload.get("steps") or payload.get("items")
+        if plan is not None:
+            text = json.dumps(plan, ensure_ascii=False, sort_keys=True)
+    toolish = normalized_type in {
+        "terminal",
+        "terminal_command",
+        "command",
+        "tool",
+        "tool_call",
+        "tool_use",
+        "tool_result",
+        "tool_output",
+        "command_result",
+        "file_edit",
+        "edit",
+    }
+    blocks: list[ParsedContentBlock] = []
+    tool_name = payload.get("tool_name") or payload.get("toolName") or payload.get("name")
+    tool_id = payload.get("tool_id") or payload.get("toolId") or payload.get("call_id") or payload.get("callId")
+    if toolish and normalized_type in {"tool_result", "tool_output", "command_result"}:
+        is_error, exit_code, unknown_reason = _tool_outcome(payload, row)
+        blocks.append(
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                text=text,
+                tool_name=str(tool_name) if tool_name is not None else None,
+                tool_id=str(tool_id) if tool_id is not None else None,
+                is_error=is_error,
+                exit_code=exit_code,
+                outcome_unknown_reason=unknown_reason,
+            )
+        )
+        role = Role.TOOL
+    elif toolish:
+        if tool_name is None:
+            tool_name = "terminal" if "command" in normalized_type or normalized_type == "terminal" else normalized_type
+        old_string = _string(payload.get("old_string"))
+        new_string = _string(payload.get("new_string"))
+        replace_all = payload.get("replace_all")
+        if not isinstance(replace_all, bool):
+            replace_all = None
+        blocks.append(
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                text=text,
+                tool_name=str(tool_name),
+                tool_id=str(tool_id) if tool_id is not None else None,
+                tool_input=_tool_input(payload),
+                file_edit=(
+                    ParsedFileEdit(
+                        file_path=(
+                            str(payload.get("file_path") or payload.get("filePath") or payload.get("path"))
+                            if payload.get("file_path") or payload.get("filePath") or payload.get("path")
+                            else None
+                        ),
+                        old_string=old_string,
+                        new_string=new_string,
+                        replace_all=replace_all,
+                    )
+                    if normalized_type in {"file_edit", "edit"}
+                    else None
+                ),
+            )
+        )
+    elif text is not None:
+        blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=text))
+    if not blocks and text is None:
+        return None
+    return ParsedMessage(
+        provider_message_id=provider_message_id,
+        role=role,
+        text=text,
+        timestamp=timestamp,
+        blocks=blocks,
+        position=position,
+        variant_index=0,
+        is_active_path=True,
+    )
+
+
+def parse_trajectory_db(
+    path: Path,
+    fallback_id: str | None = None,
+    *,
+    immutable: bool = False,
+) -> Iterator[ParsedSession]:
+    """Parse Antigravity's structured trajectory store through its read route.
+
+    The parser is deliberately schema-first and fail-closed: a database with
+    a familiar filename but no verified ``trajectory_meta``/``steps`` shape
+    is not a conversation.  Unknown step formats remain session events and
+    typed admission outcomes, so the writer can never report full coverage
+    for a partially understood trajectory.
+    """
+    from polylogue.sources.sqlite_export import LogicalExportError, open_logical_source
+
+    connection = open_logical_source(path, immutable=immutable)
+    connection.row_factory = sqlite3.Row
+    try:
+        if not _trajectory_schema_matches(connection):
+            raise LogicalExportError("Antigravity SQLite lacks the declared trajectory schema")
+        meta_columns = _sqlite_columns(connection, "trajectory_meta")
+        step_columns = _sqlite_columns(connection, "steps")
+        summary_columns = _sqlite_columns(connection, "conversation_summaries")
+        parent_columns = _sqlite_columns(connection, "parent_references")
+        summaries: dict[str, sqlite3.Row] = {}
+        if summary_columns:
+            for row in connection.execute("SELECT * FROM conversation_summaries"):
+                key = (
+                    row["cascade_id"]
+                    if "cascade_id" in summary_columns
+                    else row["trajectory_id"]
+                    if "trajectory_id" in summary_columns
+                    else None
+                )
+                if key is not None:
+                    summaries[str(key)] = row
+        parent_refs: dict[str, list[dict[str, object]]] = {}
+        if parent_columns:
+            for row in connection.execute("SELECT * FROM parent_references"):
+                child = (
+                    row["cascade_id"]
+                    if "cascade_id" in parent_columns
+                    else row["trajectory_id"]
+                    if "trajectory_id" in parent_columns
+                    else None
+                )
+                if child is not None:
+                    parent_refs.setdefault(str(child), []).append(
+                        {str(key): value for key, value in zip(row.keys(), row, strict=True)}
+                    )
+        meta_query = "SELECT * FROM trajectory_meta ORDER BY rowid"
+        for meta in connection.execute(meta_query):
+            trajectory_id = (
+                str(meta["trajectory_id"])
+                if "trajectory_id" in meta_columns and meta["trajectory_id"] not in (None, "")
+                else None
+            )
+            cascade_id = (
+                str(meta["cascade_id"])
+                if "cascade_id" in meta_columns and meta["cascade_id"] not in (None, "")
+                else None
+            )
+            native_id = trajectory_id or cascade_id or fallback_id
+            if not native_id:
+                continue
+            if "trajectory_id" in step_columns or "cascade_id" in step_columns:
+                predicates: list[str] = []
+                values: list[object] = []
+                if "trajectory_id" in step_columns and trajectory_id is not None:
+                    predicates.append("trajectory_id = ?")
+                    values.append(trajectory_id)
+                if "cascade_id" in step_columns and cascade_id is not None:
+                    predicates.append("cascade_id = ?")
+                    values.append(cascade_id)
+                steps = (
+                    connection.execute(
+                        "SELECT * FROM steps WHERE " + " OR ".join(predicates) + " ORDER BY idx",
+                        values,
+                    ).fetchall()
+                    if predicates
+                    else []
+                )
+            else:
+                steps = []
+            # A store may key steps by a single native id not named in the
+            # meta row.  The verified schema still permits that shape.
+            if not steps:
+                steps = connection.execute("SELECT * FROM steps ORDER BY idx").fetchall()
+            messages: list[ParsedMessage] = []
+            outcomes: list[AdmissionOutcome] = []
+            events: list[ParsedSessionEvent] = []
+            for ordinal, row in enumerate(steps):
+                row_columns = row.keys()
+                row_map = {str(key): row[key] for key in row_columns}
+                payload = _normalized_step_payload(row_map)
+                idx = row_map.get("idx", ordinal)
+                try:
+                    step_ordinal = int(idx)
+                except (TypeError, ValueError):
+                    step_ordinal = ordinal
+                step_type = str(row_map.get("step_type") or "").strip().lower()
+                step_format = str(row_map.get("step_format") or "").strip().lower()
+                key = f"step:{step_ordinal}"
+                if payload is None:
+                    outcomes.append(
+                        AdmissionOutcome(
+                            unit=AdmissionUnit.PART,
+                            ordinal=ordinal,
+                            key=key,
+                            disposition=AdmissionDisposition.TYPED_REFUSAL,
+                            reason=AdmissionRefusalReason.MALFORMED,
+                        )
+                    )
+                    events.append(
+                        ParsedSessionEvent(
+                            event_type="antigravity_unsupported_step",
+                            payload={
+                                "idx": step_ordinal,
+                                "step_type": step_type,
+                                "step_format": step_format,
+                                "reason": "malformed_payload",
+                            },
+                        )
+                    )
+                    continue
+                message = _trajectory_message(
+                    row=row_map, payload=payload, position=len(messages), step_type=step_type, step_format=step_format
+                )
+                if message is None:
+                    outcomes.append(
+                        AdmissionOutcome(
+                            unit=AdmissionUnit.PART,
+                            ordinal=ordinal,
+                            key=key,
+                            disposition=AdmissionDisposition.TYPED_UNKNOWN,
+                            reason=AdmissionUnknownReason.UNSUPPORTED_SHAPE,
+                        )
+                    )
+                    events.append(
+                        ParsedSessionEvent(
+                            event_type="antigravity_unsupported_step",
+                            timestamp=_step_timestamp(row_map, payload),
+                            payload={
+                                "idx": step_ordinal,
+                                "step_type": step_type,
+                                "step_format": step_format,
+                                "payload": payload,
+                            },
+                        )
+                    )
+                    continue
+                messages.append(message)
+                outcomes.append(
+                    AdmissionOutcome(
+                        unit=AdmissionUnit.PART, ordinal=ordinal, key=key, disposition=AdmissionDisposition.MATERIALIZED
+                    )
+                )
+            summary = summaries.get(cascade_id or "")
+            title = None
+            updated_at = None
+            if summary is not None:
+                for key in ("title", "name", "summary"):
+                    if key in summary_columns and summary[key]:
+                        title = str(summary[key])
+                        break
+                for key in ("last_modified_time", "updated_at", "updatedAt", "modified_at"):
+                    if key in summary_columns and summary[key] is not None:
+                        updated_at = str(summary[key])
+                        break
+            if parent_refs.get(cascade_id or ""):
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="antigravity_parent_reference", payload={"references": parent_refs[cascade_id or ""]}
+                    )
+                )
+            accounting = ParseAccounting(expected={AdmissionUnit.PART: len(steps)}, outcomes=outcomes)
+            accounting.assert_conserved()
+            if not messages and steps:
+                events.append(
+                    ParsedSessionEvent(event_type="antigravity_trajectory_empty", payload={"step_count": len(steps)})
+                )
+            yield_session = ParsedSession(
+                source_name=Provider.ANTIGRAVITY,
+                provider_session_id=native_id,
+                provider_session_aliases=[
+                    value for value in (trajectory_id, cascade_id) if value and value != native_id
+                ],
+                title=title,
+                title_source=TitleSource.ORIGIN if title else None,
+                updated_at=updated_at,
+                messages=messages,
+                session_events=events,
+                unit_accounting=accounting,
+                active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
+            )
+            yield_session = yield_session.model_copy(
+                update={"ingest_flags": ["degraded:unsupported-trajectory-steps"]}
+                if any(outcome.disposition is not AdmissionDisposition.MATERIALIZED for outcome in outcomes)
+                else {}
+            )
+            yield yield_session
+    finally:
+        connection.close()
 
 
 class _AntigravityLanguageServerExportClient(Protocol):
@@ -711,7 +1186,8 @@ def _conversation_pb_paths(root: Path) -> list[Path]:
     return [
         path
         for path in _walk_source_paths(root, provider=Provider.ANTIGRAVITY)
-        if classify_source_path(path).role is AntigravitySourceRole.CONVERSATION_PROTOBUF
+        if path.suffix.lower() == ".pb"
+        and classify_source_path(path).role is AntigravitySourceRole.CONVERSATION_PROTOBUF
     ]
 
 
