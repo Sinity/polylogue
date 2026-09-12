@@ -731,6 +731,11 @@ _MESSAGE_MASK: tuple[tuple[str, str], ...] = (
     ("material_origin", "material_origin"),
     ("parent_id", "parent_id"),
     ("branch_index", "branch_index"),
+    # Public topology vocabulary follows the archive contract.  Keep the
+    # legacy spellings in the same declaration for older readers; both are
+    # derived from the one domain model and therefore cannot drift.
+    ("parent_id", "parent_message_id"),
+    ("branch_index", "variant_index"),
     ("position", "position"),
     ("is_active_path", "is_active_path"),
     ("is_active_leaf", "is_active_leaf"),
@@ -869,6 +874,8 @@ _MessageRenderEnvelopeBase = _create_projection_model(
         "content_blocks",
         "parent_id",
         "branch_index",
+        "parent_message_id",
+        "variant_index",
         "position",
         "is_active_path",
         "is_active_leaf",
@@ -915,6 +922,8 @@ _MessageRowEnvelopeBase = _create_projection_model(
         "content_blocks",
         "parent_id",
         "branch_index",
+        "parent_message_id",
+        "variant_index",
         "position",
         "is_active_path",
         "is_active_leaf",
@@ -1131,6 +1140,8 @@ def message_render_envelope_from_domain(
         material_origin=role_label(getattr(message, "material_origin", "unknown") or "unknown"),
         parent_id=getattr(message, "parent_id", None),
         branch_index=int(getattr(message, "branch_index", 0) or 0),
+        parent_message_id=getattr(message, "parent_id", None),
+        variant_index=int(getattr(message, "branch_index", 0) or 0),
         position=int(getattr(message, "position", 0) or 0),
         is_active_path=getattr(message, "is_active_path", None),
         is_active_leaf=bool(getattr(message, "is_active_leaf", False)),
