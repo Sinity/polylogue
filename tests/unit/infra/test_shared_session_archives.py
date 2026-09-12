@@ -17,11 +17,13 @@ import pytest
 from polylogue.scenarios import CorpusSpec
 from tests.infra import shared_session_archives as registry
 from tests.infra.workload_artifacts import (
-    NAMED_WORKLOAD_PROFILES,
     SeededArchiveArtifact,
+    seeded_archive_key,
+)
+from tests.infra.workload_declarations import (
+    NAMED_WORKLOAD_PROFILES,
     named_corpus_specs,
     schema_coverage_corpus_specs,
-    seeded_archive_key,
 )
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)

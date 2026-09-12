@@ -11,12 +11,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.infra.workload_artifacts import (
-    BenchmarkWorkloadTier,
     SeededArchiveArtifact,
-    benchmark_corpus_specs,
-    benchmark_workload_profile,
     build_seeded_archive,
     clone_seeded_archive,
+)
+from tests.infra.workload_declarations import (
+    BenchmarkWorkloadTier,
+    benchmark_corpus_specs,
+    benchmark_workload_profile,
 )
 
 

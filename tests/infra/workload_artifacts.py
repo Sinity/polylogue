@@ -23,7 +23,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -34,7 +34,7 @@ from polylogue.config import Config, Source
 from polylogue.core.enums import Provider
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-from polylogue.scenarios import CorpusProfile, CorpusSpec
+from polylogue.scenarios import CorpusSpec
 from polylogue.scenarios.workload import (
     WorkloadEnvelopeSpec,
     WorkloadInputRef,
@@ -58,6 +58,15 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER, schema_identity
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient, provider_source_package
+from tests.infra.workload_declarations import (
+    BENCHMARK_WORKLOAD_PROFILES,
+    NAMED_WORKLOAD_PROFILES,
+    benchmark_corpus_specs,
+    c03_semantic_corpus_spec,
+    reject_semantic_metadata,
+    schema_coverage_corpus_specs,
+    validate_workload_provider,
+)
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -119,34 +128,6 @@ _RECIPE_INPUT_ROOTS = (
 _RECIPE_PROVIDER_ROOT = _REPOSITORY_ROOT / "polylogue" / "schemas" / "providers"
 _ARCHIVE_DB_NAMES = ("source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db")
 _OBSOLETE_STAGING_SCAN_BUDGET = 32
-_KNOWN_PROVIDERS = frozenset(SyntheticCorpus.available_providers())
-_PROVIDER_COMPONENT = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-#: A workload profile or publication record naming one of these declares an
-#: expectation, which belongs to the law that owns the assertion. One
-#: vocabulary, so a profile and a witness cannot disagree about what is refused.
-SEMANTIC_METADATA_PREFIXES = ("expected_", "oracle_", "pathology_", "case_")
-
-
-def _reject_semantic_metadata(value: object, *, location: str) -> None:
-    """Keep workload identity and publication records free of semantic oracles."""
-    if isinstance(value, str) and value.startswith(SEMANTIC_METADATA_PREFIXES):
-        raise ValueError(f"{location} cannot carry semantic metadata: {value}")
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if isinstance(key, str) and key.startswith(SEMANTIC_METADATA_PREFIXES):
-                raise ValueError(f"{location} cannot carry semantic metadata: {key}")
-            _reject_semantic_metadata(child, location=location)
-    elif isinstance(value, (list, tuple)):
-        for child in value:
-            _reject_semantic_metadata(child, location=location)
-
-
-def _validate_provider(provider: object) -> str:
-    if not isinstance(provider, str) or not _PROVIDER_COMPONENT.fullmatch(provider):
-        raise ValueError("corpus provider must be one safe path component")
-    if provider not in _KNOWN_PROVIDERS:
-        raise ValueError(f"unknown corpus provider: {provider!r}")
-    return provider
 
 
 @dataclass(frozen=True)
@@ -202,7 +183,7 @@ class ArtifactResourceMeasurement:
     peak_rss_bytes: int = 0
 
     def __post_init__(self) -> None:
-        _reject_semantic_metadata(self.row_counts, location="artifact resource measurement")
+        reject_semantic_metadata(self.row_counts, location="artifact resource measurement")
         if min(self.total_bytes, self.file_count, self.build_seconds, self.write_bytes, self.peak_rss_bytes) < 0:
             raise ValueError("artifact resource measurement cannot be negative")
         for table, count in self.row_counts.items():
@@ -249,9 +230,9 @@ class CorpusArtifactManifest:
     resources: ArtifactResourceMeasurement
 
     def __post_init__(self) -> None:
-        _reject_semantic_metadata(self.receipt, location="corpus artifact manifest receipt")
-        _reject_semantic_metadata(self.files, location="corpus artifact manifest files")
-        _reject_semantic_metadata(self.resources.to_payload(), location="corpus artifact manifest resources")
+        reject_semantic_metadata(self.receipt, location="corpus artifact manifest receipt")
+        reject_semantic_metadata(self.files, location="corpus artifact manifest files")
+        reject_semantic_metadata(self.resources.to_payload(), location="corpus artifact manifest resources")
 
     @property
     def manifest_id(self) -> str:
@@ -678,248 +659,6 @@ def _clone_immutable_tree_unlocked(artifact: ImmutableTreeArtifact, destination:
     return SeededArchiveClone(destination, artifact.manifest_id, method)
 
 
-def c03_semantic_corpus_spec() -> CorpusSpec:
-    """Smallest named semantic canary with a pinned selective Codex session."""
-    count = 64
-    native_ids = ("c03-target", *(f"c03-irrelevant-{index:03d}" for index in range(count - 1)))
-    return CorpusSpec.for_provider(
-        "codex",
-        count=count,
-        messages_min=4,
-        messages_max=4,
-        seed=71,
-        style="tool-heavy",
-        session_native_ids=native_ids,
-        origin="generated.test-workload-c03",
-        tags=("synthetic", "test", "workload-c03"),
-    )
-
-
-def schema_coverage_corpus_specs() -> tuple[CorpusSpec, ...]:
-    """Named all-provider schema workload; no caller chooses ad-hoc shape."""
-    return tuple(
-        CorpusSpec.for_provider(
-            provider,
-            count=2,
-            messages_min=4,
-            messages_max=4,
-            seed=42,
-            origin="generated.test-schema-coverage",
-            tags=("synthetic", "test", "schema-coverage"),
-        )
-        for provider in SyntheticCorpus.available_providers()
-    )
-
-
-@dataclass(frozen=True)
-class WorkloadSessionShape:
-    """One provider-native population within a semantic workload."""
-
-    provider: str
-    count: int
-    messages_min: int
-    messages_max: int
-    seed_offset: int = 0
-    style: str = "tool-heavy"
-
-    def __post_init__(self) -> None:
-        _validate_provider(self.provider)
-        _reject_semantic_metadata(asdict(self), location="workload session shape")
-        if self.count < 1:
-            raise ValueError("workload session shape requires a positive session count")
-        if self.messages_min < 1 or self.messages_max < self.messages_min:
-            raise ValueError("workload session shape has invalid message bounds")
-        if self.seed_offset < 0:
-            raise ValueError("workload session shape seed offset must be non-negative")
-
-
-@dataclass(frozen=True)
-class WorkloadProfile:
-    """Shared semantic identity and provider-native spec constructor for workloads."""
-
-    name: str
-    purpose: str
-    seed: int
-    family_ids: tuple[str, ...]
-    profile_tokens: tuple[str, ...]
-    origin: str
-    tags: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if not self.name or not self.purpose:
-            raise ValueError("workload profile requires a name and purpose")
-        if not self.family_ids or not self.profile_tokens:
-            raise ValueError("workload profile requires semantic corpus identity")
-        # Validate the complete declaration, not only the fields currently
-        # used to derive CorpusSpec.  A profile is an operational shape and
-        # must never become a back door for an expected result or case label
-        # in a name, purpose, origin, or tag either.
-        _reject_semantic_metadata(asdict(self), location="workload profile")
-
-    @property
-    def identity_tokens(self) -> tuple[str, ...]:
-        """Return the complete operational identity carried by generated specs.
-
-        ``name`` and ``purpose`` are part of a profile's declaration, but the
-        first profile adapter only copied ``family_ids`` and ``profile_tokens``
-        into :class:`CorpusProfile`. Two declarations that differed only in
-        those fields could therefore produce the same content-addressed cache
-        key. Keep the identity in the provider-shaped spec without introducing
-        an expected-result or case-catalogue field.
-        """
-        return tuple(
-            dict.fromkeys(
-                (
-                    *self.profile_tokens,
-                    f"workload-name:{self.name}",
-                    f"workload-purpose:{self.purpose}",
-                )
-            )
-        )
-
-    def corpus_specs(self, shapes: tuple[WorkloadSessionShape, ...]) -> tuple[CorpusSpec, ...]:
-        if not shapes:
-            raise ValueError("workload profile requires provider-native session shapes")
-        corpus_profile = CorpusProfile(
-            family_ids=self.family_ids,
-            profile_tokens=self.identity_tokens,
-            artifact_kind="archive",
-        )
-        return tuple(
-            CorpusSpec.for_provider(
-                shape.provider,
-                count=shape.count,
-                messages_min=shape.messages_min,
-                messages_max=shape.messages_max,
-                seed=self.seed + shape.seed_offset,
-                style=shape.style,
-                profile=corpus_profile,
-                origin=self.origin,
-                tags=self.tags,
-            )
-            for shape in shapes
-        )
-
-
-@dataclass(frozen=True)
-class NamedWorkloadProfile:
-    """A semantic, deterministic workload used by shared test fixtures."""
-
-    workload: WorkloadProfile
-    provider_session_counts: tuple[tuple[str, int], ...]
-    messages_min: int = 4
-    messages_max: int = 11
-
-    @property
-    def name(self) -> str:
-        return self.workload.name
-
-    @property
-    def purpose(self) -> str:
-        return self.workload.purpose
-
-    @property
-    def seed(self) -> int:
-        return self.workload.seed
-
-    def __post_init__(self) -> None:
-        if not self.provider_session_counts or any(count < 1 for _provider, count in self.provider_session_counts):
-            raise ValueError("named workload profile requires positive provider session counts")
-        providers = tuple(_validate_provider(provider) for provider, _count in self.provider_session_counts)
-        if len(set(providers)) != len(providers):
-            raise ValueError("named workload profile cannot repeat a provider")
-        if self.messages_min < 1 or self.messages_max < self.messages_min:
-            raise ValueError("named workload profile has invalid message bounds")
-        _reject_semantic_metadata(asdict(self), location="named workload profile")
-
-    def corpus_specs(self) -> tuple[CorpusSpec, ...]:
-        return self.workload.corpus_specs(
-            tuple(
-                WorkloadSessionShape(provider, count, self.messages_min, self.messages_max)
-                for provider, count in self.provider_session_counts
-            )
-        )
-
-
-def _named_workload(name: str, purpose: str, *, seed: int = 42) -> WorkloadProfile:
-    return WorkloadProfile(
-        name=name,
-        purpose=purpose,
-        seed=seed,
-        family_ids=("test-workload",),
-        profile_tokens=(name, purpose, "provider-native"),
-        origin=f"generated.test-workload-{name}",
-        tags=("synthetic", "test", name, purpose),
-    )
-
-
-NAMED_WORKLOAD_PROFILES = (
-    NamedWorkloadProfile(_named_workload("schema-small", "schema-scaling"), (("chatgpt", 10),)),
-    NamedWorkloadProfile(_named_workload("schema-medium", "schema-scaling"), (("chatgpt", 50),)),
-    NamedWorkloadProfile(_named_workload("cli-chatgpt", "cli-read"), (("chatgpt", 2),)),
-    NamedWorkloadProfile(_named_workload("cli-mixed", "cli-read"), (("chatgpt", 2), ("claude-code", 2))),
-    NamedWorkloadProfile(_named_workload("completion", "completion", seed=1271), (("chatgpt", 3), ("claude-ai", 3))),
-)
-
-
-def named_workload_profile(name: str) -> NamedWorkloadProfile:
-    """Resolve one finite, semantically named test workload."""
-    try:
-        return next(profile for profile in NAMED_WORKLOAD_PROFILES if profile.name == name)
-    except StopIteration as exc:
-        raise ValueError(f"unknown named seeded archive workload {name!r}") from exc
-
-
-def named_corpus_specs(name: str) -> tuple[CorpusSpec, ...]:
-    """Resolve the finite shared workload catalog used by test consumers."""
-    return named_workload_profile(name).corpus_specs()
-
-
-class BenchmarkWorkloadTier(str, Enum):
-    """Semantic benchmark projections backed by the shared archive artifact."""
-
-    SMOKE = "smoke"
-    REPRESENTATIVE = "representative"
-    ARCHIVE_SCALE = "archive-scale"
-    STRESS = "stress"
-
-
-@dataclass(frozen=True)
-class BenchmarkWorkloadProfile:
-    """A deterministic mixed-origin benchmark projection.
-
-    The target is expressed as messages because benchmark operations scale with
-    indexed message and block populations. The tier name records why the
-    projection exists, rather than treating an arbitrary row count as its
-    identity.
-    """
-
-    tier: BenchmarkWorkloadTier
-    workload: WorkloadProfile
-    target_messages: int
-    provider_session_counts: tuple[tuple[str, int], ...]
-    messages_per_session: int = 10
-
-    def __post_init__(self) -> None:
-        if self.target_messages < 1 or self.messages_per_session < 1:
-            raise ValueError("benchmark workload dimensions must be positive")
-        if not self.provider_session_counts or any(count < 1 for _provider, count in self.provider_session_counts):
-            raise ValueError("benchmark workload requires every configured provider to have sessions")
-        providers = tuple(_validate_provider(provider) for provider, _count in self.provider_session_counts)
-        if len(set(providers)) != len(providers):
-            raise ValueError("benchmark workload cannot repeat a provider")
-        if (
-            sum(count for _provider, count in self.provider_session_counts) * self.messages_per_session
-            != self.target_messages
-        ):
-            raise ValueError("benchmark workload session composition must exactly produce target_messages")
-        _reject_semantic_metadata(asdict(self), location="benchmark workload profile")
-
-    @property
-    def purpose(self) -> str:
-        return self.workload.purpose
-
-
 @dataclass(frozen=True)
 class SeededArchiveReachabilityEntry:
     """One intentionally reusable seeded-archive recipe and its current key."""
@@ -950,95 +689,6 @@ class SeededArchiveReachabilityInventory:
             },
             "entries": [entry.to_payload() for entry in self.entries],
         }
-
-
-_BENCHMARK_PROVIDER_MIX = (
-    ("claude-code", 80),
-    ("codex", 15),
-    ("chatgpt", 2),
-    ("claude-ai", 1),
-    ("gemini", 2),
-)
-
-
-def _benchmark_workload(tier: BenchmarkWorkloadTier, purpose: str) -> WorkloadProfile:
-    return WorkloadProfile(
-        name=tier.value,
-        purpose=purpose,
-        seed=42,
-        family_ids=("benchmark-archive",),
-        profile_tokens=(tier.value, "mixed-origin", "provider-native"),
-        origin=f"generated.benchmark-{tier.value}",
-        tags=("synthetic", "benchmark", tier.value),
-    )
-
-
-BENCHMARK_WORKLOAD_PROFILES = (
-    BenchmarkWorkloadProfile(
-        BenchmarkWorkloadTier.SMOKE,
-        _benchmark_workload(BenchmarkWorkloadTier.SMOKE, "fast-benchmark"),
-        1_000,
-        _BENCHMARK_PROVIDER_MIX,
-    ),
-    BenchmarkWorkloadProfile(
-        BenchmarkWorkloadTier.REPRESENTATIVE,
-        _benchmark_workload(BenchmarkWorkloadTier.REPRESENTATIVE, "broad-benchmark"),
-        5_000,
-        tuple((provider, count * 5) for provider, count in _BENCHMARK_PROVIDER_MIX),
-    ),
-    BenchmarkWorkloadProfile(
-        BenchmarkWorkloadTier.ARCHIVE_SCALE,
-        _benchmark_workload(BenchmarkWorkloadTier.ARCHIVE_SCALE, "archive-scale-benchmark"),
-        10_000,
-        tuple((provider, count * 10) for provider, count in _BENCHMARK_PROVIDER_MIX),
-    ),
-    BenchmarkWorkloadProfile(
-        BenchmarkWorkloadTier.STRESS,
-        _benchmark_workload(BenchmarkWorkloadTier.STRESS, "stress-benchmark"),
-        50_000,
-        tuple((provider, count * 50) for provider, count in _BENCHMARK_PROVIDER_MIX),
-    ),
-)
-
-
-def benchmark_workload_profile(tier: BenchmarkWorkloadTier | str) -> BenchmarkWorkloadProfile:
-    """Resolve one named benchmark workload without exposing round-count labels."""
-    resolved = BenchmarkWorkloadTier(tier)
-    return next(profile for profile in BENCHMARK_WORKLOAD_PROFILES if profile.tier is resolved)
-
-
-def benchmark_corpus_specs(
-    tier: BenchmarkWorkloadTier | str,
-    *,
-    seed: int = 42,
-) -> tuple[CorpusSpec, ...]:
-    """Build provider-native corpus specs for a semantic benchmark tier."""
-    profile = benchmark_workload_profile(tier)
-    session_shapes: list[WorkloadSessionShape] = []
-    for provider, count in profile.provider_session_counts:
-        # Keep a bounded tail in every tier. The former direct generator sampled
-        # a six-bucket session-depth distribution; these three deterministic
-        # depths preserve the short, ordinary, and tail activation conditions
-        # while retaining an exact message target for reproducible benchmarks.
-        provider_shapes: tuple[tuple[int, int], ...]
-        if provider == "claude-code":
-            multiplier, remainder = divmod(count, 80)
-            if remainder:
-                raise ValueError("benchmark Claude Code composition must retain the 80-session provider mix")
-            provider_shapes = ((50 * multiplier, 2), (25 * multiplier, 8), (5 * multiplier, 100))
-        else:
-            provider_shapes = ((count, profile.messages_per_session),)
-        for shape_count, messages_per_session in provider_shapes:
-            session_shapes.append(
-                WorkloadSessionShape(
-                    provider,
-                    shape_count,
-                    messages_per_session,
-                    messages_per_session,
-                    len(session_shapes),
-                )
-            )
-    return replace(profile.workload, seed=seed).corpus_specs(tuple(session_shapes))
 
 
 def current_seeded_archive_reachability() -> SeededArchiveReachabilityInventory:
@@ -1098,7 +748,7 @@ def _recipe_id(providers: Iterable[str] = ()) -> str:
     """Fingerprint the generation/materialization dependency and input closure."""
     digest = hashlib.sha256()
     files: set[Path] = set()
-    safe_providers = tuple(_validate_provider(provider) for provider in providers)
+    safe_providers = tuple(validate_workload_provider(provider) for provider in providers)
     provider_roots = tuple(_RECIPE_PROVIDER_ROOT / provider for provider in sorted(set(safe_providers)))
     for root in (*_SOURCE_DEPENDENCY_ROOTS, *_RECIPE_INPUT_ROOTS, *provider_roots):
         if root.is_file():
@@ -1274,7 +924,7 @@ def _profile_id(key: SeededArchiveKey) -> str:
 
 def seeded_archive_key(specs: Iterable[CorpusSpec]) -> SeededArchiveKey:
     selected_specs = tuple(specs)
-    providers = tuple(_validate_provider(spec.provider) for spec in selected_specs)
+    providers = tuple(validate_workload_provider(spec.provider) for spec in selected_specs)
     return SeededArchiveKey(
         spec_payload={"corpus_specs": [spec.to_payload() for spec in selected_specs]},
         artifact_protocol_version=_ARTIFACT_PROTOCOL_VERSION,
@@ -1685,7 +1335,7 @@ def _manifest_file_entries(files: tuple[dict[str, object], ...]) -> tuple[tuple[
     """Validate manifest file records before any keyed access or filesystem use."""
     entries: list[tuple[str, int, str]] = []
     for item in files:
-        _reject_semantic_metadata(item, location="seeded archive manifest file")
+        reject_semantic_metadata(item, location="seeded archive manifest file")
         path_value = item.get("path")
         size_value = item.get("size")
         hash_value = item.get("sha256")
@@ -2203,7 +1853,7 @@ def _validate_frontier_convergence(root: Path) -> None:
 def _manifest_from_payload(payload: object) -> CorpusArtifactManifest:
     if not isinstance(payload, dict):
         raise ValueError("seeded archive manifest must be an object")
-    _reject_semantic_metadata(
+    reject_semantic_metadata(
         {key: value for key, value in payload.items() if key not in {"facts", "files"}},
         location="seeded archive manifest",
     )
@@ -3519,17 +3169,9 @@ __all__ = [
     "ArtifactGcReport",
     "ImmutableTreeArtifact",
     "CorpusArtifactManifest",
-    "BENCHMARK_WORKLOAD_PROFILES",
-    "BenchmarkWorkloadProfile",
-    "BenchmarkWorkloadTier",
-    "NAMED_WORKLOAD_PROFILES",
-    "NamedWorkloadProfile",
     "SeededArchiveArtifact",
     "SeededArchiveQueryLease",
-    "WorkloadProfile",
-    "WorkloadSessionShape",
     "acquire_query_only_seeded_archive",
-    "SEMANTIC_METADATA_PREFIXES",
     "build_immutable_tree",
     "clone_immutable_tree",
     "rebind_durable_identity",
@@ -3538,18 +3180,12 @@ __all__ = [
     "SeededArchiveKey",
     "SeededArchiveReachabilityEntry",
     "SeededArchiveReachabilityInventory",
-    "benchmark_corpus_specs",
-    "benchmark_workload_profile",
     "build_seeded_archive",
-    "c03_semantic_corpus_spec",
     "clone_seeded_archive",
     "default_cache_root",
     "SEEDED_ARTIFACT_GC_GRACE_PERIOD_S",
     "gc_seeded_archive_artifacts",
-    "named_corpus_specs",
-    "named_workload_profile",
     "current_seeded_archive_reachability",
-    "schema_coverage_corpus_specs",
     "seeded_archive_key",
     "validate_seeded_archive_reachability",
 ]

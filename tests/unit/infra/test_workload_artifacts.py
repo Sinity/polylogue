@@ -26,19 +26,14 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ReadOnl
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainError
 from tests.infra.workload_artifacts import (
-    BENCHMARK_WORKLOAD_PROFILES,
-    NAMED_WORKLOAD_PROFILES,
     ArtifactGcDisposition,
     ArtifactGcReport,
     ArtifactResourceMeasurement,
-    BenchmarkWorkloadTier,
     CorpusArtifactManifest,
     ImmutableTreeArtifact,
     SeededArchiveClone,
     SeededArchiveQueryLease,
     SeededArchiveReachabilityInventory,
-    WorkloadProfile,
-    WorkloadSessionShape,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
     _manifest_file_entries,
@@ -49,20 +44,27 @@ from tests.infra.workload_artifacts import (
     _recover_stale_staging,
     _sqlite_integrity,
     acquire_query_only_seeded_archive,
-    benchmark_corpus_specs,
-    benchmark_workload_profile,
     build_immutable_tree,
     build_seeded_archive,
-    c03_semantic_corpus_spec,
     clone_immutable_tree,
     clone_seeded_archive,
     current_seeded_archive_reachability,
     gc_seeded_archive_artifacts,
-    named_corpus_specs,
-    named_workload_profile,
     seal_fixture_tree,
     seeded_archive_key,
     validate_seeded_archive_reachability,
+)
+from tests.infra.workload_declarations import (
+    BENCHMARK_WORKLOAD_PROFILES,
+    NAMED_WORKLOAD_PROFILES,
+    BenchmarkWorkloadTier,
+    WorkloadProfile,
+    WorkloadSessionShape,
+    benchmark_corpus_specs,
+    benchmark_workload_profile,
+    c03_semantic_corpus_spec,
+    named_corpus_specs,
+    named_workload_profile,
 )
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)

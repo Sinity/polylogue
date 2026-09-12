@@ -778,7 +778,8 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     build_empty_archive_template(run_root)
     build_bootstrap_archive_template(run_root)
     from tests.infra.shared_session_archives import warm_shared_session_archives
-    from tests.infra.workload_artifacts import NAMED_WORKLOAD_PROFILES, build_seeded_archive
+    from tests.infra.workload_artifacts import build_seeded_archive
+    from tests.infra.workload_declarations import NAMED_WORKLOAD_PROFILES
 
     outcome = warm_shared_session_archives()
     for name, reason in outcome.failed:
