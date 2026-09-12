@@ -23,6 +23,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
+from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.raw.records import ArtifactObservationRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
@@ -41,6 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.queries.artifacts import artifact_observation_params
 from polylogue.storage.sqlite.queries.raw_writes import execute_raw_admission_plan_async
+from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
 
 OUT_OF_VOCABULARY = "not-a-declared-member"
 
@@ -329,3 +331,25 @@ def test_durable_ddl_admits_what_the_boundary_refuses(tmp_path: Path) -> None:
         assert tuple(stored) == (OUT_OF_VOCABULARY,) * 4
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("validation_status", OUT_OF_VOCABULARY),
+        ("validation_mode", OUT_OF_VOCABULARY),
+        ("payload_provider", OUT_OF_VOCABULARY),
+    ],
+)
+def test_raw_state_update_compiler_refuses_out_of_vocabulary(
+    field: str,
+    value: str,
+) -> None:
+    """The UPDATE boundary must reject malformed values before SQL receives them."""
+    update = RawSessionStateUpdate()
+    # The public dataclass constructor type-checks these fields. Mutating a
+    # constructed instance models an untyped adapter bypass and keeps this
+    # test anti-vacuous: the compiler, not pydantic/coercion, must refuse it.
+    object.__setattr__(update, field, value)
+    with pytest.raises(ValueError, match=field):
+        compile_raw_state_update(update, now_ms=1)
