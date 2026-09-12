@@ -1,8 +1,7 @@
-"""Gemini CLI writes one session as several complete checkpoint files.
+"""Gemini CLI may retain competing snapshots of one checkpoint identity.
 
 Two files under one ``~/.gemini/tmp/<project>/chats`` directory can carry the
-same ``sessionId`` with different bytes -- neither is a prefix of the other,
-so a byte-revision cohort over that logical key can only fail to order them.
+same wire identity with different bytes -- neither is a prefix of the other.
 This drives the real ``LiveBatchProcessor`` over that exact shape and proves
 admission settles it: exactly one accepted head, and no raw left quarantined
 without a receipt for the raw-frontier gate to trip over.
@@ -73,9 +72,9 @@ async def test_sibling_checkpoints_sharing_a_session_id_produce_one_accepted_hea
     )
     try:
         first = chats_root / "session-2026-04-02T10-09-56cb9ec1.json"
-        second = chats_root / "session-2026-04-02T10-12-56cb9ec1.json"
+        second = chats_root / "session-2026-04-02T10-09-56cb9ec1-copy.json"
         _checkpoint(first, kind="main", turns=5, started="2026-04-02T10:09:30.776Z")
-        _checkpoint(second, kind="subagent", turns=13, started="2026-04-02T10:12:24.099Z")
+        _checkpoint(second, kind="main", turns=13, started="2026-04-02T10:09:30.776Z")
 
         assert (await processor.ingest_files([first], emit_event=False)).failed_file_count == 0
         assert (await processor.ingest_files([second], emit_event=False)).failed_file_count == 0
@@ -100,7 +99,7 @@ async def test_sibling_checkpoints_sharing_a_session_id_produce_one_accepted_hea
         with sqlite3.connect(archive_root / "index.db") as conn:
             heads = conn.execute(
                 "SELECT COUNT(*) FROM raw_revision_heads WHERE logical_source_key = ?",
-                (f"gemini-cli-session:{_SESSION_ID}",),
+                (f"gemini-cli-session:{_SESSION_ID}:main:2026-04-02T10:09:30.776Z",),
             ).fetchone()[0]
         assert heads == 1
     finally:
