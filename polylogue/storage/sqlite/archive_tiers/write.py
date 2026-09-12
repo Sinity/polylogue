@@ -15,7 +15,7 @@ import re
 import sqlite3
 import time
 import unicodedata
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, fields, replace
@@ -435,6 +435,153 @@ class PreparedSessionWriteRefusedError(RuntimeError):
     """A pinned prepared write no longer describes the admitted archive state."""
 
 
+class LineageSignatureCache:
+    """Bounded, batch-local cache for canonical lineage signatures.
+
+    A lineage child is parsed by the provider parser before this writer sees
+    it, but the writer still has to reconstruct the parent's composed prefix
+    and hash every message before it can decide where the child diverges. The
+    old cache memoized only each session's *own* signatures in an unbounded
+    ``dict``; composed signatures were rebuilt for every sibling. This cache
+    carries both layers and evicts by weighted recency, so a large parent
+    cannot turn a batch into another unbounded resident corpus.
+
+    Values retain canonical ``(message_id, content_signature)`` pairs.
+    ``message_id`` is deliberately kept alongside the signature: it is the
+    archive's identity/provenance witness for the eventual branch point, not a
+    cache-invented positional id. The cache is only a hint. ``enabled=False``
+    is the explicit anti-vacuity/control path and has exactly the same output
+    contract as a miss on every lookup.
+
+    The cache lives for one ordered ingest drain. ``pop`` removes the rewritten
+    session and any composed entries that depended on it, retaining unrelated
+    parent work while preventing stale branch identities after replacement.
+    """
+
+    _ENTRY_OVERHEAD_BYTES = 96
+
+    def __init__(self, *, max_bytes: int = 64 * 1024 * 1024, enabled: bool = True) -> None:
+        if max_bytes < 0:
+            raise ValueError("lineage signature cache max_bytes must be non-negative")
+        self.max_bytes = max_bytes
+        self.enabled = enabled
+        self._entries: OrderedDict[tuple[str, str], tuple[list[tuple[str, str]], int]] = OrderedDict()
+        self._dependencies: dict[str, frozenset[str]] = {}
+        self._bytes = 0
+        self.hits = 0
+        self.misses = 0
+        self.evictions = 0
+
+    @staticmethod
+    def _weight(session_id: str, signatures: list[tuple[str, str]]) -> int:
+        return (
+            LineageSignatureCache._ENTRY_OVERHEAD_BYTES
+            + len(session_id)
+            + sum(len(message_id) + len(signature) + 16 for message_id, signature in signatures)
+        )
+
+    def _get(self, kind: str, session_id: str) -> list[tuple[str, str]] | None:
+        if not self.enabled:
+            self.misses += 1
+            return None
+        key = (kind, session_id)
+        entry = self._entries.get(key)
+        if entry is None:
+            self.misses += 1
+            return None
+        self._entries.move_to_end(key)
+        self.hits += 1
+        return entry[0]
+
+    def _put(
+        self,
+        kind: str,
+        session_id: str,
+        signatures: list[tuple[str, str]],
+        *,
+        dependencies: frozenset[str] = frozenset(),
+    ) -> None:
+        if not self.enabled or self.max_bytes == 0:
+            return
+        key = (kind, session_id)
+        weight = self._weight(session_id, signatures)
+        if weight > self.max_bytes:
+            # A whale must not evict the whole useful cache just to remain a
+            # one-entry cache. It is a normal miss on the next descendant.
+            previous = self._entries.pop(key, None)
+            if previous is not None:
+                self._bytes -= previous[1]
+            self._dependencies.pop(session_id, None)
+            return
+        previous = self._entries.pop(key, None)
+        if previous is not None:
+            self._bytes -= previous[1]
+        self._entries[key] = (signatures, weight)
+        self._bytes += weight
+        if kind == "composed":
+            self._dependencies[session_id] = dependencies
+        while self._bytes > self.max_bytes and self._entries:
+            oldest_key, (_value, oldest_weight) = self._entries.popitem(last=False)
+            self._bytes -= oldest_weight
+            if oldest_key[0] == "composed":
+                self._dependencies.pop(oldest_key[1], None)
+            self.evictions += 1
+
+    def get(self, session_id: str, default: list[tuple[str, str]] | None = None) -> list[tuple[str, str]] | None:
+        """Mapping-compatible lookup for an own-signature entry."""
+        value = self._get("own", session_id)
+        return default if value is None else value
+
+    def __setitem__(self, session_id: str, signatures: list[tuple[str, str]]) -> None:
+        self._put("own", session_id, signatures)
+
+    def get_composed(self, session_id: str) -> list[tuple[str, str]] | None:
+        return self._get("composed", session_id)
+
+    def set_composed(
+        self,
+        session_id: str,
+        signatures: list[tuple[str, str]],
+        *,
+        dependencies: frozenset[str],
+    ) -> None:
+        self._put("composed", session_id, signatures, dependencies=dependencies)
+
+    def pop(self, session_id: str, default: object = None) -> object:
+        """Invalidate one session and every composed descendant depending on it."""
+        if not self.enabled:
+            return default
+        impacted = {session_id}
+        changed = True
+        while changed:
+            changed = False
+            for composed_id, dependencies in tuple(self._dependencies.items()):
+                if composed_id not in impacted and dependencies & impacted:
+                    impacted.add(composed_id)
+                    changed = True
+        removed: object = default
+        for key in tuple(self._entries):
+            if key[1] not in impacted:
+                continue
+            value, weight = self._entries.pop(key)
+            self._bytes -= weight
+            if key[0] == "composed":
+                self._dependencies.pop(key[1], None)
+            if key == ("own", session_id):
+                removed = value
+        return removed
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    @property
+    def resident_bytes(self) -> int:
+        return self._bytes
+
+
+_SignatureCacheLike = dict[str, list[tuple[str, str]]] | LineageSignatureCache
+
+
 def _repair_stale_session_observations(
     conn: sqlite3.Connection,
     session_id: str,
@@ -578,7 +725,7 @@ def _prepared_message_context(
     session_id: str,
     native_id: str,
     merge_append: bool,
-    signature_cache: dict[str, list[tuple[str, str]]] | None,
+    signature_cache: _SignatureCacheLike | None,
     source_conn: sqlite3.Connection | None,
 ) -> PreparedMessageContext:
     """Canonical normalization-before-lineage-slicing context for one write."""
@@ -701,7 +848,7 @@ def prepare_session_write(
     merge_append: bool,
     fallback_timestamp: str | None = None,
     source_conn: sqlite3.Connection | None = None,
-    signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+    signature_cache: _SignatureCacheLike | None = None,
 ) -> PreparedSessionWrite:
     """Prepare the canonical pending write while its lineage evidence is pinned."""
     from polylogue.core.timestamp_authority import normalize_session_timestamps
@@ -826,7 +973,7 @@ def write_parsed_session_to_archive(
     force_replace: bool = False,
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
-    signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+    signature_cache: _SignatureCacheLike | None = None,
     preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
     manage_transaction: bool = True,
     bulk_fts: bool = False,
@@ -7218,11 +7365,49 @@ def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[
     return own
 
 
+def _signature_cache_get(
+    cache: _SignatureCacheLike | None,
+    session_id: str,
+) -> list[tuple[str, str]] | None:
+    if cache is None:
+        return None
+    return cache.get(session_id)
+
+
+def _signature_cache_set(
+    cache: _SignatureCacheLike | None,
+    session_id: str,
+    signatures: list[tuple[str, str]],
+) -> None:
+    if cache is not None:
+        cache[session_id] = signatures
+
+
+def _signature_cache_get_composed(
+    cache: _SignatureCacheLike | None,
+    session_id: str,
+) -> list[tuple[str, str]] | None:
+    if isinstance(cache, LineageSignatureCache):
+        return cache.get_composed(session_id)
+    return None
+
+
+def _signature_cache_set_composed(
+    cache: _SignatureCacheLike | None,
+    session_id: str,
+    signatures: list[tuple[str, str]],
+    *,
+    dependencies: frozenset[str],
+) -> None:
+    if isinstance(cache, LineageSignatureCache):
+        cache.set_composed(session_id, signatures, dependencies=dependencies)
+
+
 def _composed_db_signatures(
     conn: sqlite3.Connection,
     session_id: str,
     *,
-    cache: dict[str, list[tuple[str, str]]] | None = None,
+    cache: _SignatureCacheLike | None = None,
     composed_cache: dict[str, list[tuple[str, str]]] | None = None,
     _depth: int = 0,
 ) -> list[tuple[str, str]]:
@@ -7232,10 +7417,11 @@ def _composed_db_signatures(
     the synchronous envelope reader's Python-stack limit.
 
     When ``cache`` is supplied, each session's OWN signatures are memoized by
-    ``session_id`` for the life of one ingest batch. When ``composed_cache`` is
-    supplied, composed (prefix+own) results are memoized only for one graph
-    resolution operation; that avoids cross-write stale ancestors while letting
-    sibling delayed-tail repairs share the same parent composition.
+    ``session_id`` for the life of one ingest batch. A
+    :class:`LineageSignatureCache` additionally carries composed
+    (prefix+own) results with weighted recency and dependency invalidation.
+    ``composed_cache`` remains the narrow operation-local compatibility path
+    used by graph repair callers that pass a plain dict.
 
     Callers typically already hold a write transaction (single-writer ingest),
     but if ``conn`` is not already inside one this wraps the whole recursive
@@ -7250,11 +7436,10 @@ def _composed_db_signatures(
             conn.execute("ROLLBACK")
 
     def own_signatures(target_session_id: str) -> list[tuple[str, str]]:
-        own = cache.get(target_session_id) if cache is not None else None
+        own = _signature_cache_get(cache, target_session_id)
         if own is None:
             own = _own_db_signatures(conn, target_session_id)
-            if cache is not None:
-                cache[target_session_id] = own
+            _signature_cache_set(cache, target_session_id, own)
         return own
 
     # Collect (child, branch point, child-owned rows) leaf-first, then compose
@@ -7262,15 +7447,17 @@ def _composed_db_signatures(
     # guard; the shared depth limit only bounds malformed acyclic chains.
     chain: list[tuple[str, str, list[tuple[str, str]]]] = []
     visited = {session_id}
+    dependencies = {session_id}
     cursor_session_id = session_id
     composed: list[tuple[str, str]] | None = None
     remaining_depth = max(0, _MAX_WRITER_LINEAGE_DEPTH - _depth)
     for _ in range(remaining_depth):
-        if composed_cache is not None:
-            cached_composed = composed_cache.get(cursor_session_id)
-            if cached_composed is not None:
-                composed = cached_composed
-                break
+        cached_composed = composed_cache.get(cursor_session_id) if composed_cache is not None else None
+        if cached_composed is None:
+            cached_composed = _signature_cache_get_composed(cache, cursor_session_id)
+        if cached_composed is not None:
+            composed = cached_composed
+            break
         own = own_signatures(cursor_session_id)
         edge = conn.execute(
             f"""
@@ -7290,6 +7477,7 @@ def _composed_db_signatures(
             composed = own
             if composed_cache is not None:
                 composed_cache[cursor_session_id] = composed
+            _signature_cache_set_composed(cache, cursor_session_id, composed, dependencies=frozenset(dependencies))
             break
         parent_id, branch_point_message_id = str(edge[0]), str(edge[1])
         witness = None if edge[2] is None else bytes(edge[2])
@@ -7299,14 +7487,17 @@ def _composed_db_signatures(
                 composed = own
                 if composed_cache is not None:
                     composed_cache[cursor_session_id] = composed
+                _signature_cache_set_composed(cache, cursor_session_id, composed, dependencies=frozenset(dependencies))
                 break
         if parent_id in visited:
             composed = own
             if composed_cache is not None:
                 composed_cache[cursor_session_id] = composed
+            _signature_cache_set_composed(cache, cursor_session_id, composed, dependencies=frozenset(dependencies))
             break
         chain.append((cursor_session_id, branch_point_message_id, own))
         visited.add(parent_id)
+        dependencies.add(parent_id)
         cursor_session_id = parent_id
     if composed is None:
         # The runaway guard was exhausted. Match the async reader: start with
@@ -7315,6 +7506,7 @@ def _composed_db_signatures(
         composed = own_signatures(cursor_session_id)
         if composed_cache is not None:
             composed_cache[cursor_session_id] = composed
+        _signature_cache_set_composed(cache, cursor_session_id, composed, dependencies=frozenset(dependencies))
 
     for child_session_id, branch_point_message_id, own in reversed(chain):
         prefix: list[tuple[str, str]] = []
@@ -7329,6 +7521,7 @@ def _composed_db_signatures(
         composed = (prefix if found else []) + own
         if composed_cache is not None:
             composed_cache[child_session_id] = composed
+        _signature_cache_set_composed(cache, child_session_id, composed, dependencies=frozenset(dependencies))
     return composed
 
 
@@ -8064,7 +8257,7 @@ def _extract_prefix_tail(
     parent_session_id: str,
     messages: list[ParsedMessage],
     *,
-    cache: dict[str, list[tuple[str, str]]] | None = None,
+    cache: _SignatureCacheLike | None = None,
     parent_composed: list[tuple[str, str]] | None = None,
 ) -> tuple[str | None, str | None, list[ParsedMessage], dict[str, str]]:
     """Align ``messages`` (the child's full parsed messages, which replay the
