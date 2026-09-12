@@ -11,6 +11,7 @@ import shutil
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -31,19 +32,26 @@ from polylogue.maintenance.archive_verification import (
     passes_strict_acceptance,
     verify_archive,
 )
+from polylogue.pipeline.services.ingest_batch import _persist_batch_raw_state_updates, _RawIngestOutcome
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
     initialize_active_archive_root,
     initialize_archive_tier,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    upsert_raw_artifact,
+    write_source_raw_session,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
 from tests.infra.claude_vintage_live_proof import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
@@ -578,35 +586,74 @@ def test_raw_with_no_typed_refusal_and_no_session_is_untyped_gap(tmp_path: Path)
     assert check.evidence["orphan_count"] == 0
 
 
-def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path: Path) -> None:
-    """polylogue-5tkbt: I1 read four columns and called everything else untyped.
+@pytest.mark.asyncio
+async def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path: Path) -> None:
+    """polylogue-5tkbt: I1 reads the ordinary durable terminal disposition.
 
-    A head with a durable schema rejection (``validation_status = 'failed'``)
-    has a typed reason for never materializing; the coverage check simply did
-    not look at that column, and reported the row as having no typed state at
-    all. It now asks the one ladder that types an acquired raw before calling
-    a head untyped, and names the class that explained it.
+    A strict schema rejection has no parse error and creates no session, which
+    is the shape of the nine historic I1 rows. The normal batch persistence
+    boundary must retain ``validation_status = 'failed'`` on that raw before
+    the operator-facing coverage route runs. I1 then asks the one durable
+    typing ladder and reports the ``validation_rejected`` escape class instead
+    of claiming the logical source has no typed state.
 
-    Anti-vacuity: drop the typed-elsewhere consultation and this head is untyped
-    again, turning the check red with an empty escape class.
+    Anti-vacuity: clearing the boundary's durable validation disposition
+    restores the pre-fix shape and makes I1 red again.
     """
     _seed_coherent_archive(tmp_path)
-    source_conn = _connect(tmp_path / "source.db")
+    source_path = tmp_path / "source.db"
+    source_conn = _connect(source_path)
     try:
-        source_conn.execute(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms,
-                revision_authority, parsed_at_ms, validation_status
-            )
-            VALUES ('raw-schema-rejected', 'codex-session', 'rejected', '/rejected', ?, 10, 100,
-                    'byte_proven', 100, 'failed')
-            """,
-            (b"v" * 32,),
+        raw_id = write_source_raw_session(
+            source_conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="validation-rejected.jsonl",
+            source_index=11,
+            payload=b"schema-invalid-but-retained",
+            acquired_at_ms=100,
         )
+        source_conn.execute("UPDATE raw_sessions SET revision_authority = 'byte_proven' WHERE raw_id = ?", (raw_id,))
         source_conn.commit()
     finally:
         source_conn.close()
+
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    outcome = _RawIngestOutcome(
+        raw_id=raw_id,
+        payload_provider="codex",
+        validation_status="failed",
+        validation_error="strict schema validation rejected the raw",
+        parse_error=None,
+        error="strict schema validation rejected the raw",
+        had_sessions=False,
+        outcome_code="validation_rejected",
+        retryable=False,
+        evidence_ref="schema_validation_strict",
+        remediation="repair the source schema",
+        diagnostic="missing required session field",
+    )
+    try:
+        await _persist_batch_raw_state_updates(
+            SimpleNamespace(repository=repository),
+            repository.backend,
+            outcomes={raw_id: outcome},
+            succeeded_raw_ids=set(),
+            skipped_raw_ids=set(),
+            failed_raw_ids={raw_id: outcome.error or "worker failure"},
+            validation_mode="strict",
+        )
+    finally:
+        await repository.close()
+
+    source_conn = _connect(source_path)
+    try:
+        state = source_conn.execute(
+            "SELECT parse_error, validation_status, validation_error FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+    finally:
+        source_conn.close()
+    assert state == (None, "failed", "strict schema validation rejected the raw")
 
     report = verify_archive(tmp_path, checks=("source-index-coverage", "convergence-freshness"))
 
@@ -620,6 +667,20 @@ def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path: Path)
     assert check.evidence["unindexed_head_count"] == 1
     # I6 shares the ladder, so the same head is not counted as backlog either.
     assert _check(report, "convergence-freshness").evidence["unindexed_backlog_gap"] == 0
+
+    source_conn = _connect(source_path)
+    try:
+        source_conn.execute(
+            "UPDATE raw_sessions SET validation_status = NULL, validation_error = NULL WHERE raw_id = ?", (raw_id,)
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    pre_fix = _check(verify_archive(tmp_path, checks=("source-index-coverage",)), "source-index-coverage")
+    assert pre_fix.status is OutcomeStatus.ERROR
+    assert pre_fix.evidence["untyped_count"] == 1
+    assert pre_fix.evidence["untyped_sample"] == [raw_id]
 
 
 def test_source_index_coverage_census_deletion_does_not_hide_raw_head(tmp_path: Path) -> None:
