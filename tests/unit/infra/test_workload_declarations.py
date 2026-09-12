@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.infra.workload_artifacts import _manifest_file_entries, build_seeded_archive, seeded_archive_key
 from tests.infra.workload_declarations import (
     BENCHMARK_WORKLOAD_PROFILES,
@@ -19,6 +20,7 @@ from tests.infra.workload_declarations import (
     benchmark_workload_profile,
     named_corpus_specs,
     named_workload_profile,
+    raw_sample_corpus_specs,
 )
 
 
@@ -73,6 +75,19 @@ def test_named_workload_profiles_are_semantic_and_build_deterministic_provider_s
     assert {"completion", "provider-native"}.issubset(set(first[0].profile.profile_tokens))
     with pytest.raises(ValueError, match="unknown named seeded archive workload"):
         named_workload_profile("unknown")
+
+
+def test_raw_sample_specs_are_deterministic_and_preserve_hash_fixture_shape() -> None:
+    first = raw_sample_corpus_specs()
+    second = raw_sample_corpus_specs()
+
+    assert first == second
+    assert {spec.provider for spec in first} == set(SyntheticCorpus.available_providers())
+    assert {spec.count for spec in first} == {5}
+    assert {(spec.messages_min, spec.messages_max) for spec in first} == {(3, 15)}
+    assert {spec.seed for spec in first} == {42}
+    assert {spec.origin for spec in first} == {"generated.test-raw-samples"}
+    assert {spec.tags for spec in first} == {("synthetic", "test", "raw-samples")}
 
 
 def test_profile_name_and_purpose_are_part_of_artifact_identity() -> None:
