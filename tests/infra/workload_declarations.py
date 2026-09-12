@@ -10,7 +10,7 @@ import re
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 
-from polylogue.scenarios import CorpusProfile, CorpusSpec
+from polylogue.scenarios import CorpusProfile, CorpusSpec, build_default_corpus_specs
 from polylogue.schemas.synthetic import SyntheticCorpus
 
 SEMANTIC_METADATA_PREFIXES = ("expected_", "oracle_", "pathology_", "case_")
@@ -71,6 +71,26 @@ def schema_coverage_corpus_specs() -> tuple[CorpusSpec, ...]:
             tags=("synthetic", "test", "schema-coverage"),
         )
         for provider in SyntheticCorpus.available_providers()
+    )
+
+
+def raw_sample_corpus_specs() -> tuple[CorpusSpec, ...]:
+    """Return the deterministic provider-shaped specs used by raw hash tests.
+
+    This is deliberately a constructor rather than a registered named
+    workload: the raw fixture needs a small, stable provider sample while the
+    workload profile registry remains reserved for shared archive workloads.
+    Keep this contract in one declaration so the fixture and its shape tests
+    cannot silently drift apart.
+    """
+    return build_default_corpus_specs(
+        providers=SyntheticCorpus.available_providers(),
+        count=5,
+        messages_min=3,
+        messages_max=15,
+        seed=42,
+        origin="generated.test-raw-samples",
+        tags=("synthetic", "test", "raw-samples"),
     )
 
 
