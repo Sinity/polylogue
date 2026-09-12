@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.daemon.intake import (
     AdmissionOutcome,
     AdmissionResult,
@@ -25,6 +26,9 @@ from polylogue.daemon.intake import (
 )
 from polylogue.daemon.observation import ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
+from polylogue.operations.intake_adapters import discover_pending_raw_ids
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 class FakeAdapter:
@@ -59,6 +63,38 @@ class FakeAdapter:
         # Atomic and idempotent: acknowledging twice releases one entry.
         if item.item_id in self.pending:
             self.pending.remove(item.item_id)
+
+
+def test_raw_discovery_uses_canonical_adapter_and_returns_payload_costs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A census selector cannot hide a pending raw from fair intake."""
+    bootstrap_archive_root(tmp_path)
+    payloads = {
+        "a.json": b"raw-a",
+        "b.json": b"raw-b-longer",
+        "c.json": b"raw-c",
+    }
+    raw_ids: dict[str, str] = {}
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for path, payload in payloads.items():
+            raw_ids[path] = archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path=path,
+                acquired_at_ms=1,
+            )
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("legacy raw census selector was called")
+
+    monkeypatch.setattr("polylogue.storage.raw_convergence.raw_materialization_pending_census_raw_ids", forbidden)
+    result = discover_pending_raw_ids(tmp_path, limit=2, max_payload_bytes=1024)
+
+    expected = tuple(
+        (raw_id, len(payloads[path])) for path, raw_id in sorted(raw_ids.items(), key=lambda item: item[1])[:2]
+    )
+    assert result == expected
 
 
 @pytest.mark.asyncio
