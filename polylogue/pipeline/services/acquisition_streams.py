@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from polylogue.config import Source
+    from polylogue.pipeline.services.ingest_execution import IngestExecution
     from polylogue.sources.drive.types import DriveConfigLike, DriveUILike
     from polylogue.storage.blob_store import BlobStore
 
@@ -98,6 +99,7 @@ async def iter_drive_raw_stream(
     drive_config: DriveConfigLike | None = None,
     observation_callback: ObservationCallback | None = None,
     progress_callback: Callable[[int, str | None], None] | None = None,
+    execution: IngestExecution | None = None,
 ) -> AsyncIterator[RawSessionData]:
     """Stream Drive payloads as raw records without touching the local cache."""
     from polylogue.sources.drive import iter_drive_raw_data
@@ -126,10 +128,20 @@ async def iter_drive_raw_stream(
     loop = asyncio.get_running_loop()
     with ThreadPoolExecutor(max_workers=1) as executor:
         while True:
-            batch = await loop.run_in_executor(
+            pending = loop.run_in_executor(
                 executor,
-                partial(_drain_batch, iterator, batch_size=batch_size, blob_store=blob_store),
+                partial(
+                    _drain_batch, iterator, batch_size=batch_size, blob_store=blob_store if execution is None else None
+                ),
             )
+            if execution is None:
+                batch = await pending
+            else:
+                from polylogue.storage.blob_publication import flush_blob_publications
+
+                batch = await execution.settle(pending)
+                if blob_store is not None:
+                    await execution.publish_sync("blobs", lambda: flush_blob_publications(blob_store))
             if not batch:
                 break
             for item in batch:
@@ -148,6 +160,7 @@ async def iter_raw_record_stream(
     drive_config: DriveConfigLike | None = None,
     observation_callback: ObservationCallback | None = None,
     progress_callback: Callable[[int, str | None], None] | None = None,
+    execution: IngestExecution | None = None,
 ) -> AsyncIterator[RawSessionRecord]:
     """Yield prepared RawSessionRecord values for a source."""
     raw_stream: AsyncIterator[RawSessionData]
@@ -161,6 +174,7 @@ async def iter_raw_record_stream(
             drive_config=drive_config,
             observation_callback=observation_callback,
             progress_callback=progress_callback,
+            execution=execution,
         )
     else:
         raw_stream = iter_source_raw_stream(
@@ -182,7 +196,10 @@ async def iter_raw_record_stream(
             if blob_store is not None and raw_data.raw_bytes:
                 from polylogue.storage.blob_publication import flush_blob_publications
 
-                flush_blob_publications(blob_store)
+                if execution is None:
+                    flush_blob_publications(blob_store)
+                else:
+                    await execution.publish_sync("blobs", lambda: flush_blob_publications(blob_store))
             # Explicitly break reference to raw bytes so GC can collect them
             # before the next iteration reads the next file.
             del raw_data

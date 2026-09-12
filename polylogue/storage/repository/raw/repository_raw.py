@@ -57,7 +57,7 @@ class RepositoryRawMixin:
             )
 
     async def get_raw_session(self, raw_id: str) -> RawSessionRecord | None:
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             return await raw_queries.get_raw_session(conn, raw_id)
 
     async def update_raw_state(
@@ -118,12 +118,12 @@ class RepositoryRawMixin:
             )
 
     async def get_known_source_mtimes(self) -> dict[str, str]:
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             return await raw_queries.get_known_source_mtimes(conn)
 
     async def get_known_source_cursors(self) -> dict[str, dict[str, object]]:
         """Return ingest_cursor stat fields for the stat-based fast path."""
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             try:
                 return await cursor_queries.get_known_source_cursors(conn)
             except Exception as exc:
@@ -190,21 +190,21 @@ class RepositoryRawMixin:
         self,
         raw_ids: list[str],
     ) -> list[RawSessionRecord]:
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             return await raw_queries.get_raw_sessions_batch(conn, raw_ids)
 
     async def get_raw_blob_sizes(
         self,
         raw_ids: list[str],
     ) -> list[tuple[str, int]]:
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             return await raw_queries.get_raw_blob_sizes(conn, raw_ids)
 
     async def get_raw_session_states(
         self,
         raw_ids: list[str],
     ) -> dict[str, RawSessionState]:
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             return await raw_queries.get_raw_session_states(conn, raw_ids)
 
     async def iter_raw_sessions(
@@ -230,17 +230,21 @@ class RepositoryRawMixin:
         validation_statuses: list[str] | None = None,
         page_size: int = 1000,
     ) -> AsyncIterator[tuple[str, int]]:
-        async with self._backend.connection() as conn:
-            async for header in raw_queries.iter_raw_headers(
-                conn,
-                source_paths=source_paths,
-                source_name=source_name,
-                require_unparsed=require_unparsed,
-                require_unvalidated=require_unvalidated,
-                validation_statuses=validation_statuses,
-                page_size=page_size,
-            ):
-                yield header
+        async with self._backend.read_connection() as conn:
+            headers = [
+                header
+                async for header in raw_queries.iter_raw_headers(
+                    conn,
+                    source_paths=source_paths,
+                    source_name=source_name,
+                    require_unparsed=require_unparsed,
+                    require_unvalidated=require_unvalidated,
+                    validation_statuses=validation_statuses,
+                    page_size=page_size,
+                )
+            ]
+        for header in headers:
+            yield header
 
     async def get_raw_session_count(self, origin: str | None = None) -> int:
         async with self._backend.connection() as conn:

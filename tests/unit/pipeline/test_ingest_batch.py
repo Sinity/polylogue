@@ -2920,6 +2920,7 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
         archive_root=archive_root,
         ingest_workers=1,
         measure_ingest_result_size=False,
+        execution=None,
     )
     backend = SimpleNamespace(db_path=archive_root / "index.db")
     seen: dict[str, object] = {}
