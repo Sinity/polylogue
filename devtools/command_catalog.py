@@ -325,6 +325,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench slo", "devtools bench slo --json", "devtools bench slo --skip-benchmarks --json"),
     ),
     CommandSpec(
+        "bench daemon-operation",
+        "benchmarking",
+        "Run the installed CLI and direct typed-UDS daemon operation profile.",
+        "devtools.daemon_performance_profile",
+        use_when=(
+            "Measure the daemon architecture on the production route: installed CLI status, typed UDS find/read, "
+            "completion, concurrent reads, cancellation, and declared background workload denominators. "
+            "The profile records runtime, queue, CPU/RSS, SQLite, writer-hold, first-byte/full-render, "
+            "rows/bytes, and cancellation evidence where the production route exposes it."
+        ),
+        examples=("devtools bench daemon-operation",),
+    ),
+    CommandSpec(
         "bench memory",
         "benchmarking",
         "Measure query-memory envelopes on generated fixtures.",

@@ -389,21 +389,38 @@ class BoundedComputeAdapter:
     # -- admission ------------------------------------------------------
 
     def _evidence(self, state: _ClassState) -> dict[str, int]:
+        group_used_units = self._group_used_units(state.admission_class)
         return {
             "capacity_units": self.capacity_units,
             "used_units": self._used_units,
             "queued_units": max(0, self._used_units - self._active_units),
             "capacity_bytes": self.capacity_bytes,
             "used_bytes": self._used_bytes,
-            "class_used_units": state.used_units,
+            # Background classes share one reserve.  Report the aggregate
+            # usage so a rejected sibling cannot make the bounded admission
+            # envelope look larger than it is.
+            "class_used_units": group_used_units,
             "class_ceiling_units": state.ceiling_units,
         }
 
+    @staticmethod
+    def _class_group(admission_class: str) -> str:
+        return "background" if admission_class in BACKGROUND_CLASSES else admission_class
+
+    def _group_used_units(self, admission_class: str) -> int:
+        group = self._class_group(admission_class)
+        return sum(state.used_units for name, state in self._classes.items() if self._class_group(name) == group)
+
+    def _group_active_slots(self, admission_class: str) -> int:
+        group = self._class_group(admission_class)
+        return sum(state.active_slots for name, state in self._classes.items() if self._class_group(name) == group)
+
     def _acquire_locked(self, state: _ClassState, units: int, estimated_bytes: int) -> None:
+        group_used_units = self._group_used_units(state.admission_class)
         if (
             self._used_units + units > self.capacity_units
             or self._used_bytes + estimated_bytes > self.capacity_bytes
-            or state.used_units + units > state.ceiling_units
+            or group_used_units + units > state.ceiling_units
         ):
             state.rejected += 1
             self._rejected += 1
@@ -481,7 +498,7 @@ class BoundedComputeAdapter:
             state = self._classes[name]
             if self._active_slots + task.slots > self.max_workers:
                 continue
-            if state.active_slots + task.slots > state.ceiling_slots:
+            if self._group_active_slots(name) + task.slots > state.ceiling_slots:
                 continue
             queue.popleft()
             task.state = "running"

@@ -98,6 +98,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools bench daemon-operation` | Run the installed CLI and direct typed-UDS daemon operation profile. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools bench query-envelope` | Measure repeated incident-scale query RSS, PSS, swap, and temp envelopes. |
