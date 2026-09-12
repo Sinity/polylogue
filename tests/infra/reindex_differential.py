@@ -44,12 +44,19 @@ _NON_COMPARABLE_TABLES: dict[str, str] = {
 # One explicit entry per comparable DDL table. Empty sets are declarations:
 # they make an added table fail this test until its volatility is considered.
 _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
-    "agent_meta_sidecar_purge_receipts": frozenset(),
     "action_pairs": frozenset(),
     "attachment_native_ids": frozenset(),
     "attachment_refs": frozenset(),
     "attachments": frozenset(),
     "blocks": frozenset(),
+    # Retained Codex state exports are source-derived index projections. The
+    # replay route must reproduce their complete row sets, including the
+    # source receipt that prevents an older export overwriting a newer one.
+    # Their timestamps/order are durable source evidence, not run-local clock
+    # observations, so they intentionally have no volatile exclusions.
+    "codex_thread_spawn_edges": frozenset(),
+    "codex_thread_state": frozenset(),
+    "codex_thread_state_provenance": frozenset(),
     "delegation_facts": frozenset(),
     "delegation_refresh_scope": frozenset(),
     "derived_refresh_guard": frozenset(),
@@ -75,9 +82,6 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_work_events": frozenset(),
     "session_working_dirs": frozenset(),
     "sessions": frozenset(),
-    "session_tag_rollups": frozenset({"materialized_at"}),
-    "thread_sessions": frozenset(),
-    "threads": frozenset({"materialized_at"}),
     "web_content_constructs": frozenset(),
     "work_evidence_edges": frozenset(),
     "work_evidence_graphs": frozenset(),
