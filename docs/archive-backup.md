@@ -192,6 +192,23 @@ disposable tier, is touched. When the archive is the only copy, capture a
 size/mtime/ctime/sha256 manifest of the durable tiers before and after the read
 and compare the two, rather than assuming the read was clean.
 
+## Pre-wipe rollback packet
+
+The rollback packet for the 2026-09-12 fresh-restart campaign is a public pointer to private operator-held artifacts. It contains no archive bytes, transcripts, assertions, or blob payloads in Git. The executable pin is first-parent commit `c8ba64157ea1a8eeed175c9a80229aedfa818820` (2026-08-10, `fix(replay): block readiness on incomplete parser census (#3903)`). Keep that checkout available with the aside archive root, all six tier files, and the referenced `blob/` directory.
+
+Before a wipe, the operator must recheck the private packet and record its exact archive-root path, commit, executable version, and a size/mtime/ctime/sha256 manifest outside Git. The packet is ready only when all six files are present: `source.db`, `index.db`, `embeddings.db`, `user.db`, `audit.db`, and `ops.db`, together with the referenced blobs. The independently exported user assertions file is additional evidence, not a replacement for `user.db`.
+
+Use the pinned checkout and the production read route for the proof. A raw SQLite open or a file listing alone does not establish rollback readiness:
+
+```bash
+export POLYLOGUE_ARCHIVE_ROOT="<operator-retained rollback root>"
+./.venv/bin/polylogue ops maintenance archive-plan --output-format json
+./.venv/bin/polylogue status
+./.venv/bin/polylogue --origin ORIGIN find 'FIELD:VALUE' then select --format json
+```
+
+The rollback pin is expected to provide field, origin, and date queries while FTS remains stale until daemon convergence. Report FTS as degraded rather than claiming complete search readiness. Do not migrate, re-adopt audit receipts, reconcile a reserved migration train, or start a daemon against the only archive as part of this preparation. If the private packet or its recorded production-route receipt cannot be rechecked, stop and leave the wipe unauthorized.
+
 Restore in place. An archive root can be a symlink farm whose `index.db` and
 active-generation tier links are absolute, so a file set copied to a different
 root resolves back into the old one and `ArchiveLocation` refuses it. Changing
