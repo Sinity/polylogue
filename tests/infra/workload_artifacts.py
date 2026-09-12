@@ -748,8 +748,11 @@ class WorkloadProfile:
             raise ValueError("workload profile requires a name and purpose")
         if not self.family_ids or not self.profile_tokens:
             raise ValueError("workload profile requires semantic corpus identity")
-        _reject_semantic_metadata(self.family_ids, location="workload profile")
-        _reject_semantic_metadata(self.profile_tokens, location="workload profile")
+        # Validate the complete declaration, not only the fields currently
+        # used to derive CorpusSpec.  A profile is an operational shape and
+        # must never become a back door for an expected result or case label
+        # in a name, purpose, origin, or tag either.
+        _reject_semantic_metadata(asdict(self), location="workload profile")
 
     def corpus_specs(self, shapes: tuple[WorkloadSessionShape, ...]) -> tuple[CorpusSpec, ...]:
         if not shapes:

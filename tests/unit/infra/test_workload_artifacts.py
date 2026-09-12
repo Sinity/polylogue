@@ -238,6 +238,32 @@ def test_workload_identity_rejects_semantic_oracle_metadata(tmp_path: Path) -> N
             files=({"path": "index.db", "size": 0, "sha256": "0" * 64, "expected_sessions": 64},),
         )
 
+    # Every profile field is operational metadata.  Checking only family_ids
+    # and profile_tokens would let a catalogue-shaped tag or name leak into
+    # the shared artifact identity while the obvious fields remain clean.
+    for field, value in {
+        "name": "expected_sessions",
+        "purpose": "expected_sessions",
+        "origin": "expected_sessions",
+        "tags": ("expected_sessions",),
+    }.items():
+        with pytest.raises(ValueError, match="semantic metadata"):
+            dataclasses.replace(
+                cast(
+                    Any,
+                    WorkloadProfile(
+                        name="valid-name",
+                        purpose="fixture-shape",
+                        seed=1,
+                        family_ids=("test",),
+                        profile_tokens=("fixture-shape",),
+                        origin="generated.test-invalid",
+                        tags=("synthetic",),
+                    ),
+                ),
+                **{field: value},
+            )
+
 
 def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None:
     """Both catalog adapters retain a common identity and native-spec constructor."""
