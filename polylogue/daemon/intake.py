@@ -15,17 +15,19 @@ depended on it and no pass ever enumerates a whole spool.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeVar, cast, overload, runtime_checkable
 
 from polylogue.daemon.observation import Observation, ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 __all__ = [
     "AdmissionOutcome",
@@ -51,6 +53,7 @@ class IntakeItem:
     item_id: str
     class_name: str
     payload: object = None
+    estimated_cost: int = 1
 
 
 class AdmissionOutcome(str, Enum):
@@ -74,6 +77,7 @@ class AdmissionOutcome(str, Enum):
 class AdmissionResult:
     outcome: AdmissionOutcome
     reason: str | None = None
+    actual_cost: int | None = None
 
     @property
     def acknowledgeable(self) -> bool:
@@ -89,11 +93,11 @@ class IntakeAdapter(Protocol):
     wherever it left off and never costs a full scan.
     """
 
-    def discover(self, *, limit: int) -> Sequence[IntakeItem]: ...
+    async def discover(self, *, limit: int) -> Sequence[IntakeItem]: ...
 
-    def admit(self, item: IntakeItem) -> AdmissionResult: ...
+    async def admit(self, item: IntakeItem) -> AdmissionResult: ...
 
-    def acknowledge(self, item: IntakeItem) -> None:
+    async def acknowledge(self, item: IntakeItem) -> None:
         """Release the item's queue entry. Atomic and idempotent."""
 
 
@@ -125,6 +129,9 @@ class IntakeClassReport:
     """Items that exhausted their attempts and were set aside."""
 
     discovered: int = 0
+    estimated_cost: int = 0
+    actual_cost: int = 0
+    reconciled_cost: int = 0
     halted: bool = False
     reason: str | None = None
 
@@ -213,7 +220,7 @@ class FairIntakeDispatcher:
         """Item identities this process has set aside in *class_name*."""
         return frozenset(self._runtime[class_name].isolated)
 
-    def run_once(self, *, budget: int = 64) -> IntakePass:
+    async def run_once(self, *, budget: int = 64) -> IntakePass:
         """Run one bounded pass and return what each class achieved."""
         started = self._clock()
         schedulable = self.schedulable_classes()
@@ -226,7 +233,7 @@ class FairIntakeDispatcher:
             runtime = self._runtime[spec.name]
             share = max(1, budget * spec.weight // total_weight)
             runtime.deficit += share
-            reports.append(self._service_class(spec, runtime))
+            reports.append(await self._service_class(spec, runtime))
 
         for name in skipped:
             record = self._halts.record_for(unit_id(UnitKind.INTAKE_CLASS, name)) if self._halts else None
@@ -248,25 +255,32 @@ class FairIntakeDispatcher:
 
     # -- internals ----------------------------------------------------
 
-    def _service_class(self, spec: IntakeClassSpec, runtime: _ClassRuntime) -> IntakeClassReport:
+    async def _service_class(self, spec: IntakeClassSpec, runtime: _ClassRuntime) -> IntakeClassReport:
         if runtime.deficit <= 0:
             return IntakeClassReport(name=spec.name)
 
         limit = min(spec.page_size, runtime.deficit)
         try:
-            page = list(spec.adapter.discover(limit=limit))
+            page: list[IntakeItem] = list(await _maybe_await(spec.adapter.discover(limit=limit)))
         except Exception as exc:
             logger.warning("intake: class %s discovery failed: %s", spec.name, exc, exc_info=True)
             return IntakeClassReport(name=spec.name, reason=f"discovery failed: {exc}")
 
         admitted = duplicates = retried = isolated = 0
+        estimated_cost = actual_cost = 0
         for item in page:
             if runtime.deficit <= 0:
                 break
             if item.item_id in runtime.isolated:
                 continue
-            runtime.deficit -= 1
-            result = self._admit(spec, item)
+            item_cost = max(1, int(item.estimated_cost))
+            if runtime.deficit < item_cost:
+                break
+            # Charge the estimate before admission. An adapter cannot hide a
+            # large item behind a cheap synthetic page identity.
+            runtime.deficit -= item_cost
+            estimated_cost += item_cost
+            result = await self._admit(spec, item)
             if result.outcome is AdmissionOutcome.CLASS_TERMINAL:
                 self._halt_class(spec.name, result.reason or "class reported terminal failure")
                 return IntakeClassReport(
@@ -276,12 +290,20 @@ class FairIntakeDispatcher:
                     retried=retried,
                     isolated=isolated,
                     discovered=len(page),
+                    estimated_cost=estimated_cost,
+                    actual_cost=actual_cost,
+                    reconciled_cost=actual_cost - estimated_cost,
                     halted=True,
                     reason=result.reason,
                 )
             if result.acknowledgeable:
-                spec.adapter.acknowledge(item)
+                await _maybe_await(spec.adapter.acknowledge(item))
                 runtime.attempts.pop(item.item_id, None)
+                item_actual_cost = max(1, int(result.actual_cost or item_cost))
+                actual_cost += item_actual_cost
+                # Reconcile the estimate after preparation. A larger actual
+                # cost consumes future deficit; a smaller one is returned.
+                runtime.deficit -= item_actual_cost - item_cost
                 if result.outcome is AdmissionOutcome.ADMITTED:
                     admitted += 1
                 else:
@@ -313,11 +335,14 @@ class FairIntakeDispatcher:
             retried=retried,
             isolated=isolated,
             discovered=len(page),
+            estimated_cost=estimated_cost,
+            actual_cost=actual_cost,
+            reconciled_cost=actual_cost - estimated_cost,
         )
 
-    def _admit(self, spec: IntakeClassSpec, item: IntakeItem) -> AdmissionResult:
+    async def _admit(self, spec: IntakeClassSpec, item: IntakeItem) -> AdmissionResult:
         try:
-            return spec.adapter.admit(item)
+            return await _maybe_await(spec.adapter.admit(item))
         except Exception as exc:
             return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"{type(exc).__name__}: {exc}")
 
@@ -361,7 +386,25 @@ class FairIntakeDispatcher:
                         "retried": report.retried,
                         "isolated": report.isolated,
                         "discovered": report.discovered,
+                        "estimated_cost": report.estimated_cost,
+                        "actual_cost": report.actual_cost,
+                        "reconciled_cost": report.reconciled_cost,
                     },
                     frame=self._frame or None,
                 )
             )
+
+
+@overload
+async def _maybe_await(value: Awaitable[_T]) -> _T: ...
+
+
+@overload
+async def _maybe_await(value: _T) -> _T: ...
+
+
+async def _maybe_await(value: object) -> object:
+    """Await an adapter result while keeping tiny synchronous test doubles useful."""
+    if inspect.isawaitable(value):
+        return await cast(Awaitable[object], value)
+    return value

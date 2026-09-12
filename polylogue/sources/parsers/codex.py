@@ -497,6 +497,256 @@ def _record_payload(record: dict[str, object]) -> dict[str, object]:
     return {str(key): value for key, value in record.items() if value is not None}
 
 
+def _codex_turn_evidence(payload: dict[str, object]) -> dict[str, object]:
+    """Lift Codex's three observed turn-correlation carriers.
+
+    ``metadata.turn_id`` is the oldest and most consistently populated
+    carrier, so it remains the authoritative scalar for compatibility.  The
+    passthrough and direct fields are retained as evidence too; when they
+    disagree, ``turn_id_conflict`` makes the ambiguity explicit instead of
+    silently selecting whichever field happened to be visited last.
+    """
+    candidates: dict[str, str] = {}
+    metadata = _dict_record(payload.get("metadata"))
+    metadata_turn_id = _string_value(metadata.get("turn_id")) if metadata else None
+    if metadata_turn_id:
+        candidates["metadata.turn_id"] = metadata_turn_id
+    passthrough = _dict_record(payload.get("internal_chat_message_metadata_passthrough"))
+    passthrough_turn_id = _string_value(passthrough.get("turn_id")) if passthrough else None
+    if passthrough_turn_id:
+        candidates["internal_chat_message_metadata_passthrough.turn_id"] = passthrough_turn_id
+    direct_turn_id = _string_value(payload.get("turn_id"))
+    if direct_turn_id:
+        candidates["turn_id"] = direct_turn_id
+    if not candidates:
+        return {}
+    # The established metadata.turn_id behavior wins; passthrough is the
+    # authority when metadata is absent, with a direct field as final fallback.
+    authority = next(
+        (
+            name
+            for name in ("metadata.turn_id", "internal_chat_message_metadata_passthrough.turn_id", "turn_id")
+            if name in candidates
+        ),
+        next(iter(candidates)),
+    )
+    evidence: dict[str, object] = {"turn_id": candidates[authority], "turn_id_source": authority}
+    distinct_values = sorted(set(candidates.values()))
+    if len(distinct_values) > 1:
+        evidence["turn_id_conflict"] = {
+            "authority": authority,
+            "values": dict(candidates),
+        }
+    return evidence
+
+
+def _codex_source_references(value: object, *, field: str) -> list[dict[str, object]]:
+    """Retain bounded source references without claiming byte acquisition.
+
+    Codex ``local_images`` are paths/references into the producer's machine;
+    they are not attachment bytes.  Keeping the reference in the event
+    payload preserves identity and provenance while the explicit policy field
+    prevents readers from treating it as an acquired/public asset.
+    """
+    if not isinstance(value, list):
+        return []
+    references: list[dict[str, object]] = []
+    for item in value:
+        if isinstance(item, str) and item:
+            references.append(
+                {
+                    "reference": item,
+                    "source": f"codex.user_message.{field}",
+                    "acquired_bytes": False,
+                    "path_disclosure": "provider_reference",
+                }
+            )
+            continue
+        if not isinstance(item, dict):
+            continue
+        reference: dict[str, object] = {
+            "source": f"codex.user_message.{field}",
+            "acquired_bytes": False,
+            "path_disclosure": "provider_reference",
+        }
+        # Preserve identity/display metadata, never inline byte payloads.
+        for key in ("path", "url", "uri", "name", "id", "mime_type", "media_type", "type", "text"):
+            candidate = item.get(key)
+            if isinstance(candidate, str) and candidate:
+                reference[key] = candidate
+        if reference.keys() > {"source", "acquired_bytes", "path_disclosure"}:
+            references.append(reference)
+    return references
+
+
+def _codex_text_element_references(value: object) -> list[dict[str, object]]:
+    """Keep placeholder/range coordinates while excluding hidden content."""
+    if not isinstance(value, list):
+        return []
+    references: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        reference: dict[str, object] = {
+            "source": "codex.user_message.text_elements",
+            "content_policy": "range_only",
+        }
+        for key in (
+            "type",
+            "id",
+            "start",
+            "end",
+            "start_index",
+            "end_index",
+            "start_offset",
+            "end_offset",
+            "range",
+            "placeholder",
+            "kind",
+        ):
+            candidate = item.get(key)
+            if isinstance(candidate, (str, int, float)) and not isinstance(candidate, bool):
+                reference[key] = candidate
+            elif isinstance(candidate, list) and key == "range":
+                reference[key] = [entry for entry in candidate if isinstance(entry, (str, int, float))]
+        references.append(reference)
+    return references
+
+
+def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, object]:
+    """Extract the reviewed Codex event fields beyond generic identity keys."""
+    compact: dict[str, object] = {}
+    phase = _string_value(payload.get("phase"))
+    if phase:
+        compact["phase"] = phase
+    compact.update(_codex_turn_evidence(payload))
+
+    event_type = _string_value(payload.get("type"))
+    if event_type == "thread_goal_updated":
+        goal = _dict_record(payload.get("goal"))
+        if goal:
+            compact_goal: dict[str, object] = {}
+            for key in ("objective", "status", "tokensUsed", "timeUsedSeconds"):
+                if key in goal and isinstance(goal[key], (str, int, float, bool)):
+                    compact_goal[key] = goal[key]
+            if compact_goal:
+                compact["goal"] = compact_goal
+    elif event_type == "sub_agent_activity":
+        for key in ("agent_thread_id", "agent_path", "kind"):
+            value = _string_value(payload.get(key))
+            if value:
+                compact[key] = value
+    elif event_type == "task_started":
+        for key in ("model_context_window", "collaboration_mode_kind"):
+            field_value = payload.get(key)
+            if isinstance(field_value, (str, int, float, bool)):
+                compact[key] = field_value
+    elif event_type in {"task_complete", "turn_aborted"}:
+        if event_type == "task_complete":
+            message_value = payload.get("last_agent_message")
+            if isinstance(message_value, str) and message_value:
+                compact["last_agent_message_chars"] = len(message_value)
+        reason = _string_value(payload.get("reason"))
+        if reason:
+            compact["reason"] = reason
+    elif event_type == "thread_settings_applied":
+        for key in ("model", "model_name", "reasoning_effort", "effort", "personality"):
+            value = _string_value(payload.get(key))
+            if value:
+                compact[key] = value
+        collaboration_mode = _dict_record(payload.get("collaboration_mode"))
+        if collaboration_mode:
+            compact["collaboration_mode"] = {
+                str(key): value
+                for key, value in collaboration_mode.items()
+                if isinstance(value, (str, int, float, bool, dict, list))
+            }
+    elif event_type in {
+        "collab_agent_spawn_end",
+        "collab_waiting_end",
+        "collab_close_end",
+        "collab_agent_interaction_end",
+    }:
+        for key in (
+            "new_thread_id",
+            "new_agent_nickname",
+            "new_agent_role",
+            "prompt",
+            "receiver_thread_id",
+            "receiver_agent_nickname",
+            "receiver_agent_role",
+            "status",
+        ):
+            value = _string_value(payload.get(key))
+            if value:
+                compact[key] = value
+    elif event_type == "item_completed":
+        item = _dict_record(payload.get("item"))
+        if item:
+            retained_item: dict[str, object] = {}
+            for key in ("type", "id", "text", "name", "path"):
+                item_value = item.get(key)
+                if isinstance(item_value, (str, int, float, bool)):
+                    retained_item[key] = item_value
+            if retained_item:
+                compact["item"] = retained_item
+    elif event_type == "entered_review_mode":
+        target = _dict_record(payload.get("target"))
+        if target:
+            compact["target"] = {
+                key: target_value
+                for key in ("instructions", "user_facing_hint")
+                if isinstance((target_value := target.get(key)), str)
+            }
+    elif event_type == "exited_review_mode":
+        review_output = _dict_record(payload.get("review_output"))
+        if review_output:
+            compact["review_output"] = {
+                key: review_value
+                for key in ("findings", "overall_correctness", "overall_explanation", "overall_confidence_score")
+                if isinstance((review_value := review_output.get(key)), (str, int, float, bool, list))
+            }
+    elif event_type == "view_image_tool_call":
+        path = _string_value(payload.get("path"))
+        if path:
+            compact["path"] = path
+            compact["path_disclosure"] = "provider_reference"
+            compact["acquired_bytes"] = False
+    elif event_type == "web_search_end":
+        query = _string_value(payload.get("query"))
+        if query:
+            compact["query"] = query
+        action = _dict_record(payload.get("action"))
+        queries = action.get("queries") if action else None
+        if isinstance(queries, list):
+            compact["action"] = {"queries": [query for query in queries if isinstance(query, str)]}
+    elif event_type == "thread_rolled_back":
+        num_turns = _optional_int_field(payload, "num_turns")
+        if num_turns is not None:
+            compact["num_turns"] = num_turns
+    elif event_type == "error":
+        message = _string_value(payload.get("message"))
+        if message:
+            compact["message"] = message
+        error_info = payload.get("codex_error_info")
+        if isinstance(error_info, (str, dict)):
+            compact["codex_error_info"] = error_info
+    if event_type == "user_message":
+        local_images = _codex_source_references(payload.get("local_images"), field="local_images")
+        if local_images:
+            compact["local_images"] = local_images
+        text_elements = _codex_text_element_references(payload.get("text_elements"))
+        if text_elements:
+            compact["text_elements"] = text_elements
+    # Preserve observed lifecycle timing as scalar evidence without retaining a
+    # provider envelope dump or guessing its units.
+    for key in ("started_at", "start_time", "ended_at", "end_time", "duration_ms", "elapsed_ms", "elapsed_seconds"):
+        timing_value = payload.get(key)
+        if isinstance(timing_value, (str, int, float)) and not isinstance(timing_value, bool):
+            compact[key] = timing_value
+    return compact
+
+
 def _compact_response_payload(
     payload: dict[str, object],
     *,
@@ -525,14 +775,7 @@ def _compact_response_payload(
     cwd = _extract_cwd(payload)
     if cwd:
         compact["cwd"] = cwd
-    # `metadata.turn_id` correlates a response_item/event_msg record (most
-    # commonly `reasoning`) back to the turn that produced it. Small, always
-    # present or absent as a single scalar -- safe to carry on every event.
-    metadata = _dict_record(payload.get("metadata"))
-    if metadata:
-        turn_id = metadata.get("turn_id")
-        if isinstance(turn_id, str) and turn_id:
-            compact["turn_id"] = turn_id
+    compact.update(_codex_semantic_response_fields(payload))
     if compact.get("type") == "token_count":
         if current_model_name and not _string_field(compact, "model", "model_name"):
             compact["model"] = current_model_name
@@ -3344,6 +3587,9 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     event_type=event_type,
                     timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
                     payload=event_payload,
+                    source_message_provider_id=_string_value(
+                        inner.get("client_id") or inner.get("id") or inner.get("call_id")
+                    ),
                 )
                 session_events.append(response_event)
                 # Usage lowering keeps numeric counters in its typed table.
@@ -3437,6 +3683,23 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                 if cwd:
                     working_directories.add(cwd)
                 continue
+
+        # These newer producer records are top-level envelopes rather than
+        # response_item/event_msg payloads. Keep them on the same normalized
+        # session_events route, with the bounded compactor and no raw dump.
+        if _record_type(record) in {"inter_agent_communication_metadata", "token_usage_record"}:
+            top_level_payload = _payload_record(record) or _record_payload(record)
+            event_payload = _compact_response_payload(top_level_payload, index=idx)
+            event_payload.setdefault("type", _record_type(record))
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type=_record_type(record) or "codex_unknown_outer_record",
+                    timestamp=_iso_or_none(_record_timestamp(record) or _record_timestamp(top_level_payload)),
+                    payload=event_payload,
+                    source_message_provider_id=_string_value(top_level_payload.get("id")),
+                )
+            )
+            continue
 
         # World-state snapshots (full or delta) report ambient runtime
         # context -- most notably the live subagent roster
@@ -3591,6 +3854,32 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     duration_ms=duration_ms,
                 )
             )
+            message_semantics = _compact_response_payload(message_record, index=idx)
+            # A response_item message is lowered into the message tree, but
+            # phase/turn/image-reference evidence belongs to session_events so
+            # it survives archive writes and public event reads as well.
+            retained_message_keys = {
+                key: value
+                for key, value in message_semantics.items()
+                if key
+                in {
+                    "phase",
+                    "turn_id",
+                    "turn_id_source",
+                    "turn_id_conflict",
+                    "local_images",
+                    "text_elements",
+                }
+            }
+            if retained_message_keys:
+                session_events.append(
+                    ParsedSessionEvent(
+                        event_type="response_item",
+                        timestamp=timestamp,
+                        payload={"source_index": idx, **retained_message_keys},
+                        source_message_provider_id=msg_id or None,
+                    )
+                )
             message_position += 1
             latest_message_timestamp = _newer_timestamp_pair(latest_message_timestamp, timestamp_pair)
             continue
