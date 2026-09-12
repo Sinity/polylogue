@@ -5205,6 +5205,64 @@ def test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them(tmp_
         conn.close()
 
 
+def test_reingest_with_poorer_export_carries_provider_usage_evidence(tmp_path: Path) -> None:
+    """A distinct poorer acquisition cannot erase a richer usage event.
+
+    The second export retains the message but omits its provider event and
+    reports no token counters.  The stable source-message anchor lets the
+    writer retain the original observation without adding a second cumulative
+    report; a same-raw reparse remains on the ordinary replacement path.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+
+        def _event(input_tokens: int, output_tokens: int) -> ParsedSessionEvent:
+            return ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="m1",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "total_token_usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                    },
+                },
+            )
+
+        rich = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="poorer-usage-carry-forward",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    model_name="gpt-5-codex",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="answer")],
+                )
+            ],
+            session_events=[_event(100, 20)],
+        )
+        session_id = write_parsed_session_to_archive(conn, rich, raw_id="usage-rich-acquisition")
+
+        poorer = rich.model_copy(update={"session_events": [_event(0, 0)]})
+        write_parsed_session_to_archive(conn, poorer, raw_id="usage-poor-acquisition")
+
+        events = conn.execute(
+            "SELECT source_message_id, model_name, total_input_tokens, total_output_tokens "
+            "FROM session_provider_usage_events WHERE session_id = ? ORDER BY position",
+            (session_id,),
+        ).fetchall()
+        assert [tuple(row) for row in events] == [(f"{session_id}:n:m1", "gpt-5-codex", 100, 20)]
+        rollup = conn.execute(
+            "SELECT input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert tuple(rollup) == (100, 20)
+    finally:
+        conn.close()
+
+
 def test_reingest_with_same_raw_id_replaces_instead_of_unioning(tmp_path: Path) -> None:
     """polylogue-geop: the SAME raw acquisition re-parsed must be able to
     retract a message the previous parse produced -- explicitly exercises
