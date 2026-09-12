@@ -41,7 +41,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import IO, Any
+from typing import Any, Protocol
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 
@@ -53,6 +53,12 @@ EXPORT_PROBE_BYTES = len(EXPORT_MAGIC)
 
 class LogicalExportError(ValueError):
     """A retained export is not readable as one."""
+
+
+class BinaryWriteSink(Protocol):
+    """The streaming export's deliberately small binary output contract."""
+
+    def write(self, payload: bytes) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +178,7 @@ def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[l
 
 def write_logical_export(
     source: Path,
-    handle: IO[bytes],
+    handle: BinaryWriteSink,
     *,
     scope: MemberExportScope | None = None,
     tables: Sequence[str] | None = None,
@@ -319,7 +325,7 @@ class _HashingSink:
 def logical_export_digest(source: Path, **kwargs: Any) -> str:
     """Digest *source*'s canonical export without materializing it."""
     sink = _HashingSink()
-    write_logical_export(source, sink, **kwargs)  # type: ignore[arg-type]
+    write_logical_export(source, sink, **kwargs)
     return sink.hexdigest()
 
 
@@ -503,6 +509,7 @@ __all__ = [
     "EXPORT_MAGIC",
     "EXPORT_PROBE_BYTES",
     "EXPORT_VERSION",
+    "BinaryWriteSink",
     "LogicalExportError",
     "LogicalExportHeader",
     "MemberExportScope",
