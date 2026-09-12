@@ -988,8 +988,10 @@ content:
   the coordinate slot it occupies is 0 for want of anything else to put there.
 
 `raw_container_coordinates.addressing_mode` records which reading applies.
-A `NULL` mode is a row acquired before the column existed: unknown, not a
-default reading.
+`raw_container_coordinates.content_identity` stores the structural digest of
+the acquired value (or the byte digest for opaque members). A `NULL` mode or
+identity is a row acquired before that evidence was recorded: unknown, not a
+default reading; such a row is never accepted from its position alone.
 
 The position is a hint. Providers reorder, insert into, and re-export their
 members, so the value at a recorded position may be a different and equally

@@ -3,11 +3,11 @@
   "disposition_counts": {
     "COMPLETE": 67,
     "DERIVE": 7,
-    "KEEP": 1762,
+    "KEEP": 1763,
     "TRANSITION": 9
   },
   "format": "polylogue-schema-disposition/v1",
-  "object_count": 1845,
+  "object_count": 1846,
   "objects": [
     {
       "campaign_action": "retain and verify the named producer/consumer",
@@ -4821,7 +4821,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "source.db production readers",
-      "definition_sha256": "507fd2ee53c364c36205e06670cec463ee9e89036a6c1f4969a79023238a7f2e",
+      "definition_sha256": "0223ac68794811489991f15def26843d5090893c34c009a4306048aed5225560",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -4934,6 +4934,27 @@
       "live_row_denominator": "SELECT COUNT(*) FROM raw_container_coordinates",
       "name": "addressing_mode",
       "object_ref": "source:column:raw_container_coordinates.addressing_mode",
+      "object_type": "column",
+      "producer": "source.db canonical writer route",
+      "reindex_timing": "authenticated durable train",
+      "semantic_owner": "canonical schema owner",
+      "successor_or_authorization": "none",
+      "table_name": "raw_container_coordinates",
+      "tier": "source",
+      "tier_durability": "durable",
+      "virtual": false
+    },
+    {
+      "campaign_action": "retain and verify the named producer/consumer",
+      "consumer": "source.db production readers",
+      "definition_sha256": "c8631a411bb2f424cc994582e9dce1e9ea2fa81d52b8164a124e1543fa5d9c7d",
+      "disposition": "KEEP",
+      "evidence": "reachable canonical declaration; live counts are evidence only",
+      "generated_kind": null,
+      "implementation_bead": "polylogue-20eld",
+      "live_row_denominator": "SELECT COUNT(*) FROM raw_container_coordinates",
+      "name": "content_identity",
+      "object_ref": "source:column:raw_container_coordinates.content_identity",
       "object_type": "column",
       "producer": "source.db canonical writer route",
       "reindex_timing": "authenticated durable train",
@@ -38760,7 +38781,7 @@
     "embeddings": "822d7ca7d00c658690337f521b0ad03d912903d95435e71a9a5703480e82dc5f",
     "index": "84c2048fac960a3ad53d5185fd21a5993602a4096f4a03d63ddfe4004184a01c",
     "ops": "4443709d4b8fa6706cd0f2e350cb34fe7660c734dcd2407da202a425027e2d80",
-    "source": "c27da624017380fcadc7edf86d9685b405f4f145e543c072aa2e249bf53116da",
+    "source": "75da4242514d5802dd0682e8dc8bc47a17260edc5bdf8567e90f3da5734c3695",
     "user": "e87ac873dd6e228784e367ac4252c76bdd18569d9af0dc38bf2ee33128134559"
   },
   "schema_versions": {
@@ -38768,7 +38789,7 @@
     "embeddings": 5,
     "index": 98,
     "ops": 1,
-    "source": 43,
+    "source": 44,
     "user": 11
   },
   "tier_counts": {
@@ -38805,9 +38826,9 @@
       "views": 0
     },
     "source": {
-      "columns": 350,
+      "columns": 351,
       "indexes": 37,
-      "objects": 423,
+      "objects": 424,
       "tables": 35,
       "triggers": 0,
       "views": 1

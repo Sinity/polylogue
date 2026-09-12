@@ -123,6 +123,8 @@ def make_raw_record(
         source_name=source_name,
         source_path=raw_data.source_path,
         source_index=raw_data.source_index,
+        addressing_mode=raw_data.addressing_mode,
+        content_identity=raw_data.content_identity,
         blob_size=blob_size,
         acquired_at=acquired_at,
         file_mtime=raw_data.file_mtime,
@@ -164,6 +166,7 @@ def pending_pre_parse_raw_admission_request(
         acquired_at_ms=acquisition_timestamp_ms(record.acquired_at),
         file_mtime_ms=file_mtime_ms,
         raw_id=record.raw_id,
+        addressing_mode=record.addressing_mode,
         blob_publication_receipt_id=record.blob_publication_receipt_id,
         policy_snapshot=policy_snapshot,
     )

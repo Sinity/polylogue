@@ -110,6 +110,28 @@ def test_inserted_element_shifts_the_hint_without_losing_the_conversation(tmp_pa
     assert payload == expected
 
 
+def test_reacquisition_accepts_structural_identity_after_reserialization(tmp_path: Path) -> None:
+    """A provider's harmless JSON rewrite does not lose a member."""
+    zip_path = tmp_path / "rewritten.zip"
+    recorded_path = f"{zip_path}:conversations.json"
+    expected_value = {**_session("kept"), "ordinal": 1}
+    _write_member(zip_path, [_META, {**_session("kept"), "ordinal": 1.0}, _session("other")])
+
+    payload, error = zip_reacquisition_payload(
+        {
+            **_row(recorded_path, payload=b"old", source_index=0),
+            "content_identity": structural_content_identity(expected_value),
+            "addressing_mode": MemberAddressingMode.ELEMENT_OF_CONTAINER.value,
+        },
+        source_path=recorded_path,
+        zip_payload_cache={},
+    )
+
+    assert error is None
+    assert payload is not None
+    assert structurally_equal(json.loads(payload), expected_value)
+
+
 def test_duplicate_equal_elements_never_resolve_to_an_unrelated_conversation(tmp_path: Path) -> None:
     """Repeated equal elements are duplicate observations of one item.
 
@@ -323,6 +345,31 @@ def test_equal_content_without_a_recorded_digest_is_one_logical_item() -> None:
     assert refused.error == "content_identity:unavailable"
 
 
+def test_replay_uses_structural_digest_when_serialization_changes() -> None:
+    """The durable identity is value-structural, not the retained byte hash.
+
+    Anti-vacuity: the candidate has different key order and integral numeric
+    spelling, so a raw ``blob_hash`` comparison cannot resolve it.
+    """
+    expected = {"id": "kept", "ordinal": 1}
+    candidate = MemberCandidate(
+        MemberAddressingMode.ELEMENT_OF_CONTAINER,
+        0,
+        b'{"ordinal":1.0,"id":"kept"}',
+    )
+
+    resolution = resolve_member_candidate(
+        (candidate,),
+        expected_digest=structural_content_identity(expected),
+        hint_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+        hint_index=0,
+    )
+
+    assert resolution.error is None
+    assert resolution.outcome == "hint_verified"
+    assert resolution.payload_bytes == candidate.payload_bytes
+
+
 @pytest.mark.parametrize(
     ("left", "right", "equal"),
     [
@@ -375,6 +422,22 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
         )
         stored = conn.execute("SELECT addressing_mode FROM raw_container_coordinates WHERE raw_id = 'raw-1'").fetchone()
         assert stored[0] == MemberAddressingMode.WHOLE_MEMBER.value
+
+        identity = structural_content_identity(_session("one"))
+        record_raw_container_coordinate(
+            conn,
+            "raw-1",
+            coordinate_format="zip-v2",
+            entry_ordinal=0,
+            split_index=0,
+            addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+            content_identity=identity,
+            manage_transaction=False,
+        )
+        assert (
+            conn.execute("SELECT content_identity FROM raw_container_coordinates WHERE raw_id = 'raw-1'").fetchone()[0]
+            == identity
+        )
 
         with pytest.raises(ValueError, match="addressing_mode"):
             record_raw_container_coordinate(

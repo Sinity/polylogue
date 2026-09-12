@@ -1591,6 +1591,7 @@ class ArchiveStore:
         entry_ordinal: int,
         split_index: int,
         addressing_mode: MemberAddressingMode | str | None,
+        content_identity: str | None = None,
     ) -> None:
         self._require_writable("record source.db container coordinate")
         record_raw_container_coordinate(
@@ -1600,6 +1601,7 @@ class ArchiveStore:
             entry_ordinal=entry_ordinal,
             split_index=split_index,
             addressing_mode=addressing_mode,
+            content_identity=content_identity,
         )
 
     def admit_raw_artifact_payload(

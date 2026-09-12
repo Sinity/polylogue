@@ -17,6 +17,7 @@ from polylogue.archive.zip_admission import (
     ZipBombError,
     open_bounded_zip_entry,
 )
+from polylogue.core.content_identity import payload_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
@@ -219,6 +220,8 @@ def process_zip(
                     # entry's (forgeable) declared header sizes.
                     with open_bounded_zip_entry(zf, info) as handle:
                         blob_hash, blob_size = store.write_from_fileobj(handle)
+                    with store.open(blob_hash) as stored_handle:
+                        content_identity = payload_content_identity(stored_handle.read())
                     receipt_id = publication_receipt_id(store, blob_hash)
                     flush_blob_publications(store)
                     precomputed_raw = RawSessionData(
@@ -226,6 +229,7 @@ def process_zip(
                         source_path=f"{zip_path}:{name}",
                         source_index=None,
                         addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+                        content_identity=content_identity,
                         file_mtime=file_mtime,
                         provider_hint=entry_provider_hint,
                         blob_hash=blob_hash,

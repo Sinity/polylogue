@@ -92,9 +92,26 @@ def structural_content_identity(value: object) -> str:
     return sha256(b"".join(out)).hexdigest()
 
 
+def payload_content_identity(payload: bytes) -> str:
+    """Return structural identity for JSON bytes, or byte identity otherwise.
+
+    Container members can be provider JSON or opaque/raw evidence.  Both need
+    a durable identity, but only decoded JSON has a representation-independent
+    identity.  Opaque bytes deliberately fall back to their content hash.
+    """
+    # Importing the project JSON facade here avoids making the identity codec
+    # depend on one parser backend while keeping its error vocabulary typed.
+    from polylogue.core.json import JSONDecodeError, loads
+
+    try:
+        return structural_content_identity(loads(payload))
+    except (JSONDecodeError, TypeError, ValueError):
+        return sha256(payload).hexdigest()
+
+
 def structurally_equal(left: object, right: object) -> bool:
     """Report whether two decoded values are the same content."""
     return structural_content_identity(left) == structural_content_identity(right)
 
 
-__all__ = ["structural_content_identity", "structurally_equal"]
+__all__ = ["payload_content_identity", "structural_content_identity", "structurally_equal"]
