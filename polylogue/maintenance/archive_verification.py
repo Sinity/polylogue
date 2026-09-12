@@ -57,6 +57,7 @@ from polylogue.maintenance.corpus_fidelity import (
     audit_chatgpt_content_conservation,
     audit_revision_fidelity,
 )
+from polylogue.maintenance.parent_session_accounting import audit_parent_session_accounting
 from polylogue.maintenance.reasoning_conservation import (
     audit_reasoning_conservation,
     reasoning_populations_present,
@@ -828,6 +829,19 @@ def archive_verification_migrated_owner_adapters(
             check=lambda: _check_lineage_sanity(archive_root, sample_limit, index_path=index_path_override),
         ),
         _declared_owner(
+            name="parent-session-accounting",
+            semantic_owner="parent-session-materialization",
+            applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE, _ROUTE_CORPUS_FIDELITY}),
+            production_route="ordinary source acquisition and index materialization",
+            population=("index.db.session_links", "source.db.raw_sessions", "index.db.sessions"),
+            owned_reference="test_available_parent_without_candidate_session_trips_parent_accounting",
+            check=lambda: (
+                _check_parent_session_accounting_at_index_path(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_parent_session_accounting(archive_root, sample_limit)
+            ),
+        ),
+        _declared_owner(
             name="session-lineage-acyclic",
             semantic_owner="topology",
             applicable_routes=frozenset({_ROUTE_INDEX_CANDIDATE, _ROUTE_LIVE}),
@@ -1496,6 +1510,61 @@ def _check_lineage_sanity(
             "dangling_branch_point_sample": dangling_branch_point_sample,
         },
     )
+
+
+def _check_parent_session_accounting_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Account for retained Claude/Codex parent references on a candidate.
+
+    This deliberately opens source and candidate index independently.  The
+    source ledger remains the acquisition authority while the candidate is
+    only the materialization being judged.
+    """
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check("parent-session-accounting", "source.db or candidate index.db not present")
+    try:
+        source = _open_ro(source_path)
+        index = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("parent-session-accounting", f"could not open source/index tiers: {exc}", exc=exc)
+    try:
+        report = audit_parent_session_accounting(source, index, archive_root=archive_root)
+    except sqlite3.Error as exc:
+        return _error_check("parent-session-accounting", f"could not read parent accounting: {exc}", exc=exc)
+    finally:
+        source.close()
+        index.close()
+
+    if not report.available:
+        return _skip_check("parent-session-accounting", report.summary())
+    status = (
+        OutcomeStatus.ERROR
+        if report.blocking_count
+        else OutcomeStatus.WARNING
+        if report.warning_count
+        else OutcomeStatus.OK
+    )
+    evidence = dict(report.to_json())
+    evidence["sample_references"] = [entry.to_json() for entry in report.references[:sample_limit]]
+    evidence["sample_raw_dispositions"] = [entry.to_json() for entry in report.raw_dispositions[:sample_limit]]
+    return ArchiveVerificationCheck(
+        name="parent-session-accounting",
+        status=status,
+        summary=report.summary(),
+        count=report.blocking_count,
+        details=[
+            f"{entry.origin}:{entry.native_id}:{entry.disposition}"
+            for entry in report.references
+            if entry.disposition != "materialized"
+        ][:sample_limit],
+        evidence=evidence,
+    )
+
+
+def _check_parent_session_accounting(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_parent_session_accounting_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
 
 
 # ---------------------------------------------------------------------------
