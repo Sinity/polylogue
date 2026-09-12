@@ -593,6 +593,13 @@ def test_rebuild_reconciles_model_usage_after_a_fixed_id_model_correction(archiv
             """,
             (session_id,),
         )
+        # The rebuild must re-apportion a session-level reported amount after
+        # the message correction; checking only token rows would miss stale
+        # provider_cost_usd shares left on the old model row.
+        conn.execute(
+            "UPDATE sessions SET reported_cost_usd = 12.0 WHERE session_id = ?",
+            (session_id,),
+        )
         rebuild_session_insights_sync(conn, session_ids=[session_id])
 
     _mutate_model_name(index_db, session_id)
@@ -609,11 +616,22 @@ def test_rebuild_reconciles_model_usage_after_a_fixed_id_model_correction(archiv
             """,
             (session_id,),
         ).fetchall()
+        usage_costs = conn.execute(
+            """
+            SELECT model_name, provider_cost_usd
+            FROM session_model_usage
+            WHERE session_id = ?
+            ORDER BY model_name
+            """,
+            (session_id,),
+        ).fetchall()
 
     assert [tuple(row) for row in usage_rows] == [
         ("model-after", 120, 48, 0, 0),
         ("provider-event-model", 17, 9, 0, 0),
     ]
+    assert sum(float(row[1]) for row in usage_costs) == pytest.approx(12.0)
+    assert all(row[1] is not None for row in usage_costs)
     assert _pending(index_db) == []
 
 
