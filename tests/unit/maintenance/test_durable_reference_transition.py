@@ -46,6 +46,10 @@ NATIVE_OLD = f"message:{SESSION}:m-1"
 POSITIONAL_OLD = f"message:{SESSION}:0.0"
 NATIVE_NEW = f"message:{SESSION}:n:m-1"
 POSITIONAL_NEW = f"message:{SESSION}:p:0.0"
+NATIVE_EVIDENCE_OLD = f"{SESSION}::{SESSION}:m-1"
+POSITIONAL_EVIDENCE_OLD = f"{SESSION}::{SESSION}:0.0"
+NATIVE_EVIDENCE_NEW = f"{SESSION}::{SESSION}:n:m-1"
+POSITIONAL_EVIDENCE_NEW = f"{SESSION}::{SESSION}:p:0.0"
 
 #: The message identity the live archive's index generation was built with.
 _PREDECESSOR_DDL = """
@@ -174,12 +178,27 @@ def test_message_refs_are_explicitly_migrated_across_the_n_p_identity_change() -
 
     transition = _plan(user, audit, candidate, predecessor)
 
+    census = transition.receipt(applied=False)
+    assert census["resolution"]["predecessor_resolved_cells"] == 3
+    assert census["resolution"]["candidate_direct_resolved_cells"] == 1
+    assert census["resolution"]["candidate_resolved_cells"] == 3
+    assert census["durable_rows"]["after"] is None
+
     assert dict(transition.plan.forward) == {NATIVE_OLD: NATIVE_NEW, POSITIONAL_OLD: POSITIONAL_NEW}
     assert transition.dispositions[ObjectRefDisposition.EXPLICITLY_MIGRATED.value] == 2
     assert transition.dispositions[ObjectRefDisposition.ORPHANED.value] == 0
     assert transition.binding.migration_map_digest is not None
 
     apply_durable_reference_transition(user_conn=user, audit_conn=audit, transition=transition, verified_backup=True)
+
+    applied = transition.receipt(applied=True)
+    assert (
+        applied["durable_rows"]["after"]["user.result_sets"] == census["durable_rows"]["before"]["user.result_sets"] + 1
+    )
+    assert (
+        applied["durable_rows"]["after"]["user.result_set_members"]
+        == census["durable_rows"]["before"]["user.result_set_members"] + 2
+    )
 
     # The original manifest is immutable, so the old ids survive verbatim and
     # the transition lands as a successor manifest carrying the new ones.
@@ -270,6 +289,31 @@ def test_two_candidate_successors_for_one_old_id_refuse_rather_than_guess() -> N
     candidate = _candidate_index(native_id_shadowing_a_position=True)
     with pytest.raises(ObjectRefReconciliationError, match="two candidate successors"):
         message_identity_migration_map(candidate, (POSITIONAL_OLD,), producer="test")
+
+
+def test_evidence_message_refs_are_migrated_with_native_and_positional_ids() -> None:
+    """Compact evidence refs retain their session and follow both namespaces."""
+    user, audit = _durable_tiers((NATIVE_OLD, POSITIONAL_OLD))
+    # The fixture has no assertion row by default; add one through the schema
+    # directly so this test exercises the declared durable field inventory.
+    user.execute(
+        "INSERT INTO assertions (assertion_id, target_ref, kind, evidence_refs_json, created_at_ms, updated_at_ms) "
+        "VALUES ('evidence', 'user:local', 'note', ?, 1, 1)",
+        (json.dumps([NATIVE_EVIDENCE_OLD, POSITIONAL_EVIDENCE_OLD]),),
+    )
+    predecessor, candidate = _predecessor_index(), _candidate_index()
+
+    transition = _plan(user, audit, candidate, predecessor)
+
+    assert dict(transition.plan.forward)[NATIVE_EVIDENCE_OLD] == NATIVE_EVIDENCE_NEW
+    assert dict(transition.plan.forward)[POSITIONAL_EVIDENCE_OLD] == POSITIONAL_EVIDENCE_NEW
+
+    apply_durable_reference_transition(user_conn=user, audit_conn=audit, transition=transition, verified_backup=True)
+
+    evidence = json.loads(
+        user.execute("SELECT evidence_refs_json FROM assertions WHERE assertion_id = 'evidence'").fetchone()[0]
+    )
+    assert evidence == [NATIVE_EVIDENCE_NEW, POSITIONAL_EVIDENCE_NEW]
 
 
 def test_an_index_governed_kind_without_an_exact_probe_refuses() -> None:
