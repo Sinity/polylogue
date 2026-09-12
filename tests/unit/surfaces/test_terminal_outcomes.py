@@ -216,6 +216,22 @@ class TestCliTerminalOutcomes:
         exit_code, output = self._run(["-i", "nonexistent-xyz", "read"])
         assert exit_code != 0, output
 
+    def test_daemon_degraded_empty_is_not_translated_to_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from polylogue.cli.archive_query import _emit_no_results
+
+        with pytest.raises(SystemExit) as exc_info:
+            _emit_no_results(
+                {
+                    "mode": "search",
+                    "outcome": decide_outcome(matched=0, degraded=("lane_unavailable:semantic",)).to_dict(),
+                },
+                output_format="json",
+            )
+
+        assert exc_info.value.code == OUTCOME_EXIT_CODES["degraded"]
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["outcome"]["state"] == "degraded"
+
 
 # ---------------------------------------------------------------------------
 # MCP adapter
@@ -285,6 +301,12 @@ class TestHttpTerminalOutcomes:
         status, payload = self._get("/api/sessions?query=no-such-token-anywhere")
         assert status == 200
         assert cast(dict[str, object], payload["outcome"])["state"] == "empty"
+
+    def test_session_messages_carry_the_outcome(self, workspace_env: dict[str, Path]) -> None:
+        session_id = _seed_session(workspace_env)
+        status, payload = self._get(f"/api/sessions/{session_id}/messages")
+        assert status == 200
+        assert cast(dict[str, object], payload["outcome"])["state"] == "ok"
 
     def test_unknown_origin_is_rejected_not_answered_empty(self, workspace_env: dict[str, Path]) -> None:
         _seed_session(workspace_env)

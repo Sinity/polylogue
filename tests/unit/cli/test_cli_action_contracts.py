@@ -138,6 +138,28 @@ def test_declared_machine_formats_are_supported_by_click_options() -> None:
     assert not unsupported, f"Contracts declare unsupported machine formats: {unsupported}"
 
 
+def test_empty_terminal_query_unit_is_an_explicit_outcome(workspace_env: dict[str, Path]) -> None:
+    """The CLI's daemon/local adapter cannot emit a bare empty terminal page."""
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "--no-daemon",
+            "find",
+            "messages where text:no-such-contract-token",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.output)
+    assert payload["items"] == []
+    assert payload["outcome"]["state"] == "empty"
+    assert payload["outcome"]["reason"] == "no_rows_in_scope"
+
+
 def test_action_contracts_emit_shared_affordance_payloads() -> None:
     """The public floor exposes the #2305 affordance fields as JSON-native data."""
     payloads = action_affordance_payloads()

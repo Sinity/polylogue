@@ -1011,21 +1011,42 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 if events is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
                 return hooks.json_payload(
-                    MCPRootPayload(root={"session_id": session_id, "total": len(events), "events": events})
+                    MCPRootPayload(
+                        root={
+                            "session_id": session_id,
+                            "total": len(events),
+                            "events": events,
+                            "outcome": decide_outcome(matched=len(events)).to_dict(),
+                        }
+                    )
                 )
             if projection == "file-edits" and session_id is not None:
                 edits = await hooks.get_polylogue().get_file_edits(session_id)
                 if edits is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
                 return hooks.json_payload(
-                    MCPRootPayload(root={"session_id": session_id, "total": len(edits), "file_edits": edits})
+                    MCPRootPayload(
+                        root={
+                            "session_id": session_id,
+                            "total": len(edits),
+                            "file_edits": edits,
+                            "outcome": decide_outcome(matched=len(edits)).to_dict(),
+                        }
+                    )
                 )
             if projection == "agent-policies" and session_id is not None:
                 policies = await hooks.get_polylogue().get_agent_policies(session_id)
                 if policies is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
                 return hooks.json_payload(
-                    MCPRootPayload(root={"session_id": session_id, "total": len(policies), "agent_policies": policies})
+                    MCPRootPayload(
+                        root={
+                            "session_id": session_id,
+                            "total": len(policies),
+                            "agent_policies": policies,
+                            "outcome": decide_outcome(matched=len(policies)).to_dict(),
+                        }
+                    )
                 )
             if projection == "web-content" and session_id is not None:
                 constructs = await hooks.get_polylogue().get_web_content_constructs(session_id)
@@ -1037,6 +1058,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                             "session_id": session_id,
                             "total": len(constructs),
                             "web_content_constructs": constructs,
+                            "outcome": decide_outcome(matched=len(constructs)).to_dict(),
                         }
                     )
                 )
@@ -1205,6 +1227,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         limit=clamped_limit,
                         offset=page_offset,
                         next_offset=next_offset,
+                        outcome=decide_outcome(matched=matched),
                     )
                 )
             payload = await hooks.get_polylogue().context_image_payload(
