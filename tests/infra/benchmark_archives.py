@@ -11,18 +11,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.infra.workload_artifacts import (
+    BenchmarkWorkloadTier,
     SeededArchiveArtifact,
+    benchmark_corpus_specs,
     benchmark_workload_profile,
-    benchmark_workload_tier,
-    build_benchmark_archive,
+    build_seeded_archive,
     clone_seeded_archive,
 )
 
 
-def _measured_benchmark_artifact(target_messages: int, *, seed: int) -> SeededArchiveArtifact:
-    """Resolve the shared artifact for a tier, refusing a mis-sized construction."""
-    tier = benchmark_workload_tier(target_messages)
-    artifact = build_benchmark_archive(tier, seed=seed)
+def _measured_benchmark_artifact(tier: BenchmarkWorkloadTier, *, seed: int) -> SeededArchiveArtifact:
+    """Construct one named tier through the canonical artifact builder."""
+    artifact = build_seeded_archive(benchmark_corpus_specs(tier, seed=seed))
     produced = artifact.manifest.resources.row_counts.get("messages")
     expected = benchmark_workload_profile(tier).target_messages
     if produced != expected:
@@ -30,9 +30,13 @@ def _measured_benchmark_artifact(target_messages: int, *, seed: int) -> SeededAr
     return artifact
 
 
-def seed_benchmark_archive(db_path: Path, target_messages: int, seed: int = 42) -> dict[str, int]:
+def seed_benchmark_archive(
+    db_path: Path,
+    tier: BenchmarkWorkloadTier | str,
+    seed: int = 42,
+) -> dict[str, int]:
     """Clone one private writable benchmark tier and report its measured shape."""
-    artifact = _measured_benchmark_artifact(target_messages, seed=seed)
+    artifact = _measured_benchmark_artifact(BenchmarkWorkloadTier(tier), seed=seed)
     clone_seeded_archive(artifact, db_path.parent)
     resources = artifact.manifest.resources
     return {

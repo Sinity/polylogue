@@ -1007,15 +1007,6 @@ def benchmark_workload_profile(tier: BenchmarkWorkloadTier | str) -> BenchmarkWo
     return next(profile for profile in BENCHMARK_WORKLOAD_PROFILES if profile.tier is resolved)
 
 
-def benchmark_workload_tier(target_messages: int) -> BenchmarkWorkloadTier:
-    """Map the former direct-seeder message targets to their semantic tiers."""
-    for profile in BENCHMARK_WORKLOAD_PROFILES:
-        if profile.target_messages == target_messages:
-            return profile.tier
-    supported = ", ".join(str(profile.target_messages) for profile in BENCHMARK_WORKLOAD_PROFILES)
-    raise ValueError(f"no named benchmark workload for {target_messages} messages; supported targets: {supported}")
-
-
 def benchmark_corpus_specs(
     tier: BenchmarkWorkloadTier | str,
     *,
@@ -1101,16 +1092,6 @@ def validate_seeded_archive_reachability(inventory: SeededArchiveReachabilityInv
         raise ValueError("seeded archive reachability inventory has duplicate keys")
     if any(not _SEEDED_KEY.fullmatch(key) for key in inventory.keys):
         raise ValueError("seeded archive reachability inventory has malformed keys")
-
-
-def build_benchmark_archive(
-    tier: BenchmarkWorkloadTier | str,
-    *,
-    seed: int = 42,
-    cache_root: Path | None = None,
-) -> SeededArchiveArtifact:
-    """Build or reuse a benchmark archive through the shared production route."""
-    return build_seeded_archive(benchmark_corpus_specs(tier, seed=seed), cache_root=cache_root)
 
 
 def _recipe_id(providers: Iterable[str] = ()) -> str:
@@ -3559,8 +3540,6 @@ __all__ = [
     "SeededArchiveReachabilityInventory",
     "benchmark_corpus_specs",
     "benchmark_workload_profile",
-    "benchmark_workload_tier",
-    "build_benchmark_archive",
     "build_seeded_archive",
     "c03_semantic_corpus_spec",
     "clone_seeded_archive",
