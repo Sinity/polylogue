@@ -187,9 +187,9 @@ def _replaced_range(snapshot: ContextSnapshot) -> tuple[int, int] | None:
         return None
     try:
         bounds = (int(start), int(end))
-    except ValueError:
+    except (TypeError, ValueError):
         return None
-    return bounds if bounds[0] <= bounds[1] else None
+    return bounds if 0 <= bounds[0] <= bounds[1] else None
 
 
 def _detect_compaction_context_loss(projection: RunProjection) -> list[PathologyFinding]:
