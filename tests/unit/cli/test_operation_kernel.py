@@ -49,8 +49,9 @@ def test_typed_daemon_error_does_not_fall_through_to_direct_execution() -> None:
 
 
 def test_non_read_operation_cannot_use_direct_fallback() -> None:
-    with pytest.raises(OperationUnavailableError):
+    with pytest.raises(OperationUnavailableError) as exc_info:
         OperationKernel(lambda _request: None).execute(OperationRequest("mutation.session.tag", {}))
+    assert exc_info.value.code == "daemon_required"
 
 
 @pytest.mark.parametrize(

@@ -30,6 +30,12 @@ class OperationKernelError(RuntimeError):
 class OperationUnavailableError(OperationKernelError):
     """The daemon is absent and the operation cannot execute directly."""
 
+    code = "daemon_required"
+
+    def __init__(self, detail: object = None) -> None:
+        self.detail = detail
+        super().__init__(str(detail) if detail is not None else self.code)
+
 
 class OperationEnvelopeError(OperationKernelError):
     """The selected transport did not return the declared operation envelope."""
@@ -227,7 +233,7 @@ def configured_read_operation(
                 allow_no_auth=getattr(config, "api_allow_no_auth", False),
             ),
         )
-        envelope = client.operation_with_direct_fallback(operation, payload, context=context)
+        envelope = client.operation_with_read_fallback(operation, payload, context=context)
     return OperationKernel(lambda _request: envelope).execute(OperationRequest(operation, payload))
 
 
