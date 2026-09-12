@@ -16,7 +16,7 @@ from polylogue.core.web_urls import canonical_session_url
 from polylogue.readiness import component_from_outcome_check, component_from_raw_materialization_readiness
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.surfaces.authority import AuthorityEnvelope
-from polylogue.surfaces.outcome import OutcomeEnvelope
+from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
     SearchCursor,
@@ -220,6 +220,7 @@ class MCPContextDeliveryListPayload(SurfacePayloadModel):
     limit: int | None = None
     offset: int = 0
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPFencedCodeBlock(TypedDict):
@@ -355,6 +356,7 @@ class MCPSessionTopologyPayload(SurfacePayloadModel):
     descendants: tuple[MCPSessionRefPayload, ...]
     siblings: tuple[MCPSessionRefPayload, ...]
     thread: tuple[MCPSessionRefPayload, ...]
+    outcome: OutcomeEnvelope
 
 
 class MCPLogicalSessionPayload(SurfacePayloadModel):
@@ -632,6 +634,7 @@ def session_topology_payload(topology: object, *, session_id: str) -> MCPSession
         descendants=tuple(_ref_payload(ref) for ref in topology.descendant_refs(session_id)),
         siblings=tuple(_ref_payload(ref) for ref in topology.sibling_refs(session_id)),
         thread=tuple(_ref_payload(ref) for ref in topology.thread_refs(session_id)),
+        outcome=decide_outcome(matched=len(nodes)),
     )
 
 

@@ -89,7 +89,7 @@ from polylogue.rendering.semantic_cards import (
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.surfaces.authority import serialize_authority
-from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes, decide_outcome
+from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes, decide_outcome, lineage_page_outcome
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     MutationResultPayload,
@@ -4902,6 +4902,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "offset": offset,
             "lineage_complete": completeness.complete,
             "lineage_truncation_reason": completeness.truncation_reason,
+            "outcome": lineage_page_outcome(
+                matched=total,
+                complete=completeness.complete,
+                truncation_reason=completeness.truncation_reason,
+            ).to_dict(),
             "authority": serialize_authority(
                 authority_for_config(poly.config, server_identity="daemon", started_at=started_at)
             ),
@@ -4946,6 +4951,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "offset": offset,
                     "lineage_complete": True,
                     "lineage_truncation_reason": None,
+                    "outcome": decide_outcome(matched=0, error="session_not_found").to_dict(),
                     "authority": authority,
                 }
         page = list(envelope.messages)
@@ -4972,6 +4978,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             # compute it); it was just never included in the response body.
             "lineage_complete": envelope.lineage_complete,
             "lineage_truncation_reason": envelope.lineage_truncation_reason,
+            "outcome": lineage_page_outcome(
+                matched=total,
+                complete=envelope.lineage_complete,
+                truncation_reason=envelope.lineage_truncation_reason,
+            ).to_dict(),
             "authority": authority,
         }
 

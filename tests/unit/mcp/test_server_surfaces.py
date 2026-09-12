@@ -257,6 +257,7 @@ async def test_get_projection_events_surfaces_session_timeline_evidence(
         default_payload = json.loads(await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri))
 
     assert events_payload["total"] == 1
+    assert events_payload["outcome"]["state"] == "ok"
     assert events_payload["events"][0]["event_type"] == "world_state"
     assert events_payload["events"][0]["payload"]["cwd"] == "/repo"
     # The default (no projection) path still resolves the ordinary session
