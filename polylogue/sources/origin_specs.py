@@ -2283,6 +2283,7 @@ def _antigravity_spec() -> OriginSpec:
             ),
         ),
         topology_capabilities=_no_topology_capabilities(Origin.ANTIGRAVITY_SESSION),
+        tool_outcome_unknown_reasons=frozenset({ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}),
     )
 
 

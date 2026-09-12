@@ -552,6 +552,39 @@ def _tool_input(payload: Mapping[str, object]) -> dict[str, object]:
     return values
 
 
+def _file_edit(payload: Mapping[str, object]) -> ParsedFileEdit | None:
+    """Return file-edit evidence only when the payload declares an edit result."""
+    edit_fields = frozenset(
+        {
+            "old_string",
+            "new_string",
+            "structured_patch",
+            "structuredPatch",
+            "original_file",
+            "replace_all",
+            "user_modified",
+        }
+    )
+    if not edit_fields & payload.keys():
+        return None
+    replace_all = payload.get("replace_all")
+    if not isinstance(replace_all, bool):
+        replace_all = None
+    user_modified = payload.get("user_modified")
+    if not isinstance(user_modified, bool):
+        user_modified = None
+    structured_patch = payload.get("structured_patch", payload.get("structuredPatch"))
+    return ParsedFileEdit(
+        file_path=_string(payload.get("file_path") or payload.get("filePath") or payload.get("path")),
+        structured_patch=structured_patch if isinstance(structured_patch, list) else None,
+        original_file=_string(payload.get("original_file") or payload.get("originalFile")),
+        old_string=_string(payload.get("old_string")),
+        new_string=_string(payload.get("new_string")),
+        replace_all=replace_all,
+        user_modified=user_modified,
+    )
+
+
 def _normalized_step_payload(row: Mapping[str, object]) -> dict[str, object] | None:
     payload = _json_mapping(row.get("step_payload"))
     if payload is None:
@@ -617,17 +650,13 @@ def _trajectory_message(
                 is_error=is_error,
                 exit_code=exit_code,
                 outcome_unknown_reason=unknown_reason,
+                file_edit=_file_edit(payload),
             )
         )
         role = Role.TOOL
     elif toolish:
         if tool_name is None:
             tool_name = "terminal" if "command" in normalized_type or normalized_type == "terminal" else normalized_type
-        old_string = _string(payload.get("old_string"))
-        new_string = _string(payload.get("new_string"))
-        replace_all = payload.get("replace_all")
-        if not isinstance(replace_all, bool):
-            replace_all = None
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_USE,
@@ -635,20 +664,7 @@ def _trajectory_message(
                 tool_name=str(tool_name),
                 tool_id=str(tool_id) if tool_id is not None else None,
                 tool_input=_tool_input(payload),
-                file_edit=(
-                    ParsedFileEdit(
-                        file_path=(
-                            str(payload.get("file_path") or payload.get("filePath") or payload.get("path"))
-                            if payload.get("file_path") or payload.get("filePath") or payload.get("path")
-                            else None
-                        ),
-                        old_string=old_string,
-                        new_string=new_string,
-                        replace_all=replace_all,
-                    )
-                    if normalized_type in {"file_edit", "edit"}
-                    else None
-                ),
+                file_edit=_file_edit(payload) if normalized_type in {"file_edit", "edit"} else None,
             )
         )
     elif text is not None:
