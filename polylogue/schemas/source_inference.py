@@ -1304,7 +1304,9 @@ def _collect_database_schema_candidate(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             ).fetchall()
             actual_tables = {str(row[0]) for row in table_rows}
-            table_names = sorted(actual_tables | set(member.logical_tables))
+            table_names = sorted(
+                actual_tables | set(member.logical_tables) | {rule.table for rule in member.table_rules}
+            )
             table_shapes: dict[str, JSONDocument] = {}
             for table in table_names:
                 quoted = '"' + table.replace('"', '""') + '"'
@@ -1324,9 +1326,20 @@ def _collect_database_schema_candidate(
                     name = column.get("name")
                     if isinstance(name, str):
                         column_map[name] = {key: value for key, value in column.items() if key != "name"}
+                table_rule = member.table_rule(table)
+                disposition = table_rule.disposition if table_rule is not None else "unrecognized"
                 table_shapes[table] = {
                     "declared": table in member.logical_tables,
                     "present": table in actual_tables,
+                    "retention": disposition,
+                    # Schema evidence records structural shape rather than
+                    # sample values. Preserve this policy value as a bounded
+                    # field name too, so consumers can distinguish a declared
+                    # later-consumption table from a new unrecognized table.
+                    "disposition": {disposition: True},
+                    "retention_reason": table_rule.reason
+                    if table_rule is not None
+                    else "no declared table disposition",
                     "columns": column_map,
                 }
             records.append(

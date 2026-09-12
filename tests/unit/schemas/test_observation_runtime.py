@@ -125,3 +125,30 @@ class TestExtractSchemaUnitsFromPayload:
             assert "observed_in_wal" in json.dumps(evidence.structure)
         finally:
             connection.close()
+
+    def test_codex_state_table_dispositions_and_unknown_tables_are_observable(self, tmp_path: Path) -> None:
+        """Retention is per table, and a future table is never silently classified."""
+        path = tmp_path / "state_5.sqlite"
+        with sqlite3.connect(path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT);
+                CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT);
+                CREATE TABLE thread_artifacts (
+                    id TEXT PRIMARY KEY, thread_id TEXT, artifact_type TEXT, identity_key TEXT, payload TEXT, created_at INTEGER
+                );
+                CREATE TABLE thread_dynamic_tools (
+                    thread_id TEXT, position INTEGER, name TEXT, description TEXT, input_schema TEXT, defer_loading INTEGER, namespace TEXT
+                );
+                CREATE TABLE provider_extension (private_payload TEXT);
+                """
+            )
+
+        collected = _collect_candidate(_SourceCandidate("codex", tmp_path, path, "codex-state"))
+        assert collected.terminal.outcome == "included"
+        evidence = SchemaEvidence.from_json(collected.contributions[0].evidence_by_element["database_schema"])
+        encoded = json.dumps(evidence.structure)
+        assert '"thread_artifacts"' in encoded
+        assert '"retained-for-later-consumption"' in encoded
+        assert '"provider_extension"' in encoded
+        assert '"unrecognized"' in encoded

@@ -108,6 +108,11 @@ def _write_thread_state_db(path: Path, *, threads: int = 1, title: str = "title"
                 parent_thread_id TEXT, child_thread_id TEXT, status TEXT
             );
             CREATE TABLE thread_dynamic_tools (thread_id TEXT, tool TEXT);
+            CREATE TABLE thread_artifacts (id TEXT, thread_id TEXT, identity_key TEXT, payload TEXT);
+            CREATE TABLE thread_sections (id TEXT, name TEXT, appearance TEXT);
+            CREATE TABLE projects (id TEXT, name TEXT, metadata TEXT);
+            CREATE TABLE project_roots (project_id TEXT, position INTEGER, path TEXT);
+            CREATE TABLE backfill_state (id TEXT, status TEXT);
             """
         )
         for index in range(threads):
@@ -307,7 +312,15 @@ def test_the_retained_material_is_the_declared_logical_export(tmp_path: Path) ->
     assert header.member == "state_5.sqlite"
     assert header.origin == "codex-session"
     assert header.kind == "thread_state"
-    assert set(header.tables) == {"threads", "thread_spawn_edges"}
+    assert set(header.tables) == {
+        "threads",
+        "thread_spawn_edges",
+        "thread_artifacts",
+        "thread_dynamic_tools",
+        "thread_sections",
+        "projects",
+        "project_roots",
+    }
     with closing(open_logical_source(blob)) as conn:
         assert list(conn.execute("SELECT id, title FROM threads")) == [("t-1", "Curated")]
         assert list(conn.execute("SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges")) == [
@@ -315,11 +328,11 @@ def test_the_retained_material_is_the_declared_logical_export(tmp_path: Path) ->
         ]
 
 
-def test_a_change_outside_the_declared_tables_mints_no_revision(tmp_path: Path) -> None:
+def test_a_change_to_a_deliberately_excluded_table_mints_no_revision(tmp_path: Path) -> None:
     """The member's revision is the revision of what it is acquired for.
 
-    Anti-vacuity: export every table and an unrelated write mints a second
-    raw revision for a logical product that did not move.
+    Anti-vacuity: export deliberately excluded operational state and its write
+    mints a second raw revision for a logical product that did not move.
     """
     source = tmp_path / "state_5.sqlite"
     _write_thread_state_db(source, threads=1, title="Curated")
@@ -327,7 +340,7 @@ def test_a_change_outside_the_declared_tables_mints_no_revision(tmp_path: Path) 
     before = snapshot_sqlite_to_blob(source, store)
 
     with closing(sqlite3.connect(source)) as conn, conn:
-        conn.execute("INSERT INTO thread_dynamic_tools VALUES ('t-1', 'shell')")
+        conn.execute("INSERT INTO backfill_state VALUES ('one', 'complete')")
 
     after = snapshot_sqlite_to_blob(source, store)
     assert after.blob_hash == before.blob_hash
