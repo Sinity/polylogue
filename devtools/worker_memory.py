@@ -198,13 +198,16 @@ def memory_bounded_worker_cap(
 ) -> tuple[int, dict[str, Any]]:
     """The widest run this job's pytest cgroup may hold right now.
 
-    Host availability is deliberately diagnostic-only.  Admission owns the
-    host-wide decision; folding it into this calculation made a queued corpus
-    lose its allocated width merely because unrelated agent work was active.
+    Both readings are live at launch.  The cgroup is the hard boundary for
+    this process, while host ``MemAvailable`` is the bound on what the kernel
+    can hand it; whichever is tighter wins.  The pytest pool's admission
+    decision still owns queue pressure, and the derived ``CORPUS_MAX_WORKERS``
+    cap remains the upper bound even when both readings are roomy.
     """
     host = available_memory_mib(meminfo=meminfo)
     cgroup = pytest_slot_available_mib(process_cgroup=process_cgroup, root=cgroup_root)
-    if cgroup is None:
+    measured = [value for value in (host, cgroup) if value is not None]
+    if not measured:
         return requested, {
             "basis": "unmeasured",
             "host_available_mib": host,
@@ -213,10 +216,12 @@ def memory_bounded_worker_cap(
             "requested_workers": requested,
             "narrowed": False,
         }
-    workers = max(1, min(requested, width_within(cgroup)))
+    available = min(measured)
+    workers = max(1, min(requested, width_within(available)))
+    basis = "cgroup_budget" if cgroup is not None and (host is None or cgroup <= host) else "mem_available"
     return workers, {
-        "basis": "cgroup_budget",
-        "available_mib": cgroup,
+        "basis": basis,
+        "available_mib": available,
         "host_available_mib": host,
         "cgroup_available_mib": cgroup,
         "headroom_fraction": MEMORY_HEADROOM_FRACTION,
