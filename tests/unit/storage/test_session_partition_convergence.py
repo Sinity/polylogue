@@ -635,6 +635,63 @@ def test_a_token_count_change_makes_the_partition_stale(archive_root: Path) -> N
     assert _pending(index_db) == [session_id]
 
 
+def test_provider_usage_correction_makes_the_partition_stale(archive_root: Path) -> None:
+    """Provider usage is a profile input even though messages stay unchanged.
+
+    Anti-vacuity: remove the ``provider_usage_events`` projection from
+    ``session_input_bindings`` and this fixed-id correction leaves the stored
+    profile binding equal, so inspection incorrectly reports VALID. The
+    provider event's larger output total also proves publication refreshes the
+    profile from the canonical usage rollup rather than merely changing a
+    digest.
+    """
+    index_db = _index_db(archive_root)
+    session_id = _priced_session(index_db, "provider-usage-correction")
+    with write_lease("test.provider-usage-seed"), closing(_write_connection(index_db)) as conn:
+        conn.execute(
+            """
+            INSERT INTO session_provider_usage_events (
+                session_id, position, provider_event_type, model_name, last_output_tokens
+            ) VALUES (?, 99, 'token_count', 'provider-corrected-model', 1)
+            """,
+            (session_id,),
+        )
+        conn.commit()
+    _converge_to_fixpoint(index_db)
+
+    with write_lease("test.provider-usage-correction"), closing(_write_connection(index_db)) as conn:
+        before = conn.execute(
+            "SELECT primary_model_name FROM session_profiles WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        message_before = conn.execute(
+            "SELECT COUNT(*), MAX(occurred_at_ms), MAX(position) FROM messages WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        changed = conn.execute(
+            """
+            UPDATE session_provider_usage_events
+            SET last_output_tokens = 10_000
+            WHERE session_id = ? AND position = 99
+            """,
+            (session_id,),
+        ).rowcount
+        message_after = conn.execute(
+            "SELECT COUNT(*), MAX(occurred_at_ms), MAX(position) FROM messages WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        conn.commit()
+
+    assert before[0] == "model-before"
+    assert changed == 1
+    assert tuple(message_after) == tuple(message_before), "the correction must not move a message identity or timestamp"
+    assert _pending(index_db) == [session_id]
+
+    _converge_to_fixpoint(index_db)
+    with closing(_read_connection(index_db)) as conn:
+        after = conn.execute(
+            "SELECT primary_model_name FROM session_profiles WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    assert after[0] == "provider-corrected-model"
+
+
 def test_expected_row_counts_cannot_certify_a_stale_partition(archive_root: Path) -> None:
     """Work-event and phase readiness may not rest on the profile's own declaration.
 
