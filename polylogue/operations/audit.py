@@ -1058,7 +1058,7 @@ class AuditRepository:
                 with open_verified_audit_read_connection(self.path) as conn:
                     conn.row_factory = sqlite3.Row
                     yield conn
-            except (AuditLeafError, sqlite3.DatabaseError) as exc:
+            except AuditLeafError as exc:
                 raise AuditContinuityPendingError("audit machine read is unavailable") from exc
             return
         with open_verified_audit_connection(self.path) as conn:

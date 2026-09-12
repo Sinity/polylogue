@@ -206,10 +206,10 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
         success_ref = _prepare_authorize(client, (success_id,))
         result = _delete_operation(client, "execute", {"authorization_ref": success_ref})
-        assert result == {"status": "deleted", "operation": "delete", "session_count": 1, "affected_count": 1}
+        _assert_completed_delete(result, affected=1, chunks=1)
         _assert_session_exists(archive_root, success_id, expected=False)
 
-        with pytest.raises(DaemonResponseError):
+        with pytest.raises(ValueError, match="invalid DeleteExecuteRequest payload"):
             _delete_operation(client, "execute", {"session_ids": [replay_id]})
         _assert_session_exists(archive_root, replay_id, expected=True)
 
@@ -220,7 +220,7 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
         _assert_session_exists(archive_root, substitute_id, expected=True)
 
         substitute_ref = _prepare_authorize(client, (substitute_id,))
-        with pytest.raises(DaemonResponseError):
+        with pytest.raises(ValueError, match="invalid DeleteExecuteRequest payload"):
             _delete_operation(client, "execute", {"authorization_ref": substitute_ref, "session_ids": [stale_a]})
         _assert_session_exists(archive_root, substitute_id, expected=True)
         _delete_operation(client, "execute", {"authorization_ref": substitute_ref})
@@ -228,11 +228,16 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
         stale_ref = _prepare_authorize(client, (stale_a, stale_b))
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             archive.delete_sessions((stale_a,))
-        with pytest.raises(DaemonResponseError) as stale_error:
-            _delete_operation(client, "execute", {"authorization_ref": stale_ref})
-        assert stale_error.value.status == HTTPStatus.CONFLICT
-        assert stale_error.value.code == "delete_authorization_denied"
-        assert stale_error.value.detail == "selection_changed_after_authorization"
+        # Selection validation runs after durable batch acceptance. Its
+        # refusal is a recoverable no-effect result, not an HTTP rejection.
+        stale_result = _delete_operation(client, "execute", {"authorization_ref": stale_ref})
+        assert stale_result["outcome"] == "failed"
+        assert stale_result["effect"] == "no-effect"
+        assert stale_result["completed_chunks"] == 0
+        assert stale_result["affected_count"] == 0
+        assert stale_result["not_attempted"] == [0]
+        assert stale_result["parts"] == []
+        assert stale_result["stop_reason"] == "refused"
         _assert_session_exists(archive_root, stale_b, expected=True)
 
         expiry_ref = _prepare_authorize(client, (expiry_id,))
@@ -577,6 +582,21 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
     }
 
 
+def _assert_completed_delete(result: dict[str, object], *, affected: int, chunks: int) -> None:
+    assert result["outcome"] == "completed"
+    assert result["effect"] == "committed"
+    assert result["affected_count"] == affected
+    assert result["completed_chunks"] == chunks
+    assert result["not_attempted"] == []
+    assert result["stop_reason"] is None
+    parts = result["parts"]
+    assert isinstance(parts, list)
+    assert [(part["ordinal"], part["outcome"]) for part in parts] == [
+        (ordinal, "completed") for ordinal in range(chunks)
+    ]
+    assert all(part["operation_id"] for part in parts)
+
+
 def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -597,7 +617,7 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
         assert len(tokens) == 3
         result = _delete_operation(client, "execute", {"authorization_refs": tokens})
 
-    assert result == {"status": "deleted", "operation": "delete", "session_count": 513, "affected_count": 513}
+    _assert_completed_delete(result, affected=513, chunks=3)
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -605,6 +625,8 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
 def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.machine_lifecycle import machine_request_state
     from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
     from polylogue.operations.mutation_transaction import MutationPlan, MutationReceipt
 
@@ -646,7 +668,31 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
     assert result["effect"] == "indeterminate"
     assert result["completed_chunks"] == 2
     assert result["affected_count"] == 512
-    assert result["stop_reason"] == "refused"
+    # An indeterminate reply can precede the batch's final suffix fence. After
+    # daemon teardown drains the writer, recovery must retain both the known
+    # effects and that fence, without making the unknown part retry-safe.
+    reference = result["reference"]
+    assert isinstance(reference, dict)
+    audit = AuditRepository.for_archive_root(archive_root)
+    with audit.settled_machine_read():
+        record = audit.machine_request_for_principal(
+            reference["archive_identity"], reference["request_id"], reference["principal_ref"]
+        )
+        assert record is not None
+        settled = machine_request_state(audit, record)
+    assert settled["outcome"] == "indeterminate"
+    assert settled["effect"] == "indeterminate"
+    assert settled["completed_chunks"] == 2
+    assert settled["affected_count"] == 512
+    assert settled["not_attempted"] == []
+    assert settled["stop_reason"] == "refused"
+    parts = settled["parts"]
+    assert isinstance(parts, list)
+    assert [(part["ordinal"], part["outcome"]) for part in parts] == [
+        (0, "completed"),
+        (1, "completed"),
+        (2, "indeterminate"),
+    ]
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 

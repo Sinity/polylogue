@@ -15,7 +15,17 @@ _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 
 class AuditLeafError(RuntimeError):
-    """The audit pathname cannot prove it is one archive-owned database file."""
+    """The audit database cannot provide verified archive-owned access."""
+
+
+@contextmanager
+def _audit_sqlite_access(detail: str) -> Iterator[None]:
+    """Keep SQLite failures inside the verified audit storage boundary."""
+
+    try:
+        yield
+    except sqlite3.DatabaseError as exc:
+        raise AuditLeafError(detail) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,7 +279,7 @@ class VerifiedAuditLeaf:
 
         if not self._lock_writer:
             raise RuntimeError("audit leaf is not a writer")
-        try:
+        with _audit_sqlite_access("cannot establish the audit SQLite WAL namespace"):
             journal_mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()
             if journal_mode is None or str(journal_mode[0]).lower() != "wal":
                 raise AuditLeafError("audit tier must use WAL before writable access")
@@ -278,8 +288,6 @@ class VerifiedAuditLeaf:
             self._pin_writable_sidecars()
             self.assert_unchanged()
             self._first_transaction_guard_armed = True
-        except sqlite3.DatabaseError as exc:
-            raise AuditLeafError("cannot establish the audit SQLite WAL namespace") from exc
 
     def install_transaction_guard(self, connection: sqlite3.Connection) -> None:
         """Reject a sidecar replacement before SQLite starts an application tx."""
@@ -464,7 +472,10 @@ def open_verified_sqlite_write_connection(path: Path) -> Iterator[sqlite3.Connec
 def open_verified_audit_read_connection(path: Path) -> Iterator[sqlite3.Connection]:
     """Open one live-WAL-aware, read-only audit connection."""
 
-    with open_verified_sqlite_read_connection(path) as connection:
+    with (
+        _audit_sqlite_access("audit SQLite read is unavailable"),
+        open_verified_sqlite_read_connection(path) as connection,
+    ):
         yield connection
 
 

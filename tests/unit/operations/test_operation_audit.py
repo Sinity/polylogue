@@ -826,6 +826,28 @@ def test_verified_audit_reader_observes_a_committed_live_wal_head(tmp_path: Path
             ).fetchone() == (archive_id,)
 
 
+def test_verified_audit_reader_translates_sqlite_failure_without_writing(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    with pytest.raises(AuditLeafError, match="audit SQLite read is unavailable") as failure:
+        with open_verified_audit_read_connection(audit_path) as reader:
+            reader.execute("DELETE FROM archive_authority")
+    assert isinstance(failure.value.__cause__, sqlite3.OperationalError)
+    assert "readonly" in str(failure.value.__cause__)
+
+
+def test_settled_audit_read_reports_sqlite_failure_as_pending(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.audit_continuity import AuditContinuityPendingError
+
+    bootstrap_archive_root(tmp_path)
+    audit = AuditRepository.for_archive_root(tmp_path)
+    with pytest.raises(AuditContinuityPendingError, match="audit machine read is unavailable") as failure:
+        with audit.settled_machine_read(), audit._connection() as reader:
+            reader.execute("SELECT * FROM synthetic_missing_table")
+    assert isinstance(failure.value.__cause__, AuditLeafError)
+    assert isinstance(failure.value.__cause__.__cause__, sqlite3.OperationalError)
+
+
 def test_verified_audit_writer_coexists_with_an_older_read_transaction(tmp_path: Path) -> None:
     """Persistent WAL mode lets a later writer proceed while a reader retains its snapshot."""
 
