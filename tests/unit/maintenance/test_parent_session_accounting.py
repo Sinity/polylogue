@@ -101,6 +101,13 @@ def test_parent_accounting_conserves_identity_and_explicit_unavailable_states(tm
         _link(index, child="claude-code-session:child", origin="codex-session", native_id="gone")
         _link(index, child="claude-code-session:child", origin="codex-session", native_id="never-acquired")
         _session(index, origin="claude-code-session", native_id="parent", raw_id="raw-claude")
+        index.execute(
+            """
+            UPDATE session_links
+            SET resolved_dst_session_id = 'claude-code-session:parent'
+            WHERE dst_origin = 'claude-code-session' AND dst_native_id = 'parent'
+            """
+        )
         source.commit()
         index.commit()
 
@@ -166,6 +173,35 @@ def test_parsed_available_parent_without_candidate_session_is_blocking(tmp_path:
     assert check.status is OutcomeStatus.ERROR
     assert check.evidence["untyped_total"] == 1
     assert check.evidence["untyped_denominator"] == 1
+
+
+def test_materialized_parent_with_unresolved_reference_is_blocking(tmp_path: Path) -> None:
+    source, index = _archive(tmp_path)
+    try:
+        _raw(source, root=tmp_path, raw_id="raw-parent", origin="codex-session", native_id="parent")
+        _session(index, origin="codex-session", native_id="parent", raw_id="raw-parent")
+        _link(index, child="claude-code-session:child", origin="codex-session", native_id="parent")
+        source.commit()
+        index.commit()
+        report = audit_parent_session_accounting(source, index, archive_root=tmp_path)
+    finally:
+        source.close()
+        index.close()
+
+    assert report.materialized_parent_total == 0
+    assert report.unresolved_reference_total == 1
+    assert report.references[0].disposition == "materialized_unresolved"
+    assert report.references[0].resolved_reference_count == 0
+    assert report.blocking_count == 1
+
+    check = verify_archive(
+        tmp_path,
+        checks=("parent-session-accounting",),
+        index_path_override=tmp_path / "index.db",
+    ).checks[0]
+    assert isinstance(check, ArchiveVerificationCheck)
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["unresolved_reference_total"] == 1
 
 
 def test_unmaterialized_parent_raw_with_parse_refusal_is_conserved(tmp_path: Path) -> None:
