@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.core.outcomes import OutcomeStatus
-from polylogue.maintenance.archive_verification import verify_archive
+from polylogue.maintenance.archive_verification import ArchiveVerificationCheck, verify_archive
 from polylogue.maintenance.parent_session_accounting import audit_parent_session_accounting
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_store import BlobStore
@@ -162,6 +162,7 @@ def test_parsed_available_parent_without_candidate_session_is_blocking(tmp_path:
         checks=("parent-session-accounting",),
         index_path_override=tmp_path / "index.db",
     ).checks[0]
+    assert isinstance(check, ArchiveVerificationCheck)
     assert check.status is OutcomeStatus.ERROR
     assert check.evidence["untyped_total"] == 1
     assert check.evidence["untyped_denominator"] == 1
