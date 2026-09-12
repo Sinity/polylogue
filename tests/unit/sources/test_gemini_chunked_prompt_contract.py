@@ -368,7 +368,7 @@ def _wire_rendered_texts(payload: JSONDocument) -> list[str]:
     ``parts`` because those fields describe the same wire content.
     """
     prompt_value = payload.get("chunkedPrompt")
-    prompt = cast(JSONDocument, prompt_value) if isinstance(prompt_value, dict) else {}
+    prompt = prompt_value if isinstance(prompt_value, dict) else {}
     chunks_value = prompt.get("chunks")
     chunks = cast(list[object], chunks_value) if isinstance(chunks_value, list) else None
     if not isinstance(chunks, list):
@@ -378,7 +378,6 @@ def _wire_rendered_texts(payload: JSONDocument) -> list[str]:
     for chunk in chunks:
         if not isinstance(chunk, dict):
             continue
-        chunk = cast(JSONDocument, chunk)
         text = chunk.get("text")
         if isinstance(text, str) and text:
             rendered.append(text)
@@ -391,11 +390,13 @@ def _wire_rendered_texts(payload: JSONDocument) -> list[str]:
                 if isinstance(part_text, str) and part_text:
                     rendered.append(part_text)
         executable_code = chunk.get("executableCode")
-        if isinstance(executable_code, dict) and isinstance(executable_code.get("code"), str):
-            rendered.append(executable_code["code"])
+        executable_code_text = executable_code.get("code") if isinstance(executable_code, dict) else None
+        if isinstance(executable_code_text, str):
+            rendered.append(executable_code_text)
         execution_result = chunk.get("codeExecutionResult")
-        if isinstance(execution_result, dict) and isinstance(execution_result.get("output"), str):
-            rendered.append(execution_result["output"])
+        execution_result_text = execution_result.get("output") if isinstance(execution_result, dict) else None
+        if isinstance(execution_result_text, str):
+            rendered.append(execution_result_text)
         error_message = chunk.get("errorMessage")
         if isinstance(error_message, str) and error_message:
             rendered.append(error_message)
@@ -427,9 +428,12 @@ def test_current_export_conserves_wire_text_into_typed_blocks() -> None:
 def test_current_export_conservation_oracle_rejects_dropped_mutated_text() -> None:
     """The conservation lock follows changed source bytes, not fixture names."""
     payload = _load_catalog("current_export.json")
-    mutated = cast(JSONDocument, deepcopy(payload))
-    prompt = cast(JSONDocument, mutated["chunkedPrompt"])
-    chunks = cast(list[JSONDocument], prompt["chunks"])
+    mutated = deepcopy(payload)
+    prompt = mutated["chunkedPrompt"]
+    assert isinstance(prompt, dict)
+    chunks = prompt["chunks"]
+    assert isinstance(chunks, list)
+    assert isinstance(chunks[0], dict)
     chunks[0]["text"] = "synthetic conservation mutation"
     session = _parse(mutated, "current_export")
 
