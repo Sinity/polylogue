@@ -13,16 +13,18 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from polylogue.archive.query.archive_execution import list_summaries_archive
+from polylogue.archive.query.archive_execution import list_archive, list_summaries_archive
 from polylogue.archive.query.expression import ExpressionCompileError, compile_expression
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
 from polylogue.config import Config, Source
 from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+from polylogue.core.protocols import VectorProvider
 from polylogue.storage.embeddings.identity import vector_derivation_hash
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -43,7 +45,10 @@ def _build_index(db_path: Path) -> None:
     for session_key, text in (
         ("conv-seed", "alpha seed session with enough prose"),
         ("conv-near", "alpha near neighbor with enough prose"),
+        ("conv-near-two", "alpha second near neighbor with enough prose"),
+        ("conv-near-three", "alpha third near neighbor with enough prose"),
         ("conv-far", "zeta unrelated topic with enough prose"),
+        ("conv-far-two", "zeta second unrelated topic with enough prose"),
         ("conv-unembedded", "no vectors here but enough prose"),
     ):
         (
@@ -68,8 +73,8 @@ def _message_rows(db_path: Path) -> dict[str, tuple[str, str]]:
     for row in rows:
         session_id = str(row["session_id"])
         message_id = str(row["message_id"])
-        for suffix in ("seed", "near", "far", "unembedded"):
-            if f"conv-{suffix}" in session_id:
+        for suffix in ("seed", "near-three", "near-two", "near", "far-two", "far", "unembedded"):
+            if session_id.endswith(f"conv-{suffix}"):
                 mapping[suffix] = (session_id, message_id)
     return mapping
 
@@ -97,12 +102,18 @@ def seeded_archive(tmp_path: Path) -> tuple[Path, Config, dict[str, tuple[str, s
     vectors = {
         "seed": _unit_vector(axis0=1.0, axis1=0.0),
         "near": _unit_vector(axis0=0.99, axis1=0.141),
+        "near-two": _unit_vector(axis0=0.95, axis1=0.312),
+        "near-three": _unit_vector(axis0=0.9, axis1=0.436),
         "far": _unit_vector(axis0=0.0, axis1=1.0),
+        "far-two": _unit_vector(axis0=-0.2, axis1=0.98),
     }
     text_by_suffix = {
         "seed": "alpha seed session with enough prose",
         "near": "alpha near neighbor with enough prose",
+        "near-two": "alpha second near neighbor with enough prose",
+        "near-three": "alpha third near neighbor with enough prose",
         "far": "zeta unrelated topic with enough prose",
+        "far-two": "zeta second unrelated topic with enough prose",
     }
     for suffix, vector in vectors.items():
         session_id, message_id = mapping[suffix]
@@ -160,6 +171,63 @@ async def test_near_id_returns_similar_sessions_excluding_seed(
     assert near_id in result_ids
     assert far_id in result_ids
     assert result_ids.index(near_id) < result_ids.index(far_id)
+
+
+@pytest.mark.parametrize("offset", (0, 1, 2, 3))
+async def test_near_id_applies_one_final_ranked_offset(
+    seeded_archive: tuple[Path, Config, dict[str, tuple[str, str]]], offset: int
+) -> None:
+    """Session-seeded list pages advance through ranked summaries exactly once."""
+    archive_root, config, mapping = seeded_archive
+    seed_id = mapping["seed"][0]
+    plan = SessionQueryPlan(
+        similar_session_id=seed_id,
+        vector_provider=_provider(archive_root),
+        limit=1,
+        offset=offset,
+    )
+
+    page = await list_summaries_archive(plan, archive_root=archive_root, config=config)
+    unpaged = await list_summaries_archive(
+        SessionQueryPlan(similar_session_id=seed_id, vector_provider=_provider(archive_root)),
+        archive_root=archive_root,
+        config=config,
+    )
+
+    expected = [str(summary.id) for summary in unpaged][offset : offset + 1]
+    assert [str(summary.id) for summary in page] == expected
+
+
+@pytest.mark.parametrize("full_session", (False, True))
+async def test_text_semantic_pages_apply_the_ranked_offset_once(
+    seeded_archive: tuple[Path, Config, dict[str, tuple[str, str]]], full_session: bool
+) -> None:
+    """Semantic pages are disjoint for summaries and fully hydrated sessions."""
+    archive_root, config, mapping = seeded_archive
+    scored = [
+        (mapping[suffix][1], float(index))
+        for index, suffix in enumerate(("near", "near-two", "near-three", "far", "far-two"), start=1)
+    ]
+
+    class RankedVectors:
+        def query(self, _text: str, *, limit: int) -> list[tuple[str, float]]:
+            return scored[:limit]
+
+    vectors = cast(VectorProvider, RankedVectors())
+    plan = SessionQueryPlan(similar_text="pagination", vector_provider=vectors, limit=2, offset=2)
+    unpaged = SessionQueryPlan(similar_text="pagination", vector_provider=vectors)
+    if full_session:
+        page_ids = [str(item.id) for item in await list_archive(plan, archive_root=archive_root, config=config)]
+        whole_ids = [str(item.id) for item in await list_archive(unpaged, archive_root=archive_root, config=config)]
+    else:
+        page_ids = [
+            str(item.id) for item in await list_summaries_archive(plan, archive_root=archive_root, config=config)
+        ]
+        whole_ids = [
+            str(item.id) for item in await list_summaries_archive(unpaged, archive_root=archive_root, config=config)
+        ]
+
+    assert page_ids == whole_ids[2:4]
 
 
 async def test_near_id_seed_without_embeddings_fails_typed(
