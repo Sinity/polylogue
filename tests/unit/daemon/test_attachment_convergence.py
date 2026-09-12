@@ -8,6 +8,7 @@ from pathlib import Path
 
 from polylogue.core.enums import Provider, Role
 from polylogue.operations.attachment_convergence import converge_drive_attachments
+from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.drive.types import DriveNotFoundError
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
@@ -104,6 +105,78 @@ def test_polylogue_ck5v_legacy_route_attachment_is_backfilled_and_bounded(tmp_pa
     assert bytes(source_ref["blob_hash"]) == hashlib.sha256(payload).digest()
     assert source_ref["ref_id"] == "legacy-zip-raw"
     assert source_ref["size_bytes"] == len(payload)
+
+    # The production backfill only upgrades durable acquisition evidence.  A
+    # later raw replay would legitimately produce a new full session hash once
+    # the bytes are present, but the comparison identity must remain stable so
+    # that this fidelity upgrade is not mistaken for a different attachment.
+    acquired_session = session.model_copy(
+        update={
+            "attachments": [
+                session.attachments[0].model_copy(update={"inline_bytes": payload, "size_bytes": len(payload)})
+            ]
+        }
+    )
+    before_projection = session_revision_projection(session)
+    after_projection = session_revision_projection(acquired_session)
+    assert before_projection.attachment_identities == after_projection.attachment_identities
+    assert before_projection.attachment_contents != after_projection.attachment_contents
+    assert session_content_hash(session) != session_content_hash(acquired_session)
+
+    # Negative control: non-Drive/paste references are not selected by the
+    # route-neutral stage, while their identity/hash partition has the same
+    # acquisition semantics.
+    paste_session = _session("negative-paste", upload_origin="paste", file_id="paste-file-1")
+    paste_acquired = paste_session.model_copy(
+        update={
+            "attachments": [
+                paste_session.attachments[0].model_copy(update={"inline_bytes": payload, "size_bytes": len(payload)})
+            ]
+        }
+    )
+    paste_before = session_revision_projection(paste_session)
+    paste_after = session_revision_projection(paste_acquired)
+    assert paste_before.attachment_identities == paste_after.attachment_identities
+    assert paste_before.attachment_contents != paste_after.attachment_contents
+    assert session_content_hash(paste_session) != session_content_hash(paste_acquired)
+    index.close()
+    source.close()
+
+
+def test_attachment_convergence_keeps_retryable_provider_failure_as_debt(tmp_path: Path) -> None:
+    """Transient provider failures remain unfetched and retryable."""
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("retry", file_id="temporarily-busy"), raw_id="retry-raw")
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+
+    calls: list[str] = []
+
+    def fetch(file_id: str) -> bytes:
+        calls.append(file_id)
+        raise TimeoutError("provider timeout")
+
+    result = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_bytes=fetch,
+    )
+
+    row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
+    assert result.inspected == 1
+    assert result.acquired == 0
+    assert result.terminal == 0
+    # One unit records the provider failure itself; another records that the
+    # canonical row remains for the scheduler's next debt pass.
+    assert result.deferred >= 1
+    assert not result.complete
+    assert calls == ["temporarily-busy"]
+    assert row["acquisition_status"] == "unfetched"
+    assert row["blob_hash"] is None
+    assert row["byte_count"] == 0
     index.close()
     source.close()
 
