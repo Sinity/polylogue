@@ -18,6 +18,7 @@ import pytest
 
 from polylogue.core.errors import SchemaSkewError, SchemaVersionMismatchError
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_tier,
     open_initialized_tier_connection,
@@ -29,6 +30,43 @@ from polylogue.storage.sqlite.schema import assert_readable_archive_layout
 from polylogue.storage.sqlite.schema_manifest import canonical_schema_manifest
 
 INDEX_VERSION = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
+
+
+@pytest.mark.parametrize("partial", [False, True], ids=["empty", "partial"])
+def test_readable_layout_rejects_uninitialized_version_zero(partial: bool) -> None:
+    """Read admission rejects both empty and partially bootstrapped indexes.
+
+    Anti-vacuity: removing the version-zero guard admits this connection and
+    the first query fails later with SQLite's ``no such table`` error instead
+    of returning an actionable typed refusal before any query executes.
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        if partial:
+            conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+
+        with pytest.raises(SchemaVersionMismatchError) as caught:
+            assert_readable_archive_layout(conn)
+    finally:
+        conn.close()
+
+    assert caught.value.current_version == 0
+    assert caught.value.expected_version == INDEX_VERSION
+    assert caught.value.lifecycle_action == "rebuild_index"
+    assert "uninitialized" in str(caught.value)
+
+
+def test_public_read_open_rejects_partially_initialized_version_zero_index(tmp_path: Path) -> None:
+    """The public ArchiveStore path applies the version-zero admission guard."""
+    index_path = tmp_path / "index.db"
+    with sqlite3.connect(index_path) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+
+    with pytest.raises(SchemaVersionMismatchError) as caught:
+        ArchiveStore.open_existing(tmp_path)
+
+    assert caught.value.current_version == 0
+    assert caught.value.lifecycle_action == "rebuild_index"
 
 
 def test_schema_identity_stamp_survives_the_connection_that_wrote_it(tmp_path: Path) -> None:
