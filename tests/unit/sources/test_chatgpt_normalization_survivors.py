@@ -152,6 +152,91 @@ def test_chatgpt_native_wire_fixture_survives_dispatch_and_semantic_normalizatio
     }
 
 
+def test_chatgpt_media_pointers_survive_dispatch_with_typed_unavailable_assets() -> None:
+    """Dispatch keeps A/V pointers even when no export bytes are present.
+
+    A pointer is provider evidence, not proof that the corresponding bytes
+    were acquired. The normalized attachment must therefore retain identity
+    and provenance while leaving acquisition-only fields unset.
+    """
+    payload: JSONDocument = {
+        "id": "media-conversation",
+        "conversation_id": "media-conversation",
+        "title": "media pointers",
+        "create_time": 1.0,
+        "current_node": "video-node",
+        "mapping": {
+            "audio-node": {
+                "id": "audio-node",
+                "parent": None,
+                "children": ["video-node"],
+                "message": {
+                    "id": "audio-message",
+                    "author": {"role": "user"},
+                    "create_time": 1.0,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "audio_asset_pointer",
+                                "asset_pointer": "file-service://file-audio-pointer",
+                                "mime_type": "audio/wav",
+                            },
+                            {
+                                "content_type": "real_time_user_audio_video_asset_pointer",
+                                "video_container_asset_pointer": "sediment://file-video-pointer",
+                                "frames_asset_pointers": [
+                                    {"asset_pointer": "sediment://file-frame-pointer", "mime_type": "image/jpeg"}
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+            "video-node": {
+                "id": "video-node",
+                "parent": "audio-node",
+                "children": [],
+                "message": {
+                    "id": "video-message",
+                    "author": {"role": "assistant"},
+                    "create_time": 2.0,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "video_asset_pointer",
+                                "asset_pointer": "sediment://file-video-output",
+                                "mime_type": "video/mp4",
+                            }
+                        ],
+                    },
+                },
+            },
+        },
+    }
+
+    session = _parse_one(payload)
+    pointers = {
+        construct.asset_pointer
+        for message in session.messages
+        for block in message.blocks
+        for construct in block.web_constructs
+        if construct.asset_pointer is not None
+    }
+    assert pointers == {
+        "file-service://file-audio-pointer",
+        "sediment://file-video-pointer",
+        "sediment://file-frame-pointer",
+        "sediment://file-video-output",
+    }
+    attachments = {attachment.provider_attachment_id: attachment for attachment in session.attachments}
+    assert attachments["file-service://file-audio-pointer"].direction == "user_input"
+    assert attachments["sediment://file-video-output"].producer_ref == "message:video-message"
+    assert attachments["sediment://file-video-output"].precomputed_blob is None
+    assert all(attachment.provider_file_id for attachment in attachments.values())
+
+
 def test_timing_only_provider_node_rehomes_duration_to_the_last_emitted_branch_message() -> None:
     """A metadata-only winning node must not make its generation duration disappear.
 

@@ -869,6 +869,12 @@ def _chatgpt_media_asset_pointers(
     fields: tuple[str, ...]
     if content_type == "audio_asset_pointer":
         fields = ("asset_pointer",)
+    elif content_type in {"video_asset_pointer", "video_container_asset_pointer"}:
+        # A few exports use a standalone video part rather than the realtime
+        # wrapper.  Keep both the ordinary and provider-specific spellings so
+        # the pointer remains the acquisition identity regardless of which
+        # capture path produced the part.
+        fields = ("asset_pointer", "video_asset_pointer", "video_container_asset_pointer")
     else:
         # ``asset_pointer`` is retained as a compatibility fallback for
         # captures that used the ordinary image/audio spelling for realtime
@@ -884,8 +890,11 @@ def _chatgpt_media_asset_pointers(
             yield pointer, record, field
 
 
-def _chatgpt_media_attachment_kind(pointer_field: str) -> str:
-    if pointer_field == "video_container_asset_pointer":
+def _chatgpt_media_attachment_kind(pointer_field: str, content_type: str | None = None) -> str:
+    if pointer_field in {"video_asset_pointer", "video_container_asset_pointer"} or content_type in {
+        "video_asset_pointer",
+        "video_container_asset_pointer",
+    }:
         return "video_asset"
     if pointer_field == "frames_asset_pointers":
         return "video_frame_asset"
@@ -1675,6 +1684,8 @@ def extract_messages_from_mapping(
                     "audio_asset_pointer",
                     "audio_transcription",
                     "real_time_user_audio_video_asset_pointer",
+                    "video_asset_pointer",
+                    "video_container_asset_pointer",
                 }:
                     part_text = part.get("text")
                     content_type = str(part.get("content_type"))
@@ -1700,7 +1711,7 @@ def extract_messages_from_mapping(
                             pointer_record,
                             pointer=pointer,
                             message_provider_id=str(msg_id),
-                            attachment_kind=_chatgpt_media_attachment_kind(pointer_field),
+                            attachment_kind=_chatgpt_media_attachment_kind(pointer_field, content_type),
                             direction=media_direction,
                             producer_ref=media_producer,
                             dedupe_from=message_attachment_start,
@@ -1804,6 +1815,8 @@ def extract_messages_from_mapping(
                         "audio_asset_pointer",
                         "audio_transcription",
                         "real_time_user_audio_video_asset_pointer",
+                        "video_asset_pointer",
+                        "video_container_asset_pointer",
                     }
                 ):
                     admission.materialized(

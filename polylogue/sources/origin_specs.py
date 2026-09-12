@@ -1987,6 +1987,13 @@ def _codex_spec() -> OriginSpec:
             "stream, so the event records last_agent_message_chars plus "
             "last_agent_message_retained rather than the text -- and stores "
             "the text verbatim in the case the duplication does not hold.",
+            "Codex lifecycle timing on task_started/task_complete and the other "
+            "named event families (started_at/completed_at/duration_ms and "
+            "observed elapsed/start/end aliases) is retained as bounded scalar "
+            "event evidence. inter_agent_communication_metadata and "
+            "token_usage_record are classified at their top-level dispatch and "
+            "retain only named delegation/counter fields; opaque siblings are "
+            "excluded rather than copied as a wire-payload dump.",
             "event_msg.memory_citation (measured negative, polylogue-cgfy "
             "codex lane): observed null on every sampled record across "
             "~3,200 real session files -- a constant, not an unread signal; "

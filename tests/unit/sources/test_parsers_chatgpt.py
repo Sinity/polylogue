@@ -410,6 +410,45 @@ def test_realtime_audio_video_pointer_shapes_retain_each_asset_reference() -> No
     assert all(attachment.producer_ref is None for attachment in attachments)
 
 
+def test_standalone_video_pointer_is_typed_and_keeps_provider_metadata() -> None:
+    """Video parts outside the realtime wrapper retain their real pointer."""
+    messages, attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "video-msg",
+                    "author": {"role": "assistant"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "video_asset_pointer",
+                                "asset_pointer": "sediment://file-VIDEO7",
+                                "media_type": "video/mp4",
+                                "size_bytes": "128",
+                            }
+                        ],
+                    },
+                },
+            }
+        }
+    )
+
+    construct = messages[0].blocks[0].web_constructs[0]
+    assert construct.asset_pointer == "sediment://file-VIDEO7"
+    assert construct.mime_type == "video/mp4"
+    attachment = attachments[0]
+    assert attachment.provider_attachment_id == "sediment://file-VIDEO7"
+    assert attachment.provider_file_id == "file-VIDEO7"
+    assert attachment.mime_type == "video/mp4"
+    assert attachment.size_bytes == 128
+    assert attachment.attachment_kind == "video_asset"
+    assert attachment.direction == "model_output"
+    assert attachment.producer_ref == "message:video-msg"
+
+
 def test_chatgpt_shared_conversation_index_shell_is_tagged() -> None:
     session = chatgpt_parse(
         {
