@@ -712,6 +712,8 @@ def _archive_storage_info() -> ArchiveStorageStatus:
     source_exists = "source" in present_tiers
     final_shape_ready = not missing_tiers
     schema_mismatches = [str(tier.name) for tier in tiers if tier.exists and tier.version_status != "ok"]
+    schema_mismatches.extend(_derived_identity_mismatches(tier_paths))
+    schema_mismatches = list(dict.fromkeys(schema_mismatches))
     archive_schema_ready = final_shape_ready and not schema_mismatches and not unreadable_tiers
     archive_ready = index_exists and source_exists and archive_schema_ready and not conflicts
     if index_exists and source_exists:
@@ -736,6 +738,14 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         identity=identity.as_dict(unit="polylogued.service"),
         identity_conflicts=[conflict.as_dict(unit="polylogued.service") for conflict in conflicts],
     )
+
+
+def _derived_identity_mismatches(tier_paths: Mapping[ArchiveTierName, Path]) -> list[str]:
+    """Return derived tiers whose stamped identity is not this runtime's."""
+
+    from polylogue.operations.derived_tier_status import derived_identity_mismatches
+
+    return derived_identity_mismatches(cast(Mapping[str, Path], tier_paths))
 
 
 def _archive_tier_status(

@@ -441,6 +441,23 @@ def _check_schema_version_fast() -> HealthAlert:
             if current != spec.version:
                 mismatches.append(f"{spec.filename}:{current}!={spec.version}")
 
+            # A same-version derived tier can still be stale: its identity
+            # includes the DDL and the lowering/materializer/replay closure.
+            # Surface that mismatch in the same fast health check so daemon
+            # readiness cannot claim green while every derived read refuses.
+            if current == spec.version and spec.durability in {"rebuildable", "expensive_rebuild", "disposable"}:
+                from polylogue.operations.derived_tier_status import derived_tier_identity
+
+                expected_identity: str | None
+                actual_identity: str | None
+                try:
+                    expected_identity, actual_identity = derived_tier_identity(path, spec.tier.value)
+                except ValueError:
+                    # Durable/source tiers are not derived identity surfaces.
+                    expected_identity = actual_identity = None
+                if expected_identity is not None and actual_identity != expected_identity:
+                    mismatches.append(f"{spec.filename}:identity {actual_identity!r}!={expected_identity}")
+
         if not missing and not mismatches:
             severity = HealthSeverity.OK
             message = "archive tier layout matches runtime"
