@@ -27,6 +27,7 @@ from polylogue.sources.decoder_zip import (
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.sources.dispatch import detect_provider
+from polylogue.sources.parsers import antigravity
 
 _JSON_SUFFIXES = frozenset({".json", ".jsonl", ".ndjson"})
 _MAX_DIRECTORY_CANDIDATES = 256
@@ -190,6 +191,9 @@ def _preflight_directory(path: Path, acc: _PreflightAccumulator) -> None:
 
 def _preflight_file(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
     lower_name = path.name.lower()
+    if Path(lower_name).suffix in {".db", ".sqlite", ".sqlite3"}:
+        _preflight_sqlite(path, acc, label=label)
+        return
     if lower_name.endswith(".zip"):
         _preflight_zip(path, acc, label=label)
         return
@@ -202,6 +206,27 @@ def _preflight_file(path: Path, acc: _PreflightAccumulator, *, label: str) -> No
         acc.malformed(label, f"could not read file: {exc}")
         return
     _preflight_json_bytes(raw, acc, label=label)
+
+
+def _preflight_sqlite(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
+    """Classify a SQLite import by its provider schema, never by its suffix."""
+    try:
+        if antigravity.looks_like_trajectory_db_path(path):
+            sessions = list(antigravity.parse_trajectory_db(path, fallback_id=path.stem))
+            if sessions and any(session.messages for session in sessions):
+                acc.supported(label, Provider.ANTIGRAVITY)
+                if any(session.ingest_flags for session in sessions):
+                    acc._caveat(f"{label}: trajectory contains unsupported or degraded steps")
+            else:
+                acc.unsupported(label, "Antigravity trajectory schema contains no materialized messages")
+            return
+    except Exception as exc:
+        # The parser adapter classifies SQLite read failures at its storage
+        # seam; this boundary turns any failed inspection into a typed
+        # preflight outcome without adding a new hand-written sqlite policy.
+        acc.malformed(label, f"could not inspect SQLite trajectory: {type(exc).__name__}: {exc}")
+        return
+    acc.unsupported(label, "SQLite schema is not a supported Antigravity trajectory store")
 
 
 def _preflight_zip(path: Path, acc: _PreflightAccumulator, *, label: str) -> None:
@@ -273,7 +298,12 @@ def _preflight_json_stream(raw: bytes, acc: _PreflightAccumulator, *, label: str
 
 
 def _is_candidate_path(path: Path) -> bool:
-    return path.name.lower().endswith(".zip") or _is_json_candidate_name(path.name.lower())
+    lower_name = path.name.lower()
+    return (
+        lower_name.endswith(".zip")
+        or _is_json_candidate_name(lower_name)
+        or Path(lower_name).suffix in {".db", ".sqlite", ".sqlite3"}
+    )
 
 
 def _is_json_candidate_name(name: str) -> bool:

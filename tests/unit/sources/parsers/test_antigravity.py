@@ -188,6 +188,71 @@ def test_trajectory_sqlite_parser_preserves_identity_order_tools_and_summary(tmp
     assert result.is_error is False
     assert session.messages[3].blocks[0].file_edit is not None
     assert any(event.event_type == "antigravity_parent_reference" for event in session.session_events)
+    assert any(event.event_type == "antigravity_unmatched_parent_reference" for event in session.session_events)
+    assert session.parent_session_provider_id == "parent-1"
+
+
+def test_trajectory_sqlite_parser_refuses_known_text_with_unknown_step_format(tmp_path: Path) -> None:
+    path = _trajectory_db(tmp_path / "conversation.db")
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE steps SET step_format = 'future-v9' WHERE idx = 0")
+
+    session = list(parse_trajectory_db(path))[0]
+
+    assert [message.text for message in session.messages] == [None, "hi", None]
+    unsupported = [event for event in session.session_events if event.event_type == "antigravity_unsupported_step"]
+    assert unsupported
+    assert unsupported[0].payload["reason"] == "unsupported_step_format_or_type"
+    assert "degraded:unsupported-trajectory-steps" in session.ingest_flags
+
+
+def test_trajectory_sqlite_parser_empty_schema_is_attributable(tmp_path: Path) -> None:
+    path = tmp_path / "empty.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            """
+        )
+
+    sessions = list(parse_trajectory_db(path, fallback_id="empty"))
+
+    assert len(sessions) == 1
+    assert sessions[0].messages == []
+    assert any(event.event_type == "antigravity_trajectory_empty" for event in sessions[0].session_events)
+
+
+def test_trajectory_sqlite_parser_does_not_merge_unkeyed_multiple_trajectories(tmp_path: Path) -> None:
+    path = _trajectory_db(tmp_path / "conversation.db")
+    with sqlite3.connect(path) as connection:
+        connection.execute("INSERT INTO trajectory_meta VALUES (?, ?)", ("trajectory-2", "cascade-2"))
+
+    sessions = list(parse_trajectory_db(path))
+
+    assert [session.provider_session_id for session in sessions] == ["trajectory-1", "trajectory-2"]
+    assert all(session.messages == [] for session in sessions)
+    assert all(
+        any(event.event_type == "antigravity_unattributed_steps" for event in session.session_events)
+        for session in sessions
+    )
+
+
+def test_trajectory_sqlite_parser_retains_unmatched_summary_as_metadata(tmp_path: Path) -> None:
+    path = _trajectory_db(tmp_path / "conversation.db")
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?)",
+            ("orphan-cascade", "Orphan title", "2026-03-06T04:21:34Z"),
+        )
+
+    sessions = list(parse_trajectory_db(path))
+
+    orphan = next(session for session in sessions if session.provider_session_id == "orphan-cascade")
+    assert orphan.messages == []
+    assert orphan.ingest_flags == ["degraded:unmatched-trajectory-summary"]
+    event = next(event for event in orphan.session_events if event.event_type == "antigravity_unmatched_summary")
+    assert event.payload["title"] == "Orphan title"
 
 
 def test_trajectory_sqlite_parser_refuses_malformed_step_without_fabricating_text(tmp_path: Path) -> None:

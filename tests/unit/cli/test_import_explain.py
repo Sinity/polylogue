@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import zipfile
 from pathlib import Path
 
@@ -31,6 +32,27 @@ def test_explain_import_path_reports_codex_parser_and_counts(tmp_path: Path) -> 
     assert payload.entries[0].artifact_kind == "session_record_stream"
     assert payload.entries[0].parser_mode == "grouped_records"
     assert payload.entries[0].produced.session_refs
+
+
+def test_explain_import_path_reports_antigravity_trajectory_sqlite(tmp_path: Path) -> None:
+    source = tmp_path / "renamed-trajectory.db"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            INSERT INTO trajectory_meta VALUES ('trajectory-explain', 'cascade-explain');
+            INSERT INTO steps VALUES (0, 'message', 'v1', '{"role":"user","text":"hello"}');
+            """
+        )
+
+    payload = explain_import_path(source)
+
+    assert payload.produced.sessions == 1
+    assert payload.produced.messages == 1
+    assert payload.entries[0].detected_provider == "antigravity"
+    assert payload.entries[0].artifact_kind == "sqlite_trajectory_database"
+    assert payload.entries[0].parser_mode == "logical_export"
 
 
 def test_explain_import_path_treats_jsonl_text_json_wrappers_as_jsonl(tmp_path: Path) -> None:

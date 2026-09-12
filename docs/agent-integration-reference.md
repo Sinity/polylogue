@@ -785,7 +785,7 @@ Prompts: `cost_of`.
 - `codex-session` — Codex CLI local sessions (lab: OpenAI)
 - `gemini-cli-session` — Gemini CLI local sessions (lab: Google)
 - `hermes-session` — Hermes agent sessions
-- `antigravity-session` — Antigravity language-server conversations
+- `antigravity-session` — Antigravity language-server and trajectory SQLite conversations
 - `beads-issue` — Reserved Beads issue origin (not admitted)
 - `grok-export` — Grok account-data exports (lab: xAI)
 - `chatgpt-export` — ChatGPT web exports (lab: OpenAI)
