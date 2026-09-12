@@ -31,6 +31,7 @@ from polylogue.sources.parsers.base import (
     ParsedWebConstruct,
 )
 from polylogue.sources.parsers.claude import parse_code
+from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.hydrators import session_event_from_record
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -3901,6 +3902,55 @@ def test_writer_retains_ambiguous_attachment_as_typed_unowned(tmp_path: Path) ->
             conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)).fetchone()[0]
             == 0
         )
+    finally:
+        conn.close()
+
+
+def test_writer_receipt_types_unresolved_inline_attachment_owner(tmp_path: Path) -> None:
+    """Production acquisition reports an unresolved owner instead of silent loss.
+
+    Inline bytes cannot be retained as an acquired, ref-less row: every public
+    attachment read starts at ``attachment_refs``. The writer therefore drops
+    the unreachable bytes but returns the exact typed owner reason in its
+    normal write receipt.
+
+    Anti-vacuity: removing the shared owner-resolution call or the ambiguity
+    branch makes this receipt lose ``OWNER_AMBIGUOUS`` and the regression red.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        messages = [ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same") for _ in range(2)]
+        attachment = ParsedAttachment(
+            provider_attachment_id="ambiguous-inline",
+            message_provider_id="",
+            message_position=0,
+            name="note.txt",
+            mime_type="text/plain",
+            inline_bytes=b"never guess this owner",
+        )
+        session = ParsedSession(
+            source_name=Provider.GEMINI,
+            provider_session_id="ambiguous-inline-owner",
+            messages=messages,
+            attachments=[attachment],
+        )
+        outcomes: list[ArchiveWriteOutcome] = []
+        session_id = write_parsed_session_to_archive(
+            conn,
+            session,
+            preacquired_attachment_blobs={id(attachment): (b"a" * 32, len(attachment.inline_bytes or b""), "acquired")},
+            write_outcome=outcomes,
+        )
+
+        assert outcomes[-1].session_id == session_id
+        assert outcomes[-1].unresolved_attachment_owners == (
+            (
+                archive_tier_write._attachment_id(session_id, attachment),
+                AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS,
+            ),
+        )
+        assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
     finally:
         conn.close()
 
