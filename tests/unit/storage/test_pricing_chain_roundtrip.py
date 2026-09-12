@@ -170,6 +170,27 @@ class TestTokenAggregation:
 
 
 class TestCostUsdComputation:
+    def test_multi_model_session_cost_is_the_sum_of_its_model_rows(self, tmp_path: Path) -> None:
+        """A session total is not repeated once for each participating model.
+
+        Anti-vacuity: grouping a session aggregate under every model row made
+        mixed-model sessions report the same session total multiple times.
+        """
+        conn = _make_archive(tmp_path)
+        messages = [
+            _msg(provider_message_id="m1", model_name="gpt-4o", input_tokens=1_000_000),
+            _msg(provider_message_id="m2", model_name="claude-sonnet-4-5", output_tokens=1_000_000),
+        ]
+        with conn:
+            session_id = write_parsed_session_to_archive(conn, _session(messages=messages))
+
+        costs = session_usage_costs_for_connection(conn, [session_id])
+        cost = costs[session_id]
+        expected = estimate_cost(1_000_000, 0, "gpt-4o") + estimate_cost(0, 1_000_000, "claude-sonnet-4-5")
+        assert cost.catalog_api_equivalent_usd == pytest.approx(expected)
+        assert cost.model_names == ("claude-sonnet-4-5", "gpt-4o")
+        conn.close()
+
     def test_catalog_cost_cannot_cross_provider_write_path(self) -> None:
         """The provider writer rejects a catalog-computed cost wrapper."""
 

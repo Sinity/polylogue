@@ -644,6 +644,18 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   origins, source rows acquired but not materialized, and stale
   `session_model_usage` rollups are distinct diagnostic states. Cache read/write
   token lanes remain labelled and are not merged into generic input/output.
+  The provider-usage ledger exposes `uncached_input_tokens`,
+  `cached_input_tokens`, `completion_output_tokens`, and
+  `reasoning_output_tokens` as disjoint labelled lanes. It also records whether
+  the provider's native input/output counters include cache/reasoning. Codex
+  native counters are inclusive; Claude cache is a separate lane; ChatGPT
+  exports have unavailable provider-token lanes rather than synthetic zeros.
+  API-list-equivalent prices resolve only through the vendored LiteLLM catalog
+  by final model-id path segment. Subscription credits are a separate labelled
+  estimate and are never summed with API-list-equivalent dollars. Executable
+  guards live in `tests/unit/storage/test_origin_usage_report.py`,
+  `tests/unit/storage/test_pricing_chain_roundtrip.py`, and
+  `tests/unit/core/test_pricing.py`.
 - Index schema version 6 added `session_provider_usage_events` for
   provider-reported token usage events and single-model rollup repair from
   those events. Existing index tiers must be rebuilt from source evidence so

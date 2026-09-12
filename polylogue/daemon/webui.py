@@ -877,7 +877,7 @@ COST_LANE_LEGEND: tuple[tuple[str, str], ...] = (
     ),
     (
         "catalog_priced_usd",
-        "Catalog-priced estimate from the curated LiteLLM-shaped seed.",
+        "Catalog-priced estimate from the vendored LiteLLM catalog.",
     ),
     (
         "tool_surcharge_usd",
