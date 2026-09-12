@@ -1024,7 +1024,7 @@ def _publish_fts_readiness(archive_root: Path, sessions: int) -> None:
     assert stage.execute(archive_db) is True
 
 
-def test_fts_health_probe_reads_the_published_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fts_readiness_health_probe_reads_the_published_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """polylogue-t4iy5.11.1: the medium FTS health probe never aggregates the
     archive.
 
