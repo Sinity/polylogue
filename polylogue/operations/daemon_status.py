@@ -13,6 +13,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from polylogue.storage.introspection import relation_exists
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -265,14 +266,15 @@ def _attached_connection(conn: sqlite3.Connection, schema: str) -> sqlite3.Conne
 
 
 def _table_exists(conn: sqlite3.Connection | None, table: str, *, schema: str = "main") -> bool:
-    if conn is None:
-        return False
-    return (
-        conn.execute(
-            f"SELECT 1 FROM {schema}.sqlite_schema WHERE type IN ('table', 'view') AND name = ?", (table,)
-        ).fetchone()
-        is not None
-    )
+    """Return whether a declared status relation exists in ``schema``.
+
+    Keep the optional-connection behavior local to this operation, while
+    delegating the actual table-or-view check to the shared introspection
+    primitive.  Status inventories intentionally include query-time views
+    (for example ``threads`` and ``actions``), so a table-only probe would
+    silently omit valid counters.
+    """
+    return conn is not None and relation_exists(conn, table, schema=schema)
 
 
 def _count(conn: sqlite3.Connection | None, sql: str, params: tuple[object, ...] = ()) -> int:
