@@ -187,6 +187,7 @@ def record_codex_state_snapshot_terminal(
             export_path=state_path,
             blob_hash=blob_hash or archive.raw_revision_descriptor(raw_id)[1],
             observed_at_ms=acquired_at_ms,
+            source_path=source_path,
         )
     archive.replace_raw_membership_census(
         raw_id,
@@ -248,15 +249,31 @@ def _thread_state_projection_is_current(archive_root: Path) -> bool:
         return True
     try:
         with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
-            latest = codex_state_projection.latest_retained_state_export(source_conn)
-        if latest is None:
+            latest = codex_state_projection.latest_retained_state_exports(source_conn)
+        if not latest:
             return True
         with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn:
-            current = codex_state_projection.projection_provenance(index_conn)
+            current = {
+                export.source_scope: codex_state_projection.projection_provenance(
+                    index_conn, source_scope=export.source_scope
+                )
+                for export in latest
+            }
     except sqlite3.Error as exc:
         logger.debug("codex state: could not compare the retained export against the projection: %s", exc)
         return True
-    return current is not None and current.raw_id == latest.raw_id and current.blob_hash == latest.blob_hash
+    for export in latest:
+        projection = current[export.source_scope]
+        if projection is None:
+            return False
+        if (
+            projection.raw_id != export.raw_id
+            or projection.blob_hash != export.blob_hash
+            or (projection.observed_at_ms, projection.observation_order)
+            != (export.observed_at_ms, export.observation_order)
+        ):
+            return False
+    return True
 
 
 def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
