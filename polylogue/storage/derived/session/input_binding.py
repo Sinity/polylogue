@@ -35,6 +35,7 @@ import aiosqlite
 __all__ = [
     "SESSION_INPUT_EXCLUDED_COLUMNS",
     "SESSION_INPUT_PROJECTION_COLUMNS",
+    "SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS",
     "SESSION_ROW_EXCLUDED_COLUMNS",
     "SESSION_ROW_PROJECTION_COLUMNS",
     "SessionInputDigest",
@@ -48,7 +49,7 @@ __all__ = [
 #: Bumped when the meaning of a session-scoped derivation changes without the
 #: projection changing. Every stored binding compares unequal afterwards, which
 #: is the whole invalidation mechanism: there is no separate freshness ledger.
-SESSION_INPUT_RECIPE_VERSION = "2"
+SESSION_INPUT_RECIPE_VERSION = "3"
 
 #: The exact session-row columns session-scoped aggregates read. The profile
 #: caches several of these directly (``source_sort_key``, ``source_updated_at``,
@@ -138,6 +139,29 @@ SESSION_EVENT_PROJECTION_COLUMNS: tuple[str, ...] = (
     "boundary_start_position",
     "boundary_end_position",
     "boundary_message_id",
+)
+
+# ``_refresh_provider_usage_rollup`` derives ``session_model_usage`` from this
+# persisted provider evidence immediately before the profile reads that rollup.
+# These are its exact input columns: leaving them outside the binding lets a
+# fixed-id usage correction change the profile's dominant model while
+# inspection still reports the old partition VALID.
+SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS: tuple[str, ...] = (
+    "position",
+    "provider_event_type",
+    "model_name",
+    "last_input_tokens",
+    "last_output_tokens",
+    "last_cached_input_tokens",
+    "last_cache_write_tokens",
+    "last_reasoning_output_tokens",
+    "last_total_tokens",
+    "total_input_tokens",
+    "total_output_tokens",
+    "total_cached_input_tokens",
+    "total_cache_write_tokens",
+    "total_reasoning_output_tokens",
+    "total_tokens",
 )
 
 #: Every ``sessions`` column the projection deliberately leaves out, with the
@@ -270,6 +294,22 @@ ORDER BY se.session_id, se.position
 """
 
 
+def session_provider_usage_event_binding_sql(session_count: int) -> str:
+    """Ordered provider-usage projection consumed by the usage-rollup refresh."""
+    if session_count < 1:
+        raise ValueError("session_provider_usage_event_binding_sql requires at least one session")
+    placeholders = ",".join("?" * session_count)
+    projected = ",\n    ".join(f"pue.{column}" for column in SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS)
+    return f"""
+SELECT
+    pue.session_id,
+    {projected}
+FROM session_provider_usage_events pue
+WHERE pue.session_id IN ({placeholders})
+ORDER BY pue.session_id, pue.position
+"""
+
+
 class SessionInputDigest:
     """Accumulates one binding per session from projection rows, in order.
 
@@ -337,6 +377,7 @@ def session_input_bindings(
     for relation, sql in (
         ("attachments", session_attachment_binding_sql(len(unique))),
         ("session_events", session_event_binding_sql(len(unique))),
+        ("provider_usage_events", session_provider_usage_event_binding_sql(len(unique))),
     ):
         cursor = conn.execute(sql, unique)
         try:
@@ -369,6 +410,7 @@ async def session_input_bindings_async(
     for relation, sql in (
         ("attachments", session_attachment_binding_sql(len(unique))),
         ("session_events", session_event_binding_sql(len(unique))),
+        ("provider_usage_events", session_provider_usage_event_binding_sql(len(unique))),
     ):
         async with conn.execute(sql, unique) as cursor:
             async for row in cursor:
