@@ -66,6 +66,11 @@ class SurfaceQueryFacts:
     #: matches, so the same session appearing twice there is two hits and not
     #: a defect; a session list repeating a row is.
     rows_are_sessions: bool = True
+    #: ``False`` when this request has FTS/vector rank order. The reference
+    #: model predicts membership and count for those requests, but does not
+    #: duplicate production's ranking policy. Structured session pages have a
+    #: declared date/id order and remain exact tuple comparisons.
+    order_is_declared: bool = True
 
     @property
     def id_set(self) -> frozenset[str]:
@@ -146,6 +151,26 @@ def _rows_and_total(payload: object) -> tuple[object, int | None]:
     return [], reported
 
 
+def _request_has_ranked_order(request: ModelRequest) -> bool:
+    """Whether production gives this request retrieval rather than list order.
+
+    ``SessionQueryPlan`` preserves the retrieval order whenever its FTS or
+    vector lane is active. This asks production's compiler, instead of
+    creating a second classification of expression spellings in the test
+    harness.
+    """
+    from polylogue.archive.query.expression import compile_expression
+
+    spec = compile_expression(request.expression)
+    return bool(
+        spec.query_terms
+        or spec.contains_terms
+        or spec.similar_text
+        or spec.similar_session_id
+        or spec.retrieval_lane in {"semantic", "hybrid"}
+    )
+
+
 class ApiExpressionSurface:
     """The Python facade over the shared expression lowering."""
 
@@ -169,7 +194,19 @@ class ApiExpressionSurface:
         # This preserves the envelope contract that ``total`` names matches
         # before paging, while the page itself remains entirely product-owned.
         total = await replace(spec, limit=None, offset=0).count(self._archive.config)
-        return SurfaceQueryFacts(surface=self.name, request=request, session_ids=ids, total=total)
+        return SurfaceQueryFacts(
+            surface=self.name,
+            request=request,
+            session_ids=ids,
+            total=total,
+            order_is_declared=not bool(
+                spec.query_terms
+                or spec.contains_terms
+                or spec.similar_text
+                or spec.similar_session_id
+                or spec.retrieval_lane in {"semantic", "hybrid"}
+            ),
+        )
 
     async def close(self) -> None:
         await self._archive.close()
@@ -220,6 +257,7 @@ class CliExpressionSurface:
             session_ids=session_ids,
             total=total,
             rows_are_sessions=rows_are_sessions,
+            order_is_declared=not _request_has_ranked_order(request),
         )
 
     async def close(self) -> None:
@@ -331,6 +369,7 @@ class McpExpressionSurface:
             session_ids=session_ids,
             total=total,
             rows_are_sessions=rows_are_sessions,
+            order_is_declared=not _request_has_ranked_order(request),
         )
 
     async def close(self) -> None:
@@ -379,6 +418,7 @@ class DaemonExpressionSurface:
             session_ids=session_ids,
             total=total,
             rows_are_sessions=rows_are_sessions,
+            order_is_declared=not _request_has_ranked_order(request),
         )
 
     async def close(self) -> None:
@@ -454,13 +494,14 @@ def compare_to_model(
 
     Each surface is asked for the model's answer to the request *it* was
     given, which is how a surface that cannot express an offset is still
-    compared honestly.  Ids are compared as sets, because the model declares
-    which sessions match and not the rank order a ranked surface may impose,
-    plus an explicit repeat check, because a session listed twice is a defect
-    a set comparison cannot see.  Totals are compared only where a surface
-    reports one, and always at the pre-window grain — a surface that reports
-    its page size as the total is a count-grain error, which is exactly what
-    this comparison exists to name.
+    compared honestly.  Ranked-search rows are compared as sets because the
+    model deliberately does not predict relevance order.  A session listing,
+    however, has a declared default order and a page boundary: compare that
+    tuple exactly.  The separate repeat check makes a duplicated one-row page
+    visible too.  Totals are compared only where a surface reports one, and
+    always at the pre-window grain — a surface that reports its page size as
+    the total is a count-grain error, which is exactly what this comparison
+    exists to name.
     """
     divergences: list[Divergence] = []
     for facts in observed:
@@ -473,6 +514,17 @@ def compare_to_model(
                     request=facts.request,
                     surface=facts.surface,
                     detail=f"ids differ (missing={missing}, unexpected={extra})",
+                )
+            )
+        if facts.rows_are_sessions and facts.order_is_declared and facts.session_ids != expected.session_ids:
+            divergences.append(
+                Divergence(
+                    request=facts.request,
+                    surface=facts.surface,
+                    detail=(
+                        f"session page order differs "
+                        f"(expected={list(expected.session_ids)}, observed={list(facts.session_ids)})"
+                    ),
                 )
             )
         if facts.duplicate_ids:
