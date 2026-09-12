@@ -51,7 +51,13 @@ from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.cursor_identity import search_cursor_request_identity
-from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES, decide_outcome, outcome_exit_code
+from polylogue.surfaces.outcome import (
+    OUTCOME_EXIT_CODES,
+    OutcomeEnvelope,
+    decide_outcome,
+    outcome_exit_code,
+    render_outcome_line,
+)
 
 # The names below are used only as type annotations across this module (never
 # constructed/called at the module's own top level) except at the specific
@@ -1492,6 +1498,10 @@ def _emit_daemon_list_payload(
         "next_cursor": None,
         "source": "daemon",
     }
+    daemon_outcome = payload.get("outcome")
+    envelope["outcome"] = (
+        dict(daemon_outcome) if isinstance(daemon_outcome, Mapping) else decide_outcome(matched=total).to_dict()
+    )
     _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line_renderer(items), fields=fields)
 
 
@@ -1540,6 +1550,10 @@ def _emit_daemon_search_payload(
         "next_cursor": None,
         "source": "daemon",
     }
+    daemon_outcome = payload.get("outcome")
+    envelope["outcome"] = (
+        dict(daemon_outcome) if isinstance(daemon_outcome, Mapping) else decide_outcome(matched=total).to_dict()
+    )
     if not hits:
         diagnostics_payload = payload.get("diagnostics")
         _emit_no_results(
@@ -1570,6 +1584,7 @@ def _emit_degraded_daemon_search_payload(
         "total": None,
         "source": "daemon",
         "route_state": dict(route_state),
+        "outcome": decide_outcome(matched=0, degraded=(reason,)).to_dict(),
     }
     diagnostics = payload.get("diagnostics")
     if isinstance(diagnostics, Mapping):
@@ -1579,6 +1594,7 @@ def _emit_degraded_daemon_search_payload(
     elif output_format in {"ndjson", "csv"}:
         pass
     else:
+        click.echo(render_outcome_line(OutcomeEnvelope.model_validate(envelope["outcome"])), err=True)
         click.echo(reason, err=True)
     raise SystemExit(OUTCOME_EXIT_CODES["degraded"])
 
@@ -1894,6 +1910,7 @@ def _emit_stats(
         "mode": "stats",
         "origin": origin,
         "query": query or None,
+        "outcome": decide_outcome(matched=stats.total_sessions).to_dict(),
         **stats.to_dict(),
     }
     if convergence_warning is not None:
@@ -1909,6 +1926,7 @@ def _emit_stats(
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Stats do not support --format {output_format}.")
+    outcome_line = render_outcome_line(OutcomeEnvelope.model_validate(payload["outcome"]))
     lines = [
         f"Sessions: {stats.total_sessions}",
         f"Messages: {stats.total_messages}",
@@ -1918,6 +1936,8 @@ def _emit_stats(
     ]
     if convergence_warning is not None:
         lines.insert(0, convergence_warning)
+    if outcome_line is not None:
+        lines.insert(0, outcome_line)
     click.echo("\n".join(lines))
 
 
@@ -1938,6 +1958,7 @@ def _emit_stats_by(
         "query": query or None,
         "items": items,
         "total": sum(grouped.values()),
+        "outcome": decide_outcome(matched=sum(grouped.values())).to_dict(),
     }
     _emit_rows(envelope, items, output_format=output_format, text_line=_stats_by_line, fields=fields)
 
@@ -2334,6 +2355,7 @@ def _emit_list(
         "offset": offset,
         "next_offset": offset + limit if next_cursor is not None else None,
         "next_cursor": next_cursor,
+        "outcome": decide_outcome(matched=total if total is not None else len(items)).to_dict(),
     }
     # Browse/list mode emits an empty envelope (exit 0) when the archive has no
     # matching rows: "show me everything, there is nothing" is a valid success.
@@ -2384,6 +2406,7 @@ def _list_no_results_envelope(
         "offset": offset,
         "next_offset": None,
         "next_cursor": None,
+        "outcome": decide_outcome(matched=0).to_dict(),
     }
 
 
@@ -2483,6 +2506,7 @@ def _emit_search(
         "offset": offset,
         "next_offset": offset + limit if next_cursor is not None else None,
         "next_cursor": next_cursor,
+        "outcome": decide_outcome(matched=total if total is not None else len(items)).to_dict(),
     }
     if not items:
         _emit_no_results(envelope, output_format=output_format, typo_hint=typo_hint, diagnostics=diagnostics)
@@ -2573,7 +2597,12 @@ def _emit_no_results(
 
     convergence_warning = convergence_warning_line()
     diagnostics_payload = _diagnostics_dict(diagnostics)
-    outcome = decide_outcome(matched=0)
+    # Preserve the operation boundary's decision when a daemon supplied one.
+    # In particular, a degraded zero-row answer must not be translated into
+    # the local ``empty`` state merely because this adapter has no rows to
+    # render.  Local builders still decide ``empty`` when no outcome exists.
+    raw_outcome = envelope.get("outcome")
+    outcome = OutcomeEnvelope.model_validate(raw_outcome) if raw_outcome is not None else decide_outcome(matched=0)
     empty = {**envelope, "items": [], "total": 0, "outcome": outcome.to_dict()}
     if convergence_warning is not None:
         empty["archive_converging"] = True
@@ -2621,6 +2650,9 @@ def _emit_rows(
     text_line: Callable[[dict[str, object]], str],
     fields: str | None,
 ) -> None:
+    if "outcome" not in envelope:
+        raise ValueError("terminal row envelope missing canonical outcome")
+    outcome = OutcomeEnvelope.model_validate(envelope["outcome"])
     env = _TIMING_ENV.get()
     if env is not None:
         env.finish_timing("execute")
@@ -2646,6 +2678,9 @@ def _emit_rows(
             return
         if output_format not in {"markdown", "plaintext"}:
             raise click.UsageError(f"Root query does not support --format {output_format}.")
+        outcome_line = render_outcome_line(outcome)
+        if outcome_line is not None:
+            click.echo(outcome_line)
         click.echo("\n".join(text_line(item) for item in items))
     finally:
         if env is not None:
@@ -2701,6 +2736,7 @@ def _unit_source_session_filters(filter_kwargs: SessionFilterKwargs) -> dict[str
 
 def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_format: str) -> NoReturn:
     empty = {**envelope, "items": [], "total": 0}
+    outcome = OutcomeEnvelope.model_validate(empty["outcome"])
     if output_format == "json":
         click.echo(json.dumps(empty, indent=2, sort_keys=True))
     elif output_format == "yaml":
@@ -2711,7 +2747,7 @@ def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_form
         pass
     else:
         click.echo(f"No {unit}s matched.")
-    raise SystemExit(2)
+    raise SystemExit(outcome_exit_code(outcome))
 
 
 def _message_query_line(item: dict[str, object]) -> str:
