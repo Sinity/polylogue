@@ -28,6 +28,7 @@ from polylogue.sources.parsers.drive import (
 from polylogue.sources.parsers.drive_support import extract_text_from_chunk
 from polylogue.sources.parsers.drive_support_attachments import DRIVE_LIVE_FETCH_DATA_KEY
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.live_ingest import write_session_sync
 from tests.infra.pipeline_roundtrip import PipelineRoundtrip, write_and_hydrate
 from tests.infra.storage_records import db_setup
 
@@ -181,6 +182,132 @@ def test_parse_chunked_prompt_keeps_prompt_parent_at_session_grain() -> None:
     # The prompt id is not a local message id, so the branch point remains
     # unresolved rather than becoming a dangling parent_message_id.
     assert result.messages[0].parent_message_provider_id is None
+
+
+def test_parse_chunked_prompt_keeps_message_parent_at_message_grain() -> None:
+    result = parse_chunked_prompt(
+        "gemini",
+        {
+            "id": "drive-local-parent-session",
+            "chunkedPrompt": {
+                "chunks": [
+                    {"id": "local-parent-message", "role": "user", "text": "parent"},
+                    {
+                        "id": "local-child-message",
+                        "role": "model",
+                        "text": "child",
+                        "branchParent": {"id": "local-parent-message"},
+                    },
+                ]
+            },
+        },
+        "fallback-id",
+    )
+
+    assert result.parent_session_provider_id is None
+    assert result.messages[1].parent_message_provider_id == "local-parent-message"
+
+
+@pytest.mark.parametrize("child_first", [False, True], ids=["parent-first", "child-first"])
+def test_drive_prompt_parent_replay_preserves_unresolved_branch_point(
+    workspace_env: Mapping[str, Path], child_first: bool
+) -> None:
+    """Prompt-grain branch evidence must converge independent of replay order.
+
+    The child deliberately repeats the parent's first message text.  That is
+    not proof of a message-level branch point: only ``branchParent.promptId``
+    is present.  In particular, child-first replay must not let deferred
+    prefix extraction turn that coincidental match into a local message id.
+    """
+    parent = parse_chunked_prompt(
+        "drive",
+        {
+            "id": "drive-parent-replay",
+            "chunkedPrompt": {
+                "chunks": [
+                    {
+                        "id": "parent-message",
+                        "role": "user",
+                        "text": "shared prefix text",
+                        "createTime": "2026-01-01T00:00:00Z",
+                    }
+                ]
+            },
+        },
+        "parent-fallback",
+    )
+    child = parse_chunked_prompt(
+        "drive",
+        {
+            "id": "drive-child-replay",
+            "chunkedPrompt": {
+                "chunks": [
+                    {
+                        "id": "child-message",
+                        "role": "user",
+                        "text": "shared prefix text",
+                        "createTime": "2026-01-01T00:00:01Z",
+                        "branchParent": {"promptId": "drive-parent-replay"},
+                    },
+                    {
+                        "id": "child-answer",
+                        "role": "model",
+                        "text": "child-only answer",
+                        "createTime": "2026-01-01T00:00:02Z",
+                    },
+                ]
+            },
+        },
+        "child-fallback",
+    )
+
+    db_path = db_setup(workspace_env)
+    if child_first:
+        write_session_sync(db_path, child)
+        write_session_sync(db_path, parent)
+    else:
+        write_session_sync(db_path, parent)
+        write_session_sync(db_path, child)
+
+    with open_connection(db_path) as conn:
+        edge = conn.execute(
+            """
+            SELECT dst_origin, dst_native_id, resolved_dst_session_id,
+                   branch_point_message_id, inheritance, evidence_json
+            FROM session_links
+            WHERE src_session_id = 'aistudio-drive:drive-child-replay'
+            """
+        ).fetchone()
+        projection = conn.execute(
+            """
+            SELECT parent_session_id, root_session_id
+            FROM sessions
+            WHERE session_id = 'aistudio-drive:drive-child-replay'
+            """
+        ).fetchone()
+        message_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM messages
+            WHERE session_id = 'aistudio-drive:drive-child-replay'
+            """
+        ).fetchone()[0]
+
+    assert edge is not None
+    assert tuple(edge[:5]) == (
+        "aistudio-drive",
+        "drive-parent-replay",
+        "aistudio-drive:drive-parent-replay",
+        None,
+        None,
+    )
+    assert edge[5] is not None
+    assert '"branch_point_resolution":"unresolved-source-no-local-message-id"' in edge[5]
+    assert tuple(projection) == (
+        "aistudio-drive:drive-parent-replay",
+        "aistudio-drive:drive-parent-replay",
+    )
+    assert message_count == 2
 
 
 def test_parse_chunked_prompt_idless_chunk_does_not_get_a_positional_provider_id() -> None:

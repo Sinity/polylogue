@@ -7434,6 +7434,31 @@ def _reextract_prefix_tail_db(
     if edge is None:
         return
     dst_origin, dst_native_id, link_type = edge
+    # A Drive ``branchParent.promptId`` is a source-asserted session edge, not
+    # evidence that the child replays the parent's message prefix.  The child
+    # may have arrived before its parent, so the normal deferred extraction
+    # path must not manufacture a branch point from coincidental matching
+    # content once the parent becomes available.  The parser-side writer
+    # records this typed unresolved state in the edge evidence; preserve it
+    # across parent-first and child-first replay alike.
+    unresolved_drive_branch = conn.execute(
+        """
+        SELECT 1
+        FROM session_links
+        WHERE src_session_id = ?
+          AND dst_origin = ?
+          AND dst_native_id = ?
+          AND link_type = ?
+          AND json_valid(evidence_json)
+          AND json_extract(evidence_json, '$.branch_point_resolution') =
+              'unresolved-source-no-local-message-id'
+        LIMIT 1
+        """,
+        (child_session_id, dst_origin, dst_native_id, link_type),
+    ).fetchone()
+    if unresolved_drive_branch is not None:
+        record_substage("deferred_source_branch_unresolved", time.perf_counter())
+        return
     t0 = time.perf_counter()
     parent_composed = _composed_db_signatures(
         conn,
