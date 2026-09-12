@@ -15,6 +15,10 @@ from enum import StrEnum
 class AttachmentAvailabilityState(StrEnum):
     AVAILABLE = "available"
     UNFETCHED = "unfetched"
+    # The provider was consulted and gave a terminal absence/access answer.
+    # This is distinct from ``UNFETCHED`` (no attempt yet) and ``UNKNOWN``
+    # (the archive cannot establish why bytes are absent).
+    UNAVAILABLE = "unavailable"
     MISSING = "missing"
     HASH_MISMATCH = "hash-mismatch"
     UNAUTHORIZED = "unauthorized"
@@ -63,6 +67,13 @@ def resolve_attachment_availability(
             return AttachmentAvailability(
                 AttachmentAvailabilityState.UNFETCHED,
                 "bytes-not-requested",
+                False,
+                generation_id,
+            )
+        if acquisition_status == "unavailable":
+            return AttachmentAvailability(
+                AttachmentAvailabilityState.UNAVAILABLE,
+                "provider-bytes-unavailable",
                 False,
                 generation_id,
             )
