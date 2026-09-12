@@ -155,6 +155,43 @@ def test_raw_parse_recovery_stage_drains_a_stuck_raw_row(tmp_path: Path) -> None
     assert rows[0][0] == "conv-stuck"
 
 
+def test_single_observation_recovery_survives_output_loss_and_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A minimal pass must publish, including after losing output and ops hints.
+
+    Anti-vacuity: using all inspection capacity before publication strands the
+    first raw forever; falling back to the legacy scanner fails explicitly.
+    """
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "source"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(source / "first.json"))
+    monkeypatch.setattr("polylogue.daemon.convergence_stages._RAW_PARSE_RECOVERY_BATCH_LIMIT", 1)
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("legacy raw candidate scanner was called")
+
+    monkeypatch.setattr("polylogue.storage.raw_convergence._raw_materialization_candidate_ids", forbidden)
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+    assert stage.execute(source) is True
+    assert _sessions_for_raw(tmp_path, raw_id) == [("conv-stuck", raw_id)]
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("DELETE FROM sessions WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("DELETE FROM convergence_debt")
+        conn.commit()
+    later_id = _write_stuck_raw(tmp_path, source_path=str(source / "later.json"), native_id="later")
+    restarted = make_raw_parse_recovery_stage(tmp_path / "index.db")
+    for _ in range(4):
+        if restarted.execute(source):
+            break
+    assert restarted.check(source) is False
+    assert _sessions_for_raw(tmp_path, raw_id) == [("conv-stuck", raw_id)]
+    assert _sessions_for_raw(tmp_path, later_id) == [("later", later_id)]
+
+
 def test_raw_parse_recovery_stage_drains_a_parsed_but_unindexed_raw(tmp_path: Path) -> None:
     """A completed parse must still be retried when index projection was lost."""
     initialize_active_archive_root(tmp_path)
