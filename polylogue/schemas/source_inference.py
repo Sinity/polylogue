@@ -608,7 +608,14 @@ def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
         # separate decisions.  Opaque/raw-only families retain their typed
         # non-applicability outcome instead of being fed to a JSON reducer.
         rule = artifact_rule_for_path(provider, str(candidate.path))
-        if recognition.source_class == "non_session" and rule is not None and rule.parse_policy == "fact":
+        if (
+            recognition.source_class == "non_session"
+            and rule is not None
+            and rule.observation_strategy in {"structured-records", "structured-documents"}
+        ):
+            # A structured sidecar is not a session, but its shape belongs in
+            # the source-backed schema denominator. The raw acquisition route
+            # still owns retention and any later typed consumer.
             return None
         return SourceTerminal(
             "intentionally_excluded" if recognition.source_class == "non_session" else "unsupported",
@@ -750,6 +757,7 @@ def _iter_document_payloads(
     path_name: str,
     *,
     byte_count: int,
+    expand_export_arrays: bool = True,
 ) -> Iterator[JSONValue]:
     """Stream export arrays without repeatedly walking one physical document."""
     import ijson
@@ -762,9 +770,9 @@ def _iter_document_payloads(
                 _prefix, root_event, _value = next(parser)
             except StopIteration:
                 raise SourceInferenceError(f"malformed_json:{path_name}") from None
-            if root_event == "start_array":
+            if root_event == "start_array" and expand_export_arrays:
                 prefixes = ("item",)
-            elif root_event == "start_map":
+            elif root_event == "start_map" and expand_export_arrays:
                 prefixes = tuple(
                     f"{value}.item"
                     for prefix, event, value in parser
@@ -800,12 +808,22 @@ def _iter_document_payloads(
     yield value
 
 
-def _iter_file_payloads(path: Path, *, byte_count: int) -> Iterator[JSONValue | _SizedPayload]:
+def _iter_file_payloads(
+    path: Path,
+    *,
+    byte_count: int,
+    preserve_document: bool = False,
+) -> Iterator[JSONValue | _SizedPayload]:
     if path.suffix.lower() in {".jsonl", ".ndjson"}:
         with path.open("rb") as handle:
             yield from _iter_sized_jsonl_payloads(handle)
         return
-    yield from _iter_document_payloads(lambda: path.open("rb"), str(path), byte_count=byte_count)
+    yield from _iter_document_payloads(
+        lambda: path.open("rb"),
+        str(path),
+        byte_count=byte_count,
+        expand_export_arrays=not preserve_document,
+    )
 
 
 def _native_source_id(provider: Provider, payload: JSONValue, fallback: str, *, source_path: Path) -> str:
@@ -932,9 +950,19 @@ def _collect_payload_evidence(
             # strong path rule below, preserving the sidecar family even when
             # its values happen to resemble a transcript.
             rule = artifact_rule_for_path(provider, str(candidate.path))
-            if rule is None or rule.parse_policy != "fact":
+            if rule is None or rule.observation_strategy not in {
+                "structured-records",
+                "structured-documents",
+            }:
                 payload_replay.close()
                 return (), 0, (), False
+            # A JSON sidecar is one structured document even when its provider
+            # happens to use a record-stream config (for example Claude's
+            # sessions-index.json). Keeping the document envelope here makes
+            # additive fields observable instead of accidentally sampling only
+            # nested objects such as ``sessions[]``.
+            if rule.observation_strategy == "structured-documents" and candidate.path.suffix.lower() == ".json":
+                config = replace(config, sample_granularity="document", record_type_key=None)
         else:
             admitted_artifact_kind = artifact.cohort
         for record in payload_replay:
@@ -1225,15 +1253,28 @@ def _collect_candidate(
             return _CollectedCandidate(candidate, revision, SourceTerminal("changed_during_read", byte_count))
         return collected
     try:
+        structured_document_sidecar = False
+        if candidate.path.suffix.lower() == ".json":
+            rule = artifact_rule_for_path(Provider.from_string(candidate.provider), str(candidate.path))
+            structured_document_sidecar = rule is not None and rule.observation_strategy == "structured-documents"
         contributions, record_count, producer_versions, producer_version_unrecognized = _collect_payload_evidence(
             candidate,
             revision,
-            _iter_file_payloads(candidate.path, byte_count=byte_count),
+            _iter_file_payloads(
+                candidate.path,
+                byte_count=byte_count,
+                preserve_document=structured_document_sidecar,
+            ),
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
             metadata_only=metadata_only,
             spool_path=spool_path,
-            replay_payloads=partial(_iter_file_payloads, candidate.path, byte_count=byte_count),
+            replay_payloads=partial(
+                _iter_file_payloads,
+                candidate.path,
+                byte_count=byte_count,
+                preserve_document=structured_document_sidecar,
+            ),
         )
     except SourceInferenceError as exc:
         reason = str(exc)
