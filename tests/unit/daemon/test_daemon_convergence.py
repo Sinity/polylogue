@@ -63,7 +63,10 @@ async def test_coordinator_cancellation_keeps_the_real_writer_owned_until_it_sto
         await second_caller
         assert effects == ["first", "after-admission"]
         assert coordinator.snapshot().active_actor is None
-        assert any(event.actor == "watcher.first" and event.outcome == "cancelled" for event in events)
+        # The caller disconnected, but the admitted execution completed its
+        # own work successfully. Terminal evidence follows that execution,
+        # not the caller's wait state.
+        assert any(event.actor == "watcher.first" and event.outcome == "success" for event in events)
     finally:
         allow_first_finish.set()
         await coordinator.shutdown(timeout=1.0)
