@@ -62,7 +62,7 @@ async def temp_config_and_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     render_root.mkdir(parents=True, exist_ok=True)
 
     # The split-file backend, the config archive root, and the db_path used by
-    # update_index/search must all point at the same archive. db_path is the
+    # search must all point at the same archive. db_path is the
     # backend's index tier under archive_root (not a standalone test.db).
     db_path = archive_root / "index.db"
 

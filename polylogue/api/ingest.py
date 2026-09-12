@@ -56,23 +56,3 @@ class PolylogueIngestMixin:
         from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 
         return await parse_sources_archive(_active_archive_root(self.config), sources)
-
-    async def rebuild_index(self) -> bool:
-        """Rebuild the derived block-FTS index through the mutation executor."""
-        from polylogue.config import active_archive_root as _active_archive_root
-        from polylogue.operations.bindings import runtime_operation_binding
-        from polylogue.operations.mutation_actuators import IndexRebuildActuator, IndexRebuildArgs
-        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            actuator = IndexRebuildActuator()
-            args = IndexRebuildArgs(archive=archive)
-            root = _active_archive_root(self.config)
-            executor = OperationExecutor.for_archive_root(root)
-            binding = runtime_operation_binding(actuator)
-            principal = MutationPrincipal("facade", frozenset({"archive.rebuild_index"}), "api", "write")
-            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-            authorization = executor.authorize_bound(binding, preview, principal)
-            receipt = executor.execute_bound(binding, preview, authorization, args)
-        return receipt.status in {"applied", "already_satisfied"}

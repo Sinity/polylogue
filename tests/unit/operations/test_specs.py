@@ -51,8 +51,6 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-blackboard-post",
         "mutate-capture-assertion-candidate",
         "mutate-import-annotation-batch",
-        "mutate-rebuild-index",
-        "mutate-update-index",
         "mutate-rebuild-insights",
         "mutate-resolve-raw-authority-blocker",
         "mutate-save-saved-view",
@@ -85,7 +83,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["materialize-session-insights"].mutates_state is True
     assert specs["project-retrieval-band-readiness"].previewable is True
     assert specs["project-session-insight-readiness"].previewable is True
-    for operation in ("mutate-rebuild-index", "mutate-update-index", "mutate-rebuild-insights"):
+    for operation in ("mutate-rebuild-insights",):
         assert specs[operation].mutates_state is True
         assert specs[operation].previewable is True
         assert specs[operation].idempotent is True

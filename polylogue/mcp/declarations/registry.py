@@ -223,8 +223,8 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
     ),
     _ToolRow(
         "maintenance",
-        "Rebuild derived indexes and inspect or adjudicate operation recovery. "
-        "rebuild_index, rebuild_insights, and recovery_adjudicate require confirm=true "
+        "Rebuild session insights and inspect or adjudicate operation recovery. "
+        "rebuild_insights and recovery_adjudicate require confirm=true "
         "and fail closed without it.",
         "polylogue.mcp.server_cutover",
         "register_cutover_privileged_tools",
@@ -235,7 +235,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "polylogue.mcp.server_cutover.maintenance:inspect.signature",
         (("operation", "recovery_status"),),
         "operation_result",
-        "mutate-rebuild-index",
+        "mutate-rebuild-insights",
     ),
 )
 

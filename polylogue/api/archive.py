@@ -6766,24 +6766,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             projection="index-status",
         )
 
-    async def update_index(self, session_ids: list[str]) -> bool:
-        """Repair the archive block-FTS index.
-
-        The archive FTS index is trigger-maintained, so it stays in sync on every
-        write and there is no per-session update primitive. This exposes the
-        operator repair path: a full archive rebuild that reconciles the index
-        with ``index.db`` blocks. ``session_ids`` is accepted for surface
-        symmetry but the archive rebuild always reconciles the whole index.
-        """
-        from polylogue.operations.mutation_actuators import IndexRebuildActuator, IndexRebuildArgs
-
-        receipt, _plan = self._execute_facade_mutation(
-            IndexRebuildActuator(operation="mutate-update-index"),
-            lambda archive: IndexRebuildArgs(archive=archive, session_ids=tuple(session_ids)),
-            capability="archive.update_index",
-        )
-        return receipt.status in {"applied", "already_satisfied"}
-
     async def neighbor_candidates(
         self,
         *,

@@ -252,8 +252,6 @@ def test_pinned_read_only_store_blocks_all_archive_tier_mutations(tmp_path: Path
         with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
             archive.delete_sessions((session_id,))
         with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
-            archive.rebuild_index()
-        with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
             archive.commit()
         with pytest.raises(ReadOnlyArchiveError, match="read-only archive evidence"):
             archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:codex-pinned-read-only")

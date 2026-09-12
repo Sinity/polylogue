@@ -21,6 +21,7 @@ from polylogue.storage.fts.pl_fold import PL_FOLD_TABLE, pl_fold, pl_fold_sql_ex
 from polylogue.storage.fts.sql import FTS_MESSAGES_TABLE_SQL, FTS_UNICODE_TOKENIZER
 from polylogue.storage.search.query_support import escape_fts5_query, normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.write import rebuild_archive_messages_fts
 from tests.infra.identity import archive_message_id
 
 # ---------------------------------------------------------------------------
@@ -197,8 +198,8 @@ def test_literal_l_stroke_query_also_finds_the_same_content(test_conn: sqlite3.C
     assert _fts_hits(test_conn, "łatwo") == [message_id]
 
 
-def test_archive_store_rebuild_index_preserves_l_stroke_recall(tmp_path: Path) -> None:
-    """The public rebuild route must fold canonical text, not only fresh-write triggers."""
+def test_messages_fts_primitive_preserves_l_stroke_recall(tmp_path: Path) -> None:
+    """The retained storage primitive folds canonical text, not only fresh-write triggers."""
     with ArchiveStore(tmp_path) as archive:
         message_id = _seed_text_block(
             archive._conn,
@@ -211,7 +212,8 @@ def test_archive_store_rebuild_index_preserves_l_stroke_recall(tmp_path: Path) -
             (message_id,),
         ).fetchone()[0]
 
-        assert archive.rebuild_index() == 1
+        assert rebuild_archive_messages_fts(archive._conn) == 1
+        archive._conn.commit()
         assert archive.search_blocks("latwo") == [block_id]
         assert archive.search_blocks("łatwo") == [block_id]
 

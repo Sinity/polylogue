@@ -2122,44 +2122,8 @@ async def _dispatch_run(hooks: ServerCallbacks, *, ref: str, limit: int | None) 
 
 
 async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwargs: dict[str, Any]) -> str:
-    """Dispatch derived-index and recovery maintenance operations."""
+    """Dispatch session-insight and recovery maintenance operations."""
     config = hooks.get_config()
-
-    if operation == "rebuild_index":
-        from polylogue.mcp.payloads import MCPMutationStatusPayload
-
-        confirm_error = _require_confirm(hooks, bool(kwargs.get("confirm") or False), verb="rebuild the index")
-        if confirm_error is not None:
-            return confirm_error
-        poly = hooks.get_polylogue()
-        success = await poly.rebuild_index()
-        status_info = await poly.get_index_status()
-        return hooks.json_payload(
-            MCPMutationStatusPayload(
-                status="ok" if success else "failed",
-                index_exists=bool(status_info.get("exists", False)),
-                indexed_messages=int(status_info.get("count", 0)),
-            ),
-            exclude_none=True,
-        )
-
-    if operation == "update_index":
-        from polylogue.mcp.payloads import MCPMutationStatusPayload
-
-        session_ids = kwargs.get("session_ids")
-        if not session_ids:
-            return hooks.error_json(
-                "maintenance(operation='update_index') requires session_ids", code="invalid_argument"
-            )
-        success = await hooks.get_polylogue().update_index(list(session_ids))
-        return hooks.json_payload(
-            MCPMutationStatusPayload(
-                status="ok" if success else "failed",
-                scope="archive-wide",
-                scope_note="update_index rebuilds the complete messages_fts index; session_ids are selection metadata only",
-            ),
-            exclude_none=True,
-        )
 
     if operation in {"recovery_status", "recovery_adjudicate"}:
         from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
@@ -2481,22 +2445,16 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
     if capabilities.maintenance:
 
         async def maintenance(
-            operation: Literal[
-                "rebuild_index",
-                "update_index",
-                "rebuild_insights",
-                "recovery_status",
-                "recovery_adjudicate",
-            ],
+            operation: Literal["rebuild_insights", "recovery_status", "recovery_adjudicate"],
             operation_id: str | None = None,
             target_outcomes: dict[str, Literal["applied", "not-applied", "unknown"]] | None = None,
             reason: str | None = None,
             confirm: bool = False,
         ) -> str:
-            """Rebuild derived indexes and inspect or adjudicate operation recovery.
+            """Rebuild session insights and inspect or adjudicate operation recovery.
 
-            Full-effect operations require ``confirm=True``: ``rebuild_index``,
-            ``rebuild_insights`` and ``recovery_adjudicate`` fail closed without it.
+            Full-effect operations require ``confirm=True``: ``rebuild_insights``
+            and ``recovery_adjudicate`` fail closed without it.
             """
 
             async def run() -> str:
