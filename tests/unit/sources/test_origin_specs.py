@@ -174,7 +174,14 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "brain_metadata_sidecar",
         "brain_document",
     }
-    assert artifact_suffixes_for_provider(Provider.ANTIGRAVITY) == (".pb", ".metadata.json", ".md")
+    assert artifact_suffixes_for_provider(Provider.ANTIGRAVITY) == (
+        ".pb",
+        ".db",
+        ".sqlite",
+        ".sqlite3",
+        ".metadata.json",
+        ".md",
+    )
     assert set(by_origin) == set(Origin)
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)

@@ -9,7 +9,10 @@ Two halves, both read-only and neither able to create a fixture or a parser:
   artifact kind observed in an archive's ``source.db`` maps to a declared
   parser route, a declared artifact rule, or a typed unsupported exclusion.
   A construct nothing declares is reported as typed unsupported evidence and
-  fails the gate.
+  fails the gate.  Persisted ``unknown`` rows may be re-inspected against
+  their immutable retained blob, but only a positive current classification
+  for that exact payload can cover the old observation; an unavailable blob
+  or a fresh ``unknown`` remains uncovered.
 
 Ordinary value variation inside a declared construct is not a construct; a
 new origin token, detector route, or artifact kind is.
@@ -20,15 +23,19 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy.models import ArtifactKind
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginSpec
+from polylogue.storage.artifacts.inspection import inspect_raw_artifact
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
+from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from tests.infra.origin_capability_matrix import CapabilityManifest, load_manifest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -212,13 +219,187 @@ def inventory_constructs(
                     )
 
         if table_exists(conn, "raw_artifacts"):
-            for origin, kind, support, count in conn.execute(
-                "SELECT origin, artifact_kind, support_status, COUNT(*) FROM raw_artifacts GROUP BY 1, 2, 3"
-            ):
+            # Artifact observations are durable and can legitimately predate a
+            # declaration fix.  Re-inspect only those rows whose stored kind is
+            # ``unknown``; a fresh positive classification is evidence for the
+            # exact shape, while an unknown re-inspection remains uncovered.
+            # This keeps the gate useful against an immutable archive without
+            # turning ``unknown`` into a provider-wide allow-list.
+            artifact_rows = conn.execute(
+                """
+                SELECT origin, artifact_kind, support_status, COUNT(*)
+                FROM raw_artifacts
+                WHERE artifact_kind <> ?
+                GROUP BY 1, 2, 3
+                """,
+                (ArtifactKind.UNKNOWN.value,),
+            )
+            for origin, kind, support, count in artifact_rows:
                 out.append(_artifact_construct(by_origin, manifest, str(origin), str(kind), str(support), int(count)))
+
+            if (unknown_columns := _unknown_artifact_columns(conn)) is not None:
+                stale_rows = conn.execute(
+                    f"""
+                    SELECT a.origin, a.artifact_kind, a.support_status,
+                           s.raw_id, s.blob_hash, s.blob_size, s.source_path,
+                           {unknown_columns["source_index"]}, {unknown_columns["detected_provider"]}
+                    FROM raw_artifacts AS a
+                    LEFT JOIN raw_sessions AS s ON s.raw_id = a.raw_id
+                    WHERE a.artifact_kind = ?
+                    """,
+                    (ArtifactKind.UNKNOWN.value,),
+                )
+                out.extend(
+                    _stale_unknown_artifact_constructs(
+                        stale_rows,
+                        source_db=source_db,
+                        by_origin=by_origin,
+                        manifest=manifest,
+                    )
+                )
     finally:
         conn.close()
     return tuple(out)
+
+
+def _unknown_artifact_columns(conn: sqlite3.Connection) -> dict[str, str] | None:
+    """Return optional raw columns needed for read-only stale reinspection."""
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_sessions)")}
+    required = {"raw_id", "blob_hash", "blob_size", "source_path"}
+    if not required.issubset(columns):
+        return None
+    detected_provider = "s.detected_provider" if "detected_provider" in columns else "NULL"
+    source_index = "s.source_index" if "source_index" in columns else "NULL"
+    return {"detected_provider": detected_provider, "source_index": source_index}
+
+
+def _stale_unknown_artifact_constructs(
+    rows: Iterable[tuple[object, ...]],
+    *,
+    source_db: Path,
+    by_origin: dict[str, OriginSpec],
+    manifest: CapabilityManifest,
+) -> tuple[CoverageConstruct, ...]:
+    """Reclassify persisted unknown rows, retaining an explicit shape witness.
+
+    The source tier is immutable evidence for this gate.  Reinspection never
+    writes an observation back; it only proves that a previously bounded
+    inspection now has a declared, content-specific route.  A missing blob,
+    a decode failure, or a fresh ``unknown`` classification is deliberately
+    left as an uncovered original construct.
+    """
+    blob_root = source_db.parent / "blob"
+    blob_store = BlobStore(blob_root) if blob_root.is_dir() else None
+    buckets: dict[tuple[str, str, str, str, str, str], int] = {}
+    for row in rows:
+        (
+            origin,
+            original_kind,
+            original_support,
+            raw_id,
+            blob_hash,
+            blob_size,
+            source_path,
+            source_index,
+            detected_provider,
+        ) = row
+        origin = str(origin)
+        original_kind = str(original_kind)
+        original_support = str(original_support)
+        observation = _reinspect_unknown_row(
+            raw_id=raw_id,
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            source_path=source_path,
+            source_index=source_index,
+            detected_provider=detected_provider,
+            origin=origin,
+            blob_store=blob_store,
+        )
+        if observation is None or observation.artifact_kind == ArtifactKind.UNKNOWN.value:
+            status = UNCOVERED
+            route = "no artifact declaration"
+            witness = "none"
+        else:
+            declared = _artifact_construct(
+                by_origin,
+                manifest,
+                origin,
+                observation.artifact_kind,
+                observation.support_status.value,
+                1,
+            )
+            status = declared.status
+            route = (
+                f"stale observation; fresh shape={observation.artifact_kind}/{observation.support_status.value}; "
+                f"{declared.route}"
+            )
+            witness = f"fresh classification: {observation.classification_reason}"
+        key = (origin, original_kind, original_support, status, route, witness)
+        buckets[key] = buckets.get(key, 0) + 1
+
+    constructs: list[CoverageConstruct] = []
+    for (origin, original_kind, original_support, status, route, witness), count in sorted(buckets.items()):
+        original_key = f"{origin}/{original_kind}/{original_support}"
+        # Keep the persisted construct visible.  If one stale bucket contains
+        # more than one positive shape, the route/witness still distinguishes
+        # each bucket instead of silently coalescing them.
+        constructs.append(
+            CoverageConstruct(
+                "artifact-kind",
+                original_key,
+                status,
+                route,
+                witness,
+                count,
+            )
+        )
+    return tuple(constructs)
+
+
+def _reinspect_unknown_row(
+    *,
+    raw_id: object,
+    blob_hash: object,
+    blob_size: object,
+    source_path: object,
+    source_index: object,
+    detected_provider: object,
+    origin: str,
+    blob_store: BlobStore | None,
+) -> ArtifactObservationRecord | None:
+    """Return a fresh observation for one stale row, or ``None`` if unavailable."""
+    if blob_store is None or not isinstance(raw_id, str) or not isinstance(source_path, str):
+        return None
+    if not isinstance(blob_hash, (bytes, bytearray)) or not isinstance(blob_size, int):
+        return None
+    blob_hash_hex = bytes(blob_hash).hex()
+    try:
+        if not blob_store.exists(blob_hash_hex):
+            return None
+        provider = Provider.from_string(str(detected_provider or ""))
+        if provider is Provider.UNKNOWN and origin == "aistudio-drive":
+            # The public origin is intentionally non-injective; use the
+            # acquisition family only as a parser hint for this exact shape.
+            provider = Provider.GEMINI
+        if provider is Provider.UNKNOWN:
+            return None
+        record = RawSessionRecord(
+            raw_id=raw_id,
+            blob_hash=blob_hash_hex,
+            payload_provider=provider,
+            source_name=provider.value,
+            source_path=source_path,
+            source_index=int(source_index) if isinstance(source_index, int) else None,
+            blob_size=blob_size,
+            acquired_at=datetime.fromtimestamp(0, tz=timezone.utc).isoformat(),
+        )
+        return inspect_raw_artifact(record, blob_store=blob_store)
+    except Exception:
+        # This is a verification aid, not a second parser error surface.  The
+        # original unknown observation remains uncovered when reinspection is
+        # unavailable or fails.
+        return None
 
 
 def _artifact_construct(
