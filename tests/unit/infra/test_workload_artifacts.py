@@ -197,6 +197,40 @@ def test_profile_name_and_purpose_are_part_of_artifact_identity() -> None:
     assert seeded_archive_key(repurposed.corpus_specs(shapes)).value != baseline.value
 
 
+def test_profile_identity_controls_published_artifact_reuse(tmp_path: Path) -> None:
+    """The cache route reuses one profile and publishes a changed profile separately.
+
+    The adjacent identity test proves key derivation; this tiny provider-shaped
+    build proves that the key is also the executable cache boundary.  Keeping
+    the source shape fixed isolates the profile declaration as the only input
+    that may select a different published artifact.
+    """
+    import dataclasses
+
+    profile = WorkloadProfile(
+        name="cache-profile",
+        purpose="cache-shape",
+        seed=7,
+        family_ids=("test-workload",),
+        profile_tokens=("provider-native", "cache-shape"),
+        origin="generated.test-cache-profile",
+        tags=("synthetic", "test"),
+    )
+    shapes = (WorkloadSessionShape("codex", 1, 1, 1),)
+    renamed = dataclasses.replace(profile, name="cache-profile-renamed")
+    cache_root = tmp_path / "cache"
+
+    first = build_seeded_archive(profile.corpus_specs(shapes), cache_root=cache_root)
+    reused = build_seeded_archive(profile.corpus_specs(shapes), cache_root=cache_root)
+    changed = build_seeded_archive(renamed.corpus_specs(shapes), cache_root=cache_root)
+
+    assert reused.root == first.root
+    assert reused.manifest.key == first.manifest.key
+    assert changed.root != first.root
+    assert changed.manifest.key != first.manifest.key
+    assert len(tuple((cache_root / "artifacts").iterdir())) == 2
+
+
 def test_seeded_archive_manifest_is_the_canonical_corpus_artifact_manifest(
     tmp_path: Path,
 ) -> None:
