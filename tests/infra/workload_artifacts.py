@@ -723,6 +723,8 @@ class WorkloadSessionShape:
     style: str = "tool-heavy"
 
     def __post_init__(self) -> None:
+        _validate_provider(self.provider)
+        _reject_semantic_metadata(asdict(self), location="workload session shape")
         if self.count < 1:
             raise ValueError("workload session shape requires a positive session count")
         if self.messages_min < 1 or self.messages_max < self.messages_min:
@@ -802,8 +804,12 @@ class NamedWorkloadProfile:
     def __post_init__(self) -> None:
         if not self.provider_session_counts or any(count < 1 for _provider, count in self.provider_session_counts):
             raise ValueError("named workload profile requires positive provider session counts")
+        providers = tuple(_validate_provider(provider) for provider, _count in self.provider_session_counts)
+        if len(set(providers)) != len(providers):
+            raise ValueError("named workload profile cannot repeat a provider")
         if self.messages_min < 1 or self.messages_max < self.messages_min:
             raise ValueError("named workload profile has invalid message bounds")
+        _reject_semantic_metadata(asdict(self), location="named workload profile")
 
     def corpus_specs(self) -> tuple[CorpusSpec, ...]:
         return self.workload.corpus_specs(
@@ -878,11 +884,15 @@ class BenchmarkWorkloadProfile:
             raise ValueError("benchmark workload dimensions must be positive")
         if not self.provider_session_counts or any(count < 1 for _provider, count in self.provider_session_counts):
             raise ValueError("benchmark workload requires every configured provider to have sessions")
+        providers = tuple(_validate_provider(provider) for provider, _count in self.provider_session_counts)
+        if len(set(providers)) != len(providers):
+            raise ValueError("benchmark workload cannot repeat a provider")
         if (
             sum(count for _provider, count in self.provider_session_counts) * self.messages_per_session
             != self.target_messages
         ):
             raise ValueError("benchmark workload session composition must exactly produce target_messages")
+        _reject_semantic_metadata(asdict(self), location="benchmark workload profile")
 
     @property
     def purpose(self) -> str:
