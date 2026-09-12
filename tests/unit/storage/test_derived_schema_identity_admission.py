@@ -69,6 +69,16 @@ def test_public_read_open_rejects_partially_initialized_version_zero_index(tmp_p
     assert caught.value.lifecycle_action == "rebuild_index"
 
 
+def test_writable_fresh_initialization_remains_readable(tmp_path: Path) -> None:
+    """The read-only version-zero guard does not reject the writer bootstrap path."""
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        assert archive.index_connection is not None
+
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        assert archive.index_connection is not None
+        assert archive.index_connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
 def test_schema_identity_stamp_survives_the_connection_that_wrote_it(tmp_path: Path) -> None:
     """The stamp is committed, not left in the writer's open transaction.
 
