@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -156,6 +157,67 @@ async def test_seeded_divergence_is_caught(
         f"perturbation {kind!r} on seed {seed} changed no request's expected answer on "
         f"{sorted(FULL_COVERAGE_SURFACES - observed_by)}: the request set cannot observe it"
     )
+
+
+@pytest.mark.parametrize("seeded_corpus", (CORPUS_SEEDS[0],), indirect=True)
+async def test_predicate_differential_rejects_dropped_predicates_page_counts_and_replays(
+    seeded_corpus: tuple[ModelCorpus, int],
+    surfaces: ExpressionSurfaceSet,
+) -> None:
+    """The comparator rejects the three pagination/predicate escape hatches.
+
+    The observations originate at the real API, CLI, MCP and daemon adapters;
+    each mutation then models one plausible adapter or product regression.
+    This is deliberately more specific than asserting that a perturbed corpus
+    differs: a comparator that reduced a page to a set, or compared totals at
+    page grain, would otherwise make the production routes look green.
+    """
+    corpus, _ = seeded_corpus
+    model = corpus.reference_archive()
+    origins = {session.origin for session in corpus}
+    selected_origin = max(origins, key=lambda origin: sum(session.origin == origin for session in corpus))
+
+    predicate_request = ModelRequest(
+        name="predicate-control",
+        expression=f"sessions where origin:{selected_origin}",
+    )
+    page_request = ModelRequest(
+        name="page-control",
+        expression=predicate_request.expression,
+        limit=1,
+        offset=1,
+    )
+    assert model.query(predicate_request).total < len(corpus)
+    assert model.query(page_request).total > len(model.query(page_request).session_ids)
+
+    predicate_answers = await surfaces.execute(predicate_request)
+    page_answers = await surfaces.execute(page_request)
+    assert {facts.surface for facts in predicate_answers} == set(SURFACE_NAMES)
+    assert {facts.surface for facts in page_answers} == set(SURFACE_NAMES)
+    assert all(facts.session_ids for facts in page_answers)
+
+    unfiltered = model.query(ModelRequest(name="without-predicate", expression="sessions"))
+    dropped_predicate = tuple(
+        replace(facts, session_ids=unfiltered.session_ids, total=unfiltered.total) for facts in predicate_answers
+    )
+    page_sized_total = tuple(replace(facts, total=len(facts.session_ids)) for facts in page_answers)
+    replayed_page = tuple(replace(facts, session_ids=facts.session_ids * 2) for facts in page_answers)
+
+    controls = (
+        ("dropped predicate", predicate_request, dropped_predicate, "ids differ"),
+        ("page-sized total", page_request, page_sized_total, "model total"),
+        ("replayed page", page_request, replayed_page, "more than once"),
+    )
+    for name, request, mutated, diagnostic in controls:
+        divergences = compare_to_model(model, mutated)
+        assert {item.surface for item in divergences} == set(SURFACE_NAMES), (
+            f"{name} was not rejected by every real surface adapter:\n{format_divergences(divergences)}"
+        )
+        assert all(item.request == request for item in divergences)
+        assert all(
+            any(diagnostic in item.detail for item in divergences if item.surface == surface)
+            for surface in SURFACE_NAMES
+        )
 
 
 @pytest.mark.parametrize("seeded_corpus", (CORPUS_SEEDS[0],), indirect=True)
