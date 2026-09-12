@@ -62,6 +62,65 @@ def _config(tmp_path: Path) -> Config:
     return Config(archive_root=tmp_path, render_root=tmp_path, sources=[])
 
 
+def test_raw_materialization_replays_current_cohort_after_session_row_loss(tmp_path: Path) -> None:
+    """The production replay path replaces orphaned output without touching a foreign session.
+
+    Anti-vacuity: removing the writer's orphan-membership cleanup leaves the
+    target's old ``(session_id, position, variant_index)`` row in place and
+    makes this selected raw replay fail at the messages UNIQUE constraint.
+    """
+    from polylogue.archive.message.roles import Role
+    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+    key = "codex-session:orphaned-current-cohort"
+    payload = _codex_conversation_bytes("orphaned-current-cohort")
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="orphaned-current-cohort.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(key, RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED),
+        )
+        archive.commit()
+
+    first = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
+    assert first.success is True
+    target_id = "codex-session:orphaned-current-cohort"
+    foreign = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="foreign-current-cohort",
+        messages=[ParsedMessage(provider_message_id="foreign-0", role=Role.USER, text="foreign retained")],
+    )
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute("PRAGMA foreign_keys = ON")
+        foreign_id = write_parsed_session_to_archive(index_conn, foreign, raw_id="foreign-current-raw")
+        index_conn.execute("PRAGMA foreign_keys = OFF")
+        index_conn.execute("DELETE FROM sessions WHERE session_id = ?", (target_id,))
+        index_conn.commit()
+        index_conn.execute("PRAGMA foreign_keys = ON")
+
+    replay = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
+
+    assert replay.success is True
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        target_messages = index_conn.execute(
+            "SELECT native_id, position FROM messages WHERE session_id = ? ORDER BY position", (target_id,)
+        ).fetchall()
+        foreign_messages = index_conn.execute(
+            "SELECT native_id, position FROM messages WHERE session_id = ? ORDER BY position", (foreign_id,)
+        ).fetchall()
+        assert target_messages == [("m-orphaned-current-cohort", 0)]
+        assert foreign_messages == [("foreign-0", 0)]
+
+
 def test_raw_materialization_binds_current_generation_under_writer_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
