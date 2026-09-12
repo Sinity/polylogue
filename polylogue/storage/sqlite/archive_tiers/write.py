@@ -4931,7 +4931,9 @@ def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_sess
             continue
         conn.execute(
             """
-            UPDATE session_links SET branch_point_message_id = ?
+            UPDATE session_links
+               SET branch_point_message_id = ?,
+                   inheritance = 'prefix-sharing'
              WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
             """,
             (bound, src_session_id, dst_origin, dst_native_id, link_type),
@@ -5037,6 +5039,12 @@ def _write_session_link(
                 _existing_parent_session_id(conn, session, origin),
                 asserted_branch_point,
             )
+        # ``fork-context-ref`` children do not replay the parent's prefix, but
+        # their effective context is still the parent's transcript through the
+        # provider-asserted branch point. Mark a successfully bound assertion
+        # as prefix-sharing so every public read composes that context back in.
+        if branch_point_message_id is not None:
+            inheritance = "prefix-sharing"
     identity_reason = _session_target_resolution_reason(conn, origin, dst_native_id)
     if identity_reason is not None:
         evidence["resolution_reason"] = identity_reason

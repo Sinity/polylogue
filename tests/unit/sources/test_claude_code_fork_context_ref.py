@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ASSERTED_BRANCH_POINT_EVIDENCE_KEY,
+    read_archive_session_envelope,
     write_parsed_session_to_archive,
 )
 from tests.infra.identity import archive_message_id
@@ -115,7 +116,7 @@ def _link(conn: sqlite3.Connection, child_id: str) -> sqlite3.Row:
     rows = conn.execute(
         """
         SELECT resolved_dst_session_id, dst_native_id, branch_point_message_id,
-               method, confidence, evidence_json
+               inheritance, method, confidence, evidence_json
         FROM session_links WHERE src_session_id = ?
         """,
         (child_id,),
@@ -159,6 +160,17 @@ def test_branch_point_reaches_session_links_when_parent_is_already_stored(tmp_pa
     assert link["confidence"] == 1.0
     assert json.loads(link["evidence_json"])[ASSERTED_BRANCH_POINT_EVIDENCE_KEY] == _BRANCH_POINT_UUID
 
+    # A public archive read must recompose the parent's context through the
+    # asserted branch point; inspecting session_links alone would miss a route
+    # that stores the claim but still serves only the child's tail.
+    envelope = read_archive_session_envelope(conn, child_id)
+    assert envelope.lineage_inheritance == "prefix-sharing"
+    assert [message.native_id for message in envelope.messages] == [
+        "p0000000-0000-0000-0000-000000000001",
+        _BRANCH_POINT_UUID,
+        "c0000000-0000-0000-0000-000000000001",
+    ]
+
 
 def test_branch_point_binds_when_the_parent_arrives_after_the_child(tmp_path: Path) -> None:
     """Ingest order must not decide whether the branch point survives.
@@ -176,6 +188,15 @@ def test_branch_point_binds_when_the_parent_arrives_after_the_child(tmp_path: Pa
     link = _link(conn, child_id)
     assert link["resolved_dst_session_id"] == parent_id
     assert link["branch_point_message_id"] == archive_message_id(parent_id, _BRANCH_POINT_UUID, position=0)
+    assert link["inheritance"] == "prefix-sharing"
+
+    envelope = read_archive_session_envelope(conn, child_id)
+    assert envelope.lineage_inheritance == "prefix-sharing"
+    assert [message.native_id for message in envelope.messages] == [
+        "p0000000-0000-0000-0000-000000000001",
+        _BRANCH_POINT_UUID,
+        "c0000000-0000-0000-0000-000000000001",
+    ]
 
 
 def test_unbacked_branch_point_is_retained_as_a_claim_not_a_dangling_id(tmp_path: Path) -> None:
