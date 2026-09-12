@@ -360,17 +360,18 @@ def test_parse_goals_db(tmp_path: Path) -> None:
     assert goals[0].token_budget == 100000
 
 
-def test_parse_memories_db_omits_raw_memory_text(tmp_path: Path) -> None:
+def test_parse_memories_db_preserves_generated_memory_text(tmp_path: Path) -> None:
     path = tmp_path / "memories_1.sqlite"
     _write_memories_db(path)
     records = parse_codex_memories_db(path)
     assert len(records) == 1
     record = records[0]
     assert record.thread_id == "0000-thread-parent"
+    assert record.raw_memory == "summary text"
+    assert record.rollout_summary == "rollout summary"
     assert record.usage_count == 3
     assert record.has_rollout_slug is True
     assert record.selected_for_phase2 is True
-    assert not hasattr(record, "raw_memory")
 
 
 # --- marker payload round trip -------------------------------------------
