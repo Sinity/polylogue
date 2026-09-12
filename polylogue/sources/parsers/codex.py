@@ -609,6 +609,19 @@ def _codex_text_element_references(value: object) -> list[dict[str, object]]:
                 reference[key] = candidate
             elif isinstance(candidate, list) and key == "range":
                 reference[key] = [entry for entry in candidate if isinstance(entry, (str, int, float))]
+            elif isinstance(candidate, dict) and key == "range":
+                # Current Codex builds use both ``[start, end]`` and a named
+                # range object. Preserve the latter's coordinates without
+                # copying provider-private text or arbitrary metadata.
+                range_reference = {
+                    range_key: range_value
+                    for range_key, range_value in candidate.items()
+                    if isinstance(range_value, (str, int, float))
+                    and not isinstance(range_value, bool)
+                    and range_key in {"start", "end", "start_index", "end_index", "start_offset", "end_offset"}
+                }
+                if range_reference:
+                    reference[key] = range_reference
         references.append(reference)
     return references
 
@@ -820,7 +833,10 @@ def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, obj
             if isinstance(field_value, (str, int, float, bool)):
                 compact[key] = field_value
     elif event_type == "token_usage_record":
-        usage = _dict_record(payload.get("usage"))
+        # Newer exports wrap counters in ``usage``; older top-level records
+        # place the same named counters directly beside ``type``. Both are
+        # bounded numeric evidence, while opaque siblings remain excluded.
+        usage = _dict_record(payload.get("usage")) or payload
         usage_payload = _codex_token_usage_payload(usage)
         if usage_payload:
             compact["usage"] = usage_payload
@@ -833,7 +849,17 @@ def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, obj
             compact["text_elements"] = text_elements
     # Preserve observed lifecycle timing as scalar evidence without retaining a
     # provider envelope dump or guessing its units.
-    for key in ("started_at", "start_time", "ended_at", "end_time", "duration_ms", "elapsed_ms", "elapsed_seconds"):
+    for key in (
+        "started_at",
+        "start_time",
+        "ended_at",
+        "end_time",
+        "completed_at",
+        "completion_time",
+        "duration_ms",
+        "elapsed_ms",
+        "elapsed_seconds",
+    ):
         timing_value = payload.get(key)
         if isinstance(timing_value, (str, int, float)) and not isinstance(timing_value, bool):
             compact[key] = timing_value

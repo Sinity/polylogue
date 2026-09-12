@@ -2730,6 +2730,55 @@ class TestCodexLifecycleEventFields:
         assert "text" not in by_type[0]["item"]
         assert by_type[1]["item"]["text"] == "full plan content"
 
+    def test_lifecycle_completion_timing_and_named_ranges_are_conserved(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_started",
+                    "turn_id": "turn-1",
+                    "started_at": 1788727984,
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "turn-1",
+                    "completed_at": 1788727987,
+                    "duration_ms": 3326,
+                    "last_agent_message": "only completion text",
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "text_elements": [
+                        {
+                            "type": "image",
+                            "range": {"start": 1, "end": 2, "private": "drop"},
+                            "placeholder": "[image]",
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "token_usage_record",
+                "input_tokens": 10,
+                "output_tokens": 4,
+                "opaque": "drop",
+            },
+        ]
+        result = parse(payload, "timing-contract")
+        by_type = {event.event_type: cast(dict[str, Any], event.payload) for event in result.session_events}
+        assert by_type["task_started"]["started_at"] == 1788727984
+        assert by_type["task_complete"]["completed_at"] == 1788727987
+        assert by_type["task_complete"]["duration_ms"] == 3326
+        assert by_type["user_message"]["text_elements"][0]["range"] == {"start": 1, "end": 2}
+        assert by_type["token_usage_record"]["usage"] == {"input_tokens": 10, "output_tokens": 4}
+        assert "opaque" not in by_type["token_usage_record"]
+
 
 # =============================================================================
 # Re-embedded context conservation (replacement_history, task_complete)
