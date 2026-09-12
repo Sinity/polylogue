@@ -298,6 +298,9 @@ class VerifyRun:
         seed_source: str | None = None,
         seed_source_mtime_ns: int | None = None,
         selection_reason: str | None = None,
+        selected_count: int | None = None,
+        estimated_seconds: float | None = None,
+        admission: Mapping[str, Any] | None = None,
     ) -> None:
         self._payload["testmon_selection"] = {
             "selection_mode": selection_mode,
@@ -311,6 +314,9 @@ class VerifyRun:
             # Why the selection is bounded or empty; what a reader of a run
             # with no pytest step needs to accept it.
             "selection_reason": selection_reason,
+            "selected_count": selected_count,
+            "estimated_seconds": estimated_seconds,
+            "admission": dict(admission) if admission is not None else None,
         }
         self.write()
 
@@ -832,6 +838,23 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
             )
             if key in aggregate
         }
+    selection = entry.get("testmon_selection")
+    if isinstance(selection, Mapping):
+        bounded_selection = {
+            key: selection[key]
+            for key in (
+                "selection_mode",
+                "graph_status",
+                "graph_reason",
+                "selected_count",
+                "estimated_seconds",
+                "selection_reason",
+                "admission",
+            )
+            if key in selection
+        }
+        if bounded_selection:
+            result["selection"] = bounded_selection
     diagnosis = entry.get("diagnosis")
     if isinstance(diagnosis, str):
         result["diagnosis"] = diagnosis

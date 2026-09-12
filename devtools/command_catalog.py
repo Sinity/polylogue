@@ -126,14 +126,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "verify",
         "verification",
-        "Run the local verification baseline: every quick gate, then the selected or complete test corpus.",
+        "Run every quick gate, then a bounded affected selection or the explicit complete test corpus.",
         "devtools.verify",
         json_flag=True,
         flags=(
             ("--quick", "Run the static gates only."),
             ("--all", "Run the static gates plus the complete test corpus."),
         ),
-        use_when="Run the gates and tests locally before pushing. --quick stops at the static gates; --all runs the complete corpus.",
+        use_when="Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary.",
         examples=("devtools verify", "devtools verify --quick", "devtools verify --all"),
         featured=True,
     ),

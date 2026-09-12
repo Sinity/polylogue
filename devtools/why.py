@@ -86,6 +86,10 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "The testmon datafile is corrupt or was written by an incompatible version, so selection cannot be trusted.",
         "Delete .cache/testmon/testmondata and rerun; the next run reseeds it.",
     ),
+    "affected_admission_refused": Explanation(
+        "The affected test plan was refused before pytest because its graph, size, time, or resource budget was not bounded.",
+        "Use the named next verification boundary; the explicit corpus command is devtools verify --all on master.",
+    ),
     "checkout_import_mismatch": Explanation(
         "The resolved polylogue package was outside the checkout being verified.",
         "Run with an environment that imports polylogue from the invoked checkout.",
@@ -182,6 +186,15 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
         cause = selection.get("full_rerun_cause")
         if cause:
             print(f"  full rerun: {cause} since the graph was written", file=stream)
+        admission = selection.get("admission")
+        if isinstance(admission, Mapping):
+            selected = admission.get("selected_count")
+            selected_text = "unknown" if selected is None else str(selected)
+            print(f"  admission: {admission.get('status')} (selected {selected_text} test(s))", file=stream)
+            if admission.get("reason"):
+                print(f"  admission reason: {admission['reason']}", file=stream)
+            if admission.get("next_boundary"):
+                print(f"  next boundary: {admission['next_boundary']}", file=stream)
 
     aggregate = payload.get("pytest_aggregate")
     if isinstance(aggregate, dict):

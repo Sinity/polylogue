@@ -14,6 +14,8 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
     """Project verifier semantics without duplicating AgentCTL job metadata."""
     selection = _mapping(payload.get("testmon_selection"))
     aggregate = _mapping(payload.get("pytest_aggregate"))
+    admission = _mapping(selection.get("admission"))
+    budget = _mapping(admission.get("budget"))
     verification_scope = _string(payload.get("verification_scope"))
     return {
         "schema_version": RECEIPT_SCHEMA_VERSION,
@@ -28,6 +30,17 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
         },
         "gate_outcomes": _gate_outcomes(payload.get("steps")),
         "pytest_outcomes": _pytest_outcomes(aggregate),
+        "admission": {
+            "status": _string(admission.get("status")),
+            "selected_count": _integer(admission.get("selected_count")),
+            "estimated_seconds": admission.get("estimated_seconds")
+            if isinstance(admission.get("estimated_seconds"), (int, float))
+            and not isinstance(admission.get("estimated_seconds"), bool)
+            else None,
+            "reason": _string(admission.get("reason")),
+            "next_boundary": _string(admission.get("next_boundary")),
+            "budget": dict(budget) if budget else None,
+        },
         "diagnostics": {
             "diagnosis": _string(payload.get("diagnosis")),
             "checkout_diagnosis": _string(payload.get("checkout_diagnosis")),

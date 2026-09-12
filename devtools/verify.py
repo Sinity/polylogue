@@ -9,8 +9,10 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -39,13 +41,18 @@ from devtools.testmon_provision import (
     TESTMON_COVERAGE_CORE,
     TESTMON_ENVIRONMENT,
     TestmonGraphStatus,
-    discard_testmon_graph,
     inspect_testmon_graph,
     primary_worktree,
+    snapshot_testmon_graph,
     sync_testmon_graph,
     testmon_datafile,
 )
 from devtools.toolchain import venv_python
+from devtools.verification_admission import (
+    AFFECTED_MAX_WORKERS,
+    AffectedAdmission,
+    admit_affected_selection,
+)
 from devtools.verification_authority import validate_authority_matrix
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
@@ -227,7 +234,9 @@ def build_verify_steps(
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
         steps += _pytest_steps(
             selection=selection,
-            worker_args=_pytest_worker_args(maximum=CORPUS_MAX_WORKERS),
+            worker_args=_pytest_worker_args(
+                maximum=AFFECTED_MAX_WORKERS if selection == "affected" else CORPUS_MAX_WORKERS
+            ),
             hypothesis_profile=hypothesis_profile,
         )
     return steps
@@ -302,6 +311,82 @@ def _selection_reason(selection: str) -> str | None:
     if selection == "descriptor":
         return "the change stays inside orchestration metadata and includes the AgentCTL descriptor"
     return None
+
+
+def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, float | None, str | None]:
+    """Estimate the exact testmon selection without launching pytest.
+
+    Testmon mutates its database while it determines stable tests, so this
+    uses a SQLite backup in a temporary directory.  The live checkout graph
+    and archive are never written.  ``None`` means the selection could not be
+    proven; admission then refuses rather than silently widening the scope.
+    """
+    if getattr(graph, "status", None) is not TestmonGraphStatus.USABLE:
+        return None, None, None
+    if getattr(graph, "full_rerun_cause", None):
+        return None, None, None
+    source = testmon_datafile(root)
+    if not source.is_file():
+        return None, None, "the testmon graph disappeared before admission"
+    try:
+        from testmon import db as testmon_db
+        from testmon.testmon_core import TestmonData
+
+        with tempfile.TemporaryDirectory(prefix="polylogue-affected-admission-") as temporary:
+            destination = Path(temporary) / "testmondata"
+            if not snapshot_testmon_graph(source, destination):
+                return None, None, "the testmon graph could not be snapshotted for admission"
+            database = testmon_db.DB(str(destination), readonly=False)
+            try:
+                data = TestmonData.for_local_run(rootdir=str(root), database=database, environment=TESTMON_ENVIRONMENT)
+                if data.system_packages_change:
+                    return None, None, "the testmon environment changed; affected selection is unbounded"
+                data.determine_stable()
+                selected = set(data.unstable_test_names) | set(data.failing_tests)
+                durations = [data.all_tests[name].get("duration") for name in selected]
+                estimated = (
+                    None if any(value is None for value in durations) else sum(float(value) for value in durations)
+                )
+                return len(selected), estimated, None
+            finally:
+                database.con.close()
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
+        return None, None, "the affected selection could not be measured from the graph"
+
+
+def _affected_admission(*, root: Path, graph: Any) -> AffectedAdmission:
+    """Build the bounded affected admission decision and its measurement note."""
+    selected_count, estimated_seconds, measurement_error = _estimate_affected_selection(root, graph)
+    decision = admit_affected_selection(
+        graph_status=str(getattr(graph, "status", "unknown")),
+        graph_reason=str(getattr(graph, "reason", "graph state unavailable")),
+        full_rerun_cause=getattr(graph, "full_rerun_cause", None),
+        selected_count=selected_count,
+        estimated_seconds=estimated_seconds,
+    )
+    if measurement_error and decision.admitted:
+        # This is defensive: the current estimator returns an unknown count
+        # for every measurement failure, but keeping the check here prevents a
+        # future estimator from accidentally admitting an unmeasured plan.
+        decision = admit_affected_selection(
+            graph_status="unknown",
+            graph_reason=measurement_error,
+            full_rerun_cause=None,
+            selected_count=None,
+            estimated_seconds=None,
+        )
+    if measurement_error and decision.status == "unknown":
+        decision = AffectedAdmission(
+            status=decision.status,
+            selected_count=decision.selected_count,
+            estimated_seconds=decision.estimated_seconds,
+            reason=f"{decision.reason} ({measurement_error})",
+            next_boundary=decision.next_boundary,
+            max_selected_tests=decision.max_selected_tests,
+            max_estimated_seconds=decision.max_estimated_seconds,
+            max_workers=decision.max_workers,
+        )
+    return decision
 
 
 def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
@@ -687,6 +772,20 @@ def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) 
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
 
 
+def _emit_affected_admission_refusal(*, graph: Any, decision: AffectedAdmission, stream: Any | None = None) -> None:
+    """Explain a bounded affected refusal without implying that tests ran."""
+    if stream is None:
+        stream = sys.stderr
+    selected = "unknown" if decision.selected_count is None else str(decision.selected_count)
+    stream.write(
+        "verify: affected verification refused before pytest launch.\n"
+        f"  selected: {selected} test(s)\n"
+        f"  graph: {getattr(graph, 'status', 'unknown')} ({getattr(graph, 'reason', 'unavailable')})\n"
+        f"  reason: {decision.reason}\n"
+        f"  next boundary: {decision.next_boundary}\n"
+    )
+
+
 def _verification_workload_receipt(
     *,
     tier: str,
@@ -871,11 +970,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         selection = _selection_for_changes(_git_changed_paths(ROOT))
     seeded_from_primary = sync_testmon_graph(ROOT)
     graph = inspect_testmon_graph(ROOT)
-    if graph.status is TestmonGraphStatus.UNUSABLE and selection not in _GRAPH_FREE_SELECTIONS:
-        # An unusable lane copy cannot be an authority. If the primary seed
-        # was unavailable, discard it so this run honestly reseeds.
-        discard_testmon_graph(ROOT)
-        graph = inspect_testmon_graph(ROOT)
     scope = _scope(quick=args.quick, selection=selection)
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools verify")
@@ -901,6 +995,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         agentctl_operation=agentctl_operation,
     )
     if not args.quick:
+        admission: AffectedAdmission | None = None
+        if selection == "affected":
+            admission = _affected_admission(root=ROOT, graph=graph)
         run.record_selection(
             selection_mode=selection,
             graph_status=str(graph.status),
@@ -912,29 +1009,34 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             seed_source_mtime_ns=(
                 testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
             ),
-            selection_reason=_selection_reason(selection),
+            selection_reason=(admission.reason if admission is not None else _selection_reason(selection)),
+            selected_count=admission.selected_count if admission is not None else None,
+            estimated_seconds=admission.estimated_seconds if admission is not None else None,
+            admission=admission.to_payload() if admission is not None else None,
         )
         if selection == "none":
             sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection)) + "\n")
-        if graph.status is TestmonGraphStatus.UNUSABLE and selection not in _GRAPH_FREE_SELECTIONS:
+        if admission is not None and not admission.admitted:
             payload = _finish_and_record_verification(
                 run=run,
                 exit_code=2,
                 duration_s=time.monotonic() - started,
-                diagnosis="graph_unusable",
+                diagnosis="affected_admission_refused",
                 verification_scope=scope.value,
                 final_git_head=git_head(ROOT),
+                pytest_aggregate={
+                    "selection_mode": "affected",
+                    "selected_union_count": admission.selected_count,
+                    "terminal_union_count": 0,
+                    "outcomes": {},
+                    "terminal_green": False,
+                    "complete_corpus_covered": False,
+                    "admission": admission.to_payload(),
+                },
             )
-            sys.stderr.write(f"verify: {graph.reason}; no usable primary seed was available.\n")
+            _emit_affected_admission_refusal(graph=graph, decision=admission)
             _emit(payload, use_json=args.json, operation=agentctl_operation)
             return 2
-        if selection not in _GRAPH_FREE_SELECTIONS:
-            if graph.status is TestmonGraphStatus.ABSENT:
-                sys.stderr.write("verify: no testmon datafile: this run seeds it and runs every test.\n")
-            elif graph.full_rerun_cause:
-                sys.stderr.write(
-                    f"verify: {graph.full_rerun_cause} since the graph was written: this run re-executes every test.\n"
-                )
     steps = build_verify_steps(quick=args.quick, selection=selection, hypothesis_profile=args.hypothesis_profile)
     try:
         results: list[dict[str, Any]] = []

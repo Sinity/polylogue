@@ -48,6 +48,18 @@ def refusal(payload: Mapping[str, Any]) -> str | None:
     """Why the receipt is not test evidence, or None when it is."""
     status = payload.get("status")
     if status != "success":
+        if payload.get("diagnosis") == "affected_admission_refused":
+            selection = payload.get("testmon_selection")
+            selection = selection if isinstance(selection, Mapping) else {}
+            admission = selection.get("admission")
+            admission = admission if isinstance(admission, Mapping) else {}
+            selected = admission.get("selected_count")
+            count = "unknown" if selected is None else str(selected)
+            return (
+                f"affected verification was refused before pytest (selected {count} test(s)): "
+                f"{admission.get('reason') or selection.get('selection_reason') or 'no reason recorded'}; "
+                f"next boundary: {admission.get('next_boundary') or 'devtools verify --all at the explicit master/corpus boundary'}"
+            )
         return f"run {payload.get('run_id')} ended {status!r} (exit {payload.get('exit_code')!r})"
     steps = [step for step in payload.get("steps") or [] if isinstance(step, Mapping)]
     pytest_steps = [step for step in steps if str(step.get("name") or step.get("label") or "").startswith("pytest")]
