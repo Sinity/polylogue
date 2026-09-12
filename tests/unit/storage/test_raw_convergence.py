@@ -1885,8 +1885,13 @@ def test_raw_materialization_replays_complete_governed_bundle_membership_after_i
     assert candidates.authority_quarantined == 1
 
 
-def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path: Path) -> None:
-    """A complete durable census governs replay; it never substitutes for index rows."""
+@pytest.mark.parametrize("loss", ["index", "member", "head"])
+def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path: Path, loss: str) -> None:
+    """A complete durable census governs replay; it never substitutes for index rows.
+
+    Anti-vacuity: accepting any surviving session as a whole raw's output
+    skips member/head loss; refusing a missing in-cohort session blocks replay.
+    """
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from tests.infra.archive_templates import bootstrap_archive_root
@@ -1932,10 +1937,16 @@ def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path:
             "SELECT status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
         ).fetchone() == ("complete",)
 
-    # Model the normal derived-tier reset: source authority and its already
-    # complete parser census survive while every index projection is rebuilt.
-    (tmp_path / "index.db").unlink()
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    # Durable membership and parser evidence survive either complete or
+    # partial index loss, including orphaned children of the missing member.
+    if loss == "index":
+        (tmp_path / "index.db").unlink()
+        initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    else:
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            table = "sessions" if loss == "member" else "raw_revision_heads"
+            conn.execute(f"DELETE FROM {table} WHERE session_id = ?", ("chatgpt-export:bundle-two",))
+            conn.commit()
 
     replay = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
 
@@ -1943,6 +1954,13 @@ def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path:
     assert replay.repaired_count == 2
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (2,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_revision_heads WHERE accepted_raw_id = ?", (raw_id,)
+        ).fetchone() == (2,)
+
+    unchanged = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
+    assert unchanged.success is True
+    assert unchanged.repaired_count == 0
 
 
 def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt(tmp_path: Path) -> None:
