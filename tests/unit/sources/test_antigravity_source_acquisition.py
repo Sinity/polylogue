@@ -11,12 +11,18 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+import polylogue.sources.live.watcher as live_watcher
+from polylogue import Polylogue
 from polylogue.config import Source
 from polylogue.core.enums import Provider
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.antigravity import AntigravityBinaryUnavailableError
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
@@ -299,3 +305,139 @@ def test_real_conversation_files_are_claimed_by_the_declared_session_route(tmp_p
     # Nothing else in the tree is a session candidate.
     for other in sorted(p for p in root.rglob("*") if p.is_file() and p != conversation):
         assert antigravity.classify_source_path(other).parse_as_session is False
+
+
+def _write_trajectory_store(path: Path) -> sqlite3.Connection:
+    """Create a neutral trajectory whose committed turns remain in its WAL."""
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (
+                idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT
+            );
+            CREATE TABLE conversation_summaries (cascade_id TEXT, title TEXT, last_modified_time TEXT);
+            """
+        )
+
+    writer = sqlite3.connect(path)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    writer.execute("INSERT INTO trajectory_meta VALUES (?, ?)", ("trajectory-e2e", "cascade-e2e"))
+    writer.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, ?)",
+        ("cascade-e2e", "SQLite trajectory", "2026-09-12T08:00:00Z"),
+    )
+    writer.executemany(
+        "INSERT INTO steps VALUES (?, ?, ?, ?)",
+        [
+            (10, "message", "v1", '{"role":"user","text":"inspect the workspace"}'),
+            (
+                20,
+                "terminal_command",
+                "v1",
+                '{"tool_name":"shell","tool_id":"command-1","command":"git status --short"}',
+            ),
+            (
+                30,
+                "tool_result",
+                "v1",
+                '{"tool_name":"shell","tool_id":"command-1","output":" M README.md","status":"success"}',
+            ),
+            (
+                40,
+                "file_edit",
+                "v1",
+                '{"tool_name":"edit_file","tool_id":"edit-1","path":"README.md"}',
+            ),
+            (
+                45,
+                "tool_result",
+                "v1",
+                '{"tool_name":"edit_file","tool_id":"edit-1","output":"edited README.md",'
+                '"path":"README.md","old_string":"old","new_string":"new"}',
+            ),
+            (50, "plan", "v1", '{"plan":["inspect","edit"]}'),
+        ],
+    )
+    writer.commit()
+    return writer
+
+
+@pytest.mark.asyncio
+async def test_trajectory_sqlite_wal_reaches_the_daemon_owned_public_read_route(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The ordinary live batch route snapshots WAL content before parsing it.
+
+    Anti-vacuity: bypassing ``snapshot_sqlite_to_blob`` loses the committed
+    rows below because they remain in the WAL while the writer stays open.
+    """
+    root = workspace_env["data_root"] / "antigravity"
+    root.mkdir(parents=True)
+    source_path = root / "unpredictable-name.sqlite"
+    writer = _write_trajectory_store(source_path)
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "cursor.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="antigravity", root=root, suffixes=(".sqlite", ".db")),),
+        cursor=CursorStore(workspace_env["data_root"] / "cursor.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+        assert metrics.failed_file_count == 0
+        assert metrics.ingested_session_count == 1
+
+        replay = await processor.ingest_files([source_path], emit_event=False)
+        assert replay.failed_file_count == 0
+        assert replay.ingested_session_count == 1
+
+        session = await archive.get_session("antigravity-session:trajectory-e2e")
+        assert session is not None
+        assert session.title == "SQLite trajectory"
+        assert [message.text for message in session.messages] == [
+            "inspect the workspace",
+            None,
+            " M README.md",
+            None,
+            "edited README.md",
+            '["inspect", "edit"]',
+        ]
+        terminal_message = session.messages[1]
+        result_message = session.messages[2]
+        assert not isinstance(terminal_message, list)
+        assert not isinstance(result_message, list)
+        terminal = terminal_message.blocks[0]
+        result = result_message.blocks[0]
+        assert terminal["tool_name"] == "shell"
+        assert terminal["tool_input"] == {"command": "git status --short"}
+        assert result["tool_id"] == "command-1"
+        assert result["text"] == " M README.md"
+        assert result["tool_outcome"] == "ok"
+
+        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as index:
+            session_count = index.execute(
+                "SELECT COUNT(*) FROM sessions WHERE session_id = ?",
+                ("antigravity-session:trajectory-e2e",),
+            ).fetchone()
+            actions = index.execute(
+                "SELECT tool_name, tool_input, output_text, result_state FROM actions WHERE session_id = ?",
+                ("antigravity-session:trajectory-e2e",),
+            ).fetchall()
+            edits = index.execute(
+                "SELECT file_path, old_string, new_string FROM file_edits WHERE session_id = ?",
+                ("antigravity-session:trajectory-e2e",),
+            ).fetchall()
+        assert actions == [
+            ("shell", '{"command":"git status --short"}', " M README.md", "outcome_success"),
+            ("edit_file", '{"path":"README.md"}', "edited README.md", "outcome_unknown"),
+        ]
+        assert session_count == (1,)
+        assert edits == [("README.md", "old", "new")]
+        assert source_path.with_name(f"{source_path.name}-wal").exists()
+    finally:
+        writer.close()
+        await archive.close()
