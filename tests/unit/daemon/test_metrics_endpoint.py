@@ -56,6 +56,11 @@ EXPECTED_SERIES: frozenset[str] = frozenset(
     {
         "polylogue_daemon_uptime_seconds",
         "polylogue_daemon_build_info",
+        "polylogue_daemon_result_cache_entries",
+        "polylogue_daemon_result_cache_bytes",
+        "polylogue_daemon_result_cache_hits_total",
+        "polylogue_daemon_result_cache_misses_total",
+        "polylogue_daemon_result_cache_evictions_total",
         "polylogue_live_ingest_attempts_total",
         "polylogue_live_ingest_attempts_in_flight",
         "polylogue_live_ingest_storage_route_total",

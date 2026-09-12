@@ -69,6 +69,38 @@ def test_one_uds_operation_request_returns_canonical_read_without_health_probe(
     assert {item["id"] for item in envelope["result"]["items"]} == set(session_ids)
 
 
+def test_repeated_daemon_query_uses_revision_scoped_result_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repeated production UDS read reuses the canonical result payload.
+
+    Anti-vacuity: the second request still traverses the real operation route,
+    but a patched canonical query body must only run once.  The cache is then
+    invalidated explicitly, proving that freshness is a write boundary rather
+    than a TTL guess.
+    """
+    from polylogue.operations import daemon_reads
+    from polylogue.storage.search.cache import invalidate_search_cache
+
+    invalidate_search_cache()
+    calls = 0
+    original = daemon_reads._query_payload
+
+    def counted(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(daemon_reads, "_query_payload", counted)
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        first = stack.client.operation("cli.query", {"params": {"limit": 1}}, archive_root=str(stack.archive_root))
+        second = stack.client.operation("cli.query", {"params": {"limit": 1}}, archive_root=str(stack.archive_root))
+
+    assert first is not None and second is not None
+    assert first["result"] == second["result"]
+    assert calls == 1
+
+
 def test_machine_listener_uses_the_independent_operation_handler(tmp_path: Path) -> None:
     """Mutation: delegate machine requests through the browser handler and this fails."""
 
