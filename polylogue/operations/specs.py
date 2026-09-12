@@ -605,60 +605,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
     ),
     OperationSpec(
-        name="mutate-rebuild-index",
-        kind=OperationKind.MAINTENANCE,
-        description=(
-            "Rebuild the derived block-FTS index from persisted blocks. The operation is idempotent and "
-            "routes its real ArchiveStore primitive through OperationExecutor/IndexRebuildActuator."
-        ),
-        surfaces=("facade", "mcp"),
-        mutates_state=True,
-        previewable=True,
-        idempotent=True,
-        effects=("DbRead", "DbWrite"),
-        safety_guards=("write_role_required",),
-        executor_status="executor-routed",
-        allowed_surfaces=("api",),
-        target_authority=(
-            TargetAuthorityPolicy(
-                key="index-rebuild",
-                target_kinds=("source",),
-                required_capabilities=("archive.rebuild_index",),
-                destructive_class="maintenance",
-                required_confirmation="role_only",
-                allowed_durabilities=("derived",),
-                allowed_recovery=("rebuild",),
-            ),
-        ),
-    ),
-    OperationSpec(
-        name="mutate-update-index",
-        kind=OperationKind.MAINTENANCE,
-        description=(
-            "Reconcile the derived block-FTS index for the facade update route. The current storage "
-            "primitive rebuilds the complete index, and OperationExecutor binds the caller scope before it runs."
-        ),
-        surfaces=("facade", "mcp"),
-        mutates_state=True,
-        previewable=True,
-        idempotent=True,
-        effects=("DbRead", "DbWrite"),
-        safety_guards=("write_role_required",),
-        executor_status="executor-routed",
-        allowed_surfaces=("api",),
-        target_authority=(
-            TargetAuthorityPolicy(
-                key="index-update",
-                target_kinds=("source",),
-                required_capabilities=("archive.update_index",),
-                destructive_class="maintenance",
-                required_confirmation="role_only",
-                allowed_durabilities=("derived",),
-                allowed_recovery=("rebuild",),
-            ),
-        ),
-    ),
-    OperationSpec(
         name="mutate-rebuild-insights",
         kind=OperationKind.MAINTENANCE,
         description=(

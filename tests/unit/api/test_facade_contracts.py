@@ -54,7 +54,7 @@ from polylogue.core.enums import (
     Provider,
     TitleSource,
 )
-from polylogue.core.errors import DatabaseError, PolylogueError
+from polylogue.core.errors import PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import (
     delegation_ancestry_object_id,
@@ -174,7 +174,6 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "origin_usage_report",
         "session_usage_reconciliation",
         "count_sessions",
-        "rebuild_index",
         "get_index_status",
         "get_stats_by",
         "parse_sources",
@@ -260,7 +259,6 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         # Distilled postmortem bundle (#2380).
         "postmortem_bundle",
         "parse_file",
-        "update_index",
         "cost_outlook",
         "archive_count_sessions",
         "archive_get_session",
@@ -704,7 +702,7 @@ async def test_facade_is_async_context_manager(tmp_path: Path) -> None:
 # A representative subset that exercises every return-shape family
 # (list, scalar, mapping, typed envelope). The full
 # ``READ_NULLARY_METHODS`` set is too broad to invoke individually here
-# because some methods (``rebuild_insights``, ``rebuild_index``,
+# because some methods (``rebuild_insights``,
 # ``parse_sources``) have meaningful side-effects that warrant their
 # own tests. Keep this list focused on pure reads.
 EMPTY_ARCHIVE_LIST_METHODS: tuple[str, ...] = (
@@ -4545,14 +4543,6 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         assert list(bulk_messages) == [session_id]
         assert [message.id for message in bulk_messages[session_id]] == [expected_message_id]
 
-        with ArchiveStore.open_existing(archive.config.archive_root, read_only=False) as archive_db:
-            archive_db._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
-            archive_db._conn.commit()
-
-        with pytest.raises(DatabaseError):
-            await archive.search("needle")
-        assert await archive.rebuild_index() is True
-        assert [hit.session_id for hit in (await archive.search("needle")).hits] == [session_id]
     finally:
         await archive.close()
 

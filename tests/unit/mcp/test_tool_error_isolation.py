@@ -77,7 +77,7 @@ def test_schema_skew_surface_preserves_structured_recovery_fields() -> None:
     body = json.loads(
         _exception_to_error_json(
             "read",
-            SchemaSkewError(tier="index", expected={"version": 82}, found={"version": 81}, remedy="rebuild_index"),
+            SchemaSkewError(tier="index", expected={"version": 82}, found={"version": 81}, remedy="daemon convergence"),
         )
     )
 
@@ -86,7 +86,7 @@ def test_schema_skew_surface_preserves_structured_recovery_fields() -> None:
     assert body["tier"] == "index"
     assert body["expected"] == {"version": 82}
     assert body["found"] == {"version": 81}
-    assert body["remedy"] == "rebuild_index"
+    assert body["remedy"] == "daemon convergence"
 
 
 def test_derived_schema_skew_surface_preserves_structured_recovery_fields() -> None:
@@ -99,7 +99,7 @@ def test_derived_schema_skew_surface_preserves_structured_recovery_fields() -> N
     assert body["tier"] == "index"
     assert body["expected"] == "expected"
     assert body["found"] == "found"
-    assert body["remedy"] == "rebuild_index"
+    assert body["remedy"] == "daemon convergence"
 
 
 class TestTopLevelIsolation:

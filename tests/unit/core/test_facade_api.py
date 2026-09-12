@@ -832,14 +832,6 @@ class TestPolylogueContextManager:
         await _archive(tmp_path).close()
 
 
-class TestPolylogueRebuildIndex:
-    @pytest.mark.asyncio
-    async def test_rebuild_index_lazy_init(self: object, tmp_path: Path) -> None:
-        archive = _archive(tmp_path)
-        assert callable(archive.rebuild_index)
-        assert isinstance(await archive.rebuild_index(), bool)
-
-
 class TestPolylogueStats:
     @pytest.mark.asyncio
     async def test_stats_empty_db(self: object, tmp_path: Path) -> None:

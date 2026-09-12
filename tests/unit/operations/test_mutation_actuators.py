@@ -56,8 +56,6 @@ from polylogue.operations.mutation_actuators import (
     CorrectionsClearArgs,
     IdentityResetActuator,
     IdentityResetArgs,
-    IndexRebuildActuator,
-    IndexRebuildArgs,
     InsightsRebuildActuator,
     InsightsRebuildArgs,
     MarkAddActuator,
@@ -93,6 +91,7 @@ from polylogue.operations.mutation_transaction import (
     MutationPreview,
     MutationPrincipal,
     MutationReceipt,
+    MutationTransactionError,
     OperationExecutor,
     PlanStaleError,
     recover_interrupted_operations,
@@ -2116,56 +2115,7 @@ class TestCorrectionActuators:
 class TestDerivedMaintenanceActuators:
     """Real derived-tier effects remain behind the shared executor."""
 
-    def test_index_rebuild_actuator_rebuilds_real_fts_and_returns_receipt(self, tmp_path: Path) -> None:
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        _seed_archive_session(archive_root, native_id="maintenance-index")
-
-        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-            actuator = IndexRebuildActuator()
-            args = IndexRebuildArgs(archive=archive, session_ids=("maintenance-index",))
-            executor = OperationExecutor()
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="test",
-                role="write",
-                capability="archive.rebuild_index",
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
-            indexed = archive.index_status()
-
-        assert receipt.operation == "mutate-rebuild-index"
-        assert receipt.status == "applied"
-        assert receipt.domain_receipt["indexed_rows"] == 0
-        assert indexed["exists"] is True
-
-    def test_index_rebuild_binds_requested_scope_before_execution(self, tmp_path: Path) -> None:
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        _seed_archive_session(archive_root, native_id="maintenance-scope")
-
-        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-            actuator = IndexRebuildActuator(operation="mutate-update-index")
-            prepared_args = IndexRebuildArgs(archive=archive, session_ids=("first",))
-            execute_args = IndexRebuildArgs(archive=archive, session_ids=("second",))
-            executor = OperationExecutor()
-            plan = executor.prepare(actuator, prepared_args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="test",
-                role="write",
-                capability="archive.update_index",
-                confirmation_strength="role_only",
-            )
-
-            with pytest.raises(PlanStaleError):
-                executor.execute(actuator, plan, authorization, execute_args)
-
-    def test_insights_rebuild_actuator_uses_real_materializer(self, tmp_path: Path) -> None:
+    def test_insights_rebuild_actuator_rejects_unsealed_direct_execution(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
         session_id = _seed_archive_session(archive_root, native_id="maintenance-insights")
@@ -2183,10 +2133,8 @@ class TestDerivedMaintenanceActuators:
                 capability="archive.rebuild_insights",
                 confirmation_strength="role_only",
             )
-            receipt = executor.execute(actuator, plan, authorization, args)
-            profile_count = archive._conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0]
-
-        assert receipt.operation == "mutate-rebuild-insights"
-        assert receipt.status in {"applied", "already_satisfied"}
-        assert receipt.affected_count == sum(int(cast("int", value)) for value in receipt.domain_receipt.values())
-        assert profile_count >= 0
+            with pytest.raises(
+                MutationTransactionError,
+                match="only through a sealed accepted machine part owner",
+            ):
+                executor.execute(actuator, plan, authorization, args)

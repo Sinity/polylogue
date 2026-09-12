@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
-from polylogue.operations.mutation_transaction import OperationExecutor
+from polylogue.operations.mutation_transaction import MutationTransactionError, OperationExecutor
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
@@ -45,32 +45,7 @@ def _seed_archive(archive_root: Path, *, native_id: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_facade_rebuild_and_update_index_use_executor_and_real_routes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    session_id = _seed_archive(archive_root, native_id="route-index")
-    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
-    calls: list[str] = []
-    original_execute_bound = OperationExecutor.execute_bound
-
-    def record_execute_bound(self: OperationExecutor, binding, preview, authorization, args):  # type: ignore[no-untyped-def]
-        calls.append(binding.actuator.operation)
-        return original_execute_bound(self, binding, preview, authorization, args)
-
-    monkeypatch.setattr(OperationExecutor, "execute_bound", record_execute_bound)
-    try:
-        assert await archive.rebuild_index() is True
-        assert await archive.update_index([session_id]) is True
-    finally:
-        await archive.close()
-
-    assert calls == ["mutate-rebuild-index", "mutate-update-index"]
-
-
-@pytest.mark.asyncio
-async def test_facade_rebuild_insights_uses_executor_and_real_materializer(
+async def test_facade_rebuild_insights_stays_behind_sealed_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive_root = tmp_path / "archive"
@@ -86,9 +61,9 @@ async def test_facade_rebuild_insights_uses_executor_and_real_materializer(
 
     monkeypatch.setattr(OperationExecutor, "execute_bound", record_execute_bound)
     try:
-        counts = await archive.rebuild_insights(session_ids=[session_id])
+        with pytest.raises(MutationTransactionError, match="sealed accepted machine part"):
+            await archive.rebuild_insights(session_ids=[session_id])
     finally:
         await archive.close()
 
     assert calls == ["mutate-rebuild-insights"]
-    assert counts.total() >= 0

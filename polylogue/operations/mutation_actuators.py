@@ -25,7 +25,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.protocols import ProgressCallback
@@ -2112,59 +2112,6 @@ class BlackboardPostActuator(_FailClosedRecovery):
         )
 
 
-# ---------------------------------------------------------------------------
-# Derived maintenance rebuilds (mutate-rebuild-index / mutate-update-index /
-# mutate-rebuild-insights)
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class IndexRebuildArgs:
-    """Shared archive handle and caller scope for derived-index rebuilds."""
-
-    archive: ArchiveStore
-    session_ids: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class IndexRebuildActuator(_FailClosedRecovery):
-    """Actuator for the trigger-maintained block FTS rebuild primitive.
-
-    ``update_index`` historically accepts session ids for surface symmetry,
-    but the storage primitive reconciles the complete derived index. The
-    requested scope is still included in the plan context so the executor
-    binds the caller's exact request before the full-index effect is applied.
-    """
-
-    operation: str = "mutate-rebuild-index"
-    destructive_class: DestructiveClass = "maintenance"
-    required_confirmation: ConfirmationStrength = "role_only"
-
-    def prepare(self, args: IndexRebuildArgs) -> MutationPlan:
-        return build_plan(
-            operation=self.operation,
-            destructive_class="maintenance",
-            target_refs=(make_target_ref("source", "index.db:messages_fts"),),
-            affected_tiers=("index",),
-            reversible=False,
-            context={"session_ids": list(dict.fromkeys(args.session_ids))},
-        )
-
-    def apply(self, plan: MutationPlan, args: IndexRebuildArgs) -> MutationReceipt:
-        rebuilt_rows = args.archive.rebuild_index()
-        return MutationReceipt(
-            operation=self.operation,
-            plan_hash=plan.plan_hash,
-            status="applied",
-            target_refs=plan.target_refs,
-            affected_count=rebuilt_rows,
-            detail=None,
-            receipt_ref=None,
-            applied_at=plan.prepared_at,
-            domain_receipt={"indexed_rows": rebuilt_rows},
-        )
-
-
 @dataclass(frozen=True, slots=True)
 class InsightsRebuildArgs:
     """Archive handle, exact session scope, and optional progress observer."""
@@ -2183,6 +2130,9 @@ class InsightsRebuildActuator(_FailClosedRecovery):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: InsightsRebuildArgs) -> MutationPlan:
+        from polylogue.operations.insight_acceptance import AcceptedInsightTarget, build_insight_page_context
+        from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+
         if args.session_ids is None:
             resolved = tuple(summary.session_id for summary in args.archive.list_summaries(limit=1_000_000))
         else:
@@ -2193,26 +2143,48 @@ class InsightsRebuildActuator(_FailClosedRecovery):
                     for resolved_id in _resolve_session_id(args.archive, session_id)
                 )
             )
+        scope_kind: Literal["explicit", "full"] = "full" if args.session_ids is None else "explicit"
+        manifest_digest = hashlib.sha256(
+            json.dumps(
+                [(f"session:{session_id}", "required") for session_id in resolved],
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        context = build_insight_page_context(
+            scope_kind=scope_kind,
+            index_generation=f"index-generation:{args.archive.index_db_path}",
+            recipe_version=str(SESSION_INSIGHT_MATERIALIZER_VERSION),
+            ordinal=0,
+            page_count=1,
+            manifest_digest=manifest_digest,
+            previous_preview_ref=None,
+            targets=tuple(AcceptedInsightTarget(f"session:{session_id}", "required") for session_id in resolved),
+        )
         return build_plan(
             operation=self.operation,
             destructive_class="maintenance",
             target_refs=tuple(make_target_ref("session", session_id) for session_id in resolved),
             affected_tiers=("index",),
             reversible=False,
-            context={"full_rebuild": args.session_ids is None, "session_ids": list(resolved)},
+            context=context,
         )
 
     def apply(self, plan: MutationPlan, args: InsightsRebuildArgs) -> MutationReceipt:
         from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
         from polylogue.storage.derived.session.runtime import SessionInsightCounts
 
-        session_ids = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
-        if not session_ids and not bool(plan.context.get("full_rebuild")):
+        session_ids = tuple(
+            str(target["target_ref"]).removeprefix("session:")
+            for target in cast("list[dict[str, object]]", plan.context.get("targets") or ())
+            if target.get("disposition") == "required"
+        )
+        full_rebuild = plan.context.get("scope_kind") == "full"
+        if not session_ids and not full_rebuild:
             counts = SessionInsightCounts()
         else:
             counts = rebuild_session_insights_sync(
                 args.archive._conn,
-                session_ids=None if bool(plan.context.get("full_rebuild")) else session_ids,
+                session_ids=None if full_rebuild else session_ids,
                 progress_callback=args.progress_callback,
             )
         affected_count = counts.total()
@@ -2257,8 +2229,6 @@ __all__ = [
     "CorrectionsClearArgs",
     "IdentityResetActuator",
     "IdentityResetArgs",
-    "IndexRebuildActuator",
-    "IndexRebuildArgs",
     "InsightsRebuildActuator",
     "InsightsRebuildArgs",
     "MarkAddActuator",

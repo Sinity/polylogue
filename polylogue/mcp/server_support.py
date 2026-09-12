@@ -455,7 +455,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             tier=exc.tier,
             expected=exc.expected,
             found=exc.found,
-            remedy=getattr(exc, "remedy", "rebuild_index"),
+            remedy=getattr(exc, "remedy", "daemon convergence"),
         )
     elif isinstance(exc, SchemaVersionMismatchError):
         payload = MCPErrorPayload(
