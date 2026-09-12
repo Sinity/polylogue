@@ -343,6 +343,126 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
     assert all(not restarted.session_exists(session_id) for session_id in session_ids)
 
 
+def test_disconnected_after_durable_acceptance_recovers_without_replaying_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lost post-acceptance UDS response recovers one durable execution.
+
+    The raw peer is closed only after the actuator has entered, which proves
+    that the acceptance record exists before transport loss.  A retry with the
+    same request identity must observe that record, and a restarted daemon must
+    return its terminal receipt without invoking the actuator again.
+    """
+    root = tmp_path / "archive"
+    session_ids: tuple[str, ...] = ()
+
+    def seed(root: Path) -> None:
+        nonlocal session_ids
+        session_ids = _seed_sessions(root, count=1)
+
+    entered_apply = threading.Event()
+    release_apply = threading.Event()
+    apply_calls = 0
+    original_apply = SessionDeleteActuator.apply
+
+    def blocked_apply(self: SessionDeleteActuator, plan: MutationPlan, args: SessionDeleteArgs) -> MutationReceipt:
+        nonlocal apply_calls
+        apply_calls += 1
+        entered_apply.set()
+        if not release_apply.wait(timeout=5):
+            raise TimeoutError("test did not release the accepted delete actuator")
+        return original_apply(self, plan, args)
+
+    monkeypatch.setattr(SessionDeleteActuator, "apply", blocked_apply)
+    request_id = "disconnect-after-acceptance"
+    accepted_reference: dict[str, object]
+    authorization_refs: list[str]
+    with running_daemon_operations(root, seed_archive=seed) as stack:
+        preview = stack.client.operation_to_completion(
+            "mutation.session.delete.preview",
+            {"session_ids": list(session_ids)},
+            archive_root=str(root),
+        )
+        assert preview is not None
+        authorization = stack.client.operation_to_completion(
+            "mutation.session.delete.authorize",
+            {"preview_refs": preview["result"]["preview_refs"]},
+            archive_root=str(root),
+        )
+        assert authorization is not None
+        authorization_refs = list(authorization["result"]["authorization_refs"])
+
+        from polylogue.operations.daemon_protocol import DaemonOperationRequest
+
+        request = DaemonOperationRequest(
+            "mutation.session.delete.execute",
+            {"authorization_refs": authorization_refs},
+            archive_root=str(root),
+            request_id=request_id,
+            deadline_ms=10_000,
+        )
+        body = json.dumps(request.to_dict(), separators=(",", ":")).encode()
+        peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            peer.connect(str(stack.socket_path))
+            peer.sendall(
+                b"POST /api/operation HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"Content-Type: application/json\r\n" + f"Content-Length: {len(body)}\r\n\r\n".encode() + body
+            )
+            # SessionDeleteActuator.apply runs only after the durable
+            # accept_execution_batch transition has committed.
+            assert entered_apply.wait(timeout=2)
+        finally:
+            peer.close()
+
+        recovered = stack.client.operation(
+            request.operation,
+            request.payload,
+            archive_root=request.archive_root,
+            request_id=request.request_id,
+            deadline_ms=request.deadline_ms,
+        )
+        assert recovered is not None
+        assert recovered["outcome"] == "running"
+        accepted_reference = recovered["accepted_reference"]
+        assert recovered["result"]["reference"] == accepted_reference
+        assert recovered["result"]["completed_chunks"] == 0
+
+        try:
+            release_apply.set()
+            terminal = stack.client.operation_to_completion(
+                request.operation,
+                request.payload,
+                archive_root=str(root),
+                request_id=request_id,
+            )
+            assert terminal is not None
+            assert terminal["outcome"] == "completed"
+            assert terminal["accepted_reference"] == accepted_reference
+            assert terminal["result"]["reference"] == accepted_reference
+            assert terminal["result"]["completed_chunks"] == 1
+        finally:
+            release_apply.set()
+
+        assert apply_calls == 1
+        assert all(not stack.session_exists(session_id) for session_id in session_ids)
+
+    with running_daemon_operations(root) as restarted:
+        replay = restarted.client.operation(
+            request.operation,
+            request.payload,
+            archive_root=str(root),
+            request_id=request.request_id,
+            deadline_ms=request.deadline_ms,
+        )
+        assert replay is not None
+        assert replay["outcome"] == "completed"
+        assert replay["accepted_reference"] == accepted_reference
+        assert replay["result"]["reference"] == accepted_reference
+        assert apply_calls == 1
+
+
 def test_uds_refuses_when_kernel_peer_credentials_cannot_be_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
