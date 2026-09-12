@@ -756,12 +756,33 @@ class WorkloadProfile:
         # in a name, purpose, origin, or tag either.
         _reject_semantic_metadata(asdict(self), location="workload profile")
 
+    @property
+    def identity_tokens(self) -> tuple[str, ...]:
+        """Return the complete operational identity carried by generated specs.
+
+        ``name`` and ``purpose`` are part of a profile's declaration, but the
+        first profile adapter only copied ``family_ids`` and ``profile_tokens``
+        into :class:`CorpusProfile`. Two declarations that differed only in
+        those fields could therefore produce the same content-addressed cache
+        key. Keep the identity in the provider-shaped spec without introducing
+        an expected-result or case-catalogue field.
+        """
+        return tuple(
+            dict.fromkeys(
+                (
+                    *self.profile_tokens,
+                    f"workload-name:{self.name}",
+                    f"workload-purpose:{self.purpose}",
+                )
+            )
+        )
+
     def corpus_specs(self, shapes: tuple[WorkloadSessionShape, ...]) -> tuple[CorpusSpec, ...]:
         if not shapes:
             raise ValueError("workload profile requires provider-native session shapes")
         corpus_profile = CorpusProfile(
             family_ids=self.family_ids,
-            profile_tokens=self.profile_tokens,
+            profile_tokens=self.identity_tokens,
             artifact_kind="archive",
         )
         return tuple(
