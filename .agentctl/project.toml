@@ -33,7 +33,7 @@ agent_memory_max = "3000M"
 # Review is intentionally omitted; the hosted candidate gate is the publication
 # check. Focused and complete suites remain explicit manual operations below.
 review = "none"
-verify = { candidate = "hosted:ci/circleci: quick-gate" }
+verify = { candidate = "hosted:ci/circleci: quick-gate", focused = "verify_quick" }
 publish = "pr"
 
 # Manual bounded selections and broad suites use the declared operations below.

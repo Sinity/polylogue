@@ -71,6 +71,13 @@ class TestmonGraphState:
     #: differ from what it was written under: testmon will re-execute every
     #: test this run and record the new environment.
     full_rerun_cause: str | None = None
+    #: Number of test executions currently represented by the graph.  These
+    #: counts are evidence about the graph that was inspected, not a claim
+    #: about what a later pytest invocation will select.
+    recorded_tests: int = 0
+    #: Number of non-test files with recorded dependencies.  A graph with
+    #: tests but no source dependencies is unusable for affected selection.
+    source_dependencies: int = 0
 
     @property
     def usable(self) -> bool:
@@ -135,6 +142,8 @@ def inspect_testmon_graph(root: Path) -> TestmonGraphState:
             TestmonGraphStatus.UNUSABLE,
             f"the testmon datafile records {recorded_tests} tests and no dependency on any source file: "
             "it was traced without dynamic contexts and cannot select",
+            recorded_tests=recorded_tests,
+            source_dependencies=source_dependencies,
         )
     cause = None
     if environment is not None:
@@ -143,7 +152,13 @@ def inspect_testmon_graph(root: Path) -> TestmonGraphState:
             cause = f"the interpreter changed ({environment[1]} -> {version})"
         elif environment[0] != packages:
             cause = "the installed packages changed"
-    return TestmonGraphState(TestmonGraphStatus.USABLE, "testmon datafile present", cause)
+    return TestmonGraphState(
+        TestmonGraphStatus.USABLE,
+        "testmon datafile present",
+        cause,
+        recorded_tests=recorded_tests,
+        source_dependencies=source_dependencies,
+    )
 
 
 def discard_testmon_graph(root: Path) -> None:
@@ -273,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         "status": str(state.status),
         "reason": state.reason,
         "full_rerun_cause": state.full_rerun_cause,
+        "recorded_tests": state.recorded_tests,
+        "source_dependencies": state.source_dependencies,
         "discarded": discarded,
         "seeded": seeded,
     }

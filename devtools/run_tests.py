@@ -560,6 +560,8 @@ def main(argv: list[str] | None = None) -> int:
             "status": graph.status.value,
             "reason": graph.reason,
             "cause": graph.full_rerun_cause,
+            "recorded_tests": getattr(graph, "recorded_tests", None),
+            "source_dependencies": getattr(graph, "source_dependencies", None),
         }
         metadata["hypothesis_profile"] = hypothesis_profile
         metadata["hypothesis_profile_source"] = hypothesis_profile_source
