@@ -19,30 +19,20 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
-
-_SCALE_TIERS = {
-    "xs-tiny": {"files": 5, "msgs_per_file": 10},
-    "sm-small": {"files": 20, "msgs_per_file": 25},
-    "md-medium": {"files": 50, "msgs_per_file": 50},
-}
+from tests.infra.workload_declarations import (
+    MULTI_PROVIDER_SCALE_TIERS,
+    ConvergenceWorkloadTier,
+    convergence_corpus_specs,
+    convergence_workload_profile,
+)
 
 
 def _generate_corpus(tmp_path: Path, tier: str, provider: str) -> Path:
-    spec = _SCALE_TIERS[tier]
+    spec = convergence_corpus_specs(tier, provider=provider)[0]
     root = tmp_path / "corpus" / f"{provider}-project"
-    workload = CorpusSpec.for_provider(
-        provider,
-        count=spec["files"],
-        messages_min=spec["msgs_per_file"],
-        messages_max=spec["msgs_per_file"],
-        seed=42,
-        origin="generated.schema-convergence-benchmark",
-        tags=("synthetic", "schema", "benchmark", "convergence"),
-    )
-    SyntheticCorpus.write_spec_artifacts(workload, root, prefix=provider, index_width=4)
+    SyntheticCorpus.write_spec_artifacts(spec, root, prefix=provider, index_width=4)
     return root.parent
 
 
@@ -111,8 +101,8 @@ class _BenchmarkPolylogue:
 def _provider_tier_params() -> list[Any]:
     params: list[Any] = []
     for provider in ["claude-code", "codex"]:  # ChatGPT needs special handling
-        for tier in _SCALE_TIERS:
-            params.append(pytest.param(provider, tier, id=f"{provider}-{tier}"))
+        for tier in MULTI_PROVIDER_SCALE_TIERS:
+            params.append(pytest.param(provider, tier.value, id=f"{provider}-{tier.value}"))
     return params
 
 
@@ -132,15 +122,16 @@ def test_convergence_per_provider(
 
     result = benchmark_one_shot(benchmark, _run_convergence_probe, corpus_root, tmp_path)
 
-    spec = _SCALE_TIERS[tier]
-    total_msgs = spec["files"] * spec["msgs_per_file"]
+    spec = convergence_workload_profile(tier)
+    _provider, files, msgs_per_file = next(shape for shape in spec.provider_session_shapes if shape[0] == provider)
+    total_msgs = files * msgs_per_file
     if result["total_s"] > 0:
         msgs_per_s = total_msgs / result["total_s"]
         extras = {
             "provider": provider,
             "tier": tier,
-            "files": spec["files"],
-            "msgs_per_file": spec["msgs_per_file"],
+            "files": files,
+            "msgs_per_file": msgs_per_file,
             "total_msgs": total_msgs,
             "total_s": round(result["total_s"], 2),
             "msgs_per_s": round(msgs_per_s, 1),
@@ -166,15 +157,7 @@ def test_convergence_single_file_per_provider(
 ) -> None:
     """Per-provider throughput on a single 500-message file."""
     root = tmp_path / "corpus" / "test"
-    workload = CorpusSpec.for_provider(
-        provider,
-        count=1,
-        messages_min=500,
-        messages_max=500,
-        seed=43,
-        origin="generated.schema-convergence-benchmark",
-        tags=("synthetic", "schema", "benchmark", "convergence"),
-    )
+    workload = convergence_corpus_specs(ConvergenceWorkloadTier.SINGLE_FILE_500, provider=provider, seed=43)[0]
     SyntheticCorpus.write_spec_artifacts(workload, root, prefix=f"single-{provider}")
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
@@ -209,7 +192,7 @@ def test_cross_provider_convergence_correctness(
     # Generate files from all providers into subdirectories
     providers = ["claude-code", "codex"]
     for provider in providers:
-        tier = "xs-tiny"
+        tier = ConvergenceWorkloadTier.MULTI_XS_TINY.value
         _generate_corpus(tmp_path, tier, provider)
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
