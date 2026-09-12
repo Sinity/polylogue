@@ -276,6 +276,15 @@ def _source_states(
     states: dict[str, SourceState] = {}
     conn = open_readonly_connection(source_db, validate_schema=False)
     try:
+        # A partially initialized or pre-split source tier is not evidence
+        # that the sessions are absent. Keep the source axis explicitly
+        # unchecked rather than turning a missing table into a false absence
+        # (or failing the entire census before it can report its denominator).
+        has_raw_sessions = conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'raw_sessions' LIMIT 1"
+        ).fetchone()
+        if has_raw_sessions is None:
+            return {session_id: SourceState(SOURCE_UNCHECKED, COMPLETION_UNKNOWN) for session_id in sessions}
         for session_id in sessions:
             origin, _, native_id = session_id.partition(":")
             row = conn.execute(
@@ -324,6 +333,12 @@ def _classify_call(
         return CLASS_SOURCE_ABSENT
     if source.presence == SOURCE_BYTES_ABSENT:
         return CLASS_SOURCE_TRUNCATED
+    # A retained acquisition whose source file advanced after it was read is
+    # an incomplete frontier even though its old bytes are still present. Do
+    # not let a tail-position heuristic turn that known source gap into an
+    # in-flight call.
+    if source.completion == COMPLETION_SUPERSEDED:
+        return CLASS_SOURCE_TRUNCATED
     if position != POSITION_INTERIOR:
         return CLASS_IN_FLIGHT
     # The transcript keeps running past the call and never records an answer:
@@ -334,9 +349,20 @@ def _classify_call(
 def _classify_result(*, owner_present: bool, source: SourceState) -> str:
     if source.presence == SOURCE_RECORD_ABSENT:
         return CLASS_SOURCE_ABSENT
+    if source.presence == SOURCE_BYTES_ABSENT:
+        return CLASS_SOURCE_TRUNCATED
+    if source.completion == COMPLETION_SUPERSEDED:
+        return CLASS_SOURCE_TRUNCATED
+    # With no source-tier evidence we cannot call an unowned result a parser
+    # loss (or a sidecar result), so retain the explicit source-omission
+    # bucket. Once source bytes survive, however, a result that names no
+    # declared owner is genuinely ambiguous and must stay unknown rather than
+    # borrowing an identity from a nearby call.
     if owner_present:
         return CLASS_PROVIDER_FANOUT
-    return CLASS_SOURCE_OMISSION
+    if source.presence == SOURCE_UNCHECKED:
+        return CLASS_SOURCE_OMISSION
+    return CLASS_UNKNOWN
 
 
 # --------------------------------------------------------------------------
@@ -364,7 +390,7 @@ def build_report(args: CensusArgs) -> dict[str, object]:
         # is what the per-tool identity plan exists to avoid.
         origin_rows, timing = _timed(
             conn,
-            "calls_by_origin",
+            "calls_by_identity",
             f"""
             SELECT {_ORIGIN_EXPR.format(column="session_id")} AS origin,
                    COUNT(*),
@@ -406,7 +432,7 @@ def build_report(args: CensusArgs) -> dict[str, object]:
         # residue, so the anti-join never lands in Python.
         unmatched_rows, timing = _timed(
             conn,
-            "unmatched_results",
+            "results_by_identity",
             """
             SELECT r.session_id, r.tool_id, r.n - COALESCE(u.n, 0), COALESCE(u.n, 0) > 0
             FROM (
