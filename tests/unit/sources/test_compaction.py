@@ -605,6 +605,7 @@ class TestCodexParserSessionEvents:
             "cwd": "/realm/project/polylogue",
             "model": "gpt-5-codex",
             "effort": "high",
+            "turn_id": "turn-123",
             "personality": "pragmatic",
             "reasoning_summary": "auto",
             "collaboration_mode": "plan",
