@@ -671,12 +671,15 @@ class TestFormatMetricsReadsArchiveState:
         # Archive catch-up runs track outcome session counts but not rebuild
         # mode, planned/skipped breakdowns, or planned message counts.
         assert 'polylogue_embedding_latest_catchup_run_info{rebuild="false",status="interrupted"} 1' in body
-        assert 'polylogue_embedding_latest_catchup_sessions{state="planned"} 3' in body
-        assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 3' in body
+        # Archive-tier receipts store the number actually visited, not the
+        # pre-run pending window.  Planned is therefore omitted instead of
+        # duplicating processed and implying a false 100% run.
+        assert 'polylogue_embedding_latest_catchup_sessions{state="planned"}' not in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 2' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="embedded"} 2' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="skipped"} 0' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="failed"} 1' in body
-        assert 'polylogue_embedding_latest_catchup_messages{state="planned"} 0' in body
+        assert 'polylogue_embedding_latest_catchup_messages{state="planned"}' not in body
         assert 'polylogue_embedding_latest_catchup_messages{state="embedded"} 2' in body
         assert "polylogue_embedding_latest_catchup_estimated_cost_usd 0.003" in body
 
@@ -764,7 +767,7 @@ class TestFormatMetricsReadsArchiveState:
         assert "polylogue_embedding_coverage_percent 33.33333333333333" in body
         assert 'polylogue_embedding_status_state{status="partial"} 1' in body
         assert 'polylogue_embedding_latest_catchup_run_info{rebuild="false",status="completed"} 1' in body
-        assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 2' in body
+        assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 3' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="embedded"} 2' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="skipped"} 1' in body
         assert 'polylogue_embedding_latest_catchup_messages{state="embedded"} 4' in body
