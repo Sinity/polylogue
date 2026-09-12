@@ -53,6 +53,35 @@ def _seed_archive(archive_root: Path) -> str:
         )
 
 
+def _seed_paged_archive(archive_root: Path, *, count: int = 7) -> list[str]:
+    """Write enough deterministic rows to exercise three session pages."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(archive_root) as archive:
+        return [
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CHATGPT,
+                    provider_session_id=f"session-page-{index}",
+                    title=f"Session page {index}",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text=f"pagination session {index}",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"pagination session {index}")],
+                        )
+                    ],
+                ),
+            )
+            for index in range(count)
+        ]
+
+
 class TestCapabilityGating:
     """polylogue-800m: write/judge/maintenance are independent config opt-ins, not a role ladder.
 
@@ -1177,6 +1206,30 @@ class TestMaintenanceConfirmGates:
 
 
 class TestQuerySessionsProjection:
+    @pytest.mark.asyncio
+    async def test_session_projection_forwards_offset_into_disjoint_pages(self, tmp_path: Path) -> None:
+        """Each registered MCP page reaches its requested session window."""
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_paged_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server())
+        query_fn = server._tool_manager._tools["query"].fn
+
+        with installed_runtime_services(archive_root):
+            full = json.loads(await invoke_surface_async(query_fn, projection="sessions", limit=100))
+            pages = [
+                json.loads(await invoke_surface_async(query_fn, projection="sessions", limit=2, offset=offset))
+                for offset in (0, 2, 4, 6)
+            ]
+
+        expected_ids = [item["id"] for item in full["items"]]
+        page_ids = [[item["id"] for item in page["items"]] for page in pages]
+        assert expected_ids == [item_id for page in page_ids for item_id in page]
+        assert all(page["total"] == len(expected_ids) for page in pages)
+        assert [page["offset"] for page in pages] == [0, 2, 4, 6]
+        assert [page["next_offset"] for page in pages] == [2, 4, 6, None]
+
     @pytest.mark.asyncio
     async def test_ranked_search_finds_the_seeded_session(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server

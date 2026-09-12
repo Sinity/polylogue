@@ -179,8 +179,11 @@ def _archive_summaries(
             # execution envelope records the unavailable vector lane.
             search_hits = archive.search_summaries(
                 _plan_text_query(plan) or "",
-                limit=limit,
-                offset=plan.offset,
+                # The shared ranked window is applied after this fallback,
+                # just as it is after the semantic leg. Fetch its prefix at
+                # offset zero so a later page cannot be offset twice.
+                limit=max(limit + plan.offset, limit),
+                offset=0,
                 sort=sort,
                 reverse=reverse,
                 **filter_kwargs,
@@ -330,7 +333,16 @@ async def list_summaries_archive(
     )
     filtered = plan._apply_common_filters(summaries, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_summaries(filtered)
-    if plan.has_post_filters() and plan.offset:
+    # SQL owns ordinary lexical and structured windows. Ranked routes fetch
+    # an unwindowed candidate prefix, so filters and rank-preserving
+    # deduplication precede one final page cut. Hybrid's lexical fallback
+    # follows that same rule.
+    ranked_window = (
+        plan.similar_text is not None
+        or plan.similar_session_id is not None
+        or plan.retrieval_lane in {"semantic", "hybrid"}
+    )
+    if (plan.has_post_filters() or ranked_window) and plan.offset:
         ordered = ordered[plan.offset :]
     return plan._finalize(ordered)
 
@@ -389,7 +401,12 @@ async def list_archive(
     )
     filtered = plan._apply_full_filters(sessions, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_sessions(filtered)
-    if plan.has_post_filters() and plan.offset:
+    ranked_window = (
+        plan.similar_text is not None
+        or plan.similar_session_id is not None
+        or plan.retrieval_lane in {"semantic", "hybrid"}
+    )
+    if (plan.has_post_filters() or ranked_window) and plan.offset:
         ordered = ordered[plan.offset :]
     return plan._finalize(ordered)
 
