@@ -72,6 +72,7 @@ from polylogue.sources.parsers.base import (
 from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
+from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.fts.fts_lifecycle import message_fts_triggers_present_sync
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
@@ -423,6 +424,11 @@ class ArchiveWriteOutcome:
     session_id: str
     wrote: bool
     stale_skipped: bool = False
+    # An attachment whose parser evidence does not identify one safe message
+    # owner is deliberately not given a guessed attachment_refs edge. Keep
+    # that decision in the production write receipt so acquisition/replay can
+    # account for every parsed attachment without treating it as silent loss.
+    unresolved_attachment_owners: tuple[tuple[str, AttachmentOwnerResolutionReason], ...] = ()
 
 
 class PreparedSessionWriteRefusedError(RuntimeError):
@@ -1272,7 +1278,7 @@ def write_parsed_session_to_archive(
                 if projection_carry_forward is not None
                 else set()
             )
-            _write_attachments(
+            unresolved_attachment_owners = _write_attachments(
                 conn,
                 session_id,
                 messages,
@@ -1422,7 +1428,13 @@ def write_parsed_session_to_archive(
             f"origin={origin.value!r} native_id={native_id!r}: {exc}"
         ) from exc
     if write_outcome is not None:
-        write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=True))
+        write_outcome.append(
+            ArchiveWriteOutcome(
+                session_id=session_id,
+                wrote=True,
+                unresolved_attachment_owners=unresolved_attachment_owners,
+            )
+        )
     return session_id
 
 
@@ -4152,7 +4164,7 @@ def _write_attachments(
     duplicate_native_ids: frozenset[str] = frozenset(),
     refresh_attachment_ids: set[str] | None = None,
     preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
-) -> None:
+) -> tuple[tuple[str, AttachmentOwnerResolutionReason], ...]:
     attachments = tuple(attachments)
     owner_resolution, by_owner_key, owning_messages = _attachment_message_id_maps(
         session_id,
@@ -4163,17 +4175,21 @@ def _write_attachments(
     attachment_positions: dict[int, int] = {}
     resolved_message_ids: dict[int, str] = {}
     attachments_by_message: defaultdict[str, list[ParsedAttachment]] = defaultdict(list)
+    unresolved: dict[str, AttachmentOwnerResolutionReason] = {}
     for attachment in attachments:
         try:
             owner_key = attachment_message_owner_key(attachment, owner_resolution)
         except MessageOwnerAmbiguityError:
             # The attachment remains represented by the session hash and raw
             # evidence, but no message owner is safe to guess.
+            unresolved[_attachment_id(session_id, attachment)] = AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
             continue
         message_id = by_owner_key.get(owner_key) if owner_key is not None else None
         if message_id is not None:
             resolved_message_ids[id(attachment)] = message_id
             attachments_by_message[message_id].append(attachment)
+        else:
+            unresolved[_attachment_id(session_id, attachment)] = AttachmentOwnerResolutionReason.PROVIDER_NEVER_LINKED
     for message_id, message_group in attachments_by_message.items():
         current_ids = {_attachment_id(session_id, attachment) for attachment in message_group}
         occupied = (
@@ -4272,6 +4288,7 @@ def _write_attachments(
     # attachment_refs), while still reporting acquisition_status='acquired'
     # and real fetched bytes.
     refresh_and_sweep_attachment_rows(conn, affected_attachment_ids)
+    return tuple(sorted(unresolved.items()))
 
 
 def _write_attachment_row(

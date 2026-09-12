@@ -77,6 +77,10 @@ _OWNER_AMBIGUOUS_REASON = (
     "the raw session reproduces this attachment but more than one message claims its owner "
     "coordinate, so no ref may be guessed"
 )
+_PROVIDER_NEVER_LINKED_REASON = (
+    "the raw session reproduces this attachment but the provider never linked it "
+    "to a message that can own an attachment_refs edge"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,8 +102,12 @@ class RelinkableAttachment:
 
 class UnrecoverableAttachmentReason(StrEnum):
     NO_AUTHORITATIVE_RAW = "no_authoritative_raw"
+    # Alias retained for callers that need to distinguish source omission in
+    # the replay report without changing the historical wire value.
+    SOURCE_OMITTED = "no_authoritative_raw"
     MESSAGE_MISSING = "message_missing"
     OWNER_AMBIGUOUS = "owner_ambiguous"
+    PROVIDER_NEVER_LINKED = "provider_never_linked"
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,7 +343,7 @@ def plan_orphaned_attachment_relink(
             continue
         reason_kind, reason = ineligible_reasons.get(
             attachment_id,
-            (UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW, _NO_RAW_MATCH_REASON),
+            (UnrecoverableAttachmentReason.SOURCE_OMITTED, _NO_RAW_MATCH_REASON),
         )
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
         unrecoverable_count += 1
@@ -404,7 +412,7 @@ def _match_session_payload(
             if attachment_id in pending:
                 ineligible_reasons.setdefault(
                     attachment_id,
-                    (UnrecoverableAttachmentReason.NO_AUTHORITATIVE_RAW, _NO_RAW_MATCH_REASON),
+                    (UnrecoverableAttachmentReason.PROVIDER_NEVER_LINKED, _PROVIDER_NEVER_LINKED_REASON),
                 )
             continue
         if not _message_exists(index_conn, message_id):

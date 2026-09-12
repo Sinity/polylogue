@@ -444,3 +444,52 @@ def test_owner_ambiguous_orphan_is_reported_typed_not_raised(tmp_path: Path) -> 
     index_conn.commit()
     assert exec_result.relinked_count == 0
     assert index_conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0
+
+
+def test_provider_never_linked_attachment_is_reported_typed_not_guessed(tmp_path: Path) -> None:
+    """Replay distinguishes an attachment with no provider message link.
+
+    Anti-vacuity: treating every unresolved owner as ``no raw session`` would
+    erase the parser's positive evidence and return the wrong reason kind.
+    """
+    blob_store = BlobStore(tmp_path / "blob")
+    index_conn = _index_conn(tmp_path / "index.db")
+    source_conn = _source_conn(tmp_path / "source.db")
+    session = ParsedSession(
+        source_name=Provider.GEMINI,
+        provider_session_id="provider-never-linked",
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="upload")],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="provider-never-linked-file",
+                message_provider_id="missing-provider-message",
+                name="missing-owner.txt",
+                mime_type="text/plain",
+            )
+        ],
+    )
+    session_id = write_parsed_session_to_archive(index_conn, session)
+    index_conn.commit()
+    orphan = index_conn.execute("SELECT attachment_id FROM attachments").fetchone()
+    assert orphan is not None
+
+    _write_raw_row(source_conn, blob_store, _CLAUDE_AI_PAYLOAD, raw_id="raw-1", source_path="conversations.json")
+
+    def _parser(record: RawSessionRecord) -> IngestRecordResult:
+        return IngestRecordResult(
+            raw_id=record.raw_id,
+            sessions=[SessionWritePayload(session_id=session_id, content_hash="0" * 64, parsed_session=session)],
+        )
+
+    plan = plan_orphaned_attachment_relink(
+        index_conn,
+        source_conn,
+        archive_root=tmp_path,
+        blob_root=blob_store.root,
+        raw_session_parser=_parser,
+    )
+
+    assert plan.eligible == ()
+    assert plan.unrecoverable_samples[0].attachment_id == str(orphan[0])
+    assert plan.unrecoverable_samples[0].reason_kind is UnrecoverableAttachmentReason.PROVIDER_NEVER_LINKED
+    assert "provider never linked" in plan.unrecoverable_samples[0].reason
