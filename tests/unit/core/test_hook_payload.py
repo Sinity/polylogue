@@ -174,8 +174,18 @@ def test_camelcase_payload_resolves_the_keys_readers_name(event_type: str) -> No
 
 def test_no_reader_key_matches_an_undescribed_generation() -> None:
     """A spelling this vocabulary does not describe resolves nothing at all."""
+    payload = {"tool.use.id": "toolu_1", "agent.id": "agent-instance-1"}
+    assert matched_reader_keys(payload) == frozenset()
+
+
+def test_envelope_fields_remain_readable_for_an_undescribed_payload() -> None:
     record = _record("PreToolUse", {"tool.use.id": "toolu_1", "agent.id": "agent-instance-1"})
-    assert matched_reader_keys(record) == frozenset()
+
+    assert hook_record_field(record, "session_id") == "sess-1"
+    assert hook_record_field(record, "timestamp") == "2026-05-07T12:00:00Z"
+    assert hook_record_field(record, "tool_use_id") is None
+    assert hook_record_field(record, "agent_id") is None
+    assert matched_reader_keys(record) == frozenset({"session_id", "timestamp"})
 
 
 def test_payload_only_records_resolve_without_an_envelope() -> None:
