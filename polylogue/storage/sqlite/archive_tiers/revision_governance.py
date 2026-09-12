@@ -3487,20 +3487,10 @@ def apply_raw_membership_classification(
                         "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
                         (str(existing_head[3]),),
                     ).fetchone()
-                    # Retiring an IN-COHORT head only requires that the
-                    # persisted session row was also written by this
-                    # cohort (head raw or any classified member): both
-                    # representative drift across resumed passes (cohort
-                    # absorption can flip which equivalent member wrote
-                    # the session row) and content-hash drift (parser
-                    # fixes between resumed passes re-derive hashes; the
-                    # same-raw CAS exemption already treats that as
-                    # re-derivation, not conflict) are healed immediately
-                    # by this very replay re-indexing the accepted
-                    # member. Only a persisted session written by a raw
-                    # FOREIGN to the cohort still refuses -- that is the
-                    # genuine unrelated-head hazard this guard exists
-                    # for.
+                    # A cohort may restore missing output or rederive its
+                    # own output after parser or representative drift. A
+                    # persisted row owned by a raw outside the cohort still
+                    # requires separate authority.
                     persisted_raw = None if persisted_session is None else str(persisted_session[0])
                     persisted_head_authority = (
                         _raw_revision_authority(store, persisted_raw)
@@ -3547,8 +3537,11 @@ def apply_raw_membership_classification(
                         yield_to_head_raw_id = persisted_raw
                     if yield_to_head_raw_id is None and (
                         existing_raw_id not in classified_raw_ids
-                        or persisted_session is None
-                        or (persisted_raw != existing_raw_id and persisted_raw not in classified_raw_ids)
+                        or (
+                            persisted_session is not None
+                            and persisted_raw != existing_raw_id
+                            and persisted_raw not in classified_raw_ids
+                        )
                     ):
                         raise MembershipReplayConflictError(
                             "membership replay cannot retire an unrelated accepted head: "
