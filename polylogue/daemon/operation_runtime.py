@@ -261,7 +261,11 @@ class DaemonOperationRuntime:
                 assert current is not None
                 return machine_request_state(audit, current)
         except AuditContinuityPendingError:
-            return {"outcome": "indeterminate", "sequence": 0, "reference": record}
+            return {
+                "outcome": "indeterminate",
+                "sequence": 0,
+                "reference": AcceptedOperationReference.from_record(record).to_dict(),
+            }
 
     def _pending_envelope(
         self, exchange: _Exchange, *, outcome: str, record: dict[str, object] | None = None
@@ -328,7 +332,15 @@ class DaemonOperationRuntime:
                 client_disconnect.add_listener(disconnect_control)
             return execute_operation(request, context).to_dict()
         if spec.accepted_reference:
-            control = observe_control_authority(self.archive_root)
+            try:
+                control = observe_control_authority(self.archive_root)
+            except ValueError as exc:
+                return operation_envelope(
+                    request,
+                    context,
+                    outcome="rejected",
+                    error={"code": str(exc), "retryable": False},
+                ).to_dict()
             if request.archive_root is not None and Path(request.archive_root).resolve() != self.archive_root.resolve():
                 return operation_envelope(
                     request,
