@@ -13,6 +13,7 @@ import ijson
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.config import Source
+from polylogue.core.content_identity import payload_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
@@ -97,6 +98,7 @@ class SerializedSplitPayload:
     payload_bytes: bytes
     source_index: int | None
     addressing_mode: MemberAddressingMode = MemberAddressingMode.ELEMENT_OF_CONTAINER
+    content_identity: str | None = None
 
 
 @dataclass(slots=True)
@@ -118,6 +120,7 @@ class SplitPayloadBuffer:
                 payload_bytes=payload_bytes,
                 source_index=self._next_source_index,
                 addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+                content_identity=payload_content_identity(payload_bytes),
             )
             self._next_source_index += 1
             return (payload,)
@@ -133,6 +136,7 @@ class SplitPayloadBuffer:
                 payload_bytes=pending_payload_bytes,
                 source_index=index,
                 addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+                content_identity=payload_content_identity(pending_payload_bytes),
             )
             for index, (pending_provider, pending_payload_bytes) in enumerate(
                 self._pending,
@@ -261,6 +265,7 @@ def raw_data_record(
     source_index: int | None = None,
     blob_publication_receipt_id: str | None = None,
     addressing_mode: MemberAddressingMode | None = None,
+    content_identity: str | None = None,
 ) -> RawSessionData:
     return RawSessionData(
         raw_bytes=b"",
@@ -272,6 +277,7 @@ def raw_data_record(
         blob_size=blob_size,
         blob_publication_receipt_id=blob_publication_receipt_id,
         addressing_mode=addressing_mode,
+        content_identity=content_identity,
     )
 
 
@@ -324,6 +330,7 @@ def make_split_entry_raw_data(
         source_index=split_payload.source_index,
         blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
         addressing_mode=split_payload.addressing_mode,
+        content_identity=split_payload.content_identity or payload_content_identity(split_payload.payload_bytes),
     )
 
 
@@ -526,6 +533,10 @@ def stream_preserved_zip_entry_raw_data(
             source_name=context.source.name,
             source_path=context.source_path,
         )
+    # Read the already-published bytes to derive structural identity without
+    # weakening the bounded streaming publication route.
+    with context.blob_store.open(blob_hash) as stored_handle:
+        content_identity = payload_content_identity(stored_handle.read())
     from polylogue.storage.blob_publication import publication_receipt_id
 
     publication_id = publication_receipt_id(context.blob_store, blob_hash)
@@ -546,6 +557,7 @@ def stream_preserved_zip_entry_raw_data(
         source_index=source_index,
         blob_publication_receipt_id=publication_id,
         addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+        content_identity=content_identity,
     )
 
 
@@ -632,11 +644,13 @@ def replay_zip_entry_acquisition_payloads(
     entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
     if entry_provider_hint in GROUP_PROVIDERS:
         with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
+            payload_bytes = handle.read()
             yield SerializedSplitPayload(
                 provider=entry_provider_hint,
-                payload_bytes=handle.read(),
+                payload_bytes=payload_bytes,
                 source_index=None,
                 addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+                content_identity=payload_content_identity(payload_bytes),
             )
         return
 
@@ -651,11 +665,13 @@ def replay_zip_entry_acquisition_payloads(
     # Preserve original ZIP entry bytes when it is metadata or a single
     # session document, matching the ordinary acquisition fallback.
     with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
+        payload_bytes = handle.read()
         yield SerializedSplitPayload(
             provider=state.detected_provider,
-            payload_bytes=handle.read(),
+            payload_bytes=payload_bytes,
             source_index=None,
             addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+            content_identity=payload_content_identity(payload_bytes),
         )
 
 

@@ -457,6 +457,7 @@ def _record_zip_container_coordinate(
         # A record that did not come from container-member acquisition has no
         # reading to assert; the coordinate is still worth keeping.
         addressing_mode=record.addressing_mode,
+        content_identity=record.content_identity,
     )
 
 

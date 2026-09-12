@@ -183,6 +183,8 @@ class PendingPreParseRawAdmissionRequest:
     blob_hash: bytes
     blob_size: int
     acquired_at_ms: int
+    addressing_mode: str | None = None
+    content_identity: str | None = None
     file_mtime_ms: int | None = None
     native_id: str | None = None
     raw_id: str | None = None

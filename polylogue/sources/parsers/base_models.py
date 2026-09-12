@@ -671,6 +671,9 @@ class RawSessionData(BaseModel):
     # document itself"; ``None`` means the acquiring route is not a container
     # member at all.
     addressing_mode: MemberAddressingMode | None = None
+    # Structural value identity for container members.  This is the replay
+    # authority; source_index remains only a coordinate hint.
+    content_identity: str | None = None
     file_mtime: str | None = None
     provider_hint: Provider | None = None
     blob_hash: str | None = None
