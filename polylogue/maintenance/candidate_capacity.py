@@ -369,9 +369,24 @@ def _iter_tree(root: Path, *, label: str) -> Iterator[os.stat_result]:
     archive root every link either points back at a tier this inventory already
     counts, or out of the archive entirely.
     """
-    pending = [root]
+    # Keep the inode identity observed when a directory is queued.  A
+    # rebuild can be writing alongside this read, and a path that was a real
+    # directory at enumeration time must not become an external symlink
+    # before we descend into it.  Re-checking here makes the no-follow
+    # guarantee hold across that small race as well as for a static tree.
+    metadata = _lstat(root, label=label)
+    if metadata is None or not stat.S_ISDIR(metadata.st_mode):
+        return
+    pending: list[tuple[Path, tuple[int, int]]] = [(root, (metadata.st_dev, metadata.st_ino))]
     while pending:
-        directory = pending.pop()
+        directory, expected_identity = pending.pop()
+        current = _lstat(directory, label=label)
+        if (
+            current is None
+            or not stat.S_ISDIR(current.st_mode)
+            or (current.st_dev, current.st_ino) != expected_identity
+        ):
+            continue
         try:
             with os.scandir(directory) as scan:
                 entries = list(scan)
@@ -388,7 +403,7 @@ def _iter_tree(root: Path, *, label: str) -> Iterator[os.stat_result]:
                 raise ArchiveCapacityError(f"cannot inspect {label} entry: {entry.path}") from exc
             yield metadata
             if stat.S_ISDIR(metadata.st_mode):
-                pending.append(Path(entry.path))
+                pending.append((Path(entry.path), (metadata.st_dev, metadata.st_ino)))
 
 
 def _measure_path(accumulator: _Accumulator, path: Path, *, label: str, follow_root_link: bool = False) -> None:
@@ -489,6 +504,12 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
     )
 
     unclassified = accumulators["unclassified"]
+    # The root directory is itself allocated filesystem space.  Charge only
+    # its inode here; recursively walking it would repeat the whole archive
+    # after the named populations have already been measured.
+    root_metadata = _lstat(root, label="archive root")
+    if root_metadata is not None:
+        unclassified.add(root_metadata)
     try:
         with os.scandir(root) as scan:
             remainder = list(scan)
