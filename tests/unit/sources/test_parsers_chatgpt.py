@@ -316,6 +316,100 @@ def test_image_asset_pointer_without_a_pointer_invents_no_attachment() -> None:
     assert attachments == []
 
 
+def test_audio_asset_pointer_part_becomes_a_typed_attachment() -> None:
+    """Audio pointers retain the acquisition identity beside the construct.
+
+    The document/web-construct projection alone is insufficient: ChatGPT
+    export members join acquired bytes to the session through the attachment's
+    normalized ``provider_file_id``. This witness goes red if the parser keeps
+    only the transcription-shaped document block.
+    """
+    messages, attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "audio-msg",
+                    "author": {"role": "assistant"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "audio_asset_pointer",
+                                "asset_pointer": "file-service://file-AUDIO7",
+                                "mime_type": "audio/wav",
+                                "size_bytes": 4096,
+                            }
+                        ],
+                    },
+                },
+            }
+        }
+    )
+
+    construct = messages[0].blocks[0].web_constructs[0]
+    assert construct.asset_pointer == "file-service://file-AUDIO7"
+    assert construct.mime_type == "audio/wav"
+    assert len(attachments) == 1
+    attachment = attachments[0]
+    assert attachment.provider_attachment_id == "file-service://file-AUDIO7"
+    assert attachment.provider_file_id == "file-AUDIO7"
+    assert attachment.mime_type == "audio/wav"
+    assert attachment.size_bytes == 4096
+    assert attachment.attachment_kind == "audio_asset"
+    assert attachment.direction == "model_output"
+    assert attachment.producer_ref == "message:audio-msg"
+
+
+def test_realtime_audio_video_pointer_shapes_retain_each_asset_reference() -> None:
+    """Realtime A/V uses type-specific and nested pointer fields."""
+    messages, attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "realtime-msg",
+                    "author": {"role": "user"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "real_time_user_audio_video_asset_pointer",
+                                "audio_asset_pointer": "file-service://file-REALTIME-AUDIO",
+                                "video_container_asset_pointer": {
+                                    "asset_pointer": "file-service://file-REALTIME-VIDEO",
+                                    "mime_type": "video/mp4",
+                                },
+                                "frames_asset_pointers": [
+                                    "file-service://file-REALTIME-FRAME-1",
+                                    {"asset_pointer": "file-service://file-REALTIME-FRAME-2"},
+                                ],
+                            }
+                        ],
+                    },
+                },
+            }
+        }
+    )
+
+    construct_pointers = {construct.asset_pointer for construct in messages[0].blocks[0].web_constructs}
+    assert construct_pointers == {
+        "file-service://file-REALTIME-AUDIO",
+        "file-service://file-REALTIME-VIDEO",
+        "file-service://file-REALTIME-FRAME-1",
+        "file-service://file-REALTIME-FRAME-2",
+    }
+    by_pointer = {attachment.provider_attachment_id: attachment for attachment in attachments}
+    assert set(by_pointer) == construct_pointers
+    assert by_pointer["file-service://file-REALTIME-AUDIO"].attachment_kind == "audio_asset"
+    assert by_pointer["file-service://file-REALTIME-VIDEO"].attachment_kind == "video_asset"
+    assert by_pointer["file-service://file-REALTIME-FRAME-1"].attachment_kind == "video_frame_asset"
+    assert all(attachment.direction == "user_input" for attachment in attachments)
+    assert all(attachment.producer_ref is None for attachment in attachments)
+
+
 def test_chatgpt_shared_conversation_index_shell_is_tagged() -> None:
     session = chatgpt_parse(
         {
