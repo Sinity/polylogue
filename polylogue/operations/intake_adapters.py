@@ -45,9 +45,13 @@ __all__ = [
     "HookSpoolIntakeAdapter",
     "CallbackIntakeAdapter",
     "RawMaterializationIntakeAdapter",
+    "RawMaterializationDiscovery",
     "discover_pending_raw_ids",
     "build_intake_adapters",
 ]
+
+
+_RAW_DISCOVERY_INSPECTION_LIMIT = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,16 +365,18 @@ class RawMaterializationIntakeAdapter(IntakeAdapter):
 
     def __init__(
         self,
-        discover_ids: Callable[[int], Sequence[tuple[str, int]]],
+        discover_ids: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]],
         admit_id: Callable[[str], Awaitable[AdmissionResult | int] | AdmissionResult | int],
     ) -> None:
         self._discover_ids = discover_ids
         self._admit_id = admit_id
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        raw_ids = self._discover_ids(limit)
+        if isinstance(raw_ids, Awaitable):
+            raw_ids = await raw_ids
         return tuple(
-            IntakeItem(raw_id, "raw_materialization", estimated_cost=max(1, int(cost)))
-            for raw_id, cost in self._discover_ids(limit)
+            IntakeItem(raw_id, "raw_materialization", estimated_cost=max(1, int(cost))) for raw_id, cost in raw_ids
         )
 
     async def admit(self, item: IntakeItem) -> AdmissionResult:
@@ -391,43 +397,86 @@ class RawMaterializationIntakeAdapter(IntakeAdapter):
         return None
 
 
-def discover_pending_raw_ids(archive_root: Path, limit: int, max_payload_bytes: int) -> tuple[tuple[str, int], ...]:
-    """Return a bounded, stable raw frontier page for the intake adapter.
+@dataclass(frozen=True, slots=True)
+class _RawDiscoveryBinding:
+    """The canonical frame identity that makes a continuation reusable."""
 
-    Raw discovery is deliberately a read-only derivation traversal.  The old
-    census preview was a second backlog authority and could miss observations
-    whose parser census was complete but whose derived output had been lost.
-    Page through the canonical raw-observation adapter instead, inspecting
-    each bounded page before admitting only non-valid observations.  The
-    payload size is the scheduler's cost estimate, read from the durable raw
-    rows rather than guessed by the adapter.
+    archive_root: str
+    source_revision: str
+    recipe_version: str
+
+
+class RawMaterializationDiscovery:
+    """One process-local, bounded traversal of canonical raw obligations.
+
+    The cursor is an intake scheduling hint. It never records validity or an
+    admission result, so losing it merely starts a new bounded traversal.
     """
-    if limit <= 0:
-        return ()
-    from polylogue.operations.raw_observation_derivation import raw_observation_frame
-    from polylogue.storage.derived.raw import RawObservationDerivation
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    adapter = RawObservationDerivation(archive_root, max_payload_bytes=max_payload_bytes)
-    frame = raw_observation_frame(archive_root)
-    pending: list[str] = []
-    cursor: str | None = None
-    while len(pending) < limit:
-        page, next_cursor = adapter.required_page(frame, cursor=cursor, limit=limit - len(pending))
+    def __init__(self, archive_root: Path, *, max_payload_bytes: int) -> None:
+        self._archive_root = archive_root
+        self._max_payload_bytes = max_payload_bytes
+        self._binding: _RawDiscoveryBinding | None = None
+        self._cursor: str | None = None
+
+    def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
+        """Inspect one bounded canonical page and retain its continuation.
+
+        Raw discovery is deliberately a read-only derivation traversal.  The old
+        census preview was a second backlog authority and could miss observations
+        whose parser census was complete but whose derived output had been lost.
+        A discovery call inspects one bounded page before admitting only non-valid
+        observations. The next call resumes after that page, even if it contained
+        only valid or already-isolated observations. The
+        payload size is the scheduler's cost estimate, read from the durable raw
+        rows rather than guessed by the adapter.
+        """
+        if limit <= 0:
+            return ()
+        from polylogue.operations.raw_observation_derivation import raw_observation_frame
+        from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN, RawObservationDerivation
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        frame = raw_observation_frame(self._archive_root)
+        binding = _RawDiscoveryBinding(
+            archive_root=frame.archive_root,
+            source_revision=frame.source_revision,
+            recipe_version=frame.recipe_version(RAW_OBSERVATION_DOMAIN),
+        )
+        if binding != self._binding:
+            self._binding = binding
+            self._cursor = None
+
+        inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
+        adapter = RawObservationDerivation(self._archive_root, max_payload_bytes=self._max_payload_bytes)
+        page, next_cursor = adapter.required_page(frame, cursor=self._cursor, limit=inspected_limit)
+        # Store the continuation even when no candidate is returned. A valid
+        # page is still progress through the required-key space. ``None`` is
+        # the completed-traversal marker; the following pass starts a fresh
+        # sweep so new work before this cursor is eventually revisited.
+        self._cursor = next_cursor
         if not page:
-            break
+            return ()
         statuses = adapter.inspect(frame, page)
-        pending.extend(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
-        if next_cursor is None:
-            break
-        cursor = next_cursor
+        selected = tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+        if not selected:
+            return ()
+        with ArchiveStore.open_existing(self._archive_root, read_only=True) as archive:
+            sizes = archive.raw_payload_sizes(selected)
+        return tuple((raw_id, max(1, int(sizes.get(raw_id, 1)))) for raw_id in selected)
 
-    selected = tuple(pending[:limit])
-    if not selected:
-        return ()
-    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
-        sizes = archive.raw_payload_sizes(selected)
-    return tuple((raw_id, max(1, int(sizes.get(raw_id, 1)))) for raw_id in selected)
+
+def discover_pending_raw_ids(archive_root: Path, limit: int, max_payload_bytes: int) -> tuple[tuple[str, int], ...]:
+    """Discover one bounded raw page for callers without an intake lifetime.
+
+    The daemon owns a ``RawMaterializationDiscovery`` instance for its whole
+    fair-intake lifetime. This compatibility helper deliberately has no
+    continuation because it cannot retain one across independent callers.
+    """
+    return RawMaterializationDiscovery(
+        archive_root,
+        max_payload_bytes=max_payload_bytes,
+    ).discover_pending_raw_ids(limit)
 
 
 class DaemonIntakeService:
@@ -462,7 +511,7 @@ def build_intake_adapters(
     *,
     remote_callback: Callable[[], Awaitable[int] | int] | None = None,
     raw_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
-    raw_discover: Callable[[int], Sequence[tuple[str, int]]] | None = None,
+    raw_discover: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]] | None = None,
 ) -> tuple[tuple[str, IntakeAdapter], ...]:
     """Compose browser, hook, local, remote, and admitted-raw classes."""
 
