@@ -59,7 +59,7 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
         elif kind == "authorization-batch":
             state["result"] = {"status": "authorized", "authorization_ref": refs[0], "authorization_refs": refs}
         elif kind == "cancelled-preview-batch":
-            state["result"] = {"status": "cancelled", "preview_refs": refs}
+            state["result"] = {"status": "cancelled", "preview_ref": refs[0], "preview_refs": refs}
         return state
     if kind == "operation":
         parts = [{"ordinal": 0, "operation_id": record["artifact_ref"]}]

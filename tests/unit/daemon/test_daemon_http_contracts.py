@@ -942,13 +942,20 @@ class TestBoundedArchiveQueryExecutor:
 
         monkeypatch.setattr(daemon_http, "_ARCHIVE_QUERY_TIMEOUT_S", 0.05)
         handler = _make_handler("GET", "/api/facets")
+        kernel = BoundedComputeAdapter(max_workers=1, queue_units=1)
+        object.__setattr__(handler.server, "execution_kernel", kernel)
 
         async def _slow_handler(poly: object) -> object:
             time_module.sleep(0.5)
             return {"never": "reached"}
 
-        with pytest.raises(TimeoutError, match="did not complete within"):
-            handler._sync_run(_slow_handler)
+        try:
+            with pytest.raises(TimeoutError, match="did not complete within"):
+                handler._sync_run(_slow_handler)
+        finally:
+            # Timed-out computation retains its reservation until it stops.
+            # This test owns that computation and must drain it before returning.
+            kernel.shutdown(wait=True)
 
     def test_daemon_safe_handler_maps_timeout_to_503_with_retry_after(self) -> None:
         from polylogue.daemon.http import daemon_safe_handler
