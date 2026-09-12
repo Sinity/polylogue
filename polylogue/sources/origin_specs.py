@@ -1989,12 +1989,16 @@ def _codex_spec() -> OriginSpec:
             "codex lane): observed null on every sampled record across "
             "~3,200 real session files -- a constant, not an unread signal; "
             "not acquired.",
-            "response_item(message).internal_chat_message_metadata_passthrough "
-            "(to-acquire, deferred): carries only {turn_id}, letting a "
-            "message join back to its turn -- messages presently carry no "
-            "turn_id at all. Deferred because it needs a metadata channel on "
-            "ParsedMessage plumbed through every codex.py message "
-            "constructor, not an additive per-event change.",
+            "response_item/event_msg phase and "
+            "internal_chat_message_metadata_passthrough.turn_id (acquired, "
+            "polylogue-q0vka): phase and turn-correlation evidence is retained "
+            "on the normalized session_events route, anchored to the source "
+            "message where available. Existing metadata.turn_id remains the "
+            "compatibility authority; passthrough/direct values are retained "
+            "and conflicts are explicit, so no turn identity is guessed. "
+            "user_message.local_images/text_elements retain bounded provider "
+            "references and placeholder ranges with acquired_bytes/path and "
+            "content-policy markers; local paths never imply acquired bytes.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.CODEX_SESSION),
         tool_outcome_unknown_reasons=frozenset(

@@ -613,6 +613,72 @@ def _codex_text_element_references(value: object) -> list[dict[str, object]]:
     return references
 
 
+def _codex_error_evidence(payload: dict[str, object]) -> dict[str, object]:
+    """Lift user-facing error text and the producer's typed error code.
+
+    Codex emits these fields both directly on an ``error`` item and nested
+    under ``task_complete.error``.  The latter is especially important: a
+    usage-limit completion otherwise looks identical to a normal completion.
+    Keep the normalized names stable regardless of which wire placement was
+    used, and do not infer a code from the human-readable message.
+    """
+    error = _dict_record(payload.get("error"))
+    message = _string_value(payload.get("message"))
+    if message is None and error is not None:
+        message = _string_value(error.get("message"))
+    error_info: object = payload.get("codex_error_info")
+    if error_info is None and error is not None:
+        error_info = error.get("codex_error_info")
+    evidence: dict[str, object] = {}
+    if message:
+        evidence["message"] = message
+    if isinstance(error_info, (str, dict)):
+        evidence["codex_error_info"] = error_info
+    return evidence
+
+
+def _codex_settings_record(payload: dict[str, object]) -> dict[str, object]:
+    """Resolve the top-level or nested settings shape used by Codex builds."""
+    settings = _dict_record(payload.get("settings")) or _dict_record(payload.get("thread_settings"))
+    if settings is None:
+        return payload
+    merged = {str(key): value for key, value in settings.items()}
+    merged.update({str(key): value for key, value in payload.items() if key not in {"settings", "thread_settings"}})
+    return merged
+
+
+def _codex_collaboration_mode(value: object) -> dict[str, object] | None:
+    """Retain named collaboration settings without copying opaque payloads."""
+    if isinstance(value, str) and value:
+        return {"mode": value}
+    mode = _dict_record(value)
+    if mode is None:
+        return None
+    retained: dict[str, object] = {}
+    scalar_keys = (
+        "kind",
+        "mode",
+        "name",
+        "developer_instructions",
+        "agent_role",
+        "agent_nickname",
+    )
+    for key in scalar_keys:
+        field_value = mode.get(key)
+        if isinstance(field_value, (str, int, float, bool)):
+            retained[key] = field_value
+    nested_settings = _dict_record(mode.get("settings")) or _dict_record(mode.get("config"))
+    if nested_settings is not None:
+        for key in ("developer_instructions", "mode", "kind", "name", "agent_role", "agent_nickname"):
+            field_value = nested_settings.get(key)
+            if isinstance(field_value, (str, int, float, bool)) and key not in retained:
+                retained[key] = field_value
+    return retained or None
+
+
+_CODEX_EVENT_ITEM_DUPLICATE_TYPES = frozenset({"CommandExecution", "FileChange"})
+
+
 def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, object]:
     """Extract the reviewed Codex event fields beyond generic identity keys."""
     compact: dict[str, object] = {}
@@ -649,18 +715,16 @@ def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, obj
         reason = _string_value(payload.get("reason"))
         if reason:
             compact["reason"] = reason
+        compact.update(_codex_error_evidence(payload))
     elif event_type == "thread_settings_applied":
+        settings = _codex_settings_record(payload)
         for key in ("model", "model_name", "reasoning_effort", "effort", "personality"):
-            value = _string_value(payload.get(key))
+            value = _string_value(settings.get(key))
             if value:
                 compact[key] = value
-        collaboration_mode = _dict_record(payload.get("collaboration_mode"))
+        collaboration_mode = _codex_collaboration_mode(settings.get("collaboration_mode"))
         if collaboration_mode:
-            compact["collaboration_mode"] = {
-                str(key): value
-                for key, value in collaboration_mode.items()
-                if isinstance(value, (str, int, float, bool, dict, list))
-            }
+            compact["collaboration_mode"] = collaboration_mode
     elif event_type in {
         "collab_agent_spawn_end",
         "collab_waiting_end",
@@ -684,7 +748,14 @@ def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, obj
         item = _dict_record(payload.get("item"))
         if item:
             retained_item: dict[str, object] = {}
-            for key in ("type", "id", "text", "name", "path"):
+            item_type = _string_value(item.get("type"))
+            # CommandExecution and FileChange are lowered to typed child
+            # tool-result blocks. Their output/patch text must not be copied
+            # into the generic event as a second public content route.
+            item_keys: tuple[str, ...] = ("type", "id", "name", "path")
+            if item_type not in _CODEX_EVENT_ITEM_DUPLICATE_TYPES:
+                item_keys = (*item_keys, "text")
+            for key in item_keys:
                 item_value = item.get(key)
                 if isinstance(item_value, (str, int, float, bool)):
                     retained_item[key] = item_value
@@ -725,12 +796,34 @@ def _codex_semantic_response_fields(payload: dict[str, object]) -> dict[str, obj
         if num_turns is not None:
             compact["num_turns"] = num_turns
     elif event_type == "error":
-        message = _string_value(payload.get("message"))
-        if message:
-            compact["message"] = message
-        error_info = payload.get("codex_error_info")
-        if isinstance(error_info, (str, dict)):
-            compact["codex_error_info"] = error_info
+        compact.update(_codex_error_evidence(payload))
+    elif event_type == "inter_agent_communication_metadata":
+        # This is a top-level Codex record in newer exports. Retain the
+        # observed orchestration fields explicitly; unknown nested metadata is
+        # not promoted as a generic wire dump.
+        for key in (
+            "trigger_turn",
+            "turn_id",
+            "thread_id",
+            "agent_thread_id",
+            "agent_path",
+            "agent_role",
+            "agent_nickname",
+            "sender_thread_id",
+            "receiver_thread_id",
+            "status",
+            "kind",
+            "message",
+            "prompt",
+        ):
+            field_value = payload.get(key)
+            if isinstance(field_value, (str, int, float, bool)):
+                compact[key] = field_value
+    elif event_type == "token_usage_record":
+        usage = _dict_record(payload.get("usage"))
+        usage_payload = _codex_token_usage_payload(usage)
+        if usage_payload:
+            compact["usage"] = usage_payload
     if event_type == "user_message":
         local_images = _codex_source_references(payload.get("local_images"), field="local_images")
         if local_images:
@@ -928,16 +1021,13 @@ def _compact_response_payload(
 #     reclassified here -- it already has a confirmed message consumer and
 #     is out of scope for this audit.
 #
-# EVIDENCE, currently under-captured by ``_compact_response_payload`` above
-# (its generic lift only covers type/id/call_id/name/status/timestamp/
-# output-or-argument-length/cwd/metadata.turn_id -- every field named below
-# is real signal read off the raw wire that falls outside that allowlist
-# and is silently dropped today, not merely "not yet interesting"). Kept
-# passing through under their own wire name for now; a dedicated extraction
-# pass for this cluster is out of scope for a classification-only audit
-# (each needs its own bounded field-set decision plus an
-# INDEX_SCHEMA_VERSION SEMANTIC_REPARSE bump) and is tracked as a follow-up
-# (see the bead filed alongside this change).
+# EVIDENCE, formerly under-captured by ``_compact_response_payload`` above,
+# has a reviewed bounded extraction table in
+# ``_codex_semantic_response_fields``. The generic lift still carries only
+# identity/provenance fields; each semantic family below names its explicit
+# destination and any duplicate-content exclusion. A future wire type remains
+# fail-loud via ``_CODEX_UNCLASSIFIED_RESPONSE_ITEM_TYPE`` until it receives
+# the same review.
 #
 # Rank this list against the SOURCE ROOT, never against live-archive row
 # counts: the archive is a wire generation behind what Codex writes today, and
@@ -3146,9 +3236,9 @@ def _session_stream_supported(payload: Sequence[object], *, for_schema: bool) ->
         "compacted",
         "turn_context",
         "world_state",
+        "inter_agent_communication_metadata",
+        "token_usage_record",
     }
-    if for_schema:
-        supported_envelope_types.update({"inter_agent_communication_metadata", "token_usage_record"})
     schema_direct_types = {"reasoning", "function_call", "function_call_output"} if for_schema else set()
 
     for index, item in enumerate(payload, start=1):
@@ -3209,6 +3299,8 @@ _CODEX_SUPPORTED_OUTER_RECORD_TYPES = frozenset(
         "compacted",
         "turn_context",
         "world_state",
+        "inter_agent_communication_metadata",
+        "token_usage_record",
     }
 )
 
@@ -3689,8 +3781,10 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
         # session_events route, with the bounded compactor and no raw dump.
         if _record_type(record) in {"inter_agent_communication_metadata", "token_usage_record"}:
             top_level_payload = _payload_record(record) or _record_payload(record)
-            event_payload = _compact_response_payload(top_level_payload, index=idx)
-            event_payload.setdefault("type", _record_type(record))
+            event_payload = _compact_response_payload(
+                {"type": _record_type(record), **top_level_payload},
+                index=idx,
+            )
             session_events.append(
                 ParsedSessionEvent(
                     event_type=_record_type(record) or "codex_unknown_outer_record",
