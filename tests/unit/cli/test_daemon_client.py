@@ -145,17 +145,18 @@ def test_operation_reaches_the_production_uds_server(monkeypatch: pytest.MonkeyP
 
 
 @contextlib.contextmanager
-def _raw_unix_http_responder(socket_path: Path, *, status: int, payload: dict[str, object]) -> Iterator[None]:
+def _raw_unix_http_responder(
+    socket_path: Path, *, status: int, payload: dict[str, object], framing: str | None = None
+) -> Iterator[None]:
     """Serve one arbitrary HTTP payload without exercising daemon behavior."""
 
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(str(socket_path))
     listener.listen(1)
     body = json.dumps(payload, separators=(",", ":")).encode()
+    framing = framing if framing is not None else f"Content-Length: {len(body)}\r\n"
     response = (
-        f"HTTP/1.1 {status} Test\r\n"
-        f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
-        "Connection: close\r\n\r\n"
+        f"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\n{framing}Connection: close\r\n\r\n"
     ).encode() + body
 
     def serve_once() -> None:
@@ -171,6 +172,41 @@ def _raw_unix_http_responder(socket_path: Path, *, status: int, payload: dict[st
     finally:
         listener.close()
         thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("mutation", [False, True], ids=["read", "mutation"])
+@pytest.mark.parametrize(
+    "framing",
+    [
+        "Content-Length: 3\r\n",
+        "Content-Length: -1\r\n",
+        "Content-Length: 2\r\nContent-Length: 2\r\n",
+        "Content-Length: 2\r\nContent-Length: 3\r\n",
+        "Content-Length: 2\r\nTransfer-Encoding: identity\r\n",
+        "",
+    ],
+    ids=["partial", "negative", "duplicate", "conflicting", "transfer-encoding", "missing"],
+)
+def test_operation_transport_refuses_invalid_response_framing(
+    _short_uds_runtime_dir: Path, framing: str, mutation: bool
+) -> None:
+    """Accepting valid JSON from an incomplete or ambiguous frame makes this red."""
+    from polylogue.daemon_client import (
+        DaemonClient,
+        DaemonMutationIndeterminateError,
+        DaemonOperationProtocolError,
+    )
+
+    socket_path = _short_uds_runtime_dir / "framing.sock"
+    error = DaemonMutationIndeterminateError if mutation else DaemonOperationProtocolError
+    with _raw_unix_http_responder(socket_path, status=200, payload={}, framing=framing):
+        client = DaemonClient(socket_path, timeout_s=1)
+        with pytest.raises(error) as raised:
+            client._request_json_response(
+                "POST", "/api/operation", {"request_id": "framing-request"}, mutation=mutation
+            )
+        if mutation:
+            assert raised.value.request_id == "framing-request"
 
 
 def test_transport_preserves_typed_non_operation_error_payload(

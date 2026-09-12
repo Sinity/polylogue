@@ -146,20 +146,28 @@ class DaemonClient:
             if self.auth_token:
                 headers["Authorization"] = f"Bearer {self.auth_token}"
             connection.request(method, path, body=raw, headers=headers)
-            response = connection.getresponse()
-            declared_length = response.getheader("Content-Length")
-            if declared_length is not None and int(declared_length) > MAX_OPERATION_RESULT_BYTES:
-                raise DaemonOperationProtocolError("daemon response exceeds the bounded result size")
-            response_body = response.read(MAX_OPERATION_RESULT_BYTES + 1)
-            if len(response_body) > MAX_OPERATION_RESULT_BYTES:
-                raise DaemonOperationProtocolError("daemon response exceeds the bounded result size")
-            try:
-                decoded = json.loads(response_body.decode())
-            except (UnicodeDecodeError, ValueError):
-                decoded = None
-            self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
-            self.last_status = response.status
-            return response.status, decoded if isinstance(decoded, dict) else None
+            with connection.getresponse() as response:
+                lengths = response.headers.get_all("Content-Length", [])
+                if (
+                    response.getheader("Transfer-Encoding") is not None
+                    or len(lengths) != 1
+                    or not lengths[0].isascii()
+                    or not lengths[0].isdecimal()
+                ):
+                    raise DaemonOperationProtocolError("daemon response has invalid HTTP framing")
+                declared_length = int(lengths[0])
+                if declared_length > MAX_OPERATION_RESULT_BYTES:
+                    raise DaemonOperationProtocolError("daemon response exceeds the bounded result size")
+                response_body = response.read(MAX_OPERATION_RESULT_BYTES + 1)
+                if len(response_body) != declared_length:
+                    raise DaemonOperationProtocolError("daemon response body is incomplete")
+                try:
+                    decoded = json.loads(response_body.decode())
+                except (UnicodeDecodeError, ValueError):
+                    decoded = None
+                self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
+                self.last_status = response.status
+                return response.status, decoded if isinstance(decoded, dict) else None
         except KeyboardInterrupt as exc:
             if mutation and connection.connected:
                 raise DaemonMutationIndeterminateError(
