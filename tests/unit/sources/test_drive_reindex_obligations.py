@@ -18,6 +18,8 @@ unprotected until now:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -26,8 +28,16 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import message_owner_resolution
 from polylogue.schemas.drift_sentinel import UNSEEN_SHAPE, classify_schema_drift
 from polylogue.schemas.runtime_registry import SchemaRegistry
-from polylogue.sources.dispatch import require_positive_conversational_evidence
+from polylogue.sources.dispatch import detect_provider, parse_payload, require_positive_conversational_evidence
 from polylogue.sources.parsers.drive import parse_chunked_prompt
+
+_CURRENT_EXPORT_FIXTURE = Path(__file__).resolve().parents[2] / "data" / "gemini_chunked_prompt" / "current_export.json"
+
+
+def _current_export_fixture() -> dict[str, Any]:
+    payload = json.loads(_CURRENT_EXPORT_FIXTURE.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _document_turn(file_id: str) -> dict[str, Any]:
@@ -119,6 +129,35 @@ def test_current_chunked_prompt_shape_resolves_to_a_committed_candidate(label: s
     assert resolution is not None
     assert resolution.reason != "package_default"
     assert not _drifts_as_unseen(payload)
+
+
+def test_checked_in_current_export_is_a_production_parser_and_schema_canary() -> None:
+    """The privacy-safe fixture must exercise both production decisions.
+
+    Keeping detection/parse and schema resolution on one checked-in payload
+    prevents the drift lock from quietly testing a hand-built approximation
+    while the catalog fixture drifts.  The three top-level keys are structural
+    evidence only; fixture values are synthetic and never copied into schema
+    annotations.
+    """
+    payload = _current_export_fixture()
+    assert {"chunkedPrompt", "runSettings", "systemInstruction"} <= payload.keys()
+
+    assert detect_provider(payload) is Provider.GEMINI
+    [session] = parse_payload(Provider.DRIVE, payload, "current-export-fixture")
+    assert session.messages
+
+    resolution = SchemaRegistry().resolve_payload(Provider.GEMINI.value, payload)
+    assert resolution is not None
+    assert resolution.reason != "package_default"
+    assert (
+        classify_schema_drift(
+            resolution_reason=resolution.reason,
+            is_valid=True,
+            drift_warnings=(),
+        )
+        is not UNSEEN_SHAPE
+    )
 
 
 @pytest.mark.parametrize("label,payload", _STILL_UNSEEN, ids=[label for label, _ in _STILL_UNSEEN])
