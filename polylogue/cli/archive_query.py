@@ -1408,44 +1408,11 @@ def _submit_mutation_operation(
     on the socket, an absent receipt is indeterminate, never a retryable
     absence.
     """
-    from polylogue.cli.operation_kernel import (
-        OperationKernel,
-        OperationRequest,
-        OperationUnavailableError,
-    )
-    from polylogue.daemon.api_auth import resolve_api_auth_token
-    from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.daemon_client import DaemonClient
-    from polylogue.operations.daemon_protocol import MUTATION_OPERATION_NAMES
+    from polylogue.cli.operation_kernel import OperationUnavailableError, configured_mutation_operation
 
-    if operation not in MUTATION_OPERATION_NAMES:
-        raise RuntimeError(f"operation is not a declared mutation: {operation}")
     if _daemon_disabled():
         raise OperationUnavailableError(f"daemon is unavailable for operation: {operation}")
-
-    mutation_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-    client = DaemonClient(
-        daemon_socket_path(mutation_root),
-        timeout_s=_DAEMON_MUTATION_TIMEOUT_S,
-        auth_token=resolve_api_auth_token(
-            getattr(config, "api_auth_token", None),
-            allow_no_auth=getattr(config, "api_allow_no_auth", False),
-        ),
-    )
-    kernel = OperationKernel(
-        lambda request: client.operation_to_completion(
-            request.operation,
-            dict(request.payload),
-            archive_root=str(mutation_root),
-        )
-    )
-    result = kernel.execute(OperationRequest(operation, payload))
-    value = result.value
-    if not isinstance(value, dict):
-        from polylogue.cli.operation_kernel import OperationEnvelopeError
-
-        raise OperationEnvelopeError(f"{operation} returned a non-object result")
-    return dict(value)
+    return configured_mutation_operation(config, operation, payload)
 
 
 _DAEMON_LIST_ITEM_KEEP_KEYS = (
