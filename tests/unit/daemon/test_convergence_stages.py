@@ -860,11 +860,13 @@ def test_default_convergence_stages_always_register_embed_stage(
     monkeypatch.setenv("VOYAGE_API_KEY", "key")
     monkeypatch.delenv("POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS", raising=False)
 
-    stage_names = [stage.name for stage in make_default_convergence_stages(tmp_path / "archive.sqlite")]
+    stages = make_default_convergence_stages(tmp_path / "archive.sqlite")
+    stage_names = [stage.name for stage in stages]
 
     assert stage_names == [
         "raw_parse_recovery",
         "raw_authority_verdict_cache",
+        "attachment_bytes",
         "fts",
         "embed",
         "claude_workflow",
@@ -872,6 +874,9 @@ def test_default_convergence_stages_always_register_embed_stage(
         "fts_readiness",
         "standing-queries",
     ]
+    attachment_stage = next(stage for stage in stages if stage.name == "attachment_bytes")
+    assert attachment_stage.false_means_pending is True
+    assert attachment_stage.whole_archive is True
 
 
 def test_embed_stage_is_noop_when_disabled(
