@@ -3915,6 +3915,7 @@ def _codex_session_payload(
     message_texts: list[str],
     *,
     forked_from_id: str | None = None,
+    timestamp_adversarial: bool = False,
 ) -> bytes:
     """Build a codex JSONL raw with one message per ``message_texts`` entry.
 
@@ -3924,23 +3925,30 @@ def _codex_session_payload(
     ``message_texts`` for a parent and one of its children (plus extra tail
     entries on the child) reproduces the on-disk shape #2467's deferred-tail
     extraction exists for: the child's JSONL physically re-contains the
-    parent's entire prefix.
+    parent's entire prefix. ``timestamp_adversarial`` gives each message a
+    clock that runs backwards against its content position, keeping replay
+    parity honest about topology rather than accidentally relying on time.
     """
     meta_payload: dict[str, object] = {"id": session_id, "timestamp": "2026-06-01T00:00:00Z"}
     if forked_from_id is not None:
         meta_payload["forked_from_id"] = forked_from_id
     lines = [json.dumps({"type": "session_meta", "payload": meta_payload}, separators=(",", ":"))]
     for position, text in enumerate(message_texts):
+        message: dict[str, object] = {
+            "type": "message",
+            "id": f"m{position}",
+            "role": "user" if position % 2 == 0 else "assistant",
+            "content": [{"type": "input_text", "text": text}],
+        }
+        if timestamp_adversarial:
+            # Content position is authoritative even when the observed clock
+            # is reversed. Both replay schedules consume the same evidence.
+            message["timestamp"] = f"2026-01-01T00:00:{59 - position:02d}Z"
         lines.append(
             json.dumps(
                 {
                     "type": "response_item",
-                    "payload": {
-                        "type": "message",
-                        "id": f"m{position}",
-                        "role": "user" if position % 2 == 0 else "assistant",
-                        "content": [{"type": "input_text", "text": text}],
-                    },
+                    "payload": message,
                 },
                 separators=(",", ":"),
             )
@@ -3948,7 +3956,7 @@ def _codex_session_payload(
     return ("\n".join(lines) + "\n").encode()
 
 
-def _seed_lineage_fixture(root: Path, *, n_children: int) -> None:
+def _seed_lineage_fixture(root: Path, *, n_children: int, timestamp_adversarial: bool = False) -> None:
     """One parent (native_id sorts LAST lexicographically) plus N children
     (native_ids sort BEFORE the parent) that each replay the parent's full
     message prefix plus one new tail message -- a real Codex resume shape.
@@ -3959,7 +3967,11 @@ def _seed_lineage_fixture(root: Path, *, n_children: int) -> None:
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=_codex_session_payload(parent_native_id, parent_texts),
+            payload=_codex_session_payload(
+                parent_native_id,
+                parent_texts,
+                timestamp_adversarial=timestamp_adversarial,
+            ),
             source_path=f"{parent_native_id}.jsonl",
             acquired_at_ms=1,
         )
@@ -3968,7 +3980,12 @@ def _seed_lineage_fixture(root: Path, *, n_children: int) -> None:
             child_texts = [*parent_texts, f"child-{index}-tail"]
             archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=_codex_session_payload(child_native_id, child_texts, forked_from_id=parent_native_id),
+                payload=_codex_session_payload(
+                    child_native_id,
+                    child_texts,
+                    forked_from_id=parent_native_id,
+                    timestamp_adversarial=timestamp_adversarial,
+                ),
                 source_path=f"{child_native_id}.jsonl",
                 acquired_at_ms=2 + index,
             )
@@ -4108,9 +4125,7 @@ def test_lineage_aware_replay_schedule_reduces_deferred_tail_hits(
     )
 
 
-def test_lineage_aware_replay_schedule_preserves_outcome_parity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """polylogue-5q2u AC2: lineage-aware scheduling must not change WHAT gets
     replayed/adopted -- only the order. Two archives seeded identically,
     replayed once under lineage order and once forced to the previous
@@ -4122,8 +4137,8 @@ def test_lineage_aware_replay_schedule_preserves_outcome_parity(
     """
     lineage_root = tmp_path / "lineage"
     lexicographic_root = tmp_path / "lexicographic"
-    _seed_lineage_fixture(lineage_root, n_children=5)
-    _seed_lineage_fixture(lexicographic_root, n_children=5)
+    _seed_lineage_fixture(lineage_root, n_children=5, timestamp_adversarial=True)
+    _seed_lineage_fixture(lexicographic_root, n_children=5, timestamp_adversarial=True)
 
     lineage_result = backfill_historical_revision_evidence(lineage_root)
 
@@ -4137,4 +4152,11 @@ def test_lineage_aware_replay_schedule_preserves_outcome_parity(
     assert lineage_result.replayed_logical_sources == lexicographic_result.replayed_logical_sources
     assert lineage_result.quarantined == lexicographic_result.quarantined
     assert lineage_result.adoption_deferred == lexicographic_result.adoption_deferred
-    assert _index_content_manifest(lineage_root) == _index_content_manifest(lexicographic_root)
+    lineage_manifest = _index_content_manifest(lineage_root)
+    lexicographic_manifest = _index_content_manifest(lexicographic_root)
+    # Topology is the acceptance boundary: replay order may change when
+    # deferred-tail work runs, never which parent edge is persisted. The raw
+    # fixture reverses timestamps against message positions so a wall-clock
+    # ordering shortcut cannot make these manifests agree by luck.
+    assert lineage_manifest["session_links"] == lexicographic_manifest["session_links"]
+    assert lineage_manifest == lexicographic_manifest
