@@ -1111,6 +1111,7 @@ def _archive_health_report(config: Config) -> ReadinessReport:
         ArchiveTier.INDEX: root / "index.db",
         ArchiveTier.EMBEDDINGS: root / "embeddings.db",
         ArchiveTier.USER: root / "user.db",
+        ArchiveTier.AUDIT: root / "audit.db",
         ArchiveTier.OPS: root / "ops.db",
     }
     for tier, path in tier_paths.items():

@@ -171,18 +171,37 @@ def _usage_fields(chunk_obj: JSONDocument, *, role: Role) -> dict[str, int]:
     return {"input_tokens": 0, "output_tokens": token_count}
 
 
-def _branch_parent_provider_id(chunk_obj: JSONDocument) -> str | None:
-    branch_parent = chunk_obj.get("branchParent")
-    if isinstance(branch_parent, str) and branch_parent:
-        return branch_parent
-    branch_parent_obj = json_document(branch_parent)
-    return _string_field(branch_parent_obj, "id", "promptId", "messageId")
+def _branch_parent_message_provider_id(chunk_obj: JSONDocument) -> str | None:
+    """Return only a branch parent's same-session message identity."""
+    branch_parent_obj = json_document(chunk_obj.get("branchParent"))
+    # Drive's promptId names a parent prompt/session, never a local message.
+    return _string_field(branch_parent_obj, "id", "messageId")
+
+
+def _branch_parent_session_provider_id(chunk_obj: JSONDocument) -> str | None:
+    """Return a branch parent's source-asserted prompt/session identity."""
+    return _string_field(json_document(chunk_obj.get("branchParent")), "promptId")
 
 
 def _branch_child_provider_id(value: object) -> str | None:
     if isinstance(value, str) and value:
         return value
-    return _string_field(json_document(value), "id", "promptId", "messageId")
+    return _string_field(json_document(value), "id", "messageId")
+
+
+def _branch_session_child_ids(chunks: Sequence[object]) -> frozenset[str]:
+    """Return child ids whose branch declaration names a prompt/session."""
+    unresolved: set[str] = set()
+    for chunk in chunks:
+        chunk_obj = json_document(chunk)
+        branch_children = chunk_obj.get("branchChildren")
+        if not isinstance(branch_children, list):
+            continue
+        for child in branch_children:
+            prompt_id = _string_field(json_document(child), "promptId")
+            if prompt_id is not None:
+                unresolved.add(prompt_id)
+    return frozenset(unresolved)
 
 
 def _branch_child_parent_map(chunks: Sequence[object]) -> tuple[dict[str, str], frozenset[str]]:
@@ -372,6 +391,15 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     if citations_event := _citations_event(payload):
         session_events.append(citations_event)
     branch_child_parents, ambiguous_branch_child_ids = _branch_child_parent_map(chunks)
+    prompt_branch_child_ids = _branch_session_child_ids(chunks)
+    branch_child_parents = {
+        child_id: parent_id
+        for child_id, parent_id in branch_child_parents.items()
+        if child_id not in prompt_branch_child_ids
+    }
+    ambiguous_branch_child_ids = frozenset(set(ambiguous_branch_child_ids) | set(prompt_branch_child_ids))
+    prompt_parent_ids: set[str] = set()
+    unresolved_branch_message_ids: set[str] = set(prompt_branch_child_ids)
     message_position = 0
     for _idx, chunk in enumerate(chunks, start=1):
         if isinstance(chunk, str):
@@ -387,6 +415,11 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
             continue
         role = Role.normalize(role_val)
         msg_id = str(chunk_obj.get("id") or "")
+        prompt_parent_id = _branch_parent_session_provider_id(chunk_obj)
+        if prompt_parent_id is not None:
+            prompt_parent_ids.add(prompt_parent_id)
+            if msg_id:
+                unresolved_branch_message_ids.add(msg_id)
         message_timestamp = _chunk_timestamp(chunk_obj, default_timestamp)
         model_name = _string_field(chunk_obj, "model", "modelName", "model_name") or default_model_name
         if model_name is not None:
@@ -469,7 +502,9 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
                 position=message_position,
                 variant_index=0,
                 is_active_path=True,
-                parent_message_provider_id=(_branch_parent_provider_id(chunk_obj) or branch_child_parents.get(msg_id)),
+                parent_message_provider_id=(
+                    _branch_parent_message_provider_id(chunk_obj) or branch_child_parents.get(msg_id)
+                ),
                 owner_coordinate=owner_coordinate,
                 input_tokens=usage_fields["input_tokens"],
                 output_tokens=usage_fields["output_tokens"],
@@ -522,7 +557,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     pending_drafts = _pending_drafts(prompt.get("pendingInputs"))
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     messages = mark_last_occurrence_as_active_leaf(messages)
-    # bd polylogue-ksgg: real Gemini branch evidence (``_branch_parent_provider_id``
+    # bd polylogue-ksgg: real Gemini branch evidence (``_branch_parent_message_provider_id``
     # / ``branch_child_parents`` above) already sets ``parent_message_provider_id``
     # for messages that carry it; most AI Studio Drive sessions have none
     # (0% parented measured) because they're a plain linear chat with no
@@ -532,7 +567,8 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     # _branch_child_parent_map) must keep parent_message_provider_id=None --
     # fill_linear_parent_chain cannot tell that apart from "no branch data at
     # all" on its own, so those specific ids are excluded from the gap-fill
-    # and restored to None afterward.
+    # and restored to None afterward. Prompt-grain branch evidence is also
+    # explicitly unresolved at message grain: no local message id is guessed.
     # chunkedPrompt's array order is not guaranteed chronological (a Drive
     # payload can legitimately list chunks in a different order than they
     # occurred -- ai-studio-drive normalization laws require native facts,
@@ -549,6 +585,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     messages = [
         message
         if message.provider_message_id in ambiguous_branch_child_ids
+        or message.provider_message_id in unresolved_branch_message_ids
         else message.model_copy(
             update={
                 "parent_message_provider_id": parent_by_position[message.position][0],
@@ -575,6 +612,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         # state must not enter session_revision_projection's comparison
         # axes).
         pending_drafts=pending_drafts,
+        parent_session_provider_id=(next(iter(prompt_parent_ids)) if len(prompt_parent_ids) == 1 else None),
     )
 
 

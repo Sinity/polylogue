@@ -261,6 +261,9 @@ def test_ai_studio_normalizes_identity_authorship_config_blocks_artifacts_usage_
     assert session.updated_at == "2026-06-01T10:00:05Z"
     assert session.instructions_text == "Use only fixture-safe data."
     assert session.models_used == ["models/gemini-safe-test"]
+    # Multiple prompt-grain parents are ambiguous evidence, so normalization
+    # retains no fabricated single session target.
+    assert session.parent_session_provider_id is None
     assert list(by_id) == [
         "turn-user-native",
         "turn-thought-native",
@@ -276,7 +279,9 @@ def test_ai_studio_normalizes_identity_authorship_config_blocks_artifacts_usage_
     assert user.model_name == "models/gemini-safe-test"
 
     thought = by_id["turn-thought-native"]
-    assert thought.parent_message_provider_id == "turn-user-native"
+    # branchChildren[].promptId is session-grain evidence; it is not a local
+    # message parent, even when the prompt id resembles a chunk id.
+    assert thought.parent_message_provider_id is None
     assert thought.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
     assert thought.output_tokens == 3
     thought_block = next(block for block in thought.blocks if block.type is BlockType.THINKING)
@@ -287,7 +292,7 @@ def test_ai_studio_normalizes_identity_authorship_config_blocks_artifacts_usage_
     }
 
     code = by_id["turn-code-native"]
-    assert code.parent_message_provider_id == "turn-thought-native"
+    assert code.parent_message_provider_id is None
     assert code.delivery_status == "STOP"
     assert code.end_turn is True
     assert code.output_tokens == 11
@@ -405,7 +410,7 @@ def test_native_turn_facts_survive_reordering_while_missing_ids_stay_absent() ->
         "turn-thought-native": (
             Role.ASSISTANT,
             "2026-06-01T10:00:02Z",
-            "turn-user-native",
+            None,
             0,
             3,
             (BlockType.THINKING,),
@@ -413,7 +418,7 @@ def test_native_turn_facts_survive_reordering_while_missing_ids_stay_absent() ->
         "turn-code-native": (
             Role.ASSISTANT,
             "2026-06-01T10:00:03Z",
-            "turn-thought-native",
+            None,
             0,
             11,
             (
@@ -428,7 +433,7 @@ def test_native_turn_facts_survive_reordering_while_missing_ids_stay_absent() ->
         "turn-failed-result-native": (
             Role.ASSISTANT,
             "2026-06-01T10:00:04Z",
-            "turn-code-native",
+            None,
             0,
             2,
             (BlockType.TOOL_RESULT,),

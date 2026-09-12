@@ -77,6 +77,17 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
             generation_id=generation_id,
             lifecycle_action=lifecycle_action,
         )
+    if snapshot.current_version == 0:
+        suffix = f" Generation {generation_id}" if generation_id is not None else ""
+        raise SchemaVersionMismatchError(
+            f"Archive index is uninitialized (schema version 0).{suffix} "
+            "Read-only opens require a materialized index; initialize it through a writable archive open "
+            "or let `polylogued run` rebuild it from source.",
+            current_version=snapshot.current_version,
+            expected_version=SCHEMA_VERSION,
+            generation_id=generation_id,
+            lifecycle_action="rebuild_index",
+        )
     if snapshot.current_version == SCHEMA_VERSION:
         suffix = f" Generation {generation_id}" if generation_id is not None else ""
         try:

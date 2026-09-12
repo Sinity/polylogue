@@ -622,7 +622,14 @@ def _prepared_message_context(
                 elif session.branch_type is BranchType.SIDECHAIN:
                     lineage_inheritance = "spawned-fresh"
                     force_spawned_fresh = True
-            if not force_spawned_fresh:
+            # Drive's ``branchParent.promptId`` is a source-asserted
+            # cross-session relation without a local branch-message id.  Its
+            # chunks are not proof that this child replays the parent's
+            # prefix; content alignment would fabricate a branch point from
+            # coincidental text.  Keep the topology edge and leave its
+            # branch_point_message_id explicitly unresolved.
+            drive_prompt_parent = origin is Origin.AISTUDIO_DRIVE and bool(session.parent_session_provider_id)
+            if not force_spawned_fresh and not drive_prompt_parent:
                 (
                     branch_point_message_id,
                     lineage_inheritance,
@@ -4827,6 +4834,8 @@ def _write_session_link(
     parent_tool_use_block_id = dispatch.block_id
     method = dispatch.method or "parser-parent"
     evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
+    if origin == Origin.AISTUDIO_DRIVE.value and branch_point_message_id is None:
+        evidence["branch_point_resolution"] = "unresolved-source-no-local-message-id"
     # A parser-asserted branch point is the only branch point available when
     # the child does not physically replay the parent's prefix, so prefix
     # alignment produced none. Alignment wins where both exist: it is measured

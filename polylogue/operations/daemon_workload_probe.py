@@ -30,6 +30,7 @@ from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.blob_integrity import scan_blob_reference_debt
+from polylogue.storage.introspection import relation_exists
 from polylogue.storage.raw_convergence import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -112,6 +113,7 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
         "session_work_events",
         "session_phases",
         "session_profiles",
+        "actions",
     ),
     ArchiveTier.EMBEDDINGS: (
         "message_embeddings",
@@ -215,7 +217,10 @@ def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> Evidence
 def _table_count_with_precision(conn: sqlite3.Connection, table: str, *, exact: bool) -> tuple[int, str]:
     """Return an exact, cheap exact, or planner-estimated table count."""
 
-    if not _table_exists(conn, table):
+    # Compatibility relations such as threads, thread_sessions, and actions
+    # are views in current index schemas.  They remain countable status
+    # members even though the table-only probe intentionally rejects them.
+    if not relation_exists(conn, table):
         return -1, "missing"
     if exact:
         try:
