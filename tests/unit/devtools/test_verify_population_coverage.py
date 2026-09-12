@@ -25,6 +25,7 @@ from devtools.verify_population_coverage import (
 )
 from polylogue.core.enums import Origin
 from polylogue.sources.origin_specs import ORIGIN_SPECS
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.origin_capability_matrix import load_manifest
 
@@ -148,6 +149,45 @@ def test_unknown_artifact_kind_is_typed_unsupported_evidence(tmp_path: Path) -> 
     assert not report.ok
     assert [c.key for c in report.uncovered] == ["aistudio-drive/unknown/unknown"]
     assert report.uncovered[0].route == "no artifact declaration"
+
+
+def test_stale_unknown_artifact_is_covered_only_by_fresh_shape_evidence(tmp_path: Path) -> None:
+    """A bounded old observation is covered by its current positive shape only."""
+    source_db = _seed_inventory(tmp_path)
+    payload = (
+        b'{"runSettings":{"model":"models/synthetic"},'
+        b'"systemInstruction":{},"chunkedPrompt":{"chunks":['
+        b'{"role":"user","text":"synthetic"}]}}'
+    )
+    blob_hash, blob_size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
+    conn = sqlite3.connect(source_db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-stale-drive', 'aistudio-drive', NULL, '/drive-cache/gemini/synthetic.json', ?, ?, 100)
+            """,
+            (bytes.fromhex(blob_hash), blob_size),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts(artifact_id, raw_id, origin, source_path, artifact_kind, support_status,
+                                      classification_reason, parse_as_session, first_observed_at_ms,
+                                      last_observed_at_ms)
+            VALUES ('art-stale-drive', 'raw-stale-drive', 'aistudio-drive', '/drive-cache/gemini/synthetic.json',
+                    'unknown', 'decode_failed', 'decode failure: JSONDecodeError', 0, 100, 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    kinds = _by_key(inventory_constructs(source_db), "artifact-kind")
+    stale = kinds["aistudio-drive/unknown/decode_failed"]
+    assert stale.status == COVERED
+    assert stale.count == 1
+    assert "fresh shape=session_document/supported_parseable" in stale.route
+    assert stale.witness == "fresh classification: session-bearing document"
 
 
 def test_gate_reports_static_only_without_an_archive_and_writes_nothing(
