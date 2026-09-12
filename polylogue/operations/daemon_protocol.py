@@ -36,20 +36,17 @@ class DaemonFallback(StrEnum):
     NEVER = "never"
 
 
-class DaemonOperationOutcome(StrEnum):
-    """Lifecycle outcomes for one machine exchange."""
-
-    ACCEPTED = "accepted"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    TIMED_OUT = "timed-out"
-    DISCONNECTED_BEFORE_ACCEPTANCE = "disconnected-before-acceptance"
-    DISCONNECTED_AFTER_ACCEPTANCE = "disconnected-after-acceptance"
-    INDETERMINATE = "indeterminate"
-    RESTARTED = "restarted"
-    REJECTED = "rejected"
+DAEMON_OPERATION_OUTCOMES = frozenset(
+    {
+        *(status.value for status in OperationStatus),
+        "cancelled",
+        "timed-out",
+        "disconnected-before-acceptance",
+        "disconnected-after-acceptance",
+        "indeterminate",
+        "restarted",
+    }
+)
 
 
 class _OperationPayload(BaseModel):
@@ -158,6 +155,48 @@ class SessionMetadataRequest(_OperationPayload):
         return self
 
 
+class SessionExcisionRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=4096)
+    actor: str = Field(min_length=1, max_length=512)
+    cascade_lineage: bool = False
+
+
+class SessionLifecycleRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    mode: Literal["mirror", "primary"]
+    reason: str = Field(min_length=1, max_length=4096)
+    actor: str = Field(min_length=1, max_length=512)
+
+
+class IdentityResetRequest(_OperationPayload):
+    session_ids: list[str] = Field(min_length=1, max_length=10_000)
+    reason: str = Field(min_length=1, max_length=4096)
+
+
+class RawAuthorityBlockerResolveRequest(_OperationPayload):
+    blocker_id: str = Field(min_length=1)
+    resolution: str = Field(min_length=1, max_length=4096)
+    assertion_id: str | None = None
+    judgment_disposition: Literal["retain_canonical_authority"] | None = None
+
+
+class ResetRequest(_OperationPayload):
+    index: bool = False
+    database: bool = False
+    include_user_db: bool = False
+    include_source_db: bool = False
+    blob: bool = False
+    assets: bool = False
+    cache: bool = False
+    auth: bool = False
+    reset_all: bool = False
+
+
+class BlobGCRecoverRequest(_OperationPayload):
+    generation_id: str = Field(min_length=1)
+
+
 class OperationStatusRequest(_OperationPayload):
     request_id: str = Field(min_length=1)
 
@@ -258,13 +297,13 @@ class FacetsResult(_OperationResult):
 
 class IngestResult(_OperationResult):
     source_generation_id: str = Field(min_length=1)
-    outcome: DaemonOperationOutcome
+    outcome: OperationStatus
     sequence: int = Field(ge=0)
     historical_receipt: IngestHistoricalReceipt
 
     @model_validator(mode="after")
     def binds_terminal_receipt(self) -> IngestResult:
-        if self.outcome is not DaemonOperationOutcome.COMPLETED:
+        if self.outcome is not OperationStatus.COMPLETED:
             raise ValueError("ingest terminal result must be completed")
         if self.source_generation_id != self.historical_receipt.source_generation_id:
             raise ValueError("ingest result and historical receipt disagree on source generation")
@@ -308,7 +347,7 @@ class MutationResult(_OperationPayload):
     @model_validator(mode="after")
     def exact_result_family(self) -> MutationResult:
         if self.status is None:
-            if self.outcome not in {item.value for item in DaemonOperationOutcome} or self.sequence is None:
+            if self.outcome not in DAEMON_OPERATION_OUTCOMES or self.sequence is None:
                 raise ValueError("mutation lifecycle result requires outcome and durable sequence")
         elif self.status == "prepared":
             if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids is None:
@@ -381,7 +420,7 @@ class DaemonOperationError:
     code: str
     detail: str
     retryable: bool = False
-    outcome: DaemonOperationOutcome = DaemonOperationOutcome.FAILED
+    outcome: OperationStatus = OperationStatus.FAILED
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -675,6 +714,93 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=SessionMetadataRequest,
         result_model=MutationResult,
     ),
+    DaemonOperationSpec(
+        "mutation.session.excision",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.excise_session",
+        deadline_s=300.0,
+        progress=True,
+        request_contract="mutation.session.excision.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="SessionExcisionRequest",
+        result_type="MutationResult",
+        request_model=SessionExcisionRequest,
+        result_model=MutationResult,
+        handler="mutation_session_excision",
+    ),
+    DaemonOperationSpec(
+        "mutation.session.lifecycle-request",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.request_session_lifecycle",
+        deadline_s=30.0,
+        request_contract="mutation.session.lifecycle-request.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="SessionLifecycleRequest",
+        result_type="MutationResult",
+        request_model=SessionLifecycleRequest,
+        result_model=MutationResult,
+        handler="mutation_session_lifecycle_request",
+    ),
+    DaemonOperationSpec(
+        "mutation.identity-reset",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.identity_reset",
+        deadline_s=300.0,
+        progress=True,
+        request_contract="mutation.identity-reset.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="IdentityResetRequest",
+        result_type="MutationResult",
+        request_model=IdentityResetRequest,
+        result_model=MutationResult,
+        handler="mutation_identity_reset",
+    ),
+    DaemonOperationSpec(
+        "mutation.raw-authority-blocker.resolve",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.raw_authority.resolve_blocker",
+        deadline_s=30.0,
+        request_contract="mutation.raw-authority-blocker.resolve.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="RawAuthorityBlockerResolveRequest",
+        result_type="MutationResult",
+        request_model=RawAuthorityBlockerResolveRequest,
+        result_model=MutationResult,
+        handler="mutation_raw_authority_blocker_resolve",
+    ),
+    DaemonOperationSpec(
+        "maintenance.reset",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.reset",
+        deadline_s=300.0,
+        progress=True,
+        request_contract="maintenance.reset.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="ResetRequest",
+        result_type="MutationResult",
+        request_model=ResetRequest,
+        result_model=MutationResult,
+        handler="maintenance_reset",
+    ),
+    DaemonOperationSpec(
+        "maintenance.blob-gc.recover",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.blob_gc.abandon_pending_generation",
+        deadline_s=30.0,
+        request_contract="maintenance.blob-gc.recover.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="BlobGCRecoverRequest",
+        result_type="MutationResult",
+        request_model=BlobGCRecoverRequest,
+        result_model=MutationResult,
+        handler="maintenance_blob_gc_recover",
+    ),
 )
 
 MAX_DECLARED_OPERATION_BODY_BYTES: int = max(spec.max_body_bytes for spec in DAEMON_OPERATION_SPECS)
@@ -962,7 +1088,7 @@ __all__ = [
     "MAX_OPERATION_BODY_BYTES",
     "MAX_OPERATION_RESULT_BYTES",
     "DaemonAuthority",
-    "DaemonOperationOutcome",
+    "DAEMON_OPERATION_OUTCOMES",
     "DaemonFallback",
     "DaemonOperationSpec",
     "DaemonOperationEnvelope",

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import replace
+from pathlib import Path
 from time import time
 from typing import Any, cast
 
@@ -27,6 +29,223 @@ from polylogue.operations.mutation_transaction import (
 )
 from polylogue.operations.operation_context import OperationContext, PinnedOperationRead
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+
+def _execute_named_mutation(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+    actuator: Any,
+    args: Any,
+) -> dict[str, object]:
+    """Run one legacy domain actuator under the daemon's write authority."""
+    assert context.runtime is not None
+    binding = runtime_operation_binding(actuator)
+    executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
+    preview = executor.prepare_bound_for_archive(binding, args, context.principal, archive_root=context.archive_root)
+    authorization = executor.authorize_bound(binding, preview, context.principal, confirmation_strength="bound_token")
+    receipt = executor.execute_bound(binding, preview, authorization, args)
+    if receipt.status in {"blocked", "unknown"}:
+        raise ValueError(receipt.detail or f"{actuator.operation} did not apply")
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if receipt.affected_count else "no-effect",
+        "affected_count": receipt.affected_count,
+        "result": dict(receipt.domain_receipt),
+    }
+
+
+def mutation_session_excision(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
+
+    payload = request.payload
+    args = SessionExcisionArgs(
+        archive_root=context.archive_root,
+        session_id=str(payload["session_id"]),
+        reason=str(payload["reason"]),
+        actor=str(payload["actor"]),
+        cascade_lineage=bool(payload.get("cascade_lineage", False)),
+    )
+    return _execute_named_mutation(request, context, audit, snapshot, SessionExcisionActuator(), args)
+
+
+def mutation_session_lifecycle_request(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    from polylogue.operations.mutation_actuators import SessionLifecycleRequestActuator, SessionLifecycleRequestArgs
+    from polylogue.security.lifecycle import LifecycleMode
+
+    payload = request.payload
+    args = SessionLifecycleRequestArgs(
+        archive_root=context.archive_root,
+        session_id=str(payload["session_id"]),
+        mode=cast(LifecycleMode, str(payload["mode"])),
+        reason=str(payload["reason"]),
+        actor=str(payload["actor"]),
+        now_ms=int(time() * 1000),
+    )
+    return _execute_named_mutation(request, context, audit, snapshot, SessionLifecycleRequestActuator(), args)
+
+
+def mutation_identity_reset(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    from polylogue.operations.mutation_actuators import IdentityResetActuator, IdentityResetArgs
+
+    payload = request.payload
+    args = IdentityResetArgs(
+        archive_root=context.archive_root,
+        session_ids=tuple(cast(list[str], payload["session_ids"])),
+        reason=str(payload["reason"]),
+    )
+    return _execute_named_mutation(request, context, audit, snapshot, IdentityResetActuator(), args)
+
+
+def mutation_raw_authority_blocker_resolve(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    from polylogue.operations.mutation_actuators import BlockerResolveActuator, BlockerResolveArgs
+
+    payload = request.payload
+    args = BlockerResolveArgs(
+        archive_root=context.archive_root,
+        blocker_id=str(payload["blocker_id"]),
+        resolution=str(payload["resolution"]),
+        assertion_id=cast(str | None, payload.get("assertion_id")),
+        judgment_disposition=cast(str | None, payload.get("judgment_disposition")),
+    )
+    return _execute_named_mutation(request, context, audit, snapshot, BlockerResolveActuator(), args)
+
+
+def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Path]]:
+    """Resolve reset targets in the daemon before any deletion is attempted."""
+    from polylogue.paths import blob_store_root, cache_home, data_home, drive_cache_path, drive_token_path, state_home
+
+    flags = {key: bool(payload.get(key, False)) for key in ("index", "database", "blob", "assets", "cache", "auth")}
+    if bool(payload.get("reset_all", False)):
+        flags.update(dict.fromkeys(flags, True))
+    if not any(flags.values()):
+        raise ValueError("reset requires at least one target")
+    targets: list[tuple[str, Path]] = []
+    if flags["index"] or flags["database"]:
+        if (root / ".index-active-pointer").exists():
+            raise ValueError("reset is unsafe for a managed active generation")
+        names = [("index database", "index.db")] if flags["index"] else []
+        if flags["database"]:
+            names = [
+                ("source database", "source.db"),
+                ("index database", "index.db"),
+                ("embeddings database", "embeddings.db"),
+                ("ops database", "ops.db"),
+            ]
+            if not bool(payload.get("include_source_db", False)):
+                names = [item for item in names if item[1] != "source.db"]
+            if not bool(payload.get("include_user_db", False)):
+                pass
+        for name, filename in names:
+            path = root / filename
+            if path.exists():
+                targets.append((name, path))
+            for suffix in ("-wal", "-shm"):
+                sidecar = path.with_name(f"{path.name}{suffix}")
+                if sidecar.exists():
+                    targets.append((f"{name} {suffix}", sidecar))
+    if flags["database"] and bool(payload.get("include_user_db", False)):
+        path = root / "user.db"
+        if path.exists():
+            targets.append(("user database", path))
+    if flags["blob"]:
+        path = blob_store_root()
+        if path.exists():
+            targets.append(("blob store", path))
+    if flags["assets"]:
+        path = data_home() / "assets"
+        if path.exists():
+            targets.append(("assets", path))
+    if flags["cache"]:
+        for name, path in (
+            ("cache/indexes", cache_home()),
+            ("inferred schemas", data_home() / "schemas"),
+            ("drive cache", drive_cache_path()),
+        ):
+            if path.exists():
+                targets.append((name, path))
+    if flags["auth"]:
+        path = drive_token_path()
+        if path.exists():
+            targets.append(("OAuth token", path))
+    if bool(payload.get("reset_all", False)):
+        path = state_home() / "last-source.json"
+        if path.exists():
+            targets.append(("last-source state", path))
+    return targets
+
+
+def maintenance_reset(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    targets = _reset_targets(context.archive_root, request.payload)
+    deleted = 0
+    for _name, path in targets:
+        if path.is_file():
+            path.unlink()
+            deleted += 1
+        elif path.is_dir():
+            shutil.rmtree(path)
+            deleted += 1
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if deleted else "no-effect",
+        "affected_count": deleted,
+        "result": {"deleted": deleted, "targets": [name for name, _path in targets]},
+    }
+
+
+def maintenance_blob_gc_recover(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    from polylogue.operations.mutation_actuators import (
+        PendingBlobGCGenerationAbandonActuator,
+        PendingBlobGCGenerationAbandonArgs,
+    )
+
+    args = PendingBlobGCGenerationAbandonArgs(
+        archive_root=context.archive_root,
+        generation_id=str(request.payload["generation_id"]),
+    )
+    return _execute_named_mutation(
+        request,
+        context,
+        audit,
+        snapshot,
+        PendingBlobGCGenerationAbandonActuator(),
+        args,
+    )
 
 
 def _audit_int(value: object, *, field: str) -> int:

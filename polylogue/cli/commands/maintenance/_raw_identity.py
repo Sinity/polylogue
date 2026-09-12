@@ -10,6 +10,25 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.maintenance import raw_authority
 
 
+def _submit(env: AppEnv, payload: dict[str, object]) -> dict[str, object]:
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationIndeterminateError,
+        OperationUnavailableError,
+        configured_mutation_operation,
+    )
+
+    operation = "mutation.raw-authority-blocker.resolve"
+    try:
+        return configured_mutation_operation(env.config, operation, payload)
+    except OperationUnavailableError as exc:
+        raise click.ClickException(f"daemon is unavailable; it must execute {operation}") from exc
+    except OperationIndeterminateError as exc:
+        raise click.ClickException(f"{operation} outcome is indeterminate; inspect daemon audit state") from exc
+    except OperationFailedError as exc:
+        raise click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}") from exc
+
+
 @click.command("raw-authority-frontier")
 @click.option(
     "--output-format",
@@ -212,46 +231,17 @@ def raw_authority_blocker_resolve_command(
     """
     if not confirmed:
         raise click.ClickException("refusing to resolve a durable blocker without --yes")
-    from polylogue.operations.bindings import BindingValidationError, runtime_operation_binding
-    from polylogue.operations.mutation_actuators import BlockerResolveActuator, BlockerResolveArgs
-    from polylogue.operations.mutation_transaction import (
-        MutationPrincipal,
-        MutationTransactionError,
-        OperationExecutor,
+    result = _submit(
+        env,
+        {
+            "blocker_id": blocker_id,
+            "resolution": reason,
+            "assertion_id": assertion_id,
+            "judgment_disposition": judgment_disposition,
+        },
     )
-
-    actuator = BlockerResolveActuator()
-    executor = OperationExecutor.for_archive_root(env.config.archive_root)
-    args = BlockerResolveArgs(
-        archive_root=env.config.archive_root,
-        blocker_id=blocker_id,
-        resolution=reason,
-        assertion_id=assertion_id,
-        judgment_disposition=judgment_disposition,
-    )
-    try:
-        binding = runtime_operation_binding(actuator)
-        principal = MutationPrincipal(
-            "cli",
-            frozenset({"archive.raw_authority.resolve_blocker"}),
-            "cli",
-            "write",
-        )
-        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=env.config.archive_root)
-        authorization = executor.authorize_bound(binding, preview, principal)
-        result = executor.execute_bound(binding, preview, authorization, args)
-    except (
-        BindingValidationError,
-        FileNotFoundError,
-        KeyError,
-        RuntimeError,
-        ValueError,
-        MutationTransactionError,
-    ) as exc:
-        raise click.ClickException(str(exc)) from exc
-    if result.status != "applied":
-        raise click.ClickException(f"blocker {blocker_id!r} not found or already resolved")
-    receipt = dict(result.domain_receipt)
+    receipt_result = result.get("result")
+    receipt = receipt_result if isinstance(receipt_result, dict) else {}
     if output_format == "json":
         click.echo(json.dumps(receipt, indent=2, sort_keys=True))
         return

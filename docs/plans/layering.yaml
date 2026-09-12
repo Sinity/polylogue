@@ -200,8 +200,8 @@ rules:
     description: >-
       Mutation authority — the daemon is the sole writer, so a CLI adapter
       lowers a write to a declared operation instead of driving the mutation
-      executor in its own process. The baseline names the command families
-      that still hold a second write authority; it may only shrink.
+      executor in its own process. The baseline is empty: any direct mutation
+      executor import in the CLI is a violation.
     disallow:
       from:
         - polylogue/operations/mutation_transaction
