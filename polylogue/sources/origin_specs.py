@@ -2251,7 +2251,11 @@ def _antigravity_spec() -> OriginSpec:
             "tests/unit/sources/test_antigravity_language_server.py",
             "tests/unit/sources/parsers/test_antigravity.py",
         ),
-        display_description="Antigravity language-server conversations",
+        display_description="Antigravity language-server and trajectory SQLite conversations",
+        fidelity_notes=(
+            "trajectory_meta and steps SQLite stores are acquired as one consistent logical export, then parsed by "
+            "the same canonical session writer; unknown step formats remain retained evidence.",
+        ),
         artifact_rules=(
             OriginArtifactRule(
                 kind="session_document",
@@ -2282,7 +2286,16 @@ def _antigravity_spec() -> OriginSpec:
                 path_suffixes=(".md",),
             ),
         ),
-        topology_capabilities=_no_topology_capabilities(Origin.ANTIGRAVITY_SESSION),
+        topology_capabilities=TopologyCapabilities(
+            message_parent=_absent_topology("Antigravity steps carry no reviewed message-parent identity"),
+            message_branch_state=_absent_topology("Antigravity steps carry no reviewed branch-state identity"),
+            session_parent_target=TopologyCapability(
+                "carried",
+                ("trajectory parent_references.parent_id", "trajectory parent_references.cascade_id"),
+            ),
+            inheritance_branch_point=_absent_topology("Antigravity trajectory stores carry no branch boundary"),
+            parent_dispatch=_absent_topology("Antigravity trajectory stores carry no parent-dispatch identity"),
+        ),
         tool_outcome_unknown_reasons=frozenset({ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}),
     )
 

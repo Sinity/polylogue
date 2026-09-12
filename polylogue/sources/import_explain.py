@@ -32,7 +32,7 @@ from polylogue.sources.dispatch import (
     parse_payload,
     parse_stream_payload,
 )
-from polylogue.sources.parsers import hermes_spans, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, hermes_spans, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.surfaces.payloads import (
@@ -411,6 +411,9 @@ def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryP
     # pre-JSON-decode consumers (e.g. schema sampling) from raw SQLite bytes,
     # not to gate the SQLite-specific parse routes, which have their own
     # structural admission check (looks_like_*_path).
+    if antigravity.looks_like_trajectory_db_path(path):
+        return _explain_antigravity_trajectory(path, provider_hint=provider_hint)
+
     if hermes_state.looks_like_state_db_path(path):
         return _explain_hermes_state_db(path, provider_hint=provider_hint)
 
@@ -445,6 +448,49 @@ def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryP
         source_path=str(path),
         provider_hint=provider_hint,
         path_classification=path_classification,
+    )
+
+
+def _explain_antigravity_trajectory(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
+    """Inspect the Antigravity trajectory parser without staging or writing."""
+    try:
+        sessions = list(antigravity.parse_trajectory_db(path, fallback_id=path.stem))
+    except Exception as exc:
+        # SQLite-specific degradation is classified by the parser/storage
+        # adapter; this surface only turns a failed inspection into explain
+        # evidence and must not grow another degradation site.
+        return _skipped_entry(
+            path,
+            provider_hint=provider_hint,
+            artifact=None,
+            reason=f"Antigravity trajectory parser failure: {type(exc).__name__}: {exc}",
+            detected_provider=Provider.ANTIGRAVITY,
+            detector_evidence=(
+                _evidence("antigravity_trajectory.signature", matched=True, reason="trajectory_meta and steps tables"),
+            ),
+        )
+    caveats = [
+        "dry-run inspected the SQLite trajectory read-only; import snapshots a consistent logical export before parsing."
+    ]
+    if not sessions or not any(session.messages for session in sessions):
+        caveats.append("trajectory contains no materialized messages; empty evidence remains attributable.")
+    if any(session.ingest_flags for session in sessions):
+        caveats.append("trajectory contains typed unsupported or degraded steps; coverage is not complete.")
+    return ImportExplainEntryPayload(
+        source_path=str(path),
+        artifact_kind="sqlite_trajectory_database",
+        provider_hint=provider_hint.value,
+        detected_origin=_origin_value(Provider.ANTIGRAVITY),
+        detected_provider=Provider.ANTIGRAVITY.value,
+        detector="antigravity_trajectory_db",
+        detector_evidence=(
+            _evidence("antigravity_trajectory.signature", matched=True, reason="trajectory_meta and steps tables"),
+        ),
+        parser="antigravity_trajectory_db",
+        parser_mode="logical_export",
+        produced=_produced_rows(sessions),
+        caveats=tuple(caveats),
+        raw_evidence_refs=(),
     )
 
 
