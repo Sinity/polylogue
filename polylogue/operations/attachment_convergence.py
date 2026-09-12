@@ -114,6 +114,10 @@ def converge_drive_attachments(
     acquired_rows: list[tuple[str, bytes, int]] = []
     terminal_ids: list[str] = []
     deferred = 0
+    # One content-addressed attachment can have refs in several sessions.  A
+    # bounded pass must not spend one Drive request per ref; retain only the
+    # fetch outcome (never the payload) and still emit one source ref per raw.
+    fetch_outcomes: dict[str, tuple[str, bytes | None, int]] = {}
     observed_at_ms = now_ms() if now_ms is not None else int(time.time() * 1000)
 
     try:
@@ -123,22 +127,51 @@ def converge_drive_attachments(
             if not isinstance(provider_file_id, str) or not provider_file_id:
                 terminal_ids.append(attachment_id)
                 continue
+            cached = fetch_outcomes.get(provider_file_id)
+            if cached is not None:
+                outcome, cached_hash, cached_size = cached
+                if outcome == "terminal":
+                    terminal_ids.append(attachment_id)
+                    continue
+                if outcome == "deferred":
+                    deferred += 1
+                    continue
+                assert outcome == "acquired" and cached_hash is not None
+                blob_hash = cached_hash
+                byte_count = cached_size
+                acquired_rows.append((attachment_id, blob_hash, byte_count))
+                acquired_refs.append(
+                    ArchiveSourceBlobRef(
+                        blob_hash=blob_hash,
+                        raw_id=str(row["raw_id"]),
+                        ref_type="attachment",
+                        source_path=str(row["source_url"] or "attachment-convergence"),
+                        size_bytes=byte_count,
+                        acquired_at_ms=observed_at_ms,
+                        publication_receipt_id=publisher.receipt_id(blob_hash.hex()),
+                    )
+                )
+                continue
             try:
                 payload = download_bytes(provider_file_id)
                 if len(payload) > max_attachment_bytes:
+                    fetch_outcomes[provider_file_id] = ("terminal", None, 0)
                     terminal_ids.append(attachment_id)
                     continue
                 blob_hash_hex, byte_count = publisher.write_from_bytes(payload)
             except Exception as exc:
                 if _permanent_failure(exc):
+                    fetch_outcomes[provider_file_id] = ("terminal", None, 0)
                     terminal_ids.append(attachment_id)
                 else:
+                    fetch_outcomes[provider_file_id] = ("deferred", None, 0)
                     deferred += 1
                     logger.info("attachment convergence deferred %s: %s", attachment_id, exc)
                 continue
 
             blob_hash = bytes.fromhex(blob_hash_hex)
             assert hashlib.sha256(payload).digest() == blob_hash
+            fetch_outcomes[provider_file_id] = ("acquired", blob_hash, byte_count)
             acquired_rows.append((attachment_id, blob_hash, byte_count))
             acquired_refs.append(
                 ArchiveSourceBlobRef(
