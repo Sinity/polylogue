@@ -87,6 +87,8 @@ def _bounded_source_paths(
                 path = Path(entry.path)
                 try:
                     if entry.is_dir(follow_symlinks=False):
+                        if source.ignores_directory(path):
+                            continue
                         pending.append(path)
                         continue
                     if not entry.is_file(follow_symlinks=False):
