@@ -206,6 +206,7 @@ def test_operation_transport_refuses_invalid_response_framing(
                 "POST", "/api/operation", {"request_id": "framing-request"}, mutation=mutation
             )
         if mutation:
+            assert isinstance(raised.value, DaemonMutationIndeterminateError)
             assert raised.value.request_id == "framing-request"
 
 
