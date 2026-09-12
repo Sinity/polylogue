@@ -113,6 +113,22 @@ def test_inventory_totals_cover_every_declared_population(tmp_path: Path) -> Non
     assert inventory.population("spools").allocated_bytes >= 32 * 1024
     assert inventory.population("maintenance_receipts").allocated_bytes >= 4096
     assert inventory.population("unclassified").allocated_bytes >= 128 * 1024
+    assert inventory.total_allocated_bytes >= _allocated(root)
+
+
+def test_inventory_charges_archive_root_directory_without_following_external_links(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _archive_with_generation(root, generation_bytes=64 * 1024)
+    outside = tmp_path / "outside"
+    _dense(outside / "huge.bin", 16 * 1024 * 1024)
+    # A root-level unknown link is retained as one inode, but must not make
+    # unrelated storage outside the archive part of the retained baseline.
+    (root / "unrelated-link").symlink_to(outside, target_is_directory=True)
+
+    inventory = measure_archive_capacity(root)
+
+    assert inventory.total_allocated_bytes >= _allocated(root)
+    assert inventory.total_allocated_bytes < 8 * 1024 * 1024
 
 
 def test_hardlinked_blob_is_charged_once(tmp_path: Path) -> None:
