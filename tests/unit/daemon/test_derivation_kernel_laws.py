@@ -425,7 +425,12 @@ def test_a_publication_the_output_relation_does_not_confirm_is_a_failure() -> No
 
     class LyingPublication(RecordingDerivation):
         def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
-            self.published.append(str(replacement.payload))
+            key = str(replacement.payload)
+            self.published.append(key)
+            # A publisher may claim success while persisting the wrong input
+            # binding.  The authoritative relation must expose that as stale;
+            # merely returning True must not certify the replacement.
+            self.output[key] = "wrong-binding"
             return True
 
     adapter = LyingPublication("d", required=("a",))
@@ -435,8 +440,8 @@ def test_a_publication_the_output_relation_does_not_confirm_is_a_failure() -> No
     assert report.done == 0
     assert report.failed == 1
     failure = report.by_outcome(Outcome.FAILED)[0]
-    assert failure.error is not None and "missing" in failure.error
-    assert adapter.output == {}
+    assert failure.error is not None and "stale" in failure.error
+    assert adapter.output == {"a": "wrong-binding"}
 
 
 def test_quiet_policy_defers_a_key_without_certifying_it() -> None:
