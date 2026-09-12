@@ -17,6 +17,7 @@ import pytest
 from tests.benchmarks.helpers import BenchmarkFixture
 from tests.infra.benchmark_archives import seed_benchmark_archive
 from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
+from tests.infra.workload_artifacts import BenchmarkWorkloadTier
 
 pytestmark = pytest.mark.uses_real_clock(
     "polylogue-20d.1 daemon UDS benchmark uses the maintained production daemon operation stack; frozen_clock cannot substitute for its real writer/listener lifecycle."
@@ -51,7 +52,7 @@ def bench_daemon_uds_stack(
     monkeypatch.delenv("POLYLOGUE_DAEMON", raising=False)
 
     def seed(root: Path) -> None:
-        seed_benchmark_archive(root / "index.db", target_messages=1000)
+        seed_benchmark_archive(root / "index.db", BenchmarkWorkloadTier.SMOKE)
 
     with running_daemon_operations(bench_daemon_uds_archive_root, seed_archive=seed) as stack:
         yield stack

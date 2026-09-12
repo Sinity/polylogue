@@ -45,6 +45,8 @@ from typing import Any
 
 import pytest
 
+from tests.infra.workload_artifacts import BenchmarkWorkloadTier
+
 pytestmark = pytest.mark.uses_real_clock(
     "polylogue-196x nightly perf-floors runner stamps its measurement report with the real wall-clock generation time (machine fingerprint metadata for the committed floors artifact); a frozen clock would misdate every real nightly run."
 )
@@ -56,8 +58,6 @@ _GIT_TIMEOUT_S = 2.0
 
 # Quick mode shrinks corpora for a fast smoke check (local dev / CI dry runs);
 # it still exercises every measured surface, just at a smaller scale.
-_ACTION_PAIRS_TARGET_MESSAGES = 5000
-_ACTION_PAIRS_TARGET_MESSAGES_QUICK = 1000
 _ACTION_PAIRS_SAMPLE_SESSIONS = 20
 _QUERY_TARGET_MESSAGES = 5000
 _QUERY_TARGET_MESSAGES_QUICK = 1000
@@ -195,7 +195,7 @@ def measure_replay_throughput(workdir: Path, *, quick: bool = False) -> list[Flo
 # ---------------------------------------------------------------------------
 
 
-def _seed_bench_archive(workdir: Path, *, target_messages: int) -> Path:
+def _seed_bench_archive(workdir: Path, *, tier: BenchmarkWorkloadTier) -> Path:
     """Materialize a semantic benchmark archive and return its ``index.db`` path.
 
     Reuses the shared artifact seeder from ``tests/infra/benchmark_archives``.
@@ -206,7 +206,7 @@ def _seed_bench_archive(workdir: Path, *, target_messages: int) -> Path:
 
     db_path = workdir / "seeded" / "index.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    seed_benchmark_archive(db_path, target_messages=target_messages)
+    seed_benchmark_archive(db_path, tier)
     return db_path
 
 
@@ -372,8 +372,8 @@ def run_perf_floor_set(workdir: Path | None = None, *, quick: bool = False) -> d
         metrics.extend(measure_census_throughput(base / "census", quick=quick))
         metrics.extend(measure_replay_throughput(base / "replay", quick=quick))
 
-        target_messages = _ACTION_PAIRS_TARGET_MESSAGES_QUICK if quick else _ACTION_PAIRS_TARGET_MESSAGES
-        index_db = _seed_bench_archive(base / "seed", target_messages=target_messages)
+        tier = BenchmarkWorkloadTier.SMOKE if quick else BenchmarkWorkloadTier.REPRESENTATIVE
+        index_db = _seed_bench_archive(base / "seed", tier=tier)
         metrics.extend(measure_action_pairs_refresh(index_db))
         metrics.extend(measure_query_latency(index_db))
 

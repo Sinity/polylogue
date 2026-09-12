@@ -51,7 +51,6 @@ from tests.infra.workload_artifacts import (
     acquire_query_only_seeded_archive,
     benchmark_corpus_specs,
     benchmark_workload_profile,
-    benchmark_workload_tier,
     build_immutable_tree,
     build_seeded_archive,
     c03_semantic_corpus_spec,
@@ -136,16 +135,15 @@ def test_benchmark_profiles_are_semantic_mixed_origin_exact_message_projections(
         assert {profile.tier.value for spec in specs if profile.tier.value in spec.tags} == {profile.tier.value}
 
 
-def test_benchmark_profile_selection_is_deterministic_and_rejects_legacy_ad_hoc_targets() -> None:
+def test_benchmark_profile_selection_is_deterministic_and_named() -> None:
     """The adapter has one stable corpus identity per supported semantic tier."""
     first = benchmark_corpus_specs(BenchmarkWorkloadTier.REPRESENTATIVE, seed=91)
     second = benchmark_corpus_specs("representative", seed=91)
 
     assert first == second
-    assert benchmark_workload_tier(5_000) is BenchmarkWorkloadTier.REPRESENTATIVE
     assert benchmark_workload_profile("representative").target_messages == 5_000
-    with pytest.raises(ValueError, match="no named benchmark workload"):
-        benchmark_workload_tier(7_500)
+    with pytest.raises(ValueError, match="not-a-tier"):
+        BenchmarkWorkloadTier("not-a-tier")
 
 
 def test_named_workload_profiles_are_semantic_and_build_deterministic_provider_specs() -> None:
@@ -2616,12 +2614,19 @@ def test_benchmark_seeder_reports_the_manifest_measurement_without_recounting(
             ),
         ),
     )
-    monkeypatch.setattr(benchmark_archives, "build_benchmark_archive", lambda *_a, **_k: planted)
+    built_specs: list[tuple[CorpusSpec, ...]] = []
+
+    def build(specs: tuple[CorpusSpec, ...], **_kwargs: object) -> object:
+        built_specs.append(specs)
+        return planted
+
+    monkeypatch.setattr(benchmark_archives, "build_seeded_archive", build)
     monkeypatch.setattr(benchmark_archives, "clone_seeded_archive", lambda *_a, **_k: None)
 
-    stats = benchmark_archives.seed_benchmark_archive(tmp_path / "bench" / "benchmark.db", 1_000)
+    stats = benchmark_archives.seed_benchmark_archive(tmp_path / "bench" / "benchmark.db", BenchmarkWorkloadTier.SMOKE)
 
     assert stats == {"sessions": 7, "messages": 1_000, "content_blocks": 11, "bytes": 4242}
+    assert built_specs == [benchmark_corpus_specs(BenchmarkWorkloadTier.SMOKE)]
 
 
 def test_benchmark_seeder_refuses_a_tier_whose_measured_size_is_wrong(
@@ -2643,11 +2648,11 @@ def test_benchmark_seeder_refuses_a_tier_whose_measured_size_is_wrong(
             ),
         ),
     )
-    monkeypatch.setattr(benchmark_archives, "build_benchmark_archive", lambda *_a, **_k: undersized)
+    monkeypatch.setattr(benchmark_archives, "build_seeded_archive", lambda *_a, **_k: undersized)
     monkeypatch.setattr(benchmark_archives, "clone_seeded_archive", lambda *_a, **_k: None)
 
     with pytest.raises(RuntimeError, match="produced 999 messages, expected 1000"):
-        benchmark_archives.seed_benchmark_archive(tmp_path / "bench" / "benchmark.db", 1_000)
+        benchmark_archives.seed_benchmark_archive(tmp_path / "bench" / "benchmark.db", BenchmarkWorkloadTier.SMOKE)
 
 
 def test_construction_measurement_carries_io_and_memory_denominators(tmp_path: Path) -> None:
