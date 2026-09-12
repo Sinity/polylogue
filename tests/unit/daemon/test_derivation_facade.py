@@ -109,19 +109,22 @@ def test_the_facade_routes_only_publication_through_the_owner_admission() -> Non
 
 
 def test_a_required_key_that_disappears_after_discovery_is_binding_moved() -> None:
-    """Correct retirement during a required pass is pending, not a false failure.
+    """A publisher rechecks a vanished required key as a moved binding.
 
-    Anti-vacuity: classify a post-publish MISSING relation as FAILED and this
-    loses the retryable moved-input distinction although the old output was
-    correctly removed.
+    Anti-vacuity: return success after the source row disappears and the
+    kernel correctly reports a failed publication rather than concealing it as
+    a moved binding.
     """
 
     class VanishingDerivation(BaseDerivation):
         domain = "vanishing"
         prerequisites: tuple[str, ...] = ()
 
+        def __init__(self) -> None:
+            self.required = True
+
         def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
-            return ("gone",)
+            return ("gone",) if self.required else ()
 
         def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, str]:
             return dict.fromkeys(keys, "missing")
@@ -130,7 +133,11 @@ def test_a_required_key_that_disappears_after_discovery_is_binding_moved() -> No
             return Replacement(key=DerivationKey(self.domain, key), input_binding="before", payload=key)
 
         def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
-            return True
+            self.required = False
+            # This is the bounded source-relation recheck a real publisher
+            # makes under its write transaction.  The key is no longer
+            # required, so it declines the prepared replacement.
+            return False
 
     report = DaemonConverger([], derivations=[VanishingDerivation()]).converge_derivations(FRAME)
     outcome = report.by_outcome(Outcome.PENDING)

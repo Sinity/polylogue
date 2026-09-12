@@ -444,6 +444,30 @@ def test_a_publication_the_output_relation_does_not_confirm_is_a_failure() -> No
     assert adapter.output == {"a": "wrong-binding"}
 
 
+def test_a_successful_publication_that_leaves_a_required_output_missing_fails() -> None:
+    """A success claim cannot turn a still-required missing output into backlog.
+
+    Anti-vacuity: classify ``MISSING`` after a successful required publication
+    as ``BINDING_MOVED`` and the kernel conceals a lying publisher as an
+    ordinary retry.
+    """
+
+    class LyingPublication(RecordingDerivation):
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            self.published.append(str(replacement.payload))
+            return True
+
+    adapter = LyingPublication("d", required=("a",))
+    report = converge(DerivationRegistry([adapter]), FRAME)
+
+    assert report.done == 0
+    assert report.pending == 0
+    assert report.failed == 1
+    failure = report.by_outcome(Outcome.FAILED)[0]
+    assert failure.error is not None and "required output remains missing" in failure.error
+    assert adapter.output == {}
+
+
 def test_quiet_policy_defers_a_key_without_certifying_it() -> None:
     """A deferred key stays pending, so the next pass still finds it."""
     adapter = RecordingDerivation("d", required=("hot", "cold"), quiet_keys=frozenset({"hot"}))
