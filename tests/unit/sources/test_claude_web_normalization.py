@@ -947,6 +947,97 @@ def test_authenticated_browser_capture_uses_native_payload_and_enriches_attachme
     assert attachment.upload_origin == "oauth"
 
 
+def _claude_attachment_duplicate_routes_payload() -> dict[str, Any]:
+    """Provider-shaped fixture for native plus envelope attachment routes.
+
+    The raw response carries provider ids and the envelope carries the
+    extension's id-less projections.  Both source attachments intentionally
+    share a filename and size so byte identity, rather than a loose descriptor
+    match, is what keeps the two legitimate uploads distinct.
+    """
+
+    first = b"first-paste"
+    second = b"other-bytes"
+    return {
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "capture_id": "claude-ai:attachment-dedupe-fixture",
+        "provenance": {
+            "source_url": "https://claude.ai/chat/attachment-dedupe-fixture",
+            "captured_at": "2026-07-01T10:00:05Z",
+            "adapter_name": "claude-native-api-v1",
+            "capture_mode": "snapshot",
+        },
+        "session": {
+            "provider": "claude-ai",
+            "provider_session_id": "attachment-dedupe-fixture",
+            "turns": [
+                {
+                    "provider_turn_id": "m1",
+                    "role": "user",
+                    "text": "Keep both source files.",
+                    "attachments": [
+                        {
+                            "provider_attachment_id": "claude-attachment:first",
+                            "message_provider_id": "m1",
+                            "name": "paste.txt",
+                            "mime_type": "text/plain",
+                            "size_bytes": len(first),
+                            "extracted_content": first.decode(),
+                        },
+                        {
+                            "provider_attachment_id": "claude-attachment:second",
+                            "message_provider_id": "m1",
+                            "name": "paste.txt",
+                            "mime_type": "text/plain",
+                            "size_bytes": len(second),
+                            "extracted_content": second.decode(),
+                        },
+                    ],
+                }
+            ],
+        },
+        "raw_provider_payload": {
+            "uuid": "attachment-dedupe-fixture",
+            "chat_messages": [
+                {
+                    "uuid": "m1",
+                    "sender": "human",
+                    "text": "Keep both source files.",
+                    "attachments": [
+                        {
+                            "id": "provider-first",
+                            "file_name": "paste.txt",
+                            "file_type": "text/plain",
+                            "file_size": len(first),
+                            "extracted_content": first.decode(),
+                        },
+                        {
+                            "id": "provider-second",
+                            "file_name": "paste.txt",
+                            "file_type": "text/plain",
+                            "file_size": len(second),
+                            "extracted_content": second.decode(),
+                        },
+                    ],
+                }
+            ],
+        },
+    }
+
+
+def test_native_claude_attachment_routes_dedupe_by_provider_identity_and_bytes() -> None:
+    parsed = _parse_real_route(_claude_attachment_duplicate_routes_payload())
+
+    assert [attachment.provider_attachment_id for attachment in parsed.attachments] == [
+        "provider-first",
+        "provider-second",
+    ]
+    assert [attachment.upload_origin for attachment in parsed.attachments] == ["oauth", "oauth"]
+    assert [attachment.inline_bytes for attachment in parsed.attachments] == [b"first-paste", b"other-bytes"]
+    assert [attachment.message_provider_id for attachment in parsed.attachments] == ["m1", "m1"]
+
+
 def test_native_browser_envelope_supplies_only_missing_optional_metadata() -> None:
     """Envelope projection fills omissions but never replaces native conversation identity."""
     raw = _native_claude_payload()
