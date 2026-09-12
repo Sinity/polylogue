@@ -292,6 +292,48 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
     assert cursors == [None, first, None]
 
 
+def test_raw_discovery_restarts_for_a_new_raw_before_its_cursor(tmp_path: Path) -> None:
+    """A new durable raw cannot wait for an unrelated full cursor sweep.
+
+    Anti-vacuity: omit the durable raw frontier from the discovery binding and
+    the second page starts after ``first``; the newly admitted, lexically
+    earlier raw is then invisible until a complete old traversal wraps.
+    """
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        first = "z" * 64
+        first_payload = b"high-frontier"
+        assert (
+            archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=first_payload,
+                source_path="high.json",
+                acquired_at_ms=1,
+                raw_id=first,
+            )
+            == first
+        )
+
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    assert discovery.discover_pending_raw_ids(1) == ((first, len(first_payload)),)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        earlier = "a" * 64
+        earlier_payload = b"earlier-frontier"
+        assert (
+            archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=earlier_payload,
+                source_path="earlier.json",
+                acquired_at_ms=2,
+                raw_id=earlier,
+            )
+            == earlier
+        )
+
+    assert discovery.discover_pending_raw_ids(1) == ((earlier, len(earlier_payload)),)
+
+
 @pytest.mark.asyncio
 async def test_intake_coalesces_hints_received_during_discovery() -> None:
     """Clearing a wake after discovery loses the event and waits sixty seconds."""
