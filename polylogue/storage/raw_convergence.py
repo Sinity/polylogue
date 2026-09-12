@@ -3886,6 +3886,21 @@ def _raw_materialization_candidate_ids(
                    ) AS membership_authority_complete
                    , EXISTS (
                        SELECT 1
+                       FROM raw_session_memberships AS m
+                       WHERE m.raw_id = r.raw_id
+                         AND m.decision = 'applied'
+                         AND NOT EXISTS (
+                           SELECT 1
+                           FROM {index_schema}.raw_revision_heads AS h
+                           JOIN {index_schema}.sessions AS member
+                             ON member.session_id = h.session_id
+                            AND member.raw_id = h.accepted_raw_id
+                            AND member.content_hash = h.accepted_content_hash
+                           WHERE h.logical_source_key = m.logical_source_key
+                         )
+                   ) AS membership_output_missing
+                   , EXISTS (
+                       SELECT 1
                        FROM raw_membership_census AS c
                        WHERE c.raw_id = r.raw_id
                          AND c.parser_fingerprint = ?
@@ -3920,17 +3935,21 @@ def _raw_materialization_candidate_ids(
                          AND c.detail = ?
                    )) AS byte_authority_pending
             FROM raw_sessions AS r
-            LEFT JOIN {index_schema}.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN {index_schema}.sessions AS s_by_native
               ON r.native_id IS NOT NULL
              AND s_by_native.origin = {effective_origin}
              AND s_by_native.native_id = r.native_id
             LEFT JOIN raw_sessions AS existing_native_raw
               ON existing_native_raw.raw_id = s_by_native.raw_id
-            WHERE s_by_raw.raw_id IS NULL
-              AND (
-                s_by_native.native_id IS NULL
-                OR existing_native_raw.raw_id IS NULL
+            WHERE (
+                (
+                  NOT EXISTS (
+                    SELECT 1 FROM {index_schema}.sessions AS s_by_raw
+                    WHERE s_by_raw.raw_id = r.raw_id
+                  )
+                  AND (s_by_native.native_id IS NULL OR existing_native_raw.raw_id IS NULL)
+                )
+                OR membership_output_missing
               )
               -- A failed worker validation is replay authority only until a
               -- successful parse records a durable parsed timestamp. Keep
@@ -4006,13 +4025,13 @@ def _raw_materialization_candidate_ids(
                 adoption_deferred += 1
                 adoption_deferred_raw_ids.append(row_raw_id)
                 continue
-            if bool(row["application_terminal"]):
+            if bool(row["application_terminal"]) and not bool(row["membership_output_missing"]):
                 continue
             # Membership authority describes how to replay a shared raw; it is
             # not evidence that the rebuildable index still contains the
             # governed sessions.  The candidate query has already proved this
-            # raw has no materialized index row, so retain complete censuses
-            # as replay inputs after an index reset.
+            # raw has missing or inconsistent member output, so retain
+            # complete censuses as replay inputs after partial index loss.
             if bool(row["membership_authority_quarantined"]):
                 authority_quarantined += 1
                 authority_quarantined_raw_ids.append(row_raw_id)
@@ -4034,7 +4053,9 @@ def _raw_materialization_candidate_ids(
                 row["failure_artifact_kind"] in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
             ):
                 continue
-            if _raw_materialized_by_source_path_native(materialized_aliases, row):
+            if not bool(row["membership_output_missing"]) and _raw_materialized_by_source_path_native(
+                materialized_aliases, row
+            ):
                 continue
             if bool(row["membership_non_session_terminal"]):
                 continue

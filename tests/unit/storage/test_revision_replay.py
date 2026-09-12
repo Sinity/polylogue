@@ -2220,6 +2220,8 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
     the head from a quarantined membership (browser-capture) raw instead of
     the CAS rejecting the whole replay.
     """
+    from polylogue.storage.raw_convergence import raw_materialization_candidate_ids_from_pinned_index
+
     bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
@@ -2238,6 +2240,11 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
             "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
         assert stored is not None
+        archive.commit()
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("ATTACH DATABASE ? AS source_tier", (str(tmp_path / "source.db"),))
+        candidates = raw_materialization_candidate_ids_from_pinned_index(conn, archive_root=tmp_path)
+    assert capture not in candidates.raw_ids
 
 
 def test_chain_replay_supersedes_quarantined_membership_head_even_when_capture_has_more_units(tmp_path: Path) -> None:
