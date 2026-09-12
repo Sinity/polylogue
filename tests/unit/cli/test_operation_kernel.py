@@ -48,9 +48,21 @@ def test_typed_daemon_error_does_not_fall_through_to_direct_execution() -> None:
         ).execute(OperationRequest("cli.query", {}))
 
 
-def test_non_read_operation_cannot_use_direct_fallback() -> None:
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "mutation.session.excision",
+        "mutation.session.lifecycle-request",
+        "mutation.identity-reset",
+        "mutation.raw-authority-blocker.resolve",
+        "maintenance.reset",
+        "maintenance.blob-gc.recover",
+        "mutation.session.tag",
+    ],
+)
+def test_mutation_operations_cannot_use_direct_fallback(operation: str) -> None:
     with pytest.raises(OperationUnavailableError) as exc_info:
-        OperationKernel(lambda _request: None).execute(OperationRequest("mutation.session.tag", {}))
+        OperationKernel(lambda _request: None).execute(OperationRequest(operation, {}))
     assert exc_info.value.code == "daemon_required"
 
 

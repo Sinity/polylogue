@@ -16,11 +16,11 @@ if TYPE_CHECKING:
     from polylogue.operations.operation_context import OperationContext
 
 from polylogue.operations.daemon_protocol import (
+    DAEMON_OPERATION_OUTCOMES,
     DAEMON_OPERATION_PROTOCOL,
     MAX_OPERATION_RESULT_BYTES,
     AcceptedOperationReference,
     DaemonAuthority,
-    DaemonOperationOutcome,
     DaemonOperationRequest,
     daemon_operation_spec,
     validate_operation_result,
@@ -285,7 +285,7 @@ class DaemonClient:
             or Path(str(archive.get("root", ""))).resolve() != Path(request.archive_root).resolve()
         ):
             raise DaemonOperationProtocolError("daemon returned a different archive identity")
-        if response.get("outcome") not in {outcome.value for outcome in DaemonOperationOutcome}:
+        if response.get("outcome") not in DAEMON_OPERATION_OUTCOMES:
             raise DaemonOperationProtocolError("daemon returned an unknown lifecycle outcome")
         for key in (
             "archive",

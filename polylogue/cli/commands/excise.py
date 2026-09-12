@@ -10,7 +10,6 @@ explicitly out of this command's scope (polylogue-303r.6); see
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 import click
@@ -18,13 +17,26 @@ import click
 if TYPE_CHECKING:
     from polylogue.surfaces.payloads import MutationStatus
 
-from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.paths import archive_root
 
 
-def _now_ms() -> int:
-    return int(datetime.now(UTC).timestamp() * 1000)
+def _submit(env: AppEnv, operation: str, payload: dict[str, object]) -> dict[str, object]:
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationIndeterminateError,
+        OperationUnavailableError,
+        configured_mutation_operation,
+    )
+
+    try:
+        return configured_mutation_operation(env.config, operation, payload)
+    except OperationUnavailableError as exc:
+        raise click.ClickException(f"daemon is unavailable; it must execute {operation}") from exc
+    except OperationIndeterminateError as exc:
+        raise click.ClickException(f"{operation} outcome is indeterminate; inspect daemon audit state") from exc
+    except OperationFailedError as exc:
+        raise click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}") from exc
 
 
 def _emit(
@@ -159,33 +171,17 @@ def excise_command(
                 env.ui.console.print("Aborted.")
                 return
 
-        from polylogue.operations.bindings import runtime_operation_binding
-        from polylogue.operations.mutation_actuators import SessionLifecycleRequestActuator, SessionLifecycleRequestArgs
-        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
-        from polylogue.security.lifecycle import LifecycleMode
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-        initialize_active_archive_root(root)
-        lifecycle_actuator = SessionLifecycleRequestActuator()
-        lifecycle_args = SessionLifecycleRequestArgs(
-            archive_root=root,
-            session_id=session_id,
-            mode=cast(LifecycleMode, mode),
-            reason=reason,
-            actor=actor,
-            now_ms=_now_ms(),
+        result = _submit(
+            env,
+            "mutation.session.lifecycle-request",
+            {"session_id": session_id, "mode": mode, "reason": reason, "actor": actor},
         )
-        executor = OperationExecutor.for_archive_root(root)
-        lifecycle_binding = runtime_operation_binding(lifecycle_actuator)
-        lifecycle_principal = MutationPrincipal(actor, frozenset({"archive.request_session_lifecycle"}), "cli", "write")
-        lifecycle_preview = executor.prepare_bound_for_archive(
-            lifecycle_binding, lifecycle_args, lifecycle_principal, archive_root=root
+        detail_result = result.get("result")
+        assertion_id = (
+            str(detail_result.get("assertion_id"))
+            if isinstance(detail_result, dict) and detail_result.get("assertion_id")
+            else str(result.get("reference", ""))
         )
-        lifecycle_authorization = executor.authorize_bound(
-            lifecycle_binding, lifecycle_preview, lifecycle_principal, confirmation_strength="bound_token"
-        )
-        receipt = executor.execute_bound(lifecycle_binding, lifecycle_preview, lifecycle_authorization, lifecycle_args)
-        assertion_id = cast(str, receipt.domain_receipt["assertion_id"])
         _emit(
             env,
             status="ok",
@@ -200,19 +196,7 @@ def excise_command(
         )
         return
 
-    from polylogue.operations.bindings import runtime_operation_binding
-    from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
-    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
     from polylogue.security.excision import plan_session_excision
-
-    actuator = SessionExcisionActuator()
-    excision_args = SessionExcisionArgs(
-        archive_root=root,
-        session_id=session_id,
-        reason=reason,
-        actor=actor,
-        cascade_lineage=cascade_lineage,
-    )
 
     if dry_run:
         plan = plan_session_excision(root, session_id)
@@ -310,36 +294,28 @@ def excise_command(
             env.ui.console.print("Aborted.")
             return
 
-    # Route the real mutation through OperationExecutor (polylogue-t46.9/
-    # kwsb.2): PREPARE re-resolves the plan against live state (catching a
-    # session that changed between the plan/confirm above and now), AUTHORIZE
-    # binds this operator's --yes confirmation to that exact plan hash, and
-    # EXECUTE revalidates the hash immediately before mutating -- a stale or
-    # tampered authorization refuses (``PlanStaleError``) rather than excising
-    # the wrong target set.
-    executor = OperationExecutor.for_archive_root(root)
-    binding = runtime_operation_binding(actuator)
-    principal = MutationPrincipal(actor, frozenset({"archive.excise_session"}), "cli", "write")
-    preview = executor.prepare_bound_for_archive(binding, excision_args, principal, archive_root=root)
-    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
-    executor_receipt = executor.execute_bound(binding, preview, authorization, excision_args)
-    if executor_receipt.status == "blocked":
-        _emit(
-            env,
-            status="aborted",
-            session_id=session_id,
-            affected_count=0,
-            output_format=output_format,
-            plain_message=executor_receipt.detail or "Excision refused: lineage dependents present.",
-        )
-        return
-    if executor_receipt.status == "unknown":
-        fail("excise", f"Session {session_id!r} disappeared between plan and apply.")
-        return
-    domain_receipt = executor_receipt.domain_receipt
-    cascaded_session_ids: tuple[str, ...] = tuple(cast("list[str]", domain_receipt.get("cascaded_session_ids", ())))
+    # The daemon re-runs PREPARE/AUTHORIZE/EXECUTE against live state.  The
+    # CLI only lowers the confirmed request and never opens a writer.
+    result = _submit(
+        env,
+        "mutation.session.excision",
+        {
+            "session_id": session_id,
+            "reason": reason,
+            "actor": actor,
+            "cascade_lineage": cascade_lineage,
+        },
+    )
+    domain_receipt = result.get("result")
+    domain_receipt = domain_receipt if isinstance(domain_receipt, dict) else {}
+    affected_raw = result.get("affected_count")
+    affected_count = affected_raw if isinstance(affected_raw, int) else 0
+    cascaded_session_ids: tuple[str, ...] = tuple(
+        str(item) for item in cast("list[object]", domain_receipt.get("cascaded_session_ids", ()))
+    )
     detail_message = (
-        f"Excised session {session_id}: {domain_receipt.get('counts', {})} (receipt: {executor_receipt.receipt_ref})"
+        f"Excised session {session_id}: {domain_receipt.get('counts', {})} "
+        f"(receipt: {domain_receipt.get('receipt_assertion_id', result.get('reference', 'unknown'))})"
     )
     if cascaded_session_ids:
         detail_message += f"; also excised lineage-dependent session(s): {', '.join(cascaded_session_ids)}"
@@ -347,10 +323,10 @@ def excise_command(
         env,
         status="ok",
         session_id=session_id,
-        affected_count=executor_receipt.affected_count,
+        affected_count=affected_count,
         output_format=output_format,
         plain_message=detail_message,
-        detail=cast(str | None, domain_receipt.get("receipt_assertion_id")) or executor_receipt.receipt_ref,
+        detail=cast(str | None, domain_receipt.get("receipt_assertion_id")) or str(result.get("reference", "")),
     )
 
 

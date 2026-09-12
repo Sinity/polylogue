@@ -237,6 +237,39 @@ def configured_read_operation(
     return OperationKernel(lambda _request: envelope).execute(OperationRequest(operation, payload))
 
 
+def configured_mutation_operation(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+    """Execute a declared mutation through the resident daemon only.
+
+    A missing socket becomes the typed ``daemon_required`` result; transport
+    failures after connection remain indeterminate and are never retried
+    through a local writer.
+    """
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+    from polylogue.operations.daemon_protocol import MUTATION_OPERATION_NAMES
+
+    if operation not in MUTATION_OPERATION_NAMES:
+        raise OperationKernelError(f"operation is not a declared mutation: {operation}")
+    client = DaemonClient(
+        daemon_socket_path(config.archive_root),
+        auth_token=resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
+    )
+    result = OperationKernel(
+        lambda request: client.operation_to_completion(
+            request.operation,
+            dict(request.payload),
+            archive_root=str(config.archive_root),
+        )
+    ).execute(OperationRequest(operation, payload))
+    if not isinstance(result.value, Mapping):
+        raise OperationEnvelopeError(f"{operation} returned a non-object result")
+    return {str(key): value for key, value in result.value.items()}
+
+
 __all__ = [
     "OperationCancelledError",
     "OperationFailedError",
@@ -247,4 +280,5 @@ __all__ = [
     "OperationRequest",
     "OperationResult",
     "OperationUnavailableError",
+    "configured_mutation_operation",
 ]

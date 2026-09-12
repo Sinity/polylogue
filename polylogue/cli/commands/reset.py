@@ -6,10 +6,9 @@ rather than hard-deleted, preserving user metadata across reset cycles.
 
 from __future__ import annotations
 
-import shutil
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import click
 
@@ -44,6 +43,24 @@ _REBUILDABLE_ARCHIVE_DATABASES = (
 # ``reset --database`` preserves it unless the operator opts in explicitly.
 _USER_ARCHIVE_DATABASE = ("user database", "user.db")
 _INDEX_ARCHIVE_DATABASE = ("index database", "index.db")
+
+
+def _submit(env: AppEnv, operation: str, payload: dict[str, object]) -> dict[str, object]:
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationIndeterminateError,
+        OperationUnavailableError,
+        configured_mutation_operation,
+    )
+
+    try:
+        return configured_mutation_operation(env.config, operation, payload)
+    except OperationUnavailableError as exc:
+        raise click.ClickException(f"daemon is unavailable; it must execute {operation}") from exc
+    except OperationIndeterminateError as exc:
+        raise click.ClickException(f"{operation} outcome is indeterminate; inspect daemon audit state") from exc
+    except OperationFailedError as exc:
+        raise click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}") from exc
 
 
 def _archive_root() -> Path:
@@ -202,36 +219,6 @@ def _resolve_archive_session_ids(tokens: list[str]) -> list[str]:
         return list(dict.fromkeys(resolved))
     finally:
         conn.close()
-
-
-def _apply_identity_reset(session_ids: list[str], *, reason: str) -> tuple[int, int]:
-    """Tombstone ``session_ids`` through the shared OperationExecutor mutation authority.
-
-    Routes through :class:`IdentityResetActuator` (polylogue-t46.9/kwsb.2) so
-    ``reset --session/--source`` shares its PREPARE/AUTHORIZE/EXECUTE contract
-    with the other named destructive routes (session delete, excision)
-    instead of tombstoning directly. Returns
-    ``(suppressed_count, deleted_archive_rows)``.
-    """
-    from polylogue.operations.bindings import runtime_operation_binding
-    from polylogue.operations.mutation_actuators import IdentityResetActuator, IdentityResetArgs
-    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
-
-    if not session_ids:
-        return 0, 0
-    actuator = IdentityResetActuator()
-    root = _archive_root()
-    executor = OperationExecutor.for_archive_root(root)
-    args = IdentityResetArgs(archive_root=root, session_ids=tuple(session_ids), reason=reason)
-    binding = runtime_operation_binding(actuator)
-    principal = MutationPrincipal("user:cli", frozenset({"archive.identity_reset"}), "cli", "write")
-    preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
-    receipt = executor.execute_bound(binding, preview, authorization, args)
-    domain = receipt.domain_receipt
-    suppressed = cast("int", domain.get("suppressed_count", receipt.affected_count))
-    deleted = cast("int", domain.get("deleted_archive_rows", 0))
-    return int(suppressed), int(deleted)
 
 
 def _identity_reset_targets(*, conv_id: str | None, source_path: Path | None) -> tuple[list[str], str]:
@@ -442,7 +429,17 @@ def reset_command(
                 env.ui.console.print("Aborted.")
                 return
 
-        suppressed, deleted = _apply_identity_reset(session_ids, reason=reason)
+        result = _submit(
+            env,
+            "mutation.identity-reset",
+            {"session_ids": session_ids, "reason": reason},
+        )
+        result_payload = result.get("result")
+        result_payload = result_payload if isinstance(result_payload, dict) else {}
+        suppressed_value = result_payload.get("suppressed_count", result.get("affected_count", 0))
+        suppressed = suppressed_value if isinstance(suppressed_value, int) else 0
+        deleted_value = result_payload.get("deleted_archive_rows", 0)
+        deleted = deleted_value if isinstance(deleted_value, int) else 0
         if conv_id:
             plain_message = (
                 f"Tombstoned session {conv_id}: {suppressed} suppression(s), {deleted} archive row(s) deleted."
@@ -517,7 +514,7 @@ def reset_command(
             targets.append(("last-source state", last_source))
     targets = _dedupe_targets(targets)
 
-    if not targets:
+    if not targets and not yes:
         env.ui.console.print("Nothing to reset (no files exist for selected targets).")
         return
 
@@ -534,20 +531,30 @@ def reset_command(
             env.ui.console.print("Reset cancelled.")
             return
 
-    # Perform deletion
-    deleted = 0
-    for name, path in targets:
-        try:
-            if path.is_file():
-                path.unlink()
-                deleted += 1
-                env.ui.console.print(f"  Deleted {name}: {path}")
-            elif path.is_dir():
-                shutil.rmtree(path)
-                deleted += 1
-                env.ui.console.print(f"  Deleted {name}: {path}")
-        except OSError as exc:
-            env.ui.console.print(f"  Failed to delete {name}: {exc}")
+    # The resident daemon re-resolves and deletes these targets. The CLI only
+    # displays its read-only preview and lowers the confirmed intent.
+    result = _submit(
+        env,
+        "maintenance.reset",
+        {
+            "index": index,
+            "database": database,
+            "include_user_db": include_user_db,
+            "include_source_db": include_source_db,
+            "blob": blob,
+            "assets": assets,
+            "cache": cache,
+            "auth": auth,
+            "reset_all": reset_all,
+        },
+    )
+    deleted_value = result.get("affected_count", 0)
+    deleted = deleted_value if isinstance(deleted_value, int) else 0
+    result_targets = result.get("result")
+    target_names = result_targets.get("targets", []) if isinstance(result_targets, dict) else []
+    if isinstance(target_names, list):
+        for name in target_names:
+            env.ui.console.print(f"  Deleted {name}")
 
     env.ui.console.print(f"\nReset complete: {deleted} item(s) deleted.")
     if index or database:

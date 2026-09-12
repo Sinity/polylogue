@@ -24,6 +24,25 @@ from polylogue.logging import configure_logging
 from polylogue.paths import archive_root, render_root
 
 
+def _submit(config: Config, generation_id: str) -> dict[str, object]:
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationIndeterminateError,
+        OperationUnavailableError,
+        configured_mutation_operation,
+    )
+
+    operation = "maintenance.blob-gc.recover"
+    try:
+        return configured_mutation_operation(config, operation, {"generation_id": generation_id})
+    except OperationUnavailableError as exc:
+        raise click.ClickException(f"daemon is unavailable; it must execute {operation}") from exc
+    except OperationIndeterminateError as exc:
+        raise click.ClickException(f"{operation} outcome is indeterminate; inspect daemon audit state") from exc
+    except OperationFailedError as exc:
+        raise click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}") from exc
+
+
 @click.command("blob-gc")
 @click.option(
     "--max-batch",
@@ -184,37 +203,12 @@ def gc_recover_command(generation_id: str | None, yes: bool, output_format: str)
     adjudication: dict[str, object] | None = None
     receipt_ref: str | None = None
     if generation_id is not None:
-        from polylogue.config import Config
-        from polylogue.maintenance.offline_guard import offline_writer_block_reason
-        from polylogue.operations.bindings import runtime_operation_binding
-        from polylogue.operations.mutation_actuators import (
-            PendingBlobGCGenerationAbandonActuator,
-            PendingBlobGCGenerationAbandonArgs,
-        )
-        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
-
-        ownership_blocker = offline_writer_block_reason(
-            Config(archive_root=root, render_root=render_root(), sources=[])
-        )
-        if ownership_blocker is not None:
-            raise click.ClickException(
-                f"pending blob-GC abandonment requires the daemon to be stopped; {ownership_blocker}"
-            )
-        actuator = PendingBlobGCGenerationAbandonActuator()
-        args = PendingBlobGCGenerationAbandonArgs(archive_root=root, generation_id=generation_id)
-        executor = OperationExecutor.for_archive_root(root)
-        binding = runtime_operation_binding(actuator)
-        principal = MutationPrincipal(
-            "user:cli",
-            frozenset({"archive.blob_gc.abandon_pending_generation"}),
-            "cli",
-            "maintenance",
-        )
-        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
-        receipt = executor.execute_bound(binding, preview, authorization, args)
-        adjudication = dict(receipt.domain_receipt)
-        receipt_ref = receipt.receipt_ref
+        config = Config(archive_root=root, render_root=render_root(), sources=[])
+        result = _submit(config, generation_id)
+        value = result.get("result")
+        adjudication = value if isinstance(value, dict) else {}
+        receipt_ref_value = adjudication.get("receipt_ref")
+        receipt_ref = str(receipt_ref_value) if receipt_ref_value is not None else None
     pending = inspect_pending_gc_generations(root / "source.db")
     payload = {
         "mode": "gc_recover",
