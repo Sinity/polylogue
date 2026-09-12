@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 from polylogue.core.outcomes import OutcomeStatus
@@ -23,6 +24,12 @@ from polylogue.maintenance.archive_verification import (
 from polylogue.maintenance.source_conservation import (
     FRAGMENT_IDENTITY_PREFIXES,
     fragment_identity_shape,
+)
+from polylogue.maintenance.source_manifest_continuity import (
+    SourceDeclaration,
+    SourceFrontier,
+    SourceRole,
+    build_source_frontier,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_store import BlobStore
@@ -195,6 +202,17 @@ def _run(root: Path) -> ArchiveVerificationCheck:
     return _check(verify_archive(root, checks=(CHECK,)))
 
 
+def _run_with_frontier(root: Path, frontier: SourceFrontier) -> ArchiveVerificationCheck:
+    return _check(
+        verify_archive(
+            root,
+            checks=(CHECK,),
+            source_frontier=frontier,
+            require_source_frontier=True,
+        )
+    )
+
+
 def test_source_conservation_is_declared_for_the_live_route() -> None:
     assert CHECK in archive_verification_names_for_route("live-archive")
 
@@ -209,6 +227,71 @@ def test_coherent_archive_types_every_item_and_is_green(tmp_path: Path) -> None:
     assert check.evidence["forward_total"] == 2
     assert check.evidence["blocking_count"] == 0
     assert all(term["rule"] for term in _terms(check).values())
+
+
+def test_configured_frontier_binds_exact_totals_and_digest(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    frontier = build_source_frontier(
+        [SourceDeclaration("configured", SourceRole.DIRECTORY, tmp_path / "sources", True)]
+    )
+    check = _run_with_frontier(tmp_path, frontier)
+    assert check.status is OutcomeStatus.OK, check.summary
+    assert check.evidence["frontier_sha256"] == frontier.frontier_sha256
+    assert check.evidence["frontier_total"] == frontier.item_count == 2
+    assert check.evidence["frontier_bytes"] == frontier.byte_count
+    assert check.evidence["frontier_complete"] is True
+    assert check.evidence["frontier_root_states"] == {"configured": "present"}
+
+
+def test_configured_but_unacquired_member_blocks_even_with_other_rows(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    (_write_source(tmp_path, "unacquired.json", b"not admitted"))
+    frontier = build_source_frontier(
+        [SourceDeclaration("configured", SourceRole.DIRECTORY, tmp_path / "sources", True)]
+    )
+    check = _run_with_frontier(tmp_path, frontier)
+    assert check.status is OutcomeStatus.ERROR, check.summary
+    assert _count(check, "frontier_unacquired") == 1
+
+
+def test_frontier_integrity_failure_is_a_typed_check_error(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    frontier = build_source_frontier(
+        [SourceDeclaration("configured", SourceRole.DIRECTORY, tmp_path / "sources", True)]
+    )
+    check = _run_with_frontier(tmp_path, replace(frontier, frontier_sha256="0" * 64))
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["error"] == "source frontier integrity check failed"
+
+
+def test_suppressed_index_content_is_not_conserved_by_identity(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    frontier = build_source_frontier(
+        [SourceDeclaration("configured", SourceRole.DIRECTORY, tmp_path / "sources", True)]
+    )
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, revision_authority
+            ) VALUES ('raw-session', 'codex:session', 'session', 'r1', ?, 1, 'byte_proven')
+            """,
+            (b"s" * 32,),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    index_conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        index_conn.execute("UPDATE sessions SET content_hash = ? WHERE raw_id = 'raw-session'", (b"x" * 32,))
+        index_conn.commit()
+    finally:
+        index_conn.close()
+    check = _run_with_frontier(tmp_path, frontier)
+    assert check.status is OutcomeStatus.ERROR, check.summary
+    assert _count(check, "content_mismatch") == 1
 
 
 def test_deleted_source_file_retypes_the_raw_as_source_missing(tmp_path: Path) -> None:
