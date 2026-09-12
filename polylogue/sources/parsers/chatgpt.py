@@ -798,8 +798,31 @@ def _append_asset_attachment(
     file_id = strip_asset_pointer_scheme(pointer)
     if not file_id:
         return
-    for existing in attachments[dedupe_from:]:
+    for index, existing in enumerate(attachments[dedupe_from:], start=dedupe_from):
         if strip_asset_pointer_scheme(existing.provider_attachment_id) == file_id:
+            # A user upload is commonly named by both a metadata attachment
+            # row (the bare ``file-…`` id) and an image/audio pointer part.
+            # Keep that one acquisition identity, but do not lose the richer
+            # media/provenance facts carried by the pointer part.  In
+            # particular, metadata rows predate ``attachment_kind`` and may
+            # otherwise remain indistinguishable from an ordinary upload.
+            update: dict[str, object] = {}
+            if existing.attachment_kind is None:
+                update["attachment_kind"] = attachment_kind
+            if existing.mime_type is None:
+                pointer_mime_type = _string_value(record, "mime_type", "media_type")
+                if pointer_mime_type is not None:
+                    update["mime_type"] = pointer_mime_type
+            if existing.size_bytes is None:
+                pointer_size = _non_negative_int(record.get("size_bytes"))
+                if pointer_size is not None:
+                    update["size_bytes"] = pointer_size
+            if existing.direction is None and direction is not None:
+                update["direction"] = direction
+            if existing.producer_ref is None and producer_ref is not None:
+                update["producer_ref"] = producer_ref
+            if update:
+                attachments[index] = existing.model_copy(update=update)
             return
     attachments.append(
         ParsedAttachment(

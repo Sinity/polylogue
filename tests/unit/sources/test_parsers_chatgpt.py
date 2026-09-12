@@ -292,6 +292,10 @@ def test_image_asset_pointer_does_not_duplicate_its_metadata_attachment() -> Non
     assert len(attachments) == 1
     assert attachments[0].provider_attachment_id == "file-ABC123"
     assert attachments[0].name == "photo.png"
+    # The metadata row remains the acquisition identity, while the pointer
+    # part enriches it with the typed media role and turn provenance.
+    assert attachments[0].attachment_kind == "image_asset"
+    assert attachments[0].direction == "user_input"
 
 
 def test_image_asset_pointer_without_a_pointer_invents_no_attachment() -> None:
