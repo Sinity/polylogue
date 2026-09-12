@@ -34,6 +34,8 @@ from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_g
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
     ArchiveSourceArtifact,
+    ReconstructedRawRow,
+    insert_reconstructed_raw_row,
     record_capture_mode_observation,
     refine_raw_origin,
     upsert_raw_artifact,
@@ -126,6 +128,40 @@ def test_raw_session_writer_refuses_out_of_vocabulary_artifact_origin(tmp_path: 
         with pytest.raises(ValueError, match="artifact.origin"):
             _raw_session(conn, artifact=_artifact(origin=OUT_OF_VOCABULARY))
         assert _row_counts(conn) == before
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("field", ["origin", "capture_mode"])
+def test_reconstructed_raw_writer_refuses_out_of_vocabulary(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    """The proven-repair writer still enforces source vocabulary at its boundary."""
+    conn = _connect(tmp_path / "source.db")
+    try:
+        row = ReconstructedRawRow(
+            raw_id="reconstructed-raw",
+            origin=Origin.CLAUDE_AI_EXPORT.value,
+            capture_mode=Provider.CLAUDE_AI.value,
+            native_id="native-1",
+            source_path="/copy-forward/session.json",
+            source_index=0,
+            blob_hash=BLOB_HASH,
+            blob_size=len(PAYLOAD),
+            acquired_at_ms=1,
+            logical_source_key="claude-ai-export:native-1",
+            source_revision=BLOB_HASH.hex(),
+            baseline_raw_id="reconstructed-raw",
+        )
+        malformed = (
+            replace(row, origin=OUT_OF_VOCABULARY)
+            if field == "origin"
+            else replace(row, capture_mode=OUT_OF_VOCABULARY)
+        )
+        with pytest.raises(ValueError, match=field):
+            insert_reconstructed_raw_row(conn, malformed)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
     finally:
         conn.close()
 
