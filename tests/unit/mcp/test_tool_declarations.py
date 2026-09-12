@@ -8,6 +8,7 @@ from polylogue.agent_integration.spec import DEFAULT_READ_TOOLS
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.declarations.registry import (
     MCP_TOOL_DECLARATIONS,
+    PRIVILEGED_ALGEBRA,
     TARGET_DEFAULT_READ_ALGEBRA,
     declared_tool_names,
 )
@@ -51,6 +52,45 @@ def test_capabilities_are_independent_flags_not_a_ladder() -> None:
 def test_target_algebra_has_no_separate_graph_transaction() -> None:
     assert tuple(item.name for item in TARGET_DEFAULT_READ_ALGEBRA) == DEFAULT_READ_TOOLS
     assert "graph" not in {item.name for item in TARGET_DEFAULT_READ_ALGEBRA}
+
+
+def test_target_algebra_is_generated_from_executable_tool_declarations() -> None:
+    """Protocol discovery must be a projection, never a second tool inventory.
+
+    Anti-vacuity: restoring one of the former hand-written algebra entries, or
+    dropping a declaration's transaction projection, makes this equality fail.
+    The two event tools remain executable MCP tools but intentionally have no
+    agent-manual transaction projection; this distinction is declared on the
+    tool itself rather than maintained as another name list.
+    """
+
+    all_declarations = tuple(
+        declaration for declaration in MCP_TOOL_DECLARATIONS if declaration.transaction is not None
+    )
+    assert tuple(TARGET_DEFAULT_READ_ALGEBRA) == tuple(
+        declaration.transaction for declaration in all_declarations if declaration.required_capability is None
+    )
+    assert tuple(PRIVILEGED_ALGEBRA) == tuple(
+        declaration.transaction for declaration in all_declarations if declaration.required_capability is not None
+    )
+    assert {declaration.name for declaration in MCP_TOOL_DECLARATIONS} - {
+        declaration.name for declaration in all_declarations
+    } == {
+        "record_work_event",
+        "emit_decision",
+    }
+
+
+def test_every_executable_tool_declaration_has_one_reflectable_handler_binding() -> None:
+    """The declaration's module/symbol pair must resolve to the live handler."""
+
+    server = build_server(capabilities=ALL_CAPABILITIES)
+    for declaration in MCP_TOOL_DECLARATIONS:
+        handler = server._tool_manager._tools[declaration.name].fn
+        assert (handler.__module__, handler.__name__) == (
+            declaration.registration.module,
+            declaration.registration.symbol,
+        )
 
 
 def test_live_registration_matches_frozen_public_inventory() -> None:
