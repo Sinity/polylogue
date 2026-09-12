@@ -157,6 +157,32 @@ def test_conservation_treats_pending_publication_reservation_as_live(
     assert report.ok
 
 
+def test_conservation_treats_unpublished_reservation_as_in_flight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A committed publication reservation can precede its atomic rename.
+
+    Anti-vacuity: counting reservations as missing references reports a
+    false dangling ref during the writer's publication window.
+    """
+    _empty_archive(tmp_path)
+    reserved = hashlib.sha256(b"publication not renamed yet").hexdigest()
+    monkeypatch.setattr(
+        blob_conservation,
+        "project_source_blob_liveness",
+        lambda *args, **kwargs: BlobLivenessProjection(frozenset()),
+    )
+    monkeypatch.setattr(blob_conservation, "_source_blob_reservations", lambda *args, **kwargs: {reserved})
+
+    report = blob_conservation.check_blob_conservation(tmp_path)
+
+    assert report.reserved_blobs == 1
+    assert report.present_blobs == 0
+    assert report.orphan_blobs == 0
+    assert report.dangling_references == 0
+    assert report.ok
+
+
 def test_conservation_excludes_backup_prover_confirmed_reference(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -296,6 +322,39 @@ async def test_blob_conservation_flags_orphan_blobs_and_dangling_references(
     assert dangling.dangling_references == 1
     assert dangling.recoverable_references == 0
     assert dangling.orphan_blobs == 0
+
+
+@pytest.mark.asyncio
+async def test_declared_devtools_route_runs_the_real_seeded_check(
+    workspace_env: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The CommandSpec route must execute the storage check, not a stub.
+
+    This invokes the exact operator surface (including its nested ``verify``
+    dispatch) against a production-ingested synthetic archive.  The direct
+    function tests above cover individual fault terms; this catches a broken
+    catalog/dispatcher registration or an entrypoint that silently succeeds.
+    """
+    await _seed_archive(workspace_env)
+    clone = _clone(workspace_env, "clone-devtools")
+
+    from devtools import __main__ as devtools_main
+
+    assert (
+        devtools_main.main(
+            [
+                "verify",
+                "blob-conservation",
+                "--archive-root",
+                str(clone),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["referenced_blobs"] == payload["present_blobs"] == 1
 
 
 @pytest.mark.asyncio
