@@ -289,29 +289,25 @@ def test_validation_plan_keeps_later_type_failure_over_permissive_new_field(
         "additionalProperties": False,
     }
 
-    def _validate_selected_schema(
-        cls: type[SchemaValidator],
+    def _resolve_selected_schema(
         provider: str | Provider,
         payload: object,
         *,
         source_path: str | None = None,
         schema_resolution: SchemaResolution | None = None,
         schema_resolution_is_explicit: bool = True,
-        strict: bool = True,
-        max_samples: int | None = None,
-    ) -> PayloadValidation:
-        del provider, source_path
-        validator = cls(schema, strict=strict, provider=Provider.CHATGPT)
-        samples = tuple(validator.validation_samples(payload, max_samples=max_samples))
-        return PayloadValidation(
-            validator=validator,
-            samples=samples,
-            results=tuple(validator.validate(sample, include_drift=True) for sample in samples),
-            schema_resolution=schema_resolution,
-            schema_resolution_is_explicit=schema_resolution_is_explicit,
-        )
+        registry_cls: object | None = None,
+        schema_accepts: object | None = None,
+    ) -> tuple[Provider, dict[str, object], tuple[str, str, str]]:
+        # Keep package selection deterministic while exercising the real
+        # SchemaValidator.validate_payload implementation below.  Patching
+        # that entry point would certify the reducer with precomputed results
+        # and miss regressions in sample extraction or drift walking.
+        del provider, payload, source_path, schema_resolution, schema_resolution_is_explicit
+        del registry_cls, schema_accepts
+        return Provider.CHATGPT, schema, ("chatgpt", "v1", "session_record_stream")
 
-    monkeypatch.setattr(SchemaValidator, "validate_payload", classmethod(_validate_selected_schema))
+    monkeypatch.setattr("polylogue.schemas.validator.resolve_payload_schema", _resolve_selected_schema)
 
     record = RawSessionRecord(
         raw_id="drift-plan",
