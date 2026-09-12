@@ -13,6 +13,7 @@ write-mode connection without the lease raises instead of contending.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -170,6 +171,33 @@ def test_a_hold_within_its_budget_is_silent() -> None:
 def test_require_write_lease_returns_the_lease_for_an_authorized_caller() -> None:
     with write_lease("test.writer") as lease:
         assert require_write_lease("probe") is lease
+
+
+def test_a_child_task_cannot_inherit_its_parents_write_lease(db_path: Path) -> None:
+    """A copied context marker is not authority to start another writer.
+
+    Anti-vacuity: omitting the task-owner check in ``require_write_lease`` lets
+    ``create_task`` inherit the context variable and open an overlapping
+    writer while the owning task still holds the coordinator lease.
+    """
+
+    async def scenario() -> None:
+        with arm_write_lease_enforcement(), write_lease("test.owner"):
+
+            async def child_writer() -> None:
+                with closing(open_connection(db_path, validate_schema=False)):
+                    pass
+
+            child = asyncio.create_task(child_writer())
+            with pytest.raises(UnleasedWriteError, match="inherited by a child task"):
+                await child
+
+            # The owning task retains its own authority after refusing the
+            # inherited child context.
+            with closing(open_connection(db_path, validate_schema=False)):
+                pass
+
+    asyncio.run(scenario())
 
 
 def test_require_write_lease_is_permissive_when_unarmed() -> None:
