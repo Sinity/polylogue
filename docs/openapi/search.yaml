@@ -2646,6 +2646,26 @@ components:
         position:
           title: Position
           type: integer
+        parent_message_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Parent Message Id
+        variant_index:
+          default: 0
+          title: Variant Index
+          type: integer
+        is_active_path:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: null
+          title: Is Active Path
+        is_active_leaf:
+          default: false
+          title: Is Active Leaf
+          type: boolean
         word_count:
           title: Word Count
           type: integer

@@ -1059,6 +1059,23 @@
       "additionalProperties": false,
       "description": "Shared terminal-query row for archive messages.",
       "properties": {
+        "is_active_leaf": {
+          "default": false,
+          "title": "Is Active Leaf",
+          "type": "boolean"
+        },
+        "is_active_path": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Is Active Path"
+        },
         "material_origin": {
           "default": "unknown",
           "title": "Material Origin",
@@ -1087,6 +1104,18 @@
         "origin": {
           "title": "Origin",
           "type": "string"
+        },
+        "parent_message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Message Id"
         },
         "position": {
           "title": "Position",
@@ -1133,6 +1162,11 @@
           "default": "message",
           "title": "Unit",
           "type": "string"
+        },
+        "variant_index": {
+          "default": 0,
+          "title": "Variant Index",
+          "type": "integer"
         },
         "word_count": {
           "title": "Word Count",

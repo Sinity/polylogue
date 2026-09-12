@@ -225,11 +225,14 @@ export type FileQueryRowPayload = {
 };
 
 export type MessageQueryRowPayload = {
+  readonly is_active_leaf?: boolean;
+  readonly is_active_path?: boolean | null;
   readonly material_origin?: string;
   readonly message_id: string;
   readonly message_type: string;
   readonly occurred_at_ms?: number | null;
   readonly origin: string;
+  readonly parent_message_id?: string | null;
   readonly position: number;
   readonly repo?: string | null;
   readonly role: string;
@@ -237,6 +240,7 @@ export type MessageQueryRowPayload = {
   readonly text: string;
   readonly title?: string | null;
   readonly unit?: "message";
+  readonly variant_index?: number;
   readonly word_count: number;
 };
 

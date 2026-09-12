@@ -481,6 +481,7 @@ class MCPArchiveMessagePayload(SurfacePayloadModel):
     native_id: str | None
     role: str
     position: int
+    parent_message_id: str | None = None
     variant_index: int
     is_active_path: bool
     is_active_leaf: bool
@@ -493,6 +494,7 @@ class MCPArchiveMessagePayload(SurfacePayloadModel):
             native_id=message.native_id,
             role=message.role,
             position=message.position,
+            parent_message_id=message.parent_message_id,
             variant_index=message.variant_index,
             is_active_path=message.is_active_path,
             is_active_leaf=message.is_active_leaf,
