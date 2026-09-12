@@ -792,6 +792,88 @@ def test_audio_pointer_binds_extension_asset_member_to_normalized_attachment(tmp
     assert store.read_all(blob_hash) == audio_bytes
 
 
+def test_realtime_video_and_frame_pointers_bind_extension_asset_members(tmp_path: Path) -> None:
+    """Realtime nested A/V pointers use the ordinary asset-member join."""
+    from polylogue.sources.source_parsing import parse_one_source_path
+
+    video_pointer = "file-service://file_0000000000000000000000000000vid0"
+    frame_pointer = "sediment://file_0000000000000000000000000000frm0"
+    conversation = {
+        "id": "conv-realtime",
+        "conversation_id": "conv-realtime",
+        "title": "realtime video asset",
+        "create_time": 1704067200.0,
+        "current_node": "u1",
+        "mapping": {
+            "u1": {
+                "id": "u1",
+                "message": {
+                    "id": "u1",
+                    "author": {"role": "user"},
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "real_time_user_audio_video_asset_pointer",
+                                "video_container_asset_pointer": {
+                                    "asset_pointer": video_pointer,
+                                    "mime_type": "video/mp4",
+                                },
+                                "frames_asset_pointers": [{"asset_pointer": frame_pointer, "mime_type": "image/jpeg"}],
+                            }
+                        ],
+                    },
+                    "create_time": 1704067201.0,
+                },
+                "parent": None,
+                "children": [],
+            }
+        },
+    }
+    zip_path = tmp_path / "realtime-export.zip"
+    video_bytes = b"synthetic-video"
+    frame_bytes = b"synthetic-frame"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("conversations-000.json", json.dumps([conversation]))
+        zf.writestr("conv-realtime/video/file_0000000000000000000000000000vid0.mp4", video_bytes)
+        zf.writestr("conv-realtime/frames/file_0000000000000000000000000000frm0.jpg", frame_bytes)
+
+    blob_root = tmp_path / "blobs"
+    store = BlobStore(blob_root)
+    sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+    results = list(
+        parse_one_source_path(
+            str(zip_path),
+            file_mtime=None,
+            source_name="chatgpt",
+            sidecar_data=sidecar_data,
+            capture_raw=False,
+            blob_root=blob_root,
+            blob_store=store,
+        )
+    )
+
+    assert len(results) == 1
+    _, session = results[0]
+    attachments = {attachment.provider_attachment_id: attachment for attachment in session.attachments}
+    assert attachments[video_pointer].attachment_kind == "video_asset"
+    assert (
+        attachments[video_pointer].precomputed_blob
+        == sidecar_data["chatgpt_asset_blobs"]["file_0000000000000000000000000000vid0"]
+    )
+    assert attachments[frame_pointer].attachment_kind == "video_frame_asset"
+    assert (
+        attachments[frame_pointer].precomputed_blob
+        == sidecar_data["chatgpt_asset_blobs"]["file_0000000000000000000000000000frm0"]
+    )
+    video_blob = attachments[video_pointer].precomputed_blob
+    frame_blob = attachments[frame_pointer].precomputed_blob
+    assert video_blob is not None
+    assert frame_blob is not None
+    assert store.read_all(video_blob[0]) == video_bytes
+    assert store.read_all(frame_blob[0]) == frame_bytes
+
+
 # ---------------------------------------------------------------------------
 # polylogue-ximhz: the asset maps must be rebuildable from retained bytes,
 # scoped to the export they were acquired from.
