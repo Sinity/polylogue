@@ -783,6 +783,7 @@ def _enrich_parsed_sessions(
         provider=plan.provider,
         archive_root=context.archive_root,
         parsed_sessions=parsed_sessions,
+        source_path=context.raw_record.source_path,
     )
     # polylogue-ximhz: the Claude Code session index / prompt history and the
     # ChatGPT asset maps are retained source artifacts, so the worker resolves
@@ -803,6 +804,7 @@ def _with_retained_codex_state_titles(
     provider: Provider | None,
     archive_root: Path,
     parsed_sessions: list[ParsedSession],
+    source_path: str,
 ) -> SidecarData:
     """Attach projected ``threads.title`` evidence to a Codex bundle.
 
@@ -817,7 +819,7 @@ def _with_retained_codex_state_titles(
     from polylogue.sources.assembly_codex import resolve_retained_codex_state_titles
 
     thread_ids = [convo.provider_session_id for convo in parsed_sessions if convo.provider_session_id]
-    titles = resolve_retained_codex_state_titles(archive_root, thread_ids)
+    titles = resolve_retained_codex_state_titles(archive_root, thread_ids, source_path=source_path)
     if not titles:
         return sidecar_data
     merged = cast(SidecarData, dict(sidecar_data))

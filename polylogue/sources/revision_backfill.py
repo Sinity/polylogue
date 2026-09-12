@@ -3276,7 +3276,7 @@ def _replay_safe_enrich_sessions(
         from polylogue.sources.codex_state_projection import read_thread_titles
 
         thread_ids = [session.provider_session_id for session in sessions if session.provider_session_id]
-        titles = read_thread_titles(index_conn, thread_ids=thread_ids)
+        titles = read_thread_titles(index_conn, thread_ids=thread_ids, source_path=source_path)
         if titles:
             sidecar_data = cast("SidecarData", {"retained_state_titles": titles})
     if source_conn is not None and blob_root is not None and source_path:

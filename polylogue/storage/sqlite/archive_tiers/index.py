@@ -1485,7 +1485,11 @@ ON work_evidence_edges(graph_id, target_ref, edge_kind);
 -- export is the durable evidence; these rows are recomputed from it, so a
 -- reindex reproduces them and nothing here is a second authority.
 CREATE TABLE IF NOT EXISTS codex_thread_state (
-    thread_id        TEXT PRIMARY KEY,
+    -- A Codex install is the evidence scope.  Native thread ids are not
+    -- globally unique across installs, and one root's newer snapshot must
+    -- never make another root's evidence disappear.
+    source_scope     TEXT NOT NULL DEFAULT '',
+    thread_id        TEXT NOT NULL,
     title            TEXT,
     cwd              TEXT,
     created_at_ms    INTEGER,
@@ -1495,25 +1499,34 @@ CREATE TABLE IF NOT EXISTS codex_thread_state (
     agent_nickname   TEXT,
     agent_role       TEXT,
     archived         INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)),
-    observed_at_ms   INTEGER NOT NULL
+    observed_at_ms   INTEGER NOT NULL,
+    observation_order INTEGER NOT NULL DEFAULT 0,
+    -- A complete native snapshot can be silent about an older thread.  Keep
+    -- that retained evidence readable while recording that it is absent from
+    -- the newest source snapshot.
+    source_present   INTEGER NOT NULL DEFAULT 1 CHECK(source_present IN (0, 1)),
+    PRIMARY KEY (source_scope, thread_id)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS codex_thread_spawn_edges (
+    source_scope     TEXT NOT NULL DEFAULT '',
     parent_thread_id TEXT NOT NULL,
     child_thread_id  TEXT NOT NULL,
     status           TEXT NOT NULL,
     observed_at_ms   INTEGER NOT NULL,
-    PRIMARY KEY (parent_thread_id, child_thread_id)
+    observation_order INTEGER NOT NULL DEFAULT 0,
+    source_present   INTEGER NOT NULL DEFAULT 1 CHECK(source_present IN (0, 1)),
+    PRIMARY KEY (source_scope, parent_thread_id, child_thread_id)
 ) STRICT;
 
 -- The write path resolves a parent from the CHILD's thread id.
 CREATE INDEX IF NOT EXISTS idx_codex_thread_spawn_edges_child
-ON codex_thread_spawn_edges(child_thread_id);
+ON codex_thread_spawn_edges(source_scope, child_thread_id);
 
 -- Which retained export the two projections above were computed from, so a
 -- newer acquisition is recognised without rereading the export.
 CREATE TABLE IF NOT EXISTS codex_thread_state_provenance (
-    singleton         INTEGER PRIMARY KEY CHECK(singleton = 0),
+    source_scope      TEXT PRIMARY KEY,
     raw_id            TEXT NOT NULL,
     blob_hash         TEXT NOT NULL,
     observed_at_ms    INTEGER NOT NULL,
