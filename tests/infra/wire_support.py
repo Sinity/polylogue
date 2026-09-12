@@ -16,9 +16,11 @@ catalog ordering, a mutated route or handler) must still build its own.
 ``shared_wire_generation`` shares the parts of a *rebuild* that a parser
 mutation cannot reach. Generation, schema validation and construct coverage
 are ~85% of a build and depend only on the selected schema, the seed and the
-live construct handlers; the parse, the artifact evidence and every witness
-verdict are recomputed on every build. A test that mutates ``parse_payload``
-therefore pays the generator once per process instead of once per test.
+live construct handlers. Unmodified parser calls are content-memoized per
+process and returned as fresh values; a test that mutates ``parse_payload``
+bypasses that memo, so its parser, artifact evidence and witness verdicts are
+recomputed on every build. Such a test therefore pays the generator once per
+process instead of once per test.
 
 The memo keys carry schema content, the live handler set and the entry point
 each memo stands in front of, so an injected schema, a removed construct
@@ -39,18 +41,28 @@ import fcntl
 import hashlib
 import json
 import os
+from collections import OrderedDict
 from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Any
 
+from polylogue.sources import dispatch as _dispatch
+
+_ORIGINAL_PARSE_PAYLOAD = _dispatch.parse_payload
+
 if TYPE_CHECKING:
     from polylogue.archive.raw_payload.decode import JSONValue
+    from polylogue.core.enums import Provider
+    from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticGenerationBatch
     from polylogue.schemas.synthetic.wire_formats import ConstructCoverage, WireSupportReceipt
     from polylogue.schemas.validator import ValidationResult
+    from polylogue.sources.parsers.base_models import ParsedSession
+    from polylogue.sources.sidecar_evidence import SidecarResolver
 
 __all__ = ["shared_wire_generation", "shared_wire_support_receipt"]
 
@@ -115,6 +127,14 @@ _GENERATED_BATCHES: dict[tuple[Any, ...], SyntheticGenerationBatch] = {}
 _CONSTRUCT_COVERAGE: dict[tuple[Any, ...], ConstructCoverage] = {}
 _VALIDATIONS: dict[tuple[Any, ...], ValidationResult] = {}
 
+# Parser results are immutable input evidence for an unmodified production
+# route, but the ParsedSession model contains mutable lists.  Keep only one
+# receipt-sized working set and hand callers deep copies.  Parser-mutating
+# tests deliberately bypass this memo (see ``memo_parse`` below), preserving
+# their red/green witnesses.
+_PARSED_PAYLOAD_CACHE_LIMIT = 512
+_PARSED_PAYLOADS: OrderedDict[tuple[Any, ...], list[Any]] = OrderedDict()
+
 _ACTIVE = 0
 
 
@@ -150,11 +170,13 @@ def shared_wire_generation() -> Iterator[None]:
     from polylogue.schemas.synthetic import wire_formats
     from polylogue.schemas.synthetic.core import SyntheticCorpus
     from polylogue.schemas.validator import SchemaValidator, ValidationResult
+    from polylogue.sources import dispatch as dispatch_module
 
     real_witnesses = wire_formats.generate_coverage_witnesses
     real_coverage = wire_formats.construct_coverage
     real_batch = SyntheticCorpus.generate_batch
     real_validate = SchemaValidator.validate
+    real_parse = dispatch_module.parse_payload
 
     def memo_witnesses(corpus: Any, *, seed: int, max_witnesses: int = 128) -> list[bytes]:
         key = (*_corpus_key(corpus, real_witnesses), seed, max_witnesses)
@@ -220,10 +242,81 @@ def shared_wire_generation() -> Iterator[None]:
             drift_warnings=list(result.drift_warnings),
         )
 
+    def memo_parse(
+        provider: str | Provider,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+        sidecar_resolver: SidecarResolver | None = None,
+    ) -> list[ParsedSession]:
+        """Reuse only the unmodified parser's immutable-input result.
+
+        The witness tests monkeypatch ``dispatch.parse_payload`` to model
+        parser loss.  Their function object is therefore not ``real_parse``
+        and they continue through the real call on every build.  Ordinary
+        builds use the content-addressed payload key and receive a fresh deep
+        copy, so callers cannot mutate a later assertion through the memo.
+        """
+        if real_parse is not _ORIGINAL_PARSE_PAYLOAD or sidecar_resolver is not None:
+            if sidecar_resolver is None:
+                # Existing witness wrappers intentionally mirror the call
+                # shape used by the receipt builder and do not accept the
+                # optional sidecar keyword.
+                return real_parse(
+                    provider,
+                    payload,
+                    fallback_id,
+                    _depth,
+                    schema_resolution=schema_resolution,
+                    source_path=source_path,
+                )
+            return real_parse(
+                provider,
+                payload,
+                fallback_id,
+                _depth,
+                schema_resolution=schema_resolution,
+                source_path=source_path,
+                sidecar_resolver=sidecar_resolver,
+            )
+        key = (
+            provider,
+            _content_digest(payload),
+            fallback_id,
+            _depth,
+            _content_digest(schema_resolution),
+            source_path,
+        )
+        cached = _PARSED_PAYLOADS.get(key)
+        if cached is None:
+            cached = real_parse(
+                provider,
+                payload,
+                fallback_id,
+                _depth,
+                schema_resolution=schema_resolution,
+                source_path=source_path,
+                sidecar_resolver=sidecar_resolver,
+            )
+            _PARSED_PAYLOADS[key] = cached
+            _PARSED_PAYLOADS.move_to_end(key)
+            while len(_PARSED_PAYLOADS) > _PARSED_PAYLOAD_CACHE_LIMIT:
+                _PARSED_PAYLOADS.popitem(last=False)
+        else:
+            _PARSED_PAYLOADS.move_to_end(key)
+        return deepcopy(cached)
+
     wire_formats.generate_coverage_witnesses = memo_witnesses
     wire_formats.construct_coverage = memo_coverage
     SyntheticCorpus.generate_batch = memo_batch  # type: ignore[method-assign]
     SchemaValidator.validate = memo_validate  # type: ignore[method-assign]
+    # ``build_wire_support_receipt`` imports this attribute at call time.  A
+    # monkeypatched parser is intentionally left untouched by ``memo_parse``
+    # so mutation witnesses still exercise the parser seam on every input.
+    dispatch_module.parse_payload = memo_parse
     _ACTIVE = 1
     try:
         yield
@@ -233,6 +326,7 @@ def shared_wire_generation() -> Iterator[None]:
         wire_formats.construct_coverage = real_coverage
         SyntheticCorpus.generate_batch = real_batch  # type: ignore[method-assign]
         SchemaValidator.validate = real_validate  # type: ignore[method-assign]
+        dispatch_module.parse_payload = real_parse
 
 
 _RECEIPTS: dict[tuple[str, tuple[str, ...] | None, int], WireSupportReceipt] = {}
