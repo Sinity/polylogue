@@ -237,10 +237,5 @@ def seed_session_graph(db_path: Path, specs: tuple[SessionSpec, ...]) -> None:
             )
         builder.save()
 
-    # The archive ArchiveStore write maintains block FTS via triggers and resolves
-    # parent/topology edges on save; refresh the FTS index explicitly so any
-    # bulk-suspended triggers are reconciled before tree/law assertions read.
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    with ArchiveStore(db_path.parent) as archive:
-        archive.rebuild_index()
+    # ArchiveStore writes maintain block FTS via triggers and resolve
+    # parent/topology edges on save; no public rebuild alias is needed here.

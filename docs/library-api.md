@@ -296,9 +296,6 @@ async def main():
         # Fluent filter (terminals are async)
         convs = await archive.filter().origin("claude-ai-export").contains("error").limit(10).list()
 
-        # Rebuild search index
-        await archive.rebuild_index()
-
 
 asyncio.run(main())
 ```
@@ -314,7 +311,6 @@ asyncio.run(main())
 | `parse_file(path, source_name)` | Parse a single export file |
 | `parse_sources(sources, download_assets)` | Parse from configured sources |
 | `explain_import(path, source_name, limit)` | Explain provider detection, artifact classification, parser mode, produced row counts, skips, and caveats without writing archive rows |
-| `rebuild_index()` | Rebuild FTS5 search index |
 | `stats()` | Archive statistics (returns `ArchiveStats`) |
 | `filter()` | Fluent filter builder (sync, reuses `SessionFilter`) |
 | `get_session_insight_status()` | Durable insight readiness/freshness summary |

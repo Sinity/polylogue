@@ -383,9 +383,6 @@ class TestPolylogueSearch:
         # Ingest
         await archive.parse_file(sample_chatgpt_file)
 
-        # Rebuild index to ensure search works
-        await archive.rebuild_index()
-
         # Search for Python
         results = await archive.search("Python")
         assert results is not None
@@ -405,9 +402,6 @@ class TestPolylogueSearch:
 
         # Ingest
         await archive.parse_file(sample_chatgpt_file)
-
-        # Rebuild index
-        await archive.rebuild_index()
 
         # Search with limit
         results = await archive.search("Python", limit=5)

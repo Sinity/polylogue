@@ -315,7 +315,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     read_archive_session_page,
     read_session_phases,
     read_session_work_events,
-    rebuild_archive_messages_fts,
     refresh_and_sweep_attachment_rows,
     search_archive_blocks,
     session_attachment_ids,
@@ -3868,13 +3867,6 @@ class ArchiveStore:
     def search_blocks(self, query: str) -> list[str]:
         """Search indexed block text and return block ids."""
         return search_archive_blocks(self._conn, query)
-
-    def rebuild_index(self) -> int:
-        """Rebuild the block FTS index from index.db blocks."""
-        self._require_writable("rebuild index.db")
-        rebuilt_rows = rebuild_archive_messages_fts(self._conn)
-        self._conn.commit()
-        return rebuilt_rows
 
     def index_status(self) -> IndexStatus:
         """Return ``{exists, count}`` for the archive block FTS index.

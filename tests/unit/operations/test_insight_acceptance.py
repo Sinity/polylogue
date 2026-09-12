@@ -305,7 +305,7 @@ def test_empty_explicit_scope_is_a_sealed_no_effect_part(tmp_path: Path) -> None
         (
             lambda: replace(
                 _page(ordinal=0, count=1, digest="f" * 64, previous_preview_ref=None, targets=()),
-                operation="mutate-rebuild-index",
+                operation="mutate-rebuild-insights",
             ),
             "rebuild-insights operation",
         ),

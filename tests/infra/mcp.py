@@ -178,8 +178,6 @@ def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
     poly.get_session_stats = AsyncMock(return_value={})
     poly.get_stats_by = AsyncMock(return_value={})
     poly.get_session_tree = AsyncMock(return_value=[])
-    poly.rebuild_index = AsyncMock(return_value=True)
-    poly.update_index = AsyncMock(return_value=True)
     poly.get_index_status = AsyncMock(return_value={"exists": True, "count": 0})
     poly.get_raw_artifacts_for_session = AsyncMock(return_value=([], 0))
     poly.compact_lineage = AsyncMock(return_value=None)

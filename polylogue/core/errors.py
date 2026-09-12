@@ -111,7 +111,7 @@ class SchemaSkewError(SchemaRefusalError):
         self.tier = tier
         self.expected = expected
         self.found = found
-        self.remedy = remedy or "rebuild_index"
+        self.remedy = remedy or "daemon convergence"
         if remedy is None:
             message = (
                 f"{tier} derived schema identity mismatch: expected {expected}, found {found!r}; "
