@@ -587,8 +587,7 @@ def test_every_admitted_database_member_names_its_logical_product(provider: Prov
             assert member.consumer is None
             continue
         assert member.logical_tables, member.filename
-        if member.disposition == "acquire":
-            assert member.consumer, member.filename
+        assert member.consumer, member.filename
 
 
 @pytest.mark.parametrize("provider", [Provider.CODEX, Provider.HERMES])
@@ -696,6 +695,34 @@ async def test_reingesting_a_repaged_database_adds_no_raw_revision(
         second = await processor.ingest_files([source_path], emit_event=False)
         assert second.failed_file_count == 0
         assert _raw_rows(workspace_env["archive_root"], source_path) == after_first
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_acquisition_failure_is_a_failed_file_not_a_batch_abort(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Corrupt/locked SQLite acquisition stays in the live batch outcome.
+
+    The snapshot helper deliberately raises a typed SQLite error so callers
+    cannot mistake corruption for an empty export.  The production batch
+    route must account for that file as failed and leave the remaining batch
+    usable, rather than aborting before its typed failure/cursor bookkeeping.
+    """
+    archive, processor, root, _cursor, _db = _processor(workspace_env, "hermes-sqlite-failure", "failure-cursor.db")
+    source_path = root / "state.db"
+    try:
+        _write_state_db(source_path, sessions=1)
+
+        def fail_snapshot(*_args: Any, **_kwargs: Any) -> Any:
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        monkeypatch.setattr("polylogue.sources.live.batch.snapshot_sqlite_to_blob", fail_snapshot)
+        result = await processor.ingest_files([source_path], emit_event=False)
+
+        assert result.failed_file_count == 1
+        assert result.succeeded_file_count == 0
     finally:
         await archive.close()
 
