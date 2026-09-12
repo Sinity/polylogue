@@ -98,25 +98,41 @@ def _schema_allows_type(schema: object, type_name: str) -> bool:
 def _schema_branch_for_value(schema: object, value: object) -> object:
     if not isinstance(schema, Mapping):
         return None
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list) and isinstance(value, Mapping):
+        # ``allOf`` contributes every branch's declarations. Treating the
+        # wrapper as one object loses those properties and reports valid,
+        # branch-declared names as drift. Validation remains delegated to
+        # Draft 2020-12; this merged view is only for observation.
+        branches: list[Mapping[str, object]] = []
+        base = {key: item for key, item in schema.items() if key != "allOf"}
+        if base:
+            branches.append(base)
+        for branch in all_of:
+            selected = _schema_branch_for_value(branch, value)
+            if isinstance(selected, Mapping):
+                branches.append(selected)
+        if branches:
+            return _merge_pattern_observation_schemas(branches)
     for key in ("anyOf", "oneOf"):
-        branches = schema.get(key)
-        if not isinstance(branches, list):
+        union_branches = schema.get(key)
+        if not isinstance(union_branches, list):
             continue
         # A union can contain several object (or array) branches.  Pick a
         # branch which accepts the concrete value before falling back to its
         # broad JSON type, otherwise a drift walk can attribute a field to an
         # unrelated sibling branch.
-        for branch in branches:
+        for branch in union_branches:
             if isinstance(branch, Mapping) and _schema_accepts_value(branch, value):
                 return branch
-        for branch in branches:
+        for branch in union_branches:
             if isinstance(value, Mapping) and _schema_allows_type(branch, "object"):
                 return branch
             if isinstance(value, list) and _schema_allows_type(branch, "array"):
                 return branch
             if value is None and _schema_allows_type(branch, "null"):
                 return branch
-        for branch in branches:
+        for branch in union_branches:
             if isinstance(branch, Mapping):
                 return branch
     return schema

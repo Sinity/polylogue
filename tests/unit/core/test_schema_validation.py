@@ -331,6 +331,32 @@ def test_permissive_named_fields_are_observed_through_nested_union_array_branch(
     }
 
 
+def test_allof_object_branches_contribute_declared_fields_to_drift_observation() -> None:
+    """Drift observation must see declarations contributed by every allOf branch."""
+    validator = SchemaValidator(
+        {
+            "allOf": [
+                {
+                    "type": "object",
+                    "properties": {"first": {"type": "string"}},
+                    "additionalProperties": True,
+                },
+                {
+                    "type": "object",
+                    "properties": {"second": {"type": "string"}},
+                    "additionalProperties": True,
+                },
+            ]
+        },
+        strict=True,
+    )
+
+    result = validator.validate({"first": "ok", "second": "ok", "new": "drift"})
+
+    assert result.is_valid
+    assert result.drift_warnings == ["Unexpected field: new"]
+
+
 def test_dynamic_identifier_keys_are_suppressed_in_additional_properties_maps() -> None:
     """Identifier-like additional-property keys should not count as drift."""
     validator = SchemaValidator(
