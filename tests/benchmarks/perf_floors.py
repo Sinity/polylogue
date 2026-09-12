@@ -45,7 +45,7 @@ from typing import Any
 
 import pytest
 
-from tests.infra.workload_artifacts import BenchmarkWorkloadTier
+from tests.infra.workload_declarations import BenchmarkWorkloadTier
 
 pytestmark = pytest.mark.uses_real_clock(
     "polylogue-196x nightly perf-floors runner stamps its measurement report with the real wall-clock generation time (machine fingerprint metadata for the committed floors artifact); a frozen clock would misdate every real nightly run."

@@ -12,11 +12,8 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.scenarios import CorpusProfile, CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.infra.source_builders import PROVIDER_SOURCE_CLASS
-from tests.infra.workload_artifacts import (
-    SEMANTIC_METADATA_PREFIXES,
-    SeededArchiveArtifact,
-    build_seeded_archive,
-)
+from tests.infra.workload_artifacts import SeededArchiveArtifact, build_seeded_archive
+from tests.infra.workload_declarations import SEMANTIC_METADATA_PREFIXES
 
 _SCALE_MINIMUM_MESSAGES = {
     "smoke": 1,

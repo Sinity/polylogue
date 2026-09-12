@@ -40,14 +40,16 @@ def semantic_archive() -> SeededArchiveArtifact:
 
 def schema_coverage_archive() -> SeededArchiveArtifact:
     """The all-provider schema-coverage archive behind ``seeded_archive``."""
-    from tests.infra.workload_artifacts import build_seeded_archive, schema_coverage_corpus_specs
+    from tests.infra.workload_artifacts import build_seeded_archive
+    from tests.infra.workload_declarations import schema_coverage_corpus_specs
 
     return build_seeded_archive(schema_coverage_corpus_specs())
 
 
 def named_workload_archive(name: str) -> SeededArchiveArtifact:
     """One entry of the finite named workload catalog."""
-    from tests.infra.workload_artifacts import build_seeded_archive, named_corpus_specs
+    from tests.infra.workload_artifacts import build_seeded_archive
+    from tests.infra.workload_declarations import named_corpus_specs
 
     return build_seeded_archive(named_corpus_specs(name))
 
@@ -67,7 +69,7 @@ def shared_session_archives() -> tuple[SharedSessionArchive, ...]:
     """Every shared archive, resolved on first call so import costs nothing."""
     global _REGISTRY
     if _REGISTRY is None:
-        from tests.infra.workload_artifacts import NAMED_WORKLOAD_PROFILES
+        from tests.infra.workload_declarations import NAMED_WORKLOAD_PROFILES
 
         named = tuple(
             SharedSessionArchive(

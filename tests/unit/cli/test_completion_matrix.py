@@ -41,9 +41,9 @@ from tests.infra.workload_artifacts import (
     SeededArchiveQueryLease,
     acquire_query_only_seeded_archive,
     build_seeded_archive,
-    named_corpus_specs,
     seeded_archive_key,
 )
+from tests.infra.workload_declarations import named_corpus_specs
 
 SUPPORTED_SHELL_CLASSES: tuple[tuple[str, type[ShellComplete]], ...] = (
     ("bash", BashComplete),
