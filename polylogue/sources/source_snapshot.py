@@ -30,7 +30,8 @@ from pathlib import Path
 from typing import Protocol
 
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
-from polylogue.sources.sqlite_snapshot import snapshot_sqlite_database, sqlite_logical_revision
+from polylogue.sources.sqlite_export import BinaryWriteSink, write_logical_export
+from polylogue.sources.sqlite_snapshot import member_export_scope, sqlite_member_revision
 
 _FICLONE = 0x40049409
 _MANIFEST_VERSION = 2
@@ -54,7 +55,7 @@ class SnapshotMode(StrEnum):
     ARCHIVE_MEMBER = "archive-member"
     COMPLETE_COPY = "complete-copy"
     SPOOL_HANDOFF = "spool-generation-handoff"
-    SQLITE_BACKUP = "sqlite-online-backup"
+    SQLITE_LOGICAL_EXPORT = "sqlite-logical-export"
     DIRECTORY_COPY = "directory-copy"
 
 
@@ -416,8 +417,8 @@ def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
             raise SourceSnapshotError(f"archive member inventory failed: {root}") from exc
     result: list[CutItem] = []
     for coordinate, path, info in _walk_files(root):
-        if mode is SnapshotMode.SQLITE_BACKUP:
-            identity = sqlite_logical_revision(path)
+        if mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
+            identity = sqlite_member_revision(path)
             # Logical content is the continuity identity. Filesystem metadata
             # and page layout are transport observations, not source meaning.
             content_sha256 = identity
@@ -553,7 +554,26 @@ class _FilesystemStrategy:
         return _copy_candidates(binding, baseline, destination)
 
 
-class _SQLiteStrategy(_FilesystemStrategy):
+class _BoundedSnapshotWriter:
+    """Write one candidate member without exceeding its declared capacity."""
+
+    def __init__(self, handle: BinaryWriteSink, *, capacity_bytes: int | None) -> None:
+        self._handle = handle
+        self._capacity_bytes = capacity_bytes
+        self._written = 0
+
+    def write(self, payload: bytes) -> int:
+        next_size = self._written + len(payload)
+        if self._capacity_bytes is not None and next_size > self._capacity_bytes:
+            raise SourceSnapshotError(
+                f"capacity preflight rejects logical SQLite export: requires more than {self._capacity_bytes} bytes"
+            )
+        written = self._handle.write(payload)
+        self._written += written
+        return written
+
+
+class _SQLiteLogicalExportStrategy(_FilesystemStrategy):
     def snapshot(
         self, binding: SourceCutBinding, destination: Path, baseline: tuple[CutItem, ...]
     ) -> tuple[CutItem, ...]:
@@ -561,14 +581,18 @@ class _SQLiteStrategy(_FilesystemStrategy):
         if root.is_dir():
             raise SourceSnapshotError("mutable-sqlite declarations must name one database")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        snapshot_sqlite_database(root, destination)
+        with destination.open("xb") as raw_handle:
+            handle = _BoundedSnapshotWriter(raw_handle, capacity_bytes=binding.policy.capacity_bytes)
+            write_logical_export(root, handle, scope=member_export_scope(root))
+            raw_handle.flush()
+            os.fsync(raw_handle.fileno())
         if not destination.exists():
-            raise SourceSnapshotError(f"SQLite backup was not published: {root}")
-        if sqlite_logical_revision(root) != baseline[0].identity:
-            raise SourceMutationError(f"SQLite source changed during backup: {root}")
-        if sqlite_logical_revision(destination) != baseline[0].identity:
-            raise SourceMutationError(f"SQLite backup does not match source logical revision: {root}")
+            raise SourceSnapshotError(f"SQLite logical export was not published: {root}")
         digest = _sha256_path(destination)
+        if digest != baseline[0].identity:
+            raise SourceMutationError(f"SQLite logical export does not match source logical revision: {root}")
+        if sqlite_member_revision(root) != baseline[0].identity:
+            raise SourceMutationError(f"SQLite source changed during logical export: {root}")
         size = destination.stat().st_size
         return tuple(
             CutItem(item.source_id, item.coordinate, item.identity, digest, size, str(destination)) for item in baseline
@@ -610,7 +634,7 @@ def _default_policy(role: SourceRole) -> SourceCutPolicy:
     if role is SourceRole.ARCHIVE_MEMBER:
         return SourceCutPolicy(SnapshotMode.ARCHIVE_MEMBER)
     if role is SourceRole.MUTABLE_SQLITE:
-        return SourceCutPolicy(SnapshotMode.SQLITE_BACKUP)
+        return SourceCutPolicy(SnapshotMode.SQLITE_LOGICAL_EXPORT)
     if role in {SourceRole.SPOOL, SourceRole.QUEUE}:
         return SourceCutPolicy(SnapshotMode.SPOOL_HANDOFF)
     return SourceCutPolicy(
@@ -625,7 +649,7 @@ _ALLOWED_MODES: dict[SourceRole, frozenset[SnapshotMode]] = {
     SourceRole.ARCHIVE_MEMBER: frozenset({SnapshotMode.ARCHIVE_MEMBER}),
     SourceRole.APPEND_JSONL: frozenset({SnapshotMode.COMPLETE_COPY}),
     SourceRole.REWRITE_JSONL: frozenset({SnapshotMode.COMPLETE_COPY}),
-    SourceRole.MUTABLE_SQLITE: frozenset({SnapshotMode.SQLITE_BACKUP}),
+    SourceRole.MUTABLE_SQLITE: frozenset({SnapshotMode.SQLITE_LOGICAL_EXPORT}),
     SourceRole.SPOOL: frozenset({SnapshotMode.SPOOL_HANDOFF, SnapshotMode.DIRECTORY_COPY}),
     SourceRole.QUEUE: frozenset({SnapshotMode.SPOOL_HANDOFF, SnapshotMode.DIRECTORY_COPY}),
     SourceRole.ATTACHMENT: frozenset({SnapshotMode.DIRECTORY_COPY, SnapshotMode.COMPLETE_COPY}),
@@ -636,8 +660,8 @@ _ALLOWED_MODES: dict[SourceRole, frozenset[SnapshotMode]] = {
 
 
 def _strategy(policy: SourceCutPolicy) -> SourceSnapshotStrategy:
-    if policy.mode is SnapshotMode.SQLITE_BACKUP:
-        return _SQLiteStrategy(policy.mode)
+    if policy.mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
+        return _SQLiteLogicalExportStrategy(policy.mode)
     if policy.mode is SnapshotMode.SPOOL_HANDOFF:
         return _SpoolHandoffStrategy(policy.mode)
     return _FilesystemStrategy(policy.mode)
@@ -690,7 +714,7 @@ def _manifest(kind: str, items: Iterable[CutItem], *, version: int = _MANIFEST_V
 
 def _ownership_key(item: CutItem, *, mode: SnapshotMode) -> tuple[str, str, str, str] | tuple[str, str, str]:
     """Return the logical version key for a candidate/post-cut comparison."""
-    if mode is SnapshotMode.SQLITE_BACKUP:
+    if mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
         return item.source_id, item.coordinate, item.identity
     return item.key
 
@@ -889,7 +913,9 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
         candidate_items: list[CutItem] = []
         for binding in preflight.bindings:
             source_destination = staging / "candidate" / binding.source.source_id
-            if binding.policy.mode is SnapshotMode.ARCHIVE_MEMBER or not Path(binding.source.root).is_dir():
+            if binding.policy.mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
+                source_destination = source_destination.with_suffix(".jsonl")
+            elif binding.policy.mode is SnapshotMode.ARCHIVE_MEMBER or not Path(binding.source.root).is_dir():
                 source_destination = source_destination.with_name(
                     source_destination.name + Path(binding.source.root).suffix
                 )
