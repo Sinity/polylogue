@@ -5,10 +5,11 @@ retained-raw authority, census, replay, finalization, and close route.  The
 input is a deterministic 516-raw Codex slice whose raw identities, blob
 digests, and exact byte count are sealed into each receipt.
 
-Raw replay has no SessionShard hand-off.  Shard and process arms are therefore
-declared capability refusals, not silently replaced with direct archive-writer
-experiments.  The writer-level transport laws remain in
-``tests/unit/storage/test_session_shards.py``.
+Raw replay has no ``LiveParseStage``/``SessionShard`` hand-off and its parser
+uses threads only. Shard and process arms are consequently recorded as
+capability refusals in the same measurement receipt, rather than silently
+becoming inline runs or direct archive-writer experiments. The writer-level
+transport laws remain in ``tests/unit/storage/test_session_shards.py``.
 """
 
 from __future__ import annotations
@@ -84,6 +85,17 @@ class _ArmReceipt:
     archive_bytes: int
     stage_timings_s: dict[str, float]
     metrics: dict[str, object]
+    derived_table_census: tuple[str, ...]
+    fts_source_rows: int
+    fts_indexed_rows: int
+    public_index_count: int
+    open_convergence_debt_count: int
+    offered_raw_count: int
+    ingested_raw_count: int
+    refused_raw_count: int
+    deferred_raw_count: int
+    failed_raw_count: int
+    skipped_raw_count: int
     snapshot: DerivedModelSnapshot
 
 
@@ -97,6 +109,21 @@ class _SourceCensusReceipt:
     classified_full: int
     quarantined: int
     logical_key_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CapabilityReceipt:
+    """One declared arm that the current ordinary route cannot execute.
+
+    Keeping these alongside completed-arm receipts prevents a result renderer
+    from presenting an inline-only timing as a shard/process comparison.
+    """
+
+    arm: str
+    worker_mode: str
+    worker_count: int
+    status: str
+    reason: str
 
 
 _ARMS = (
@@ -320,7 +347,33 @@ def _run_arm(root: Path, sealed: _SealedInput, arm: _Arm, *, worker_count: int) 
         archive_bytes=archive_bytes,
         stage_timings_s=dict(result.stage_timings_s),
         metrics=metrics.to_payload(),
+        derived_table_census=tuple(table for table, _projection in snapshot.tables),
+        fts_source_rows=snapshot.fts.source_rows,
+        fts_indexed_rows=snapshot.fts.indexed_rows,
+        public_index_count=snapshot.fts.public_index_count,
+        open_convergence_debt_count=len(snapshot.open_debt),
+        offered_raw_count=sealed.raw_count,
+        ingested_raw_count=result.replayed_logical_sources,
+        refused_raw_count=0,
+        deferred_raw_count=result.adoption_deferred,
+        failed_raw_count=result.quarantined,
+        skipped_raw_count=0,
         snapshot=snapshot,
+    )
+
+
+def _capability_receipts(*, worker_count: int) -> tuple[_CapabilityReceipt, ...]:
+    """Expose every omitted matrix cell as a refusal, never a timing sample."""
+    return tuple(
+        _CapabilityReceipt(
+            arm=arm.name,
+            worker_mode=arm.worker_mode,
+            worker_count=worker_count,
+            status="refused",
+            reason=arm.refusal_reason or "unsupported finished-build capability",
+        )
+        for arm in _ARMS
+        if arm.uses_shard_transport or arm.worker_mode != "thread"
     )
 
 
@@ -346,6 +399,9 @@ def test_finished_build_measurement_declares_capability_boundary() -> None:
     for arm in refused:
         with pytest.raises(RuntimeError, match="production|ThreadPoolExecutor"):
             _run_arm(Path("not-opened-for-capability-refusal"), sealed, arm, worker_count=1)
+    refusal_receipts = _capability_receipts(worker_count=1)
+    assert {receipt.arm for receipt in refusal_receipts} == {arm.name for arm in refused}
+    assert all(receipt.status == "refused" and receipt.reason for receipt in refusal_receipts)
 
 
 @pytest.mark.benchmark
@@ -384,11 +440,27 @@ def test_finished_build_measurement_runs_sealed_inline_arms_at_declared_scale(
     assert all(receipt.metrics["unaccounted_bytes"] == 0 for receipt in receipts)
     assert all(receipt.metrics["failed_file_count"] == 0 for receipt in receipts)
     assert all(receipt.metrics["refused_bytes"] == 0 for receipt in receipts)
+    assert all(receipt.offered_raw_count == receipt.ingested_raw_count for receipt in receipts)
+    assert all(
+        receipt.refused_raw_count
+        == receipt.deferred_raw_count
+        == receipt.failed_raw_count
+        == receipt.skipped_raw_count
+        == 0
+        for receipt in receipts
+    )
+    assert all(receipt.fts_source_rows == receipt.fts_indexed_rows for receipt in receipts)
+    assert all(receipt.open_convergence_debt_count == 0 for receipt in receipts)
     # Each count has one interleaved pair. The receipts show the observed
     # ordering, but one pair is insufficient to declare a timing winner.
+    capability_receipts = _capability_receipts(worker_count=worker_count)
     verdict = {
-        "conclusion": "no-winner",
-        "reason": "one interleaved retained/fresh pair at this worker count; repeat before ranking",
+        "conclusion": "incomplete-no-winner",
+        "reason": (
+            "one interleaved retained/fresh inline pair at this worker count; "
+            "repeat before ranking, and do not rank shard/process modes until the production "
+            "raw-replay hand-off exists"
+        ),
     }
     print(
         "finished-build-measurement="
@@ -402,6 +474,7 @@ def test_finished_build_measurement_runs_sealed_inline_arms_at_declared_scale(
                     for receipt in receipts
                 ],
                 "source_census": asdict(source_census),
+                "capability_refusals": [asdict(receipt) for receipt in capability_receipts],
                 "verdict": verdict,
             },
             sort_keys=True,
