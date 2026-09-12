@@ -8,6 +8,7 @@ import pytest
 
 from devtools import verify_schema_manifest
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.schema_identity import _normalize_schema_sql
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -26,6 +27,21 @@ def test_schema_manifest_rejects_a_target_file_with_schema_drift(tmp_path: Path)
         conn.execute("DROP INDEX idx_sessions_origin_sort")
         conn.commit()
     assert verify_schema_manifest.main(["--archive-root", str(root)]) == 1
+
+
+def test_schema_manifest_normalization_keeps_escaped_literal_values_exact() -> None:
+    """Harmless SQL layout is normalized without rewriting quoted values."""
+    compact = "CREATE TABLE sample(value TEXT DEFAULT 'a''b' CHECK(value='A  B'));"
+    formatted = """
+        CREATE TABLE sample (
+            value TEXT DEFAULT 'a''b'
+            CHECK (value = 'A  B')
+        );
+    """
+    assert _normalize_schema_sql(compact) == _normalize_schema_sql(formatted)
+    assert "'a''b'" in _normalize_schema_sql(compact)
+    assert "'A  B'" in _normalize_schema_sql(compact)
+    assert _normalize_schema_sql(compact.replace("'A  B'", "'a b'")) != _normalize_schema_sql(compact)
 
 
 def _schema_state(*, source_version: int = 1, source_ddl: str = "source") -> verify_schema_manifest._SchemaState:

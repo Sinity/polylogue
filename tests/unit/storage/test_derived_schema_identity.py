@@ -6,6 +6,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.storage.sqlite import schema_manifest
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -25,6 +26,63 @@ from polylogue.storage.sqlite.archive_tiers.schema_identity import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema import _ensure_schema, ensure_schema_async
 from polylogue.storage.sqlite.schema_bootstrap import SchemaSkew
+from polylogue.storage.sqlite.schema_manifest import SchemaManifest, assert_schema_manifest
+
+
+def _manifest_for_ddl(ddl: str) -> SchemaManifest:
+    """Render a small derived-tier schema through the production manifest path."""
+    with sqlite3.connect(":memory:") as conn:
+        conn.executescript(ddl)
+        conn.executescript(DERIVED_SCHEMA_META_DDL)
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.OPS]}")
+        return SchemaManifest.from_connection(conn, ArchiveTier.OPS)
+
+
+def test_schema_manifest_preserves_sql_literal_case_and_whitespace() -> None:
+    """Literal values are part of schema semantics, not formatting noise."""
+    baseline = _manifest_for_ddl(
+        """
+        CREATE TABLE sample (
+            value TEXT DEFAULT 'user' CHECK (value = 'a b')
+        ) STRICT;
+        """
+    )
+    different_case = _manifest_for_ddl(
+        """
+        CREATE TABLE sample (
+            value TEXT DEFAULT 'USER' CHECK (value = 'a b')
+        ) STRICT;
+        """
+    )
+    different_literal_spacing = _manifest_for_ddl(
+        """
+        CREATE TABLE sample (
+            value TEXT DEFAULT 'user' CHECK (value = 'a  b')
+        ) STRICT;
+        """
+    )
+
+    assert baseline.fingerprint != different_case.fingerprint
+    assert baseline.fingerprint != different_literal_spacing.fingerprint
+
+
+def test_schema_manifest_admission_rejects_literal_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A derived file with only a quoted literal change is stale, not compatible."""
+    import polylogue.storage.sqlite.archive_tiers as archive_tiers
+
+    declared = "CREATE TABLE sample (value TEXT DEFAULT 'user') STRICT;"
+    actual = "CREATE TABLE sample (value TEXT DEFAULT 'USER') STRICT;"
+    monkeypatch.setitem(archive_tiers.ARCHIVE_DDL_BY_TIER, ArchiveTier.OPS, declared)
+    schema_manifest._canonical_schema_manifest.cache_clear()
+    try:
+        with sqlite3.connect(":memory:") as conn:
+            conn.executescript(actual)
+            conn.executescript(DERIVED_SCHEMA_META_DDL)
+            conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.OPS]}")
+            with pytest.raises(SchemaVersionMismatchError, match="semantic manifest mismatch"):
+                assert_schema_manifest(conn, ArchiveTier.OPS)
+    finally:
+        schema_manifest._canonical_schema_manifest.cache_clear()
 
 
 def test_index_identity_changes_when_a_fingerprint_input_changes(monkeypatch: pytest.MonkeyPatch) -> None:
