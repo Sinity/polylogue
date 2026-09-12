@@ -14,11 +14,19 @@ from typing import Any
 
 from devtools.tool_pairing_census import (
     CLASS_SOURCE_OMISSION,
+    CLASS_SOURCE_TRUNCATED,
     CLASS_UNKNOWN,
     CLASS_UNSUPPORTED_CONSTRUCT,
+    COMPLETION_SETTLED,
+    COMPLETION_SUPERSEDED,
     POSITION_INTERIOR,
     POSITION_TAIL,
+    SOURCE_BYTES_ABSENT,
+    SOURCE_PRESENT,
     CensusArgs,
+    SourceState,
+    _classify_call,
+    _classify_result,
     build_report,
 )
 from polylogue.archive.message.roles import Role
@@ -161,3 +169,19 @@ def test_census_reads_an_index_whose_derived_schema_predates_the_code(test_db: P
         conn.close()
     report = _census(test_db)
     assert report["derived_schema"]["action_pairs_has_tool_outcome"] == ("tool_outcome" in columns)
+
+
+def test_unowned_result_with_surviving_source_stays_unknown() -> None:
+    """A physical result without a declared owner must not borrow one."""
+    source = SourceState(SOURCE_PRESENT, COMPLETION_SETTLED)
+    assert _classify_result(owner_present=False, source=source) == CLASS_UNKNOWN
+
+
+def test_superseded_source_is_truncated_before_position_heuristics() -> None:
+    """An acquisition known to trail its source is not guessed as interrupted."""
+    source = SourceState(SOURCE_PRESENT, COMPLETION_SUPERSEDED)
+    assert _classify_call(rule=None, position=POSITION_TAIL, source=source) == CLASS_SOURCE_TRUNCATED
+    assert _classify_result(owner_present=False, source=source) == CLASS_SOURCE_TRUNCATED
+    assert _classify_result(owner_present=False, source=SourceState(SOURCE_BYTES_ABSENT, COMPLETION_SETTLED)) == (
+        CLASS_SOURCE_TRUNCATED
+    )
