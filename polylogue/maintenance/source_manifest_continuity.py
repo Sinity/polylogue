@@ -120,6 +120,15 @@ class SourceFrontier:
 
     def as_dict(self) -> dict[str, object]:
         return {
+            "declarations": [
+                {
+                    "source_id": declaration.source_id,
+                    "role": declaration.role.value,
+                    "root": str(declaration.root),
+                    "mutable": declaration.mutable,
+                }
+                for declaration in self.declarations
+            ],
             "frontier_sha256": self.frontier_sha256,
             "item_count": self.item_count,
             "byte_count": self.byte_count,
@@ -140,6 +149,18 @@ class SourceFrontier:
         }
 
     def verify_integrity(self) -> None:
+        declaration_ids = {declaration.source_id for declaration in self.declarations}
+        if len(declaration_ids) != len(self.declarations):
+            raise SourceContinuityError("source frontier contains duplicate source IDs")
+        if set(self.root_states) != declaration_ids:
+            raise SourceContinuityError("source frontier root states do not cover declarations")
+        member_keys = [member.key for member in self.members]
+        if len(set(member_keys)) != len(member_keys):
+            raise SourceContinuityError("source frontier contains duplicate members")
+        if any(member.source_id not in declaration_ids for member in self.members):
+            raise SourceContinuityError("source frontier member is outside its declarations")
+        if any(member.size < 0 for member in self.members):
+            raise SourceContinuityError("source frontier member size is negative")
         payload = {
             "declarations": [(d.source_id, d.role.value, str(d.root), d.mutable) for d in self.declarations],
             "members": [

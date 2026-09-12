@@ -69,7 +69,7 @@ from polylogue.maintenance.source_conservation import (
     typed_raw_cte,
     valid_byte_duplicate_supersession_expr,
 )
-from polylogue.maintenance.source_manifest_continuity import SourceFrontier
+from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_integrity import scan_attachment_coverage, scan_blob_integrity
 from polylogue.storage.blob_liveness import (
@@ -709,7 +709,7 @@ def _check_source_conservation_at_index_path(
                 sample_limit=sample_limit,
                 frontier=source_frontier,
             )
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, SourceContinuityError) as exc:
             return _error_check(name, f"could not read source/index tiers: {exc}", exc=exc)
     finally:
         conn.close()
