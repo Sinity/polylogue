@@ -74,7 +74,6 @@ def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
     ("path", "handler_name", "actor"),
     [
         (["api", "reset"], "_handle_reset", "http.reset"),
-        (["api", "ingest"], "_handle_ingest", "http.ingest"),
     ],
 )
 def test_authenticated_write_route_holds_gate_around_handler(path: list[str], handler_name: str, actor: str) -> None:
@@ -85,6 +84,15 @@ def test_authenticated_write_route_holds_gate_around_handler(path: list[str], ha
     handler._do_post_impl()
 
     assert timeline == [f"enter:{actor}", "body", f"exit:{actor}"]
+
+
+def test_ingest_route_delegates_publication_ownership_to_operation_runtime() -> None:
+    """An outer lease deadlocks runtime publication and keeps preparation under the writer."""
+    timeline: list[str] = []
+    handler = _handler(["api", "ingest"], timeline)
+    object.__setattr__(handler, "_handle_ingest", lambda: timeline.append("runtime"))
+    handler._do_post_impl()
+    assert timeline == ["runtime"]
 
 
 def _seed_delete_authority_archive(root: Path, count: int) -> tuple[str, ...]:
@@ -531,10 +539,12 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
             }
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-    conflicting = DaemonOperationRequest(
-        operation="completion",
-        payload={"prefix": "x"},
-        request_id="request-id-reused",
+    conflicting = DaemonOperationRequest.from_dict(
+        DaemonOperationRequest(
+            operation="completion",
+            payload={"incomplete": "x"},
+            request_id="request-id-reused",
+        ).to_dict()
     )
     body = json.dumps(conflicting.to_dict()).encode()
     handler = _operation_handler([], body)

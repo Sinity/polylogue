@@ -10,7 +10,7 @@ The three observable outcomes are:
 
 1. **accepted + observable** — the file was copied into
    ``archive_root()/inbox`` and the running daemon returned an
-   ``ImportAck`` with status ``pending``/``accepted``. The user sees the
+   durable operation reference with status ``accepted``. The user sees the
    staged path, the operation id, and the next-step pointer
    (``polylogue ops status``) so they can watch the work converge.
 2. **rejected (input)** — the supplied path does not exist, cannot be

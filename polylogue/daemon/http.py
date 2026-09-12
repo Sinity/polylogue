@@ -113,6 +113,7 @@ if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.daemon.session_profile_composition import SessionProfileCallback
     from polylogue.daemon.webui import WebUIAsset
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
@@ -1941,7 +1942,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             mutating_actor = {
                 "_handle_mcp_call_log": "http.telemetry.mcp-call",
                 "_handle_reset": "http.reset",
-                "_handle_ingest": "http.ingest",
             }.get(authenticated_route.handler_name)
             gate = self._write_gate(mutating_actor) if mutating_actor is not None else contextlib.nullcontext()
             with gate:
@@ -5223,12 +5223,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_daemon_operation(self) -> None:
         """Authenticate transport, then invoke the same canonical machine runtime."""
         from polylogue.operations.daemon_protocol import (
-            DAEMON_OPERATION_SPECS,
             MAX_DECLARED_OPERATION_BODY_BYTES,
-            MAX_OPERATION_RESULT_BYTES,
             DaemonOperationRequest,
         )
-        from polylogue.operations.mutation_transaction import MutationPrincipal
 
         if not self._check_auth(allow_web=False) or not self._check_cross_origin():
             return
@@ -5255,6 +5252,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, TimeoutError, OSError):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
+        self._send_daemon_operation(self._execute_daemon_operation(request))
+
+    def _execute_daemon_operation(self, request: DaemonOperationRequest) -> dict[str, object]:
+        from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS
+        from polylogue.operations.mutation_transaction import MutationPrincipal
+
         base = self._cli_mutation_principal("read")
         principal = MutationPrincipal(
             actor_ref=base.actor_ref,
@@ -5266,7 +5269,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.operation_disconnect import observe_peer_disconnect
 
         with observe_peer_disconnect(self.connection) as disconnected:
-            payload = runtime.call(request, principal, client_disconnect=disconnected)
+            return runtime.call(request, principal, client_disconnect=disconnected)
+
+    def _send_daemon_operation(self, payload: dict[str, object]) -> None:
+        from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
+
         if len(json.dumps(payload, separators=(",", ":")).encode()) > MAX_OPERATION_RESULT_BYTES:
             payload["result"] = None
             payload["outcome"] = "indeterminate" if payload.get("accepted_reference") else "failed"
@@ -5426,19 +5433,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, {"ok": True, "call_id": call_id})
 
+    @daemon_safe_handler
     def _handle_ingest(self) -> None:
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
-        body_text = body_raw.decode("utf-8")
-        try:
-            body = json.loads(body_text)
-        except json.JSONDecodeError:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+        body = self._read_bounded_json_body(65_536)
+        if body is None:
             return
 
-        from polylogue.paths import archive_root
-
-        inbox = archive_root() / "inbox"
+        inbox = self.server.archive_root / "inbox"
         inbox.mkdir(parents=True, exist_ok=True)
 
         source, error = _staged_inbox_source(body.get("path"), inbox)
@@ -5454,17 +5455,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, preflight.error_code, preflight.summary())
             return
 
-        # Typed Operation scheduling contract (#1247/#1248): the daemon
-        # accepts an ``ImportRequest`` and emits an ``ImportAck`` carrying
-        # the shared ``OperationFollowUp`` envelope. The existing wire keys
-        # (``path``, ``status``, ``ok``) are preserved for the CLI ingest
-        # adapter and HTTP clients that pre-date the typed contract.
+        from uuid import uuid4
+
         from pydantic import ValidationError
 
-        from polylogue.operations.import_operations import ImportAck, ImportRequest
-        from polylogue.operations.operation_contract import OperationFollowUp
-
-        op_id = f"ingest-{source.name}"
+        from polylogue.operations.daemon_protocol import DaemonOperationRequest
+        from polylogue.operations.import_operations import ImportRequest
 
         try:
             request = ImportRequest.model_validate(
@@ -5479,32 +5475,36 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
 
-        emit_daemon_event(
-            "ingest",
-            operation_id=op_id,
-            payload={"path": str(source), "inbox": str(inbox), "preflight": preflight.to_dict()},
+        operation = DaemonOperationRequest.from_dict(
+            DaemonOperationRequest(
+                operation="ingest",
+                request_id=request.idempotency_key or uuid4().hex,
+                archive_root=str(self.server.archive_root),
+                payload={
+                    "path": str(source),
+                    "source_path": request.source_path,
+                    "idempotency_key": request.idempotency_key,
+                },
+            ).to_dict()
         )
+        response = self._execute_daemon_operation(operation)
+        # The upload UI still consumes these display fields. Only the
+        # canonical durable reference can establish that ingestion was accepted.
+        from polylogue.operations.daemon_protocol import AcceptedOperationReference
 
-        message = "Ingestion scheduled. Check status for progress."
-        if preflight.status.value == "degraded":
-            message = f"{message} {preflight.summary()}"
-        ack = ImportAck.pending_import(
-            operation_id=op_id,
-            follow_up=OperationFollowUp(
-                status_endpoint=f"/api/operations/{op_id}",
-                poll_after_ms=500,
-            ),
-            message=message,
+        reference = response.get("accepted_reference")
+        if reference is not None:
+            AcceptedOperationReference.model_validate(reference)
+        response["status"] = (
+            "accepted"
+            if reference is not None and response["outcome"] in {"accepted", "running", "completed", "indeterminate"}
+            else "failed"
         )
-        response: dict[str, object] = dict(ack.to_dict())
-        response["ok"] = True
+        response["operation_id"] = operation.request_id
         response["path"] = str(source)
         response["preflight"] = preflight.to_dict()
-        # Surface the validated, typed request fields so clients can confirm
-        # the contract used; reading the request back closes the loop for
-        # adapter parity tests.
         response["request"] = request.to_dict()
-        self._send_json(HTTPStatus.ACCEPTED, response)
+        self._send_daemon_operation(response)
 
     @daemon_safe_handler
     def _handle_demo_augment(self) -> None:

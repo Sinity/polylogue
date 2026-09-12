@@ -35,6 +35,7 @@ from tests.infra.daemon_http_harness import MockDaemonServer, capture_responses,
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +532,36 @@ class TestDeleteEndpointHostGate:
 class TestIngestEndpointInboxBoundary:
     """``POST /api/ingest`` schedules client-staged inbox artifacts only."""
 
+    @pytest.fixture(autouse=True)
+    def admitted_runtime(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
+        """These boundary tests stub execution; continuity tests prove durable admission."""
+        from polylogue.daemon.http import DaemonAPIHandler
+
+        monkeypatch.setattr(MockDaemonServer, "archive_root", workspace_env["archive_root"], raising=False)
+
+        def accepted(_handler: DaemonAPIHandler, request: DaemonOperationRequest) -> dict[str, object]:
+            assert request.operation == "ingest"
+            return {
+                "outcome": "accepted",
+                "request_id": request.request_id,
+                "accepted_reference": {
+                    "archive_identity": "synthetic-archive",
+                    "request_id": request.request_id,
+                    "principal_ref": "synthetic-principal",
+                    "fingerprint": request.fingerprint,
+                    "operation_name": "ingest",
+                    "artifact_kind": "source-generation",
+                    "artifact_ref": "synthetic-generation",
+                    "accepted_at_ms": 1,
+                    "part_count": 1,
+                    "stop_reason": None,
+                    "stopped_at_ms": None,
+                    "accepted_deadline_unix_ms": 1000,
+                },
+            }
+
+        monkeypatch.setattr(DaemonAPIHandler, "_execute_daemon_operation", accepted)
+
     def test_accepts_absolute_reference_only_by_matching_inbox_entry(
         self,
         workspace_env: dict[str, Path],
@@ -579,9 +610,9 @@ class TestIngestEndpointInboxBoundary:
         assert payload["preflight"]["providers"] == ["chatgpt"]
         assert payload["request"]["source_path"] == "/original/provider/export/session.json"
         assert payload["request"]["staged_path"] == str(staged.resolve())
-        emit_event.assert_called_once()
-        assert emit_event.call_args.kwargs["payload"]["path"] == str(staged.resolve())
-        assert emit_event.call_args.kwargs["payload"]["preflight"]["status"] == "supported"
+        emit_event.assert_not_called()
+        assert payload["accepted_reference"]["request_id"] == payload["request_id"]
+        assert payload["accepted_reference"]["artifact_kind"] == "source-generation"
 
     def test_rejects_staged_unsupported_import_shape(
         self,
@@ -608,6 +639,51 @@ class TestIngestEndpointInboxBoundary:
         assert "no parseable" in send_error.call_args.args[2]
         send_json.assert_not_called()
         emit_event.assert_not_called()
+
+    @pytest.mark.parametrize("outcome", ["rejected", "indeterminate"])
+    def test_import_does_not_claim_acceptance_without_durable_reference(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, outcome: str
+    ) -> None:
+        """An event-only acknowledgement would falsely accept this unreserved input."""
+        from polylogue.daemon.http import DaemonAPIHandler
+
+        inbox = workspace_env["archive_root"] / "inbox"
+        inbox.mkdir(parents=True)
+        staged = inbox / "session.json"
+        staged.write_text(
+            json.dumps(
+                {
+                    "mapping": {
+                        "root": {
+                            "id": "root",
+                            "message": {
+                                "author": {"role": "user"},
+                                "content": {"content_type": "text", "parts": ["sample"]},
+                            },
+                            "children": [],
+                        }
+                    }
+                }
+            )
+        )
+        requests: list[DaemonOperationRequest] = []
+
+        def refuse(_handler: DaemonAPIHandler, request: DaemonOperationRequest) -> dict[str, object]:
+            requests.append(request)
+            return {"outcome": outcome, "accepted_reference": None}
+
+        monkeypatch.setattr(DaemonAPIHandler, "_execute_daemon_operation", refuse)
+        body = json.dumps({"path": str(staged), "idempotency_key": "stable-upload"}).encode()
+        handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
+        send_error, send_json = capture_responses(handler)
+        with patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]):
+            handler.do_POST()
+        send_error.assert_not_called()
+        response = send_json.call_args.args[1]
+        assert response["status"] == "failed"
+        assert response["outcome"] == outcome
+        assert requests[0].request_id == "stable-upload"
+        assert requests[0].payload["path"] == str(staged.resolve())
 
     def test_accepts_degraded_staged_import_with_preflight_caveat(
         self,
@@ -653,7 +729,7 @@ class TestIngestEndpointInboxBoundary:
         assert payload["preflight"]["status"] == "degraded"
         assert payload["preflight"]["supported_count"] == 1
         assert payload["preflight"]["unsupported_count"] == 1
-        assert "degraded" in payload["message"]
+        assert payload["accepted_reference"]["artifact_kind"] == "source-generation"
 
     def test_rejects_unstaged_absolute_local_path(
         self,
