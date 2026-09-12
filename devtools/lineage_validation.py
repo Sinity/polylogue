@@ -615,6 +615,15 @@ def _lineage_integrity(conn: Connection) -> dict[str, Any]:
 
 
 def _sample_prefix_sharing(conn: Connection, limit: int, *, max_stored_messages: int) -> dict[str, Any]:
+    """Measure a bounded canonical-message prefix-share subset.
+
+    This is deliberately an archive-read measurement, not a parser benchmark:
+    session links and the composition route can establish how much semantic
+    prefix exists in a selected subset, but they cannot establish offered raw
+    bytes or parser CPU.  A pre-rebuild decision can therefore use this value
+    to select a representative subset without presenting it as evidence that
+    parser-state reuse already exists.
+    """
     if limit < 0:
         raise ValueError("--sample-prefix-sharing must be non-negative")
     if max_stored_messages < 1:
@@ -687,7 +696,13 @@ def _sample_prefix_sharing(conn: Connection, limit: int, *, max_stored_messages:
             }
         )
     ratio = (composed_total / stored_total) if stored_total else None
+    complete = not errors
+    inherited_prefix_messages = (composed_total - stored_total) if complete else None
+    semantic_prefix_share_ratio = (
+        inherited_prefix_messages / composed_total if inherited_prefix_messages is not None and composed_total else None
+    )
     return {
+        "measurement": "bounded canonical-message sample; excludes raw-byte and parser-CPU measurement",
         "requested": limit,
         "max_sample_stored_messages": max_stored_messages,
         "total_prefix_sharing_rows": total_prefix_rows,
@@ -697,6 +712,9 @@ def _sample_prefix_sharing(conn: Connection, limit: int, *, max_stored_messages:
         "stored_messages": stored_total,
         "composed_messages": composed_total,
         "composed_to_stored_ratio": ratio,
+        "inherited_prefix_messages": inherited_prefix_messages,
+        "semantic_prefix_share_ratio": semantic_prefix_share_ratio,
+        "complete": complete,
         "errors": errors,
         "rows": samples,
     }
