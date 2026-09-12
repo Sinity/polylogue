@@ -1,10 +1,8 @@
-"""A managed pytest run is sized to the pytest pool it owns after admission.
+"""A managed pytest run is sized to the tighter host and cgroup budget.
 
-The host's ``MemAvailable`` used to narrow a corpus after the pool had already
-admitted it.  That lets unrelated agent work collapse an otherwise valid
-pytest width.  AgentCTL backpressure decides host admission; this module keeps
-the command within ``agentctl-pytest.slice`` and records host memory only as
-diagnostic evidence.
+The host's ``MemAvailable`` and the pytest pool's remaining cgroup budget are
+both live launch bounds.  AgentCTL backpressure still controls admission, and
+the local cgroup prevents an admitted command from exceeding its hard slice.
 
 Anti-vacuity:
 - replace ``pytest_slot_available_mib`` with the generic ancestor walk and
@@ -49,6 +47,7 @@ from devtools.worker_memory import (
     cgroup_available_mib,
     memory_bounded_worker_cap,
     resize_worker_argument,
+    width_within,
 )
 
 
@@ -161,17 +160,18 @@ def test_an_idle_host_runs_the_full_width(tmp_path: Path) -> None:
 
 
 def test_a_loaded_host_runs_narrower(tmp_path: Path) -> None:
-    """Host pressure is an admission concern, never a post-admission resize."""
+    """A finite host budget narrows a run even when its cgroup is unbounded."""
     workers, basis = memory_bounded_worker_cap(meminfo=_meminfo(tmp_path, 4707), **_unbounded_cgroup(tmp_path))
-    assert workers == CORPUS_MAX_WORKERS
-    assert basis["basis"] == "unmeasured"
+    assert workers == width_within(4707)
+    assert basis["basis"] == "mem_available"
+    assert basis["available_mib"] == 4707
     assert basis["host_available_mib"] == 4707
 
 
 def test_a_starved_host_still_runs_one_worker(tmp_path: Path) -> None:
-    """A starved host is held before launch; it does not rewrite a command."""
+    """Headroom never reduces the launch to zero workers."""
     workers, _basis = memory_bounded_worker_cap(meminfo=_meminfo(tmp_path, 200), **_unbounded_cgroup(tmp_path))
-    assert workers == CORPUS_MAX_WORKERS
+    assert workers == 1
 
 
 def test_an_unreadable_meminfo_does_not_narrow_silently(tmp_path: Path) -> None:
@@ -368,11 +368,21 @@ def test_the_pytest_slice_bounds_a_host_with_memory_to_spare(tmp_path: Path) -> 
 def test_the_pytest_slice_ignores_shared_agent_slice_usage(tmp_path: Path) -> None:
     """The local pytest pool, rather than host or shared parent use, decides."""
     paths = _pytest_slice(tmp_path, current_mib=350)
-    workers, basis = memory_bounded_worker_cap(meminfo=_meminfo(tmp_path, 2500), **paths)
+    workers, basis = memory_bounded_worker_cap(meminfo=_meminfo(tmp_path, 10000), **paths)
     assert basis["basis"] == "cgroup_budget"
     assert basis["available_mib"] == PYTEST_SLICE_HIGH_MIB - 350
-    assert basis["host_available_mib"] == 2500
+    assert basis["host_available_mib"] == 10000
     assert workers == CORPUS_MAX_WORKERS
+
+
+def test_the_tighter_host_bound_decides_when_cgroup_is_roomy(tmp_path: Path) -> None:
+    """A roomy pytest slice cannot exceed what the host can supply."""
+    paths = _pytest_slice(tmp_path, current_mib=350)
+    workers, basis = memory_bounded_worker_cap(meminfo=_meminfo(tmp_path, 2500), **paths)
+    assert basis["basis"] == "mem_available"
+    assert basis["available_mib"] == 2500
+    assert basis["cgroup_available_mib"] == PYTEST_SLICE_HIGH_MIB - 350
+    assert workers == width_within(2500)
 
 
 def test_a_hosted_verify_launch_stays_inside_the_pytest_slice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
