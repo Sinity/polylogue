@@ -38,6 +38,10 @@ ADMISSION_CLASSES: tuple[AdmissionClass, ...] = (
 
 BACKGROUND_CLASSES: frozenset[str] = frozenset({"incremental-background", "bulk-candidate"})
 
+# Incremental catch-up receives two turns per candidate turn. Advance only on
+# dispatch so a continuously replenished incremental queue cannot starve bulk.
+_BACKGROUND_TURNS = ("incremental-background", "incremental-background", "bulk-candidate")
+
 #: Background work keeps at least this fraction of capacity reserved against
 #: interactive and control pressure.  Both fairness bounds below are falsifiable
 #: claims about the shipped scheduler, not aspirations.
@@ -359,6 +363,7 @@ class BoundedComputeAdapter:
         self._shutdown = False
         self._classes: dict[str, _ClassState] = {name: _ClassState(name) for name in ADMISSION_CLASSES}
         self._queues: dict[str, deque[_Task]] = {name: deque() for name in ADMISSION_CLASSES}
+        self._background_turn = 0
         self._apply_reservations()
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=thread_name_prefix)
 
@@ -490,7 +495,14 @@ class BoundedComputeAdapter:
         sustained interactive load.
         """
 
-        for name in ADMISSION_CLASSES:
+        background_order = [
+            (self._background_turn + offset) % len(_BACKGROUND_TURNS) for offset in range(len(_BACKGROUND_TURNS))
+        ]
+        candidates: list[tuple[str, int | None]] = [
+            (name, None) for name in ADMISSION_CLASSES if name not in BACKGROUND_CLASSES
+        ]
+        candidates.extend((_BACKGROUND_TURNS[turn], turn) for turn in background_order)
+        for name, background_turn in candidates:
             queue = self._queues[name]
             if not queue:
                 continue
@@ -501,6 +513,8 @@ class BoundedComputeAdapter:
             if self._group_active_slots(name) + task.slots > state.ceiling_slots:
                 continue
             queue.popleft()
+            if background_turn is not None:
+                self._background_turn = (background_turn + 1) % len(_BACKGROUND_TURNS)
             task.state = "running"
             task.queue_delay_s = monotonic() - task.queued_at
             self._active_units += task.units

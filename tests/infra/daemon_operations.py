@@ -111,6 +111,7 @@ def running_daemon_operations(
     *,
     seed_archive: Callable[[Path], None] | None = None,
     server_error_sink: queue.SimpleQueue[str] | None = None,
+    compute_workers: int = 2,
 ) -> Iterator[DaemonOperationStack]:
     """Start one real machine operation stack rooted at ``archive_root``.
 
@@ -142,7 +143,9 @@ def running_daemon_operations(
     bridge = DaemonWriteThreadBridge(coordinator, coordinator_loop.loop, timeout=5)
     bridge.run_sync("daemon.operation_journals.startup", prepare_operation_journals, archive_root)
     bridge.run_sync("daemon.operation_recovery.startup", recover_interrupted_operations, archive_root)
-    kernel = BoundedComputeAdapter(max_workers=2, queue_units=4, thread_name_prefix="test-daemon-operation")
+    kernel = BoundedComputeAdapter(
+        max_workers=compute_workers, queue_units=4, thread_name_prefix="test-daemon-operation"
+    )
     runtime = DaemonOperationRuntime(
         archive_root, write_bridge=bridge, execution_kernel=kernel, owner_loop=bridge.owner_loop
     )
