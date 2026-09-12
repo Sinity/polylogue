@@ -81,6 +81,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
+    LineageSignatureCache,
     _composed_db_signatures,
     _message_content_hash,
     _normalized_message_native_id,
@@ -892,7 +893,7 @@ def _write_session(
     payload: SessionWritePayload,
     *,
     force_write: bool = False,
-    signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+    signature_cache: LineageSignatureCache | dict[str, list[tuple[str, str]]] | None = None,
     stage_timings_s: dict[str, float] | None = None,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
@@ -1314,7 +1315,7 @@ def _write_session_entry(
     *,
     summary: _IngestBatchSummary,
     force_write: bool = False,
-    signature_cache: dict[str, list[tuple[str, str]]] | None = None,
+    signature_cache: LineageSignatureCache | dict[str, list[tuple[str, str]]] | None = None,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
@@ -1466,7 +1467,10 @@ def _drain_ready_session_entries(
     # signatures so a parent with K fork-children is computed once, not K times
     # (#2475, hotspot 1). Entries are invalidated when their own rows are
     # rewritten or re-extracted in this same batch.
-    signature_cache: dict[str, list[tuple[str, str]]] = {}
+    # The cache carries own and composed lineage signatures with a weighted
+    # byte bound. A plain dict remains accepted by lower-level/test callers as
+    # the explicit unbounded compatibility path.
+    signature_cache = LineageSignatureCache()
     if fresh_build and fresh_build_batch is None:
         fresh_build_batch = set()
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):
