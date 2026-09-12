@@ -2,6 +2,7 @@ from polylogue.archive.attachment.availability import (
     AttachmentAvailabilityState,
     resolve_attachment_availability,
 )
+from polylogue.daemon.webui_data import classify_attachment_state
 
 
 def test_acquisition_status_does_not_certify_availability() -> None:
@@ -59,3 +60,15 @@ def test_typed_unfetched_unknown_generation_and_unauthorized() -> None:
     assert unfetched.state is AttachmentAvailabilityState.UNFETCHED
     assert wrong_generation.reason == "wrong-generation"
     assert unauthorized.state is AttachmentAvailabilityState.UNAUTHORIZED
+
+
+def test_terminal_unavailable_is_distinct_from_unfetched() -> None:
+    result = resolve_attachment_availability(
+        blob_hash=None,
+        acquisition_status="unavailable",
+        verify=lambda _hash: True,
+    )
+    assert result.state is AttachmentAvailabilityState.UNAVAILABLE
+    assert result.reason == "provider-bytes-unavailable"
+    assert not result.can_fetch
+    assert classify_attachment_state(size_bytes=0, mime_type="text/plain", availability=result) == "missing-blob"

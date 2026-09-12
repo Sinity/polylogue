@@ -45,7 +45,7 @@ def classify_attachment_state(
     if availability is not None:
         state = getattr(availability, "state", availability)
         state = getattr(state, "value", state)
-        if state in {"missing", "unfetched", "unknown", "hash-mismatch", "unauthorized"}:
+        if state in {"missing", "unfetched", "unavailable", "unknown", "hash-mismatch", "unauthorized"}:
             return "missing-blob"
         if state != "available":
             return str(state)
