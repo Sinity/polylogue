@@ -12,7 +12,9 @@ from polylogue.operations.intake_adapters import (
     DaemonIntakeService,
     FileIntakeAdapter,
     HookSpoolIntakeAdapter,
+    RawMaterializationIntakeAdapter,
     build_intake_adapters,
+    discover_pending_raw_ids,
 )
 
 __all__ = [
@@ -20,6 +22,8 @@ __all__ = [
     "DaemonIntakeService",
     "FileIntakeAdapter",
     "HookSpoolIntakeAdapter",
+    "RawMaterializationIntakeAdapter",
+    "discover_pending_raw_ids",
     "CallbackIntakeAdapter",
     "build_intake_adapters",
 ]

@@ -299,14 +299,14 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
     ),
     # --- derived convergence: everything below writes index/embedding tiers
     _spec(
-        "raw_materialization_convergence",
-        owner="daemon.convergence",
-        trigger=ServiceTrigger.PERIODIC,
-        requires=(ServiceCapability.DERIVED_WRITES,),
-        profiles=(ServiceProfile.PRODUCTION,),
+        "fair_intake",
+        owner="daemon.intake",
+        trigger=ServiceTrigger.CONTINUOUS,
+        failure_policy=FailurePolicy.FAIL_DAEMON,
+        profiles=_WITH_INTAKE,
         readiness=ServiceReadiness.ON_FIRST_PASS,
-        status_component="raw_materialization",
-        cadence_s=60.0,
+        status_component="intake",
+        shutdown_deadline_s=5.0,
     ),
     _spec(
         "convergence_check",
@@ -413,15 +413,6 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
         cadence_s=3600.0,
-    ),
-    _spec(
-        "drive_source_catchup",
-        owner="daemon.sources",
-        trigger=ServiceTrigger.PERIODIC,
-        requires=(ServiceCapability.DERIVED_WRITES, ServiceCapability.SOURCE_CATCHUP),
-        profiles=_WITH_INTAKE,
-        status_component="source_catchup",
-        cadence_s=900.0,
     ),
     # --- acquisition
     _spec(
