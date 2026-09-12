@@ -434,10 +434,11 @@ class DerivationAdapter(Protocol):
     def publish(self, frame: DerivationFrame, replacement: Any) -> bool:
         """Atomically replace one key under the writer lease.
 
-        Returns False when the bound inputs moved under the computation; the
-        replacement is discarded and the key stays pending. Publishing anyway
-        is how stale output reaches an authoritative relation. Returning True
-        is a claim the kernel re-inspects, not a certification.
+        Returns False when the bound inputs moved under the computation,
+        including when a required key ceased to be required. The replacement
+        is discarded and the key stays pending. Publishing anyway is how stale
+        output reaches an authoritative relation. Returning True is a claim
+        the kernel re-inspects, not a certification.
         """
         ...
 
@@ -935,15 +936,15 @@ class _Pass:
             )
             return
         if after is KeyStatus.MISSING and expected is KeyStatus.VALID:
-            # A required key may disappear after discovery while its prepared
-            # publisher correctly retires the old partition.  That is a moved
-            # binding, not a failed write: a future no-hint sweep decides
-            # whether a later admission recreated the key.
+            # A publication that rechecks the authoritative required relation
+            # returns False when this key ceased to be required.  A successful
+            # publication that still leaves a required output missing is a
+            # broken publication, not a retryable race.
             self.record(
                 KeyOutcome(
                     key=derivation_key,
-                    outcome=Outcome.PENDING,
-                    reason=PendingReason.BINDING_MOVED,
+                    outcome=Outcome.FAILED,
+                    error="publish reported success but the required output remains missing",
                     elapsed_s=elapsed,
                 )
             )
