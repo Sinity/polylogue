@@ -636,7 +636,7 @@ def test_control_result_metadata_comes_from_the_durable_receipt_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Using admission-time metadata after a recovery read returns the obsolete generation."""
+    """Using admission-time metadata after a recovery read returns obsolete schema evidence."""
     from dataclasses import replace
 
     import polylogue.operations.daemon_execution as execution
@@ -659,7 +659,9 @@ def test_control_result_metadata_comes_from_the_durable_receipt_read(
 
         def earlier_observation(root: Path) -> OperationControlRead:
             snapshot = observe_control_authority(root)
-            return replace(snapshot, identity=replace(snapshot.identity, active_generation="prior-generation"))
+            return replace(
+                snapshot, schema_versions={**snapshot.schema_versions, "source": snapshot.schema_versions["source"] - 1}
+            )
 
         monkeypatch.setattr(execution, "observe_control_authority", earlier_observation)
         recovered = stack.client.operation(
@@ -669,4 +671,5 @@ def test_control_result_metadata_comes_from_the_durable_receipt_read(
         )
         assert recovered is not None and recovered["outcome"] == "completed"
         assert recovered["generation"]["id"] == accepted["generation"]["id"]
+        assert recovered["schema_versions"] == {tier: accepted["schema_versions"][tier] for tier in ("source", "audit")}
         assert recovered["result"]["reference"] == accepted["accepted_reference"]
