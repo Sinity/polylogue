@@ -18,15 +18,16 @@ from __future__ import annotations
 import inspect
 import logging
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeVar, cast, overload, runtime_checkable
 
 from polylogue.daemon.observation import Observation, ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 __all__ = [
     "AdmissionOutcome",
@@ -260,7 +261,7 @@ class FairIntakeDispatcher:
 
         limit = min(spec.page_size, runtime.deficit)
         try:
-            page = list(await _maybe_await(spec.adapter.discover(limit=limit)))
+            page: list[IntakeItem] = list(await _maybe_await(spec.adapter.discover(limit=limit)))
         except Exception as exc:
             logger.warning("intake: class %s discovery failed: %s", spec.name, exc, exc_info=True)
             return IntakeClassReport(name=spec.name, reason=f"discovery failed: {exc}")
@@ -394,8 +395,16 @@ class FairIntakeDispatcher:
             )
 
 
+@overload
+async def _maybe_await(value: Awaitable[_T]) -> _T: ...
+
+
+@overload
+async def _maybe_await(value: _T) -> _T: ...
+
+
 async def _maybe_await(value: object) -> object:
     """Await an adapter result while keeping tiny synchronous test doubles useful."""
     if inspect.isawaitable(value):
-        return await value
+        return await cast(Awaitable[object], value)
     return value
