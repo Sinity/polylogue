@@ -34,8 +34,8 @@ ArgumentKind = Literal["string", "integer", "boolean", "array", "object"]
 TARGET_SCHEMA_STATUS: SchemaStatus = "live-verified"
 CLIENTS: tuple[AgentClient, ...] = ("claude-code", "codex", "gemini", "hermes")
 GUIDANCE_MODES: tuple[GuidanceMode, ...] = ("full", "mcp-only", "off")
-DEFAULT_READ_TOOLS: tuple[str, ...] = ("query", "read", "get", "explain", "context", "status")
-PRIVILEGED_TOOLS: tuple[str, ...] = ("write", "judge", "run", "maintenance")
+DEFAULT_READ_TOOLS: tuple[str, ...] = tuple(item.name for item in TARGET_DEFAULT_READ_ALGEBRA)
+PRIVILEGED_TOOLS: tuple[str, ...] = tuple(item.name for item in PRIVILEGED_ALGEBRA)
 ALL_TARGET_TOOLS: tuple[str, ...] = (*DEFAULT_READ_TOOLS, *PRIVILEGED_TOOLS)
 CONTINUATION_SENTINEL = "$continuation"
 

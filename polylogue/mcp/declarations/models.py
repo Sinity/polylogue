@@ -66,6 +66,25 @@ class MCPResultSemantics(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class MCPTransactionDeclaration:
+    """One executable target transaction projected from a tool declaration.
+
+    This is deliberately a projection, rather than a second registration
+    authority.  The MCP tool declaration owns handler identity, capability
+    gating, examples, and output contract; this narrower record is the
+    protocol/discovery view consumed by the agent manual and capability
+    resource.
+    """
+
+    name: str
+    verb: MCPVerb
+    required_capability: MCPCapabilityFlag | None
+    object_kinds: tuple[str, ...]
+    result_semantics: tuple[MCPResultSemantics, ...]
+    purpose: str
+
+
+@dataclass(frozen=True, slots=True)
 class MCPHandlerBinding:
     """Where the live MCPServer handler is registered and implemented."""
 
@@ -83,6 +102,7 @@ class MCPToolDeclaration:
     description: str
     required_capability: MCPCapabilityFlag | None
     registration: MCPHandlerBinding
+    transaction: MCPTransactionDeclaration | None = None
 
     @property
     def minimal_arguments(self) -> dict[str, object]:
@@ -103,22 +123,17 @@ class MCPToolDeclaration:
     def __post_init__(self) -> None:
         if self.name != self.kernel.public_name:
             raise ValueError(f"MCP declaration name {self.name!r} != kernel public name {self.kernel.public_name!r}")
+        if self.transaction is not None:
+            if self.transaction.name != self.name:
+                raise ValueError(
+                    f"MCP transaction name {self.transaction.name!r} != tool declaration name {self.name!r}"
+                )
+            if self.transaction.required_capability != self.required_capability:
+                raise ValueError(f"MCP transaction capability for {self.name!r} does not match its tool declaration")
 
     @property
     def declaration_id(self) -> str:
         return self.kernel.declaration_id
-
-
-@dataclass(frozen=True, slots=True)
-class MCPTransactionDeclaration:
-    """One target protocol-native transaction in the bounded discovery algebra."""
-
-    name: str
-    verb: MCPVerb
-    required_capability: MCPCapabilityFlag | None
-    object_kinds: tuple[str, ...]
-    result_semantics: tuple[MCPResultSemantics, ...]
-    purpose: str
 
 
 @dataclass(frozen=True, slots=True)

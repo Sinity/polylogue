@@ -51,6 +51,10 @@ class _ToolRow:
     output_kind: str
     operation_owner: str
     contract_fields: tuple[str, ...] = ()
+    target_object_kinds: tuple[str, ...] = ()
+    target_result_semantics: tuple[MCPResultSemantics, ...] = ()
+    target_purpose: str = ""
+    target_visible: bool = True
 
 
 def _compatibility(row: _ToolRow) -> CompatibilityKey:
@@ -77,6 +81,13 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("expression", "messages where text:needle"),),
         "envelope:items,total,unit,limit,offset",
         "polylogue.api.Polylogue.query_units",
+        target_result_semantics=(
+            MCPResultSemantics.EXHAUSTIVE_PAGE,
+            MCPResultSemantics.TOP_K,
+            MCPResultSemantics.SAMPLE,
+            MCPResultSemantics.AGGREGATE,
+        ),
+        target_purpose="Execute a declared DSL or typed plan with explicit result semantics and continuation.",
     ),
     _ToolRow(
         "read",
@@ -91,6 +102,13 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("ref", "session:codex-session:demo"),),
         "single_object",
         "polylogue.api.Polylogue.resolve_ref",
+        target_object_kinds=("object-ref", "evidence-ref"),
+        target_result_semantics=(
+            MCPResultSemantics.SINGLE_OBJECT,
+            MCPResultSemantics.EXHAUSTIVE_PAGE,
+            MCPResultSemantics.BOUNDED_CONTEXT,
+        ),
+        target_purpose="Read any stable archive ref through a declared projection/view.",
     ),
     _ToolRow(
         "get",
@@ -105,6 +123,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("ref", "session:codex-session:demo"),),
         "single_object",
         "polylogue.api.Polylogue.resolve_ref",
+        target_purpose="Resolve one exact object identity when a generic read would add ambiguity.",
     ),
     _ToolRow(
         "explain",
@@ -119,6 +138,8 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("subject", "capability"),),
         "single_object",
         "polylogue.api.Polylogue.explain_query_expression",
+        target_object_kinds=("query", "object-ref", "capability"),
+        target_purpose="Discover grammar, fields, values, plans, refs, authority, and recovery routes.",
     ),
     _ToolRow(
         "context",
@@ -133,6 +154,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("intent", "resume"),),
         "single_object",
         "polylogue.api.Polylogue.context_image_payload",
+        target_purpose="Compile and retrieve policy-gated bounded context plus receipts.",
     ),
     _ToolRow(
         "status",
@@ -147,6 +169,9 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("scope", "archive"),),
         "single_object",
         "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.stats",
+        target_object_kinds=("status", "receipt"),
+        target_result_semantics=(MCPResultSemantics.SINGLE_OBJECT, MCPResultSemantics.AGGREGATE),
+        target_purpose="Read archive, source, embedding, coordination, and operation status.",
     ),
     _ToolRow(
         "write",
@@ -164,6 +189,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("operation", "add_tag"), ("session_id", "test:conv-mutation"), ("tag", "review")),
         "operation_result",
         "mutate-write",
+        target_purpose="Apply a declaration-owned mutation after shared authorization.",
     ),
     _ToolRow(
         "record_work_event",
@@ -178,6 +204,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("session_id", "codex-session:demo"), ("event_type", "tool_run"), ("event_id", "evt-1")),
         "operation_result",
         "polylogue.api.Polylogue.record_work_event",
+        target_visible=False,
     ),
     _ToolRow(
         "emit_decision",
@@ -192,6 +219,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("session_id", "codex-session:demo"), ("decision", "keep"), ("event_id", "evt-2")),
         "operation_result",
         "polylogue.api.Polylogue.emit_decision",
+        target_visible=False,
     ),
     _ToolRow(
         "judge",
@@ -206,6 +234,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("candidate_ref", "assertion:contract-candidate"), ("decision", "accept")),
         "envelope:items,applied_count,failed_count",
         "polylogue.api.Polylogue.judge_assertion_candidates",
+        target_purpose="Accept, reject, defer, or supersede candidates without collapsing candidate state.",
     ),
     _ToolRow(
         "run",
@@ -220,6 +249,9 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("ref", "saved-view:contract-view"),),
         "envelope:total",
         "mutate-run",
+        target_object_kinds=("saved-query", "recipe", "result-set"),
+        target_result_semantics=(MCPResultSemantics.EXHAUSTIVE_PAGE, MCPResultSemantics.MUTATION),
+        target_purpose="Execute a saved query or governed recipe ref.",
     ),
     _ToolRow(
         "maintenance",
@@ -236,6 +268,8 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         (("operation", "recovery_status"),),
         "operation_result",
         "mutate-rebuild-insights",
+        target_object_kinds=("maintenance-plan", "maintenance-operation"),
+        target_purpose="Preview, authorize, execute, inspect, and reconcile maintenance operations.",
     ),
 )
 
@@ -290,6 +324,18 @@ def _cutover_declaration(row: _ToolRow) -> MCPToolDeclaration:
         description=row.description,
         required_capability=row.required_capability,
         registration=MCPHandlerBinding(module=row.module, symbol=row.name, registrar=row.registrar),
+        transaction=(
+            MCPTransactionDeclaration(
+                name=row.name,
+                verb=row.verb,
+                required_capability=row.required_capability,
+                object_kinds=row.target_object_kinds or row.object_kinds,
+                result_semantics=row.target_result_semantics or (row.result_semantics,),
+                purpose=row.target_purpose or row.description,
+            )
+            if row.target_visible
+            else None
+        ),
     )
 
 
@@ -337,100 +383,18 @@ def declared_tool_names(capabilities: MCPCapabilities = _ALL_CAPABILITIES_ENABLE
     )
 
 
-TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
-    MCPTransactionDeclaration(
-        name="query",
-        verb=MCPVerb.QUERY,
-        required_capability=None,
-        object_kinds=("query", "result-set"),
-        result_semantics=(
-            MCPResultSemantics.EXHAUSTIVE_PAGE,
-            MCPResultSemantics.TOP_K,
-            MCPResultSemantics.SAMPLE,
-            MCPResultSemantics.AGGREGATE,
-        ),
-        purpose="Execute a declared DSL or typed plan with explicit result semantics and continuation.",
-    ),
-    MCPTransactionDeclaration(
-        name="read",
-        verb=MCPVerb.READ,
-        required_capability=None,
-        object_kinds=("object-ref", "evidence-ref"),
-        result_semantics=(
-            MCPResultSemantics.SINGLE_OBJECT,
-            MCPResultSemantics.EXHAUSTIVE_PAGE,
-            MCPResultSemantics.BOUNDED_CONTEXT,
-        ),
-        purpose="Read any stable archive ref through a declared projection/view.",
-    ),
-    MCPTransactionDeclaration(
-        name="get",
-        verb=MCPVerb.GET,
-        required_capability=None,
-        object_kinds=("object-ref",),
-        result_semantics=(MCPResultSemantics.SINGLE_OBJECT,),
-        purpose="Resolve one exact object identity when a generic read would add ambiguity.",
-    ),
-    MCPTransactionDeclaration(
-        name="explain",
-        verb=MCPVerb.EXPLAIN,
-        required_capability=None,
-        object_kinds=("query", "object-ref", "capability"),
-        result_semantics=(MCPResultSemantics.SINGLE_OBJECT,),
-        purpose="Discover grammar, fields, values, plans, authority, and recovery routes.",
-    ),
-    MCPTransactionDeclaration(
-        name="context",
-        verb=MCPVerb.CONTEXT,
-        required_capability=None,
-        object_kinds=("context-snapshot", "context-delivery"),
-        result_semantics=(MCPResultSemantics.BOUNDED_CONTEXT,),
-        purpose="Compile and retrieve policy-gated bounded context plus receipts.",
-    ),
-    MCPTransactionDeclaration(
-        name="status",
-        verb=MCPVerb.STATUS,
-        required_capability=None,
-        object_kinds=("status", "receipt"),
-        result_semantics=(MCPResultSemantics.SINGLE_OBJECT, MCPResultSemantics.AGGREGATE),
-        purpose="Read archive, source, embedding, coordination, and operation status.",
-    ),
-)
+def _target_algebra(*, privileged: bool) -> tuple[MCPTransactionDeclaration, ...]:
+    """Project the executable target protocol from the MCP tool declarations."""
 
-PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
-    MCPTransactionDeclaration(
-        name="write",
-        verb=MCPVerb.WRITE,
-        required_capability="write",
-        object_kinds=("object-ref", "assertion"),
-        result_semantics=(MCPResultSemantics.MUTATION,),
-        purpose="Apply a declaration-owned mutation after shared authorization.",
-    ),
-    MCPTransactionDeclaration(
-        name="judge",
-        verb=MCPVerb.JUDGE,
-        required_capability="judge",
-        object_kinds=("assertion-candidate", "judgment"),
-        result_semantics=(MCPResultSemantics.MUTATION,),
-        purpose="Accept, reject, defer, or supersede candidates without collapsing candidate state.",
-    ),
-    MCPTransactionDeclaration(
-        name="run",
-        verb=MCPVerb.RUN,
-        required_capability="write",
-        object_kinds=("saved-query", "recipe", "result-set"),
-        result_semantics=(MCPResultSemantics.EXHAUSTIVE_PAGE, MCPResultSemantics.MUTATION),
-        purpose="Execute a saved query or governed recipe ref.",
-    ),
-    MCPTransactionDeclaration(
-        name="maintenance",
-        verb=MCPVerb.MAINTENANCE,
-        required_capability="maintenance",
-        object_kinds=("maintenance-plan", "maintenance-operation"),
-        result_semantics=(MCPResultSemantics.MAINTENANCE,),
-        purpose="Preview, authorize, execute, inspect, and reconcile maintenance operations.",
-    ),
-)
+    return tuple(
+        declaration.transaction
+        for declaration in MCP_TOOL_DECLARATIONS
+        if declaration.transaction is not None and (declaration.required_capability is not None) is privileged
+    )
+
+
+TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = _target_algebra(privileged=False)
+PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = _target_algebra(privileged=True)
 
 TARGET_RESOURCES: Final[tuple[MCPResourceDeclaration, ...]] = tuple(
     MCPResourceDeclaration(
