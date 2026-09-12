@@ -43,17 +43,17 @@ class FakeAdapter:
         self.discover_calls: list[int] = []
         self._outcome_for = outcome_for or (lambda _item: AdmissionResult(AdmissionOutcome.ADMITTED))
 
-    def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+    async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
         self.discover_calls.append(limit)
         return [IntakeItem(item_id=name, class_name=self.class_name) for name in self.pending[:limit]]
 
-    def admit(self, item: IntakeItem) -> AdmissionResult:
+    async def admit(self, item: IntakeItem) -> AdmissionResult:
         result = self._outcome_for(item)
         if result.outcome is AdmissionOutcome.ADMITTED:
             self.admitted.append(item.item_id)
         return result
 
-    def acknowledge(self, item: IntakeItem) -> None:
+    async def acknowledge(self, item: IntakeItem) -> None:
         self.acknowledged.append(item.item_id)
         # Atomic and idempotent: acknowledging twice releases one entry.
         if item.item_id in self.pending:
@@ -280,7 +280,7 @@ async def test_a_halted_class_survives_a_restart(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_a_discovery_failure_reports_rather_than_raising() -> None:
     class BrokenAdapter(FakeAdapter):
-        def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
             raise OSError("spool directory vanished")
 
     live = FakeAdapter("codex", ["x0"])
