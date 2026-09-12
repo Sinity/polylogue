@@ -38,12 +38,15 @@ from polylogue.sources.revision_backfill import (
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
 from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_retention_authority
+from polylogue.storage.sqlite import runtime_indexes, schema_bootstrap
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.revision_backfill_benchmark import (
     REVISION_CHAIN_SHAPE,
@@ -115,6 +118,94 @@ def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
 
 def _bundle(*sessions: dict[str, object]) -> bytes:
     return json.dumps(list(sessions), sort_keys=True).encode()
+
+
+def test_owned_empty_generation_uses_cold_build_policy_and_finishes_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real replay route gets both cold-build flags and restores its reader shape.
+
+    Anti-vacuity: the recording wrapper proves the production caller actually
+    removed the deferred indexes before replay; the final-schema assertion
+    proves the same route recreated them before it returned. Repeating the
+    same session through the fresh writer is separately refused by
+    ``test_fresh_build_refuses_duplicate_session_instead_of_replacing``.
+    """
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("cold-generation", "hello", "world")),
+            source_path="export/conversations.json",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                logical_source_key="chatgpt-export:cold-generation",
+                kind=RawRevisionKind.FULL,
+                source_revision="cold-generation-v1",
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        # The frozen candidate validates the classifier's persisted
+        # BYTE_PROVEN lineage, including a singleton full revision's own
+        # baseline raw id.  Seed the fixture through that classifier instead
+        # of asserting an incomplete authority row directly.
+        archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:cold-generation")
+    census_historical_revision_evidence(tmp_path)
+
+    generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="cold-build-test")
+    generation_root = Path(generation.index_path).parent
+    deferred_calls: list[tuple[str, ...]] = []
+    stamped_tiers: list[str] = []
+    original_defer = runtime_indexes.defer_secondary_indexes_sync
+    original_stamp = schema_bootstrap.stamp_derived_schema_identity
+
+    def record_defer(conn: sqlite3.Connection) -> tuple[str, ...]:
+        dropped = original_defer(conn)
+        deferred_calls.append(dropped)
+        return dropped
+
+    def record_stamp(conn: sqlite3.Connection, tier: str) -> None:
+        stamped_tiers.append(tier)
+        original_stamp(conn, tier)
+
+    monkeypatch.setattr(runtime_indexes, "defer_secondary_indexes_sync", record_defer)
+    monkeypatch.setattr(schema_bootstrap, "stamp_derived_schema_identity", record_stamp)
+    backfill_historical_revision_evidence(
+        generation_root,
+        owned_inactive_generation=(generation.generation_id, generation.owner_id),
+    )
+
+    with sqlite3.connect(generation.index_path) as conn:
+        index_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        assert set(DEFERRED_SECONDARY_INDEX_NAMES) <= index_names
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+        assert conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+    assert deferred_calls == [DEFERRED_SECONDARY_INDEX_NAMES]
+    assert stamped_tiers == ["index"]
+
+
+def test_owned_nonempty_generation_refuses_cold_build_deferral(tmp_path: Path) -> None:
+    """A resumed candidate is never silently treated as a fresh writer target."""
+    bootstrap_archive_root(tmp_path)
+    generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="nonempty-cold-build-test")
+    generation_root = Path(generation.index_path).parent
+    with ArchiveStore.open_owned_inactive_generation(
+        generation_root,
+        generation_id=generation.generation_id,
+        owner_id=generation.owner_id,
+    ) as archive:
+        archive._conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES ('present', 'codex-session', zeroblob(32))"
+        )
+        archive.commit()
+
+    with pytest.raises(ValueError, match="empty archive generation"):
+        backfill_historical_revision_evidence(
+            generation_root,
+            owned_inactive_generation=(generation.generation_id, generation.owner_id),
+        )
 
 
 def test_browser_snapshot_fidelity_derives_from_parser_ingest_flags() -> None:

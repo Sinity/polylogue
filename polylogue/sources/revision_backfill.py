@@ -43,6 +43,7 @@ from polylogue.archive.session_revision_membership import MembershipRevision, cl
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamp_authority import normalize_session_timestamps
+from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
 from polylogue.pipeline.services.process_pool import (
@@ -2455,6 +2456,24 @@ def backfill_historical_revision_evidence(
     stage_timings: dict[str, float] = {}
     whale_envelope: dict[str, int] = {}
     logical_keys: set[str] = set()
+    # A full replay into an inactive candidate is the production cold-build boundary.  The
+    # policy is deliberately evaluated once here, rather than letting the
+    # opener and writer independently infer safety from incidental flags.
+    # Opening with index deferral proves emptiness before either optimization
+    # is used; a resumed/non-empty candidate is refused before any mutation.
+    cold_build_shape = select_cold_build_shape(
+        destination=WriteDestination(
+            tier="index",
+            owned_rebuildable_generation=owned_inactive_generation is not None and selected_raw_ids is None,
+        ),
+        archive_empty=owned_inactive_generation is not None and selected_raw_ids is None,
+    )
+    fresh_build = cold_build_shape.fresh_build
+    if fresh_build:
+        # The same empty-generation proof licenses both the writer shortcut
+        # and one archive-wide finalization at the readiness boundary.
+        bulk_build = True
+    fresh_build_batch: set[str] | None = set() if fresh_build else None
     # The REPLAY phase's batch size is separately tunable
     # (``replay_commit_batch_size``; ``None`` inherits ``commit_batch_size``):
     # each replayed cohort may flush blob-publication receipts on a SEPARATE
@@ -2476,6 +2495,7 @@ def backfill_historical_revision_evidence(
             archive_root,
             generation_id=owned_inactive_generation[0],
             owner_id=owned_inactive_generation[1],
+            defer_secondary_indexes=cold_build_shape.defer_secondary_indexes,
         )
         if owned_inactive_generation is not None
         else ArchiveStore.open_existing(archive_root, read_only=False)
@@ -2718,6 +2738,8 @@ def backfill_historical_revision_evidence(
                         manage_transaction=not replay_batched,
                         bulk_fts=bulk_fts,
                         bulk_build=bulk_build,
+                        fresh_build=fresh_build,
+                        fresh_build_batch=fresh_build_batch,
                         prepared_by_raw_id=prepared_by_raw_id or None,
                     )
                 except sqlite3.IntegrityError as exc:
@@ -2840,6 +2862,8 @@ def backfill_historical_revision_evidence(
                         manage_transaction=not replay_batched,
                         bulk_fts=bulk_fts,
                         bulk_build=bulk_build,
+                        fresh_build=fresh_build,
+                        fresh_build_batch=fresh_build_batch,
                     )
                 except sqlite3.IntegrityError as exc:
                     raise sqlite3.IntegrityError(
@@ -2854,6 +2878,29 @@ def backfill_historical_revision_evidence(
             if decode_prefetcher is not None:
                 stage_timings.update(decode_prefetcher.close())
         if replay_batched:
+            archive.commit()
+        if fresh_build:
+            # A candidate is publishable only after its final reader schema
+            # and all build-deferred derived surfaces exist.  Keep this one
+            # boundary in the production replay route; callers cannot publish
+            # a permanently unindexed generation by forgetting a helper.
+            archive.restore_deferred_secondary_indexes()
+            from polylogue.storage.fts.fts_lifecycle import (
+                rebuild_command_trigram_index_sync,
+                rebuild_fts_index_sync,
+            )
+            from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
+            from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
+
+            rebuild_fts_index_sync(archive._conn)
+            rebuild_command_trigram_index_sync(archive._conn)
+            rebuild_all_action_pairs_sync(archive._conn)
+            rebuild_all_delegation_facts_sync(archive._conn)
+            # The candidate's identity describes the completed reader shape,
+            # not the intentionally index-deferred write phase.
+            from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+
+            stamp_derived_schema_identity(archive._conn, "index")
             archive.commit()
         if stage_timings:
             stage_timings["total"] = time.perf_counter() - census_started
