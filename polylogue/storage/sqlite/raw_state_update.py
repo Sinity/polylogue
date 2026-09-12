@@ -6,6 +6,7 @@ import json
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.storage.raw.models import UNSET, RawSessionStateUpdate, _RawStateUnset
+from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
 
 
@@ -44,7 +45,9 @@ def compile_raw_state_update(
     if state.validation_status is not UNSET:
         status = state.validation_status
         set_clauses.append("validation_status = ?")
-        params.append(status.value if isinstance(status, ValidationStatus) else None)
+        params.append(
+            require_vocabulary(status, ValidationStatus, field="validation_status") if status is not None else None
+        )
     if state.validation_error is not UNSET:
         set_clauses.append("validation_error = ?")
         params.append(
@@ -57,15 +60,20 @@ def compile_raw_state_update(
     if state.validation_mode is not UNSET:
         mode = state.validation_mode
         set_clauses.append("validation_mode = ?")
-        params.append(mode.value if isinstance(mode, ValidationMode) else None)
+        params.append(require_vocabulary(mode, ValidationMode, field="validation_mode") if mode is not None else None)
     if state.payload_provider is not UNSET or state.validation_provider is not UNSET:
-        provider: Provider | None = None
-        if isinstance(state.payload_provider, Provider):
-            provider = state.payload_provider
-        elif isinstance(state.validation_provider, Provider):
-            provider = state.validation_provider
+        payload_provider = (
+            require_vocabulary(state.payload_provider, Provider, field="payload_provider")
+            if state.payload_provider is not UNSET and state.payload_provider is not None
+            else None
+        )
+        validation_provider = (
+            require_vocabulary(state.validation_provider, Provider, field="validation_provider")
+            if state.validation_provider is not UNSET and state.validation_provider is not None
+            else None
+        )
         set_clauses.append("detected_provider = COALESCE(?, detected_provider)")
-        params.append(provider.value if provider is not None else None)
+        params.append(payload_provider or validation_provider)
     if state.detection_warnings is not UNSET:
         warnings = state.detection_warnings
         set_clauses.append("detection_warnings_json = ?")
