@@ -147,6 +147,8 @@ def _parse_state_db_file(state_path: Path) -> dict[str, str]:
 def resolve_retained_codex_state_titles(
     archive_root: Path,
     thread_ids: Sequence[str],
+    *,
+    source_path: str | None = None,
 ) -> CodexHistoryTitles:
     """Read projected Codex thread titles for ``thread_ids`` out of ``index.db``.
 
@@ -175,7 +177,7 @@ def resolve_retained_codex_state_titles(
     try:
         from polylogue.sources.codex_state_projection import read_thread_titles
 
-        return read_thread_titles(conn, thread_ids=thread_ids)
+        return read_thread_titles(conn, thread_ids=thread_ids, source_path=source_path)
     finally:
         conn.close()
 

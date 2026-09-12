@@ -16,8 +16,11 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
+from polylogue.sources.assembly_codex import resolve_retained_codex_state_titles
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.revision_backfill import _enrich_retained_parse_results
 from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
@@ -46,7 +49,13 @@ def _rollout_bytes() -> bytes:
     return ("\n".join(json.dumps(line) for line in lines) + "\n").encode("utf-8")
 
 
-def _write_state_db(path: Path) -> None:
+def _write_state_db(
+    path: Path,
+    *,
+    thread_id: str = _THREAD_ID,
+    title: str = _CURATED_TITLE,
+    edge: tuple[str, str, str] | None = None,
+) -> None:
     with sqlite3.connect(path) as conn:
         conn.executescript(
             """
@@ -63,8 +72,10 @@ def _write_state_db(path: Path) -> None:
         conn.execute(
             "INSERT INTO threads (id, title, cwd, created_at_ms, updated_at_ms, source, model, "
             "agent_nickname, agent_role, archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (_THREAD_ID, _CURATED_TITLE, "/repo", 1000, 2000, "cli", "gpt-synthetic", None, None, 0),
+            (thread_id, title, "/repo", 1000, 2000, "cli", "gpt-synthetic", None, None, 0),
         )
+        if edge is not None:
+            conn.execute("INSERT INTO thread_spawn_edges VALUES (?, ?, ?)", edge)
         conn.commit()
 
 
@@ -95,6 +106,30 @@ def _archive_with_retained_state_export(tmp_path: Path) -> Path:
         )
         archive.commit()
     return archive_root
+
+
+def _record_state_export(archive_root: Path, state_path: Path, *, acquired_at_ms: int) -> None:
+    """Drive a retained state export through its production terminal route."""
+    store = BlobStore(archive_root / "blob")
+    export = snapshot_sqlite_to_blob(state_path, store)
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=store.blob_path(export.blob_hash).read_bytes(),
+            source_path=str(state_path),
+            acquired_at_ms=acquired_at_ms,
+        )
+        record_codex_state_snapshot_terminal(
+            archive,
+            raw_id,
+            state_path=store.blob_path(export.blob_hash),
+            state_kind="thread_state",
+            source_path=str(state_path),
+            acquired_at_ms=acquired_at_ms,
+            censused_at_ms=acquired_at_ms,
+            blob_hash=export.blob_hash,
+        )
+        archive.commit()
 
 
 def test_pipeline_ingest_resolves_the_projected_state_title(tmp_path: Path) -> None:
@@ -164,3 +199,72 @@ def test_retained_replay_resolves_the_projected_state_title(tmp_path: Path) -> N
     enriched = results[raw_id][0]  # type: ignore[index]
     assert enriched[0].title == _CURATED_TITLE
     assert enriched[0].title_source is TitleSource.ORIGIN
+
+
+@pytest.mark.parametrize("initial_order", (("a", "b"), ("b", "a")))
+def test_state_projection_keeps_disjoint_roots_and_omitted_evidence(
+    tmp_path: Path, initial_order: tuple[str, str]
+) -> None:
+    """Production state admission never lets one root erase another's rows.
+
+    A later snapshot in root A is complete only for A: it explicitly updates
+    ``a-new`` while the omitted thread/edge stays readable as archived
+    evidence.  Reversing the two initial acquisitions yields the same rows.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    root_a = tmp_path / "codex-a"
+    root_b = tmp_path / "codex-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    initial_a = root_a / "state_5.sqlite"
+    initial_b = root_b / "state_5.sqlite"
+    _write_state_db(initial_a, thread_id="a-old", title="A old", edge=("a-old", "a-child", "spawned"))
+    _write_state_db(initial_b, thread_id="b-thread", title="B title", edge=("b-thread", "b-child", "closed"))
+
+    initial_exports = {"a": initial_a, "b": initial_b}
+    for sequence, root in enumerate(initial_order, start=1):
+        _record_state_export(archive_root, initial_exports[root], acquired_at_ms=sequence * 100)
+    initial_a.unlink()
+    _write_state_db(initial_a, thread_id="a-new", title="A new")
+    _record_state_export(archive_root, initial_a, acquired_at_ms=300)
+
+    with sqlite3.connect(archive_root / "index.db") as index_conn:
+        threads = index_conn.execute(
+            "SELECT thread_id, title, source_present FROM codex_thread_state ORDER BY thread_id"
+        ).fetchall()
+        edges = index_conn.execute(
+            "SELECT parent_thread_id, child_thread_id, source_present "
+            "FROM codex_thread_spawn_edges ORDER BY parent_thread_id"
+        ).fetchall()
+    assert threads == [("a-new", "A new", 1), ("a-old", "A old", 0), ("b-thread", "B title", 1)]
+    assert edges == [("a-old", "a-child", 0), ("b-thread", "b-child", 1)]
+    initial_a.unlink()
+    initial_b.unlink()
+    assert resolve_retained_codex_state_titles(
+        archive_root, ["a-old"], source_path=str(root_a / "sessions" / "rollout-a-old.jsonl")
+    ) == {"a-old": "A old"}
+
+
+def test_state_projection_uses_receipt_order_for_a_b_a_observations(tmp_path: Path) -> None:
+    """A re-observed old payload is newer evidence, not its first acquisition."""
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    state_path = tmp_path / "codex" / "state_5.sqlite"
+    state_path.parent.mkdir()
+    _write_state_db(state_path, thread_id="thread", title="A title")
+    _record_state_export(archive_root, state_path, acquired_at_ms=100)
+    state_path.unlink()
+    _write_state_db(state_path, thread_id="thread", title="B title")
+    _record_state_export(archive_root, state_path, acquired_at_ms=200)
+    state_path.unlink()
+    _write_state_db(state_path, thread_id="thread", title="A title")
+    _record_state_export(archive_root, state_path, acquired_at_ms=300)
+
+    assert resolve_retained_codex_state_titles(
+        archive_root, ["thread"], source_path=str(state_path.parent / "sessions" / "rollout-thread.jsonl")
+    ) == {"thread": "A title"}
+    with sqlite3.connect(archive_root / "index.db") as index_conn:
+        assert index_conn.execute(
+            "SELECT observed_at_ms FROM codex_thread_state WHERE thread_id = 'thread'"
+        ).fetchone() == (300,)
