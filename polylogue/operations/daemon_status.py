@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -23,7 +24,20 @@ if TYPE_CHECKING:
 
 _TIER_STATUS_TABLES: dict[str, tuple[str, ...]] = {
     "source": ("raw_sessions", "raw_artifacts", "raw_membership_census", "raw_session_memberships"),
-    "index": ("sessions", "messages", "blocks", "messages_fts", "session_profiles", "work_events"),
+    # These compatibility relations are query-time views after the #4630
+    # derived-table collapse.  Keep them in the status inventory: a declared
+    # tier member must be counted even when it is not a storage table.
+    "index": (
+        "sessions",
+        "messages",
+        "blocks",
+        "actions",
+        "messages_fts",
+        "session_profiles",
+        "work_events",
+        "threads",
+        "thread_sessions",
+    ),
     "embeddings": ("embedding_status", "message_embeddings_meta", "embedding_failures"),
     "user": ("assertions", "settings", "annotation_schemas"),
     "audit": ("operation_previews", "operation_authorizations", "operation_attempts"),
@@ -277,11 +291,25 @@ def _archive_tiers(archive: ArchiveStore, conn: sqlite3.Connection) -> dict[str,
         versions = archive.operation_schema_versions or {}
         version = versions.get(tier.value) if exists else None
         expected = ARCHIVE_VERSION_BY_TIER[tier]
-        table_counts = {
-            table: int(conn.execute(f"SELECT COUNT(*) FROM {alias}.{table}").fetchone()[0] or 0)
-            for table in _TIER_STATUS_TABLES[tier.value]
-            if exists and _table_exists(conn, table, schema=alias)
-        }
+        table_counts: dict[str, int] = {}
+        table_count_precision: dict[str, str] = {}
+        if exists:
+            for table in _TIER_STATUS_TABLES[tier.value]:
+                if not _table_exists(conn, table, schema=alias):
+                    continue
+                row: Any = None
+                # Keep a present but unreadable relation visible as
+                # unavailable rather than fabricating a measured zero or
+                # silently dropping a declared status member. COUNT(*) on a
+                # valid relation always returns one row, so ``None`` here is
+                # the typed unavailable marker.
+                with suppress(sqlite3.Error):
+                    row = conn.execute(f"SELECT COUNT(*) FROM {alias}.{table}").fetchone()
+                if row is None:
+                    table_count_precision[table] = "unavailable"
+                    continue
+                table_counts[table] = int(row[0] or 0) if row is not None else 0
+                table_count_precision[table] = "exact"
         result[tier.value] = {
             "path": str(archive.archive_root / f"{tier.value}.db"),
             "exists": exists,
@@ -290,7 +318,7 @@ def _archive_tiers(archive: ArchiveStore, conn: sqlite3.Connection) -> dict[str,
             "user_version": version,
             "version_status": "ok" if version == expected else "missing" if not exists else "mismatch",
             "table_counts": table_counts,
-            "table_count_precision": dict.fromkeys(table_counts, "exact"),
+            "table_count_precision": table_count_precision,
             "file_metadata": {
                 "state": "not_observed",
                 "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata",

@@ -470,6 +470,42 @@ class TestArchiveOneTierStatus:
         assert index_result["table_counts"]["sessions"] == 2
         assert index_result["table_counts"]["messages"] == 1
 
+    def test_table_counts_include_view_backed_index_relations(self, tmp_path: Path) -> None:
+        """Declared compatibility views are counted alongside physical tables."""
+        db_path = tmp_path / "index.db"
+        conn = sqlite3.connect(db_path)
+        expected_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
+        conn.execute(f"PRAGMA user_version = {expected_version}")
+        conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO sessions VALUES (1), (2)")
+        for view in ("threads", "thread_sessions", "actions"):
+            conn.execute(f"CREATE VIEW {view} AS SELECT id FROM sessions")
+        conn.commit()
+        try:
+            result = _archive_tiers(_archive_fixture(tmp_path, expected_version), conn)
+            index_result = cast(_ArchiveTierResult, result["index"])
+            assert index_result["table_counts"]["threads"] == 2
+            assert index_result["table_counts"]["thread_sessions"] == 2
+            assert index_result["table_counts"]["actions"] == 2
+        finally:
+            conn.close()
+
+    def test_table_counts_preserve_unreadable_view(self, tmp_path: Path) -> None:
+        """A broken declared view is unavailable, not an observed zero."""
+        db_path = tmp_path / "index.db"
+        conn = sqlite3.connect(db_path)
+        expected_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
+        conn.execute(f"PRAGMA user_version = {expected_version}")
+        conn.execute("CREATE VIEW actions AS SELECT * FROM missing_action_source")
+        conn.commit()
+        try:
+            result = _archive_tiers(_archive_fixture(tmp_path, expected_version), conn)
+            index_result = cast(_ArchiveTierResult, result["index"])
+            assert "actions" not in index_result["table_counts"]
+            assert index_result["table_count_precision"]["actions"] == "unavailable"
+        finally:
+            conn.close()
+
 
 class TestArchiveOneTierStatusDaemonParity:
     """polylogue-703 regression guard: CLI and daemon must agree by construction.
