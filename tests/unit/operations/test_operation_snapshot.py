@@ -4,16 +4,42 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext
 from polylogue.operations.authority import authority_for_reader
-from polylogue.operations.operation_context import open_operation_read, prepare_operation_journals
+from polylogue.operations.operation_context import (
+    observe_control_authority,
+    open_operation_read,
+    prepare_operation_journals,
+)
+from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from tests.infra.archive_templates import bootstrap_archive_root
 
 pytestmark = pytest.mark.uses_real_clock("exercises the canonical query deadline/cancellation controller")
+
+
+def test_control_authority_refuses_generation_change_during_audit_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generation switch between identity and receipt observation cannot be merged into one authority."""
+    bootstrap_archive_root(tmp_path)
+    original = ArchiveIdentity.resolve_location
+    calls = 0
+
+    def changed(location: ArchiveLocation) -> ArchiveIdentity:
+        nonlocal calls
+        calls += 1
+        identity = original(location)
+        return replace(identity, active_generation="synthetic-new-generation") if calls > 1 else identity
+
+    monkeypatch.setattr(ArchiveIdentity, "resolve_location", changed)
+    with pytest.raises(ValueError, match="archive changed"):
+        observe_control_authority(tmp_path)
 
 
 def test_operation_snapshot_pins_source_and_attached_tiers(tmp_path: Path) -> None:

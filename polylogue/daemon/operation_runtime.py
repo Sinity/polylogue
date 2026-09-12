@@ -12,7 +12,7 @@ from pathlib import Path
 from time import monotonic, time
 from typing import TYPE_CHECKING, TypeVar
 
-from polylogue.archive.query.execution_control import QueryExecutionContext
+from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.daemon.execution import BoundedComputeAdapter, CancellationHandle, DaemonBackpressureError
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.operations.audit import (
@@ -23,6 +23,7 @@ from polylogue.operations.audit import (
 )
 from polylogue.operations.daemon_execution import execute_operation, operation_envelope, validate_execution_request
 from polylogue.operations.daemon_protocol import (
+    AcceptedOperationReference,
     DaemonAuthority,
     DaemonOperationEnvelope,
     DaemonOperationRequest,
@@ -302,17 +303,40 @@ class DaemonOperationRuntime:
                 deadline_monotonic=deadline,
                 owner_ref=principal.actor_ref,
             )
-            if spec.authority is DaemonAuthority.READ
+            if spec.authority is DaemonAuthority.READ or request.operation.startswith("operation.")
             else None
         )
         context = OperationContext(self.archive_root, principal, "daemon", self, dependencies, read_control)
-        request = validate_execution_request(request, context)
+        try:
+            request = validate_execution_request(request, context)
+        except (ValueError, PermissionError) as exc:
+            return operation_envelope(
+                request,
+                context,
+                started_at=started,
+                outcome="rejected",
+                error={"code": str(exc), "detail": str(exc), "retryable": False},
+            ).to_dict()
         if request.operation.startswith("operation."):
+            assert read_control is not None
+            if client_disconnect is not None:
+
+                def disconnect_control() -> None:
+                    read_control.cancel()
+                    self._notify()
+
+                client_disconnect.add_listener(disconnect_control)
             return execute_operation(request, context).to_dict()
         if spec.accepted_reference:
             control = observe_control_authority(self.archive_root)
             if request.archive_root is not None and Path(request.archive_root).resolve() != self.archive_root.resolve():
-                raise ValueError("archive_identity_mismatch")
+                return operation_envelope(
+                    request,
+                    context,
+                    snapshot=control,
+                    outcome="rejected",
+                    error={"code": "archive_identity_mismatch", "retryable": False},
+                ).to_dict()
             binding = MachineRequestBinding(
                 control.identity.authority_identity_digest,
                 str(request.request_id),
@@ -472,7 +496,13 @@ class DaemonOperationRuntime:
                 if peer_closed and not exchange.future.done():
                     return self._pending_envelope(
                         exchange,
-                        outcome="indeterminate" if exchange.acceptance_started else "disconnected-before-acceptance",
+                        outcome=(
+                            "disconnected-after-acceptance"
+                            if record is not None
+                            else "indeterminate"
+                            if exchange.acceptance_started
+                            else "disconnected-before-acceptance"
+                        ),
                         record=record,
                     )
                 if exchange.future.done():
@@ -498,7 +528,7 @@ class DaemonOperationRuntime:
                         except AuditContinuityPendingError:
                             envelope["outcome"] = "indeterminate"
                     if record is not None:
-                        envelope["accepted_reference"] = record
+                        envelope["accepted_reference"] = AcceptedOperationReference.from_record(record).to_dict()
                         state = self._recovery_state(record)
                         envelope["outcome"] = state["outcome"]
                         envelope["result"] = state.get("result", state)
@@ -526,12 +556,24 @@ class DaemonOperationRuntime:
                 self._condition.wait(timeout=remaining)
 
     def control(
-        self, request: DaemonOperationRequest, principal: MutationPrincipal, archive_identity: str
+        self,
+        request: DaemonOperationRequest,
+        principal: MutationPrincipal,
+        archive_identity: str,
+        *,
+        execution_context: QueryExecutionContext | None = None,
     ) -> dict[str, object]:
         target = str(request.payload["request_id"])
         deadline = monotonic() + min(30.0, _operation_int(request.payload.get("timeout_ms", 0), field="timeout") / 1000)
+        if execution_context is not None and execution_context.deadline_monotonic is not None:
+            deadline = min(deadline, execution_context.deadline_monotonic)
         after = _operation_int(request.payload.get("after_sequence", 0), field="after sequence")
         audit = AuditRepository.for_archive_root(self.archive_root)
+        if execution_context is not None:
+            if execution_context.cancelled:
+                raise QueryCancelledError("operation control exchange disconnected")
+            if execution_context.deadline_exceeded():
+                raise QueryTimeoutError("operation control exchange deadline expired")
         if request.operation == "operation.cancel":
             with self._condition:
                 exchange = self._exchanges.get(target)
@@ -574,6 +616,15 @@ class DaemonOperationRuntime:
                 self._notify()
         with self._condition:
             while True:
+                # Once a cancellation fence starts, its actual receipt decides
+                # the outcome. A late deadline cannot turn it into no-effect.
+                if execution_context is not None and request.operation != "operation.cancel":
+                    if execution_context.cancelled:
+                        raise QueryCancelledError("operation control exchange disconnected")
+                    if execution_context.deadline_exceeded():
+                        raise QueryTimeoutError("operation control exchange deadline expired")
+                if self._closing:
+                    raise QueryCancelledError("operation runtime is stopping")
                 exchange = self._exchanges.get(target)
                 if exchange is not None and exchange.context.principal != principal:
                     raise PermissionError("operation reference belongs to another principal")

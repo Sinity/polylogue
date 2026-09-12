@@ -98,6 +98,8 @@ def observe_control_authority(root: Path) -> OperationControlRead:
     identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root))
     try:
         with AuditRepository.for_archive_root(root).settled_machine_read() as versions:
+            if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != identity:
+                raise ValueError("archive changed while observing operation control authority")
             return OperationControlRead(identity, versions, ())
     except AuditContinuityPendingError:
         return OperationControlRead(identity, {}, ("audit_continuity_pending",))

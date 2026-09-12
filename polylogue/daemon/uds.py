@@ -21,6 +21,7 @@ from polylogue.operations.daemon_protocol import (
     MAX_DECLARED_OPERATION_BODY_BYTES,
     MAX_OPERATION_RESULT_BYTES,
     DaemonOperationRequest,
+    daemon_operation_spec,
 )
 from polylogue.operations.mutation_transaction import MutationPrincipal
 
@@ -32,6 +33,15 @@ if TYPE_CHECKING:
 
 def _reject_json_constant(value: str) -> object:
     raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field: {key}")
+        result[key] = value
+    return result
 
 
 def _peer_principal(connection: socket.socket, token: str | None) -> MutationPrincipal:
@@ -69,6 +79,9 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
 
     def log_message(self, _format: str, *_args: object) -> None:
         pass
+
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        self._reject(code, "invalid_http_request", message or "invalid HTTP operation request")
 
     def _send(self, status: int, payload: dict[str, object]) -> None:
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
@@ -122,6 +135,9 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         started = monotonic()
+        if self.request_version != "HTTP/1.1":
+            self._reject(505, "unsupported_http_version", "machine operations require HTTP/1.1")
+            return
         if self.path != "/api/operation":
             self._reject(404, "operation_endpoint_required", "machine endpoint is /api/operation")
             return
@@ -153,10 +169,15 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(length)
             if len(body) != length:
                 raise ValueError("partial operation body")
-            raw = json.loads(body, parse_constant=_reject_json_constant)
+            raw = json.loads(body, parse_constant=_reject_json_constant, object_pairs_hook=_unique_json_object)
             request = DaemonOperationRequest.from_dict(raw)
-        except (ValueError, TypeError, UnicodeDecodeError, TimeoutError) as exc:
+        except (ValueError, TypeError, RecursionError, UnicodeDecodeError, TimeoutError) as exc:
             self._reject(400, "invalid_request", str(exc))
+            return
+        spec = daemon_operation_spec(request.operation)
+        assert spec is not None
+        if length > spec.max_body_bytes:
+            self._reject(413, "request_too_large", "operation body exceeds its declared bound")
             return
         try:
             principal = _peer_principal(self.connection, token)

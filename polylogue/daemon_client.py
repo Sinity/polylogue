@@ -304,11 +304,58 @@ class DaemonClient:
             raise DaemonOperationProtocolError("daemon returned invalid timing evidence")
         if any(type(value) is not int or value < 0 for value in response["schema_versions"].values()):
             raise DaemonOperationProtocolError("daemon returned invalid observed schema versions")
+        snapshot = response["authority_snapshot"]
+        degraded = response.get("degraded_components")
+        if not isinstance(degraded, list) or any(not isinstance(item, str) or not item for item in degraded):
+            raise DaemonOperationProtocolError("daemon returned invalid degradation evidence")
+        spec = daemon_operation_spec(request.operation)
+        assert spec is not None
+        if any(
+            (
+                snapshot.get("archive_identity") != response["archive"].get("archive_identity"),
+                snapshot.get("generation") != response["generation"].get("id"),
+                snapshot.get("schema_versions") != response["schema_versions"],
+                response["archive"].get("tier_schema_versions") != response["schema_versions"],
+                response["generation"].get("tier_schema_versions") != response["schema_versions"],
+                response["archive"].get("index_schema_version") != response["schema_versions"].get("index"),
+                snapshot.get("served_by") != response["served_by"].get("identity"),
+                snapshot.get("served_by") != response["authority"].get("mode"),
+                snapshot.get("elapsed_ms") != timing["elapsed_ms"],
+                snapshot.get("queue_ms") != timing["queue_ms"],
+                snapshot.get("degraded_components") != degraded,
+                response["readiness"].get("degraded_components") != degraded,
+                response["authority"].get("class") != spec.authority.value,
+                response["authority"].get("fallback") != spec.fallback.value,
+                response["authority"].get("writes") != "daemon-owned",
+                response["archive"].get("daemon_version") != response["served_by"].get("daemon_version"),
+                response["readiness"].get("ready") is not (not degraded),
+                response["readiness"].get("state") != ("degraded" if degraded else "ready"),
+            )
+        ):
+            raise DaemonOperationProtocolError("daemon returned incoherent operation authority")
+        if snapshot.get("served_by") != "daemon":
+            raise DaemonOperationProtocolError("machine response did not come from resident authority")
+        if any(
+            not isinstance(snapshot.get(key), str) or not snapshot[key] for key in ("archive_identity", "generation")
+        ):
+            raise DaemonOperationProtocolError("daemon omitted archive or generation identity")
+        # A typed refusal may explain a stale precondition using current
+        # authority. Successful execution must actually satisfy that binding.
+        if response["outcome"] not in {"rejected", "failed", "cancelled", "timed-out"}:
+            if request.expected_archive_identity not in (None, snapshot["archive_identity"]):
+                raise DaemonOperationProtocolError("daemon served a stale archive identity")
+            if response.get("accepted_reference") is None and request.expected_generation_id not in (
+                None,
+                snapshot["generation"],
+            ):
+                raise DaemonOperationProtocolError("daemon served a stale generation")
         reference = response.get("accepted_reference")
         if reference is not None and (
             not isinstance(reference, dict)
             or reference.get("request_id") != request.request_id
             or reference.get("archive_identity") != response["archive"].get("archive_identity")
+            or reference.get("operation_name") != request.operation
+            or reference.get("fingerprint") != request.fingerprint
         ):
             raise DaemonOperationProtocolError("daemon returned a mismatched durable request reference")
         try:
