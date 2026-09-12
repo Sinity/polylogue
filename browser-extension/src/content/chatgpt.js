@@ -429,6 +429,41 @@
     return null;
   }
 
+  function nativePayloadUpdatedAt(payload) {
+    const value = payload?.update_time;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value < 10_000_000_000 ? value * 1000 : value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  function nativePayloadNeedsFollowUp(payload) {
+    const mapping = payload?.mapping;
+    const current = mapping && payload?.current_node ? mapping[payload.current_node]?.message : null;
+    if (!current) return true;
+    if (current.author?.role !== "assistant") return true;
+    return !["finished_successfully", "finished", "complete", "completed"].includes(current.status);
+  }
+
+  function cachedFreshTerminalPayload(expectedConversationId, minimumUpdatedAt = null) {
+    const payload = latestNativePayload(expectedConversationId);
+    if (!payload || nativePayloadNeedsFollowUp(payload)) return null;
+    // Without a provider revision hint, the cache cannot distinguish an
+    // unchanged terminal response from a stale page-load response (or prove
+    // that the next provider read would not return a 429). Keep the ordinary
+    // provider path in that case so a throttle remains typed and no cached
+    // payload can trigger asset downloads after it.
+    if (!minimumUpdatedAt) return null;
+    const minimumMs = nativePayloadUpdatedAt({ update_time: minimumUpdatedAt });
+    const cachedMs = nativePayloadUpdatedAt(payload);
+    if (!Number.isFinite(minimumMs) || !Number.isFinite(cachedMs) || cachedMs < minimumMs) return null;
+    return payload;
+  }
+
   async function requestNativeCaptureFromPage(conversationId) {
     const requestId = `polylogue-native-fetch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const responsePromise = new Promise((resolve) => {
@@ -586,7 +621,10 @@
     return id;
   }
 
-  async function fetchNativePayloadOnDemand(requestedConversationId = null) {
+  async function fetchNativePayloadOnDemand(
+    requestedConversationId = null,
+    { preferCachedTerminal = false, minimumUpdatedAt = null } = {},
+  ) {
     let conversationId = requestedConversationId || conversationIdFromUrl();
     // A temporary chat never gets a /c/<id> URL, so waiting for one would
     // just burn the whole timeout for nothing -- fall straight through to
@@ -597,6 +635,10 @@
     }
     if (!conversationId) return { payload: null, retryAfterMs: null };
     if (!/^[A-Za-z0-9_-]{1,256}$/.test(conversationId)) return { payload: null, retryAfterMs: null };
+    if (preferCachedTerminal) {
+      const cached = cachedFreshTerminalPayload(conversationId, minimumUpdatedAt);
+      if (cached) return { payload: cached, retryAfterMs: null, cached: true };
+    }
     const pageResult = await requestNativeCaptureFromPage(conversationId);
     const pageCapture = pageResult && pageResult.capture;
     const pagePayload = parseNativeCapture(pageCapture, conversationId);
@@ -920,6 +962,7 @@
     deferReceiver = false,
     nativePayloadOverride = null,
     generationObservationsOverride = [],
+    providerUpdatedAt = null,
   ) {
     const throttle = await providerThrottle();
     if (throttle?.outcome === "provider_throttle_authority_unavailable") {
@@ -936,11 +979,11 @@
     if (throttle?.ok !== true) {
       return { ok: false, error: "provider_throttle_authority_unavailable" };
     }
-    // Intercepted responses are only a bootstrap/fallback cache. A long-running
-    // conversation can grow substantially after the response observed at page
-    // load, so every explicit capture first asks ChatGPT for current native
-    // detail with cache: "no-store". Falling back preserves degraded/offline
-    // capture without allowing an old response to outrank fresh provider state.
+    // Explicit captures ask ChatGPT for current native detail, while terminal
+    // freshness claims may settle from an intercepted payload already observed
+    // on the page. A non-terminal or revision-stale cache still takes the
+    // provider path, so a running conversation and genuinely newer revision
+    // cannot be hidden by the convergence optimization.
     let nativePayload = nativePayloadOverride;
     if (nativePayload !== null) {
       if (!nativePayload || typeof nativePayload !== "object" || !nativePayload.mapping) {
@@ -951,7 +994,10 @@
         throw new Error("provided_native_payload_identity_mismatch");
       }
     } else {
-      const nativeFetch = await fetchNativePayloadOnDemand(requestedConversationId);
+      const nativeFetch = await fetchNativePayloadOnDemand(requestedConversationId, {
+        preferCachedTerminal: reason === "freshness_convergence",
+        minimumUpdatedAt: providerUpdatedAt,
+      });
       if (nativeFetch.rateLimited) {
         const recorded = await recordProviderRateLimit(nativeFetch.retryAfterMs);
         if (!recorded?.ok) return { ok: false, error: "provider_throttle_authority_unavailable" };
@@ -1105,6 +1151,7 @@
       message.deferReceiver === true,
       message.nativePayload ?? null,
       message.generationObservations ?? [],
+      message.providerUpdatedAt || null,
     )
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));

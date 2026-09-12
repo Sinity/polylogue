@@ -2182,7 +2182,12 @@ async function captureProviderConversation(
   provider,
   providerSessionId,
   reason,
-  { deferReceiver = false, nativePayload = null, generationObservations = [] } = {},
+  {
+    deferReceiver = false,
+    nativePayload = null,
+    generationObservations = [],
+    providerUpdatedAt = null,
+  } = {},
 ) {
   if (provider !== "chatgpt") throw new Error(`exact_provider_capture_unsupported:${provider}`);
   if (!/^[A-Za-z0-9_-]{1,256}$/.test(String(providerSessionId || ""))) {
@@ -2200,6 +2205,7 @@ async function captureProviderConversation(
         deferReceiver,
         nativePayload,
         generationObservations,
+        providerUpdatedAt,
       }),
       CAPTURE_MESSAGE_TIMEOUT_MS,
       "capture_message",
@@ -2303,7 +2309,10 @@ async function processCaptureFreshnessQueueOnce() {
       claim.provider,
       claim.native_id,
       "freshness_convergence",
-      { generationObservations: claim.generation_observations || [] },
+      {
+        generationObservations: claim.generation_observations || [],
+        providerUpdatedAt: claim.provider_updated_at || null,
+      },
     );
     needsFollowUp = chatGptCaptureNeedsFollowUp(result.envelope);
     retryDelayMs = needsFollowUp ? runningPollDelayMs(claim.running_poll_count || 0) : 0;
