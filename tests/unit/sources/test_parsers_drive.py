@@ -158,6 +158,31 @@ def test_parse_chunked_prompt_preserves_core_session_metadata() -> None:
     assert result.messages[1].duration_ms == 1500
 
 
+def test_parse_chunked_prompt_keeps_prompt_parent_at_session_grain() -> None:
+    result = parse_chunked_prompt(
+        "gemini",
+        {
+            "id": "drive-child-session",
+            "chunkedPrompt": {
+                "chunks": [
+                    {
+                        "id": "child-message",
+                        "role": "model",
+                        "text": "branched answer",
+                        "branchParent": {"promptId": "drive-parent-session"},
+                    }
+                ]
+            },
+        },
+        "fallback-id",
+    )
+
+    assert result.parent_session_provider_id == "drive-parent-session"
+    # The prompt id is not a local message id, so the branch point remains
+    # unresolved rather than becoming a dangling parent_message_id.
+    assert result.messages[0].parent_message_provider_id is None
+
+
 def test_parse_chunked_prompt_idless_chunk_does_not_get_a_positional_provider_id() -> None:
     payload: JSONDocument = {
         "id": "gemini-idless",

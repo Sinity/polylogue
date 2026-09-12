@@ -2450,15 +2450,23 @@ def _aistudio_drive_spec() -> OriginSpec:
             message_parent=TopologyCapability(
                 "carried",
                 (
-                    "drive._branch_parent_provider_id/_branch_child_parent_map -> ParsedMessage.parent_message_provider_id",
+                    "drive._branch_parent_message_provider_id/_branch_child_parent_map -> ParsedMessage.parent_message_provider_id; only id/messageId are local message evidence",
                 ),
             ),
             message_branch_state=TopologyCapability(
                 "positive-derived",
                 ("drive.parse_chunked_prompt active path and fill_linear_parent_chain",),
             ),
-            session_parent_target=_absent_topology("AI Studio and Drive exports have no session-parent target"),
-            inheritance_branch_point=_absent_topology("AI Studio and Drive exports have no inheritance boundary"),
+            session_parent_target=TopologyCapability(
+                "carried",
+                ("drive.branchParent.promptId -> ParsedSession.parent_session_provider_id -> session_links",),
+            ),
+            inheritance_branch_point=TopologyCapability(
+                "positive-derived",
+                (
+                    "Drive prompt-grain parents retain branch_point_message_id=NULL with typed unresolved evidence when no local message id is asserted",
+                ),
+            ),
             parent_dispatch=_absent_topology("AI Studio and Drive exports have no parent dispatch identity"),
         ),
     )
