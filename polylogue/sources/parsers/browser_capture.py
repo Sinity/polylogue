@@ -287,6 +287,57 @@ def _browser_capture_parsed_attachment(
     )
 
 
+def _is_claude_envelope_attachment_id(provider_attachment_id: str) -> bool:
+    """Identify the Claude extension's id-less attachment projection.
+
+    Claude's native response and the browser envelope expose the same source
+    attachment through different routes.  The extension has no provider id for
+    ``attachments[]`` records, so it deliberately uses this namespace for its
+    stable projection id.  Keep this check local to the browser merge: an
+    ``att-*`` id from another provider may be a real provider identity.
+    """
+
+    return provider_attachment_id.startswith("claude-attachment:")
+
+
+def _claude_attachment_cross_route_match(
+    native: ParsedAttachment,
+    envelope: ParsedAttachment,
+) -> bool:
+    """Return whether two differently identified rows are one source file.
+
+    A browser envelope row is only reconciled with a native row when the
+    envelope carries Claude's known synthetic id and the rows share their
+    owner and descriptors.  Byte evidence is required whenever available;
+    if one side has not acquired bytes yet, the declared size must still
+    agree.  Requiring one-to-one matching at the caller keeps two legitimate
+    same-name uploads from being attributed to an arbitrary native row.
+    """
+
+    if not _is_claude_envelope_attachment_id(envelope.provider_attachment_id):
+        return False
+    if native.message_provider_id != envelope.message_provider_id:
+        return False
+    if not native.name or native.name != envelope.name:
+        return False
+    if native.mime_type and envelope.mime_type and native.mime_type != envelope.mime_type:
+        return False
+    if native.size_bytes is not None and envelope.size_bytes is not None and native.size_bytes != envelope.size_bytes:
+        return False
+
+    native_bytes = native.inline_bytes
+    envelope_bytes = envelope.inline_bytes
+    if native_bytes is not None and envelope_bytes is not None:
+        return native_bytes == envelope_bytes
+    # With only one byte carrier, a declared size is the minimum evidence that
+    # this is the same source object.  Two metadata-only rows remain distinct.
+    return (
+        (native_bytes is not None or envelope_bytes is not None)
+        and native.size_bytes is not None
+        and envelope.size_bytes == native.size_bytes
+    )
+
+
 def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
     """Fold envelope attachments into a native-payload-delegated session.
 
@@ -317,12 +368,20 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
     for candidate in envelope_attachments:
         existing = merged.get(candidate.provider_attachment_id)
         if existing is None:
-            merged[candidate.provider_attachment_id] = candidate
-            continue
+            cross_route_ids = [
+                provider_attachment_id
+                for provider_attachment_id, native in merged.items()
+                if _claude_attachment_cross_route_match(native, candidate)
+            ]
+            if len(cross_route_ids) == 1:
+                existing = merged[cross_route_ids[0]]
+            else:
+                merged[candidate.provider_attachment_id] = candidate
+                continue
         # The native row remains authoritative for provider identity and file
         # metadata. The browser projection contributes acquired bytes and can
         # fill omissions, but must not replace native size/origin/file IDs.
-        merged[candidate.provider_attachment_id] = existing.model_copy(
+        merged[existing.provider_attachment_id] = existing.model_copy(
             update={
                 "message_provider_id": existing.message_provider_id or candidate.message_provider_id,
                 "name": existing.name or candidate.name,
@@ -336,7 +395,9 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
                 "attachment_kind": existing.attachment_kind or candidate.attachment_kind,
                 "source_url": existing.source_url or candidate.source_url,
                 "caption": existing.caption or candidate.caption,
-                "inline_bytes": candidate.inline_bytes or existing.inline_bytes,
+                "inline_bytes": (
+                    candidate.inline_bytes if candidate.inline_bytes is not None else existing.inline_bytes
+                ),
             }
         )
     return parsed.model_copy(update={"attachments": list(merged.values())})
