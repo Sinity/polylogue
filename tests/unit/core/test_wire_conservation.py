@@ -28,6 +28,7 @@ from polylogue.schemas.synthetic.conservation import (
     collect_planted_values,
     excluded_paths_from_pins,
     normalise_path,
+    parsed_block_texts,
 )
 from polylogue.schemas.synthetic.wire_formats import (
     CONSERVATION_BLOCKING_PROVIDERS,
@@ -84,6 +85,30 @@ def test_body_reaching_one_block_is_conserved() -> None:
     assert result.planted_count == 2
     assert result.conserved
     assert result.findings == ()
+
+
+def test_dynamic_properties_are_planted() -> None:
+    """A content role below additionalProperties cannot be vacuous."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "mapping": {
+                "type": "object",
+                "additionalProperties": {
+                    "properties": {"text": {"type": "string", "x-polylogue-semantic-role": "message_body"}}
+                },
+            }
+        },
+    }
+    assert collect_planted_values(schema, {"mapping": {"conversation": {"text": "alpha"}}})[0].value == "alpha"
+
+
+def test_message_text_without_blocks_is_counted() -> None:
+    """Compact parsers may retain authored text on message.text only."""
+    message = ParsedMessage(provider_message_id="message-text", role=Role.ASSISTANT, text="alpha", blocks=[])
+    assert parsed_block_texts(
+        [ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="message-text", messages=[message])]
+    ) == {"alpha": 1}
 
 
 def test_absent_body_is_loss() -> None:
@@ -267,7 +292,7 @@ def test_confirmed_pin_is_not_an_exclusion(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_receipt_measures_conservation_for_every_provider() -> None:
-    """The production route measures, reports per provider, and gates nobody yet."""
+    """The production route measures every provider and gates adjudicated ones."""
     receipt = shared_wire_support_receipt()
 
     witnesses = [witness for entry in receipt.entries for witness in entry.parser_witnesses]
@@ -286,23 +311,22 @@ def test_receipt_measures_conservation_for_every_provider() -> None:
         f"conservation is vacuous everywhere: {planted_by_provider}"
     )
 
-    # Unadjudicated providers are measured without deciding the exit code.
-    assert not CONSERVATION_BLOCKING_PROVIDERS
+    supported = {entry.provider for entry in receipt.entries if entry.status == "supported"}
+    assert supported <= CONSERVATION_BLOCKING_PROVIDERS
     enforced = {
         entry.provider
         for entry in receipt.entries
         for witness in entry.parser_witnesses
         if witness.conservation_enforced
     }
-    assert enforced <= CONSERVATION_BLOCKING_PROVIDERS
+    assert enforced == supported
     unconserved = [
         witness
         for entry in receipt.entries
         for witness in entry.parser_witnesses
         if witness.conservation is not None and not witness.conservation.conserved
     ]
-    assert unconserved, "no finding measured; the check would report nothing to adjudicate"
-    assert all(witness.conservation_conserved for witness in unconserved)
+    assert not unconserved, "adjudicated providers still report unexplained conservation findings"
 
 
 def test_receipt_payload_carries_the_findings_it_measured() -> None:
@@ -324,5 +348,4 @@ def test_receipt_payload_carries_the_findings_it_measured() -> None:
             assert isinstance(findings, list)
             reported.extend((entry["provider"], finding) for finding in findings)
 
-    assert reported, "receipt payload carries no conservation findings"
-    assert all(isinstance(finding, str) and finding for _provider, finding in reported)
+    assert not reported, "receipt payload carries unexplained conservation findings"

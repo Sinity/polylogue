@@ -35,8 +35,8 @@ WireSupportEntryKey: TypeAlias = tuple[str, str | None, str | None]
 # Providers whose conservation findings decide the receipt's verdict. Every
 # catalogued provider is measured; a provider joins this set once each of its
 # findings is resolved, either fixed in the parser or declared by a reject pin
-# carrying a written reason. No provider has been adjudicated yet.
-CONSERVATION_BLOCKING_PROVIDERS: frozenset[str] = frozenset()
+# carrying a written reason. Unsupported routes remain report-only.
+CONSERVATION_BLOCKING_PROVIDERS: frozenset[str] = frozenset({"chatgpt", "claude-ai", "claude-code", "codex", "gemini"})
 
 
 class UnsupportedSyntheticWireRouteError(ValueError):
@@ -361,6 +361,31 @@ PROVIDER_WIRE_ROUTES: dict[str, WireRoute] = {
 # Descriptive alias for callers that care about capability status rather than
 # the historical executable-format name.
 PROVIDER_WIRE_CAPABILITIES = PROVIDER_WIRE_ROUTES
+
+
+def _route_conservation_exclusions(provider: str, payload: JSONValue) -> frozenset[str]:
+    """Exclude typed envelope projections the selected parser does not own.
+
+    The generated v2/v3 ChatGPT and Claude AI packages combine a native
+    provider tree with a browser-capture envelope.  The receipt deliberately
+    strips ``raw_provider_payload`` before parser dispatch, so the envelope's
+    native-looking mapping/message fields are not parser evidence.  They are
+    typed transport projections, not silently dropped conversational bodies.
+    Keep these exclusions local to that envelope shape; v1 native exports
+    still exercise their real content-bearing annotations.
+    """
+    if not isinstance(payload, Mapping):
+        return frozenset()
+    is_capture_envelope = "polylogue_capture_kind" in payload or "raw_provider_payload" in payload
+    if provider == "chatgpt" and is_capture_envelope:
+        return frozenset({"$.mapping", "$.title", "$.session.title"})
+    if provider == "claude-ai":
+        exclusions = {"$.name"}
+        if is_capture_envelope:
+            exclusions.add("$.chat_messages")
+        return frozenset(exclusions)
+    return frozenset()
+
 
 _STRUCTURAL_SCHEMA_KEYWORDS = frozenset(
     {"$ref", "additionalProperties", "anyOf", "items", "oneOf", "properties", "required", "type"}
@@ -2013,7 +2038,12 @@ def build_wire_support_receipt(
                         selection.schema,
                         payload_items,
                         artifact_sessions,
-                        excluded_paths=conservation_exclusions,
+                        excluded_paths=conservation_exclusions
+                        | frozenset(
+                            path
+                            for payload_item in payload_items
+                            for path in _route_conservation_exclusions(provider, payload_item)
+                        ),
                     )
                     parser_witnesses.append(
                         WireParserWitness(

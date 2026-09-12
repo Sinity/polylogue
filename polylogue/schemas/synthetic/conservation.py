@@ -143,12 +143,16 @@ def collect_planted_values(
     variants = _schema_variants(schema)
 
     role = _content_role(variants)
-    if role is not None:
-        # A content-bearing node is a leaf; nothing below it is content.
-        if isinstance(payload, str) and _normalise(payload):
+    if role is not None and isinstance(payload, str):
+        # A scalar content-bearing node is a leaf; nothing below it is content.
+        if _normalise(payload):
             return (PlantedValue(path=path, role=role, value=_normalise(payload)),)
         return ()
-
+    # Some inferred schemas annotate a union/container that carries a
+    # content-bearing role while the selected payload branch is itself an
+    # object or array (Claude Code content blocks are the important case).
+    # Keep walking non-scalar payloads so the selected string branch is still
+    # planted exactly once.
     found: list[PlantedValue] = []
     visited_keys: set[str] = set()
     walked_items = False
@@ -159,10 +163,38 @@ def collect_planted_values(
                 if key in visited_keys or not isinstance(child_schema, Mapping) or key not in payload:
                     continue
                 visited_keys.add(key)
+                if (
+                    key == "content"
+                    and path.startswith("$.message.content[")
+                    and payload.get("type") in {"thinking", "text", "tool_use"}
+                ):
+                    # Claude Code's historical ``content`` union covers
+                    # thinking/text/tool-use records, but the parser-owned
+                    # body for this broad inferred position is the
+                    # tool-result content. Other variants are represented by
+                    # their typed fields (or are tool arguments), so planting
+                    # them here would compare unrelated projections.
+                    continue
                 found.extend(
                     collect_planted_values(
                         child_schema,
                         payload[key],
+                        path=f"{path}.{key}",
+                        depth=depth + 1,
+                    )
+                )
+
+        additional_properties = variant.get("additionalProperties")
+        if isinstance(additional_properties, Mapping) and isinstance(payload, Mapping):
+            declared_properties = properties if isinstance(properties, Mapping) else {}
+            for key, value in payload.items():
+                if key in declared_properties or key in visited_keys:
+                    continue
+                visited_keys.add(key)
+                found.extend(
+                    collect_planted_values(
+                        additional_properties,
+                        value,
                         path=f"{path}.{key}",
                         depth=depth + 1,
                     )
@@ -199,10 +231,30 @@ def parsed_block_texts(sessions: Sequence[ParsedSession]) -> Counter[str]:
     counter: Counter[str] = Counter()
     for session in sessions:
         for message in session.messages:
+            block_texts: list[str] = []
             for block in message.blocks:
                 text = getattr(block, "text", None)
                 if isinstance(text, str) and _normalise(text):
-                    counter[_normalise(text)] += 1
+                    block_texts.append(_normalise(text))
+                tool_input = getattr(block, "tool_input", None)
+                if isinstance(tool_input, Mapping):
+                    # Claude Code tool-use blocks retain the authored
+                    # request in the typed ``content`` input rather than in
+                    # block text.  It is one semantic body witness, not a
+                    # generic walk of arbitrary tool arguments.
+                    tool_content = tool_input.get("content")
+                    if isinstance(tool_content, str) and _normalise(tool_content):
+                        block_texts.append(_normalise(tool_content))
+            if block_texts:
+                counter.update(block_texts)
+                continue
+            # Claude AI's compact export parser keeps authored prose on
+            # ``message.text`` without creating text blocks.  Count it only
+            # when no block text exists, preserving the no-double-count rule
+            # for providers whose message text concatenates their blocks.
+            message_text = getattr(message, "text", None)
+            if isinstance(message_text, str) and _normalise(message_text):
+                counter[_normalise(message_text)] += 1
     return counter
 
 
