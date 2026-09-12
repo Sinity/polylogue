@@ -6,11 +6,12 @@ import hashlib
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
-from polylogue.sources import source_snapshot
+from polylogue.sources import source_snapshot, sqlite_export
 from polylogue.sources.source_snapshot import (
     CandidateCohortError,
     SnapshotMode,
@@ -21,7 +22,8 @@ from polylogue.sources.source_snapshot import (
     preflight_source_cut,
     reacquire_candidate,
 )
-from polylogue.sources.sqlite_snapshot import snapshot_sqlite_database, sqlite_logical_revision
+from polylogue.sources.sqlite_export import logical_export_bytes, looks_like_logical_export_path, read_export_header
+from polylogue.sources.sqlite_snapshot import sqlite_logical_revision, sqlite_member_revision
 
 
 def test_cut_publishes_immutable_candidate_and_carry_forward(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -203,12 +205,15 @@ def test_archive_members_and_sqlite_use_declared_strategies(tmp_path: Path) -> N
     preflight = preflight_source_cut(declarations)
     assert [binding.policy.mode for binding in preflight.bindings] == [
         SnapshotMode.ARCHIVE_MEMBER,
-        SnapshotMode.SQLITE_BACKUP,
+        SnapshotMode.SQLITE_LOGICAL_EXPORT,
     ]
     result = execute_source_cut(preflight, tmp_path / "cut")
     assert result.counts.conserved
     assert {item.source_id for item in result.candidate_manifest.items} == {"archive", "state"}
     assert {item.source_id for item in result.carry_forward_manifest.items} == set()
+    sqlite_candidate = reacquire_candidate(result, source_id="state")[0]
+    assert sqlite_candidate.path.suffix == ".jsonl"
+    assert looks_like_logical_export_path(sqlite_candidate.path)
 
 
 def test_cut_verification_rejects_an_inventory_item_owned_by_neither_side(tmp_path: Path) -> None:
@@ -262,30 +267,30 @@ def test_published_cut_refuses_a_different_preflight(tmp_path: Path) -> None:
         )
 
 
-def test_sqlite_cut_refuses_a_commit_during_online_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Mutation: a post-backup revision change must not occupy either cohort."""
+def test_sqlite_cut_refuses_a_commit_during_logical_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation: a post-export revision change must not occupy either cohort."""
     database = tmp_path / "state.sqlite"
     with sqlite3.connect(database) as conn:
         conn.execute("CREATE TABLE state (value TEXT)")
         conn.commit()
 
-    original_backup = snapshot_sqlite_database
+    original_export = sqlite_export.write_logical_export
 
-    def backup_then_commit(source: Path, destination: Path) -> None:
-        original_backup(source, destination)
+    def export_then_commit(source: Path, handle: sqlite_export.BinaryWriteSink, **kwargs: Any) -> None:
+        original_export(source, handle, **kwargs)
         with sqlite3.connect(source) as conn:
             conn.execute("INSERT INTO state VALUES ('after-cut')")
             conn.commit()
 
-    monkeypatch.setattr("polylogue.sources.source_snapshot.snapshot_sqlite_database", backup_then_commit)
-    with pytest.raises(SourceMutationError, match="SQLite source changed"):
+    monkeypatch.setattr("polylogue.sources.source_snapshot.write_logical_export", export_then_commit)
+    with pytest.raises(SourceMutationError, match="SQLite source changed during logical export"):
         execute_source_cut(
             preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
             tmp_path / "cut",
         )
 
 
-def test_sqlite_cut_refuses_a_backup_with_a_different_logical_revision(
+def test_sqlite_cut_refuses_a_logical_export_with_a_different_logical_revision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Mutation: publishing a backup from another logical state must fail."""
@@ -295,24 +300,26 @@ def test_sqlite_cut_refuses_a_backup_with_a_different_logical_revision(
         conn.execute("INSERT INTO state VALUES ('source')")
         conn.commit()
 
-    original_backup = snapshot_sqlite_database
+    different = tmp_path / "different.sqlite"
+    with sqlite3.connect(different) as conn:
+        conn.execute("CREATE TABLE state (value TEXT)")
+        conn.execute("INSERT INTO state VALUES ('not-source')")
+        conn.commit()
 
-    def backup_with_different_content(source: Path, destination: Path) -> None:
-        original_backup(source, destination)
-        with sqlite3.connect(destination) as conn:
-            conn.execute("INSERT INTO state VALUES ('not-source')")
-            conn.commit()
+    def export_different_content(_source: Path, handle: sqlite_export.BinaryWriteSink, **kwargs: Any) -> None:
+        logical_export = logical_export_bytes(different, **kwargs)
+        handle.write(logical_export)
 
-    monkeypatch.setattr("polylogue.sources.source_snapshot.snapshot_sqlite_database", backup_with_different_content)
-    with pytest.raises(SourceMutationError, match="backup does not match source logical revision"):
+    monkeypatch.setattr("polylogue.sources.source_snapshot.write_logical_export", export_different_content)
+    with pytest.raises(SourceMutationError, match="logical export does not match source logical revision"):
         execute_source_cut(
             preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
             tmp_path / "cut",
         )
 
 
-def test_sqlite_cut_manifest_hashes_the_published_backup_bytes(tmp_path: Path) -> None:
-    """Mutation: a logical revision cannot replace the retained-byte hash."""
+def test_sqlite_cut_manifest_hashes_the_published_logical_export(tmp_path: Path) -> None:
+    """Mutation: restoring a page image must not satisfy the published candidate contract."""
     database = tmp_path / "state.sqlite"
     with sqlite3.connect(database) as conn:
         conn.execute("CREATE TABLE state (value TEXT)")
@@ -327,6 +334,36 @@ def test_sqlite_cut_manifest_hashes_the_published_backup_bytes(tmp_path: Path) -
     candidate = result.candidate_manifest.items[0]
     retained = reacquire_candidate(result)[0]
     assert candidate.content_sha256 == hashlib.sha256(retained.path.read_bytes()).hexdigest()
+    assert candidate.content_sha256 == sqlite_member_revision(database)
+    assert looks_like_logical_export_path(retained.path)
+    assert read_export_header(retained.path).tables == ("state",)
+
+
+def test_sqlite_cut_rejects_legacy_page_backup_mode() -> None:
+    """Mutation: an old page-image policy must not become a compatibility route."""
+    with pytest.raises(ValueError, match="sqlite-online-backup"):
+        SnapshotMode("sqlite-online-backup")
+
+
+def test_sqlite_cut_bounds_the_streamed_logical_export(tmp_path: Path) -> None:
+    """Mutation: a hex-expanded blob export must not exceed the declared candidate capacity."""
+    database = tmp_path / "state.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE state (value BLOB)")
+        conn.execute("INSERT INTO state VALUES (?)", (b"x" * (128 * 1024),))
+        conn.commit()
+    capacity = database.stat().st_size
+    assert len(logical_export_bytes(database)) > capacity
+
+    with pytest.raises(SourceSnapshotError, match="logical SQLite export"):
+        execute_source_cut(
+            preflight_source_cut(
+                [SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)],
+                policies={"state": SourceCutPolicy(SnapshotMode.SQLITE_LOGICAL_EXPORT, capacity_bytes=capacity)},
+            ),
+            tmp_path / "cut",
+        )
+    assert not (tmp_path / "cut").exists()
 
 
 def test_sqlite_continuity_uses_logical_rows_not_page_layout(tmp_path: Path) -> None:
