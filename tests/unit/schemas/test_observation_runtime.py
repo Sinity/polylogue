@@ -9,7 +9,7 @@ from pathlib import Path
 from polylogue.core.enums import Provider
 from polylogue.schemas.generation.evidence import SchemaEvidence
 from polylogue.schemas.observation import ProviderConfig, extract_schema_units_from_payload
-from polylogue.schemas.source_inference import _collect_candidate, _SourceCandidate
+from polylogue.schemas.source_inference import SchemaSourceInput, _collect_candidate, _SourceCandidate, infer_sources
 
 
 class TestExtractSchemaUnitsFromPayload:
@@ -125,6 +125,27 @@ class TestExtractSchemaUnitsFromPayload:
             assert "observed_in_wal" in json.dumps(evidence.structure)
         finally:
             connection.close()
+
+    def test_structured_raw_only_sidecar_is_observed_by_normal_source_inference(self, tmp_path: Path) -> None:
+        """A retained JSON sidecar contributes shape without becoming a session."""
+        sidecar = tmp_path / "projects" / "repo" / "sessions-index.json"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text(
+            json.dumps({"sessions": [{"id": "private-session-id"}], "new_index_field": {"enabled": True}}),
+            encoding="utf-8",
+        )
+
+        result = infer_sources(
+            (SchemaSourceInput("claude-code", tmp_path),),
+            cache_path=tmp_path / "source-cache.sqlite3",
+            max_workers=1,
+        )
+
+        assert result.terminal_counts == {"included": 1}
+        evidence = SchemaEvidence.from_json(result.evidence_by_element["session_index"][0])
+        encoded = json.dumps(evidence.to_json(), sort_keys=True)
+        assert "new_index_field" in encoded
+        assert "private-session-id" not in encoded
 
     def test_codex_state_table_dispositions_and_unknown_tables_are_observable(self, tmp_path: Path) -> None:
         """Retention is per table, and a future table is never silently classified."""

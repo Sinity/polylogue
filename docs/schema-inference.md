@@ -64,10 +64,15 @@ from field statistics.
 The run reports aggregate input bytes, record counts, terminal outcomes and
 reason codes, cache hits/misses by phase, computation contracts, and phase timings. A successful package write
 means evidence was emitted; inspect terminal outcomes to determine input
-coverage. Unsupported sources, sidecars, malformed documents, changing files,
-and incomplete trailing records are reported separately. Browser envelopes
-require a native-payload adapter; SQLite state and opaque protobuf files require
-their own observation routes.
+coverage. Every declared artifact family has an `OriginSpec` observation
+contract: session and structured sidecars contribute privacy-safe shape
+evidence even when they are not session-admitted, while opaque/binary families
+have an explicit non-applicability outcome and remain raw acquisition
+evidence. SQLite members use the logical table/column route and preserve
+member/table retention dispositions without row values. Unsupported sources,
+malformed documents, changing files, and incomplete trailing records are
+reported separately. Browser envelopes require a native-payload adapter;
+opaque protobuf files retain their typed non-applicability outcome.
 
 ## Versions and statistics
 
