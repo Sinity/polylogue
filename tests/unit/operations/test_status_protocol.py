@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 from time import sleep
 
+import pytest
+
 from polylogue.operations.status_protocol import (
     ComponentUnavailableError,
     StatusComponentRegistry,
@@ -229,3 +231,24 @@ def test_to_dict_is_json_serializable_shape() -> None:
         "error",
         "last_good_at",
     }
+
+
+def test_registry_rejects_duplicate_component_publishers() -> None:
+    """Anti-vacuity: silently replacing one declaration loses an observation."""
+    specs = [
+        StatusComponentSpec(name="same", scope="daemon", collector=lambda: 1),
+        StatusComponentSpec(name="same", scope="archive", collector=lambda: 2),
+    ]
+    try:
+        StatusComponentRegistry(specs)
+    except ValueError as exc:
+        assert "same" in str(exc)
+    else:  # pragma: no cover - mutation target
+        raise AssertionError("duplicate status component declarations must be rejected")
+
+
+def test_component_budget_and_identity_metadata_are_validated() -> None:
+    with pytest.raises(ValueError, match="deadline_s"):
+        StatusComponentSpec(name="bad", scope="test", collector=lambda: None, deadline_s=0)
+    with pytest.raises(ValueError, match="ttl_s"):
+        StatusComponentSpec(name="bad", scope="test", collector=lambda: None, ttl_s=-1)

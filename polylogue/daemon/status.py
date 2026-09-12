@@ -198,8 +198,10 @@ class IngestionThroughput(BaseModel):
 
 
 class InsightFreshness(BaseModel):
-    sessions_with_profiles: int = 0
-    total_sessions: int = 0
+    # ``None`` is an unreadable/unavailable count.  Zero is reserved for a
+    # successfully measured empty relation (polylogue-20d.17).
+    sessions_with_profiles: int | None = None
+    total_sessions: int | None = None
 
 
 class EmbeddingReadiness(BaseModel):
@@ -329,7 +331,11 @@ class ArchiveTierStatus(BaseModel):
     user_version: int | None = None
     expected_user_version: int | None = None
     version_status: Literal["ok", "missing", "mismatch", "invalid"] = "missing"
-    table_count: int = 0
+    # A count is absent when sqlite_master/table inspection failed.  Keeping
+    # this separate from ``version_status`` prevents an unreadable relation
+    # from looking like a measured empty tier.
+    table_count: int | None = None
+    table_count_state: Literal["exact", "unavailable", "missing"] = "missing"
 
 
 class ArchiveStorageStatus(BaseModel):
@@ -345,6 +351,7 @@ class ArchiveStorageStatus(BaseModel):
     schema_mismatches: list[str] = Field(default_factory=list)
     present_tiers: list[str] = Field(default_factory=list)
     missing_tiers: list[str] = Field(default_factory=list)
+    unreadable_tiers: list[str] = Field(default_factory=list)
     tiers: list[ArchiveTierStatus] = Field(default_factory=list)
     identity: dict[str, object] = Field(default_factory=dict)
     identity_conflicts: list[dict[str, object]] = Field(default_factory=list)
@@ -512,19 +519,24 @@ class DaemonStatus(BaseModel):
     )
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
     component_readiness: dict[str, object] = Field(default_factory=dict)
+    # Surface-neutral component snapshot metadata.  Adapters must render this
+    # projection rather than recollecting their own status facts.
+    status_components: list[dict[str, object]] = Field(default_factory=list)
     claim_guard: dict[str, object] = Field(default_factory=dict)
     browser_capture_active: bool = False
-    raw_parse_failures: int = 0
-    raw_validation_failures: int = 0
-    raw_quarantined: int = 0
-    raw_deferred_failures: int = 0
-    raw_terminal_rejections: int = 0
-    raw_unexplained_failures: int = 0
+    # ``None`` means source-tier evidence could not be read; zero means the
+    # corresponding query completed and found no rows.
+    raw_parse_failures: int | None = None
+    raw_validation_failures: int | None = None
+    raw_quarantined: int | None = None
+    raw_deferred_failures: int | None = None
+    raw_terminal_rejections: int | None = None
+    raw_unexplained_failures: int | None = None
     raw_failure_lifecycle_available: bool = False
     raw_failure_lifecycle_state: Literal["healthy", "degraded", "blocked", "unavailable"] = "unavailable"
     raw_failure_lifecycle_reason: str | None = None
     raw_failure_samples: list[RawFailureSample] = Field(default_factory=list)
-    raw_detection_warnings: int = 0
+    raw_detection_warnings: int | None = None
     sinex_publication: dict[str, object] = Field(default_factory=dict)
     health: DaemonHealth = Field(default_factory=DaemonHealth)
     health_tiers: set[HealthTier] = Field(default_factory=set)
@@ -695,11 +707,12 @@ def _archive_storage_info() -> ArchiveStorageStatus:
     ]
     present_tiers = [str(tier.name) for tier in tiers if tier.exists]
     missing_tiers = [str(tier.name) for tier in tiers if not tier.exists]
+    unreadable_tiers = [str(tier.name) for tier in tiers if tier.exists and tier.table_count_state == "unavailable"]
     index_exists = "index" in present_tiers
     source_exists = "source" in present_tiers
     final_shape_ready = not missing_tiers
     schema_mismatches = [str(tier.name) for tier in tiers if tier.exists and tier.version_status != "ok"]
-    archive_schema_ready = final_shape_ready and not schema_mismatches
+    archive_schema_ready = final_shape_ready and not schema_mismatches and not unreadable_tiers
     archive_ready = index_exists and source_exists and archive_schema_ready and not conflicts
     if index_exists and source_exists:
         active_store: Literal["archive_file_set", "empty"] = "archive_file_set"
@@ -718,6 +731,7 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         schema_mismatches=schema_mismatches,
         present_tiers=present_tiers,
         missing_tiers=missing_tiers,
+        unreadable_tiers=unreadable_tiers,
         tiers=tiers,
         identity=identity.as_dict(unit="polylogued.service"),
         identity_conflicts=[conflict.as_dict(unit="polylogued.service") for conflict in conflicts],
@@ -737,14 +751,21 @@ def _archive_tier_status(
     # fallback) is still computed here.
     probe = probe_archive_tier(ArchiveTier(name), path)
     if not probe.exists:
-        return ArchiveTierStatus(name=name, path=probe.path, expected_user_version=probe.expected_user_version)
-    table_count = -2
+        return ArchiveTierStatus(
+            name=name,
+            path=probe.path,
+            expected_user_version=probe.expected_user_version,
+            table_count_state="missing",
+        )
+    table_count: int | None = None
+    table_count_state: Literal["exact", "unavailable", "missing"] = "unavailable"
     try:
         conn = open_readonly_connection(path, validate_schema=False)
         try:
             table_count = _row_int(
                 conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
             )
+            table_count_state = "exact"
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -759,6 +780,7 @@ def _archive_tier_status(
         expected_user_version=probe.expected_user_version,
         version_status=probe.version_status,
         table_count=table_count,
+        table_count_state=table_count_state,
     )
 
 
@@ -781,8 +803,8 @@ def _insight_freshness_info() -> dict[str, object]:
         return {
             "checked": False,
             "reason": "index tier is unavailable",
-            "sessions_with_profiles": 0,
-            "total_sessions": 0,
+            "sessions_with_profiles": None,
+            "total_sessions": None,
         }
     index_db = dbf
     if index_db is not None:
@@ -803,10 +825,15 @@ def _insight_freshness_info() -> dict[str, object]:
                     """
                 ).fetchall()
             }
-            total_sessions = 0
+            if "sessions" not in tables:
+                return {
+                    "checked": False,
+                    "reason": "index tier is missing sessions",
+                    "sessions_with_profiles": None,
+                    "total_sessions": None,
+                }
+            total_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
             sessions_with_profiles = 0
-            if "sessions" in tables:
-                total_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
             if "session_profiles" in tables:
                 sessions_with_profiles = int(conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] or 0)
         finally:
@@ -817,7 +844,7 @@ def _insight_freshness_info() -> dict[str, object]:
         }
     except sqlite3.Error as exc:
         logger.warning("status: insight-freshness query failed for %s: %s", dbf, exc, exc_info=True)
-        return {"checked": False, "reason": str(exc), "sessions_with_profiles": 0, "total_sessions": 0}
+        return {"checked": False, "reason": str(exc), "sessions_with_profiles": None, "total_sessions": None}
 
 
 def _archive_insight_freshness_info(archive_db: Path) -> dict[str, object] | None:
@@ -838,7 +865,12 @@ def _archive_insight_freshness_info(archive_db: Path) -> dict[str, object] | Non
                 ).fetchall()
             }
             if "sessions" not in tables:
-                return None
+                return {
+                    "checked": False,
+                    "reason": "index tier is missing sessions",
+                    "sessions_with_profiles": None,
+                    "total_sessions": None,
+                }
             total_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
             sessions_with_profiles = 0
             if "session_profiles" in tables:
@@ -862,13 +894,13 @@ def _raw_failure_info() -> dict[str, object]:
 def _unavailable_raw_failure_info(*, reason: str) -> dict[str, object]:
     """Represent missing source evidence without manufacturing zero counts."""
     return {
-        "parse_failures": 0,
-        "validation_failures": 0,
-        "quarantined": 0,
-        "detection_warnings": 0,
-        "deferred_failures": 0,
-        "terminal_rejections": 0,
-        "unexplained_failures": 0,
+        "parse_failures": None,
+        "validation_failures": None,
+        "quarantined": None,
+        "detection_warnings": None,
+        "deferred_failures": None,
+        "terminal_rejections": None,
+        "unexplained_failures": None,
         "raw_failure_lifecycle_available": False,
         "raw_failure_lifecycle_state": "unavailable",
         "raw_failure_lifecycle_reason": reason,
@@ -881,7 +913,11 @@ def _archive_raw_failure_info(archive_db: Path) -> dict[str, object]:
         return _unavailable_raw_failure_info(
             reason=f"source.db not found: {archive_db}",
         )
-    lifecycle_snapshot = read_raw_failure_lifecycle(archive_db, sample_limit=50)
+    try:
+        lifecycle_snapshot = read_raw_failure_lifecycle(archive_db, sample_limit=50)
+    except Exception as exc:
+        logger.warning("status: raw-failure lifecycle read failed for %s: %s", archive_db, exc, exc_info=True)
+        return _unavailable_raw_failure_info(reason=f"could not read raw failure lifecycle: {exc}")
     if not lifecycle_snapshot.available:
         return _unavailable_raw_failure_info(
             reason=lifecycle_snapshot.reason or "raw failure lifecycle is unavailable",
@@ -1015,6 +1051,13 @@ def _typed_failure_samples(value: object) -> list[RawFailureSample]:
 
 
 def _safe_int(value: object) -> int:
+    return _row_int(value)
+
+
+def _optional_int(value: object) -> int | None:
+    """Coerce a measured count while preserving unavailable as ``None``."""
+    if value is None:
+        return None
     return _row_int(value)
 
 
@@ -1841,6 +1884,19 @@ def _attach_collection_state(
         }
 
 
+def _status_component_metadata(snapshots: Mapping[str, ComponentSnapshot]) -> list[dict[str, object]]:
+    """Serialize one bounded metadata-only projection for every surface.
+
+    Collector values remain domain-owned and are already represented by the
+    corresponding readiness payload.  Keeping them out of this adapter avoids
+    copying rich detail into compact CLI/MCP/HTTP responses while preserving
+    state, age, deadline, and last-good authority uniformly.
+    """
+    return [
+        {key: value for key, value in snapshot.to_dict().items() if key != "value"} for snapshot in snapshots.values()
+    ]
+
+
 def _convergence_debt_from_snapshot(snapshot: ComponentSnapshot) -> ConvergenceDebtSummary:
     """Adapt a registry snapshot without treating unavailable debt as empty."""
     if snapshot.state != "fresh" or snapshot.value is None or snapshot.error is not None:
@@ -1991,6 +2047,20 @@ def _component_from_raw_frontier_integrity(integrity: RawFrontierIntegrity) -> C
 def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentReadiness:
     total = freshness.total_sessions
     with_profiles = freshness.sessions_with_profiles
+    if total is None or with_profiles is None:
+        return ComponentReadiness(
+            component="session_profiles",
+            scope="insights",
+            state=CapabilityReadinessState.UNKNOWN,
+            summary="insight freshness unavailable",
+            counts={
+                "sessions_with_profiles": with_profiles,
+                "total_sessions": total,
+                "missing_profiles": None,
+            },
+            caveats=("index tier/session profile counts could not be read",),
+            repair_hint="polylogued run",
+        )
     if total <= 0:
         state = CapabilityReadinessState.MISSING
         summary = "no sessions"
@@ -2086,6 +2156,8 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
         caveats += (f"missing_tiers:{','.join(storage.missing_tiers)}",)
     if storage.schema_mismatches:
         caveats += (f"schema_mismatch:{','.join(storage.schema_mismatches)}",)
+    if storage.unreadable_tiers:
+        caveats += (f"unreadable_tiers:{','.join(storage.unreadable_tiers)}",)
     if storage.final_shape_ready and storage.archive_schema_ready and not storage.archive_materialization_ready:
         caveats += ("materialization_pending",)
     repair_hint = None
@@ -2557,6 +2629,40 @@ def build_daemon_status(
     blob_publication_reservations = _v("blob_publication_reservations", BlobPublicationReservationStatus())
     embedding_info: dict[str, object] = _v("embedding_readiness", {})
     health = _v("health", _checked_health())
+    # Health is a separate projection.  It must not claim to be clean when
+    # its own collector could not complete, but an unrelated optional status
+    # detail being unavailable does not invalidate an otherwise measured
+    # health result (for example, a fixture with no archive source database).
+    health_snapshot = snapshots["health"]
+    if (
+        isinstance(health, DaemonHealth)
+        and health.overall_status is HealthSeverity.OK
+        and health_snapshot.state
+        in {
+            "unavailable",
+            "timed_out",
+            "degraded",
+            "refreshing",
+        }
+    ):
+        severity = (
+            HealthSeverity.ERROR if health_snapshot.state in {"timed_out", "degraded"} else HealthSeverity.WARNING
+        )
+        health = health.model_copy(
+            update={
+                "overall_status": severity,
+                "alerts": [
+                    *health.alerts,
+                    HealthAlert(
+                        check_name="status_component_observation",
+                        tier=HealthTier.MEDIUM,
+                        severity=severity,
+                        message=f"status component unavailable: {health_snapshot.name}",
+                        checked_at=datetime.now(UTC).isoformat(),
+                    ),
+                ],
+            }
+        )
 
     # Surface memory pressure from the most recent running attempt
     rss_current_mb: float | None = None
@@ -2625,8 +2731,8 @@ def build_daemon_status(
     )
 
     insight_freshness = InsightFreshness(
-        sessions_with_profiles=_safe_int(freshness.get("sessions_with_profiles", 0)),
-        total_sessions=_safe_int(freshness.get("total_sessions", 0)),
+        sessions_with_profiles=_optional_int(freshness.get("sessions_with_profiles")),
+        total_sessions=_optional_int(freshness.get("total_sessions")),
     )
 
     from polylogue.daemon.lifecycle import lifecycle_status
@@ -2644,17 +2750,17 @@ def build_daemon_status(
     )
     _attach_collection_state(component_readiness, snapshots)
     return DaemonStatus(
-        raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
-        raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
-        raw_quarantined=_safe_int(raw_failures.get("quarantined", 0)),
-        raw_deferred_failures=_safe_int(raw_failures.get("deferred_failures", 0)),
-        raw_terminal_rejections=_safe_int(raw_failures.get("terminal_rejections", 0)),
-        raw_unexplained_failures=_safe_int(raw_failures.get("unexplained_failures", 0)),
+        raw_parse_failures=_optional_int(raw_failures.get("parse_failures")),
+        raw_validation_failures=_optional_int(raw_failures.get("validation_failures")),
+        raw_quarantined=_optional_int(raw_failures.get("quarantined")),
+        raw_deferred_failures=_optional_int(raw_failures.get("deferred_failures")),
+        raw_terminal_rejections=_optional_int(raw_failures.get("terminal_rejections")),
+        raw_unexplained_failures=_optional_int(raw_failures.get("unexplained_failures")),
         raw_failure_lifecycle_available=raw_lifecycle_available,
         raw_failure_lifecycle_state=cast(Literal["healthy", "degraded", "blocked", "unavailable"], raw_lifecycle_state),
         raw_failure_lifecycle_reason=str(raw_lifecycle_reason) if raw_lifecycle_reason is not None else None,
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
-        raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
+        raw_detection_warnings=_optional_int(raw_failures.get("detection_warnings")),
         sinex_publication=sinex_publication,
         daemon_liveness=_check_daemon_liveness(daemon_lifecycle),
         daemon_lifecycle=daemon_lifecycle,
@@ -2680,6 +2786,7 @@ def build_daemon_status(
         blob_publication_reservations=blob_publication_reservations,
         archive_storage=storage_info,
         component_readiness=component_readiness,
+        status_components=_status_component_metadata(snapshots),
         claim_guard=_daemon_claim_guard(
             archive_storage=storage_info,
             raw_materialization_readiness=raw_materialization_readiness,
@@ -2864,6 +2971,7 @@ def daemon_status_payload(
             "checked_at": status.checked_at,
             "component_state": status.component_state.model_dump(),
             "component_readiness": status.component_readiness,
+            "status_components": status.status_components,
             "claim_guard": status.claim_guard,
             "live": live_source_status_payload(watch_sources),
             "browser_capture": browser_capture_status_payload(
