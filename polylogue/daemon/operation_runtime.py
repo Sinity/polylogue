@@ -392,6 +392,28 @@ class DaemonOperationRuntime:
                     reference=record,
                     result=durable.get("result", durable),
                 ).to_dict()
+            # A durable non-terminal record is the recovery authority after a
+            # daemon restart.  Re-enqueuing the request here would create a
+            # second exchange and could replay a mutation whose first effect
+            # is merely not yet observable.  Preview-page records are only
+            # staging authority; _durable deliberately excludes them from
+            # this recovery boundary so their normal sealing exchange may
+            # continue.
+            if (
+                record is not None
+                and record["artifact_kind"] != "insight-preview-pages"
+                and durable is not None
+                and durable["outcome"] in {"accepted", "running", "indeterminate"}
+            ):
+                return operation_envelope(
+                    request,
+                    context,
+                    snapshot=control,
+                    started_at=started,
+                    outcome=str(durable["outcome"]),
+                    reference=record,
+                    result=durable,
+                ).to_dict()
         request_id = str(request.request_id)
         peer_closed = False
         with self._condition:
