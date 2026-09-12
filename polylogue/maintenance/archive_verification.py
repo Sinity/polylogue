@@ -1524,15 +1524,10 @@ def _check_parent_session_accounting_at_index_path(
     source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
     if not source_path.exists() or not index_path.exists():
         return _skip_check("parent-session-accounting", "source.db or candidate index.db not present")
-    try:
-        source = _open_ro(source_path)
-        index = _open_ro(index_path)
-    except sqlite3.Error as exc:
-        return _error_check("parent-session-accounting", f"could not open source/index tiers: {exc}", exc=exc)
+    source = _open_ro(source_path)
+    index = _open_ro(index_path)
     try:
         report = audit_parent_session_accounting(source, index, archive_root=archive_root)
-    except sqlite3.Error as exc:
-        return _error_check("parent-session-accounting", f"could not read parent accounting: {exc}", exc=exc)
     finally:
         source.close()
         index.close()
