@@ -1263,11 +1263,20 @@ class LiveBatchProcessor:
             append_file_count=append_file_count,
             full_file_count=len(full_paths),
         )
+        # The ingest-attempt receipt has separate units for parsed raw files
+        # and materialized sessions.  Count the actual session identities
+        # touched by this batch; using ``succeeded_file_count`` here would
+        # silently turn a multi-session file into one materialized session and
+        # would also credit failed cursor items.
+        materialized_session_count = len(
+            {session_id for _source_name, session_id in (*new_session_touches, *updated_session_touches)}
+        )
         self._record_attempt_progress(
             attempt_id,
             phase="cursor_update",
             succeeded_file_count=len(succeeded_paths),
             failed_file_count=len(failed_paths) + len(deferred_paths),
+            materialized_count=materialized_session_count,
             source_payload_read_bytes=source_payload_read_bytes,
             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
             parse_time_s=parse_time_s,

@@ -140,12 +140,12 @@ class EmbeddingMetricState(TypedDict):
     retrieval_ready: int
     latest_status: str | None
     latest_rebuild: str
-    latest_planned_sessions: int
+    latest_planned_sessions: int | None
     latest_processed_sessions: int
     latest_embedded_sessions: int
     latest_skipped_sessions: int
     latest_error_count: int
-    latest_planned_messages: int
+    latest_planned_messages: int | None
     latest_embedded_messages: int
     latest_estimated_cost_usd: float
 
@@ -856,14 +856,19 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
         "retrieval_ready": 1 if embedded_messages > 0 else 0,
         "latest_status": latest["status"] if latest is not None else None,
         "latest_rebuild": "false",
-        "latest_planned_sessions": latest["scanned_sessions"] if latest is not None else 0,
+        # The archive-tier receipt records how many sessions were actually
+        # visited (``scanned_sessions``), not the size of the pending window
+        # before the run started.  It therefore cannot support a planned
+        # denominator: omitting the series is more honest than publishing the
+        # same quantity under both labels.
+        "latest_planned_sessions": None if latest is not None else 0,
         "latest_processed_sessions": (
             latest["embedded_sessions"] + latest["skipped_sessions"] if latest is not None else 0
         ),
         "latest_embedded_sessions": latest["embedded_sessions"] if latest is not None else 0,
         "latest_skipped_sessions": latest["skipped_sessions"] if latest is not None else 0,
         "latest_error_count": latest["error_count"] if latest is not None else 0,
-        "latest_planned_messages": 0,
+        "latest_planned_messages": None,
         "latest_embedded_messages": latest["embedded_messages"] if latest is not None else 0,
         "latest_estimated_cost_usd": latest["estimated_cost_usd"] if latest is not None else 0.0,
     }
@@ -966,7 +971,11 @@ def _emit_embedding_metrics(lines: list[str], state: EmbeddingMetricState) -> No
         help_text="Latest embedding catch-up run session counts by state.",
         metric_type="gauge",
         samples=[
-            ({"state": "planned"}, int(state["latest_planned_sessions"])),
+            *(
+                [({"state": "planned"}, int(state["latest_planned_sessions"]))]
+                if state["latest_planned_sessions"] is not None
+                else []
+            ),
             ({"state": "processed"}, int(state["latest_processed_sessions"])),
             ({"state": "embedded"}, int(state["latest_embedded_sessions"])),
             ({"state": "skipped"}, int(state["latest_skipped_sessions"])),
@@ -979,7 +988,11 @@ def _emit_embedding_metrics(lines: list[str], state: EmbeddingMetricState) -> No
         help_text="Latest embedding catch-up run message counts by state.",
         metric_type="gauge",
         samples=[
-            ({"state": "planned"}, int(state["latest_planned_messages"])),
+            *(
+                [({"state": "planned"}, int(state["latest_planned_messages"]))]
+                if state["latest_planned_messages"] is not None
+                else []
+            ),
             ({"state": "embedded"}, int(state["latest_embedded_messages"])),
         ],
     )

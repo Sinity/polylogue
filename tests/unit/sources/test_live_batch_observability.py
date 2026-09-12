@@ -32,6 +32,7 @@ def test_record_attempt_progress_preserves_stage_payload_in_durable_event() -> N
         needed_file_count=1,
         succeeded_file_count=0,
         failed_file_count=0,
+        materialized_count=2,
         input_bytes=128,
         source_payload_read_bytes=64,
         cursor_fingerprint_read_bytes=32,
@@ -52,6 +53,7 @@ def test_record_attempt_progress_preserves_stage_payload_in_durable_event() -> N
         "storage_write_tiers": "source,index",
         "payload_available_file_count": 1,
     }
+    assert cursor.progress_kwargs["materialized_count"] == 2
     assert cursor.event_kwargs is not None
     assert cursor.event_kwargs["stage_payload"] == {
         "storage_route": "archive_full",

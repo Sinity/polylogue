@@ -668,6 +668,7 @@ def test_cursor_archives_partial_success_as_completed_with_error(tmp_path: Path)
         status="completed",
         succeeded_file_count=1,
         failed_file_count=1,
+        materialized_count=1,
     )
     store.finish_ingest_attempt(
         attempt_id,
@@ -687,6 +688,41 @@ def test_cursor_archives_partial_success_as_completed_with_error(tmp_path: Path)
         ).fetchone()
 
     assert row == ("completed_with_failures", "completed", 1, 1, "/tmp/skipped-or-failed.jsonl")
+
+
+def test_cursor_failed_items_are_not_recorded_as_parsed_or_materialized(tmp_path: Path) -> None:
+    """A wholly failed batch keeps both successful counters at zero.
+
+    The failure count remains in the stage event payload, but it must not be
+    copied into either the parsed-raw or materialized-session columns.
+    """
+    store = CursorStore(tmp_path / "live.sqlite")
+    source = tmp_path / "failed.jsonl"
+    source.write_text('{"not": "accepted"}\n')
+    attempt_id = store.begin_ingest_attempt(paths=[source], input_bytes=source.stat().st_size, queued_file_count=1)
+
+    store.update_ingest_attempt(
+        attempt_id,
+        phase="full_parse_failed",
+        status="completed_with_failures",
+        succeeded_file_count=None,
+        failed_file_count=1,
+        materialized_count=None,
+        error="parse failed",
+    )
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            "SELECT parsed_raw_count, materialized_count FROM ingest_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        event_payload = conn.execute(
+            "SELECT payload_json FROM daemon_stage_events WHERE attempt_id = ? AND stage = ?",
+            (attempt_id, "full_parse_failed"),
+        ).fetchone()[0]
+
+    assert row == (0, 0)
+    assert '"failed_file_count":1' in event_payload
 
 
 def test_cursor_syncs_positions_to_archive_ops_db(tmp_path: Path) -> None:
