@@ -27,6 +27,7 @@ import shutil
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -538,6 +539,14 @@ class _PlanRecordingConnection:
         self._conn = conn
         self._plans = plans
 
+    @property
+    def row_factory(self) -> Any:
+        return self._conn.row_factory
+
+    @row_factory.setter
+    def row_factory(self, factory: Any) -> None:
+        self._conn.row_factory = factory
+
     def execute(self, sql: str, parameters: Sequence[str] = ()) -> sqlite3.Cursor:
         if "raw_sessions" in sql:
             self._plans.append([row[3] for row in self._conn.execute("EXPLAIN QUERY PLAN " + sql, parameters)])
@@ -573,8 +582,8 @@ def test_raw_parse_recovery_probe_seeks_the_source_path_index(tmp_path: Path, mo
 
     assert make_raw_parse_recovery_stage(tmp_path / "index.db").check(path) is True
 
-    assert len(plans) == 1, f"expected exactly one raw_sessions probe, got {plans}"
-    steps = plans[0]
+    assert len(plans) <= 3, f"expected bounded discovery, membership inspection and source lookup, got {plans}"
+    steps = [step for plan in plans for step in plan]
     assert not [step for step in steps if re.match(r"^SCAN r\b", step)], steps
     assert [step for step in steps if "SEARCH r USING INDEX idx_raw_sessions_source_path" in step], steps
 
