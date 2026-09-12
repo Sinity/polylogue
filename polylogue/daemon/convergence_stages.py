@@ -1045,6 +1045,7 @@ def make_default_convergence_stages(
         (
             make_raw_parse_recovery_stage(db_path, archive_root=archive_root()),
             make_raw_authority_verdict_cache_stage(db_path),
+            _make_attachment_bytes_stage(db_path, archive_root=archive_root()),
             make_fts_stage(db_path, archive_root=archive_root()),
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
@@ -1057,6 +1058,16 @@ def make_default_convergence_stages(
         )
     )
     return tuple(stages)
+
+
+def _make_attachment_bytes_stage(db_path: Path, *, archive_root: Path) -> ConvergenceStage:
+    """Construct the Drive attachment owner lazily with the normal config."""
+    from polylogue.operations.attachment_convergence import make_configured_attachment_convergence_stage
+
+    return make_configured_attachment_convergence_stage(
+        db_path,
+        archive_root=archive_root,
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────────
