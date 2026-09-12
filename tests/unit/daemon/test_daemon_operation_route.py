@@ -6,8 +6,10 @@ import json
 import os
 import queue
 import socket
+import sqlite3
 import threading
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -256,6 +258,89 @@ def test_kernel_authenticated_uid_reference_survives_client_and_daemon_restart(t
     assert prepared["accepted_reference"]["principal_ref"] == f"daemon:unix:uid:{os.getuid()}"
     assert recovered["accepted_reference"] == prepared["accepted_reference"]
     assert recovered["result"] == prepared["result"]
+
+
+def test_restart_recovers_indeterminate_mutation_without_replaying_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durable unknown effect is returned after restart, never submitted again."""
+    root = tmp_path / "archive"
+    session_ids: tuple[str, ...] = ()
+
+    def seed(root: Path) -> None:
+        nonlocal session_ids
+        session_ids = _seed_sessions(root, count=1)
+
+    apply_calls = 0
+    original_apply = SessionDeleteActuator.apply
+
+    def apply_once_as_indeterminate(
+        actuator: SessionDeleteActuator, plan: MutationPlan, args: SessionDeleteArgs
+    ) -> MutationReceipt:
+        nonlocal apply_calls
+        apply_calls += 1
+        # The archive mutation really happens, but the worker loses the
+        # outcome at the domain boundary.  Audit therefore persists unknown,
+        # which is the restart case this route must recover.
+        return replace(original_apply(actuator, plan, args), status="unknown", detail="synthetic lost outcome")
+
+    monkeypatch.setattr(SessionDeleteActuator, "apply", apply_once_as_indeterminate)
+    with running_daemon_operations(root, seed_archive=seed) as first:
+        preview = first.client.operation_to_completion(
+            "mutation.session.delete.preview",
+            {"session_ids": list(session_ids)},
+            archive_root=str(root),
+            request_id="indeterminate-preview",
+        )
+        assert preview is not None
+        authorization = first.client.operation_to_completion(
+            "mutation.session.delete.authorize",
+            {"preview_refs": preview["result"]["preview_refs"]},
+            archive_root=str(root),
+            request_id="indeterminate-authorize",
+        )
+        assert authorization is not None
+        lost = first.client.operation_to_completion(
+            "mutation.session.delete.execute",
+            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            archive_root=str(root),
+            request_id="indeterminate-execute",
+        )
+        assert lost is not None and lost["outcome"] == "indeterminate"
+        accepted_reference = lost["accepted_reference"]
+
+    assert apply_calls == 1
+    with running_daemon_operations(root) as restarted:
+        # Startup recovery conservatively adjudicates this synthetic fixture
+        # from the already-deleted target. Re-introduce the persisted unknown
+        # outcome after startup so the route is tested against a durable
+        # indeterminate record, exactly as a crashed domain writer leaves it.
+        with sqlite3.connect(root / "audit.db") as connection:
+            connection.execute(
+                """
+                UPDATE operation_runs
+                SET unknown_count = 1, unknown_reason = ?
+                WHERE operation_id IN (
+                    SELECT operation_id FROM machine_request_parts
+                    WHERE request_id = ? AND operation_id IS NOT NULL
+                )
+                """,
+                ("synthetic lost outcome", "indeterminate-execute"),
+            )
+            connection.commit()
+        recovered = restarted.client.operation(
+            "mutation.session.delete.execute",
+            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            archive_root=str(root),
+            request_id="indeterminate-execute",
+        )
+        assert recovered is not None
+        assert recovered["outcome"] == "indeterminate"
+        assert recovered["accepted_reference"] == accepted_reference
+        assert recovered["result"]["reference"] == accepted_reference
+
+    assert apply_calls == 1
+    assert all(not restarted.session_exists(session_id) for session_id in session_ids)
 
 
 def test_uds_refuses_when_kernel_peer_credentials_cannot_be_read(
