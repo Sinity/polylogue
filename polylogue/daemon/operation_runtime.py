@@ -419,7 +419,12 @@ class DaemonOperationRuntime:
                         scheduled = self._kernel.submit(
                             work,
                             admission_class="interactive-read" if spec.authority is DaemonAuthority.READ else "control",
-                            cancellation=exchange.cancellation if spec.authority is DaemonAuthority.READ else None,
+                            # A control exchange keeps its durable authority after
+                            # acceptance, but before that boundary a disconnect or
+                            # deadline must release a queued reservation just as a
+                            # read does.  The operation body still decides any
+                            # in-flight post-acceptance cancellation semantics.
+                            cancellation=exchange.cancellation,
                         )
                         exchange.future = scheduled.future
                 except DaemonBackpressureError:
