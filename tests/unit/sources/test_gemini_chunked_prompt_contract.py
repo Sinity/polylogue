@@ -367,8 +367,10 @@ def _wire_rendered_texts(payload: JSONDocument) -> list[str]:
     the same extraction bug.  A chunk-level ``text`` wins over its streamed
     ``parts`` because those fields describe the same wire content.
     """
-    prompt = payload.get("chunkedPrompt")
-    chunks = prompt.get("chunks") if isinstance(prompt, dict) else None
+    prompt_value = payload.get("chunkedPrompt")
+    prompt = cast(JSONDocument, prompt_value) if isinstance(prompt_value, dict) else {}
+    chunks_value = prompt.get("chunks")
+    chunks = cast(list[object], chunks_value) if isinstance(chunks_value, list) else None
     if not isinstance(chunks, list):
         return []
 
@@ -376,15 +378,18 @@ def _wire_rendered_texts(payload: JSONDocument) -> list[str]:
     for chunk in chunks:
         if not isinstance(chunk, dict):
             continue
+        chunk = cast(JSONDocument, chunk)
         text = chunk.get("text")
         if isinstance(text, str) and text:
             rendered.append(text)
         elif isinstance(chunk.get("parts"), list):
-            rendered.extend(
-                part["text"]
-                for part in chunk["parts"]
-                if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"]
-            )
+            parts = cast(list[object], chunk["parts"])
+            for raw_part in parts:
+                if not isinstance(raw_part, dict):
+                    continue
+                part_text = cast(JSONDocument, raw_part).get("text")
+                if isinstance(part_text, str) and part_text:
+                    rendered.append(part_text)
         executable_code = chunk.get("executableCode")
         if isinstance(executable_code, dict) and isinstance(executable_code.get("code"), str):
             rendered.append(executable_code["code"])
@@ -422,8 +427,9 @@ def test_current_export_conserves_wire_text_into_typed_blocks() -> None:
 def test_current_export_conservation_oracle_rejects_dropped_mutated_text() -> None:
     """The conservation lock follows changed source bytes, not fixture names."""
     payload = _load_catalog("current_export.json")
-    mutated = deepcopy(payload)
-    chunks = mutated["chunkedPrompt"]["chunks"]
+    mutated = cast(JSONDocument, deepcopy(payload))
+    prompt = cast(JSONDocument, mutated["chunkedPrompt"])
+    chunks = cast(list[JSONDocument], prompt["chunks"])
     chunks[0]["text"] = "synthetic conservation mutation"
     session = _parse(mutated, "current_export")
 

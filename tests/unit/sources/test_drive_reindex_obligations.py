@@ -183,7 +183,10 @@ def test_committed_gemini_schema_declares_current_shape_without_fixture_values()
     properties = schema.get("properties")
     assert isinstance(properties, dict)
     assert {"chunkedPrompt", "runSettings", "systemInstruction"} <= properties.keys()
-    assert set(schema.get("required", [])) >= {"chunkedPrompt", "runSettings", "systemInstruction"}
+    required = schema.get("required")
+    assert isinstance(required, list)
+    required_names = {item for item in required if isinstance(item, str)}
+    assert required_names >= {"chunkedPrompt", "runSettings", "systemInstruction"}
 
     serialized = json.dumps(schema, sort_keys=True)
     fixture_sentinels = {
