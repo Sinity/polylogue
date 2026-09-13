@@ -445,6 +445,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "Workload Artifact Consolidation Ledger",
+        "plans/workload-artifact-consolidation-ledger.md",
+        "Census and per-candidate disposition for duplicate workload and corpus artifact builders under tests/infra.",
+        "design",
+    ),
+    _entry(
         "Typed WebUI Capability Matrix",
         "plans/webui-capability-matrix.md",
         "Cutover inventory for typed and legacy browser capabilities.",
