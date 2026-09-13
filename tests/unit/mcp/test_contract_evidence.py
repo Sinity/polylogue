@@ -270,17 +270,39 @@ class TestErrorPrivacyEnvelopes:
             result = invoke_surface(server._resource_manager._resources["polylogue://stats"].fn)
 
         body = _structured_error(result)
-        # The resource handler intentionally puts the raw exception message into
-        # the user-facing 'error' field today. Until that is tightened (filed
-        # separately), pin the invariants that matter most: code is the
-        # categorical signal, detail carries only the exception type name,
-        # and absolute home paths never appear.
         assert body.get("code") == "internal_error"
         assert body.get("detail") == "RuntimeError"
         serialized = json.dumps(body)
+        assert secret not in serialized
+        assert "hunter2" not in serialized
+        assert "db.internal" not in serialized
         assert "Traceback" not in serialized
         # The exception type, not the exception message, is what should leak.
         assert "RuntimeError" in serialized
+
+    def test_session_resource_internal_error_does_not_leak_exception_message(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        from polylogue.archive.query.transaction import QueryTransaction
+        from polylogue.mcp.server import build_server
+
+        secret = "synthetic-private-exception-marker"
+        server = cast(MCPServerUnderTest, build_server())
+        monkeypatch.setattr(QueryTransaction, "run", AsyncMock(side_effect=RuntimeError(secret)))
+
+        result = invoke_surface(
+            server._resource_manager._templates["polylogue://session/{conv_id}"].fn,
+            conv_id="session-under-test",
+        )
+
+        body = _structured_error(result)
+        assert body["code"] == "internal_error"
+        assert body["detail"] == "RuntimeError"
+        assert secret not in result
+        assert "RuntimeError" in result
 
     def test_tool_internal_exception_sanitised_through_safe_call(
         self,

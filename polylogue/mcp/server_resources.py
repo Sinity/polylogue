@@ -14,13 +14,13 @@ from polylogue.mcp.archive_support import (
 )
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
-    MCPErrorPayload,
     MCPReadinessReportPayload,
     MCPRootPayload,
     MCPTagCountsPayload,
     session_tree_payload,
 )
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
+from polylogue.mcp.server_support import _exception_to_error_json
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
@@ -65,11 +65,7 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
             )
             archive_stats = await transaction.run(lambda archive: archive.stats())
         except Exception as exc:
-            return hooks.error_json(
-                f"Failed to retrieve archive stats: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.stats", exc)
         return hooks.json_payload(
             MCPArchiveStatsPayload.from_archive_stats(
                 archive_stats,
@@ -100,11 +96,7 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
             payload = await transaction.run(lambda archive: archive_session_list_payload(archive, spec))
             return hooks.json_payload(payload)
         except Exception as exc:
-            return hooks.error_json(
-                f"Failed to list sessions: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.sessions", exc)
 
     @mcp.resource("polylogue://session/{conv_id}")
     async def session_resource(conv_id: str) -> str:
@@ -134,22 +126,14 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
         except sqlite3.OperationalError:
             return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
         except Exception as exc:
-            return hooks.error_json(
-                f"Failed to get session {conv_id}: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.session", exc)
 
     @mcp.resource("polylogue://tags")
     async def tags_resource() -> str:
         try:
             tags = await hooks.get_polylogue().list_tags()
         except Exception as exc:
-            return hooks.error_json(
-                f"Failed to list tags: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.tags", exc)
         with hooks.response_context("list_tags", {"limit": 3, "offset": 0}):
             return hooks.json_payload(MCPTagCountsPayload(root=tags))
 
@@ -301,22 +285,14 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
         except sqlite3.OperationalError:
             return hooks.error_json(f"Session not found: {conv_id}", code="not_found")
         except Exception as exc:
-            return hooks.error_json(
-                f"Failed to list messages for {conv_id}: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.messages", exc)
 
     @mcp.resource("polylogue://session-tree/{conv_id}")
     async def session_tree_resource(conv_id: str) -> str:
         try:
             tree = await hooks.get_polylogue().get_session_tree(conv_id)
         except Exception as exc:
-            return hooks.error_json(
-                f"Failed to get session tree for {conv_id}: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.session-tree", exc)
         return hooks.json_payload(session_tree_payload(tree))
 
     @mcp.resource("polylogue://origin/{name}/recent")
@@ -339,11 +315,7 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
             payload = await transaction.run(lambda archive: archive_session_list_payload(archive, spec))
             return hooks.json_payload(payload)
         except Exception as exc:
-            return hooks.error_json(
-                f"Failed to list recent sessions for origin {name}: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.origin-recent", exc)
 
     @mcp.resource("polylogue://readiness")
     def readiness_resource() -> str:
@@ -361,15 +333,7 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
         except Exception as exc:
-            return hooks.json_payload(
-                MCPErrorPayload(
-                    message="internal MCP resource error",
-                    code="internal_error",
-                    error="internal_error",
-                    detail=type(exc).__name__,
-                ),
-                exclude_none=True,
-            )
+            return _exception_to_error_json("resource.readiness", exc)
 
     @mcp.resource("polylogue://raw-authority-census/{census_id}/{offset}")
     def raw_authority_census_resource(census_id: str, offset: str) -> str:
@@ -383,17 +347,9 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
         except KeyError:
             return hooks.error_json(f"Raw authority census not found: {census_id}", code="not_found")
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
-            return hooks.error_json(
-                f"Failed to read raw authority census {census_id}: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.raw-authority-census", exc)
         except Exception as exc:
-            return hooks.error_json(
-                f"Failed to read raw authority census {census_id}: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.raw-authority-census", exc)
 
     @mcp.resource("polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}")
     def raw_authority_detail_resource(census_id: str, record_id: str, revision: str, offset: str) -> str:
@@ -410,17 +366,9 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
                 code="not_found",
             )
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
-            return hooks.error_json(
-                f"Failed to read raw authority detail {census_id}/{record_id}: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.raw-authority-detail", exc)
         except Exception as exc:
-            return hooks.error_json(
-                f"Failed to read raw authority detail {census_id}/{record_id}: {exc}",
-                code="internal_error",
-                detail=type(exc).__name__,
-            )
+            return _exception_to_error_json("resource.raw-authority-detail", exc)
 
 
 __all__ = ["register_resources"]
