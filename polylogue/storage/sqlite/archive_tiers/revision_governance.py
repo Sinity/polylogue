@@ -2920,6 +2920,7 @@ def apply_raw_revision_replay(
     preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
     prepared_aggregate_session: ParsedSession | None = None,
     prepared_pending_session: ParsedSession | None = None,
+    prepared_aggregate_rows: PreparedRows | None = None,
     prepared_write: PreparedSessionWrite | None = None,
     prepared_aggregate_content_hash: bytes | None = None,
 ) -> tuple[str, tuple[str, ...]]:
@@ -3145,11 +3146,13 @@ def apply_raw_revision_replay(
             # the head row is about to advertise.
             tip_raw_id = pending_raw_ids[-1]
             full_replace = already_indexed_upto < 0
-            # Legacy prepared rows only describe a single full-replace chunk.
-            # PreparedSessionWrite instead describes the exact composed pending
-            # write and is valid for multi-raw and append replay.
+            # ``prepared_aggregate_rows`` describes the exact composed
+            # full-replace session, including an attached SessionShard. The
+            # older raw-id map remains a single-chunk shortcut only.
             resolved_prepared: PreparedRows | None = None
-            if full_replace and len(pending_raw_ids) == 1 and prepared_by_raw_id is not None:
+            if full_replace and prepared_aggregate_rows is not None:
+                resolved_prepared = prepared_aggregate_rows
+            elif full_replace and len(pending_raw_ids) == 1 and prepared_by_raw_id is not None:
                 prepared_candidate = prepared_by_raw_id.get(tip_raw_id)
                 if isinstance(prepared_candidate, Future):
                     resolved_prepared = prepared_candidate.result()
@@ -3387,6 +3390,7 @@ def apply_raw_membership_classification(
     preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
     preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
     prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
+    prepared_required_raw_ids: frozenset[str] = frozenset(),
 ) -> str | None:
     """Apply one semantic member head and persist every membership decision.
 
@@ -3659,6 +3663,7 @@ def apply_raw_membership_classification(
                     fresh_build_batch=fresh_build_batch,
                     defer_fts_rebuild=not bulk_build,
                     prepared=(prepared_by_raw_id or {}).get(accepted_raw_id),
+                    prepared_required=accepted_raw_id in prepared_required_raw_ids,
                 )
                 if stage_timings_s is not None:
                     key = f"{stage_timing_prefix}.index_parsed_write"

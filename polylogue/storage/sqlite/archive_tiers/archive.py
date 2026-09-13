@@ -1211,14 +1211,20 @@ class ArchiveStore:
             self._active_writer_lease = None
 
     @contextmanager
-    def attached_session_shard(self, shard_path: Path | None) -> Iterator[dict[str, PreparedSessionShardRows]]:
+    def attached_session_shard(
+        self, shard_path: Path | None, *, required: bool = False
+    ) -> Iterator[dict[str, PreparedSessionShardRows]]:
         """Mount a stage-A shard read-only for the body and yield its bindings.
 
         ``None``, a missing file, or a shard this build refuses all yield an
         empty mapping: the caller then writes with no prepared rows, which is
-        the unchanged inline path. A shard is only ever a shortcut.
+        the unchanged inline path. ``required=True`` is for a caller that has
+        explicitly selected the sealed-shard route: it propagates refusal so
+        that route cannot silently become an inline write.
         """
         if shard_path is None:
+            if required:
+                raise ShardRefusedError("a required session shard is absent")
             yield {}
             return
         self._require_writable("attach a session shard")
@@ -1227,6 +1233,8 @@ class ArchiveStore:
             attachment = attach_session_shard(self._conn, shard)
             schema = attachment.__enter__()
         except (ShardRefusedError, OSError, sqlite3.DatabaseError) as exc:
+            if required:
+                raise ShardRefusedError(f"required session shard refused: {exc}") from exc
             logger.warning("index write: %s; building this session's rows inline", exc)
             yield {}
             return
@@ -1991,6 +1999,7 @@ class ArchiveStore:
         preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
         prepared_aggregate_session: ParsedSession | None = None,
         prepared_pending_session: ParsedSession | None = None,
+        prepared_aggregate_rows: PreparedRows | None = None,
         prepared_write: PreparedSessionWrite | None = None,
         prepared_aggregate_content_hash: bytes | None = None,
     ) -> tuple[str, tuple[str, ...]]:
@@ -2015,6 +2024,7 @@ class ArchiveStore:
             preacquired_attachment_refs_by_raw_id=preacquired_attachment_refs_by_raw_id,
             prepared_aggregate_session=prepared_aggregate_session,
             prepared_pending_session=prepared_pending_session,
+            prepared_aggregate_rows=prepared_aggregate_rows,
             prepared_write=prepared_write,
             prepared_aggregate_content_hash=prepared_aggregate_content_hash,
         )
@@ -2038,6 +2048,7 @@ class ArchiveStore:
         preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
         preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
         prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
+        prepared_required_raw_ids: frozenset[str] = frozenset(),
     ) -> str | None:
         self._require_writable("apply source.db membership classification")
         return apply_raw_membership_classification(
@@ -2058,6 +2069,7 @@ class ArchiveStore:
             preacquired_attachment_blobs=preacquired_attachment_blobs,
             preacquired_attachment_refs=preacquired_attachment_refs,
             prepared_by_raw_id=prepared_by_raw_id,
+            prepared_required_raw_ids=prepared_required_raw_ids,
         )
 
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:

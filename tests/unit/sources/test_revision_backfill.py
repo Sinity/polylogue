@@ -45,6 +45,7 @@ from polylogue.storage.sqlite import runtime_indexes, schema_bootstrap
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -273,6 +274,110 @@ def test_owned_nonempty_generation_refuses_cold_build_deferral(tmp_path: Path) -
             generation_root,
             owned_inactive_generation=(generation.generation_id, generation.owner_id),
         )
+
+
+@pytest.mark.parametrize("ingest_workers", (1, 4, 12))
+def test_frozen_inactive_generation_replays_through_sealed_session_shards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ingest_workers: int
+) -> None:
+    """The frozen candidate copies the live shard transport, never source rows.
+
+    Anti-vacuity: replacing the writer's shard copy with inline row binding
+    leaves the logical projection green but makes ``copies`` zero.
+    """
+    import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
+
+    root = tmp_path / f"shard-n{ingest_workers}"
+    bootstrap_archive_root(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session(f"sealed-shard-{ingest_workers}", "hello", "world")),
+            source_path="export/conversations.json",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                logical_source_key=f"chatgpt-export:sealed-shard-{ingest_workers}",
+                kind=RawRevisionKind.FULL,
+                source_revision=f"sealed-shard-{ingest_workers}-v1",
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.classify_raw_revision_cohort_for_rebuild_repair(f"chatgpt-export:sealed-shard-{ingest_workers}")
+    census_historical_revision_evidence(root, ingest_workers=ingest_workers)
+    source_before = (root / "source.db").read_bytes()
+    generation = IndexGenerationStore.for_archive_root(root).create(source_snapshot="sealed-shard-test")
+    copies = 0
+    original_copy = archive_tier_write.copy_shard_session_rows
+
+    def counting_copy(*args: object, **kwargs: object) -> object:
+        nonlocal copies
+        copies += 1
+        return original_copy(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", counting_copy)
+    result = backfill_historical_revision_evidence(
+        Path(generation.index_path).parent,
+        owned_inactive_generation=(generation.generation_id, generation.owner_id),
+        ingest_workers=ingest_workers,
+        use_session_shards=True,
+    )
+
+    assert result.replayed_logical_sources == 1
+    assert copies == 1
+    assert (root / "source.db").read_bytes() == source_before
+    with sqlite3.connect(generation.index_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+        assert conn.execute("SELECT state FROM fts_freshness_state WHERE surface = 'messages_fts'").fetchone() == (
+            "ready",
+        )
+    assert not list(Path(generation.index_path).parent.glob(".frozen-replay-shards-*"))
+
+
+def test_frozen_inactive_generation_refuses_corrupt_required_shard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrupt sealed-route handoff cannot fall back to an inline index write."""
+    root = tmp_path / "corrupt-shard"
+    bootstrap_archive_root(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("corrupt-shard", "hello", "world")),
+            source_path="export/conversations.json",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                logical_source_key="chatgpt-export:corrupt-shard",
+                kind=RawRevisionKind.FULL,
+                source_revision="corrupt-shard-v1",
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:corrupt-shard")
+    census_historical_revision_evidence(root)
+    source_before = (root / "source.db").read_bytes()
+    generation = IndexGenerationStore.for_archive_root(root).create(source_snapshot="corrupt-shard-test")
+    original_add_raw = revision_backfill._FrozenReplayShardTransport.add_raw
+
+    def corrupt_after_seal(
+        transport: revision_backfill._FrozenReplayShardTransport, raw_id: str, sessions: object
+    ) -> None:
+        original_add_raw(transport, raw_id, sessions)  # type: ignore[arg-type]
+        transport.path_for_raw(raw_id).write_bytes(b"not a sqlite shard")
+
+    monkeypatch.setattr(revision_backfill._FrozenReplayShardTransport, "add_raw", corrupt_after_seal)
+    with pytest.raises(ShardRefusedError, match="required session shard refused"):
+        backfill_historical_revision_evidence(
+            Path(generation.index_path).parent,
+            owned_inactive_generation=(generation.generation_id, generation.owner_id),
+            use_session_shards=True,
+        )
+
+    assert (root / "source.db").read_bytes() == source_before
+    with sqlite3.connect(generation.index_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
 def test_browser_snapshot_fidelity_derives_from_parser_ingest_flags() -> None:

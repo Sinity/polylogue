@@ -5,11 +5,11 @@ retained-raw authority, census, replay, finalization, and close route.  The
 input is a deterministic 516-raw Codex slice whose raw identities, blob
 digests, and exact byte count are sealed into each receipt.
 
-Raw replay has no ``LiveParseStage``/``SessionShard`` hand-off and its parser
-uses threads only. Shard and process arms are consequently recorded as
-capability refusals in the same measurement receipt, rather than silently
-becoming inline runs or direct archive-writer experiments. The writer-level
-transport laws remain in ``tests/unit/storage/test_session_shards.py``.
+Frozen inactive-generation replay uses the same sealed ``SessionShard`` writer
+handoff as live ingest. The retained-index and process cells remain typed
+capability refusals, rather than silently becoming inline runs or direct
+archive-writer experiments. The writer-level transport laws remain in
+``tests/unit/storage/test_session_shards.py``.
 """
 
 from __future__ import annotations
@@ -22,9 +22,11 @@ import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
+from typing import Literal
 
 import pytest
 
+from polylogue.sources import revision_backfill
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.revision_backfill import (
     RevisionBackfillResult,
@@ -122,7 +124,7 @@ class _CapabilityReceipt:
     arm: str
     worker_mode: str
     worker_count: int
-    status: str
+    status: Literal["unsupported"]
     reason: str
 
 
@@ -133,13 +135,12 @@ _ARMS = (
         "retained-index-shard",
         uses_owned_inactive_generation=False,
         uses_shard_transport=True,
-        refusal_reason="raw replay has no production SessionShard/PreparedSessionShardRows hand-off",
+        refusal_reason="sealed shard replay is an owned inactive-generation production route",
     ),
     _Arm(
         "deferred-index-fresh-shard",
         uses_owned_inactive_generation=True,
         uses_shard_transport=True,
-        refusal_reason="raw replay has no production SessionShard/PreparedSessionShardRows hand-off",
     ),
     _Arm(
         "retained-index-inline-process",
@@ -293,7 +294,7 @@ def _live_metrics(
 
 
 def _run_arm(root: Path, sealed: _SealedInput, arm: _Arm, *, worker_count: int) -> _ArmReceipt:
-    if arm.uses_shard_transport or arm.worker_mode != "thread":
+    if arm.worker_mode != "thread" or (arm.uses_shard_transport and not arm.uses_owned_inactive_generation):
         raise RuntimeError(arm.refusal_reason or "unsupported finished-build capability")
     destination, owned_generation = _candidate_root(root, arm)
     before = resource.getrusage(resource.RUSAGE_SELF)
@@ -303,6 +304,7 @@ def _run_arm(root: Path, sealed: _SealedInput, arm: _Arm, *, worker_count: int) 
         destination,
         owned_inactive_generation=owned_generation,
         ingest_workers=worker_count,
+        use_session_shards=arm.uses_shard_transport,
     )
     wall_seconds = perf_counter() - started
     after = resource.getrusage(resource.RUSAGE_SELF)
@@ -369,11 +371,11 @@ def _capability_receipts(*, worker_count: int) -> tuple[_CapabilityReceipt, ...]
             arm=arm.name,
             worker_mode=arm.worker_mode,
             worker_count=worker_count,
-            status="refused",
+            status="unsupported",
             reason=arm.refusal_reason or "unsupported finished-build capability",
         )
         for arm in _ARMS
-        if arm.uses_shard_transport or arm.worker_mode != "thread"
+        if arm.worker_mode != "thread" or (arm.uses_shard_transport and not arm.uses_owned_inactive_generation)
     )
 
 
@@ -387,11 +389,15 @@ def test_finished_build_measurement_declares_capability_boundary() -> None:
         "deferred-index-fresh-shard",
         "retained-index-inline-process",
     }
-    refused = [arm for arm in _ARMS if arm.uses_shard_transport or arm.worker_mode != "thread"]
+    refused = [
+        arm
+        for arm in _ARMS
+        if arm.worker_mode != "thread" or (arm.uses_shard_transport and not arm.uses_owned_inactive_generation)
+    ]
     assert all(arm.refusal_reason for arm in refused)
     route_source = inspect.getsource(backfill_historical_revision_evidence)
-    assert "prepare_session_shard" not in route_source
-    assert "PreparedSessionShardRows" not in route_source
+    assert "prepare_session_shard" in inspect.getsource(revision_backfill._FrozenReplayShardTransport)
+    assert "attached_session_shard" in route_source
     assert "ProcessPoolExecutor" not in inspect.getsource(
         __import__("polylogue.sources.revision_backfill", fromlist=["*"])
     )
@@ -401,14 +407,14 @@ def test_finished_build_measurement_declares_capability_boundary() -> None:
             _run_arm(Path("not-opened-for-capability-refusal"), sealed, arm, worker_count=1)
     refusal_receipts = _capability_receipts(worker_count=1)
     assert {receipt.arm for receipt in refusal_receipts} == {arm.name for arm in refused}
-    assert all(receipt.status == "refused" and receipt.reason for receipt in refusal_receipts)
+    assert all(receipt.reason for receipt in refusal_receipts)
 
 
 @pytest.mark.benchmark
 @pytest.mark.storage_scale
 @pytest.mark.timeout(900)
 @pytest.mark.parametrize("worker_count", _WORKER_COUNTS)
-def test_finished_build_measurement_runs_sealed_inline_arms_at_declared_scale(
+def test_finished_build_measurement_runs_sealed_production_arms_at_declared_scale(
     tmp_path: Path,
     worker_count: int,
     _censused_input_template: tuple[Path, _SealedInput, _SourceCensusReceipt],
@@ -420,8 +426,12 @@ def test_finished_build_measurement_runs_sealed_inline_arms_at_declared_scale(
     retaining an immediately comparable pair at each supported worker count.
     """
     template, sealed, source_census = _censused_input_template
-    retained, deferred_fresh = _ARMS[:2]
-    ordered_arms = (deferred_fresh, retained) if worker_count == 4 else (retained, deferred_fresh)
+    retained, deferred_fresh, _retained_shard, deferred_fresh_shard, _process = _ARMS
+    ordered_arms = (
+        (deferred_fresh_shard, deferred_fresh, retained)
+        if worker_count == 4
+        else (retained, deferred_fresh, deferred_fresh_shard)
+    )
     receipts = [
         _run_arm(
             _arm_root(template, tmp_path / f"{arm.name}-n{worker_count}", sealed),
@@ -436,6 +446,10 @@ def test_finished_build_measurement_runs_sealed_inline_arms_at_declared_scale(
     assert_derived_models_equivalent(
         by_arm[retained.name].snapshot,
         by_arm[deferred_fresh.name].snapshot,
+    )
+    assert_derived_models_equivalent(
+        by_arm[deferred_fresh.name].snapshot,
+        by_arm[deferred_fresh_shard.name].snapshot,
     )
     assert all(receipt.metrics["unaccounted_bytes"] == 0 for receipt in receipts)
     assert all(receipt.metrics["failed_file_count"] == 0 for receipt in receipts)
@@ -457,9 +471,8 @@ def test_finished_build_measurement_runs_sealed_inline_arms_at_declared_scale(
     verdict = {
         "conclusion": "incomplete-no-winner",
         "reason": (
-            "one interleaved retained/fresh inline pair at this worker count; "
-            "repeat before ranking, and do not rank shard/process modes until the production "
-            "raw-replay hand-off exists"
+            "one interleaved retained/fresh-inline/fresh-shard set at this worker count; "
+            "repeat before ranking, and do not rank process mode until a production policy supports it"
         ),
     }
     print(
