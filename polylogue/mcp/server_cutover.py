@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from polylogue.core.errors import InsightMaintenanceRequiresDaemonError
 from polylogue.mcp.declarations.adapter import register_declared_handler
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
@@ -2386,7 +2387,15 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         if confirm_error is not None:
             return confirm_error
         session_ids = kwargs.get("session_ids")
-        counts = await hooks.get_polylogue().rebuild_insights(session_ids=list(session_ids) if session_ids else None)
+        try:
+            counts = await hooks.get_polylogue().rebuild_insights(
+                session_ids=list(session_ids) if session_ids else None
+            )
+        except InsightMaintenanceRequiresDaemonError as exc:
+            # Insight maintenance is a sealed, page-bounded daemon machine.
+            # MCP has no way to hold that authority, so report the sanctioned
+            # route instead of surfacing an internal transaction error.
+            return hooks.error_json(str(exc), code="daemon_required")
         return hooks.json_payload(
             MCPRootPayload(
                 root={
