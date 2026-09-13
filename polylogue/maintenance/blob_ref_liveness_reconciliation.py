@@ -149,7 +149,7 @@ def _offline_apply_block_reason(archive_root: Path) -> str | None:
 
 def _checkpoint_source_db(conn: sqlite3.Connection) -> None:
     try:
-        row = checkpoint_connection(conn, "TRUNCATE")
+        row = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
     except sqlite3.Error as exc:
         raise BlobRefLivenessReconciliationError("could not checkpoint source.db before backup validation") from exc
     busy, log_frames, checkpointed_frames = (int(value) for value in row)

@@ -1756,7 +1756,7 @@ def _checkpoint_truncate(path: Path, *, label: str) -> None:
         os.close(reopened_fd)
         reopened_fd = -1
         with closing(sqlite3.connect(f"/proc/self/fd/{fd}")) as conn:
-            checkpoint = checkpoint_connection(conn, "TRUNCATE")
+            checkpoint = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
     finally:
         if reopened_fd >= 0:
             os.close(reopened_fd)

@@ -344,7 +344,7 @@ class EmbeddingGenerationStore:
             raise EmbeddingGenerationError("embedding active path is not a regular file")
         try:
             with sqlite_connection(self.active_path, timeout=30.0) as conn:
-                row = checkpoint_connection(conn, "TRUNCATE")
+                row = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
         except (OSError, sqlite3.Error) as exc:
             raise EmbeddingGenerationError("could not checkpoint legacy embedding database") from exc
         if int(row[0] or 0) != 0:
