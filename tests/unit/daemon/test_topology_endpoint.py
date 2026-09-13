@@ -259,6 +259,20 @@ class TestEnvelopeProjection:
         env = build_topology_envelope(topo, node_limit=MAX_NODE_LIMIT * 10)
         assert env["node_limit"] == MAX_NODE_LIMIT
 
+    def test_incomplete_source_page_signals_lower_bound_and_keeps_continuation(self) -> None:
+        topo = _topology().model_copy(
+            update={
+                "nodes_complete": False,
+                "edges_complete": False,
+                "continuation": "node-offset:4",
+            }
+        )
+        env = build_topology_envelope(topo, node_limit=2)
+        assert env["truncated_count"] == 1
+        assert env["nodes_complete"] is False
+        assert env["edges_complete"] is False
+        assert env["continuation"] == "node-offset:4"
+
 
 # ---------------------------------------------------------------------------
 # End-to-end endpoint dispatch
