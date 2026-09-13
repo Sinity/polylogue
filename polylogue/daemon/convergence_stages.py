@@ -15,7 +15,6 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -68,24 +67,6 @@ def _is_transient_sqlite_lock(exc: BaseException) -> bool:
     return "database is locked" in message or "database table is locked" in message or "database is busy" in message
 
 
-@dataclass(frozen=True, slots=True)
-class FtsSurfaceRepairResult:
-    """Outcome of one persisted FTS-surface repair attempt.
-
-    A busy SQLite writer is deliberate backpressure and remains retryable. A
-    repair exception or an exact-parity failure is a genuine failed attempt.
-    Keeping that distinction beside the FTS repair route prevents the debt
-    drain from reducing both outcomes to the same boolean.
-    """
-
-    success: bool
-    deferred: bool = False
-    detail: str | None = None
-
-    def __bool__(self) -> bool:
-        return self.success
-
-
 def _open_archive_insight_write_connection(db_path: Path, *, archive_root: Path) -> sqlite3.Connection:
     """Open an archive writer bound to the root admitted by its caller.
 
@@ -104,15 +85,6 @@ def _open_archive_insight_write_connection(db_path: Path, *, archive_root: Path)
         conn.close()
         raise
     return conn
-
-
-@dataclass(frozen=True, slots=True)
-class _FtsRepairNeeds:
-    messages: bool = False
-
-    @property
-    def any(self) -> bool:
-        return self.messages
 
 
 # ── Stage: FTS ─────────────────────────────────────────────────────
@@ -878,13 +850,6 @@ def _make_attachment_bytes_stage(db_path: Path, *, archive_root: Path) -> Conver
 # ── Helpers ────────────────────────────────────────────────────────
 
 
-def _fts_doc_count(conn: sqlite3.Connection, table: str) -> int:
-    if not _table_exists(conn, table):
-        return 0
-    row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-    return int(row[0] or 0) if row is not None else 0
-
-
 def _session_ids_for_source_path(conn: sqlite3.Connection, path: Path) -> list[str]:
     return session_ids_for_source_path(conn, path)
 
@@ -896,34 +861,22 @@ def _session_ids_for_source_paths(
     return session_ids_for_source_paths(conn, paths)
 
 
-def _fts_repair_needs_for_sessions(
-    conn: sqlite3.Connection,
-    session_ids: Sequence[str],
-) -> _FtsRepairNeeds:
-    if not session_ids:
-        return _FtsRepairNeeds()
-    if not _table_exists(conn, "messages_fts_docsize"):
-        return _FtsRepairNeeds(messages=True)
-    placeholders = ", ".join("?" for _ in session_ids)
-    params = tuple(session_ids)
-    missing_blocks = int(
-        conn.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM blocks AS b
-            LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
-            WHERE b.session_id IN ({placeholders})
-              AND d.id IS NULL
-              AND NULLIF(b.search_text, '') IS NOT NULL
-            """,
-            params,
-        ).fetchone()[0]
-    )
-    return _FtsRepairNeeds(messages=missing_blocks > 0)
-
-
-def _fts_needs_repair_for_sessions(conn: sqlite3.Connection, session_ids: Sequence[str]) -> bool:
-    return _fts_repair_needs_for_sessions(conn, session_ids).any
+def _archive_existing_session_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
+    """Return requested IDs that still exist for the embedding stage."""
+    unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
+    if not unique_ids or not _table_exists(conn, "sessions"):
+        return []
+    placeholders = ", ".join("?" for _ in unique_ids)
+    rows = conn.execute(
+        f"""
+        SELECT session_id
+        FROM sessions
+        WHERE session_id IN ({placeholders})
+        ORDER BY session_id
+        """,
+        unique_ids,
+    ).fetchall()
+    return list(dict.fromkeys(str(row[0]) for row in rows))
 
 
 def _embedding_config_enabled() -> bool:
@@ -1121,35 +1074,6 @@ def _reconcile_archive_embedding_config_change(index_db_path: Path, *, archive_r
         conn.close()
 
 
-def _repair_changed_session_fts(
-    conn: sqlite3.Connection,
-    session_ids: Sequence[str],
-    *,
-    needs: _FtsRepairNeeds | None = None,
-) -> None:
-    from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
-
-    needs = needs or _fts_repair_needs_for_sessions(conn, session_ids)
-    if needs.messages:
-        repair_message_fts_index_sync(conn, session_ids)
-
-
-def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> None:
-    """Mark a targeted ``messages_fts`` repair stale without a global scan.
-
-    A session-scoped repair proves only its requested rows. Preserve the last
-    exact counters until an archive-wide invariant snapshot publishes the next
-    READY verdict.
-    """
-    from polylogue.storage.fts.freshness import record_fts_surface_stale_preserving_counts_sync
-
-    record_fts_surface_stale_preserving_counts_sync(
-        conn,
-        surface="messages_fts",
-        detail="targeted changed-session repair requires exact invariant verification",
-    )
-
-
 def _record_fts_freshness_after_insights(conn: sqlite3.Connection) -> bool:
     """Publish exact FTS readiness after insight rows have changed.
 
@@ -1279,286 +1203,6 @@ def _schema_archive_session_ids_for_source_paths(
         if path is not None:
             result[path].append(str(session_id))
     return result
-
-
-def _archive_existing_session_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
-    unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-    if not unique_ids or not _table_exists(conn, "sessions"):
-        return []
-    placeholders = ", ".join("?" for _ in unique_ids)
-    rows = conn.execute(
-        f"""
-        SELECT session_id
-        FROM sessions
-        WHERE session_id IN ({placeholders})
-        ORDER BY session_id
-        """,
-        unique_ids,
-    ).fetchall()
-    return list(dict.fromkeys(str(row[0]) for row in rows))
-
-
-def _archive_text_block_count(conn: sqlite3.Connection, session_ids: Sequence[str] | None = None) -> int:
-    if not _table_exists(conn, "blocks"):
-        return 0
-    params: tuple[str, ...] = tuple(dict.fromkeys(str(session_id) for session_id in session_ids or () if session_id))
-    filter_sql = ""
-    if params:
-        placeholders = ", ".join("?" for _ in params)
-        filter_sql = f"AND session_id IN ({placeholders})"
-    row = conn.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM blocks
-        WHERE search_text != ''
-          {filter_sql}
-        """,
-        params,
-    ).fetchone()
-    return int(row[0] or 0) if row is not None else 0
-
-
-def _archive_messages_fts_doc_count(conn: sqlite3.Connection) -> int:
-    return _fts_doc_count(conn, "messages_fts_docsize")
-
-
-def _archive_fts_needs_repair(conn: sqlite3.Connection, session_ids: Sequence[str] | None = None) -> bool:
-    if not _table_exists(conn, "messages_fts") or not _table_exists(conn, "messages_fts_docsize"):
-        return _archive_text_block_count(conn, session_ids) > 0
-    ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids or () if session_id))
-    if not ids:
-        return _archive_messages_fts_doc_count(conn) != _archive_text_block_count(conn)
-    placeholders = ", ".join("?" for _ in ids)
-    missing = int(
-        conn.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM blocks AS b
-            LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
-            WHERE b.session_id IN ({placeholders})
-              AND b.search_text != ''
-              AND d.id IS NULL
-            """,
-            ids,
-        ).fetchone()[0]
-    )
-    return missing > 0
-
-
-def _archive_rebuild_messages_fts(conn: sqlite3.Connection) -> None:
-    from polylogue.storage.fts.fts_lifecycle import reset_message_fts_index_sync
-
-    reset_message_fts_index_sync(conn)
-
-
-def _archive_repair_sessions_fts(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
-    """Repair ``messages_fts`` for just the changed sessions (#1851).
-
-    The archive FTS convergence paths previously called the full
-    ``_archive_rebuild_messages_fts`` (delete-all + re-insert every message row)
-    on every batch, so a single small append re-indexed the entire corpus —
-    ~14 MiB of writes regardless of payload size. When the source path resolves
-    to known session ids we instead delete+reinsert only those sessions' FTS
-    rows (the same targeted primitive the legacy monolith path used), and mark
-    the surface ready. Unknown path scope is intentionally a no-op here:
-    whole-archive FTS repair is a dedicated surface-debt operation, not a side
-    effect of live path convergence.
-    """
-    ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-    if not ids:
-        return
-    if not _table_exists(conn, "messages_fts"):
-        return
-    from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
-
-    repair_message_fts_index_sync(conn, ids)
-    _mark_message_fts_ready_after_targeted_repair(conn)
-
-
-def _archive_fts_check(db_path: Path, path: Path) -> bool:
-    return bool(_archive_fts_check_many(db_path, (path,)))
-
-
-def _archive_fts_execute(db_path: Path, path: Path, *, archive_root: Path) -> bool:
-    return _archive_fts_execute_many(db_path, (path,), archive_root=archive_root)
-
-
-def _archive_session_ids_for_source_paths(db_path: Path, paths: Sequence[Path]) -> dict[Path, list[str]]:
-    """Sessions written from each source path, read-only."""
-    try:
-        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
-        try:
-            return _session_ids_for_source_paths(conn, paths)
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning(
-            "convergence freshness probe %s errored; treating as needs-work",
-            "_archive_session_ids_for_source_paths",
-            exc_info=True,
-        )
-        return {path: [] for path in paths}
-
-
-def _archive_fts_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
-    # FTS coverage is an unconditional convergence invariant: there is no state in
-    # which the index is legitimately behind the blocks table. These archive-backed
-    # entry points used to answer "nothing to do" (check) and "done" (execute)
-    # without touching the index, so a live batch -- which defers the write-time
-    # fts_insert to preserve writer availability -- converged with the index empty
-    # and no debt, failed attempt or missing trigger to show for it.
-    if not paths:
-        return set()
-    sessions_by_path = _archive_session_ids_for_source_paths(db_path, paths)
-    stale: set[Path] = set()
-    for path, session_ids in sessions_by_path.items():
-        if session_ids and _archive_fts_check_sessions(db_path, session_ids):
-            stale.add(path)
-    return stale
-
-
-def _archive_fts_execute_many(db_path: Path, paths: Sequence[Path], *, archive_root: Path) -> bool:
-    if not paths:
-        return True
-    sessions_by_path = _archive_session_ids_for_source_paths(db_path, paths)
-    candidates = tuple(dict.fromkeys(sid for ids in sessions_by_path.values() for sid in ids))
-    if not candidates:
-        return True
-    # Repair only the sessions that are actually behind. Foreground convergence
-    # must leave no gap, but it should not re-index a path's already-coherent
-    # sessions -- that bounded-work concern is why this route used to skip
-    # entirely, and it is satisfiable without giving up the invariant.
-    stale = _archive_fts_check_sessions(db_path, candidates)
-    if not stale:
-        return True
-    return _archive_fts_execute_sessions(db_path, tuple(stale), archive_root=archive_root)
-
-
-def _archive_fts_check_sessions(db_path: Path, session_ids: Sequence[str]) -> set[str]:
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-        try:
-            ids = _archive_existing_session_ids(conn, session_ids)
-            return {session_id for session_id in ids if _archive_fts_needs_repair(conn, [session_id])}
-        finally:
-            conn.close()
-    except Exception:
-        logger.warning(
-            "convergence freshness probe %s errored; treating as needs-work",
-            "_archive_fts_check_sessions",
-            exc_info=True,
-        )
-        return set(session_ids)
-
-
-def _archive_fts_execute_sessions(db_path: Path, session_ids: Sequence[str], *, archive_root: Path) -> bool:
-    try:
-        conn = _open_archive_insight_write_connection(db_path, archive_root=archive_root)
-        try:
-            ids = _archive_existing_session_ids(conn, session_ids)
-            if not ids:
-                return True
-            _archive_repair_sessions_fts(conn, ids)
-            conn.commit()
-            logger.info("fts: archive repaired messages_fts session debt sessions=%d", len(ids))
-            return not _archive_fts_needs_repair(conn, ids)
-        finally:
-            conn.close()
-    except Exception as exc:
-        if _is_transient_sqlite_lock(exc):
-            logger.info("fts: archive session repair deferred because sqlite is busy: %s", exc)
-            return False
-        logger.warning("fts: archive session repair failed", exc_info=True)
-        return False
-
-
-def repair_messages_fts_surface_result(db_path: Path, *, archive_root: Path) -> FtsSurfaceRepairResult:
-    """Repair the whole archive ``messages_fts`` surface after global drift."""
-    archive_db = _active_archive_index_path(db_path) or db_path
-    try:
-        conn = _open_archive_insight_write_connection(archive_db, archive_root=archive_root)
-        try:
-            from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
-            from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-            from polylogue.storage.fts.fts_lifecycle import (
-                fts_invariant_snapshot_sync,
-                reconcile_message_fts_rows_once_sync,
-            )
-
-            configure_bounded_repair_connection(conn)
-            inserted_total, deleted_total = reconcile_message_fts_rows_once_sync(conn)
-            snapshot = fts_invariant_snapshot_sync(conn)
-            record_fts_invariant_snapshot_sync(conn, snapshot)
-            surface = snapshot.messages
-            conn.commit()
-            logger.info(
-                "fts: archive messages_fts surface repair complete ready=%s inserted=%d deleted=%d",
-                surface.ready,
-                inserted_total,
-                deleted_total,
-            )
-            return FtsSurfaceRepairResult(
-                success=surface.ready,
-                detail=None if surface.ready else "exact message FTS parity failed after repair",
-            )
-        finally:
-            conn.close()
-    except Exception as exc:
-        if _is_transient_sqlite_lock(exc):
-            logger.info("fts: archive global messages_fts repair deferred because sqlite is busy: %s", exc)
-            return FtsSurfaceRepairResult(success=False, deferred=True, detail="SQLite writer busy")
-        logger.warning("fts: archive global messages_fts repair failed", exc_info=True)
-        return FtsSurfaceRepairResult(success=False, detail=f"{type(exc).__name__}: {exc}")
-
-
-def repair_messages_fts_surface(db_path: Path, *, archive_root: Path) -> bool:
-    """Compatibility boolean for callers that only need repair success."""
-    return bool(repair_messages_fts_surface_result(db_path, archive_root=archive_root))
-
-
-def repair_fts_surface_result(db_path: Path, surface: str, *, archive_root: Path) -> FtsSurfaceRepairResult:
-    """Repair a named archive FTS surface from daemon convergence debt."""
-    if surface == "messages_fts":
-        return repair_messages_fts_surface_result(db_path, archive_root=archive_root)
-    if surface != "session_work_events_fts":
-        logger.warning("fts: unsupported archive FTS surface debt surface=%s", surface)
-        return FtsSurfaceRepairResult(success=False, detail=f"unsupported FTS surface: {surface}")
-    archive_db = _active_archive_index_path(db_path) or db_path
-    try:
-        conn = _open_archive_insight_write_connection(archive_db, archive_root=archive_root)
-        try:
-            from polylogue.storage.fts.dangling_repair import (
-                configure_bounded_repair_connection,
-                repair_stale_fts_rows,
-            )
-
-            configure_bounded_repair_connection(conn)
-            outcome = repair_stale_fts_rows(conn)
-            conn.commit()
-            if outcome.success:
-                logger.info(
-                    "fts: archive derived FTS surface repair completed surface=%s detail=%s", surface, outcome.detail
-                )
-                return FtsSurfaceRepairResult(success=True, detail=outcome.detail)
-            logger.warning(
-                "fts: archive derived FTS surface repair incomplete surface=%s detail=%s", surface, outcome.detail
-            )
-            return FtsSurfaceRepairResult(success=False, detail=outcome.detail)
-        finally:
-            conn.close()
-    except Exception as exc:
-        if _is_transient_sqlite_lock(exc):
-            logger.info(
-                "fts: archive derived FTS surface repair deferred surface=%s because sqlite is busy: %s", surface, exc
-            )
-            return FtsSurfaceRepairResult(success=False, deferred=True, detail="SQLite writer busy")
-        logger.warning("fts: archive derived FTS surface repair failed surface=%s", surface, exc_info=True)
-        return FtsSurfaceRepairResult(success=False, detail=f"{type(exc).__name__}: {exc}")
-
-
-def repair_fts_surface(db_path: Path, surface: str, *, archive_root: Path) -> bool:
-    """Compatibility boolean for named archive FTS-surface repair."""
-    return bool(repair_fts_surface_result(db_path, surface, archive_root=archive_root))
 
 
 def _archive_pending_embedding_sessions(

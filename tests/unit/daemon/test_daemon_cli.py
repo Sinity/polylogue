@@ -1265,12 +1265,13 @@ def test_raw_materialization_fts_failure_records_durable_debt(
     tmp_path: Path,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.fts_convergence import FtsOwnerResult, FtsOwnerState
 
     index_db = tmp_path / "generations" / "active" / "index.db"
     ops_db = tmp_path / "ops.db"
     index_db.parent.mkdir(parents=True)
     index_db.touch()
-    calls: list[tuple[str, str, str, str | None]] = []
+    calls: list[tuple[str, str, str, str | None, bool]] = []
 
     class FakeCursor:
         def __init__(self, db: Path, *, ops_db_path: Path) -> None:
@@ -1287,15 +1288,19 @@ def test_raw_materialization_fts_failure_records_durable_debt(
             subject_type: str,
             subject_id: str,
             error: str | None = None,
+            deferred: bool = False,
         ) -> None:
-            calls.append((stage, subject_type, subject_id, error))
+            calls.append((stage, subject_type, subject_id, error, deferred))
 
     monkeypatch.setattr(
         daemon_cli,
         "_raw_materialization_fts_needs_repair",
         lambda _db, *, archive_root: True,
     )
-    monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
+        lambda *_args, **_kwargs: FtsOwnerResult(FtsOwnerState.FAILED, exact=False, detail="injected failure"),
+    )
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
     daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
@@ -1305,8 +1310,53 @@ def test_raw_materialization_fts_failure_records_durable_debt(
             "fts",
             "fts_surface",
             "messages_fts",
-            "raw materialization exited without restoring message FTS readiness",
+            "FTS convergence after raw materialization: injected failure",
+            False,
         )
+    ]
+
+
+def test_raw_materialization_fts_deferred_owner_result_keeps_debt_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Anti-vacuity: treating a typed result as truthy would clear busy debt."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.fts_convergence import FtsOwnerResult, FtsOwnerState
+
+    index_db = tmp_path / "generations" / "active" / "index.db"
+    ops_db = tmp_path / "ops.db"
+    index_db.parent.mkdir(parents=True)
+    index_db.touch()
+    recorded: list[dict[str, object]] = []
+
+    class FakeCursor:
+        def __init__(self, _db: Path, *, ops_db_path: Path) -> None:
+            assert ops_db_path == ops_db
+
+        def clear_convergence_debt(self, **_kwargs: object) -> None:
+            raise AssertionError("deferred FTS convergence must retain debt")
+
+        def record_convergence_debt(self, **kwargs: object) -> None:
+            recorded.append(kwargs)
+
+    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
+        lambda *_args, **_kwargs: FtsOwnerResult(FtsOwnerState.DEFERRED, exact=False, detail="SQLite writer busy"),
+    )
+    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
+
+    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
+
+    assert recorded == [
+        {
+            "stage": "fts",
+            "subject_type": "fts_surface",
+            "subject_id": "messages_fts",
+            "error": "FTS convergence after raw materialization: SQLite writer busy",
+            "deferred": True,
+        }
     ]
 
 
@@ -1315,6 +1365,7 @@ def test_raw_materialization_fts_success_clears_prior_debt(
     tmp_path: Path,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.fts_convergence import FtsOwnerResult, FtsOwnerState
 
     index_db = tmp_path / "generations" / "active" / "index.db"
     ops_db = tmp_path / "ops.db"
@@ -1338,7 +1389,10 @@ def test_raw_materialization_fts_success_clears_prior_debt(
         "_raw_materialization_fts_needs_repair",
         lambda _db, *, archive_root: True,
     )
-    monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
+        lambda *_args, **_kwargs: FtsOwnerResult(FtsOwnerState.READY_EXACT, exact=True),
+    )
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
     daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
@@ -1372,14 +1426,14 @@ def test_raw_materialization_fts_exception_becomes_explicit_debt(
         lambda _db, *, archive_root: True,
     )
     monkeypatch.setattr(
-        "polylogue.daemon.convergence_stages.repair_fts_surface",
+        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected FTS failure")),
     )
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
     daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
 
-    assert errors == ["FTS repair failed after raw materialization: RuntimeError: injected FTS failure"]
+    assert errors == ["FTS convergence failed after raw materialization: RuntimeError: injected FTS failure"]
 
 
 def test_periodic_raw_materialization_convergence_treats_sqlite_lock_as_retry(
