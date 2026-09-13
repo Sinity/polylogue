@@ -294,6 +294,11 @@ class WatchSource:
     # their historical name-only contract.
     source_id: str | None = None
     role: str | None = None
+    # Most provider sources use OriginSpec path rules as an admission
+    # escape-hatch for extensionless or otherwise path-scoped artifacts. A
+    # source may disable that routing when its suffix set is deliberately a
+    # hard boundary (for example, the default Codex state database source).
+    allow_path_scoped_artifacts: bool = True
 
     def exists(self) -> bool:
         return self.root.exists()
@@ -309,7 +314,7 @@ class WatchSource:
             provider = Provider.from_string(self.name)
         except ValueError:
             return any(name.endswith(suffix) for suffix in self.suffixes)
-        if artifact_rule_for_path(provider, str(path)) is not None:
+        if self.allow_path_scoped_artifacts and artifact_rule_for_path(provider, str(path)) is not None:
             return True
         return any(name.endswith(suffix) for suffix in self.suffixes)
 
@@ -2596,6 +2601,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
             name="codex-state",
             root=codex_path().parent,
             suffixes=(".sqlite", ".db"),
+            allow_path_scoped_artifacts=False,
         ),
         # polylogue-rovf5: Codex keeps harness-authored memory documents in
         # ~/.codex/memories/, a sibling of sessions/. Rooted there rather

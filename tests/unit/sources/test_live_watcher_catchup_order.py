@@ -119,6 +119,7 @@ def test_default_sources_watch_codex_state_db(monkeypatch: Any, tmp_path: Path) 
 
     codex = sources["codex"]
     assert codex.root == tmp_path / ".codex" / "sessions"
+    assert codex.accepts(tmp_path / ".codex" / "sessions" / "rollout.jsonl")
 
     codex_state_source = sources["codex-state"]
     assert codex_state_source.root == tmp_path / ".codex"
