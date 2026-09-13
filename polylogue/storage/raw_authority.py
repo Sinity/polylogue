@@ -24,6 +24,7 @@ from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 #: Fingerprints previously stamped by ``RAW_AUTHORITY_PARSER_FINGERPRINT``
@@ -73,6 +74,16 @@ RAW_AUTHORITY_CENSUS_PLAN_RETENTION = 8
 #: the observed ~97 censuses/day.
 RAW_AUTHORITY_CENSUS_HEADER_RETENTION = 256
 logger = get_logger(__name__)
+
+
+def _readonly(path: Path) -> sqlite3.Connection:
+    """Open a bounded, query-only maintenance reader."""
+    return open_readonly_connection(path, timeout_class="background-read")
+
+
+def _writer(path: Path, *, archive_root: Path) -> sqlite3.Connection:
+    """Open a lease-bound source-tier writer without attached siblings."""
+    return open_isolated_write_connection(path, purpose=f"raw authority({path})", archive_root=archive_root)
 
 
 def parser_census_logical_keys(logical_keys_json: object) -> tuple[str, ...] | None:
@@ -424,7 +435,7 @@ def read_raw_authority_detail(
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         raise FileNotFoundError(source_db)
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         conn.row_factory = sqlite3.Row
         document = _raw_authority_detail_document(conn, census_id, record_id)
     encoded = _canonical_json(document)
@@ -470,7 +481,7 @@ def read_raw_authority_census(
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         raise FileNotFoundError(source_db)
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         conn.row_factory = sqlite3.Row
         census = conn.execute(
             """
@@ -757,7 +768,7 @@ def build_raw_replay_plans(
         from polylogue.storage.archive_identity import resolve_active_index_path
 
         index_db_path = resolve_active_index_path(archive_root)
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(archive_root / "source.db")) as conn:
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db_path),))
         return tuple(build_raw_replay_plan(conn, component) for component in components)
 
@@ -767,7 +778,7 @@ def raw_replay_plan_last_attempts(archive_root: Path) -> dict[str, int]:
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return {}
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_census_plans'"
         ).fetchone()
@@ -807,7 +818,7 @@ def raw_replay_plan_deferred_for_envelope(archive_root: Path, *, max_payload_byt
     if not source_db.is_file():
         return set()
     reason = raw_replay_resource_envelope_reason(max_payload_bytes)
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_census_plans'"
         ).fetchone()
@@ -859,7 +870,7 @@ def raw_replay_plan_no_progress_plan_ids(archive_root: Path) -> set[str]:
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return set()
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_census_plans'"
         ).fetchone()
@@ -886,7 +897,7 @@ def unresolved_raw_authority_blockers(archive_root: Path) -> int:
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return 0
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_blockers'"
         ).fetchone()
@@ -907,7 +918,7 @@ def unresolved_raw_replay_blockers(archive_root: Path) -> int:
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return 0
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_blockers'"
         ).fetchone()
@@ -1092,7 +1103,7 @@ def record_raw_authority_census(
     scope_json = _canonical_json(scope)
     residual_json = _canonical_json(residual)
     require_write_lease("raw authority census", archive_root=archive_root)
-    with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+    with closing(_writer(archive_root / "source.db", archive_root=archive_root)) as conn, conn:
         # SQLite scopes foreign-key enforcement to each connection. Enable it
         # before the transaction so header compaction preserves the declared
         # self-FK and cascades its census-detail children as declared.
@@ -1314,7 +1325,7 @@ def raw_replay_application_receipt(
         from polylogue.storage.archive_identity import resolve_active_index_path
 
         index_db_path = resolve_active_index_path(archive_root)
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(archive_root / "source.db")) as conn:
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db_path),))
         return raw_replay_application_receipt_from_connection(conn, plan, index_db_path=index_db_path)
 
@@ -1586,7 +1597,7 @@ def record_raw_replay_outcome(
 ) -> None:
     now = int(time.time() * 1000)
     require_write_lease("raw authority plan", archive_root=archive_root)
-    with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+    with closing(_writer(archive_root / "source.db", archive_root=archive_root)) as conn, conn:
         updated = conn.execute(
             """
             UPDATE raw_authority_census_plans
@@ -1662,7 +1673,7 @@ def latest_raw_authority_census_receipt(
 ) -> RawAuthorityCensusReceipt | None:
     """Return the newest completed receipt for one exact scope without another ledger row."""
     scope_json = _canonical_json(scope)
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(archive_root / "source.db")) as conn:
         row = conn.execute(
             """
             SELECT census_id
@@ -1687,7 +1698,7 @@ def finalize_raw_authority_census(
     """Publish a census only after every selected plan has a recorded outcome."""
     now = int(time.time() * 1000)
     require_write_lease("raw authority census finalize", archive_root=archive_root)
-    with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+    with closing(_writer(archive_root / "source.db", archive_root=archive_root)) as conn, conn:
         status = conn.execute(
             "SELECT lifecycle_status FROM raw_authority_censuses WHERE census_id = ?",
             (census_id,),
@@ -1847,7 +1858,7 @@ def unfinished_raw_authority_census_ids(
     """Page only interrupted legacy replay obligations for explicit startup recovery."""
     if limit < 1 or not (archive_root / "source.db").is_file():
         return ()
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(archive_root / "source.db")) as conn:
         return tuple(
             (str(row[0]), int(row[1]))
             for row in conn.execute(
@@ -1863,7 +1874,7 @@ def unfinished_raw_authority_census_ids(
 
 def raw_authority_census_replay_plans(archive_root: Path, census_id: str) -> tuple[RawReplayPlan, ...]:
     """Read the immutable plan scope of one named recovery obligation."""
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(archive_root / "source.db")) as conn:
         conn.row_factory = sqlite3.Row
         return tuple(
             _raw_replay_plan_from_row(row)
@@ -1890,7 +1901,7 @@ def recover_interrupted_raw_authority_censuses(
         return ()
     census_filter = "" if census_ids is None else f"AND c.census_id IN ({','.join('?' for _ in census_ids)})"
     parameters = tuple(census_ids) if census_ids is not None else ()
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             f"""
@@ -1992,7 +2003,7 @@ def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSOND
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return None
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_blockers'"
         ).fetchone()
@@ -2068,7 +2079,7 @@ def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 1
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return _empty_page()
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_blockers'"
         ).fetchone()
@@ -2138,7 +2149,7 @@ def resolve_raw_authority_blocker(
     # the existing permissive one-shot behavior when lease enforcement is off.
     require_write_lease("raw authority blocker resolution", archive_root=archive_root)
     source_db = archive_root / "source.db"
-    with closing(sqlite3.connect(source_db)) as conn:
+    with closing(_writer(source_db, archive_root=archive_root)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(archive_root / "index.db"),))
         conn.execute("BEGIN IMMEDIATE")
@@ -2167,7 +2178,7 @@ def resolve_raw_authority_blocker(
                     conn.rollback()
                     raise RuntimeError("frontier judgment blocker requires its exact accepted assertion id")
                 user_db = archive_root / "user.db"
-                with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)) as user_conn:
+                with closing(_readonly(user_db)) as user_conn:
                     assertion = user_conn.execute(
                         "SELECT status FROM assertions WHERE assertion_id = ?",
                         (assertion_id,),
@@ -2276,7 +2287,7 @@ def auto_resolve_stale_plan_blockers(archive_root: Path) -> int:
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return 0
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_blockers'"
         ).fetchone()
@@ -2325,7 +2336,7 @@ def reject_stale_raw_replay_plan(
         json_document({"expected": plan.to_dict(), "observed": observed, "blocker_id": blocker_id}),
     )
     require_write_lease("raw authority blocker", archive_root=archive_root)
-    with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+    with closing(_writer(archive_root / "source.db", archive_root=archive_root)) as conn, conn:
         conn.execute(
             """
             INSERT INTO raw_authority_blockers (
@@ -2393,7 +2404,7 @@ def reject_invalid_raw_replay_application(
         json_document({"expected": plan.to_dict(), "observed": observed, "blocker_id": blocker_id}),
     )
     require_write_lease("raw authority blocker", archive_root=archive_root)
-    with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+    with closing(_writer(archive_root / "source.db", archive_root=archive_root)) as conn, conn:
         conn.execute(
             """
             INSERT INTO raw_authority_blockers (
@@ -2458,7 +2469,7 @@ def reset_raw_authority_census_ledger(
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         raise FileNotFoundError(source_db)
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(source_db)) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         counts = {
             "raw_authority_censuses": int(conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0]),
@@ -2498,7 +2509,7 @@ def prune_orphaned_index_revision_seeds(
     index_db = ArchiveLocation.resolve(archive_root).active_index_path
     if not source_db.is_file() or not index_db.is_file():
         raise FileNotFoundError(source_db if not source_db.is_file() else index_db)
-    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(index_db)) as conn:
         conn.execute("ATTACH DATABASE ? AS src", (str(source_db),))
         heads = int(
             conn.execute(

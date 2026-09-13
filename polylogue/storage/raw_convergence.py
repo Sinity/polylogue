@@ -39,6 +39,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     insert_reconstructed_raw_row,
     is_blob_hash_excised,
 )
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
@@ -1178,7 +1179,7 @@ def inspect_quarantined_accepted_raws(
     index_db = index_db_path or config.current_db_path()
     if not source_db.exists() or not index_db.exists():
         raise RuntimeError("source or index tier is missing")
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+    with closing(open_readonly_connection(source_db)) as conn:
         _attach_repair_index(conn, index_db)
         inspectable, excluded = _partition_quarantined_raw_repair_blob_budget(conn, raw_ids)
         inspectable_ids = set(inspectable)
@@ -2983,7 +2984,7 @@ def inspect_browser_capture_origin_mismatches(
     index_db = index_db_path or config.current_db_path()
     if not source_db.exists() or not index_db.exists():
         raise RuntimeError("source or index tier is missing")
-    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+    with closing(open_readonly_connection(index_db)) as conn:
         conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
         return tuple(_inspect_browser_capture_origin_strategy(archive_root, raw_id, conn=conn) for raw_id in raw_ids)
 
@@ -3247,7 +3248,7 @@ def inspect_browser_canonical_authority_conflicts(
 
     items: list[BrowserCanonicalAuthorityConflictWitness] = []
     resolved_count = 0
-    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+    with closing(open_readonly_connection(index_db)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
         for raw_id in raw_ids:

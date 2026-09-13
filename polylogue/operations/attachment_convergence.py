@@ -19,6 +19,7 @@ from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import get_logger
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, write_source_blob_refs
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 
@@ -243,7 +244,7 @@ def make_attachment_convergence_stage(
     def _has_work() -> bool:
         if not db_path.exists():
             return False
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn = open_readonly_connection(db_path)
         try:
             return bool(
                 conn.execute(

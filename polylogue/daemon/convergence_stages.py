@@ -109,7 +109,7 @@ def make_fts_stage(db_path: Path, *, archive_root: Path | None = None) -> Conver
         if not database.exists():
             return set(keys)
         try:
-            conn = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5.0)
+            conn = open_readonly_connection(database)
             try:
                 return {inspection.key for inspection in adapter.inspect_all(conn, keys=keys) if not inspection.valid}
             finally:
@@ -122,7 +122,7 @@ def make_fts_stage(db_path: Path, *, archive_root: Path | None = None) -> Conver
         if not database.exists() or not paths:
             return ()
         try:
-            conn = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5.0)
+            conn = open_readonly_connection(database)
             try:
                 return tuple(
                     dict.fromkeys(
@@ -484,7 +484,7 @@ def _sinex_session_ids_for_paths(
     lookup_db = _active_archive_index_path(db_path) or db_path
     if not lookup_db.exists():
         return {path: [] for path in normalized}
-    conn = sqlite3.connect(f"file:{lookup_db}?mode=ro", uri=True, timeout=5.0)
+    conn = open_readonly_connection(lookup_db)
     try:
         return _schema_archive_session_ids_for_source_paths(conn, normalized, archive_root=db_path.parent)
     finally:
@@ -1128,7 +1128,7 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
     if not index_db.exists():
         return None
     try:
-        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=5.0)
+        conn = open_readonly_connection(index_db)
         try:
             return index_db if _table_exists(conn, "sessions") else None
         finally:
