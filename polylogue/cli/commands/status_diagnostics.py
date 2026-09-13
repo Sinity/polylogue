@@ -145,7 +145,7 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
         )
 
     try:
-        from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read
+        from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
 
         with one_shot_diagnostic_read(db) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()

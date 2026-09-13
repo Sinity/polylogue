@@ -918,9 +918,9 @@ def latency_command(
     import time as _time
 
     from polylogue.cli.shared.helpers import load_effective_config
+    from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
     from polylogue.operations.route_observation import compute_latency_percentiles
     from polylogue.storage.sqlite.archive_tiers.ops_write import list_mcp_calls, list_route_observations
-    from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read
 
     env: AppEnv = ctx.obj
     config = load_effective_config(env)
@@ -1034,7 +1034,7 @@ def codex_title_census_command(
         compute_codex_title_census,
     )
     from polylogue.cli.shared.helpers import fail, load_effective_config
-    from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read
+    from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
 
     if compare is not None:
         before_path, after_path = compare
