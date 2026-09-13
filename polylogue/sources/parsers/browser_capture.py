@@ -365,19 +365,33 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
     if not envelope_attachments:
         return parsed
     merged: dict[str, ParsedAttachment] = {a.provider_attachment_id: a for a in parsed.attachments}
+    # Keep cross-route matching one-to-one. Equal-name uploads can have equal
+    # bytes too, so descriptor/byte evidence may be ambiguous; stable source
+    # order still lets us retain one provider row per upload. Remembering the
+    # synthetic id also folds a repeated envelope projection into that row.
+    matched_native_ids: set[str] = set()
+    cross_route_matches: dict[str, str] = {}
     for candidate in envelope_attachments:
         existing = merged.get(candidate.provider_attachment_id)
         if existing is None:
-            cross_route_ids = [
-                provider_attachment_id
-                for provider_attachment_id, native in merged.items()
-                if _claude_attachment_cross_route_match(native, candidate)
-            ]
-            if len(cross_route_ids) == 1:
-                existing = merged[cross_route_ids[0]]
+            matched_id = cross_route_matches.get(candidate.provider_attachment_id)
+            if matched_id is not None:
+                existing = merged[matched_id]
             else:
-                merged[candidate.provider_attachment_id] = candidate
-                continue
+                cross_route_ids = [
+                    provider_attachment_id
+                    for provider_attachment_id, native in merged.items()
+                    if provider_attachment_id not in matched_native_ids
+                    and _claude_attachment_cross_route_match(native, candidate)
+                ]
+                if cross_route_ids:
+                    matched_id = cross_route_ids[0]
+                    cross_route_matches[candidate.provider_attachment_id] = matched_id
+                    matched_native_ids.add(matched_id)
+                    existing = merged[matched_id]
+                else:
+                    merged[candidate.provider_attachment_id] = candidate
+                    continue
         # The native row remains authoritative for provider identity and file
         # metadata. The browser projection contributes acquired bytes and can
         # fill omissions, but must not replace native size/origin/file IDs.
