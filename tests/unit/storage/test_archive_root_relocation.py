@@ -10,9 +10,10 @@ import shlex
 import shutil
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -810,8 +811,16 @@ def _clone_released_durable_train_for_tier(
     source_manifest: Path,
     tier: ArchiveTier,
     monkeypatch: pytest.MonkeyPatch,
-) -> Path:
-    """Retarget one validated released fixture train to another durable tier."""
+) -> tuple[Path, ...]:
+    """Retarget one validated released fixture train across a tier's whole chain.
+
+    Relocation requires a released manifest for *every* target in
+    ``range(adoption_floor + 1, live_user_version + 1)``. Both bounds are read
+    from production here -- the floor from its declared table, the head from
+    the tier database's own ``PRAGMA user_version`` -- because a literal is
+    what broke this fixture when audit gained migration 003: it kept emitting
+    only ``audit-002.json`` while relocation had started expecting 2 *and* 3.
+    """
     source = load_durable_change_train_manifest(source_manifest)
     assert source.fresh_ddl_parity is not None
     assert source.reservation is not None
@@ -819,33 +828,71 @@ def _clone_released_durable_train_for_tier(
     assert source.pre_apply_evidence is not None
     assert source.apply_evidence is not None
     assert source.proof is not None
-    cloned = replace(
-        source,
-        train_id=f"train:{tier.value}:v{source.target_version}",
-        tier=tier,
-        migration=replace(source.migration, tier=tier),
-        fresh_ddl_parity=replace(source.fresh_ddl_parity, tier=tier),
-        reservation=replace(source.reservation, tier_path=str(root / f"{tier.value}.db")),
-        backup_authorization=replace(
-            source.backup_authorization,
-            live_tier_path=str(root / f"{tier.value}.db"),
-        ),
-        pre_apply_evidence=replace(source.pre_apply_evidence, tier=tier),
-        apply_evidence=replace(
-            source.apply_evidence,
-            pre=replace(source.apply_evidence.pre, tier=tier),
-            post=replace(source.apply_evidence.post, tier=tier),
-            migration_result=replace(source.apply_evidence.migration_result, tier=tier),
-        ),
-        proof=replace(
-            source.proof,
-            fresh_ddl_parity=replace(source.proof.fresh_ddl_parity, tier=tier),
-        ),
-    )
-    manifest = root / ".maintenance-state" / "durable-change-trains" / f"{tier.value}-002.json"
-    write_durable_change_train_manifest(manifest, cloned, expected_revision=-1)
+
+    # The cloned train begins at v1, so that is this fixture's chain floor --
+    # declared once here and then read back, so the targets below are the same
+    # set relocation itself computes from this table.
     monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, tier, 1)
-    return manifest
+    floor = DURABLE_MIGRATION_ADOPTION_FLOORS[tier]
+    tier_path = root / f"{tier.value}.db"
+    with closing(sqlite3.connect(tier_path)) as connection:
+        live_version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
+    targets = range(floor + 1, live_version + 1)
+    assert targets, f"no durable train targets for {tier.value} at v{live_version} over floor {floor}"
+
+    def _parity(parity: Any, version: int) -> Any:
+        return replace(
+            parity,
+            tier=tier,
+            target_version=version,
+            migrated_version=version,
+            fresh_version=version,
+        )
+
+    written: list[Path] = []
+    for target in targets:
+        pre = replace(source.pre_apply_evidence, tier=tier, user_version=target - 1)
+        cloned = replace(
+            source,
+            train_id=f"train:{tier.value}:v{target}",
+            tier=tier,
+            current_version=target - 1,
+            target_version=target,
+            slot=target,
+            migration=replace(source.migration, tier=tier, target_version=target, slot=target),
+            fresh_ddl_parity=_parity(source.fresh_ddl_parity, target),
+            reservation=replace(source.reservation, tier_path=str(tier_path)),
+            backup_authorization=replace(
+                source.backup_authorization,
+                live_tier_path=str(tier_path),
+                live_user_version=target - 1,
+            ),
+            pre_apply_evidence=pre,
+            # apply_evidence.pre must be identical to pre_apply_evidence.
+            apply_evidence=replace(
+                source.apply_evidence,
+                pre=pre,
+                post=replace(source.apply_evidence.post, tier=tier, user_version=target),
+                migration_result=replace(
+                    source.apply_evidence.migration_result,
+                    tier=tier,
+                    from_version=target - 1,
+                    to_version=target,
+                    applied_versions=(target,),
+                ),
+            ),
+            proof=replace(
+                source.proof,
+                fresh_ddl_parity=_parity(source.proof.fresh_ddl_parity, target),
+                # The restart observation must report the version the train
+                # lands on (migration_runner.py:3610), not the source's.
+                restart_convergence=replace(source.proof.restart_convergence, observed_user_version=target),
+            ),
+        )
+        manifest = root / ".maintenance-state" / "durable-change-trains" / f"{tier.value}-{target:03d}.json"
+        write_durable_change_train_manifest(manifest, cloned, expected_revision=-1)
+        written.append(manifest)
+    return tuple(written)
 
 
 def _activate_movable_index_generation(root: Path) -> Path:
@@ -2871,7 +2918,7 @@ def test_relocation_rebinds_released_trains_for_every_durable_tier(
     manifests = [
         source_manifest,
         user_manifest,
-        _clone_released_durable_train_for_tier(old_root, user_manifest, ArchiveTier.AUDIT, monkeypatch),
+        *_clone_released_durable_train_for_tier(old_root, user_manifest, ArchiveTier.AUDIT, monkeypatch),
     ]
     legacy_identity = ArchiveIdentity.resolve(old_root).authority_identity_digest
     for manifest in manifests:
