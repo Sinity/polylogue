@@ -18,12 +18,13 @@ import asyncio
 import hashlib
 import json
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Coroutine, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import TypeVar, cast
 
 import polylogue.daemon.convergence_stages as convergence_stages
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
@@ -70,6 +71,8 @@ from tests.infra.source_composer import (
     compose_quarantined_head_arrangement,
     compose_sources,
 )
+
+_T = TypeVar("_T")
 
 SqlValue = str | int | float | bytes | None
 FactRow = tuple[SqlValue, ...]
@@ -321,6 +324,23 @@ def ingest_composed_sources(
     return ConvergenceArchive(root, composed, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
 
 
+def _run_coroutine(coro: Coroutine[object, object, _T]) -> _T:
+    """Drive a coroutine to completion from sync code, loop running or not.
+
+    ``build_converged_archive`` is a synchronous fixture builder that async
+    tests call directly. ``asyncio.run`` refuses to nest inside an already
+    running loop, so when one is running the coroutine gets its own loop on a
+    dedicated thread. The owner it drives builds its own executor and write
+    coordinator per call, so it holds no affinity to the caller's loop.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def converge_session_profiles(
     index_db: Path,
     archive_root: Path,
@@ -358,7 +378,7 @@ def converge_session_profiles(
             compute.shutdown(wait=True)
             await coordinator.shutdown(timeout=1.0)
 
-    report = asyncio.run(run())
+    report = _run_coroutine(run())
     if getattr(report, "failed", 0) or getattr(report, "pending", 0):
         raise AssertionError(
             "typed session-profile convergence left pending work: "

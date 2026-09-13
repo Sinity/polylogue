@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 import pytest
@@ -89,7 +90,12 @@ def test_session_trigram_cleanup_seeks_docsize_by_block_rowid(test_conn: sqlite3
 
 
 def test_incremental_fts_repair_uses_direct_fts_rowid_deletes(test_conn: sqlite3.Connection) -> None:
-    """A changed session must not make FTS5 scan the whole archive to delete."""
+    """A changed session must not make FTS5 scan the whole archive to delete.
+
+    Anti-vacuity: widen any FTS delete back to a ``session_id`` predicate, an
+    unfiltered ``DELETE FROM messages_fts``, or a rowid set that reaches past
+    the repaired session's own blocks, and this goes red.
+    """
     restore_fts_triggers_sync(test_conn)
     message_id = _seed_text_block(
         test_conn,
@@ -106,16 +112,27 @@ def test_incremental_fts_repair_uses_direct_fts_rowid_deletes(test_conn: sqlite3
     finally:
         test_conn.set_trace_callback(None)
 
-    delete_statements = [sql for sql in traced if sql.startswith("DELETE FROM messages_fts")]
-    assert delete_statements == [
-        "DELETE FROM messages_fts WHERE rowid = "
-        + str(
-            test_conn.execute(
-                "SELECT rowid FROM blocks WHERE message_id = ?",
-                (message_id,),
-            ).fetchone()[0]
+    session_rowids = {
+        int(row[0])
+        for row in test_conn.execute(
+            "SELECT rowid FROM blocks WHERE message_id = ?",
+            (message_id,),
         )
-    ]
+    }
+    assert session_rowids, "the fixture must seed at least one block to repair"
+
+    delete_statements = [sql for sql in traced if sql.startswith("DELETE FROM messages_fts")]
+    assert delete_statements, "targeted repair issued no FTS delete at all"
+
+    # Every FTS delete a session repair issues must name the exact block rowids
+    # of that session. A literal rowid predicate is what keeps FTS5 from
+    # scanning the whole archive to find the rows it is about to drop.
+    for sql in delete_statements:
+        predicate = sql.partition(" WHERE ")[2]
+        assert predicate, f"unfiltered FTS delete would drop the whole surface: {sql!r}"
+        assert predicate.startswith("rowid"), f"FTS delete is not keyed by rowid: {sql!r}"
+        named = {int(token) for token in re.findall(r"\d+", predicate)}
+        assert named == session_rowids, f"FTS delete reached beyond the repaired session: {sql!r}"
 
 
 def test_targeted_repair_never_runs_an_archive_wide_exact_snapshot(

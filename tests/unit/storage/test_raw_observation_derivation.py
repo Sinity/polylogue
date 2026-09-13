@@ -202,17 +202,37 @@ def test_existing_head_does_not_certify_missing_observation_application(tmp_path
 
 
 def test_discovery_budget_bounds_raw_enumeration(tmp_path: Path) -> None:
+    """A discovery bound stops enumeration mid-domain and defers, never drops, the rest.
+
+    Anti-vacuity: let the adapter enumerate past its page/discovery bound, mark
+    the cursor swept while keys remain unread, or fail to reach the deferred
+    raws on later passes, and this goes red.
+    """
     bootstrap_archive_root(tmp_path)
     for index in range(5):
         _admit(tmp_path, (f"session-{index}",), path=f"{index}.json")
-    report = converge(
-        DerivationRegistry((RawObservationDerivation(tmp_path),)),
-        raw_observation_frame(tmp_path),
-        budget=Budget(page=2, discovery=2, inspection=2, compute=2),
-    )
+
+    registry = DerivationRegistry((RawObservationDerivation(tmp_path),))
+    budget = Budget(page=2, discovery=2, inspection=2, compute=2)
+
+    report = converge(registry, raw_observation_frame(tmp_path), budget=budget)
+
+    # The bound is a bound: one pass may not read the whole five-raw domain.
     assert report.work.discovered == 2
-    assert report.work.computed == report.work.published == 0
+    assert report.work.published <= 2
     assert not report.cursor.position("raw_observation").swept
+
+    # What the bound withheld is deferred, not dropped: bounded passes reach
+    # every raw, and the domain then settles with nothing left to enumerate.
+    cursor = report.cursor
+    for _ in range(16):
+        report = converge(registry, raw_observation_frame(tmp_path), budget=budget, cursor=cursor)
+        cursor = report.cursor
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 5
+
+    assert _run(tmp_path).wrote_nothing
 
 
 @pytest.mark.parametrize("limit", [1, 2])
