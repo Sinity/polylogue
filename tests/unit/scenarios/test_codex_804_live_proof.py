@@ -390,7 +390,8 @@ async def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monke
         prefix_witness.observe(revision, path)
         observed_revisions.append(revision)
 
-    acquired_raw_ids, sizes, fixture_sha256s = acquire_codex_revision_chain(
+    acquired_raw_ids, sizes, fixture_sha256s = await asyncio.to_thread(
+        acquire_codex_revision_chain,
         root,
         fixture,
         source_path,

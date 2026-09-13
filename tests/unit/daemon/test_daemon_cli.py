@@ -3740,7 +3740,7 @@ def test_periodic_raw_materialization_respects_catch_up_gate(
     """Canonical raw maintenance wakes only after the watcher catch-up gate."""
     from polylogue.daemon import cli as daemon_cli
 
-    async def exercise() -> tuple[list[tuple[object, object]], bool]:
+    async def exercise() -> bool:
         catch_up_complete = asyncio.Event()
         if catch_up_initially_complete:
             catch_up_complete.set()
