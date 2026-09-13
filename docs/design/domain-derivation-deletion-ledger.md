@@ -10,7 +10,7 @@ The production daemon uses the ordered-domain kernel selected by `polylogue-04r9
 | FTS orphan membership | `fts_orphan_audit` and independent repair loops | One low-cadence orphan partition in the FTS adapter | Global residue discovery is bounded, but inspecting its full binding and replacing residue still costs a global scan. |
 | Session counters | Duplicate append/full-replace arithmetic in the parsed writer | `storage/derived/session/summary.py`, shared by canonical writes, inspection and derivation publication | No generic completion table is needed: the session row represents valid zero counters. |
 | Session profiles | Generic profile stage | Existing session-profile adapter, preceded by the summary adapter | Excess retirement consumes no deleted summary row. Selected profile scope and archive sweep share the daemon owner. |
-| Embeddings | Daemon embedding stage and backlog execution loop | `storage/embeddings/derivation.py` and `daemon/embedding_owner.py` | Manual CLI backfill and older session materialization still execute their own routes. Their full retirement is incomplete. |
+| Embeddings | Daemon embedding stage and backlog execution loop | `storage/embeddings/derivation.py`, composed through `operations/embedding_derivation.py` and `daemon/embedding_owner.py` | Manual CLI backfill and older session materialization still execute their own routes. Their full retirement is incomplete. |
 | Raw-to-logical membership | Generic raw parse stage | Existing raw-observation adapter and daemon raw owner | Source admission, bounded parse preparation, and raw membership evidence retain their independent owners. |
 | Readiness | FTS freshness receipts, stage-derived insight status, optimistic embedding attempt counters | Domain inspection in FTS, session summary/profile and embedding status projections | Other products still have stage-specific telemetry. No operation receipt certifies these migrated outputs. |
 | Generic scheduling | Generic DAG sorting and redundant migrated callbacks | Ordered registry, bounded required/excess discovery, disposable cursor, shared compute adapter and writer bridge | `ConvergenceStage`, `FileState`, `SessionState`, callback variants and barriers remain for the products below. |
@@ -20,7 +20,7 @@ The production daemon uses the ordered-domain kernel selected by `polylogue-04r9
 
 ## Measurement
 
-The table below counts added and deleted physical lines with `git diff --numstat` against the named base. It includes replacements within files, so gross deletion is not a claim that every deleted line represented a distinct retired capability. Domain SQL is counted separately. There are no file renames; semantic moves are explicitly accounted for in the ownership table rather than assigned an unverifiable line count.
+The table below records the snapshot at `e587bb6307df6286995538a07ccdf1b5069fb0e0`, counting added and deleted physical lines with `git diff --numstat` against the named base. Later boundary corrections move provider composition and readiness projections into their operations owners; those moves receive no reduction credit. It includes replacements within files, so gross deletion is not a claim that every deleted line represented a distinct retired capability. Domain SQL is counted separately. There are no file renames; semantic moves are explicitly accounted for in the ownership table rather than assigned an unverifiable line count.
 
 | Scope | Added | Deleted | Net |
 | --- | ---: | ---: | ---: |
