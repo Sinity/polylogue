@@ -424,7 +424,14 @@ def test_prepared_partition_refuses_related_input_that_moved_before_publish(
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
     )
-    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
+    frame = DerivationFrame(
+        archive_root=str(index_db.parent),
+        source_revision="r1",
+        recipe_versions={
+            SESSION_SUMMARY_DOMAIN: SESSION_SUMMARY_RECIPE_VERSION,
+            SESSION_PROFILE_DOMAIN: SESSION_PROFILE_RECIPE_VERSION,
+        },
+    )
     prepared = adapter.compute(frame, session_id)
 
     with write_lease("test.mutate-related"), closing(_write_connection(index_db)) as conn:
@@ -558,7 +565,14 @@ def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path,
     from polylogue.storage.derived.session.derivation import SessionProfileDerivation
 
     index_db, session_id = archive
-    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
+    frame = DerivationFrame(
+        archive_root=str(index_db.parent),
+        source_revision="r1",
+        recipe_versions={
+            SESSION_SUMMARY_DOMAIN: SESSION_SUMMARY_RECIPE_VERSION,
+            SESSION_PROFILE_DOMAIN: SESSION_PROFILE_RECIPE_VERSION,
+        },
+    )
     adapter = SessionProfileDerivation(
         lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
         lambda: _write_connection(index_db),

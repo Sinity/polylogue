@@ -188,7 +188,9 @@ async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(
         # compute capacity, while an inspection limit stops before the quiet
         # predicate is evaluated. One discovered page therefore captures the
         # real no-hint continuation after the hot key was actually deferred.
-        first = await owner.converge(archive_frame, budget=Budget(page=1, discovery=1, compute=1))
+        first = await owner.converge(
+            archive_frame, budget=Budget(page=1, discovery=1, compute=1), domains=("session_profile",)
+        )
         assert first.pending == 1
         assert first.done == 0
         assert session_materialization_facts(recovered.index_db, session_id=recovered.target_session_id).profile is None
@@ -215,7 +217,9 @@ async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(
         )
         assert converger._derivation_cursor == archive_cursor
 
-        resumed = await owner.converge(archive_frame, budget=Budget(page=1, discovery=1, compute=1))
+        resumed = await owner.converge(
+            archive_frame, budget=Budget(page=1, discovery=1, compute=1), domains=("session_profile",)
+        )
         assert resumed.done == 1
         assert resumed.pending == 0
         assert (

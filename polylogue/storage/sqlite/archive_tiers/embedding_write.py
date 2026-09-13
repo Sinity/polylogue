@@ -435,31 +435,26 @@ def replace_message_embedding_derivation(
     conn: sqlite3.Connection,
     write: ArchiveEmbeddingWrite,
 ) -> None:
-    """Atomically replace one message ref and certify its current recipe.
+    """Publish the computed vector, full recipe and one reference atomically.
 
-    A vector address is intentionally reusable for an identical provider
-    request.  The message derivation's validity also includes the complete
-    recipe and output contract, so a provider-computed replacement updates the
-    colocated metadata in the same transaction as its message reference.
+    A request address can survive a recipe change. Reusing its old vector and
+    merely relabeling metadata would certify output that was never computed by
+    the new recipe. This route receives a computed replacement, so it replaces
+    the physical vector even when metadata already occupies that address.
     """
-
     prepared = _prepared_write(write)
+    if not prepared.embedding:
+        raise ValueError("computed embedding replacement must contain a vector")
     with conn:
-        _write_message_embeddings(conn, (prepared,))
         conn.execute(
-            """
-            UPDATE message_embeddings_meta
-            SET recipe_hash = ?, output_contract_hash = ?, model = ?, dimension = ?
-            WHERE vector_derivation_hash = ?
-            """,
-            (
-                prepared.recipe_hash,
-                prepared.output_contract_hash,
-                prepared.model,
-                EMBEDDING_DIMENSION,
-                prepared.vector_derivation_hash,
-            ),
+            "DELETE FROM message_embeddings WHERE vector_derivation_hash = ?",
+            (prepared.vector_derivation_hash.hex(),),
         )
+        conn.execute(
+            "DELETE FROM message_embeddings_meta WHERE vector_derivation_hash = ?",
+            (prepared.vector_derivation_hash,),
+        )
+        _write_message_embeddings(conn, (prepared,))
 
 
 def complete_embedding_attempt_success(

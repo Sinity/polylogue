@@ -14,7 +14,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
-from polylogue.storage.derived.session import rebuild as insight_rebuild
+from polylogue.storage.derived.session.derivation import SessionProfileDerivation
 from polylogue.storage.fts.derivation import FtsDerivationAdapter
 from polylogue.storage.sqlite.archive_tiers import write as archive_write
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -58,7 +58,7 @@ def test_convergence_property_insight_repair_mutation_red_twin(tmp_path: Path, m
     """A bypassed production insight rebuild cannot report a converged archive."""
     composed = rich_convergence_sources()
     initialize_active_archive(tmp_path / "mutated")
-    monkeypatch.setattr(insight_rebuild, "rebuild_session_insights_sync", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(SessionProfileDerivation, "publish", lambda *_args, **_kwargs: False)
 
     archive = ingest_composed_sources(
         tmp_path / "mutated",
@@ -66,7 +66,7 @@ def test_convergence_property_insight_repair_mutation_red_twin(tmp_path: Path, m
         session_indexes=tuple(range(len(composed.sessions))),
         converge_after_each=False,
     )
-    with pytest.raises(AssertionError, match="production convergence left pending work"):
+    with pytest.raises(AssertionError, match="typed session-profile convergence left pending work"):
         converge_convergence_archive(archive)
 
 
@@ -193,7 +193,9 @@ def test_omitted_fts_required_member_has_pending_work_control(
     )
     required_page = FtsDerivationAdapter.required_page
 
-    def omit_tail(self: FtsDerivationAdapter, frame: object, *, cursor: str | None, limit: int):
+    def omit_tail(
+        self: FtsDerivationAdapter, frame: object, *, cursor: str | None, limit: int
+    ) -> tuple[tuple[str, ...], str | None]:
         keys, next_cursor = required_page(self, frame, cursor=cursor, limit=limit)
         if cursor is None and getattr(frame, "scope", None) and len(keys) > 1:
             return keys[:1], None

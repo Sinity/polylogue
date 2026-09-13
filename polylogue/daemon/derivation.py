@@ -600,7 +600,7 @@ class _Pass:
         deadline = self.budget.deadline_s
         return deadline is not None and time.monotonic() - self.started >= deadline
 
-    def work_exhausted(self) -> bool:
+    def work_exhausted(self, *, inspected: bool = False) -> bool:
         """True when no further key in this pass can be computed or published."""
         budget = self.budget
         if self.out_of_time():
@@ -609,7 +609,7 @@ class _Pass:
             return True
         if budget.compute is not None and self.computed >= budget.compute:
             return True
-        return budget.inspection is not None and self.inspected >= budget.inspection
+        return not inspected and budget.inspection is not None and self.inspected >= budget.inspection
 
     def page_limit(self) -> int:
         """How many keys the next discovery call may return."""
@@ -900,7 +900,7 @@ class _Pass:
                     continue
                 if statuses.get(key, KeyStatus.MISSING) is KeyStatus.VALID:
                     continue
-                if stopped_at is not None or self.work_exhausted():
+                if stopped_at is not None or self.work_exhausted(inspected=True):
                     # Already classified, so it is reported; not attempted, so
                     # the resume position stays behind it.
                     if stopped_at is None:

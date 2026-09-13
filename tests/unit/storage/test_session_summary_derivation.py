@@ -19,6 +19,7 @@ from polylogue.storage.derived.session.summary import (
     SESSION_SUMMARY_DOMAIN,
     SESSION_SUMMARY_RECIPE_VERSION,
     SessionSummaryDerivation,
+    inspect_session_summary,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -143,7 +144,7 @@ def test_session_summary_converges_append_overlap_and_late_lineage_from_messages
             provider_session_id="summary-main",
             messages=[
                 ParsedMessage(
-                    provider_message_id=None,
+                    provider_message_id="",
                     role=Role.USER,
                     material_origin=MaterialOrigin.GENERATED_CONTEXT_PACK,
                     text="generated context tail",
@@ -253,3 +254,82 @@ def test_session_summary_inspection_repairs_corruption_then_second_pass_writes_n
     assert repaired.done == 1
     report = converge(DerivationRegistry([adapter]), frame)
     assert report.wrote_nothing
+
+
+def test_session_summary_census_marks_a_corrupt_counter_stale(tmp_path: Path) -> None:
+    """The status census compares stored counters to messages, not stage history."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="summary-census-corruption",
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="one two")],
+            ),
+        )
+        conn.execute("UPDATE sessions SET message_count = 99 WHERE session_id = ?", (session_id,))
+        inspection = inspect_session_summary(conn)
+    finally:
+        conn.close()
+
+    assert inspection.state == "stale"
+    assert inspection.total_sessions == 1
+    assert inspection.stale_sessions == 1
+
+
+def test_session_summary_census_deadline_is_unknown(tmp_path: Path) -> None:
+    """A status deadline cannot certify a partially inspected counter projection."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        inspection = inspect_session_summary(conn, deadline_s=0)
+    finally:
+        conn.close()
+
+    assert inspection.state == "unknown"
+    assert inspection.reason == "session-summary inspection deadline exceeded"
+
+
+def test_session_summary_census_accepts_valid_empty_session(tmp_path: Path) -> None:
+    """A LEFT JOIN's synthetic row cannot count as an empty session's message."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(source_name=Provider.CODEX, provider_session_id="empty-census", messages=[]),
+        )
+        inspection = inspect_session_summary(conn)
+        assert inspection.state == "ready"
+        assert inspection.total_sessions == 1
+        assert inspection.stale_sessions == 0
+    finally:
+        conn.close()
+
+
+def test_summary_inspection_refuses_retired_generation(tmp_path: Path) -> None:
+    """Anti-vacuity: current counters cannot certify the previous generation."""
+    from dataclasses import replace
+
+    import pytest
+
+    from polylogue.operations.session_profile_convergence import (
+        make_session_profile_frame,
+        make_session_summary_derivation,
+    )
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    conn = _connect(root / "index.db")
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            ParsedSession(source_name=Provider.CODEX, provider_session_id="frame", messages=[]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    adapter = make_session_summary_derivation(root / "index.db", archive_root=root)
+    frame = make_session_profile_frame(root / "index.db", archive_root=root, scope=(session_id,))
+    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
+    with pytest.raises(RuntimeError, match="retired"):
+        adapter.inspect(replace(frame, source_revision="index-generation:retired"), (session_id,))

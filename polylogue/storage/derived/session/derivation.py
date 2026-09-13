@@ -696,10 +696,17 @@ class SessionProfileDerivation:
             return self._quiet_key(frame, key)
         return key in self._quiet_keys(frame) if self._quiet_keys is not None else False
 
-    def prerequisite_keys(self, frame: object, key: str) -> tuple[tuple[str, str]]:
+    def prerequisite_keys(self, frame: object, key: str) -> tuple[tuple[str, str], ...]:
         """The profile reads this session's materialized summary counters."""
         del frame
-        return ((SESSION_SUMMARY_DOMAIN, key),)
+        conn = self._read_connection()
+        try:
+            # Retiring an orphan consumes no session counters. Requiring the
+            # deleted upstream row would prevent excess cleanup after restart.
+            exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (key,)).fetchone()
+            return ((SESSION_SUMMARY_DOMAIN, key),) if exists else ()
+        finally:
+            conn.close()
 
     def compute(self, frame: object, key: str) -> SessionProfileReplacement:
         """Prepare the complete replacement from a lease-free read frame."""

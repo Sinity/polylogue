@@ -27,7 +27,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypedDict, TypeVar
 
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
@@ -43,6 +43,13 @@ __all__ = [
     "EmbeddingConvergenceResult",
     "compose_embedding_convergence",
 ]
+
+
+class _PassReceipt(TypedDict):
+    run_id: str | None
+    started_at_ms: int
+    scanned_sessions: int
+    reserved_cost_usd: float
 
 
 class DaemonEmbeddingAdmission:
@@ -125,7 +132,7 @@ def compose_embedding_convergence(
     from polylogue.daemon.convergence import DaemonConverger, DerivationConvergenceOwner
     from polylogue.daemon.derivation import Budget, Outcome
     from polylogue.operations.embedding_derivation import make_embedding_frame
-    from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
+    from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter, EmbeddingTextProvider
     from polylogue.storage.search_providers import create_vector_provider
     from polylogue.storage.search_providers.sqlite_vec_support import (
         ESTIMATED_TOKENS_PER_MESSAGE,
@@ -156,7 +163,7 @@ def compose_embedding_convergence(
         model=cfg.embedding_model,
         dimension=cfg.embedding_dimension,
     )
-    if provider is None:
+    if not isinstance(provider, EmbeddingTextProvider):
 
         async def unavailable(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
             return EmbeddingConvergenceResult(None, "provider_unavailable")
@@ -166,7 +173,7 @@ def compose_embedding_convergence(
     estimated_cost_per_message = ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
     pass_lock = asyncio.Lock()
     receipt_lock = threading.Lock()
-    active_receipt: dict[str, object] | None = None
+    active_receipt: _PassReceipt | None = None
 
     def reserve(actor: str, function: Callable[[], T], /) -> T:
         """Create one conservative spend reservation before the first provider call."""
@@ -218,7 +225,7 @@ def compose_embedding_convergence(
                 compute_budget = min(compute_budget, max(0, int(remaining / estimated_cost_per_message)))
                 if compute_budget <= 0:
                     return EmbeddingConvergenceResult(None, "monthly_cost_cap")
-            receipt: dict[str, object] = {
+            receipt: _PassReceipt = {
                 "run_id": None,
                 "started_at_ms": int(time.time() * 1000),
                 "scanned_sessions": len(tuple(scope or ())),

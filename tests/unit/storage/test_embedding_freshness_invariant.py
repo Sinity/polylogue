@@ -11,10 +11,11 @@ that route silently trust the clean status row.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TypeVar, cast
 
 import pytest
 
@@ -45,6 +46,8 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from tests.infra.live_ingest import write_index_session
+
+T = TypeVar("T")
 
 _INITIAL_TEXT = "Initial authored archive prose that is long enough for an embedding vector."
 _CHANGED_TEXT = "Changed authored archive prose that keeps the same identity and message count."
@@ -312,7 +315,11 @@ def test_status_payload_uses_its_resolved_recipe_for_exact_archive_counts(
     initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
     assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id).status == "embedded"
 
-    monkeypatch.setattr(config_module, "load_polylogue_config", lambda: _EmbeddingConfig(model="voyage-5"))
+    monkeypatch.setattr(
+        config_module,
+        "load_polylogue_config",
+        lambda: config_module.PolylogueConfig(_EmbeddingConfig(model="voyage-5")),
+    )
     payload = embedding_status_payload(SimpleNamespace(config=SimpleNamespace(db_path=root / "index.db")))
 
     assert payload["configured_model"] == "voyage-5"
@@ -510,3 +517,53 @@ def test_recipe_mutation_removing_any_declared_computational_field_preserves_wro
     changed = replace(baseline, **{field_name: changed_value})  # type: ignore[arg-type]
 
     assert changed.recipe_hash != baseline.recipe_hash
+
+
+@pytest.mark.parametrize("damage", ["recipe", "missing-vector"])
+def test_common_derivation_replaces_physical_vector_with_existing_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    """Anti-vacuity: metadata-only publication leaves V1 or no vector, never V2."""
+    from polylogue.daemon.derivation import DerivationRegistry, converge
+    from polylogue.operations.embedding_derivation import make_embedding_frame
+    from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    root = tmp_path / "archive"
+    session_id = _write_archive_session(root, native_id="recipe-output", text=_INITIAL_TEXT)
+    index_db = root / "index.db"
+    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
+    assert embed_archive_session_sync(index_db, _FakeVectorProvider(0.01), session_id).status == "embedded"
+    conn = _open_embeddings(root / "embeddings.db")
+    try:
+        _message_id, address, old_vector = _current_ref_and_vector(conn, session_id)
+        if damage == "missing-vector":
+            conn.execute("DELETE FROM message_embeddings WHERE vector_derivation_hash = ?", (address.hex(),))
+            conn.commit()
+    finally:
+        conn.close()
+    if damage == "recipe":
+        monkeypatch.setattr("polylogue.storage.embeddings.identity.EMBEDDING_RECORD_SELECTOR", "changed-selector")
+
+    def admit(actor: str, function: Callable[[], T]) -> T:
+        with write_lease(actor, archive_root=root):
+            return function()
+
+    adapter = EmbeddingDerivationAdapter(index_db, _FakeVectorProvider(0.25), archive_root=root, reserve=admit)
+    frame = make_embedding_frame(index_db, archive_root=root, adapter=adapter, scope=(session_id,))
+    report = converge(DerivationRegistry([adapter]), frame, publisher=admit)
+    assert report.done == 1
+    assert report.failed == 0
+    conn = _open_embeddings(root / "embeddings.db")
+    try:
+        _, new_address, new_vector = _current_ref_and_vector(conn, session_id)
+        assert new_address == address
+        assert new_vector != old_vector
+        import struct
+
+        assert struct.unpack("<f", new_vector[:4])[0] == 0.25
+    finally:
+        conn.close()
+    assert converge(DerivationRegistry([adapter]), frame).wrote_nothing

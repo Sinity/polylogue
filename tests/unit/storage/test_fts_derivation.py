@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.derivation import Budget, DerivationFrame, Outcome
-from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter, FtsKeyStatus
+from polylogue.daemon.derivation import Budget, DerivationFrame, DerivationReport, Outcome
+from polylogue.storage.fts.derivation import (
+    GLOBAL_PARTITION,
+    FtsDerivationAdapter,
+    FtsKeyStatus,
+    FtsOrphanReplacement,
+    FtsPartitionReplacement,
+)
 from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
 
 
@@ -63,7 +72,9 @@ def _seed_session(conn: sqlite3.Connection, native_id: str = "derivation") -> tu
     return session_id, int(rowid)
 
 
-def _converge(adapter: FtsDerivationAdapter, frame: DerivationFrame, *, budget: Budget | None = None):
+def _converge(
+    adapter: FtsDerivationAdapter, frame: DerivationFrame, *, budget: Budget | None = None
+) -> DerivationReport:
     return DaemonConverger([], derivations=[adapter]).converge_derivations(frame, budget=budget)
 
 
@@ -250,3 +261,52 @@ def test_trigger_loss_stays_pending_and_is_never_recreated_at_runtime(
     assert report.pending == 1
     assert test_conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'messages_fts_ad'").fetchone() is None
     restore_fts_triggers_sync(test_conn)
+
+
+@pytest.mark.parametrize("binding", ["generation", "recipe"])
+def test_fts_inspection_refuses_a_retired_frame(
+    test_conn: sqlite3.Connection,
+    test_db: Path,
+    binding: str,
+) -> None:
+    """Anti-vacuity: current valid rows cannot certify a different input frame."""
+    session_id, _ = _seed_session(test_conn)
+    adapter = _adapter(test_db)
+    frame = _frame(test_db, (session_id,))
+    retired = (
+        replace(frame, source_revision="index-generation:retired")
+        if binding == "generation"
+        else replace(frame, recipe_versions={adapter.domain: "old"})
+    )
+    with pytest.raises(RuntimeError, match="frame"):
+        adapter.inspect(retired, (session_id,))
+
+
+def test_orphan_retirement_succeeds_despite_poisoned_session(
+    test_conn: sqlite3.Connection,
+    test_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: a global readiness check misreports successful orphan cleanup."""
+    session_id, rowid = _seed_session(test_conn)
+    test_conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
+    test_conn.execute(
+        "INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text) "
+        "VALUES (999999, 'orphan:block', 'orphan:message', 'orphan:session', 'text', 'orphan')"
+    )
+    test_conn.commit()
+    adapter = _adapter(test_db)
+    compute = adapter.compute
+
+    def poison(frame: object, key: str) -> FtsPartitionReplacement | FtsOrphanReplacement:
+        if key == session_id:
+            raise ValueError("poison session")
+        return compute(frame, key)
+
+    monkeypatch.setattr(adapter, "compute", poison)
+    report = _converge(adapter, _frame(test_db, (session_id,)))
+    assert report.failed == 1
+    assert report.done == 1
+    assert report.by_outcome(Outcome.FAILED)[0].key.key == session_id
+    assert report.by_outcome(Outcome.DONE)[0].key.key == GLOBAL_PARTITION
+    assert test_conn.execute("SELECT 1 FROM messages_fts_docsize WHERE id = 999999").fetchone() is None

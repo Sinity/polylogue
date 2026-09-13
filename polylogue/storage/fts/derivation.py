@@ -666,21 +666,25 @@ class FtsDerivationAdapter:
         return ()
 
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
-        """Classify keys from canonical/FTS relations, never freshness telemetry."""
+        """Classify keys against the bound generation and each partition's output."""
+        if not self._frame_current(frame) or not self._frame_recipe_current(frame):
+            raise RuntimeError("FTS inspection frame generation or recipe changed")
         read_connection, _ = self._connections()
         conn = read_connection()
         try:
             conn.execute("BEGIN")
             statuses: dict[str, str] = {}
             for key in keys:
-                inspection = self.inspect_partition(conn, key)
-                # The global key is discovered only in the excess space.  Its
-                # correct retired state is absence, which the kernel spells
-                # ``missing`` after publication.
-                if key == GLOBAL_PARTITION and inspection.valid:
-                    statuses[key] = FtsKeyStatus.MISSING.value
+                if key == GLOBAL_PARTITION:
+                    # This key owns only orphan residue. A poisoned session's
+                    # missing membership cannot make successful retirement fail.
+                    if not _schema_compatible(conn):
+                        raise RuntimeError("FTS schema or canonical trigger set is incompatible")
+                    statuses[key] = "excess" if _has_orphan_rows(conn) else "missing"
                 else:
-                    statuses[key] = inspection.status.value
+                    statuses[key] = self.inspect_partition(conn, key).status.value
+            if not self._frame_current(frame):
+                raise RuntimeError("FTS index generation changed during inspection")
             return statuses
         finally:
             conn.close()

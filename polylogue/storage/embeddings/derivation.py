@@ -24,7 +24,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.embeddings.generations import (
@@ -52,9 +52,11 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
+from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 
+@runtime_checkable
 class EmbeddingTextProvider(Protocol):
     """The provider capability the message derivation needs."""
 
@@ -350,6 +352,10 @@ class EmbeddingDerivationAdapter:
             has_refs = embeddings_attached and table_exists(index, "message_embedding_refs", schema="embeddings")
             has_meta = embeddings_attached and table_exists(index, "message_embeddings_meta", schema="embeddings")
             has_vectors = embeddings_attached and table_exists(index, "message_embeddings", schema="embeddings")
+            if has_vectors:
+                loaded, error = try_load_sqlite_vec(index)
+                if not loaded:
+                    raise RuntimeError(f"embedding vector inspection unavailable: {error}")
             for key in wanted:
                 message_id, excess = _message_id(key)
                 # Inspection needs no generation token: the current source and
@@ -416,7 +422,7 @@ class EmbeddingDerivationAdapter:
                 )
         return statuses
 
-    def prerequisite_keys(self, frame: object, key: str) -> tuple[str, ...]:
+    def prerequisite_keys(self, frame: object, key: str) -> tuple[()]:
         del frame, key
         return ()
 

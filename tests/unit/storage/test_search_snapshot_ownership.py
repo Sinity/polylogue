@@ -25,6 +25,7 @@ import aiosqlite
 import pytest
 
 import polylogue.storage.sqlite.queries.sessions_search as sessions_search
+from polylogue.storage.fts import fts_lifecycle
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.queries.sessions_search import (
     search_action_session_hits,
@@ -144,7 +145,7 @@ async def test_commit_between_readiness_probes_does_not_refuse(
     disagree by the racing row, and ``check_fts_readiness`` raises
     "Search index is incomplete" against an archive that is in fact complete.
     """
-    real_status = sessions_search.message_fts_search_readiness_async
+    real_status = fts_lifecycle.message_fts_search_readiness_async
     counter = itertools.count()
     raced = False
 

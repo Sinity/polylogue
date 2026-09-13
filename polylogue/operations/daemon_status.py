@@ -19,6 +19,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 if TYPE_CHECKING:
     from polylogue.config import Config, PolylogueConfig
+    from polylogue.readiness.capability import ComponentReadiness
     from polylogue.storage.embeddings.status_payload import EmbeddingStatusSettings
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -682,37 +683,27 @@ def _session_profile_component(index_conn: sqlite3.Connection) -> Any:
     )
 
 
-def session_summary_component_from_connection(index_conn: sqlite3.Connection) -> Any:
+def session_summary_component_from_connection(index_conn: sqlite3.Connection) -> ComponentReadiness:
     """Inspect stored session counters against their authoritative messages relation."""
     from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
-    from polylogue.storage.derived.session.summary import SESSION_SUMMARY_MEASURES, authoritative_session_summary
+    from polylogue.storage.derived.session.summary import inspect_session_summary
 
-    columns = ", ".join(measure.column for measure in SESSION_SUMMARY_MEASURES)
-    try:
-        rows = index_conn.execute(f"SELECT session_id, {columns} FROM sessions ORDER BY session_id").fetchall()
-        stale_count = 0
-        for row in rows:
-            session_id = str(row[0])
-            stored = tuple(int(row[index] or 0) for index in range(1, len(SESSION_SUMMARY_MEASURES) + 1))
-            authoritative = authoritative_session_summary(index_conn, session_id)
-            if authoritative is None or stored != authoritative.values:
-                stale_count += 1
-    except sqlite3.Error as exc:
+    inspection = inspect_session_summary(index_conn)
+    if inspection.state == "unknown":
         return ComponentReadiness(
             component="session_summary",
             scope="archive",
             state=CapabilityReadinessState.UNKNOWN,
-            summary="session-summary inspection unavailable",
-            caveats=(str(exc),),
+            summary=inspection.reason or "session-summary inspection unavailable",
             repair_hint="polylogued run",
         )
-    ready = stale_count == 0
+    ready = inspection.state == "ready"
     return ComponentReadiness(
         component="session_summary",
         scope="archive",
         state=CapabilityReadinessState.READY if ready else CapabilityReadinessState.STALE,
         summary="ready" if ready else "session counters stale",
-        counts={"total_sessions": len(rows), "stale_sessions": stale_count},
+        counts={"total_sessions": inspection.total_sessions, "stale_sessions": inspection.stale_sessions},
         repair_hint=None if ready else "polylogued run",
     )
 

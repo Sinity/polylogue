@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.session_profile_composition import SessionProfileCallback
     from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
+    from polylogue.sources.live.watcher import EmbeddingConvergenceOwner
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
 logger = get_logger(__name__)
@@ -2323,6 +2324,7 @@ async def _run_daemon_services_under_active_writer_lease(
     watcher: LiveWatcher | None = None
     converger: DaemonConverger | None = None
     session_profile_callback: SessionProfileCallback | None = None
+    embedding_callback: EmbeddingConvergenceOwner | None = None
     catch_up_complete_gate: asyncio.Event | None = None
     raw_intake_wakeup = asyncio.Event()
     cleanup_task: asyncio.Task[object] | None = None
@@ -2476,6 +2478,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     return True
                 return (await embedding_convergence(ids)).converged
 
+            embedding_callback = converge_ingest_embeddings
             raw_observation_owner = RawObservationConvergenceOwner(
                 archive_root_path,
                 compute_adapter=daemon_compute,
@@ -2616,7 +2619,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         event_emitter=_emit_live_batch_event,
                         catch_up_event_emitter=emit_catch_up_cycle,
                         write_coordinator=write_coordinator,
-                        embedding_owner=converge_ingest_embeddings if not watcher_blocked else None,
+                        embedding_owner=embedding_callback,
                         session_profile_callback=session_profile_callback,
                         intake_hints_only=True,
                         intake_wakeup=raw_intake_wakeup,

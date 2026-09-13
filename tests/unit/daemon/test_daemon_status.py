@@ -30,6 +30,7 @@ from polylogue.daemon.status_snapshot import (
     refresh_status_snapshot,
 )
 from polylogue.operations.status_protocol import StatusComponentRegistry
+from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -1742,9 +1743,9 @@ def test_build_daemon_status_claim_guard_keeps_operation_debt_separate(
         ),
         patch(
             "polylogue.daemon.status._session_summary_readiness_info",
-            return_value=status_module.ComponentReadiness(
+            return_value=ComponentReadiness(
                 component="session_summary",
-                state=status_module.CapabilityReadinessState.READY,
+                state=CapabilityReadinessState.READY,
                 summary="ready",
             ),
         ),
@@ -1808,9 +1809,9 @@ def test_build_daemon_status_claim_guard_keeps_registry_debt_health_separate(
     monkeypatch.setattr(
         status_module,
         "_session_summary_readiness_info",
-        lambda: status_module.ComponentReadiness(
+        lambda: ComponentReadiness(
             component="session_summary",
-            state=status_module.CapabilityReadinessState.READY,
+            state=CapabilityReadinessState.READY,
             summary="ready",
         ),
     )
@@ -2095,9 +2096,9 @@ def test_daemon_and_shared_claim_guard_share_mixed_frontier_summary(tmp_path: Pa
             total_sessions=0,
             profile_ready=True,
         ),
-        session_summary_readiness=status_module.ComponentReadiness(
+        session_summary_readiness=ComponentReadiness(
             component="session_summary",
-            state=status_module.CapabilityReadinessState.READY,
+            state=CapabilityReadinessState.READY,
             summary="ready",
         ),
         embedding_readiness=status_module.EmbeddingReadiness(),

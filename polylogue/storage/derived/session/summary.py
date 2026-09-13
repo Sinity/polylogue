@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import bisect
 import sqlite3
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,10 +30,12 @@ __all__ = [
     "SESSION_SUMMARY_MESSAGE_PROJECTION",
     "SESSION_SUMMARY_RECIPE_VERSION",
     "SessionSummaryDerivation",
+    "SessionSummaryInspection",
     "SessionSummaryMeasure",
     "SessionSummaryReplacement",
     "SessionSummaryValues",
     "authoritative_session_summary",
+    "inspect_session_summary",
     "refresh_session_summary",
 ]
 
@@ -71,7 +74,7 @@ class SessionSummaryMeasure:
 
     def sql_expression(self, alias: str = "m") -> str:
         """Return the exact aggregate expression for this measure."""
-        terms: list[str] = []
+        terms: list[str] = [f"{alias}.message_id IS NOT NULL"]
         if self.role is not None:
             terms.append(f"{alias}.role = {_sql_literal(self.role)}")
         if self.material_origin is not None:
@@ -110,6 +113,16 @@ class SessionSummaryValues:
     def __post_init__(self) -> None:
         if len(self.values) != len(SESSION_SUMMARY_MEASURES):
             raise ValueError("session summary values do not match the declared measures")
+
+
+@dataclass(frozen=True, slots=True)
+class SessionSummaryInspection:
+    """One bounded census of the stored session-counter projection."""
+
+    state: Literal["ready", "stale", "unknown"]
+    total_sessions: int = 0
+    stale_sessions: int = 0
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +177,82 @@ WHERE m.session_id = ?
 
 
 _SUMMARY_SELECT_SQL = _summary_select_sql()
+
+
+def _summary_census_sql() -> str:
+    stored_columns = ",\n       ".join(f"s.{measure.column}" for measure in SESSION_SUMMARY_MEASURES)
+    authoritative_columns = ",\n       ".join(
+        f"{measure.sql_expression()} AS authoritative_{measure.column}" for measure in SESSION_SUMMARY_MEASURES
+    )
+    return f"""
+SELECT s.session_id,
+       {stored_columns},
+       {authoritative_columns}
+FROM sessions AS s
+LEFT JOIN messages AS m ON m.session_id = s.session_id
+GROUP BY s.session_id
+ORDER BY s.session_id
+"""
+
+
+_SUMMARY_CENSUS_SQL = _summary_census_sql()
+
+
+def inspect_session_summary(
+    conn: sqlite3.Connection,
+    *,
+    deadline_s: float | None = 1.0,
+) -> SessionSummaryInspection:
+    """Compare every stored counter with its message-derived value in one bounded scan.
+
+    The supplied connection stays open and retains its snapshot ownership.  A
+    status caller owns this temporary progress handler; an expired scan is
+    incomplete authority and therefore reports ``unknown`` rather than a
+    readiness result.
+    """
+    if deadline_s is not None and deadline_s < 0:
+        raise ValueError("session summary inspection deadline must be non-negative")
+    deadline = None if deadline_s is None else time.monotonic() + deadline_s
+    if deadline is not None and time.monotonic() >= deadline:
+        return SessionSummaryInspection(state="unknown", reason="session-summary inspection deadline exceeded")
+
+    def _interrupt_when_expired() -> int:
+        return int(deadline is not None and time.monotonic() >= deadline)
+
+    if deadline is not None:
+        conn.set_progress_handler(_interrupt_when_expired, 10_000)
+    total_sessions = 0
+    stale_sessions = 0
+    try:
+        for row in conn.execute(_SUMMARY_CENSUS_SQL):
+            if deadline is not None and time.monotonic() >= deadline:
+                return SessionSummaryInspection(
+                    state="unknown",
+                    total_sessions=total_sessions,
+                    stale_sessions=stale_sessions,
+                    reason="session-summary inspection deadline exceeded",
+                )
+            total_sessions += 1
+            stored = tuple(int(row[index] or 0) for index in range(1, len(SESSION_SUMMARY_MEASURES) + 1))
+            start = len(SESSION_SUMMARY_MEASURES) + 1
+            authoritative = tuple(int(row[index] or 0) for index in range(start, start + len(SESSION_SUMMARY_MEASURES)))
+            if stored != authoritative:
+                stale_sessions += 1
+    except sqlite3.Error as exc:
+        return SessionSummaryInspection(
+            state="unknown",
+            total_sessions=total_sessions,
+            stale_sessions=stale_sessions,
+            reason=f"session-summary inspection unavailable: {exc}",
+        )
+    finally:
+        if deadline is not None:
+            conn.set_progress_handler(None, 0)
+    return SessionSummaryInspection(
+        state="ready" if stale_sessions == 0 else "stale",
+        total_sessions=total_sessions,
+        stale_sessions=stale_sessions,
+    )
 
 
 def authoritative_session_summary(conn: sqlite3.Connection, session_id: str) -> SessionSummaryValues | None:
@@ -270,8 +359,13 @@ class SessionSummaryDerivation:
         return ()
 
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        generation = self._generation_binding() if self._generation_binding is not None else None
+        if generation is not None and getattr(frame, "source_revision", None) != f"index-generation:{generation}":
+            raise RuntimeError("session summary inspection frame names a retired index generation")
         conn = self._read_connection()
         try:
+            if generation is not None and _connection_generation(conn) != generation:
+                raise RuntimeError("session summary inspection opened another index generation")
             conn.execute("BEGIN")
             statuses: dict[str, str] = {}
             for key in keys:
@@ -287,6 +381,8 @@ class SessionSummaryDerivation:
                     statuses[key] = "valid"
                 else:
                     statuses[key] = "stale"
+            if self._generation_binding is not None and self._generation_binding() != generation:
+                raise RuntimeError("session summary index generation changed during inspection")
             return statuses
         finally:
             conn.close()

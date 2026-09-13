@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -31,8 +32,8 @@ def test_periodic_embedding_backlog_waits_for_catch_up_complete(monkeypatch: pyt
 
     calls: list[tuple[str, ...] | None] = []
 
-    async def converge(scope: tuple[str, ...] | None) -> embedding_owner.EmbeddingConvergenceResult:
-        calls.append(scope)
+    async def converge(scope: Sequence[str] | None) -> embedding_owner.EmbeddingConvergenceResult:
+        calls.append(None if scope is None else tuple(scope))
         raise asyncio.CancelledError
 
     async def exercise() -> None:

@@ -82,8 +82,8 @@ async def periodic_embedding_backlog_check(
             result = await callback(None)
             if result.deferred_reason is not None:
                 logger.info("embed: backlog deferred by policy: %s", result.deferred_reason)
-            elif result.report is not None and getattr(result.report, "done", 0):
-                logger.info("embed: converged %d message partition(s)", int(getattr(result.report, "done", 0)))
+            elif result.report is not None and result.report.done:
+                logger.info("embed: converged %d message partition(s)", int(result.report.done))
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
                 logger.info("embed: archive busy; retrying backlog on next tick: %s", exc)

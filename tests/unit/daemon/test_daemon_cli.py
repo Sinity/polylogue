@@ -830,7 +830,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
         task = asyncio.create_task(
             daemon_cli._periodic_convergence_check(
                 (),
-                fts_owner=SimpleNamespace(converge=fake_fts_converge),
+                fts_owner=cast(Any, SimpleNamespace(converge=fake_fts_converge)),
                 catch_up_complete=catch_up_complete,
                 session_profile_callback=fake_session_profiles,
             )

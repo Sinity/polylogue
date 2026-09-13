@@ -866,3 +866,18 @@ def test_a_poison_prerequisite_inspection_blocks_only_its_dependent_key() -> Non
     assert len(blocked) == 1
     assert blocked[0].key == DerivationKey("down", "x")
     assert blocked[0].reason is PendingReason.BLOCKED
+
+
+def test_inspection_budget_allows_already_inspected_key_to_publish() -> None:
+    """Anti-vacuity: treating inspection exhaustion as compute exhaustion stalls forever."""
+    domain = VirtualDomain(10_000)
+    report = converge(
+        DerivationRegistry([domain]),
+        FRAME,
+        budget=Budget(page=1, discovery=1, inspection=1, compute=1, publication=1),
+    )
+    assert report.done == 1
+    assert domain.calls["compute"] == 1
+    assert report.work.discovered == 1
+    # Publication certification is counted separately from discovery admission.
+    assert report.work.inspected == 2

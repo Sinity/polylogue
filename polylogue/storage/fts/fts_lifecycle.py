@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
 import aiosqlite
 
@@ -659,7 +659,8 @@ async def message_fts_readiness_async(
 ) -> dict[str, int | bool]:
     """Async form of the same authoritative message FTS inspection."""
     del verify_total_rows
-    return await conn._execute(message_fts_readiness_sync, conn._conn)  # type: ignore[no-untyped-call]
+    result = await conn._execute(message_fts_readiness_sync, conn._conn)  # type: ignore[no-untyped-call]
+    return cast(dict[str, int | bool], result)
 
 
 async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict[str, int | bool]:
