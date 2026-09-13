@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -252,6 +253,58 @@ def test_configured_but_unacquired_member_blocks_even_with_other_rows(tmp_path: 
     check = _run_with_frontier(tmp_path, frontier)
     assert check.status is OutcomeStatus.ERROR, check.summary
     assert _count(check, "frontier_unacquired") == 1
+
+
+def test_archive_member_frontier_matches_the_canonical_member_coordinate(tmp_path: Path) -> None:
+    """An acquired ``archive!member`` address must not become an orphan.
+
+    Anti-vacuity: building the expected address from the already archive-prefixed
+    frontier coordinate produces ``archive!archive!member``.  Falling back to
+    the archive root then loses member-level ownership and cannot distinguish
+    equal-byte sibling members.
+    """
+    initialize_active_archive_root(tmp_path)
+    archive = tmp_path / "export.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("sessions/one.json", "session payload")
+    blob_hash = BlobStore(tmp_path / "blob").write_from_bytes(b"session payload")[0]
+    source_path = Path(f"{archive}!sessions/one.json")
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="raw-archive-member",
+            origin="codex-session",
+            native_id="one",
+            source_path=source_path,
+            blob_hash=blob_hash,
+            parsed=True,
+        )
+        _insert_artifact(
+            source_conn,
+            raw_id="raw-archive-member",
+            origin="codex-session",
+            source_path=source_path,
+            kind="session_record_stream",
+            support="supported_parseable",
+            parse_as_session=True,
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    index_conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        _insert_session(index_conn, origin="codex-session", native_id="one", raw_id="raw-archive-member")
+        index_conn.commit()
+    finally:
+        index_conn.close()
+
+    frontier = build_source_frontier([SourceDeclaration("export", SourceRole.ARCHIVE_MEMBER, archive)])
+    check = _run_with_frontier(tmp_path, frontier)
+
+    assert check.status is OutcomeStatus.OK, check.summary
+    assert _count(check, "frontier_unacquired") == 0
+    assert _count(check, "frontier_orphan") == 0
 
 
 def test_frontier_integrity_failure_is_a_typed_check_error(tmp_path: Path) -> None:
