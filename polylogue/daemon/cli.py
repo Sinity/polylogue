@@ -101,56 +101,7 @@ _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 #: lease-free embedding pass that precedes it so both see the same window.
 _CONVERGENCE_DEBT_RETRY_LIMIT = 100
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
-# Rows per bounded writer-held pass. This is now a PURE writer-hold-duration
-# bound: small enough to keep the write coordinator responsive to live
-# appends. It used to also double as a parse-throughput knob for
-# census-only passes (see the removed ``_RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT``
-# / ``census_mode`` escalation, docs/design/convergence-simplification-inventory.md
-# item 4) -- that job now belongs entirely to
-# ``_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT`` below, which runs off the
-# writer hold and therefore never has to trade against this bound.
-_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 16
-# Between backlog burst passes the loop yields the writer briefly so live
-# ingest and interactive writes never queue behind a long drain.
-_RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS = 1
-# Ceiling on how many candidates ``_maybe_warm_raw_materialization_parse_stage``
-# pre-parses OFF the writer hold per pass (polylogue-m6tp item 4). Distinct
-# from ``_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT`` on purpose: this is a
-# parse-throughput knob bounded by ``DaemonParseStage``'s own worker-count and
-# in-flight/cached-tree-bytes budgets (``polylogue.daemon.parse_prefetch``),
-# not by writer-hold duration, so it can stay generous regardless of how the
-# writer-held pass sizes itself. When the warmer actually fills the cache,
-# the writer-held pass widens its own limit to match (see the ``limit =
-# max(...)`` derivation in ``_periodic_raw_materialization_convergence``) so
-# already-parsed candidates get consumed without waiting several extra ticks
-# -- consuming a prefetch hit costs a receipt write, not a reparse, so this
-# does not meaningfully extend the writer hold.
-_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT = 64
-# Whale warming is deliberately bounded independently of the ordinary pass.
-# A component can contain hundreds of stream records; the repair census still
-# falls back to its normal parser for anything the cache budget cannot admit.
-_RAW_MATERIALIZATION_WHALE_PARSE_STAGE_WARM_LIMIT = 64
 _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
-# polylogue-de2a: declared, enforced ceiling on how long ONE ordinary trickle
-# pass may hold the process-wide writer coordinator. Live evidence showed
-# ``_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT`` alone did not bound hold
-# time -- a 16-64 component cap still produced measured holds of 187-210s,
-# because per-component cost (parse, replay, then a full FTS/action-pairs/
-# delegation-facts rebuild) dominates, not component count. Other maintenance
-# actors (FTS merge, session insights, convergence debt retry) want a 60s
-# cadence; a 20s ceiling here means the write coordinator's existing
-# maintenance-priority admission (PR #3289) bounds worst-case queued-actor
-# wait to roughly "this pass's remaining budget + at most one more
-# already-queued, equally-bounded ingest hold" instead of an unbounded
-# multi-minute wait. The retired compatibility drain checked this budget only
-# between components, at a point it already commits and requeries candidates
-# -- a real transaction-boundary checkpoint, not a mid-write yield -- and
-# always completes at least one component regardless of the budget, so a
-# single slower-than-budget component still makes forward progress. Not
-# applied to the retired whale compatibility pass,
-# whose entire purpose is converging one oversized, resource-blocked
-# component in a single pass once the ordinary conveyor is quiescent.
-_RAW_MATERIALIZATION_MAX_PASS_SECONDS = 20.0
 
 # An additional root is content-detected by the ordinary export route. SQLite
 # remains admitted only by typed provider sources such as Hermes and Codex.
@@ -169,13 +120,6 @@ _DRIVE_CATCHUP_MAX_PASS_SECONDS = 20.0
 # 6.33GB/788 raws) with headroom; override via
 # ``raw_authority_whale_payload_bytes`` / POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES.
 _RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
-_RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
-# Live capture outranks bulk materialization, but not absolutely. While the
-# browser-capture spool holds pending files this loop takes one bounded pass
-# per tick instead of skipping every pass: a spool that never drains -- four
-# undrainable files, or a class large enough that draining takes days -- must
-# not stop unrelated admitted work from progressing at all.
-_RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET = 1
 # A spool file younger than this is in the live route's normal debounce/
 # batch flow, not stalled; only older cursor-less files park the conveyor.
 _SPOOL_PENDING_GRACE_SECONDS = 300
@@ -193,6 +137,30 @@ async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> obj
         FtsConvergenceOwner(_active_index_db_path(), archive_root=archive_root()).run_once_sync,
         reason=FtsRunReason.STARTUP,
     )
+
+
+async def _run_startup_raw_census_recovery(coordinator: DaemonWriteCoordinator, root: Path) -> None:
+    """Recover named unfinished replay receipts before starting acquisition."""
+    from polylogue.config import Config
+    from polylogue.maintenance.raw_authority import (
+        recover_materialization_censuses,
+        unfinished_materialization_census_ids,
+    )
+
+    after_sequence = 0
+    while True:
+        page = await asyncio.to_thread(
+            unfinished_materialization_census_ids, root, after_sequence=after_sequence, limit=128
+        )
+        if not page:
+            return
+        await coordinator.run_sync(
+            "startup.raw_authority_censuses",
+            recover_materialization_censuses,
+            Config(archive_root=root, render_root=root / "render", sources=[]),
+            census_ids=tuple(census_id for census_id, _sequence in page),
+        )
+        after_sequence = page[-1][1]
 
 
 async def _run_startup_embedding_lifecycle(coordinator: DaemonWriteCoordinator, archive_root_path: Path) -> Path:
@@ -2746,6 +2714,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
             )
 
+            await _run_startup_raw_census_recovery(write_coordinator, archive_root_path)
             fts_startup = await _run_startup_fts_readiness(write_coordinator)
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
@@ -2780,7 +2749,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     ),
                 ),
                 (
-                    "raw_materialization_convergence",
+                    "raw_observation_convergence",
                     lambda: _periodic_raw_materialization_convergence(
                         catch_up_complete=gate,
                         raw_observation_owner=raw_observation_owner,

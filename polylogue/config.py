@@ -684,19 +684,6 @@ class PolylogueConfig:
         return max(1, int(str(self._data.get("live_full_ingest_workers", 1))))
 
     @property
-    def raw_authority_commit_batch_size(self) -> int | None:
-        """Census-phase commit batch size for raw-materialization repair (polylogue-amg1).
-
-        ``None``/absent falls back to the caller's hardcoded default; <=0
-        disables batching (per-raw commits), mirroring the historical
-        ``os.environ`` escape hatch.
-        """
-        value = self._data.get("raw_authority_commit_batch_size")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
     def raw_authority_whale_payload_bytes(self) -> int | None:
         """Escalation-tier payload envelope (bytes) for the daemon whale pass (polylogue-t93b).
 
@@ -1442,17 +1429,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "raw_authority_commit_batch_size",
-        toml_path="pipeline.raw_authority.commit_batch_size",
-        env_var="POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE",
-        owner_class="resource-policy",
-        reload_behavior="startup-bound",
-        description=(
-            "Census-phase commit batch size for raw-materialization repair "
-            "(polylogue-amg1); <=0 disables batching (per-raw commits)."
-        ),
-    ),
-    ConfigInventoryEntry(
         "raw_authority_whale_payload_bytes",
         toml_path="pipeline.raw_authority.whale_payload_bytes",
         env_var="POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES",
@@ -1653,7 +1629,6 @@ _INT_CONFIG_KEYS = frozenset(
         "memory_budget_bytes",
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
-        "raw_authority_commit_batch_size",
         "raw_authority_whale_payload_bytes",
         "daemon_parse_stage_workers",
         "daemon_parse_stage_max_inflight_bytes",
@@ -1876,7 +1851,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "ingest_commit_batch_messages": 8000,
         "live_full_ingest_workers": 1,
         "memory_budget_bytes": None,
-        "raw_authority_commit_batch_size": None,
         "raw_authority_whale_payload_bytes": None,
         "subscription_plans": (),
         "daemon_parse_stage_workers": None,

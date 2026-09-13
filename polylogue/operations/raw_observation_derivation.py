@@ -22,9 +22,13 @@ from polylogue.storage.derived.raw import RawObservationDerivation, RawObservati
 RAW_OBSERVATION_DOMAIN = _RAW_OBSERVATION_DOMAIN
 
 
-def make_raw_observation_derivation(archive_root: Path, *, max_payload_bytes: int) -> RawObservationDerivation:
+def make_raw_observation_derivation(
+    archive_root: Path, *, max_payload_bytes: int, stream_safe_only: bool = False
+) -> RawObservationDerivation:
     """Construct the storage-owned raw adapter from the operations boundary."""
-    return RawObservationDerivation(archive_root, max_payload_bytes=max_payload_bytes)
+    return RawObservationDerivation(
+        archive_root, max_payload_bytes=max_payload_bytes, stream_safe_only=stream_safe_only
+    )
 
 
 def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple[str, ...]:
@@ -61,26 +65,41 @@ def raw_observation_frame(
     )
 
 
-def raw_observation_pending_roots(archive_root: Path, paths: Sequence[Path]) -> set[Path]:
+def raw_observation_pending_roots(
+    archive_root: Path,
+    paths: Sequence[Path],
+    *,
+    continuations: dict[tuple[Path, ...], tuple[str, str | None]] | None = None,
+    limit: int = 128,
+) -> set[Path]:
+    """Inspect one page; an unfinished traversal remains pending.
+
+    The caller may retain a disposable continuation after an all-valid page.
+    A page containing pending work is revisited until publication resolves it.
+    No partial all-valid prefix can certify the entire selected source scope.
+    """
     adapter = make_raw_observation_derivation(archive_root, max_payload_bytes=64 * 1024 * 1024)
     pending: set[Path] = set()
     ordered = tuple(dict.fromkeys(paths))
-    for offset in range(0, len(ordered), 128):
-        chunk = ordered[offset : offset + 128]
-        frame = raw_observation_frame(archive_root, source_roots=chunk)
+    if not ordered:
+        return pending
+    frame = raw_observation_frame(archive_root, source_roots=ordered)
+    binding = frame.source_revision + ":" + frame.recipe_version(RAW_OBSERVATION_DOMAIN)
+    previous_binding, cursor = (continuations or {}).get(ordered, (binding, None))
+    if previous_binding != binding:
         cursor = None
-        while True:
-            keys, cursor = adapter.required_page(frame, cursor=cursor, limit=128)
-            if keys:
-                stale = tuple(key for key, status in adapter.inspect(frame, keys).items() if status != "valid")
-                for source_path in adapter.source_paths(stale).values():
-                    pending.update(
-                        path
-                        for path in chunk
-                        if source_path == str(path).rstrip("/") or source_path.startswith(str(path).rstrip("/") + "/")
-                    )
-            if cursor is None or all(path in pending for path in chunk):
-                break
+    keys, next_cursor = adapter.required_page(frame, cursor=cursor, limit=limit)
+    stale = tuple(key for key, status in adapter.inspect(frame, keys).items() if status != "valid") if keys else ()
+    for source_path in adapter.source_paths(stale).values():
+        pending.update(
+            path
+            for path in ordered
+            if source_path == str(path).rstrip("/") or source_path.startswith(str(path).rstrip("/") + "/")
+        )
+    if continuations is not None:
+        continuations[ordered] = (binding, cursor if stale else next_cursor)
+    if next_cursor is not None:
+        pending.update(ordered)
     return pending
 
 

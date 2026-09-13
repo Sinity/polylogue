@@ -88,6 +88,7 @@ class RawObservationConvergenceOwner:
                         make_raw_observation_derivation(
                             self._archive_root,
                             max_payload_bytes=payload_limit,
+                            stream_safe_only=payload_limit > self._max_payload_bytes,
                         ),
                     ),
                 )
@@ -128,7 +129,7 @@ class RawObservationConvergenceOwner:
         from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation
         from polylogue.readiness.capability import raw_frontier_source_selection_refusal
 
-        refusal = raw_frontier_source_selection_refusal(self._archive_root)
+        refusal = raw_frontier_source_selection_refusal(self._archive_root, raw_ids=(raw_id,))
         if refusal.unattributed_reason is not None:
             raise RuntimeError(f"raw observation source-selection gate blocked: {refusal.unattributed_reason}")
         if not refusal.source_paths:

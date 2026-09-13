@@ -1,19 +1,4 @@
-"""Equivalence: parse-stage prefetch (flag on) vs. in-hold parse (flag off).
-
-polylogue-m6tp phase (a). ``RawParsePrefetchCache`` is purely additive by
-construction (see its docstring and the unit-level cache-hit/miss tests in
-``tests/unit/sources/test_revision_backfill.py``); this test proves the
-end-to-end claim against a real archive: running the SAME raw-materialization
-convergence over the SAME fixture corpus, once with the daemon's
-``DaemonParseStage`` warming the census parse ahead of time and once with no
-prefetch cache at all, produces byte-identical durable archive content.
-
-Production dependencies exercised: ``DaemonParseStage.warm`` (the actual
-off-writer-hold pre-parse path) feeding ``polylogue.storage.raw_convergence.
-converge_raw_materialization``'s ``prefetch_cache`` parameter (the actual
-production plumbing the daemon conveyor uses), not a reimplementation of
-either.
-"""
+"""Canonical preparation and retained prefetch produce equivalent replay content."""
 
 from __future__ import annotations
 
@@ -32,7 +17,8 @@ from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.parse_prefetch import DaemonParseStage
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-from polylogue.storage.raw_convergence import converge_raw_materialization
+from polylogue.operations.raw_observation_derivation import converge_raw_observations
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -126,33 +112,26 @@ def test_flag_on_prefetch_and_flag_off_produce_identical_archive_content(tmp_pat
     _seed_corpus(baseline_root)
     _seed_corpus(prefetch_root)
 
-    # Flag OFF: parse happens entirely inside converge_raw_materialization,
-    # exactly as production behaves today.
-    baseline_result = converge_raw_materialization(
-        _config(baseline_root),
-        dry_run=False,
-        raw_artifact_limit=100,
+    baseline_result = converge_raw_observations(
+        baseline_root,
+        source_roots=(),
+        limit=100,
         max_payload_bytes=10_000_000,
     )
-    assert baseline_result.success is True
+    assert baseline_result.failed == 0 and baseline_result.done == 4
 
-    # Flag ON: warm the SAME candidates off any writer hold first, exactly as
-    # the daemon's ``_maybe_warm_raw_materialization_parse_stage`` does, then
-    # thread the warmed cache into the identical production entry point.
     stage = DaemonParseStage(max_workers=2, max_inflight_bytes=10_000_000)
     try:
         warmed = stage.warm(_config(prefetch_root), limit=100, max_payload_bytes=10_000_000)
         assert warmed == 4
-        prefetch_result = converge_raw_materialization(
-            _config(prefetch_root),
-            dry_run=False,
-            raw_artifact_limit=100,
+        backfill_historical_revision_evidence(
+            prefetch_root,
             max_payload_bytes=10_000_000,
             prefetch_cache=stage.cache,
+            pipeline_decode=False,
         )
     finally:
         stage.shutdown()
-    assert prefetch_result.success is True
     # Every warmed entry was consumed by the census phase, not left stranded.
     assert len(stage.cache) == 0
 
@@ -180,13 +159,13 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
             acquired_at_ms=1,
         )
 
-    result = converge_raw_materialization(
-        _config(archive_root),
-        dry_run=False,
-        raw_artifact_limit=1,
+    result = converge_raw_observations(
+        archive_root,
+        source_roots=(),
+        limit=1,
         max_payload_bytes=10_000_000,
     )
-    assert result.success is True
+    assert result.done == 1 and result.failed == 0
     session_ids = daemon_cli._raw_materialized_session_ids(archive_root, raw_id)
     assert session_ids == ("codex-session:raw-profile-handoff",)
 

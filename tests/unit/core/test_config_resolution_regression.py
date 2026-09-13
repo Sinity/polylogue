@@ -374,32 +374,6 @@ class TestNewlyInventoriedSettingsRouteThroughResolver:
 
         assert result == "codex"
 
-    def test_raw_authority_commit_batch_size_toml_only_reaches_repair_resolution(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        """Reverted-mutation witness: restore
-        ``raw = os.environ.get("POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE")``
-        in ``polylogue/storage/raw_convergence.py::_resolve_raw_authority_commit_batch_size``
-        -- the test then fails because no environment variable is set
-        (TOML-only configuration) and resolution falls back to the module's
-        hardcoded ``RAW_MATERIALIZATION_COMMIT_BATCH_SIZE`` default instead
-        of the configured value.
-        """
-        from polylogue.storage.raw_convergence import _resolve_raw_authority_commit_batch_size
-
-        _disable_site(monkeypatch)
-        monkeypatch.delenv("POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE", raising=False)
-        user = tmp_path / "user.toml"
-        user.write_text("[pipeline.raw_authority]\ncommit_batch_size = 4242\n", encoding="utf-8")
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
-
-        assert _resolve_raw_authority_commit_batch_size(None) == 4242
-        # Explicit caller override still wins over the configured value.
-        assert _resolve_raw_authority_commit_batch_size(7) == 7
-
     def test_daemon_parse_stage_knobs_toml_only_reach_prefetch_resolution(
         self,
         monkeypatch: pytest.MonkeyPatch,
