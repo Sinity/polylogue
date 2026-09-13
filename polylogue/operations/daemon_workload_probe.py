@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.archive.topology.edge import TopologyEdgeStatus
-from polylogue.config import Config
 from polylogue.core.errors import SchemaSkewError
 from polylogue.core.evidence import Empty, Evidence, Measured, Unavailable, measured_or_none, resolve
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
@@ -31,7 +30,6 @@ from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.blob_integrity import scan_blob_reference_debt
 from polylogue.storage.introspection import relation_exists
-from polylogue.storage.raw_convergence import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -817,15 +815,9 @@ def _archive_source_path_churn(
 
 
 def _raw_replay_backlog(root: Path, *, limit: int) -> dict[str, object]:
-    return raw_materialization_replay_backlog(
-        Config(
-            archive_root=root,
-            render_root=root / "render",
-            sources=[],
-            db_path=root / "index.db",
-        ),
-        limit=limit,
-    )
+    from polylogue.operations.raw_observation_derivation import raw_observation_backlog_snapshot
+
+    return raw_observation_backlog_snapshot(root, limit=limit)
 
 
 def _cursor_lag_baselines(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:

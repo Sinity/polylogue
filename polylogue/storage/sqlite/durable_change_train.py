@@ -2020,12 +2020,6 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_raw_artifact_upsert(cast(Callable[..., object], value), train.target_version)
-                elif reference.endswith(":_raw_materialization_candidate_ids"):
-                    if train.tier is not ArchiveTier.SOURCE:
-                        raise DurableChangeTrainError(
-                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
-                        )
-                    detail = _probe_raw_materialization_candidates(cast(Callable[..., object], value))
                 elif reference.endswith(":AuditRepository.reconcile_continuity"):
                     from polylogue.operations.audit import AuditRepository
 
@@ -2240,21 +2234,6 @@ def _probe_raw_artifact_upsert(upsert: Callable[..., object], target_version: in
     if row != expected:
         raise DurableChangeTrainError("raw-artifact upsert probe did not persist the expected artifact contract")
     return "wrote and read back one raw artifact in the projected source tier"
-
-
-def _probe_raw_materialization_candidates(candidates: Callable[..., object]) -> str:
-    """Exercise the raw replay candidate query against an empty archive fixture."""
-    from polylogue.config import Config
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-probe-") as temporary:
-        root = Path(temporary)
-        initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
-        initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
-        result = candidates(Config(archive_root=root, render_root=root, sources=[]))
-    if getattr(result, "raw_ids", None) != [] or getattr(result, "missing_blobs", None) != 0:
-        raise DurableChangeTrainError("raw-materialization candidate probe found unexpected replay debt")
-    return "enumerated an empty source/index archive without replay debt"
 
 
 def _runtime_probe_source_connection(target_version: int) -> sqlite3.Connection:
