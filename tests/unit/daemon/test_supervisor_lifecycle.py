@@ -446,8 +446,8 @@ def test_profile_selection_comes_from_the_production_registry() -> None:
         production_names = {spec.name for spec in production.selected}
 
         assert focused_names < production_names
-        assert "raw_materialization_convergence" not in focused_names
-        assert focused.start("raw_materialization_convergence", _forever) is None
-        assert focused.state("raw_materialization_convergence") is ServiceState.SKIPPED
+        assert "raw_observation_convergence" not in focused_names
+        assert focused.start("raw_observation_convergence", _forever) is None
+        assert focused.state("raw_observation_convergence") is ServiceState.SKIPPED
 
     asyncio.run(scenario())
