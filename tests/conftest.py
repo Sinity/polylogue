@@ -185,7 +185,14 @@ def pytest_make_parametrize_id(config: pytest.Config, val: object, argname: str 
     the test; only its collection-time display label is shortened.
     """
     del config
-    rendered = repr(val)
+    try:
+        rendered = repr(val)
+    except Exception:
+        # A parameter may deliberately carry an object whose repr raises (the
+        # devtools unprintable-exit-code cases).  pytest's own id machinery
+        # never reprs such a value; this hook must not turn one into a
+        # collection error for the whole file.
+        return f"{argname or 'param'}-unrepresentable"
     if len(rendered) <= 80:
         return None
     digest = hashlib.blake2b(rendered.encode("utf-8", "backslashreplace"), digest_size=8).hexdigest()
