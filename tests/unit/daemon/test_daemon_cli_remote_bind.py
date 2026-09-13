@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import click
@@ -116,11 +117,13 @@ def test_non_loopback_bind_with_allow_remote_and_no_explicit_token_auto_mints(
     (``192.168.1.1``) -- only the pure-logic gate at the top of
     ``run_daemon_services`` is under test here.
     """
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
+    api_server = MagicMock()
+    api_server.operation_runtime = SimpleNamespace(shutdown=AsyncMock())
     with (
-        patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=MagicMock()),
+        patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=api_server),
         patch("polylogue.daemon.uds.DaemonAPIUnixHTTPServer", return_value=MagicMock()),
         patch(
             "polylogue.daemon.cli._run_startup_fts_readiness",

@@ -59,7 +59,6 @@ class TestRawFailureSampleModel:
             "decode_error",
             "parse_error",
             "schema_violation",
-            "maintenance",
             "unknown",
             *RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
             *RAW_FAILURE_TERMINAL_EVIDENCE_KINDS,
@@ -1101,33 +1100,9 @@ class TestRawFailureInfoProducesTypedSamples:
         assert len(cast(list[RawFailureSample], info["samples"])) == 50
 
     def test_raw_failure_info_empty_when_no_failures(self, tmp_path: Path) -> None:
-        db = tmp_path / "index.db"
-        with sqlite3.connect(db) as conn:
-            conn.executescript(
-                """
-                CREATE TABLE raw_sessions (
-                    raw_id TEXT PRIMARY KEY,
-                    payload_provider TEXT,
-                    source_name TEXT,
-                    source_path TEXT NOT NULL,
-                    source_index INTEGER,
-                    blob_size INTEGER NOT NULL,
-                    acquired_at TEXT NOT NULL,
-                    file_mtime TEXT,
-                    parsed_at TEXT,
-                    parse_error TEXT,
-                    validated_at TEXT,
-                    validation_status TEXT,
-                    validation_error TEXT,
-                    validation_drift_count INTEGER DEFAULT 0,
-                    validation_provider TEXT,
-                    validation_mode TEXT,
-                    detection_warnings TEXT
-                );
-                """
-            )
+        initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
 
-        with patch("polylogue.daemon.status._active_status_db_path", return_value=db):
+        with patch("polylogue.daemon.status.archive_root", return_value=tmp_path):
             info = _raw_failure_info()
 
         assert info["parse_failures"] == 0

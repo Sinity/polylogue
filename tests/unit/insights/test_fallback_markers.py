@@ -129,9 +129,14 @@ async def test_readiness_report_classifies_fallback_rows_as_degraded(
 ) -> None:
     db_path = cli_workspace["db_path"]
     _seed_degraded_session(db_path)
-    archive_seed = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    await archive_seed.rebuild_insights()
-    await archive_seed.close()
+    # Insight rebuilds are daemon-owned and require a sealed accepted machine
+    # part.  Seed the derived read model through the materializer harness
+    # directly so this readiness test does not bypass that operation contract.
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.sqlite.connection import open_connection
+
+    with open_connection(db_path) as connection:
+        rebuild_session_insights_sync(connection)
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     report: InsightReadinessReport = await archive.insight_readiness_report(
