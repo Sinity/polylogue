@@ -146,6 +146,10 @@ def test_surface_authority_module_resolves_no_archive_state() -> None:
         "started_at",
         "run_id",
         "degraded",
+        "matched",
+        "analyzed",
+        "request_scope_fingerprint",
+        "result_scope_fingerprint",
     ]
     with pytest.raises(TypeError):
         module.build_authority_envelope(Path("/nonexistent"), server_identity="direct")

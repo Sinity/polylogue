@@ -308,7 +308,7 @@ def test_run_health_embedding_status_contract(
             materialized_rows=3,
         ),
     }
-    with patch("polylogue.readiness._collect_table_status_best_effort", return_value=(derived_statuses, {})):
+    with patch("polylogue.readiness._collect_table_status_best_effort", return_value=derived_statuses):
         report = run_archive_readiness(get_config())
 
     check = next(c for c in report.checks if c.name == "transcript_embeddings")
