@@ -1638,7 +1638,8 @@ def raw_frontier_integrity_snapshot_from_connections(
     source_conn: sqlite3.Connection,
     *,
     index_conn: sqlite3.Connection,
-    ops_conn: sqlite3.Connection,
+    ops_conn: sqlite3.Connection | None,
+    ops_db_path: Path | None = None,
     ops_schema: str = "ops_tier",
     sample_limit: int = 10,
 ) -> RawFrontierIntegritySnapshot:
@@ -1646,8 +1647,10 @@ def raw_frontier_integrity_snapshot_from_connections(
 
     Operation reads have a fixed publication snapshot.  Opening the index or
     ops path here would silently compare source evidence with a later
-    generation, so this variant deliberately accepts the three observed
-    handles instead.  It is otherwise the same proof as
+    generation, so this variant deliberately accepts the observed handles
+    (with ``ops_conn=None`` representing an unavailable optional authority)
+    instead.  ``ops_db_path`` is retained only for the diagnostic reason when
+    that optional handle is unavailable.  It is otherwise the same proof as
     :func:`raw_frontier_integrity_snapshot`.
     """
 
@@ -1682,7 +1685,7 @@ def raw_frontier_integrity_snapshot_from_connections(
             cursor_reason,
         ) = _check_cursor_ahead_of_accepted(
             source_conn,
-            None,
+            ops_db_path,
             heads,
             sample_limit=sample_limit,
             ops_conn=ops_conn,
