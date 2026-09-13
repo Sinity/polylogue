@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.daemon import convergence_stages, convergence_standing_queries
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
 def _open_seeded_database(path: Path) -> None:
@@ -25,7 +26,7 @@ def test_convergence_reader_census_has_no_direct_sqlite_opens() -> None:
 
 @pytest.mark.parametrize(
     "open_reader",
-    (convergence_stages.open_readonly_connection, convergence_standing_queries.open_readonly_connection),
+    (open_readonly_connection,),
 )
 def test_convergence_one_shot_readers_cannot_mutate(
     tmp_path: Path,
