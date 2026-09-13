@@ -452,9 +452,9 @@ class RawMaterializationDiscovery:
         """
         if limit <= 0:
             return ()
+        from polylogue.operations.operation_context import open_operation_read
         from polylogue.operations.raw_observation_derivation import raw_observation_frame
         from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN, RawObservationDerivation
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         frame = raw_observation_frame(self._archive_root)
         binding = _RawDiscoveryBinding(
@@ -481,8 +481,8 @@ class RawMaterializationDiscovery:
         selected = tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
         if not selected:
             return ()
-        with ArchiveStore.open_existing(self._archive_root, read_only=True) as archive:
-            sizes = archive.raw_payload_sizes(selected)
+        with open_operation_read(self._archive_root) as pinned:
+            sizes = pinned.archive.raw_payload_sizes(selected)
         return tuple((raw_id, max(1, int(sizes.get(raw_id, 1)))) for raw_id in selected)
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[4]
 CONTROLLED_READER = "polylogue/archive/query/execution_control.py"
+CONTROLLED_OPERATION_READ = "polylogue/operations/operation_context.py"
 
 
 def _direct_archive_open_lines(path: Path) -> list[tuple[int, bool | None]]:
@@ -35,7 +36,7 @@ def test_all_direct_archive_opens_use_the_controlled_reader_or_explicit_write_mo
     for path in sorted((REPO_ROOT / "polylogue").rglob("*.py")):
         relative_path = path.relative_to(REPO_ROOT).as_posix()
         for line, read_only in _direct_archive_open_lines(path):
-            if relative_path == CONTROLLED_READER:
+            if relative_path in {CONTROLLED_READER, CONTROLLED_OPERATION_READ}:
                 controlled_reader_opens += 1
                 continue
             if read_only is not False:
