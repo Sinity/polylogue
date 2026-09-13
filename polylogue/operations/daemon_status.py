@@ -108,7 +108,13 @@ def produce_direct_status(
             "surfaces": {},
         }
     )
-    frontier = _frontier_status(source_conn, index_conn, ops_conn, materialization)
+    frontier = _frontier_status(
+        source_conn,
+        index_conn,
+        ops_conn,
+        materialization,
+        ops_db_path=archive.archive_root / "ops.db",
+    )
     raw_failures = _raw_failure_status(source_conn)
     workload = _ops_workload_status(ops_conn, now_ms=now_ms)
     convergence = _convergence_status(ops_conn, now_ms=now_ms)
@@ -374,17 +380,26 @@ def _frontier_status(
     index_conn: sqlite3.Connection,
     ops_conn: sqlite3.Connection | None,
     materialization: Mapping[str, object],
+    *,
+    ops_db_path: Path | None = None,
 ) -> dict[str, object]:
-    if source_conn is None or ops_conn is None:
-        return {"available": False, "overall_status": "unknown", "reason": "source or ops tier unavailable"}
     from polylogue.storage.raw_retention import (
         RawFrontierIntegrityProjection,
         combine_raw_frontier_integrity_statuses,
         missing_source_raw_integrity_status,
         raw_frontier_integrity_snapshot_from_connections,
+        unknown_raw_frontier_integrity_projection,
     )
 
-    snapshot = raw_frontier_integrity_snapshot_from_connections(source_conn, index_conn=index_conn, ops_conn=ops_conn)
+    if source_conn is None:
+        return unknown_raw_frontier_integrity_projection("source tier is unavailable").to_dict()
+
+    snapshot = raw_frontier_integrity_snapshot_from_connections(
+        source_conn,
+        index_conn=index_conn,
+        ops_conn=ops_conn,
+        ops_db_path=ops_db_path,
+    )
     missing_status, missing_count, missing_samples, missing_reason = missing_source_raw_integrity_status(
         materialization
     )

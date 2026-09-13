@@ -6,7 +6,10 @@ indistinguishable from a real answer. The typed route
 (``polylogue.core.evidence`` plus ``polylogue.storage.tier_access``) classifies
 that once at the seam instead, so this census exists to ratchet the improvised
 sites down: the baseline records what each file carries today, and
-``devtools gate layering`` fails when a file grows past it.
+``devtools gate layering`` fails when a file grows past it. Handlers that
+preserve an explicit failure boundary by raising are not degradation sites;
+handlers that return a value (including an empty or otherwise fabricated
+projection) remain in the census.
 """
 
 from __future__ import annotations
@@ -35,6 +38,18 @@ def _handles_sqlite(node: ast.ExceptHandler) -> bool:
     return False
 
 
+def _returns_value(node: ast.ExceptHandler) -> bool:
+    """Whether an SQLite handler fabricates a result instead of failing closed.
+
+    A handler may contain nested ``try`` blocks, so walk its body rather than
+    only inspecting immediate statements. ``raise``-only handlers are an
+    explicit domain-error boundary and therefore do not belong in this
+    degradation census.
+    """
+
+    return any(isinstance(child, ast.Return) for child in ast.walk(node))
+
+
 def census_sqlite_degradation_sites(repo_root: Path, roots: tuple[str, ...]) -> dict[str, int]:
     """Return repo-relative file -> count of ``except sqlite3.*`` handlers."""
     counts: dict[str, int] = {}
@@ -47,7 +62,11 @@ def census_sqlite_degradation_sites(repo_root: Path, roots: tuple[str, ...]) -> 
                 tree = ast.parse(py_file.read_text(encoding="utf-8"))
             except (OSError, SyntaxError, UnicodeDecodeError):
                 continue
-            count = sum(1 for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler) and _handles_sqlite(node))
+            count = sum(
+                1
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ExceptHandler) and _handles_sqlite(node) and _returns_value(node)
+            )
             if count:
                 counts[py_file.relative_to(repo_root).as_posix()] = count
     return counts

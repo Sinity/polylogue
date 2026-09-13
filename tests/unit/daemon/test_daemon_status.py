@@ -125,7 +125,7 @@ def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
             "archive_storage": {
                 "active_store": "archive_file_set",
                 "present_tiers": ["source", "index"],
-                "missing_tiers": ["embeddings", "user", "ops"],
+                "missing_tiers": ["embeddings", "user", "audit", "ops"],
                 "schema_mismatches": ["index"],
                 "archive_root_matches_configured": False,
                 "archive_root": "/tmp/active-archive",
@@ -143,7 +143,7 @@ def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
     )
 
     assert (
-        "Storage: archive_file_set (source, index); missing embeddings, user, ops; schema mismatch index; active root /tmp/active-archive"
+        "Storage: archive_file_set (source, index); missing embeddings, user, audit, ops; schema mismatch index; active root /tmp/active-archive"
         in lines
     )
     assert (
@@ -1470,7 +1470,7 @@ def test_archive_storage_info_uses_configured_archive_root(tmp_path: Path) -> No
     assert storage.active_db_path == str(default_root / "index.db")
     assert storage.active_store == "empty"
     assert storage.present_tiers == ["ops"]
-    assert storage.missing_tiers == ["source", "index", "embeddings", "user"]
+    assert storage.missing_tiers == ["source", "index", "embeddings", "user", "audit"]
     assert storage.identity["active_generation"]
     assert storage.identity["unit"] == "polylogued.service"
     assert "invocation_id" in storage.identity
@@ -1554,7 +1554,7 @@ def test_archive_storage_info_reads_durable_tiers_from_configured_root_for_index
     assert tiers["ops"].resolved_path == str(configured / "ops.db")
     assert tiers["index"].resolved_path == str(generation_index)
     assert storage.present_tiers == ["source", "index", "embeddings", "user", "ops"]
-    assert storage.missing_tiers == []
+    assert storage.missing_tiers == ["audit"]
 
 
 def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_debt(tmp_path: Path) -> None:
@@ -1567,7 +1567,7 @@ def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_de
         archive_materialization_ready=True,
         final_shape_ready=True,
         archive_schema_ready=True,
-        present_tiers=["source", "index", "embeddings", "user", "ops"],
+        present_tiers=["source", "index", "embeddings", "user", "audit", "ops"],
     )
     raw_readiness = status_module.RawMaterializationReadiness(
         available=True,
@@ -1630,7 +1630,7 @@ def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_
         archive_materialization_ready=True,
         final_shape_ready=True,
         archive_schema_ready=True,
-        present_tiers=["source", "index", "embeddings", "user", "ops"],
+        present_tiers=["source", "index", "embeddings", "user", "audit", "ops"],
     )
     raw_readiness = status_module.RawMaterializationReadiness(
         available=True,
@@ -1694,7 +1694,7 @@ def test_build_daemon_status_claim_guard_blocks_pending_or_unknown_convergence_d
         archive_materialization_ready=True,
         final_shape_ready=True,
         archive_schema_ready=True,
-        present_tiers=["source", "index", "embeddings", "user", "ops"],
+        present_tiers=["source", "index", "embeddings", "user", "audit", "ops"],
     )
     raw_readiness = _complete_raw_materialization_readiness()
     frontier = status_module.RawFrontierIntegrity(available=True, overall_status="healthy")
@@ -1781,7 +1781,7 @@ def test_build_daemon_status_claim_guard_uses_real_registry_convergence_snapshot
         archive_materialization_ready=True,
         final_shape_ready=True,
         archive_schema_ready=True,
-        present_tiers=["source", "index", "embeddings", "user", "ops"],
+        present_tiers=["source", "index", "embeddings", "user", "audit", "ops"],
     )
     raw_readiness = _complete_raw_materialization_readiness()
     frontier = status_module.RawFrontierIntegrity(available=True, overall_status="healthy")
@@ -1958,8 +1958,11 @@ def test_daemon_and_direct_status_share_zero_head_unavailable_ops_semantics(tmp_
     operation_result = configured_read_operation(config, "status", {}, daemon_disabled=True)
     direct_result = cast(dict[str, object], operation_result.value)
     direct_payload = cast(dict[str, object], direct_result["raw_frontier_integrity"])
+    embedding_payload = cast(dict[str, object], direct_result["embedding_status"])
 
     assert daemon_payload == direct_payload
+    assert embedding_payload["status"] == "unavailable"
+    assert embedding_payload["freshness_status"] == "unavailable"
     assert daemon_payload["broken_head_status"] == "healthy"
     assert daemon_payload["cursor_ahead_status"] == "unknown"
     assert daemon_payload["overall_status"] == "unknown"
@@ -2067,7 +2070,7 @@ def test_daemon_and_shared_claim_guard_share_mixed_frontier_summary(tmp_path: Pa
         archive_materialization_ready=True,
         final_shape_ready=True,
         archive_schema_ready=True,
-        present_tiers=["source", "index", "embeddings", "user", "ops"],
+        present_tiers=["source", "index", "embeddings", "user", "audit", "ops"],
     )
     raw_readiness = _complete_raw_materialization_readiness()
     daemon_guard = status_module._daemon_claim_guard(

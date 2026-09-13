@@ -844,8 +844,9 @@ def _sqlite_degradation_findings(
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Return (violations, ratchet-down opportunities) for improvised sqlite policy.
 
-    A file may carry fewer ``except sqlite3`` handlers than the baseline
-    records, never more, and a file the baseline does not name may carry none.
+    A file may carry fewer value-returning ``except sqlite3`` handlers than the
+    baseline records, never more, and a file the baseline does not name may
+    carry none. Explicit failure-boundary rethrows are excluded by the census.
     Growth is therefore only possible by editing the baseline, which is the
     thing review looks at.
     """
