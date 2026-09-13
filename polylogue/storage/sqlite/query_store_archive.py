@@ -69,9 +69,20 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await sessions_q.get_sessions_batch(conn, ids)
 
-    async def list_session_links_for_session(self, session_id: str) -> list[dict[str, object]]:
+    async def list_session_links_for_session(
+        self, session_id: str, *, limit: int | None = None
+    ) -> list[dict[str, object]]:
         async with self._connection_factory() as conn:
-            return await session_links_q.list_session_links_for_session(conn, session_id)
+            return await session_links_q.list_session_links_for_session(conn, session_id, limit=limit)
+
+    async def list_session_links_to_session(self, session_id: str, *, limit: int) -> list[dict[str, object]]:
+        async with self._connection_factory() as conn:
+            return await session_links_q.list_session_links_to_session(conn, session_id, limit=limit)
+
+    async def list_session_links(self) -> list[dict[str, object]]:
+        """Return the canonical relation used by the topology projection."""
+        async with self._connection_factory() as conn:
+            return await session_links_q.list_session_links(conn)
 
     async def list_sessions(
         self,

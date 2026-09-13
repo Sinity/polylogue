@@ -8,6 +8,7 @@ unresolved-edge surfaces.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -157,7 +158,11 @@ async def test_topology_unresolved_native_parent_via_session_links(workspace_env
     assert edge.resolved is False
     assert edge.parent_id is None
     assert edge.parent_native_id == "missing-parent-uuid"
-    assert edge.kind is TopologyEdgeKind.UNRESOLVED_NATIVE
+    # Resolution and classification are orthogonal: a missing parent does not
+    # erase the parser's real edge type.
+    assert edge.kind is TopologyEdgeKind.BRANCH
+    assert edge.resolution_state == "unresolved"
+    assert edge.composable is False
 
 
 def test_topology_sync_derivation_cycle_detected() -> None:
@@ -183,6 +188,31 @@ def test_topology_sync_derivation_cycle_detected() -> None:
         "A",
         fetch=by_id.get,
         fetch_children=lambda _cid: [],
+        fetch_links=lambda cid: (
+            [
+                {
+                    "src_session_id": "A",
+                    "dst_origin": "unknown-export",
+                    "dst_native_id": "ext-B",
+                    "link_type": "branch",
+                    "resolved_dst_session_id": "B",
+                    "confidence": 1.0,
+                    "observed_at_ms": 1,
+                }
+            ]
+            if cid == "A"
+            else [
+                {
+                    "src_session_id": "B",
+                    "dst_origin": "unknown-export",
+                    "dst_native_id": "ext-A",
+                    "link_type": "branch",
+                    "resolved_dst_session_id": "A",
+                    "confidence": 1.0,
+                    "observed_at_ms": 1,
+                }
+            ]
+        ),
     )
     assert topo is not None
     assert topo.cycle_detected is True
@@ -214,13 +244,69 @@ def test_topology_sync_derivation_resolves_full_tree() -> None:
         "cont",
         fetch=by_id.get,
         fetch_children=lambda cid: children.get(cid, []),
+        fetch_links=lambda cid: (
+            [
+                {
+                    "src_session_id": "cont",
+                    "dst_origin": "codex-session",
+                    "dst_native_id": "ext-root",
+                    "link_type": "branch",
+                    "resolved_dst_session_id": "root",
+                    "confidence": 1.0,
+                    "observed_at_ms": 1,
+                }
+            ]
+            if cid == "cont"
+            else []
+        ),
     )
     assert topo is not None
     assert not topo.cycle_detected
     assert str(topo.root_id) == "root"
     ids = {str(node.session_id) for node in topo.nodes}
     assert ids == {"root", "cont"}
-    # cont has no branch_type → edge kind falls back to UNKNOWN.
+    # The canonical link type remains available even though the denormalized
+    # session branch field carries no classification.
     cont_edge = next(edge for edge in topo.edges if str(edge.child_id) == "cont")
-    assert cont_edge.kind is TopologyEdgeKind.UNKNOWN
+    assert cont_edge.kind is TopologyEdgeKind.BRANCH
     assert cont_edge.resolved is True
+
+
+@pytest.mark.asyncio
+async def test_topology_edges_are_complete_session_links_projections_not_session_parent_fields(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Corrupting the denormalized parent cannot alter public topology."""
+
+    db_path = db_setup(workspace_env)
+    _seed_lineage(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE session_links
+               SET inheritance = 'prefix-sharing', branch_point_message_id = 'branch-point',
+                   parent_tool_use_block_id = 'dispatch-block', method = 'provider-evidence',
+                   confidence = 0.75, evidence_json = '[{"source":"fixture"}]'
+             WHERE src_session_id = ?
+            """,
+            (_native("continuation"),),
+        )
+        # This cache is intentionally wrong. The graph must still use the
+        # canonical row above.
+        conn.execute("UPDATE sessions SET parent_session_id = NULL WHERE session_id = ?", (_native("continuation"),))
+        conn.commit()
+
+    polylogue = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        topology = await polylogue.get_session_topology(_native("continuation"))
+    finally:
+        await polylogue.close()
+    assert topology is not None
+    edge = next(edge for edge in topology.edges if str(edge.child_id) == _native("continuation"))
+    assert edge.parent_id == _native("root")
+    assert edge.inheritance == "prefix-sharing"
+    assert edge.branch_point_message_id == "branch-point"
+    assert edge.parent_tool_use_block_id == "dispatch-block"
+    assert edge.method == "provider-evidence"
+    assert edge.confidence == 0.75
+    assert edge.evidence == [{"source": "fixture"}]

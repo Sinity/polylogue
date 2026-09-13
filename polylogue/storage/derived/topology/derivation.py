@@ -1,189 +1,295 @@
-"""Derive ``SessionTopology`` from the canonical archive tables.
+"""Canonical session topology projection over ``session_links``.
 
-This module is the single source of truth for how the topology read model
-is built. The async derivation walks from the requested session up
-to the topology root (cycle-safe), then performs a BFS over resolved
-children to enumerate the rooted subtree, classifying every visited
-edge and recording unresolved native-parent pointers from ``session_links``.
-
-Cycle handling: a cycle is reported through
-``SessionTopology.cycle_detected`` and the ancestry walk terminates at
-the repeated node. Cycle quarantine is the caller's responsibility (see
-#866).
+The ``sessions`` parent/root columns are write-side accelerators. They are
+not read here: every public topology edge starts as a preserved natural
+``session_links`` row, then this module solely decides composability.
 """
 
 from __future__ import annotations
 
+import json
+from collections import defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
-from polylogue.analysis.topology import (
-    SessionTopology,
-    TopologyEdge,
-    TopologyEdgeKind,
-    TopologyNode,
-)
+from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyEdgeKind, TopologyNode
 from polylogue.archive.topology.edge import status_excludes_composition
 from polylogue.core.types import SessionId
-from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.runtime import SessionRecord
 
 
 class _SessionQuerySource(Protocol):
-    """Subset of the query-store surface needed by the derivation."""
-
     async def get_session(self, session_id: str) -> SessionRecord | None: ...
-
-    async def list_sessions(self, request: SessionRecordQuery) -> list[SessionRecord]: ...
-
-    async def list_session_links_for_session(self, session_id: str) -> list[dict[str, object]]: ...
-
-
-def _edge_kind(record: SessionRecord) -> TopologyEdgeKind:
-    return TopologyEdgeKind.from_branch_type(record.branch_type)
+    async def list_session_links_for_session(
+        self, session_id: str, *, limit: int | None = None
+    ) -> list[dict[str, object]]: ...
+    async def list_session_links_to_session(self, session_id: str, *, limit: int) -> list[dict[str, object]]: ...
 
 
-def _node_from_record(record: SessionRecord, *, depth: int, is_root: bool) -> TopologyNode:
-    return TopologyNode(
-        session_id=SessionId(str(record.session_id)),
-        origin=record.origin.value,
-        title=record.title,
-        depth=depth,
-        is_root=is_root,
-    )
+def _kind(value: object) -> TopologyEdgeKind:
+    try:
+        return TopologyEdgeKind(str(value))
+    except ValueError:
+        return TopologyEdgeKind.UNKNOWN
 
 
-def _resolved_edge(record: SessionRecord) -> TopologyEdge | None:
-    if record.parent_session_id is None:
-        return None
+def _evidence(value: object) -> list[object]:
+    """Normalize stored JSON into the public evidence-array contract."""
+
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return [{"state": "invalid-json"}]
+    return parsed if isinstance(parsed, list) else [parsed]
+
+
+def _draft_edge(link: Mapping[str, object]) -> TopologyEdge:
+    status = link.get("status")
+    parent = link.get("resolved_dst_session_id")
+    resolved = isinstance(parent, str) and bool(parent)
+    parent_id = parent if isinstance(parent, str) and parent else None
+    excluded = status_excludes_composition(status)
+    dst_native_id = str(link["dst_native_id"]) if link.get("dst_native_id") is not None else None
     return TopologyEdge(
-        child_id=SessionId(str(record.session_id)),
-        parent_id=SessionId(str(record.parent_session_id)),
-        kind=_edge_kind(record),
-        resolved=True,
+        child_id=SessionId(str(link["src_session_id"])),
+        parent_id=SessionId(parent_id) if parent_id is not None else None,
+        dst_origin=str(link.get("dst_origin") or ""),
+        dst_native_id=dst_native_id,
+        parent_native_id=dst_native_id if not resolved else None,
+        kind=_kind(link.get("link_type")),
+        resolved=resolved,
+        inheritance=str(link["inheritance"]) if link.get("inheritance") is not None else None,
+        branch_point_message_id=str(link["branch_point_message_id"]) if link.get("branch_point_message_id") else None,
+        authority_state=str(status) if status is not None else "accepted",
+        resolution_state="resolved" if resolved else "unresolved",
+        composable=resolved and not excluded,
+        composability_reason=str(status) if excluded else (None if resolved else "unresolved-parent"),
+        parent_tool_use_block_id=(
+            str(link["parent_tool_use_block_id"]) if link.get("parent_tool_use_block_id") else None
+        ),
+        method=str(link["method"]) if link.get("method") is not None else None,
+        confidence=float(str(link.get("confidence") or 0.0)),
+        observed_at_ms=(int(str(link["observed_at_ms"])) if link.get("observed_at_ms") is not None else None),
+        resolved_at_ms=(int(str(link["resolved_at_ms"])) if link.get("resolved_at_ms") is not None else None),
+        evidence=_evidence(link.get("evidence_json")),
     )
 
 
-def _edge_kind_from_link(link_type: object) -> TopologyEdgeKind:
-    if isinstance(link_type, str) and link_type:
-        try:
-            return TopologyEdgeKind(link_type)
-        except ValueError:
-            return TopologyEdgeKind.UNKNOWN
-    return TopologyEdgeKind.UNKNOWN
+def _exclude(edge: TopologyEdge, reason: str) -> TopologyEdge:
+    return edge.model_copy(update={"composable": False, "composability_reason": reason})
 
 
-def _unresolved_edges_from_links(record: SessionRecord, links: Sequence[Mapping[str, object]]) -> list[TopologyEdge]:
-    edges: list[TopologyEdge] = []
+def _cycle_indexes(edges: Sequence[TopologyEdge]) -> set[int]:
+    children: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for index, edge in enumerate(edges):
+        if edge.composable and edge.parent_id is not None:
+            children[str(edge.parent_id)].append((index, str(edge.child_id)))
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    cycles: set[int] = set()
+
+    def visit(node: str, ancestry: list[int]) -> None:
+        visiting.add(node)
+        for index, child in children.get(node, ()):
+            if child in visiting:
+                cycles.update(ancestry)
+                cycles.add(index)
+            elif child not in visited:
+                visit(child, [*ancestry, index])
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in sorted(children):
+        if node not in visited:
+            visit(node, [])
+    return cycles
+
+
+def _compose(
+    target_id: str,
+    records: Sequence[SessionRecord],
+    links: Sequence[Mapping[str, object]],
+) -> SessionTopology | None:
+    records_by_id = {str(record.session_id): record for record in records}
+    if target_id not in records_by_id:
+        return None
+    unique_links: dict[tuple[str, str, str, str], Mapping[str, object]] = {}
     for link in links:
-        if link.get("resolved_dst_session_id") is not None:
+        if str(link.get("src_session_id")) not in records_by_id:
             continue
-        # Composability class: read the shared exclusion set, not a literal.
-        # A contradicted edge is unresolved BY CONSTRUCTION (the resolver's
-        # ``status IS NULL`` gate never resolves it), so a literal
-        # ``== "quarantined"`` filter here readmitted 100% of them into the
-        # unresolved-edge derivation.
-        if status_excludes_composition(link.get("status")):
-            continue
-        dst_native_id = link.get("dst_native_id")
-        if not isinstance(dst_native_id, str) or not dst_native_id.strip():
-            continue
-        edges.append(
-            TopologyEdge(
-                child_id=SessionId(str(record.session_id)),
-                parent_id=None,
-                parent_native_id=dst_native_id,
-                kind=_edge_kind_from_link(link.get("link_type")),
-                resolved=False,
-            )
+        key = (
+            str(link.get("src_session_id") or ""),
+            str(link.get("dst_origin") or ""),
+            str(link.get("dst_native_id") or ""),
+            str(link.get("link_type") or ""),
         )
-    return edges
+        unique_links[key] = link
+    edges = [_draft_edge(link) for _, link in sorted(unique_links.items())]
 
+    parent_sets: dict[str, set[str]] = defaultdict(set)
+    for edge in edges:
+        if edge.composable and edge.parent_id is not None:
+            parent_sets[str(edge.child_id)].add(str(edge.parent_id))
+    conflicts = {child for child, parents in parent_sets.items() if len(parents) > 1}
+    edges = [
+        _exclude(edge, "conflicting-parent") if edge.composable and str(edge.child_id) in conflicts else edge
+        for edge in edges
+    ]
+    cycles = _cycle_indexes(edges)
+    edges = [_exclude(edge, "cycle") if index in cycles else edge for index, edge in enumerate(edges)]
 
-async def _walk_to_root(
-    source: _SessionQuerySource,
-    start: SessionRecord,
-) -> tuple[SessionRecord, bool]:
-    """Walk parent pointers from ``start`` to the topology root.
+    parent_of: dict[str, str] = {}
+    children: dict[str, list[str]] = defaultdict(list)
+    for edge in edges:
+        if edge.composable and edge.parent_id is not None:
+            child, parent = str(edge.child_id), str(edge.parent_id)
+            parent_of[child] = parent
+            children[parent].append(child)
+    for value in children.values():
+        value.sort()
 
-    Returns the root record plus ``cycle_detected``. A cycle is signaled
-    when the walk revisits an already-seen session; in that case
-    the function returns the last unique record reached.
-    """
-
-    seen: set[str] = {str(start.session_id)}
-    current = start
-    cycle = False
-    while current.parent_session_id is not None:
-        parent_id = str(current.parent_session_id)
-        if parent_id in seen:
-            cycle = True
-            break
-        parent = await source.get_session(parent_id)
-        if parent is None:
-            # Parent is referenced but not present — topology root for
-            # the resolved subtree is ``current``. The dangling pointer
-            # itself is reported on ``current``'s edge through the
-            # resolved-edge classification (parent_id retained).
-            break
-        seen.add(parent_id)
-        current = parent
-    return current, cycle
+    root, seen = target_id, {target_id}
+    while root in parent_of and parent_of[root] not in seen:
+        root = parent_of[root]
+        seen.add(root)
+    depths: dict[str, int] = {root: 0}
+    node_ids: list[str] = []
+    queue: deque[str] = deque([root])
+    while queue:
+        current = queue.popleft()
+        node_ids.append(current)
+        for child in children.get(current, ()):
+            if child not in depths:
+                depths[child] = depths[current] + 1
+                queue.append(child)
+    included = set(node_ids)
+    return SessionTopology(
+        target_id=SessionId(target_id),
+        root_id=SessionId(root),
+        nodes=tuple(
+            TopologyNode(
+                session_id=SessionId(node_id),
+                origin=records_by_id[node_id].origin.value,
+                title=records_by_id[node_id].title,
+                depth=depths[node_id],
+                is_root=node_id == root,
+            )
+            for node_id in node_ids
+        ),
+        edges=tuple(edge for edge in edges if str(edge.child_id) in included),
+        cycle_detected=bool(cycles),
+        conflicting_parent_detected=bool(conflicts),
+    )
 
 
 async def derive_session_topology_async(
     source: _SessionQuerySource,
     session_id: str,
+    *,
+    node_offset: int = 0,
+    node_limit: int = 200,
+    edge_limit: int = 500,
 ) -> SessionTopology | None:
-    """Derive ``SessionTopology`` for ``session_id``.
+    """Compose one bounded, stable page from canonical link-neighborhood reads.
 
-    Returns ``None`` if the session does not exist.
+    The continuation is an opaque ``node-offset`` token.  Each request
+    recomputes a deterministic BFS prefix from canonical rows, then returns a
+    page from that prefix.  No route scans sessions or session_links globally.
     """
-
     target = await source.get_session(session_id)
     if target is None:
         return None
+    if node_offset < 0 or node_limit < 1 or edge_limit < 1:
+        raise ValueError("topology page bounds must be positive")
 
-    root, cycle = await _walk_to_root(source, target)
+    # Resolve the root by walking only this child's canonical outbound rows.
+    records: dict[str, SessionRecord] = {str(target.session_id): target}
+    links: list[Mapping[str, object]] = []
+    current = target
+    seen_ancestors = {str(current.session_id)}
+    link_truncated = False
+    while True:
+        outbound = await source.list_session_links_for_session(str(current.session_id), limit=edge_limit + 1)
+        if len(outbound) > edge_limit:
+            link_truncated = True
+            outbound = outbound[:edge_limit]
+        links.extend(outbound)
+        candidates = [edge for edge in (_draft_edge(link) for link in outbound) if edge.composable and edge.parent_id]
+        parents = {str(edge.parent_id) for edge in candidates if edge.parent_id is not None}
+        if len(parents) != 1:
+            break
+        parent_id = parents.pop()
+        if parent_id in seen_ancestors:
+            break
+        parent = await source.get_session(parent_id)
+        if parent is None:
+            break
+        records[parent_id] = parent
+        seen_ancestors.add(parent_id)
+        current = parent
+    root_id = str(current.session_id)
 
-    nodes: list[TopologyNode] = []
-    edges: list[TopologyEdge] = []
-    seen_nodes: set[str] = set()
-    queue: list[tuple[SessionRecord, int]] = [(root, 0)]
-
-    while queue:
-        record, depth = queue.pop(0)
-        record_id = str(record.session_id)
-        if record_id in seen_nodes:
-            # BFS guard — a cycle in the descendant graph is the same
-            # structural failure mode as the ancestry one; surface it
-            # through ``cycle_detected`` and skip the revisit.
-            cycle = True
+    scan_limit = node_offset + node_limit + 1
+    queue: deque[str] = deque([root_id])
+    discovered: set[str] = set()
+    bfs_ids: list[str] = []
+    while queue and len(bfs_ids) < scan_limit:
+        current_id = queue.popleft()
+        if current_id in discovered:
             continue
-        seen_nodes.add(record_id)
-        nodes.append(_node_from_record(record, depth=depth, is_root=record_id == str(root.session_id)))
+        record = records.get(current_id) or await source.get_session(current_id)
+        if record is None:
+            continue
+        records[current_id] = record
+        discovered.add(current_id)
+        bfs_ids.append(current_id)
+        outbound = await source.list_session_links_for_session(current_id, limit=edge_limit + 1)
+        if len(outbound) > edge_limit:
+            link_truncated = True
+            outbound = outbound[:edge_limit]
+        links.extend(outbound)
+        inbound = await source.list_session_links_to_session(current_id, limit=scan_limit + 1)
+        if len(inbound) > scan_limit:
+            link_truncated = True
+            inbound = inbound[:scan_limit]
+        links.extend(inbound)
+        for edge in sorted((_draft_edge(link) for link in inbound), key=lambda item: str(item.child_id)):
+            if not edge.composable or str(edge.parent_id) != current_id:
+                continue
+            child_id = str(edge.child_id)
+            if child_id not in discovered:
+                child = await source.get_session(child_id)
+                if child is not None:
+                    records[child_id] = child
+                    queue.append(child_id)
 
-        resolved = _resolved_edge(record)
-        if resolved is not None:
-            edges.append(resolved)
-        edges.extend(_unresolved_edges_from_links(record, await source.list_session_links_for_session(record_id)))
-
-        children = await source.list_sessions(SessionRecordQuery(parent_id=record_id))
-        for child in children:
-            queue.append((child, depth + 1))
-
-    return SessionTopology(
-        target_id=SessionId(str(target.session_id)),
-        root_id=SessionId(str(root.session_id)),
-        nodes=tuple(nodes),
-        edges=tuple(edges),
-        cycle_detected=cycle,
+    composed = _compose(str(target.session_id), list(records.values()), links)
+    if composed is None:
+        return None
+    # `_compose` supplies the one graph classification; paging only trims its
+    # already classified stable BFS output and never remaps an edge.
+    all_nodes = composed.nodes
+    page_nodes = all_nodes[node_offset : node_offset + node_limit]
+    page_ids = {str(node.session_id) for node in page_nodes}
+    page_edges = tuple(edge for edge in composed.edges if str(edge.child_id) in page_ids)[:edge_limit]
+    more_nodes = len(all_nodes) > node_offset + len(page_nodes) or bool(queue)
+    edges_complete = not link_truncated and len(page_edges) == len(
+        tuple(edge for edge in composed.edges if str(edge.child_id) in page_ids)
+    )
+    return composed.model_copy(
+        update={
+            "nodes": page_nodes,
+            "edges": page_edges,
+            "nodes_complete": not more_nodes,
+            "edges_complete": edges_complete,
+            "continuation": None if not more_nodes else f"node-offset:{node_offset + len(page_nodes)}",
+        }
     )
 
-
-# A pure-Python sync derivation is exposed for tests and offline tools
-# that operate on a sequence of ``SessionRecord`` objects without a
-# query-store. The async path above is the production entry point.
 
 _SyncFetcher = Callable[[str], SessionRecord | None]
 _SyncChildrenFetcher = Callable[[str], list[SessionRecord]]
@@ -197,59 +303,36 @@ def derive_session_topology_sync(
     fetch_children: _SyncChildrenFetcher,
     fetch_links: _SyncLinksFetcher | None = None,
 ) -> SessionTopology | None:
-    """Sync variant of :func:`derive_session_topology_async`."""
-
+    """Test adapter which invokes the same canonical composition engine."""
     target = fetch(session_id)
     if target is None:
         return None
-
-    seen_ancestors: set[str] = {str(target.session_id)}
-    current = target
-    cycle = False
-    while current.parent_session_id is not None:
-        parent_id = str(current.parent_session_id)
-        if parent_id in seen_ancestors:
-            cycle = True
-            break
-        parent = fetch(parent_id)
-        if parent is None:
-            break
-        seen_ancestors.add(parent_id)
-        current = parent
-
-    nodes: list[TopologyNode] = []
-    edges: list[TopologyEdge] = []
-    seen_nodes: set[str] = set()
-    queue: list[tuple[SessionRecord, int]] = [(current, 0)]
-    root_id = str(current.session_id)
-
-    while queue:
-        record, depth = queue.pop(0)
-        record_id = str(record.session_id)
-        if record_id in seen_nodes:
-            cycle = True
-            continue
-        seen_nodes.add(record_id)
-        nodes.append(_node_from_record(record, depth=depth, is_root=record_id == root_id))
-
-        resolved = _resolved_edge(record)
-        if resolved is not None:
-            edges.append(resolved)
-        edges.extend(_unresolved_edges_from_links(record, [] if fetch_links is None else fetch_links(record_id)))
-
-        for child in fetch_children(record_id):
-            queue.append((child, depth + 1))
-
-    return SessionTopology(
-        target_id=SessionId(str(target.session_id)),
-        root_id=SessionId(root_id),
-        nodes=tuple(nodes),
-        edges=tuple(edges),
-        cycle_detected=cycle,
-    )
+    records: dict[str, SessionRecord] = {str(target.session_id): target}
+    pending: deque[SessionRecord] = deque([target])
+    while pending:
+        record = pending.popleft()
+        for child in fetch_children(str(record.session_id)):
+            if str(child.session_id) not in records:
+                records[str(child.session_id)] = child
+                pending.append(child)
+    links: list[Mapping[str, object]] = []
+    if fetch_links is not None:
+        pending_ids: deque[str] = deque(records)
+        queried: set[str] = set()
+        while pending_ids:
+            record_id = pending_ids.popleft()
+            if record_id in queried:
+                continue
+            queried.add(record_id)
+            for link in fetch_links(record_id):
+                links.append(link)
+                parent_id = link.get("resolved_dst_session_id")
+                if isinstance(parent_id, str) and parent_id not in records:
+                    parent = fetch(parent_id)
+                    if parent is not None:
+                        records[parent_id] = parent
+                        pending_ids.append(parent_id)
+    return _compose(str(target.session_id), list(records.values()), links)
 
 
-__all__ = [
-    "derive_session_topology_async",
-    "derive_session_topology_sync",
-]
+__all__ = ["derive_session_topology_async", "derive_session_topology_sync"]

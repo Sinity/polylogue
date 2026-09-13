@@ -60,6 +60,7 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         "effective_context", "required", EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES
     ),
     "lineage": ReadViewHandlerMetadata("lineage", "required", LINEAGE_READ_VIEW_OPTION_NAMES),
+    "topology": ReadViewHandlerMetadata("topology", "required"),
     "file-edits": ReadViewHandlerMetadata("file-edits", "required"),
     "agent-policies": ReadViewHandlerMetadata("agent-policies", "required"),
     "web-content": ReadViewHandlerMetadata("web-content", "required"),

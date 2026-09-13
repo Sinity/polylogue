@@ -869,7 +869,7 @@ export type ReadSessionViewParameters = {
   readonly related_limit?: number;
   readonly repo_path?: string;
   readonly since_hours?: number;
-  readonly view?: "messages" | "raw" | "context" | "context-image" | "neighbors" | "correlation" | "effective_context" | "lineage";
+  readonly view?: "messages" | "raw" | "context" | "context-image" | "neighbors" | "correlation" | "effective_context" | "lineage" | "topology";
   readonly window_hours?: number;
 };
 export type ReadSessionViewResponse = SessionReadViewEnvelope;

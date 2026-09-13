@@ -307,8 +307,8 @@ Usage: polylogue read [OPTIONS] [REF]
 Projection:
   -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
                                   dialogue, messages, raw, hooks, events,
-                                  effective_context, lineage, file-edits,
-                                  agent-policies, web-content, context,
+                                  effective_context, lineage, topology, file-
+                                  edits, agent-policies, web-content, context,
                                   context-image, neighbors, correlation,
                                   temporal, chronicle).  [default: summary]
   --render TEXT                   Render expression, e.g. layout:context-

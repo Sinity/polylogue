@@ -26,22 +26,70 @@ import aiosqlite
 async def list_session_links_for_session(
     conn: aiosqlite.Connection,
     session_id: str,
+    *,
+    limit: int | None = None,
 ) -> list[dict[str, object]]:
+    bounded = "" if limit is None else " LIMIT ?"
+    params: tuple[object, ...] = (session_id,) if limit is None else (session_id, limit)
     cursor = await conn.execute(
         """
         SELECT src_session_id, dst_origin, dst_native_id, link_type,
-               resolved_dst_session_id, status, parent_tool_use_block_id, method, confidence,
+               resolved_dst_session_id, branch_point_message_id, inheritance,
+               status, parent_tool_use_block_id, method, confidence,
                evidence_json, observed_at_ms, resolved_at_ms
-          FROM session_links
+         FROM session_links
          WHERE src_session_id = ?
          ORDER BY link_type, dst_origin, dst_native_id
-        """,
-        (session_id,),
+        """
+        + bounded,
+        params,
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 
 
+async def list_session_links_to_session(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    """Bounded stable reverse lookup for canonical topology BFS."""
+
+    cursor = await conn.execute(
+        """
+        SELECT src_session_id, dst_origin, dst_native_id, link_type,
+               resolved_dst_session_id, branch_point_message_id, inheritance,
+               status, parent_tool_use_block_id, method, confidence,
+               evidence_json, observed_at_ms, resolved_at_ms
+          FROM session_links
+         WHERE resolved_dst_session_id = ?
+         ORDER BY src_session_id, dst_origin, dst_native_id, link_type
+         LIMIT ?
+        """,
+        (session_id, limit),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def list_session_links(conn: aiosqlite.Connection) -> list[dict[str, object]]:
+    """Return canonical topology assertions in stable natural-key order."""
+
+    cursor = await conn.execute(
+        """
+        SELECT src_session_id, dst_origin, dst_native_id, link_type,
+               resolved_dst_session_id, branch_point_message_id, inheritance,
+               status, parent_tool_use_block_id, method, confidence,
+               evidence_json, observed_at_ms, resolved_at_ms
+          FROM session_links
+         ORDER BY src_session_id, dst_origin, dst_native_id, link_type
+        """
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
 __all__ = [
     "list_session_links_for_session",
+    "list_session_links",
+    "list_session_links_to_session",
 ]
