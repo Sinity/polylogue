@@ -7,6 +7,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -20,12 +21,17 @@ from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 from tests.infra.daemon_operations import DaemonOperationStack, cli_daemon_archive
 
 
+def _no_seed(_root: Path) -> None:
+    """Default seed for cases that only need a bootstrapped archive."""
+    return None
+
+
 @contextlib.contextmanager
 def _daemon_reset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    seed: Callable[[Path], object] | None = None,
-) -> Iterator[tuple[DaemonOperationStack, object]]:
+    seed: Callable[[Path], Any] = _no_seed,
+) -> Iterator[tuple[DaemonOperationStack, Any]]:
     """Run `ops reset` against a real daemon rooted at ``tmp_path/archive``.
 
     `ops reset` is no longer a writer: it previews and confirms locally, then
@@ -42,11 +48,10 @@ def _daemon_reset(
     home directory.
     """
 
-    seeded: dict[str, object] = {}
+    seeded: dict[str, Any] = {}
 
     def _seed(root: Path) -> None:
-        if seed is not None:
-            seeded["value"] = seed(root)
+        seeded["value"] = seed(root)
 
     with cli_daemon_archive(tmp_path / "archive", monkeypatch, seed_archive=_seed, home=tmp_path / "home") as stack:
         yield stack, seeded.get("value")
@@ -458,7 +463,7 @@ class TestResetCommandDeletion:
 
         with _daemon_reset(tmp_path, monkeypatch, seed) as (stack, seeded):
             archive_root = stack.archive_root
-            session_id, active_index = seeded  # type: ignore[misc]
+            session_id, active_index = seeded
             result = CliRunner().invoke(cli, ["ops", "reset", "--session", session_id, "--yes"])
 
         assert result.exit_code == 0, result.output
@@ -498,7 +503,7 @@ class TestResetCommandDeletion:
 
         with _daemon_reset(tmp_path, monkeypatch, seed) as (stack, seeded):
             archive_root = stack.archive_root
-            child_session_id, sibling_session_id = seeded  # type: ignore[misc]
+            child_session_id, sibling_session_id = seeded
             result = CliRunner().invoke(cli, ["ops", "reset", "--source", str(source_root), "--yes"])
 
         assert result.exit_code == 0, result.output

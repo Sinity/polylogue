@@ -23,6 +23,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -46,23 +47,27 @@ def _refusal_text(result: object) -> str:
     return f"{getattr(result, 'output', '')}\n{getattr(result, 'exception', '')}"
 
 
+def _no_seed(_root: Path) -> None:
+    """Default seed for cases that only need a bootstrapped archive."""
+    return None
+
+
 @contextlib.contextmanager
 def _daemon_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    seed: Callable[[Path], object] | None = None,
-) -> Iterator[tuple[DaemonOperationStack, object]]:
+    seed: Callable[[Path], Any] = _no_seed,
+) -> Iterator[tuple[DaemonOperationStack, Any]]:
     """Run `ops excise` against a real daemon rooted at ``tmp_path/archive``.
 
     ``seed`` runs after archive bootstrap and before the daemon starts, and its
     return value (typically a seeded session id) is yielded alongside the stack.
     """
 
-    seeded: dict[str, object] = {}
+    seeded: dict[str, Any] = {}
 
     def _seed(root: Path) -> None:
-        if seed is not None:
-            seeded["value"] = seed(root)
+        seeded["value"] = seed(root)
 
     with cli_daemon_archive(tmp_path / "archive", monkeypatch, seed_archive=_seed) as stack:
         yield stack, seeded.get("value")
@@ -515,7 +520,7 @@ class TestExciseLineageSafety:
         """(b) daemon route: cascade removal is a write, so it runs under the daemon."""
         with _daemon_archive(tmp_path, monkeypatch, _seed_lineage_pair) as (stack, seeded):
             archive_root = stack.archive_root
-            parent_id, _child_id = seeded  # type: ignore[misc]
+            parent_id, _child_id = seeded
             result = CliRunner().invoke(
                 cli,
                 [
