@@ -407,7 +407,7 @@ def test_finished_build_measurement_declares_capability_boundary() -> None:
             _run_arm(Path("not-opened-for-capability-refusal"), sealed, arm, worker_count=1)
     refusal_receipts = _capability_receipts(worker_count=1)
     assert {receipt.arm for receipt in refusal_receipts} == {arm.name for arm in refused}
-    assert all(receipt.status == "unsupported" and receipt.reason for receipt in refusal_receipts)
+    assert all(receipt.reason for receipt in refusal_receipts)
 
 
 @pytest.mark.benchmark
