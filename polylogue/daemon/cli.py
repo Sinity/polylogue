@@ -2262,7 +2262,7 @@ def _close_raw_materialization_fts(index_db: Path, *, ops_db_path: Path) -> None
     """
     if not index_db.exists():
         return
-    from polylogue.daemon.convergence_stages import repair_fts_surface
+    from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
 
     try:
         needs_repair = _raw_materialization_fts_needs_repair(index_db, archive_root=ops_db_path.parent)
@@ -2274,7 +2274,9 @@ def _close_raw_materialization_fts(index_db: Path, *, ops_db_path: Path) -> None
     if not needs_repair:
         return
     try:
-        repaired = repair_fts_surface(index_db, "messages_fts", archive_root=ops_db_path.parent)
+        result = FtsConvergenceOwner(index_db, archive_root=ops_db_path.parent).run_once_sync(
+            reason=FtsRunReason.PERIODIC,
+        )
     except Exception as exc:
         # Preserve the original raw-materialization outcome. A stale
         # freshness row plus explicit debt keeps readiness negative and makes
@@ -2282,10 +2284,10 @@ def _close_raw_materialization_fts(index_db: Path, *, ops_db_path: Path) -> None
         _record_raw_materialization_fts_debt(
             index_db,
             ops_db_path=ops_db_path,
-            error=f"FTS repair failed after raw materialization: {type(exc).__name__}: {exc}",
+            error=f"FTS convergence failed after raw materialization: {type(exc).__name__}: {exc}",
         )
         return
-    if repaired:
+    if result.ready:
         try:
             from polylogue.sources.live.cursor import CursorStore
 
@@ -2300,11 +2302,18 @@ def _close_raw_materialization_fts(index_db: Path, *, ops_db_path: Path) -> None
     _record_raw_materialization_fts_debt(
         index_db,
         ops_db_path=ops_db_path,
-        error="raw materialization exited without restoring message FTS readiness",
+        error=(
+            f"FTS convergence after raw materialization: {result.detail}"
+            if result.detail
+            else f"FTS convergence after raw materialization ended {result.state}"
+        ),
+        deferred=result.deferred,
     )
 
 
-def _record_raw_materialization_fts_debt(index_db: Path, *, ops_db_path: Path, error: str) -> None:
+def _record_raw_materialization_fts_debt(
+    index_db: Path, *, ops_db_path: Path, error: str, deferred: bool = False
+) -> None:
     from polylogue.sources.live.cursor import CursorStore
 
     try:
@@ -2313,6 +2322,7 @@ def _record_raw_materialization_fts_debt(index_db: Path, *, ops_db_path: Path, e
             subject_type="fts_surface",
             subject_id="messages_fts",
             error=error,
+            deferred=deferred,
         )
     except Exception:
         # The stale FTS freshness row remains a durable negative readiness

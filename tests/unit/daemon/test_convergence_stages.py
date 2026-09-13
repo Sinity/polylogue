@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +31,6 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.identity import archive_message_id
 
 
@@ -219,11 +219,10 @@ def test_archive_probe_exceptions_log_and_fail_toward_work(
     monkeypatch.setattr(stages.logger, "warning", capture_warning)
 
     with caplog.at_level("WARNING"):
-        assert stages._archive_fts_check_sessions(archive_db, session_ids) == set(session_ids)
         assert stages._archive_embed_check(archive_db, paths[0]) is True
         assert stages._archive_embed_check_many(archive_db, paths) == set(paths)
         assert stages._archive_embed_check_sessions(archive_db, session_ids) == set(session_ids)
-    assert caplog.text.count("convergence freshness probe") >= 4
+    assert caplog.text.count("convergence freshness probe") >= 3
     assert "treating as needs-work" in caplog.text
     assert warning_exc_info
     assert all(value is True for value in warning_exc_info)
@@ -351,128 +350,21 @@ def test_fts_stage_converges_archive_source_path_sessions(tmp_path: Path) -> Non
     assert stage.check(source_path) is False
 
 
-def test_archive_fts_session_repair_defers_sqlite_lock(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    archive_db = tmp_path / "index.db"
-    archive_db.touch()
+def test_fts_convergence_has_no_repair_compatibility_or_boolean_route() -> None:
+    """Anti-vacuity: a wrapper or truthy result would hide typed owner states."""
+    source = inspect.getsource(stages)
 
-    def locked(_db_path: Path, **_kwargs: object) -> sqlite3.Connection:
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", locked)
-
-    assert stages._archive_fts_execute_sessions(archive_db, ["codex-session:s1"], archive_root=tmp_path) is False
+    assert "FtsSurfaceRepairResult" not in source
+    assert "repair_fts_surface" not in source
+    assert "repair_messages_fts_surface" not in source
 
 
-def test_archive_fts_global_repair_defers_sqlite_lock(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    archive_db = tmp_path / "index.db"
-    archive_db.touch()
-
-    def locked(_db_path: Path, **_kwargs: object) -> sqlite3.Connection:
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", locked)
-
-    assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is False
-
-
-def test_archive_fts_global_repair_scopes_bounded_mmap_to_main_tier(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The real archive repair route must not map its attached sibling tiers."""
-    from polylogue.storage.fts import dangling_repair
-    from polylogue.storage.sqlite.connection_profile import (
-        BOUNDED_REPAIR_MMAP_SIZE_BYTES,
-    )
-
-    archive_db = tmp_path / "index.db"
-    source_path = tmp_path / "codex.jsonl"
-    _seed_minimal_archive(archive_db, source_path)
-    for tier_name, tier in (
-        ("user.db", ArchiveTier.USER),
-        ("embeddings.db", ArchiveTier.EMBEDDINGS),
-        ("ops.db", ArchiveTier.OPS),
-    ):
-        with sqlite3.connect(tmp_path / tier_name) as conn:
-            initialize_archive_tier(conn, tier)
-
-    observed: dict[str, int] = {}
-    real_configure = dangling_repair.configure_bounded_repair_connection
-
-    def configure_and_capture(conn: sqlite3.Connection) -> None:
-        real_configure(conn)
-        for schema_name in ("main", "source_tier", "user_tier", "embeddings", "ops_tier"):
-            observed[schema_name] = int(conn.execute(f"PRAGMA {schema_name}.mmap_size").fetchone()[0])
-
-    monkeypatch.setattr(dangling_repair, "configure_bounded_repair_connection", configure_and_capture)
-
-    assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is True
-    assert observed == {
-        "main": BOUNDED_REPAIR_MMAP_SIZE_BYTES,
-        "source_tier": 0,
-        "user_tier": 0,
-        "embeddings": 0,
-        "ops_tier": 0,
-    }
-
-
-def test_archive_fts_optional_surface_repair_uses_stale_surface_repair(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    archive_db = tmp_path / "index.db"
-    archive_db.touch()
-
-    class FakeConnection:
-        def __init__(self) -> None:
-            self.committed = False
-            self.closed = False
-
-        def execute(self, _sql: str) -> object:
-            return object()
-
-        def commit(self) -> None:
-            self.committed = True
-
-        def close(self) -> None:
-            self.closed = True
-
-    conn = FakeConnection()
-    configured: list[FakeConnection] = []
-    repairs: list[FakeConnection] = []
-
-    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", lambda _db, **_kwargs: conn)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.configure_bounded_repair_connection",
-        lambda c: configured.append(c),
-    )
-
-    def fake_repair_stale_fts_rows(c: FakeConnection) -> SimpleNamespace:
-        repairs.append(c)
-        return SimpleNamespace(success=True, repaired_count=0, detail="derived ready")
-
-    monkeypatch.setattr(
-        "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
-        fake_repair_stale_fts_rows,
-    )
-
-    assert stages.repair_fts_surface(archive_db, "session_work_events_fts", archive_root=tmp_path) is True
-    assert configured == [conn]
-    assert repairs == [conn]
-    assert conn.committed is True
-    assert conn.closed is True
-
-
-def test_archive_fts_global_repair_inserts_missing_rows_without_reset(tmp_path: Path) -> None:
-    """Global surface debt should converge with bounded missing-row repair."""
+def test_fts_owner_converges_missing_rows_without_reset(tmp_path: Path) -> None:
+    """The canonical owner converges missing rows without a global reset."""
     from unittest import mock
 
     import polylogue.storage.fts.fts_lifecycle as fts_lc
+    from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
 
     archive_db = tmp_path / "index.db"
     archive_db.touch()
@@ -484,21 +376,25 @@ def test_archive_fts_global_repair_inserts_missing_rows_without_reset(tmp_path: 
         "reset_message_fts_index_sync",
         wraps=fts_lc.reset_message_fts_index_sync,
     ) as reset_surface:
-        assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is True
+        result = FtsConvergenceOwner(archive_db, archive_root=tmp_path).run_once_sync(reason=FtsRunReason.DEBT_RETRY)
 
+    assert result.ready
     reset_surface.assert_not_called()
     with sqlite3.connect(archive_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
 
 
-def test_archive_fts_global_repair_records_exact_parity(tmp_path: Path) -> None:
-    """Global repair must not publish ready until the exact invariant is clean."""
+def test_fts_owner_records_exact_parity(tmp_path: Path) -> None:
+    """A completed owner pass publishes readiness only after exact parity."""
+    from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
+
     archive_db = tmp_path / "index.db"
     archive_db.touch()
     source_path = tmp_path / "codex.jsonl"
     _seed_minimal_archive(archive_db, source_path)
 
-    assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is True
+    result = FtsConvergenceOwner(archive_db, archive_root=tmp_path).run_once_sync(reason=FtsRunReason.DEBT_RETRY)
+    assert result.ready
 
     with sqlite3.connect(archive_db) as conn:
         row = conn.execute(
@@ -511,22 +407,9 @@ def test_archive_fts_global_repair_records_exact_parity(tmp_path: Path) -> None:
         assert row == ("ready", 1, 1, 0, 0)
 
 
-def test_archive_fts_global_repair_records_real_counts_status_and_query_agree(tmp_path: Path) -> None:
-    """polylogue-roax: the status surface and the query-path readiness check
-    must derive the same verdict from the repaired ledger row.
-
-    Before the fix, ``repair_messages_fts_surface`` recorded a fabricated
-    ``source_rows=1, indexed_rows=1`` placeholder regardless of the real
-    archive size. On the single-block fixture used by the sibling test above
-    that placeholder happens to equal the real count, so it never exposed
-    the bug -- this test seeds several indexable blocks so a fabricated 1/1
-    placeholder would be caught: ``fts_readiness_info`` (the status surface)
-    would report a real coverage_pct computed from wrong denominators, while
-    ``message_fts_search_readiness_sync`` (the query-path fast check) would
-    still trust the same self-consistent-but-wrong 1==1 shape -- so a
-    regression here would show up as a real-count/real-count mismatch, not
-    as a raised DatabaseError.
-    """
+def test_fts_owner_records_real_counts_status_and_query_agree(tmp_path: Path) -> None:
+    """Owner readiness uses the same exact counts as status and query reads."""
+    from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
     from polylogue.daemon.fts_status import fts_readiness_info
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 
@@ -542,7 +425,8 @@ def test_archive_fts_global_repair_records_real_counts_status_and_query_agree(tm
         conn.execute("DELETE FROM messages_fts")
         conn.commit()
 
-    assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is True
+    result = FtsConvergenceOwner(archive_db, archive_root=tmp_path).run_once_sync(reason=FtsRunReason.DEBT_RETRY)
+    assert result.ready
 
     with sqlite3.connect(archive_db) as conn:
         row = conn.execute(
@@ -571,9 +455,10 @@ def test_archive_fts_global_repair_records_real_counts_status_and_query_agree(tm
 def test_fts_surface_debt_retries_after_real_sqlite_backpressure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A locked repair remains deferred, red, and restartable until parity is restored."""
+    """A locked owner pass remains deferred, red, and restartable until parity is restored."""
     from polylogue.core.outcomes import OutcomeStatus
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import fts_convergence
     from polylogue.daemon.fts_status import fts_readiness_info
     from polylogue.maintenance.archive_verification import verify_archive
     from polylogue.sources.live.cursor import CursorStore
@@ -600,7 +485,13 @@ def test_fts_surface_debt_retries_after_real_sqlite_backpressure(
     blocker = sqlite3.connect(archive_db, timeout=0.01)
     try:
         blocker.execute("BEGIN EXCLUSIVE")
-        monkeypatch.setattr(stages, "_ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS", 1)
+        real_open = cast(Callable[..., sqlite3.Connection], fts_convergence.__dict__["open_daemon_connection"])
+
+        def open_with_short_timeout(db_path: Path, *, archive_root: Path, **kwargs: object) -> sqlite3.Connection:
+            del kwargs
+            return real_open(db_path, timeout=0.001, archive_root=archive_root)
+
+        monkeypatch.setattr(fts_convergence, "open_daemon_connection", open_with_short_timeout)
         assert daemon_cli._drain_convergence_debt_once(archive_db) == 1
     finally:
         blocker.rollback()
@@ -624,9 +515,19 @@ def test_fts_surface_debt_retries_after_real_sqlite_backpressure(
     green = verify_archive(tmp_path, checks=("fts-parity",))
     assert green.checks[0].status is OutcomeStatus.OK
 
-    retired = stages.repair_fts_surface_result(archive_db, "threads_fts", archive_root=tmp_path)
-    assert retired.success is False
-    assert retired.deferred is False
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="threads_fts",
+        error="unsupported FTS surface",
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+        conn.commit()
+    assert daemon_cli._drain_convergence_debt_once(archive_db) == 1
+    unsupported = [debt for debt in cursor.list_convergence_debt() if debt.subject_id == "threads_fts"]
+    assert len(unsupported) == 1
+    assert unsupported[0].status == "failed"
 
     cursor.record_convergence_debt(
         stage="fts",
@@ -641,216 +542,10 @@ def test_fts_surface_debt_retries_after_real_sqlite_backpressure(
         conn.execute("DROP TABLE messages_fts_docsize")
         conn.commit()
 
-    assert daemon_cli._drain_convergence_debt_once(archive_db) == 1
+    assert daemon_cli._drain_convergence_debt_once(archive_db) == 2
     failed = [debt for debt in cursor.list_convergence_debt() if debt.subject_id == "messages_fts"]
     assert len(failed) == 1
     assert failed[0].status == "failed"
-
-
-def test_archive_fts_global_repair_deletes_excess_rows_without_reset(tmp_path: Path) -> None:
-    """Global surface debt should remove excess rows without a full rebuild."""
-    from unittest import mock
-
-    import polylogue.storage.fts.fts_lifecycle as fts_lc
-
-    archive_db = tmp_path / "index.db"
-    archive_db.touch()
-    source_path = tmp_path / "codex.jsonl"
-    _seed_minimal_archive(archive_db, source_path)
-
-    with sqlite3.connect(archive_db) as conn:
-        fts_lc.rebuild_fts_index_sync(conn)
-        row = conn.execute("SELECT rowid FROM blocks LIMIT 1").fetchone()
-        assert row is not None
-        conn.execute("DROP TRIGGER messages_fts_ad")
-        conn.execute("DELETE FROM blocks WHERE rowid = ?", (row[0],))
-        conn.commit()
-        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
-
-    with mock.patch.object(
-        fts_lc,
-        "reset_message_fts_index_sync",
-        wraps=fts_lc.reset_message_fts_index_sync,
-    ) as reset_surface:
-        assert stages.repair_messages_fts_surface(archive_db, archive_root=tmp_path) is True
-
-    reset_surface.assert_not_called()
-    with sqlite3.connect(archive_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
-
-
-def test_archive_repair_sessions_fts_skips_unknown_scope(tmp_path: Path) -> None:
-    """Path-scoped convergence must not become a whole-archive FTS rebuild."""
-    from unittest import mock
-
-    import polylogue.storage.fts.fts_lifecycle as fts_lc
-
-    archive_db = tmp_path / "index.db"
-    archive_db.touch()
-    source_path = tmp_path / "codex.jsonl"
-    _seed_minimal_archive(archive_db, source_path)
-
-    with (
-        sqlite3.connect(archive_db) as conn,
-        mock.patch.object(
-            fts_lc, "reset_message_fts_index_sync", wraps=fts_lc.reset_message_fts_index_sync
-        ) as reset_surface,
-    ):
-        stages._archive_repair_sessions_fts(conn, [])
-
-    reset_surface.assert_not_called()
-
-
-def test_fts_repair_needs_probe_uses_docsize_shadow_tables() -> None:
-    queries: list[tuple[str, tuple[str, ...]]] = []
-    existing_tables = {"messages_fts_docsize"}
-
-    class FakeConnection:
-        def execute(self, sql: str, params: tuple[str, ...] = ()) -> object:
-            queries.append((sql, params))
-            if "sqlite_master" in sql:
-                return _FakeCursor([(1,)] if params and params[0] in existing_tables else [])
-            if "blocks AS b" in sql:
-                return _FakeCursor([(0,)])
-            raise AssertionError(f"unexpected SQL: {sql}")
-
-    class _FakeCursor:
-        def __init__(self, rows: list[tuple[object, ...]]) -> None:
-            self._rows = rows
-
-        def fetchone(self) -> tuple[object, ...] | None:
-            return self._rows[0] if self._rows else None
-
-    conn = cast(sqlite3.Connection, FakeConnection())
-
-    assert stages._fts_repair_needs_for_sessions(conn, ["conv-a"]) == stages._FtsRepairNeeds()
-
-    probe_sql = "\n".join(sql for sql, _params in queries)
-    assert "LEFT JOIN messages_fts_docsize" in probe_sql
-    assert "LEFT JOIN messages_fts AS" not in probe_sql
-
-
-def test_fts_repair_needs_ignores_empty_text_messages(tmp_path: Path) -> None:
-    db_path = tmp_path / "index.db"
-    with open_connection(db_path) as conn:
-        session_id = _seed_empty_text_index_session(conn, session_id="conv-empty-text")
-        conn.commit()
-
-        assert stages._fts_repair_needs_for_sessions(conn, [session_id]) == stages._FtsRepairNeeds()
-
-
-def test_targeted_fts_ready_marker_preserves_prior_counts_without_publishing_ready(tmp_path: Path) -> None:
-    """A scoped repair stays stale and retains the last exact counters."""
-    from polylogue.storage.fts.freshness import record_fts_surface_state_sync
-
-    db_path = tmp_path / "index.db"
-    with open_connection(db_path) as conn:
-        _seed_index_session(conn, session_id="conv-ledger", text="indexed text")
-        record_fts_surface_state_sync(
-            conn,
-            surface="messages_fts",
-            state="stale",
-            source_rows=100,
-            indexed_rows=99,
-            missing_rows=1,
-            detail="pre-existing exact snapshot",
-        )
-        stages._mark_message_fts_ready_after_targeted_repair(conn)
-        row = conn.execute(
-            """
-            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail
-            FROM fts_freshness_state
-            WHERE surface='messages_fts'
-            """,
-        ).fetchone()
-
-    assert tuple(row) == (
-        "stale",
-        100,
-        99,
-        1,
-        0,
-        0,
-        "targeted changed-session repair requires exact invariant verification",
-    )
-
-
-def test_targeted_fts_ready_marker_stays_stale_for_an_untouched_gap(tmp_path: Path) -> None:
-    """A targeted repair must not launder an unrelated session's real gap into 'ready'.
-
-    Regression test for the live incident (polylogue-rlvj): 12,659 blocks
-    were missing from ``messages_fts`` while the ledger reported
-    ``ready``/``missing_rows=0`` because a targeted repair for *other*
-    sessions unconditionally wrote a global ready verdict. Seed two
-    sessions, delete the FTS row for one (simulating drift outside the
-    write path, exactly what ``fts_orphan_audit`` finds), then run the
-    marker as if only the untouched session had just been repaired -- the
-    ledger must stay honest about the sibling's gap.
-    """
-    db_path = tmp_path / "index.db"
-    with open_connection(db_path) as conn:
-        _seed_index_session(conn, session_id="conv-ledger-fixed", text="indexed text")
-        orphan_session_id = _seed_index_session(conn, session_id="conv-ledger-orphan", text="also indexed")
-        deleted = conn.execute(
-            """
-            DELETE FROM messages_fts_docsize
-            WHERE id IN (SELECT rowid FROM blocks WHERE session_id = ?)
-            """,
-            (orphan_session_id,),
-        ).rowcount
-        assert deleted == 1
-        conn.commit()
-
-        stages._mark_message_fts_ready_after_targeted_repair(conn)
-        row = conn.execute(
-            """
-            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail
-            FROM fts_freshness_state
-            WHERE surface='messages_fts'
-            """,
-        ).fetchone()
-
-    assert row[0] == "stale"
-    assert row[1:6] == (0, 0, 0, 0, 0)
-    assert row[4] == 0
-    assert row[5] == 0
-    assert row[6] == "targeted changed-session repair requires exact invariant verification"
-
-
-def test_targeted_fts_ready_marker_handles_legacy_freshness_table(tmp_path: Path) -> None:
-    db_path = tmp_path / "index.db"
-    with open_connection(db_path) as conn:
-        _seed_index_session(conn, session_id="conv-legacy-ledger", text="indexed text")
-        conn.execute("DROP TABLE IF EXISTS fts_freshness_state")
-        conn.execute(
-            """
-            CREATE TABLE fts_freshness_state (
-                surface TEXT PRIMARY KEY,
-                state TEXT NOT NULL,
-                checked_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("INSERT INTO fts_freshness_state VALUES ('messages_fts', 'stale', '2026-05-24T00:00:00+00:00')")
-
-        stages._mark_message_fts_ready_after_targeted_repair(conn)
-        row = conn.execute(
-            """
-            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail
-            FROM fts_freshness_state
-            WHERE surface='messages_fts'
-            """,
-        ).fetchone()
-
-    assert tuple(row) == (
-        "stale",
-        0,
-        0,
-        0,
-        0,
-        0,
-        "targeted changed-session repair requires exact invariant verification",
-    )
 
 
 def test_default_convergence_stages_always_register_embed_stage(
