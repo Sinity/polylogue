@@ -19,10 +19,10 @@ import inspect
 import json
 import resource
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import perf_counter
-from typing import Literal
+from typing import Literal, cast
 
 import pytest
 
@@ -108,7 +108,12 @@ class _ArmReceipt:
     output_session_count: int
     output_message_count: int
     output_block_count: int
-    snapshot: DerivedModelSnapshot
+    # A completed arm is compared to the retained reference immediately.  The
+    # receipt that survives to the final renderer deliberately releases this
+    # potentially large, full logical projection: the digest and censuses are
+    # the compact receipt, while retaining every projection would turn a
+    # finished-build measurement into a memory-scaling benchmark of its own.
+    snapshot: DerivedModelSnapshot | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +141,63 @@ class _CapabilityReceipt:
     worker_count: int
     status: Literal["unsupported"]
     reason: str
+
+
+def _compare_and_compact_receipt(
+    reference: DerivedModelSnapshot | None, receipt: _ArmReceipt
+) -> tuple[DerivedModelSnapshot, _ArmReceipt]:
+    """Compare one full projection, then release it from the retained receipt.
+
+    A finished-build arm's projection can contain the complete synthetic
+    payload through several ordinary index projections.  Keeping all of those
+    snapshots solely to print the compact receipt makes peak memory depend on
+    the number of controls, rather than the production route being measured.
+    """
+    snapshot = receipt.snapshot
+    assert snapshot is not None
+    if reference is not None:
+        assert_derived_models_equivalent(reference, snapshot)
+    return (snapshot if reference is None else reference), replace(receipt, snapshot=None)
+
+
+def _receipt_payload(receipt: _ArmReceipt) -> dict[str, object]:
+    """Render a compact receipt without recursively copying its projection."""
+    if receipt.snapshot is not None:
+        raise AssertionError("finished-build receipt must release its compared snapshot before rendering")
+    return {
+        "arm": receipt.arm,
+        "worker_mode": receipt.worker_mode,
+        "worker_count": receipt.worker_count,
+        "repetition": receipt.repetition,
+        "input_digest": receipt.input_digest,
+        "wall_seconds": receipt.wall_seconds,
+        "self_cpu_seconds": receipt.self_cpu_seconds,
+        "child_cpu_seconds": receipt.child_cpu_seconds,
+        "peak_rss_bytes": receipt.peak_rss_bytes,
+        "archive_bytes": receipt.archive_bytes,
+        "stage_timings_s": receipt.stage_timings_s,
+        "metrics": receipt.metrics,
+        "fresh_build": receipt.fresh_build,
+        "deferred_secondary_indexes": receipt.deferred_secondary_indexes,
+        "derived_table_census": receipt.derived_table_census,
+        "schema_object_census": receipt.schema_object_census,
+        "schema_identity": receipt.schema_identity,
+        "canonical_logical_digest": receipt.canonical_logical_digest,
+        "fts_source_rows": receipt.fts_source_rows,
+        "fts_indexed_rows": receipt.fts_indexed_rows,
+        "public_index_count": receipt.public_index_count,
+        "open_convergence_debt_count": receipt.open_convergence_debt_count,
+        "offered_raw_count": receipt.offered_raw_count,
+        "ingested_raw_count": receipt.ingested_raw_count,
+        "refused_raw_count": receipt.refused_raw_count,
+        "deferred_raw_count": receipt.deferred_raw_count,
+        "failed_raw_count": receipt.failed_raw_count,
+        "skipped_raw_count": receipt.skipped_raw_count,
+        "output_session_count": receipt.output_session_count,
+        "output_message_count": receipt.output_message_count,
+        "output_block_count": receipt.output_block_count,
+        "snapshot": "derived-model-equivalent-and-ready",
+    }
 
 
 _ARMS = (
@@ -510,6 +572,56 @@ def test_finished_build_measurement_declares_capability_boundary() -> None:
     assert all(receipt.reason for receipt in refusal_receipts)
 
 
+def test_finished_build_measurement_compacts_projection_before_rendering() -> None:
+    """A retained projection must not be recursively copied into the receipt."""
+
+    class UncopyableSnapshot:
+        def __deepcopy__(self, memo: object) -> object:
+            del memo
+            raise AssertionError("receipt renderer tried to copy the full logical projection")
+
+    receipt = _ArmReceipt(
+        arm="test",
+        worker_mode="thread",
+        worker_count=1,
+        repetition=1,
+        input_digest="sealed",
+        wall_seconds=0.0,
+        self_cpu_seconds=0.0,
+        child_cpu_seconds=0.0,
+        peak_rss_bytes=0,
+        archive_bytes=0,
+        stage_timings_s={},
+        metrics={},
+        fresh_build=False,
+        deferred_secondary_indexes=False,
+        derived_table_census=(),
+        schema_object_census=(),
+        schema_identity="schema",
+        canonical_logical_digest="digest",
+        fts_source_rows=0,
+        fts_indexed_rows=0,
+        public_index_count=0,
+        open_convergence_debt_count=0,
+        offered_raw_count=0,
+        ingested_raw_count=0,
+        refused_raw_count=0,
+        deferred_raw_count=0,
+        failed_raw_count=0,
+        skipped_raw_count=0,
+        output_session_count=0,
+        output_message_count=0,
+        output_block_count=0,
+        snapshot=cast(DerivedModelSnapshot, UncopyableSnapshot()),
+    )
+
+    reference, compact = _compare_and_compact_receipt(None, receipt)
+
+    assert reference is receipt.snapshot
+    assert compact.snapshot is None
+    assert _receipt_payload(compact)["snapshot"] == "derived-model-equivalent-and-ready"
+
+
 @pytest.mark.benchmark
 @pytest.mark.storage_scale
 @pytest.mark.timeout(900)
@@ -534,24 +646,22 @@ def test_finished_build_measurement_runs_sealed_production_arms_at_declared_scal
     supported_arms = (retained, deferred_fresh, deferred_fresh_shard)
     ordered_first = (deferred_fresh_shard, deferred_fresh, retained) if worker_count == 4 else supported_arms
     receipts: list[_ArmReceipt] = []
+    reference_snapshot: DerivedModelSnapshot | None = None
     for repetition in range(1, _INTERLEAVED_REPETITIONS + 1):
         ordered_arms = ordered_first if repetition % 2 else tuple(reversed(ordered_first))
-        receipts.extend(
-            _run_arm(
+        for arm in ordered_arms:
+            receipt = _run_arm(
                 _arm_root(template, tmp_path / f"{arm.name}-n{worker_count}-r{repetition}", sealed),
                 sealed,
                 arm,
                 worker_count=worker_count,
                 repetition=repetition,
             )
-            for arm in ordered_arms
-        )
+            reference_snapshot, compact_receipt = _compare_and_compact_receipt(reference_snapshot, receipt)
+            receipts.append(compact_receipt)
     assert {receipt.input_digest for receipt in receipts} == {sealed.digest}
     assert len(receipts) == len(supported_arms) * _INTERLEAVED_REPETITIONS
     assert {receipt.arm for receipt in receipts} == {arm.name for arm in supported_arms}
-    reference = receipts[0]
-    for receipt in receipts[1:]:
-        assert_derived_models_equivalent(reference.snapshot, receipt.snapshot)
     assert len({receipt.canonical_logical_digest for receipt in receipts}) == 1
     assert len({receipt.derived_table_census for receipt in receipts}) == 1
     assert len({receipt.schema_object_census for receipt in receipts}) == 1
@@ -590,8 +700,7 @@ def test_finished_build_measurement_runs_sealed_production_arms_at_declared_scal
             {
                 "receipts": [
                     {
-                        **{key: value for key, value in asdict(receipt).items() if key != "snapshot"},
-                        "snapshot": "derived-model-equivalent-and-ready",
+                        **_receipt_payload(receipt),
                     }
                     for receipt in receipts
                 ],
