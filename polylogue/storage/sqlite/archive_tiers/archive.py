@@ -113,6 +113,7 @@ from polylogue.archive.semantic.pricing import (
     CostUnavailableReason,
     CostUsagePayload,
     _normalize_model,
+    model_cohort_key,
 )
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd
 from polylogue.archive.session_revision_membership import MembershipClassification
@@ -2963,7 +2964,10 @@ class ArchiveStore:
             source_origin = str(row["source_name"] or "unknown")
             source_name = source_origin
             model_name = str(row["model_name"]) if row["model_name"] is not None else None
-            normalized_model = _normalize_model(model_name) if model_name is not None else None
+            # Cost rollups report a model cohort, not a release date: use the
+            # date-folding cohort key so dated snapshots and their undated
+            # form share one row. Pricing resolution stays exact-first.
+            normalized_model = model_cohort_key(model_name) if model_name is not None else None
             if model is not None and model not in {model_name, normalized_model}:
                 continue
             key = (source_name, normalized_model or model_name)
@@ -3308,7 +3312,8 @@ class ArchiveStore:
                     bucket=item.bucket,
                     origin=item.source_name,
                     model_name=timeline_model_name,
-                    normalized_model=_normalize_model(timeline_model_name) if timeline_model_name else None,
+                    # Cohort label, not a pricing key: fold the release date.
+                    normalized_model=model_cohort_key(timeline_model_name) if timeline_model_name else None,
                     session_count=max(cost_session_count, item.event_session_count),
                     event_count=item.event_count,
                     usage=item.usage,

@@ -13,6 +13,7 @@ from polylogue.archive.semantic.pricing import (
     estimate_cost,
     estimate_message_cost,
     estimate_session_cost,
+    model_cohort_key,
 )
 from tests.infra.builders import make_conv, make_msg
 
@@ -64,7 +65,8 @@ def test_token_usage_prices_known_model_with_catalog_provenance() -> None:
     estimate = estimate_message_cost(message, origin="chatgpt-export")
 
     assert estimate.status == "priced"
-    assert estimate.normalized_model == "gpt-4o"
+    # The dated snapshot is itself a catalog key, so it resolves exactly.
+    assert estimate.normalized_model == "gpt-4o-2024-08-06"
     assert estimate.total_usd == pytest.approx(0.0075)
     assert estimate.usage.input_tokens == 1000
     assert estimate.usage.output_tokens == 500
@@ -197,7 +199,7 @@ def test_litellm_is_the_only_api_price_catalog_and_resolution_is_exact() -> None
     assert "_CURATED_PRICING" not in source
     assert source.count("ModelPricing(") == 1, "only the LiteLLM loader may construct API rates"
 
-    assert _normalize_model("router/tenant/openai/gpt-4o-2024-08-06") == "gpt-4o"
+    assert _normalize_model("router/tenant/openai/gpt-4o-2024-08-06") == "gpt-4o-2024-08-06"
     assert estimate_cost(1_000_000, 1_000_000, "gpt-4o-unpriced-variant") == 0.0
 
 
@@ -235,9 +237,14 @@ def test_live_archive_shaped_models_resolve_or_are_labelled_unknown() -> None:
 
 
 def test_model_normalization_accepts_provider_prefixes_and_version_suffixes() -> None:
-    assert _normalize_model("openai/gpt-4o-2024-08-06") == "gpt-4o"
-    assert _normalize_model("anthropic/claude-sonnet-4-5-20250929") == "claude-sonnet-4-5"
-    assert _normalize_model("marketplace/team/openai/gpt-4o-2024-08-06") == "gpt-4o"
+    # Exact-first: the vendored catalog carries these dated snapshot keys, so
+    # resolution must keep them rather than fall back to the bare key (which
+    # another router may own at different cache rates).
+    assert _normalize_model("openai/gpt-4o-2024-08-06") == "gpt-4o-2024-08-06"
+    assert _normalize_model("anthropic/claude-sonnet-4-5-20250929") == "claude-sonnet-4-5-20250929"
+    assert _normalize_model("marketplace/team/openai/gpt-4o-2024-08-06") == "gpt-4o-2024-08-06"
+    # The cohort key still folds the release date away for rollup grouping.
+    assert model_cohort_key("marketplace/team/openai/gpt-4o-2024-08-06") == "gpt-4o"
     assert estimate_cost(1000, 500, "openai/gpt-4o-2024-08-06") == pytest.approx(0.0075)
 
 
@@ -586,3 +593,39 @@ def test_resolve_model_identity_keeps_axes_distinct_across_fixtures() -> None:
     # each other's model line by accident.
     lines = {fixture.model_line for fixture in (fable, opus, gpt, gemini) if fixture.model_line}
     assert len(lines) == 4
+
+
+def test_dated_snapshot_prices_from_its_own_catalog_row_not_a_bare_collision() -> None:
+    """polylogue: a dated snapshot must not be resolved to a bare key owned by
+    an unrelated router.
+
+    The vendored catalog holds ``claude-sonnet-4-20250514`` (anthropic, with
+    real cache rates) *and* ``claude-sonnet-4`` (gmi, cache rates omitted and
+    therefore zero). Date-stripping before lookup discarded the exact hit,
+    which left every cache-bearing row of these models entirely unpriced by
+    the write-path guard that refuses a zero cache rate.
+
+    Anti-vacuity: restoring the unconditional date strip in
+    ``_normalize_model`` makes the cache-rate assertions below zero and the
+    cost assertion fall to the input/output-only total.
+    """
+    from polylogue.archive.semantic.pricing import PRICING
+
+    for dated, bare in (
+        ("claude-sonnet-4-20250514", "claude-sonnet-4"),
+        ("claude-opus-4-20250514", "claude-opus-4"),
+        ("claude-4-sonnet-20250514", "claude-4-sonnet"),
+        ("claude-4-opus-20250514", "claude-4-opus"),
+        ("claude-3-haiku-20240307", "claude-3-haiku"),
+    ):
+        assert _normalize_model(dated) == dated
+        assert PRICING[bare].cache_read_usd_per_1m == 0.0, "fixture premise: bare key omits cache rates"
+        resolved = PRICING[_normalize_model(dated)]
+        assert resolved.source_name == "anthropic"
+        assert resolved.cache_read_usd_per_1m > 0.0
+        assert resolved.cache_write_usd_per_1m > 0.0
+        # The cohort key still folds both forms together for rollup grouping.
+        assert model_cohort_key(dated) == bare
+
+    # 1M cache-read tokens at anthropic's $0.30/1M rate must actually bill.
+    assert estimate_cost(0, 0, "anthropic/claude-sonnet-4-20250514", 1_000_000, 0) == pytest.approx(0.3)
