@@ -13,4 +13,4 @@ venv = "_PYTHON_SYSCONFIGDATA_NAME=_sysconfigdata_t_linux_x86_64-linux-gnu uv sy
 # writing the source; the provision check then discards a datafile the
 # installed testmon would not read.
 [[pre-start]]
-seed = ".venv/bin/python -m devtools.testmon_provision --seed \"{{ primary_worktree_path }}/.cache/testmon/testmondata\""
+seed = "_PYTHON_SYSCONFIGDATA_NAME=_sysconfigdata_t_linux_x86_64-linux-gnu .venv/bin/python -m devtools.testmon_provision --seed \"{{ primary_worktree_path }}/.cache/testmon/testmondata\""
