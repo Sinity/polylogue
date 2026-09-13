@@ -88,6 +88,7 @@ from polylogue.rendering.semantic_cards import (
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read
 from polylogue.surfaces.authority import serialize_authority
 from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes, decide_outcome, lineage_page_outcome
 from polylogue.surfaces.payloads import (
@@ -530,7 +531,7 @@ def _web_reader_archive_root() -> Path | None:
         if not path.exists():
             return None
         try:
-            with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
+            with one_shot_diagnostic_read(path, tier=tier) as conn:
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
         except sqlite3.Error as exc:
             logger.warning("web-reader archive-root version probe failed for %s: %s", path, exc, exc_info=True)
@@ -2770,7 +2771,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if not dbp.exists():
                 quick_check_ok = False
             else:
-                with contextlib.closing(sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=0.25)) as conn:
+                with one_shot_diagnostic_read(dbp, tier=ArchiveTier.INDEX) as conn:
                     conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         except (OSError, sqlite3.Error):
             quick_check_ok = False

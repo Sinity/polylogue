@@ -4,6 +4,8 @@ import json
 import re
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -714,10 +716,11 @@ def test_latency_command_reports_no_ops_db(tmp_path: Path) -> None:
     assert payload == {"buckets": [], "unavailable_reason": "ops.db does not exist"}
 
 
-def test_latency_command_reports_measured_percentiles(tmp_path: Path) -> None:
+def test_latency_command_reports_measured_percentiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.ops_write import record_route_observation
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read as real_diagnostic_read
 
     ops_db = tmp_path / "ops.db"
     initialize_archive_database(ops_db, ArchiveTier.OPS)
@@ -736,6 +739,16 @@ def test_latency_command_reports_measured_percentiles(tmp_path: Path) -> None:
         )
     conn.close()
 
+    observed: list[Path] = []
+
+    @contextmanager
+    def diagnostic_read(path: str | Path, *, tier: ArchiveTier | None = None) -> Iterator[sqlite3.Connection]:
+        observed.append(Path(path))
+        with real_diagnostic_read(path, tier=tier) as conn:
+            yield conn
+
+    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.one_shot_diagnostic_read", diagnostic_read)
+
     result = CliRunner().invoke(
         diagnostics.latency_command,
         ["--format", "json"],
@@ -751,6 +764,7 @@ def test_latency_command_reports_measured_percentiles(tmp_path: Path) -> None:
     assert bucket["sample_count"] == 5
     assert bucket["p50_ms"] == 300.0
     assert bucket["low_confidence"] is False
+    assert observed == [ops_db]
 
 
 def test_latency_command_excludes_observations_outside_lookback_window(tmp_path: Path) -> None:

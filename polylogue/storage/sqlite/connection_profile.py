@@ -453,13 +453,16 @@ WRITE_PROFILES: Mapping[str, SQLiteConnectionProfile] = {
 # tier mutated; attaching siblings would draw them into the same transaction
 # scope, which is the thing those routes exist to avoid. Journal mode and
 # foreign-key enforcement are deliberately left as the file already has them:
-# these routes adopt a tier, they do not reconfigure it.
+# these routes adopt a tier, they do not reconfigure it. Autocheckpoint remains
+# explicit because it is connection-local: an unowned process keeps the bounded
+# fallback while the daemon's recurring owner disables it for this writer too.
 ISOLATED_TIER_WRITE_PROFILE = SQLiteConnectionProfile(
     role="write",
     timeout_seconds=TIMEOUT_CLASS_PUBLICATION_S,
     busy_timeout_ms=int(TIMEOUT_CLASS_PUBLICATION_S * 1000),
     cache_size_kib=DAEMON_WRITE_CACHE_SIZE_KIB,
     mmap_size_bytes=DAEMON_WRITE_MMAP_SIZE_BYTES,
+    wal_autocheckpoint_pages=WAL_AUTOCHECKPOINT_PAGES,
 )
 
 READ_CONNECTION_PRAGMA_STATEMENTS = READ_CONNECTION_PROFILE.pragma_statements
@@ -1077,6 +1080,37 @@ def open_readonly_connection(
     return conn
 
 
+@contextmanager
+def one_shot_diagnostic_read(
+    path: str | Path,
+    *,
+    tier: ArchiveTier | None = None,
+) -> Iterator[sqlite3.Connection]:
+    """Open one non-paginated diagnostic probe under the interactive read profile.
+
+    This is deliberately narrower than :func:`open_readonly_connection`:
+    it is for a small probe whose result is consumed before request or
+    presentation work begins (for example, checking a schema version).  A
+    caller that retains SQLite state while paging or rendering must use a
+    :func:`read_frame` instead, so its live snapshot has a declared bounded
+    lifetime and can rebind safely.
+
+    Diagnostics may need to read an unsupported schema in order to explain
+    it, hence schema validation is intentionally disabled here.  That does
+    not relax SQLite's ``mode=ro`` or ``query_only`` enforcement.
+    """
+    conn = open_readonly_connection(
+        path,
+        tier=tier,
+        validate_schema=False,
+        timeout_class="interactive-read",
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def open_sealed_staging_connection(
     path: str | Path,
     *,
@@ -1512,6 +1546,7 @@ __all__ = [
     "connection_context",
     "descriptor_alias_path",
     "open_sealed_staging_connection",
+    "one_shot_diagnostic_read",
     "log_mapped_bytes_budget_check",
     "mapped_bytes_budget",
     "assert_tier_schema_supported",

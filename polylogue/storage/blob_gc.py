@@ -69,11 +69,25 @@ from polylogue.storage.blob_liveness import (
 )
 from polylogue.storage.hook_payload_ref_reconciliation import HookPayloadRefMatchStage, prepare_match_stage
 from polylogue.storage.introspection import table_exists as _table_exists
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.connection_profile import (
+    open_connection,
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 logger = logging.getLogger(__name__)
+
+
+def _readonly(path: Path) -> sqlite3.Connection:
+    """Open a bounded, query-only GC inspection connection."""
+    return open_readonly_connection(path, timeout_class="background-read")
+
+
+def _writer(path: Path) -> sqlite3.Connection:
+    """Open one lease-bound GC write tier without sibling attachments."""
+    return open_isolated_write_connection(path, purpose=f"blob GC({path})", archive_root=path.parent)
 
 
 @dataclass
@@ -191,7 +205,7 @@ def _previous_generation_completed_at(conn: sqlite3.Connection) -> int | None:
 
 def _database_has_table(path: Path, table: str) -> bool:
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = _readonly(path)
     except sqlite3.Error:
         return False
     try:
@@ -213,7 +227,7 @@ def _reference_tier_blockers(tier_paths: dict[str, Path]) -> tuple[str, ...]:
             blockers.append(f"{tier} tier is unavailable at {path} (path does not resolve)")
             continue
         try:
-            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as probe:
+            with closing(_readonly(path)) as probe:
                 probe.execute("SELECT 1").fetchone()
         except sqlite3.Error as exc:
             blockers.append(f"{tier} tier at {path} could not be opened for reading: {exc}")
@@ -597,7 +611,7 @@ def _finalize_gc_generation(control_db_path: Path, generation_id: str) -> bool:
 
 def _pending_gc_generation(control_db_path: Path) -> tuple[str | None, str | None]:
     """Return the one restartable member generation, or a fail-closed reason."""
-    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(control_db_path)) as conn:
         if not _gc_member_table_available(conn):
             return None, "blob GC durable member-intent schema is unavailable"
         if not _gc_namespace_identity_columns_available(conn):
@@ -620,7 +634,7 @@ def _generation_namespace_matches(
 ) -> str | None:
     """Refuse a pending intent whose observed namespace was swapped or remounted."""
 
-    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(control_db_path)) as conn:
         row = conn.execute(
             "SELECT blob_namespace_marker FROM gc_generations WHERE generation_id = ?",
             (generation_id,),
@@ -732,7 +746,7 @@ def _execute_gc_generation_members(
     except _BlobNamespaceUnavailableError as exc:
         report.blocked_reason = str(exc)
         return 0, 0
-    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as history:
+    with closing(_readonly(control_db_path)) as history:
         members = [
             str(row[0]).lower()
             for row in history.execute(
@@ -744,12 +758,12 @@ def _execute_gc_generation_members(
     deleted_now = 0
     reclaimed_bytes_now = 0
     require_write_lease(f"blob GC({control_db_path})", archive_root=control_db_path.parent)
-    source_conn = sqlite3.connect(control_db_path)
+    source_conn = _writer(control_db_path)
     index_conn: sqlite3.Connection | None = None
     try:
         source_conn.execute("BEGIN IMMEDIATE")
         if control_db_path != sibling_index_db:
-            index_conn = sqlite3.connect(sibling_index_db)
+            index_conn = _writer(sibling_index_db)
             index_conn.execute("BEGIN IMMEDIATE")
         recheck_index = index_conn or (source_conn if control_db_path == sibling_index_db else None)
         preflight = inspect_blob_liveness(source_conn, "", index_conn=recheck_index, require_index=True)
@@ -877,7 +891,7 @@ def _execute_gc_generation_members(
 
 def _populate_generation_summary(report: BlobGCResult, control_db_path: Path, generation_id: str) -> None:
     """Attach durable, all-attempt counters without relabeling run counters."""
-    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(control_db_path)) as conn:
         row = conn.execute(
             "SELECT completed_at_ms, reclaimed_count, reclaimed_bytes FROM gc_generations WHERE generation_id = ?",
             (generation_id,),
@@ -945,7 +959,7 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
     with exclude_archive_blob_publishers(source_db_path):
         if not _database_has_table(source_db_path, "gc_generation_members"):
             return 0, 0, ("blob GC durable member-intent schema is unavailable",)
-        with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as schema_conn:
+        with closing(_readonly(source_db_path)) as schema_conn:
             if not _gc_namespace_identity_columns_available(schema_conn):
                 return 0, 0, ("blob GC durable namespace-identity schema is unavailable",)
         tier_blockers = _reference_tier_blockers({"source": source_db_path, "index": index_db_path})
@@ -969,7 +983,7 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
         ):
             if report.blocked_reason is not None:
                 return report.deleted_count, report.reclaimed_bytes, (report.blocked_reason,)
-            with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as source_conn:
+            with closing(_readonly(source_db_path)) as source_conn:
                 errors = tuple(
                     f"{str(row[0])[:16]}: {row[1]}"
                     for row in source_conn.execute(
@@ -984,8 +998,8 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
         members: list[_GCMemberIntent] = []
         try:
             with (
-                closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as source_conn,
-                closing(sqlite3.connect(f"file:{index_db_path}?mode=ro", uri=True)) as index_conn,
+                closing(_readonly(source_db_path)) as source_conn,
+                closing(_readonly(index_db_path)) as index_conn,
             ):
                 preflight = inspect_blob_liveness(source_conn, "", index_conn=index_conn, require_index=True)
                 if preflight.state is LivenessState.BLOCKED:
@@ -1039,7 +1053,7 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
         if report.blocked_reason is not None:
             return deleted, deleted_bytes, (report.blocked_reason,)
         _populate_generation_summary(report, source_db_path, generation_id)
-        with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as source_conn:
+        with closing(_readonly(source_db_path)) as source_conn:
             errors = tuple(
                 f"{str(row[0])[:16]}: {row[1]}"
                 for row in source_conn.execute(
@@ -1084,9 +1098,12 @@ def unlink_unreferenced_blob_hashes_without_generation_ledger(
         if not dry_run:
             require_write_lease(f"blob GC({source_db_path})", archive_root=source_db_path.parent)
             stack.enter_context(exclude_archive_blob_publishers(source_db_path))
-        mode = "ro" if dry_run else "rw"
-        source_conn = stack.enter_context(closing(sqlite3.connect(f"file:{source_db_path}?mode={mode}", uri=True)))
-        index_conn = stack.enter_context(closing(sqlite3.connect(f"file:{index_db_path}?mode={mode}", uri=True)))
+        if dry_run:
+            source_conn = stack.enter_context(closing(_readonly(source_db_path)))
+            index_conn = stack.enter_context(closing(_readonly(index_db_path)))
+        else:
+            source_conn = stack.enter_context(closing(_writer(source_db_path)))
+            index_conn = stack.enter_context(closing(_writer(index_db_path)))
         if not dry_run:
             source_conn.execute("BEGIN IMMEDIATE")
             index_conn.execute("BEGIN IMMEDIATE")
@@ -1241,7 +1258,7 @@ def run_blob_gc_report(
         report.blocked_reason = "blob GC durable member-intent schema is unavailable"
         logger.error("Blob GC refused to run: %s", report.blocked_reason)
         return report
-    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as schema_conn:
+    with closing(_readonly(control_db_path)) as schema_conn:
         if not _gc_namespace_identity_columns_available(schema_conn):
             report.blocked_reason = "blob GC durable namespace-identity schema is unavailable"
             logger.error("Blob GC refused to run: %s", report.blocked_reason)
@@ -1273,7 +1290,7 @@ def run_blob_gc_report(
 
     # Filesystem enumeration is deliberately outside the destructive source
     # lock. The lock protects only the bounded final recheck+unlink window.
-    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as planning_conn:
+    with closing(_readonly(control_db_path)) as planning_conn:
         prev_completed_at = _previous_generation_completed_at(planning_conn)
     older_than = float(MIN_AGE_S)
     if prev_completed_at is not None:
@@ -1297,7 +1314,7 @@ def run_blob_gc_report(
     # past those rows under BEGIN IMMEDIATE would otherwise make max_batch a
     # deletion bound but not a lock-time bound. Every shortlisted candidate is
     # checked again under the destructive lock below.
-    planning_conn = sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)
+    planning_conn = _readonly(control_db_path)
     planning_conn.row_factory = sqlite3.Row
     planning_source_conn: sqlite3.Connection | None = None
     planning_index_conn: sqlite3.Connection | None = None
@@ -1307,9 +1324,9 @@ def run_blob_gc_report(
         # it was proven readable above, so it is opened unconditionally and a
         # failure here aborts the pass rather than silently omitting the tier.
         if control_db_path != sibling_source_db and sibling_source_db.exists():
-            planning_source_conn = sqlite3.connect(f"file:{sibling_source_db}?mode=ro", uri=True)
+            planning_source_conn = _readonly(sibling_source_db)
         if control_db_path != sibling_index_db:
-            planning_index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
+            planning_index_conn = _readonly(sibling_index_db)
         # Fail the entire destructive pass closed before candidate selection
         # when a current owner surface cannot be evaluated.  Per-hash calls
         # below retain their long-standing aliases for testable snapshot and
@@ -1422,12 +1439,12 @@ def run_blob_gc_report(
     # The mutation route returned above.  Dry runs retain the same canonical
     # final check but deliberately create no generation/member history.
     assert dry_run
-    conn = sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)
+    conn = _readonly(control_db_path)
     index_conn: sqlite3.Connection | None = None
     affected = 0
     try:
         if control_db_path != sibling_index_db:
-            index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
+            index_conn = _readonly(sibling_index_db)
         recheck_index = index_conn or (conn if control_db_path == sibling_index_db else None)
         recheck_preflight = inspect_blob_liveness(conn, "", index_conn=recheck_index, require_index=True)
         if recheck_preflight.state is LivenessState.BLOCKED:
@@ -1520,7 +1537,7 @@ class GCGenerationAbandonmentState:
 def inspect_gc_generation_abandonment(control_db_path: str | Path, generation_id: str) -> GCGenerationAbandonmentState:
     """Read one exact generation for a zero-effect abandonment preview."""
 
-    with closing(sqlite3.connect(f"file:{Path(control_db_path)}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(Path(control_db_path))) as conn:
         row = conn.execute(
             "SELECT blob_namespace_marker, completed_at_ms, "
             "(SELECT COUNT(*) FROM gc_generation_members AS member "
@@ -1541,7 +1558,7 @@ def inspect_gc_generation_abandonment(control_db_path: str | Path, generation_id
 def inspect_pending_gc_generations(control_db_path: str | Path) -> list[PendingGCGeneration]:
     """List incomplete GC intents without assigning them any new authority."""
 
-    with closing(sqlite3.connect(f"file:{Path(control_db_path)}?mode=ro", uri=True)) as conn:
+    with closing(_readonly(Path(control_db_path))) as conn:
         if not _gc_member_table_available(conn) or not _gc_namespace_identity_columns_available(conn):
             return []
         rows = conn.execute(

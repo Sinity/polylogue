@@ -466,7 +466,7 @@ def _checkpoint_sqlite_for_snapshot(conn: sqlite3.Connection, path: Path) -> Non
     partially drained WAL would make the copy an incoherent generation. A busy
     result refuses the backup rather than retrying against the reader.
     """
-    busy, log_frames, checkpointed_frames = checkpoint_connection(conn, "TRUNCATE")
+    busy, log_frames, checkpointed_frames = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
     if busy or log_frames != checkpointed_frames:
         raise RuntimeError(f"could not quiesce {path} before backup")
 
@@ -1709,20 +1709,22 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             source_generation_id = evidence.get("source_generation_id")
             if source_generation_id is not None and not isinstance(source_generation_id, str):
                 raise RuntimeError("backup blob reference evidence has invalid source generation identity")
+            assertion_path = restored / _SOURCE_DECLARED_ABSENT_FILE
             with closing(
                 _open_backup_readonly_connection(restored / "source.db", immutable=True, timeout_class="offline-bulk")
             ) as source_conn:
                 source_generation_tables_exist = _source_generation_tables_exist(source_conn)
+            if (assertion_path.exists() or assertion_path.is_symlink()) and (
+                source_generation_id is not None or source_generation_tables_exist
+            ):
+                raise RuntimeError("source declared-absent assertion is only valid before source generations exist")
             restored_source_hashes = _source_blob_hashes_from_restored_source(
                 restored / "source.db",
                 source_generation_id=source_generation_id,
             )
             reference_evidence_ok = reference_evidence_ok and restored_source_hashes == source_evidence_hashes
-            assertion_path = restored / _SOURCE_DECLARED_ABSENT_FILE
             declared_absent: set[str] = set()
             if assertion_path.exists() or assertion_path.is_symlink():
-                if source_generation_id is not None or source_generation_tables_exist:
-                    raise RuntimeError("source declared-absent assertion is only valid before source generations exist")
                 declared_absent = _load_source_declared_absent(restored / "source.db", assertion_path)
                 if not declared_absent.issubset(restored_source_hashes):
                     reference_evidence_ok = False

@@ -635,7 +635,7 @@ def _connection_main_path(conn: sqlite3.Connection) -> Path:
 
 def _checkpoint_live_tier(conn: sqlite3.Connection) -> None:
     try:
-        row = checkpoint_connection(conn, "TRUNCATE")
+        row = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
     except sqlite3.Error as exc:
         raise MigrationError("migration backup receipt validation could not checkpoint the live tier") from exc
     if row is None:

@@ -26,6 +26,7 @@ from polylogue.storage.sqlite.connection_profile import (
     ReadFrameCancelledError,
     ReadFrameExpiredError,
     StaleContinuationError,
+    one_shot_diagnostic_read,
     open_profiled_connection,
     open_readonly_connection,
     read_frame,
@@ -265,6 +266,17 @@ def test_expired_frame_rebinds_before_resuming(index_db: Path, monkeypatch: pyte
         assert not frame.expired
     finally:
         frame.close()
+
+
+def test_one_shot_diagnostic_read_is_readonly_and_releases_its_connection(index_db: Path) -> None:
+    """A diagnostic probe cannot become a hidden long-lived or writable reader."""
+    with one_shot_diagnostic_read(index_db) as conn:
+        with pytest.raises(sqlite3.OperationalError, match="readonly|read.only"):
+            conn.execute("INSERT INTO rows_ VALUES (99, 'injected')")
+        assert conn.execute("SELECT count(*) FROM rows_").fetchone()[0] == 10
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        conn.execute("SELECT 1")
 
 
 # -- production-route read-only enforcement ----------------------------------
