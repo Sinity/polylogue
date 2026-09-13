@@ -2589,6 +2589,70 @@ class TestReaderQueryUnits:
         item_ids = [cast(list[dict[str, object]], page["items"])[0]["message_id"] for page in pages]
         assert len(set(item_ids)) == len(item_ids)
 
+    def test_standalone_reader_pages_continuation_without_originating_index_writes(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """A bridge-less API server serves every page of a continuation it issued.
+
+        Production dependencies: standalone ``DaemonAPIHTTPServer`` composition
+        (``_StandaloneWriteRuntime``), ``QueryTransaction`` epoch binding, and
+        the index-tier ``query_unit_frame_state`` triggers. The seeded
+        sessions carry no ``session_profiles`` rows, so any server-originated
+        derivation has real work to publish.
+
+        Anti-vacuity: restoring a server-originated index write at standalone
+        start (the removed periodic session-profile sweep, or any derivation
+        task on the owned writer loop) derives the three unprofiled sessions,
+        advances the frame epoch under the page-1 continuation, and turns the
+        epoch, profile-count, and loop-task assertions red; the second page
+        answers 409 ``query_continuation_stale`` whenever that write lands
+        first, as it did before the sweep was removed (epoch 15 -> 18).
+        """
+        _seed_test_db(workspace_env)
+        index_db = workspace_env["archive_root"] / "index.db"
+
+        def frame() -> tuple[int, int]:
+            with sqlite3.connect(index_db) as conn:
+                epoch = int(conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton = 1").fetchone()[0])
+                profiles = int(conn.execute("SELECT count(*) FROM session_profiles").fetchone()[0])
+            return epoch, profiles
+
+        epoch_before, profiles_before = frame()
+        assert profiles_before == 0, "premise: seeded sessions must still be unprofiled"
+
+        expression = quote("messages where text:Hello")
+        path = f"/api/query-units?expression={expression}&limit=1"
+        pages: list[dict[str, object]] = []
+        from polylogue.daemon.http import DaemonAPIHTTPServer
+
+        with _running_server(workspace_env, seeded=False) as (server, base_url):
+            assert isinstance(server, DaemonAPIHTTPServer)
+            runtime = server._owned_write_runtime
+            assert runtime is not None, "premise: a bridge-less server owns its writer runtime"
+            while True:
+                payload = cast(dict[str, object], _get_json(base_url, path))
+                pages.append(payload)
+                continuation = payload["continuation"]
+                if continuation is None:
+                    break
+                path = f"/api/query-units?continuation={quote(str(continuation), safe='')}"
+
+            # Order after any write the server had already submitted, then
+            # inventory the owned loop: request-driven writes are transient
+            # tasks, so nothing may remain scheduled on the reader's behalf.
+            runtime.bridge.run_sync("test.standalone-barrier", lambda: None)
+
+            async def loop_tasks() -> list[str]:
+                current = asyncio.current_task()
+                return sorted(task.get_name() for task in asyncio.all_tasks() if task is not current)
+
+            lingering = asyncio.run_coroutine_threadsafe(loop_tasks(), runtime.loop).result(timeout=2.0)
+            assert lingering == [], f"standalone writer loop carries server-originated tasks: {lingering}"
+
+        assert [page["offset"] for page in pages] == [0, 1, 2]
+        assert frame() == (epoch_before, 0)
+
     def test_query_units_endpoint_rejects_continuation_parameter_overrides(
         self,
         workspace_env: dict[str, Path],
