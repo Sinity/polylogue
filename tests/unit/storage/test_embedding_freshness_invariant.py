@@ -554,7 +554,7 @@ def test_common_derivation_replaces_physical_vector_with_existing_metadata(
     adapter = EmbeddingDerivationAdapter(index_db, _FakeVectorProvider(0.25), archive_root=root, reserve=admit)
     frame = make_embedding_frame(index_db, archive_root=root, adapter=adapter, scope=(session_id,))
     report = converge(DerivationRegistry([adapter]), frame, publisher=admit)
-    assert report.done == 1
+    assert report.done == 1, report.outcomes
     assert report.failed == 0
     conn = _open_embeddings(root / "embeddings.db")
     try:

@@ -497,6 +497,9 @@ class EmbeddingDerivationAdapter:
                     archive_root=binding.archive_root,
                 )
                 try:
+                    loaded, error = try_load_sqlite_vec(conn)
+                    if not loaded:
+                        raise RuntimeError(f"embedding vector publication unavailable: {error}")
                     now_ms = int(datetime.now(UTC).timestamp() * 1000)
                     replace_message_embedding_derivation(
                         conn,
