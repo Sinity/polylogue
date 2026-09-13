@@ -187,6 +187,45 @@ def running_daemon_operations(
         stack.close()
 
 
+@contextlib.contextmanager
+def cli_daemon_archive(
+    archive_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    seed_archive: Callable[[Path], None] | None = None,
+    home: Path | None = None,
+) -> Iterator[DaemonOperationStack]:
+    """Run a real daemon and point the CLI's mutation route at it.
+
+    CLI mutation commands own syntax, preview and refusal only; the resident
+    daemon is the sole writer (``configured_mutation_operation``). A CLI test
+    that wants to observe what a mutation actually *does* therefore has to
+    supply the daemon the command requires, which is what this does: a real
+    ``DaemonOperationRuntime`` behind a real UDS listener, reached over the
+    ordinary socket the CLI probes.
+
+    ``POLYLOGUE_ARCHIVE_ROOT`` and the XDG roots are set rather than patching
+    ``polylogue.cli.commands.*`` path helpers, because the daemon-side handlers
+    resolve their own paths through :mod:`polylogue.paths`; patching a CLI
+    module attribute would move only the preview and leave the writer pointed
+    at the developer's real home.
+    """
+
+    archive_root = archive_root.resolve()
+    with running_daemon_operations(archive_root, seed_archive=seed_archive) as stack:
+        monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path)
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        if home is not None:
+            home.mkdir(parents=True, exist_ok=True)
+            monkeypatch.setenv("HOME", str(home))
+            monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+            monkeypatch.setenv("XDG_CACHE_HOME", str(home / ".cache"))
+            monkeypatch.setenv("XDG_STATE_HOME", str(home / ".local" / "state"))
+            monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+        yield stack
+
+
 @pytest.fixture
 def daemon_operation_stack(tmp_path: Path) -> Iterator[DaemonOperationStack]:
     """Pytest fixture providing an empty, synthetic, production operation stack."""
@@ -195,4 +234,9 @@ def daemon_operation_stack(tmp_path: Path) -> Iterator[DaemonOperationStack]:
         yield stack
 
 
-__all__ = ["DaemonOperationStack", "daemon_operation_stack", "running_daemon_operations"]
+__all__ = [
+    "DaemonOperationStack",
+    "cli_daemon_archive",
+    "daemon_operation_stack",
+    "running_daemon_operations",
+]
