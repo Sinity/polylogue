@@ -114,7 +114,6 @@ from polylogue.surfaces.payloads import (
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.archive.query.spec import SessionQuerySpec
-    from polylogue.daemon.session_profile_composition import SessionProfileCallback
     from polylogue.daemon.webui import WebUIAsset
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
@@ -5655,13 +5654,19 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
                 status_config=operation_settings,
             ),
         )
-        if self._owned_write_runtime is not None:
-            self._owned_write_runtime.start_session_profile_sweep(self.session_profile_callback)
+        # A server that owns its writer still originates no derivation of its
+        # own. Session-profile convergence is the daemon's service
+        # (``_periodic_convergence_check`` and the watcher drive this same
+        # callback under ``polylogued run``); a standalone server only writes
+        # on explicit request through ``operation_runtime``. A self-started
+        # sweep here advanced the index-tier query-unit frame under a reader's
+        # own freshly issued continuation and turned the next page into a
+        # ``query_continuation_stale`` conflict with no external mutation.
 
     def server_close(self) -> None:
         # Staged workers settle before their shared compute owner closes.
-        # Standalone composition also drains its periodic profile task and
-        # writer; polylogued drains those services before calling this method.
+        # Standalone composition also drains its writer; polylogued drains
+        # those services before calling this method.
         def close_compute() -> None:
             kernel = getattr(self, "execution_kernel", None)
             if isinstance(kernel, BoundedComputeAdapter):
@@ -5686,13 +5691,16 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
 
 
 class _StandaloneWriteRuntime:
-    """Coordinator loop for HTTP-server use outside ``polylogued``."""
+    """Coordinator loop for HTTP-server use outside ``polylogued``.
+
+    The loop serves request-driven writes only; it starts no periodic
+    derivation task of its own.
+    """
 
     def __init__(self, archive_root: Path) -> None:
         ready = threading.Event()
         self.loop = asyncio.new_event_loop()
         self.coordinator: DaemonWriteCoordinator | None = None
-        self._session_profile_task: asyncio.Task[None] | None = None
 
         def run() -> None:
             asyncio.set_event_loop(self.loop)
@@ -5716,24 +5724,6 @@ class _StandaloneWriteRuntime:
         except BaseException:
             self.close()
             raise
-
-    def start_session_profile_sweep(self, callback: SessionProfileCallback) -> None:
-        """Borrow the existing loop and compute owner even without a watcher."""
-
-        async def sweep() -> None:
-            while True:
-                try:
-                    await callback(None)
-                except Exception:
-                    logger.warning("standalone session profile convergence failed", exc_info=True)
-                await asyncio.sleep(60.0)
-
-        async def start() -> None:
-            if self._session_profile_task is not None:
-                raise RuntimeError("standalone session profile sweep already started")
-            self._session_profile_task = asyncio.create_task(sweep(), name="standalone.session-profiles")
-
-        asyncio.run_coroutine_threadsafe(start(), self.loop).result(timeout=2.0)
 
     def close(
         self,
@@ -5763,11 +5753,6 @@ class _StandaloneWriteRuntime:
         assert self.coordinator is not None
         if before_drain is not None:
             await before_drain()
-        task = self._session_profile_task
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
         while not await self.coordinator.shutdown(timeout=5.0):
             logger.warning("standalone daemon HTTP writer still draining after server close")
         if after_drain is not None:
