@@ -21,6 +21,7 @@ from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.embeddings.materialization import (
     archive_embeddable_message_where,
     archive_embeddable_messages_relation,
+    archive_embedding_blocked_counts_sql,
     archive_embedding_messages_table_ref,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
@@ -581,6 +582,39 @@ def _authoritative_archive_embedding_state(
     return tuple(_payload_int(value) for value in rows[0])  # type: ignore[return-value]
 
 
+def _blocked_archive_embedding_counts(
+    conn: sqlite3.Connection,
+    *,
+    status_table: str,
+    recipe: EmbeddingRecipe,
+    timeout_ms: int | None,
+) -> tuple[int, int]:
+    """Return (blocked session keys, their still-unembedded required messages).
+
+    Delegates the classification to the embeddings domain; this surface owns
+    only the read timeout.  An unavailable or timed-out inspection reports zero
+    blocked keys, which leaves them counted as pending -- conservative, never a
+    false claim of completeness.
+    """
+
+    if not status_table:
+        return 0, 0
+    sql = archive_embedding_blocked_counts_sql(conn, status_table=status_table, recipe=recipe)
+    if sql is None:
+        return 0, 0
+    from polylogue.storage.embeddings.support import is_missing_table_error
+
+    try:
+        rows = _rows_with_timeout(conn, sql, params=(), timeout_ms=timeout_ms)
+    except sqlite3.OperationalError as exc:
+        if is_missing_table_error(exc):
+            return 0, 0
+        raise
+    if not rows:
+        return 0, 0
+    return _payload_int(rows[0][0]), _payload_int(rows[0][1])
+
+
 def _embedding_status(
     *,
     total_sessions: int,
@@ -897,10 +931,24 @@ def _archive_embedding_status_payload(
             pending_sessions = total_sessions
             embedded_messages = 0
             pending_messages = 0
-            blocked_sessions = 0
         else:
             embedded_sessions, pending_sessions, embedded_messages, pending_messages = authoritative_state
-            blocked_sessions = 0
+        # Pending is `required - valid`, but a key the domain terminally
+        # refuses is neither.  The embeddings domain already classifies those
+        # keys -- the `blocked` branch of its freshness predicate, the same one
+        # that keeps them out of the catchup work set -- so surface that
+        # classification rather than counting them as ordinary backlog.
+        blocked_sessions, blocked_unembedded_messages = _blocked_archive_embedding_counts(
+            conn,
+            status_table=status_table,
+            recipe=recipe,
+            timeout_ms=detail_timeout_ms if include_detail else metadata_timeout_ms,
+        )
+        # A blocked key was counted as not-valid above, so it is a subset of
+        # the pending set; clamping keeps embedded + pending + blocked equal to
+        # the eligible session total.
+        blocked_sessions = min(blocked_sessions, pending_sessions)
+        pending_sessions -= blocked_sessions
         failure_count = (
             _scalar_int(
                 conn,
@@ -1071,6 +1119,11 @@ def _archive_embedding_status_payload(
                     pending_messages = exact_pending_messages
             else:
                 pending_messages = total_messages
+            if blocked_unembedded_messages:
+                # Same basis as the session clamp: these required messages
+                # belong to terminally refused keys, so they are blocked, not
+                # queued work.
+                pending_messages = max(pending_messages - blocked_unembedded_messages, 0)
             if has_refs and embedded_messages == 0:
                 missing_provenance = 0
                 stale_messages = 0

@@ -583,6 +583,58 @@ def _archive_embedding_freshness_predicate(
     )
 
 
+def archive_embedding_blocked_counts_sql(
+    conn: sqlite3.Connection,
+    *,
+    status_table: str,
+    recipe: EmbeddingRecipe,
+) -> str | None:
+    """Return SQL counting session keys whose derivation is terminally refused.
+
+    "Blocked" is not a parallel status counter: it is the embeddings domain's
+    own ``blocked`` branch of the freshness predicate that
+    ``_select_pending_archive_session_window_by_derivation`` uses to keep these
+    keys out of the work set.  A key is blocked when its *current* derivation
+    key (session, source hash, recipe hash, output contract) carries
+    ``attempt_state = 'failed_terminal'`` -- a refusal that no automatic retry
+    will clear.  Such a key is neither valid nor pending: reporting it as
+    pending claims work the writer will never do.
+
+    The two counted columns are the blocked session keys and, within them, the
+    required messages that still have no vector, so a caller can subtract a
+    blocked key's backlog from a message-level pending count on the same basis.
+    Returns ``None`` when the archive cannot express the classification.
+    """
+
+    predicate = _archive_embedding_freshness_predicate(
+        conn,
+        status_table=status_table,
+        recipe=recipe,
+    )
+    if predicate is None or predicate.blocked_sql == "0":
+        return None
+    meta_table = _archive_embedding_sibling_table(conn, status_table, "message_embeddings_meta")
+    if not meta_table:
+        return None
+    unembedded_sql = f"""
+        (SELECT COUNT(*)
+         FROM desired_messages AS dm
+         WHERE dm.session_id = s.session_id
+           AND NOT EXISTS (
+               SELECT 1 FROM {meta_table} AS em
+               WHERE em.vector_derivation_hash = dm.vector_derivation_hash
+           ))
+    """
+    return f"""
+        {predicate.cte_sql}
+        SELECT COUNT(*), COALESCE(SUM({unembedded_sql}), 0)
+        FROM desired_sessions AS ds
+        JOIN sessions AS s ON s.session_id = ds.session_id
+        {predicate.join_sql}
+        WHERE {predicate.blocked_sql}
+    """
+
+
 def _select_pending_archive_session_window_by_derivation(
     conn: sqlite3.Connection,
     *,
