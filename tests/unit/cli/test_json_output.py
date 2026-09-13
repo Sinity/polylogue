@@ -108,8 +108,11 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["--latest", "analyze", "turns"], True),  # needs session; fails cleanly on empty
     # ── Embed, feedback, schema, maintenance ─────────────────────────
     (["ops", "embed", "status"], False),
-    (["ops", "maintenance", "status"], False),
-    (["ops", "maintenance", "preview"], False),
+    # `ops maintenance status` and `ops maintenance preview` were deleted in
+    # cfc4c73ec along with the rest of the generic repair product ("a standing
+    # repair concept is a second truth"); convergence owns those semantics and
+    # no successor command was introduced. They are removed here rather than
+    # relocated because the route they exercised is genuinely gone.
     # ── Shell integration (emits scripts, not JSON; must not crash) ──
     (["config", "completions", "--shell", "bash"], False),
 ]
@@ -220,3 +223,39 @@ class TestAllCommandsAcceptJson:
         assert result.exit_code == 0, f"`polylogue {' '.join(full_args)}` exited {result.exit_code}:\n{result.output!r}"
         assert _TRACEBACK_SENTINEL not in result.output
         assert not _has_ansi(result.output)
+
+
+def test_command_table_names_only_commands_that_exist() -> None:
+    """Anti-vacuity for the hand-maintained ``_COMMANDS`` table.
+
+    The table is a literal list, not a walk of the Click tree, so deleting a
+    command cannot fail collection -- it only shows up as ``No such command``
+    when that one parametrisation runs. That is how ``ops maintenance status``
+    and ``ops maintenance preview`` stayed in this list for a week after
+    cfc4c73ec deleted them.
+
+    Anti-vacuity: re-adding a deleted command to ``_COMMANDS`` (or deleting a
+    listed command from the CLI) makes this test red immediately, naming the
+    path, instead of surfacing as a mystery exit-2 in an unrelated case.
+    """
+    import click
+
+    for args, _allow_nonzero in _COMMANDS:
+        tokens = list(args)
+        while tokens and tokens[0].startswith("-"):  # root-level flags
+            tokens.pop(0)
+        path: list[str] = []
+        for token in tokens:
+            if token.startswith("-"):
+                break
+            path.append(token)
+        assert path, f"no command path in {args!r}"
+
+        command: click.Command | None = cli
+        walked: list[str] = []
+        for name in path:
+            assert isinstance(command, click.Group), f"{' '.join(walked)} is not a group, cannot contain {name!r}"
+            with click.Context(command) as ctx:
+                command = command.get_command(ctx, name)
+            walked.append(name)
+            assert command is not None, f"_COMMANDS lists {' '.join(path)!r}, but {' '.join(walked)!r} does not exist"
