@@ -189,7 +189,6 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("hooks"),
     _L("import_command"),
     _L("init"),
-    _L("insights"),
     _L("judge"),
     _L("manual"),
     _L("note"),
