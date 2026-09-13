@@ -2825,15 +2825,13 @@ def _state_db_bytes_for_session(tmp_path: Path, *, session_id: str, message_text
     return db_path.read_bytes()
 
 
-def test_parallel_census_threads_hermes_sqlite_payload_path(tmp_path: Path) -> None:
-    """Regression for the #3113/polylogue-1zex SQLite-detection branch under
-    parallel dispatch: census_parse_worker must thread payload_path (the
-    real on-disk blob path) and archive_root through to _parse_one the same
-    way the sequential parse_retained_raw_sessions does, so a Hermes
-    state.db raw parsed by a pool worker still opens via sqlite3 against a
-    real file instead of only working by accident through the temp-file
-    fallback. Two independent single-session state.db raws force
-    ingest_workers>1 to actually dispatch through the process pool.
+def test_parallel_census_quarantines_legacy_hermes_sqlite_page_images(tmp_path: Path) -> None:
+    """Legacy SQLite page images cannot re-enter replay through the pool.
+
+    The historical #3113 path accepted these as Hermes state-db raws. Current
+    acquisition retains declared logical exports, so admitting an old page
+    image would recreate a second source authority during a future reindex.
+    Two independent raws still exercise the parallel census boundary.
     """
     bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -2849,12 +2847,11 @@ def test_parallel_census_threads_hermes_sqlite_payload_path(tmp_path: Path) -> N
     result = backfill_historical_revision_evidence(tmp_path, ingest_workers=4)
 
     assert result.scanned == 2
-    assert result.replayed_logical_sources == 2
-    assert result.quarantined == 0
+    assert result.replayed_logical_sources == 0
+    assert result.quarantined == 2
     with sqlite3.connect(tmp_path / "index.db") as conn:
         rows = conn.execute("SELECT native_id, message_count FROM sessions ORDER BY native_id").fetchall()
-    assert [native_id.startswith("hermes-") for native_id, _count in rows] == [True, True]
-    assert [count for _native_id, count in rows] == [1, 1]
+    assert rows == []
 
 
 def test_independent_raw_corpus_fixture_backfills_cleanly(tmp_path: Path) -> None:
