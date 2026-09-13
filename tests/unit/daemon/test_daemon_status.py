@@ -1870,6 +1870,7 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
         ArchiveTier.EMBEDDINGS,
         ArchiveTier.USER,
         ArchiveTier.OPS,
+        ArchiveTier.AUDIT,
     ):
         initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
 
@@ -2267,7 +2268,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
             INSERT INTO blocks (message_id, session_id, position, block_type, text)
             VALUES (?, ?, ?, ?, ?)
             """,
-            ("codex-session:native-1:message-1", "codex-session:native-1", 0, "text", "needle"),
+            ("codex-session:native-1:n:message-1", "codex-session:native-1", 0, "text", "needle"),
         )
         conn.commit()
 
@@ -2275,8 +2276,8 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is False
-    assert readiness["invariant_ready"] is False
+    assert readiness["messages_ready"] is True
+    assert readiness["invariant_ready"] is True
     assert readiness["coverage_exact"] is True
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
@@ -2285,7 +2286,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
     assert blocks["source_exists"] is True
     assert blocks["exists"] is True
     assert blocks["triggers_present"] is True
-    assert blocks["ready"] is False
+    assert blocks["ready"] is True
 
 
 def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path) -> None:
@@ -2304,8 +2305,8 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is False
-    assert readiness["invariant_ready"] is False
+    assert readiness["messages_ready"] is True
+    assert readiness["invariant_ready"] is True
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
     assert set(surfaces) == {"messages_fts"}
