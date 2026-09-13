@@ -190,6 +190,82 @@ def test_stale_unknown_artifact_is_covered_only_by_fresh_shape_evidence(tmp_path
     assert stale.witness == "fresh classification: session-bearing document"
 
 
+def test_stale_missing_drive_export_uses_only_its_narrow_path_declaration(tmp_path: Path) -> None:
+    """Missing retained bytes do not become a provider-wide unknown allow-list."""
+    source_db = _seed_inventory(tmp_path)
+    conn = sqlite3.connect(source_db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-missing-drive', 'aistudio-drive', NULL,
+                    '/drive-cache/gemini/Synthetic_Conversation-0123456789abcdef0123456789abcdef.json', ?, 100, 100)
+            """,
+            (b"f" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts(artifact_id, raw_id, origin, source_path, artifact_kind, support_status,
+                                      classification_reason, parse_as_session, first_observed_at_ms,
+                                      last_observed_at_ms)
+            VALUES ('art-missing-drive', 'raw-missing-drive', 'aistudio-drive',
+                    '/drive-cache/gemini/Synthetic_Conversation-0123456789abcdef0123456789abcdef.json',
+                    'unknown', 'decode_failed', 'decode failure: JSONDecodeError', 0, 100, 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    kinds = _by_key(inventory_constructs(source_db), "artifact-kind")
+    stale = kinds["aistudio-drive/unknown/decode_failed"]
+    assert stale.status == COVERED
+    assert "declared path shape=session_document" in stale.route
+    assert "drive_session_export" in stale.witness
+
+    stripped = tuple(
+        replace(
+            spec,
+            artifact_rules=tuple(rule for rule in spec.artifact_rules if rule.coverage_role != "drive_session_export"),
+        )
+        if spec.origin is Origin.AISTUDIO_DRIVE
+        else spec
+        for spec in ORIGIN_SPECS
+    )
+    without = _by_key(inventory_constructs(source_db, specs=stripped), "artifact-kind")
+    assert without["aistudio-drive/unknown/decode_failed"].status == UNCOVERED
+
+
+def test_stale_missing_unknown_drive_payload_is_not_covered_by_session_path(tmp_path: Path) -> None:
+    """A filename outside the declared Drive export shape remains uncovered."""
+    source_db = _seed_inventory(tmp_path)
+    conn = sqlite3.connect(source_db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-missing-odd-drive', 'aistudio-drive', NULL, '/drive-cache/gemini/not-an-export.json', ?, 100, 100)
+            """,
+            (b"g" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts(artifact_id, raw_id, origin, source_path, artifact_kind, support_status,
+                                      classification_reason, parse_as_session, first_observed_at_ms,
+                                      last_observed_at_ms)
+            VALUES ('art-missing-odd-drive', 'raw-missing-odd-drive', 'aistudio-drive',
+                    '/drive-cache/gemini/not-an-export.json', 'unknown', 'decode_failed',
+                    'decode failure: JSONDecodeError', 0, 100, 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    stale = _by_key(inventory_constructs(source_db), "artifact-kind")["aistudio-drive/unknown/decode_failed"]
+    assert stale.status == UNCOVERED
+
+
 def test_gate_reports_static_only_without_an_archive_and_writes_nothing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
