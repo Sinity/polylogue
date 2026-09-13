@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
 import pytest
@@ -27,6 +27,7 @@ from polylogue.daemon.derivation import (
     Budget,
     DerivationFrame,
     DerivationKey,
+    KeyPage,
     Outcome,
     PendingReason,
     Replacement,
@@ -35,6 +36,12 @@ from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 
 FRAME = DerivationFrame(archive_root="/archive", source_revision="r1")
+
+
+def _page(keys: Sequence[str], *, cursor: str | None, limit: int) -> KeyPage:
+    start = int(cursor) if cursor else 0
+    stop = min(start + limit, len(keys))
+    return KeyPage(tuple(keys[start:stop]), str(stop) if stop < len(keys) else None)
 
 
 class StringStatusDerivation(BaseDerivation):
@@ -53,8 +60,8 @@ class StringStatusDerivation(BaseDerivation):
         self.publish_refuses = publish_refuses
         self.leases: list[str] = []
 
-    def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
-        return iter(self.binding)
+    def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+        return _page(tuple(self.binding), cursor=cursor, limit=limit)
 
     def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, str]:
         return {
@@ -123,8 +130,8 @@ def test_a_required_key_that_disappears_after_discovery_is_binding_moved() -> No
         def __init__(self) -> None:
             self.required = True
 
-        def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
-            return ("gone",) if self.required else ()
+        def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+            return _page(("gone",) if self.required else (), cursor=cursor, limit=limit)
 
         def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, str]:
             return dict.fromkeys(keys, "missing")
@@ -284,9 +291,10 @@ async def test_session_owner_serializes_a_sweep_and_targeted_callback() -> None:
             self.a_started = threading.Event()
             self.release_a = threading.Event()
 
-        def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
+        def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
             scope = frame.scope
-            return ("a", "b") if scope is None else iter(cast(tuple[str, ...], scope))
+            keys = ("a", "b") if scope is None else cast(tuple[str, ...], scope)
+            return _page(keys, cursor=cursor, limit=limit)
 
         def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
             if replacement.payload == "a":

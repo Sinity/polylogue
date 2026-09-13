@@ -45,7 +45,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from polylogue.logging import get_logger
 
@@ -65,7 +65,6 @@ __all__ = [
     "KeyOutcome",
     "KeyPage",
     "KeyStatus",
-    "LegacyDerivationAdapter",
     "Outcome",
     "PageLike",
     "PassCursor",
@@ -447,95 +446,25 @@ class DerivationAdapter(Protocol):
         ...
 
 
-class LegacyDerivationAdapter(Protocol):
-    """The pre-paging vocabulary: one call hands over the whole key space.
+class DerivationRegistry:
+    """One explicitly ordered domain list, with declared inputs validated.
 
-    Accepted so a storage-ring adapter can move to ``required_page`` in its own
-    change rather than in this one. That is not politeness: the session-profile
-    adapter lives inside the derived schema closure, where any edit moves the
-    schema identity and obliges the archive to reconverge -- a price a dormant
-    contract change must not charge.
-
-    The kernel pages this ordinally, so the *kernel* still holds one page at a
-    time. The adapter goes on materializing its own key space, and that cost is
-    the adapter's to remove when it migrates.
+    This is deliberately not a generic graph scheduler. Composition declares
+    the run order once; each prerequisite must appear earlier in that list.
+    Concrete ``prerequisite_keys`` still decide which individual siblings are
+    blocked during a pass.
     """
 
-    @property
-    def domain(self) -> str: ...
-
-    @property
-    def prerequisites(self) -> tuple[str, ...]: ...
-
-    def required(self, frame: DerivationFrame) -> Iterable[str]: ...
-
-    def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus | str]: ...
-
-    def compute(self, frame: DerivationFrame, key: str) -> ReplacementLike: ...
-
-    def publish(self, frame: DerivationFrame, replacement: Any) -> bool: ...
-
-
-class _LegacyPaging:
-    """Adapts the pre-paging vocabulary onto the page contract."""
-
-    def __init__(self, adapter: LegacyDerivationAdapter) -> None:
-        self._adapter = adapter
-
-    @property
-    def domain(self) -> str:
-        return self._adapter.domain
-
-    @property
-    def prerequisites(self) -> tuple[str, ...]:
-        return self._adapter.prerequisites
-
-    def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
-        return _page_from_iterable(self._adapter.required(frame), cursor=cursor, limit=limit)
-
-    def excess_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
-        excess = getattr(self._adapter, "excess_candidates", None)
-        return _page_from_iterable(excess(frame) if excess is not None else (), cursor=cursor, limit=limit)
-
-    def prerequisite_keys(self, frame: DerivationFrame, key: str) -> Iterable[DerivationKey | tuple[str, str]]:
-        bindings = getattr(self._adapter, "prerequisite_keys", None)
-        return bindings(frame, key) if bindings is not None else ()
-
-    def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus | str]:
-        return self._adapter.inspect(frame, keys)
-
-    def compute(self, frame: DerivationFrame, key: str) -> ReplacementLike:
-        return self._adapter.compute(frame, key)
-
-    def publish(self, frame: DerivationFrame, replacement: Any) -> bool:
-        return self._adapter.publish(frame, replacement)
-
-    def quiet(self, frame: DerivationFrame, key: str) -> bool:
-        policy = getattr(self._adapter, "quiet", None)
-        return bool(policy(frame, key)) if policy is not None else False
-
-
-class DerivationRegistry:
-    """The declared derivations and the order their dependencies imply."""
-
-    def __init__(self, adapters: Iterable[DerivationAdapter | LegacyDerivationAdapter] = ()) -> None:
+    def __init__(self, adapters: Iterable[DerivationAdapter] = ()) -> None:
         self._adapters: dict[str, DerivationAdapter] = {}
         for adapter in adapters:
             self.register(adapter)
 
-    def register(self, adapter: DerivationAdapter | LegacyDerivationAdapter) -> None:
+    def register(self, adapter: DerivationAdapter) -> None:
         domain = adapter.domain
         if domain in self._adapters:
             raise ValueError(f"derivation domain {domain!r} is already registered")
-        # Which vocabulary the object speaks is a property of the object, not a
-        # flag anyone sets: an adapter that pages is used directly, one that
-        # does not is paged here.
-        paged: DerivationAdapter = (
-            cast("DerivationAdapter", adapter)
-            if callable(getattr(adapter, "required_page", None))
-            else _LegacyPaging(cast("LegacyDerivationAdapter", adapter))
-        )
-        self._adapters[domain] = paged
+        self._adapters[domain] = adapter
 
     def __contains__(self, domain: object) -> bool:
         return domain in self._adapters
@@ -553,42 +482,21 @@ class DerivationRegistry:
         return tuple(self._adapters[domain] for domain in self.validate())
 
     def validate(self) -> tuple[str, ...]:
-        """Resolve the run order, refusing a graph that cannot run.
-
-        Validation is deferred to resolution rather than performed per
-        registration: a domain may legitimately be registered before the
-        prerequisite it declares, and refusing that would make registration
-        order load-bearing. An unrunnable graph is still a construction error,
-        not a convergence pass that silently starves one domain forever.
-        """
-        order: list[str] = []
-        state: dict[str, int] = {}
-
-        def visit(domain: str, path: tuple[str, ...]) -> None:
-            mark = state.get(domain, 0)
-            if mark == 2:
-                return
-            if mark == 1:
-                cycle = " -> ".join((*path, domain))
-                raise ValueError(f"derivation prerequisites form a cycle: {cycle}")
-            state[domain] = 1
-            adapter = self._adapters.get(domain)
-            if adapter is not None:
-                for prerequisite in adapter.prerequisites:
-                    if prerequisite not in self._adapters:
-                        raise ValueError(
-                            f"derivation {domain!r} declares prerequisite {prerequisite!r}, which is not registered"
-                        )
-                    visit(prerequisite, (*path, domain))
-            state[domain] = 2
-            order.append(domain)
-
+        """Verify the explicit domain order contains every input before its user."""
+        positions = {domain: index for index, domain in enumerate(self._adapters)}
         for domain in self._adapters:
-            visit(domain, ())
-        return tuple(order)
-
-
-_MISSING = object()
+            for prerequisite in self._adapters[domain].prerequisites:
+                prerequisite_position = positions.get(prerequisite)
+                if prerequisite_position is None:
+                    raise ValueError(
+                        f"derivation {domain!r} declares prerequisite {prerequisite!r}, which is not registered"
+                    )
+                if prerequisite_position >= positions[domain]:
+                    raise ValueError(
+                        f"derivation {domain!r} declares prerequisite {prerequisite!r}, "
+                        "which must be registered before its consumer"
+                    )
+        return tuple(self._adapters)
 
 
 def _as_page(value: object) -> KeyPage:
@@ -617,49 +525,11 @@ def _coerce_statuses(statuses: Mapping[str, KeyStatus | str]) -> dict[str, KeySt
     return {key: KeyStatus(status) for key, status in statuses.items()}
 
 
-def _page_from_iterable(source: Iterable[str], *, cursor: str | None, limit: int) -> KeyPage:
-    """Page a lazy iterable by ordinal offset.
-
-    The default paging for a domain small enough that re-walking its prefix is
-    free. It is O(offset) per page and therefore quadratic over a sweep: a
-    domain whose key space is large enough for that to matter implements
-    ``required_page`` as a keyset scan instead. The iterable must be lazy --
-    returning a materialized list here re-materializes the universe on every
-    page, which is exactly the cost the page contract exists to remove.
-    """
-    start = int(cursor) if cursor else 0
-    iterator = iter(source)
-    for _ in range(start):
-        if next(iterator, _MISSING) is _MISSING:
-            return KeyPage((), None)
-    keys: list[str] = []
-    for item in iterator:
-        keys.append(str(item))
-        if len(keys) >= limit:
-            break
-    return KeyPage(tuple(keys), str(start + len(keys)) if len(keys) >= limit else None)
-
-
 class BaseDerivation:
-    """Optional base supplying the derivation members most domains omit.
-
-    A domain that is small, or whose key space is naturally an iterator,
-    implements ``required_keys``/``excess_keys`` and inherits ordinal paging.
-    A domain backed by a large table overrides ``required_page`` directly.
-    """
-
-    def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
-        """Every key that must exist at this frame, as a lazy iterable."""
-        raise NotImplementedError("a derivation must declare required_keys or override required_page")
-
-    def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
-        return _page_from_iterable(self.required_keys(frame), cursor=cursor, limit=limit)
-
-    def excess_keys(self, frame: DerivationFrame) -> Iterable[str]:
-        return ()
+    """Optional defaults for domain behaviors that have no output to retire."""
 
     def excess_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
-        return _page_from_iterable(self.excess_keys(frame), cursor=cursor, limit=limit)
+        return KeyPage()
 
     def prerequisite_keys(self, frame: DerivationFrame, key: str) -> Iterable[DerivationKey | tuple[str, str]]:
         return ()
@@ -830,7 +700,6 @@ class _Pass:
             statuses = _coerce_statuses(dict(upstream.inspect(self.frame, (binding.key,))))
         except Exception as exc:
             logger.warning("derivation: prerequisite inspection failed for %s: %s", binding, exc, exc_info=True)
-            self.unreadable_domains.add(binding.domain)
             return f"prerequisite {binding} could not be inspected: {exc}"
         status = statuses.get(binding.key, KeyStatus.MISSING)
         if status is not KeyStatus.VALID:
