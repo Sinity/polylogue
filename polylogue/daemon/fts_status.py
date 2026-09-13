@@ -9,28 +9,12 @@ from pydantic import BaseModel, Field
 
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.logging import get_logger
-from polylogue.storage.fts.freshness import STALE, UNKNOWN, freshness_ready_record_trusted
+from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
-from polylogue.storage.fts.sql import message_identity_mismatch_sql
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
-
-_FTS_SURFACES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
-    (
-        "messages_fts",
-        "messages",
-        "messages_fts",
-        ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"),
-    ),
-    (
-        "session_work_events_fts",
-        "session_work_events",
-        "session_work_events_fts",
-        ("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au"),
-    ),
-)
 
 _ARCHIVE_BLOCKS_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
@@ -55,66 +39,6 @@ def _triggers_present(conn: sqlite3.Connection, trigger_names: tuple[str, ...]) 
     ).fetchall()
     present = {row[0] for row in rows}
     return all(name in present for name in trigger_names)
-
-
-def _source_has_rows(conn: sqlite3.Connection, table_name: str) -> bool | None:
-    try:
-        row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
-    except sqlite3.Error as exc:
-        logger.warning("fts source-rows probe failed for %s: %s", table_name, exc, exc_info=True)
-        return None
-    return row is not None
-
-
-def _freshness_rows(conn: sqlite3.Connection) -> dict[str, dict[str, int | str | None]] | None:
-    if not _table_exists(conn, "fts_freshness_state"):
-        return None
-    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(fts_freshness_state)").fetchall()}
-    numeric_columns = (
-        "source_rows",
-        "indexed_rows",
-        "missing_rows",
-        "excess_rows",
-        "duplicate_rows",
-        "identity_mismatch_rows",
-        "exact_generation",
-    )
-    selected = ["surface", "state"]
-    selected.extend(name for name in numeric_columns if name in columns)
-    selected.extend(name for name in ("verification_kind", "exact_checked_at") if name in columns)
-    if "detail" in columns:
-        selected.append("detail")
-    rows = conn.execute(f"SELECT {', '.join(selected)} FROM fts_freshness_state").fetchall()
-    records: dict[str, dict[str, int | str | None]] = {}
-    for row in rows:
-        record = dict(zip(selected, row, strict=True))
-        records[str(record["surface"])] = {
-            "state": str(record["state"]),
-            "source_rows": _row_int(record.get("source_rows")),
-            "indexed_rows": _row_int(record.get("indexed_rows")),
-            "missing_rows": _row_int(record.get("missing_rows")),
-            "excess_rows": _row_int(record.get("excess_rows")),
-            "duplicate_rows": _row_int(record.get("duplicate_rows")),
-            "identity_mismatch_rows": _row_int(record.get("identity_mismatch_rows")),
-            "verification_kind": None
-            if "verification_kind" not in record or record["verification_kind"] is None
-            else str(record["verification_kind"]),
-            "exact_checked_at": None
-            if "exact_checked_at" not in record or record["exact_checked_at"] is None
-            else str(record["exact_checked_at"]),
-            "exact_generation": _row_int(record.get("exact_generation")),
-            "detail": None if "detail" not in record or record["detail"] is None else str(record["detail"]),
-        }
-    return records
-
-
-def _freshness_record(
-    freshness: dict[str, dict[str, int | str | None]] | None,
-    surface: str,
-) -> dict[str, int | str | None] | None:
-    if freshness is None:
-        return None
-    return freshness.get(surface)
 
 
 def _surface_payload(surface: FtsSurfaceInvariant) -> dict[str, int | bool | str | None]:
@@ -145,9 +69,9 @@ def _archive_index_path_for(dbf: Path) -> Path | None:
 
 
 def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:
+    """Project the FTS domain's global authoritative inspection for status."""
     source_exists = _table_exists(conn, "blocks")
     exists = _table_exists(conn, "messages_fts")
-    triggers_present = exists and _triggers_present(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS)
     if not source_exists:
         ready = not exists
         return {
@@ -155,7 +79,7 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
             "exists": exists,
             "source_rows": 0,
             "indexed_rows": 0,
-            "triggers_present": triggers_present,
+            "triggers_present": exists and _triggers_present(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS),
             "missing_rows": 0,
             "excess_rows": 0,
             "duplicate_rows": 0,
@@ -163,170 +87,33 @@ def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | b
             "ready": ready,
             "exact": True,
         }
-    # A block is FTS-indexable iff search_text != '' — that is exactly the
-    # predicate messages_fts is populated from (storage/fts/sql.py). Counting
-    # `text IS NOT NULL` here instead undercounts the source (tool_use /
-    # tool_result blocks carry derived search_text but a NULL display text), so
-    # indexed/source could exceed 100%.
-    source_rows = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0] or 0)
-    docsize_exists = _table_exists(conn, "messages_fts_docsize")
-    if not exists or not docsize_exists:
-        return {
-            "source_exists": source_exists,
-            "exists": exists,
-            "source_rows": source_rows,
-            "indexed_rows": 0,
-            "triggers_present": False,
-            "missing_rows": source_rows,
-            "excess_rows": 0,
-            "duplicate_rows": 0,
-            "identity_mismatch_rows": 0,
-            "ready": False,
-            "exact": True,
-        }
-    indexed_rows = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
-    missing_rows = int(
-        conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM blocks b
-            LEFT JOIN messages_fts_docsize d ON d.id = b.rowid
-            WHERE b.search_text != ''
-              AND d.id IS NULL
-            """
-        ).fetchone()[0]
-        or 0
-    )
-    excess_rows = int(
-        conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM messages_fts_docsize d
-            LEFT JOIN blocks b ON b.rowid = d.id
-            WHERE b.rowid IS NULL
-               OR b.search_text = ''
-            """
-        ).fetchone()[0]
-        or 0
-    )
-    duplicate_rows = 0
-    identity_mismatch_rows = (
-        int(conn.execute(message_identity_mismatch_sql()).fetchone()[0] or 0)
-        if _table_exists(conn, "messages_fts_identity")
-        else 0
-    )
-    ready = (
-        triggers_present
-        and missing_rows == 0
-        and excess_rows == 0
-        and duplicate_rows == 0
-        and identity_mismatch_rows == 0
-        and source_rows == indexed_rows
-    )
+    inspection = FtsDerivationAdapter().inspect_partition(conn, GLOBAL_PARTITION)
     return {
         "source_exists": source_exists,
         "exists": exists,
-        "source_rows": source_rows,
-        "indexed_rows": indexed_rows,
-        "triggers_present": triggers_present,
-        "missing_rows": missing_rows,
-        "excess_rows": excess_rows,
-        "duplicate_rows": duplicate_rows,
-        "identity_mismatch_rows": identity_mismatch_rows,
-        "ready": ready,
+        "source_rows": inspection.required_rows,
+        "indexed_rows": inspection.present_rows,
+        "triggers_present": inspection.triggers_compatible,
+        "missing_rows": inspection.missing_rows,
+        "excess_rows": inspection.excess_rows,
+        "duplicate_rows": inspection.duplicate_rows,
+        "identity_mismatch_rows": inspection.wrong_identity_rows,
+        "ready": inspection.valid,
         "exact": True,
     }
 
 
 def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:
-    freshness_records = _freshness_rows(conn)
-    freshness = _freshness_record(freshness_records, "messages_fts")
-    source_exists = _table_exists(conn, "blocks")
-    exists = _table_exists(conn, "messages_fts")
-    triggers_present = exists and _triggers_present(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS)
-    source_rows = 0 if freshness is None else _row_int(freshness.get("source_rows"))
-    indexed_rows = 0 if freshness is None else _row_int(freshness.get("indexed_rows"))
-    missing_rows = 0 if freshness is None else _row_int(freshness.get("missing_rows"))
-    excess_rows = 0 if freshness is None else _row_int(freshness.get("excess_rows"))
-    duplicate_rows = 0 if freshness is None else _row_int(freshness.get("duplicate_rows"))
-    identity_mismatch_rows = 0 if freshness is None else _row_int(freshness.get("identity_mismatch_rows"))
-    verification_kind = None if freshness is None else freshness.get("verification_kind")
-    exact_checked_at = None if freshness is None else freshness.get("exact_checked_at")
-    exact_generation = None if freshness is None else _row_int(freshness.get("exact_generation"))
-    recorded_state = None if freshness is None else str(freshness.get("state"))
-    source_has_rows = (
-        _source_has_rows(conn, "blocks")
-        if source_exists and recorded_state == "ready" and source_rows == 0 and indexed_rows == 0
-        else False
-    )
-    # No ledger table at all is a legacy tier: readiness is structural. A
-    # present ledger that holds no row for this surface is an unmeasured
-    # surface, and stays not-ready.
-    freshness_ready = (
-        True
-        if freshness_records is None
-        else freshness_ready_record_trusted(
-            state=recorded_state,
-            source_rows=source_rows,
-            indexed_rows=indexed_rows,
-            missing_rows=missing_rows,
-            excess_rows=excess_rows,
-            duplicate_rows=duplicate_rows,
-            identity_mismatch_rows=identity_mismatch_rows,
-            verification_kind=verification_kind if isinstance(verification_kind, str) else None,
-            exact_checked_at=exact_checked_at if isinstance(exact_checked_at, str) else None,
-            exact_generation=exact_generation,
-            current_generation=_row_int(conn.execute("PRAGMA user_version").fetchone()[0]),
-            source_has_rows=source_has_rows,
-        )
-    )
-    # A recorded state below `ready` is the ledger admitting it holds no
-    # current measurement: re-measure once against the rows the executor will
-    # actually search, so a deferred single-session observation cannot
-    # masquerade as archive-wide incompleteness. A recorded `ready` that fails
-    # the trust check already carries counts and a verdict — report it stale or
-    # unknown, because the request-safe path must not scan the source.
-    if freshness is not None and not freshness_ready and recorded_state != "ready":
-        measured = _archive_exact_blocks_surface(conn)
-        measured.update(
-            {
-                "freshness_known": True,
-                "freshness_state": recorded_state,
-                "freshness_recorded_state": recorded_state,
-                "freshness_trusted": False,
-                "freshness_detail": freshness.get("detail"),
-            }
-        )
-        return measured
-    freshness_state = recorded_state
-    if recorded_state == "ready" and not freshness_ready:
-        freshness_state = UNKNOWN if source_rows == 0 and indexed_rows == 0 and source_has_rows is not False else STALE
-    ready = (exists and triggers_present and freshness_ready) if source_exists else not exists
-    return {
-        "source_exists": source_exists,
-        "exists": exists,
-        "source_rows": source_rows,
-        "indexed_rows": indexed_rows,
-        "triggers_present": triggers_present,
-        "missing_rows": missing_rows,
-        "excess_rows": excess_rows,
-        "duplicate_rows": duplicate_rows,
-        "identity_mismatch_rows": identity_mismatch_rows,
-        "ready": ready,
-        "exact": False,
-        "freshness_known": freshness_records is not None,
-        "freshness_state": freshness_state,
-        "freshness_recorded_state": recorded_state,
-        "freshness_trusted": freshness_ready,
-        "freshness_detail": None if freshness is None else freshness.get("detail"),
-    }
+    """Read authoritative FTS membership; freshness rows never certify it."""
+    return _archive_exact_blocks_surface(conn)
 
 
 def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict[str, object] | None:
     if not _table_exists(conn, "blocks") and not _table_exists(conn, "messages_fts"):
         return None
-    blocks = _archive_exact_blocks_surface(conn) if exact else _archive_blocks_surface(conn)
-    effective_exact = exact
+    del exact
+    blocks = _archive_blocks_surface(conn)
+    effective_exact = True
     block_source_rows = _payload_int(blocks, "source_rows")
     block_indexed_rows = _payload_int(blocks, "indexed_rows")
     invariant_ready = bool(blocks["ready"])
@@ -409,11 +196,9 @@ def _exact_readiness_payload(snapshot: FtsInvariantSnapshot) -> dict[str, object
 def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
     """Return FTS readiness for health/status probes.
 
-    The default is request-safe: it proves tables/triggers exist and, when
-    the durable freshness table exists, requires each live surface to be
-    marked ready. It never scans source or FTS shadow tables. Use
-    ``exact=True`` for explicit diagnostics/repair jobs that can afford a
-    full invariant scan.
+    Readiness is always computed from the current output relation and its
+    canonical inputs.  ``exact`` is retained as a call-compatible parameter;
+    no freshness/debt observation can make the result cheaper or certify it.
     """
     if not dbf.exists():
         archive_index = _archive_index_path_for(dbf)
@@ -430,85 +215,13 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
         # not raise the status surface out of service.
         conn = open_readonly_connection(dbf, validate_schema=False)
         try:
-            if exact:
-                conn.execute("BEGIN")
-            archive_info = _archive_readiness_payload(conn, exact=exact)
+            conn.execute("BEGIN")
+            archive_info = _archive_readiness_payload(conn, exact=True)
             if archive_info is not None:
                 return archive_info
-            if exact:
-                return _exact_readiness_payload(fts_invariant_snapshot_sync(conn))
-            freshness_records = _freshness_rows(conn)
-            surfaces: dict[str, dict[str, int | bool | str | None]] = {}
-            for name, source_table, fts_table, triggers in _FTS_SURFACES:
-                source_exists = _table_exists(conn, source_table)
-                exists = _table_exists(conn, fts_table)
-                triggers_present = exists and _triggers_present(conn, triggers)
-                freshness = _freshness_record(freshness_records, name)
-                source_rows = 0 if freshness is None else _row_int(freshness.get("source_rows"))
-                indexed_rows = 0 if freshness is None else _row_int(freshness.get("indexed_rows"))
-                missing_rows = 0 if freshness is None else _row_int(freshness.get("missing_rows"))
-                excess_rows = 0 if freshness is None else _row_int(freshness.get("excess_rows"))
-                duplicate_rows = 0 if freshness is None else _row_int(freshness.get("duplicate_rows"))
-                identity_mismatch_rows = 0 if freshness is None else _row_int(freshness.get("identity_mismatch_rows"))
-                recorded_state = None if freshness is None else str(freshness.get("state"))
-                source_has_rows = (
-                    _source_has_rows(conn, source_table)
-                    if source_exists and recorded_state == "ready" and source_rows == 0 and indexed_rows == 0
-                    else False
-                )
-                freshness_ready = (
-                    True
-                    if freshness_records is None or freshness is None
-                    else freshness_ready_record_trusted(
-                        state=recorded_state,
-                        source_rows=source_rows,
-                        indexed_rows=indexed_rows,
-                        missing_rows=missing_rows,
-                        excess_rows=excess_rows,
-                        duplicate_rows=duplicate_rows,
-                        identity_mismatch_rows=identity_mismatch_rows,
-                        verification_kind=(
-                            str(freshness.get("verification_kind"))
-                            if freshness.get("verification_kind") is not None
-                            else None
-                        ),
-                        exact_checked_at=(
-                            str(freshness.get("exact_checked_at"))
-                            if freshness.get("exact_checked_at") is not None
-                            else None
-                        ),
-                        exact_generation=_row_int(freshness.get("exact_generation")),
-                        current_generation=_row_int(conn.execute("PRAGMA user_version").fetchone()[0]),
-                        source_has_rows=source_has_rows,
-                    )
-                )
-                freshness_state = recorded_state
-                if recorded_state == "ready" and not freshness_ready:
-                    freshness_state = (
-                        UNKNOWN if source_rows == 0 and indexed_rows == 0 and source_has_rows is not False else STALE
-                    )
-                ready = (exists and triggers_present and freshness_ready) if source_exists else not exists
-                surfaces[name] = {
-                    "source_exists": source_exists,
-                    "exists": exists,
-                    "source_rows": source_rows,
-                    "indexed_rows": indexed_rows,
-                    "triggers_present": triggers_present,
-                    "missing_rows": missing_rows,
-                    "excess_rows": excess_rows,
-                    "duplicate_rows": duplicate_rows,
-                    "identity_mismatch_rows": identity_mismatch_rows,
-                    "ready": ready,
-                    "exact": False,
-                    "freshness_known": freshness_records is not None,
-                    "freshness_state": freshness_state,
-                    "freshness_recorded_state": recorded_state,
-                    "freshness_trusted": freshness_ready,
-                    "freshness_detail": None if freshness is None else freshness.get("detail"),
-                }
+            return _exact_readiness_payload(fts_invariant_snapshot_sync(conn))
         finally:
-            if exact:
-                conn.rollback()
+            conn.rollback()
             conn.close()
     except sqlite3.Error as exc:
         logger.warning("fts readiness query failed for %s: %s", dbf, exc, exc_info=True)
@@ -519,25 +232,3 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
             "coverage_pct": 0.0,
             "surfaces": {},
         }
-
-    messages = surfaces["messages_fts"]
-    session_work_events = surfaces["session_work_events_fts"]
-    invariant_ready = all(bool(surface["ready"]) for surface in surfaces.values())
-    message_source_rows = _payload_int(messages, "source_rows")
-    message_indexed_rows = _payload_int(messages, "indexed_rows")
-    return {
-        "messages_ready": messages["ready"],
-        "session_work_events_ready": session_work_events["ready"],
-        "invariant_ready": invariant_ready,
-        "message_indexed_count": message_indexed_rows,
-        "message_indexable_count": message_source_rows,
-        # message_source_rows == 0 is a zero-denominator case -- report
-        # unmeasured (None) rather than deriving a fabricated 100.0/0.0 from
-        # invariant_ready, which only proves tables/triggers exist and is
-        # not evidence of coverage (polylogue-oitx).
-        "coverage_pct": (
-            round((message_indexed_rows / message_source_rows) * 100, 1) if message_source_rows > 0 else None
-        ),
-        "coverage_exact": False,
-        "surfaces": surfaces,
-    }

@@ -136,31 +136,6 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # the 3-value vocabulary) -- a copy-forward rejects nothing. CONSTRAINT_ONLY,
 # matching the v33/v36 precedent (widening/adding a CHECK over unchanged
 # values), not SEMANTIC_REPARSE.
-# polylogue-rlvj: v52 adds a table-level CHECK to fts_freshness_state --
-# state='ready' now requires missing_rows=0 AND excess_rows=0 AND
-# duplicate_rows=0 AND source_rows=indexed_rows in the same row. Surface-
-# coherence audit 2026-07-31 found a live archive reporting messages_fts
-# ready=true / missing_rows=0 while an independent count showed 12,659
-# blocks missing from the index: a targeted (session-scoped) repair's
-# correct scoped verdict was being written into the single global freshness
-# row as an unconditional READY, discarding whatever accurate missing_rows
-# an earlier exact snapshot had recorded (daemon/convergence_stages.py's
-# `_mark_message_fts_ready_after_targeted_repair`, fixed in the same change
-# to always source its row from the real archive-wide invariant, never a
-# cheap existence check). The CHECK makes the specific contradiction that
-# incident exhibited unrepresentable going forward: any writer that tries to
-# assert `ready` alongside a nonzero counter now fails at the database layer
-# instead of silently lying to every reader of the ledger. Existing rows are
-# already consistent with this shape (every writer that reaches `state=ready`
-# already zeroes/aligns these counters -- audited across every
-# `record_fts_surface_state_sync`/`_async` call site for this change), so
-# this is a pure constraint widening: CONSTRAINT_ONLY, REPLACE_TABLE on
-# fts_freshness_state, no values change and no reparse. A pre-existing
-# archive can already carry a row that violates this (the very bug being
-# fixed) -- the fast-forward executor's `_REPLACE_TABLE_SANITIZERS` entry
-# downgrades any such row to 'stale' before the copy runs rather than
-# aborting the migration.
-#
 # polylogue-jc4q: v53 changes how Claude Code identity is derived for a
 # resume/fork/usage-limit boundary carryover -- a run of records physically
 # stamped with an ANCESTOR session's sessionId even though it is not that
@@ -499,12 +474,6 @@ _TRIGRAM_BULK_GUARD_NOT_SET = (
     f"NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = '{FTS_BULK_SESSION_WRITE_GUARD}')"
 )
 
-FTS_FRESHNESS_STATE_DDL = f"""
-CREATE TABLE IF NOT EXISTS fts_freshness_state (
-    {TABLE_SPECS["fts_freshness_state"].ddl_body}
-) STRICT;
-"""
-
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
 
@@ -821,8 +790,6 @@ AFTER UPDATE ON blocks WHEN {_TRIGRAM_BULK_GUARD_NOT_SET} BEGIN
     SELECT new.rowid, new.tool_detail_text
     WHERE new.block_type = 'tool_use' AND new.tool_detail_text != ' ';
 END;
-
-{FTS_FRESHNESS_STATE_DDL}
 
 -- polylogue-2i2w: deliberately NO tool_input/output_text columns here. This
 -- relation is a join/rank/outcome index over paired tool_use/tool_result
@@ -1922,4 +1889,4 @@ GROUP BY dm.tag, dm.bucket_day, dm.source_name;
 # is incomplete" right after #2893 landed.
 INDEX_DDL = INDEX_DDL + "\n\n" + ";\n\n".join(FTS_TRIGGER_DDL) + ";\n"
 
-__all__ = ["FTS_FRESHNESS_STATE_DDL", "INDEX_DDL", "INDEX_SCHEMA_VERSION"]
+__all__ = ["INDEX_DDL", "INDEX_SCHEMA_VERSION"]

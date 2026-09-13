@@ -11,7 +11,11 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, converge
-from polylogue.operations.raw_observation_derivation import converge_raw_observations, raw_observation_frame
+from polylogue.operations.raw_observation_derivation import (
+    converge_raw_observations,
+    raw_observation_frame,
+    raw_observation_pending_roots,
+)
 from polylogue.storage.derived.raw import RawFrame, RawObservationDerivation, RawObservationReplacement
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -291,7 +295,6 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Red twin: exhausting all valid pages exceeds the invocation's read bound."""
-    from polylogue.daemon.convergence_stages import make_raw_parse_recovery_stage
     from tests.infra.sqlite_work_counter import sqlite_work_counter
 
     bootstrap_archive_root(tmp_path)
@@ -358,14 +361,18 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
         return inspect(self, frame, keys)
 
     monkeypatch.setattr(RawObservationDerivation, "inspect", counted)
-    stage = make_raw_parse_recovery_stage(tmp_path / "index.db", archive_root=tmp_path)
-    assert stage.check_many is not None
+    continuations: dict[tuple[Path, ...], tuple[str, str | None]] = {}
     for page in range(32):
         with sqlite_work_counter(step_interval=1) as work:
-            assert stage.check_many((source,)) == {source}
+            assert raw_observation_pending_roots(
+                tmp_path,
+                (source,),
+                continuations=continuations,
+                limit=128,
+            ) == {source}
         assert len(seen) == (page + 1) * 128
         assert work.metric("vm_steps", "source") < 500_000, work.summary()
-    assert stage.check_many((source,)) == set()
+    assert raw_observation_pending_roots(tmp_path, (source,), continuations=continuations, limit=128) == set()
     assert len(seen) == len(set(seen)) == 4096
     assert _snapshot(tmp_path) == before
 
@@ -388,13 +395,25 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
     # A fresh traversal must not treat its first all-valid page as ready when
     # an output obligation follows the long valid prefix.
     late = _admit(tmp_path, ("late-obligation",), path=str(source / "zz-late.json"))
-    restarted = make_raw_parse_recovery_stage(tmp_path / "index.db", archive_root=tmp_path)
-    assert restarted.check_many is not None
+    restarted_continuations: dict[tuple[Path, ...], tuple[str, str | None]] = {}
     for _ in range(33):
-        assert restarted.check_many((source,)) == {source}
+        assert raw_observation_pending_roots(
+            tmp_path,
+            (source,),
+            continuations=restarted_continuations,
+            limit=128,
+        ) == {source}
     assert seen[-1] == late
     report = converge_raw_observations(
         tmp_path, source_roots=(source / "zz-late.json",), limit=2, max_payload_bytes=64 * 1024 * 1024
     )
     assert report.done == 1 and report.failed == report.pending == 0
-    assert restarted.check_many((source,)) == set()
+    assert (
+        raw_observation_pending_roots(
+            tmp_path,
+            (source,),
+            continuations=restarted_continuations,
+            limit=128,
+        )
+        == set()
+    )

@@ -165,7 +165,7 @@ def _logical_table_digests(path: Path, *, tables: tuple[str, ...] | None = None)
 
 
 def _stable_finished_table_digests(path: Path) -> dict[str, str]:
-    """Digest archive rows, excluding FTS5 implementation and freshness bookkeeping."""
+    """Digest archive rows, excluding FTS5 implementation tables."""
     with sqlite3.connect(path) as conn:
         tables = tuple(
             str(name)
@@ -174,7 +174,6 @@ def _stable_finished_table_digests(path: Path) -> dict[str, str]:
             )
             if not str(sql).lstrip().upper().startswith("CREATE VIRTUAL TABLE")
             and not str(name).startswith(("messages_fts_", "blocks_command_trigram_"))
-            and str(name) != "fts_freshness_state"
         )
     return _logical_table_digests(path, tables=tables)
 

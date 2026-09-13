@@ -250,10 +250,10 @@ import sqlite3
 import tempfile
 from pathlib import Path
 from polylogue.schemas.generation.observation_journal import ObservationJournal
-from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
+from polylogue.storage.fts.fts_lifecycle import configure_bounded_fts_repair_connection
 with tempfile.TemporaryDirectory() as root:
     repair = sqlite3.connect(Path(root) / 'repair.db')
-    configure_bounded_repair_connection(repair)
+    configure_bounded_fts_repair_connection(repair)
     with ObservationJournal.create(root=Path(root)) as journal:
         print(
             repair.execute('PRAGMA cache_size').fetchone()[0],

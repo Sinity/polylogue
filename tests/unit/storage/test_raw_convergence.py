@@ -29,6 +29,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived.raw import RawObservationDerivation
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
@@ -226,6 +227,64 @@ def test_canonical_scope_does_not_certify_or_rewrite_outside_observations(tmp_pa
     assert _inspect(tmp_path, outside) == "missing"
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("selected",)]
+
+
+@pytest.mark.parametrize(
+    ("selected_directory", "outside_directory"),
+    (("100%", "1000"), ("Case", "case")),
+)
+def test_canonical_source_root_scope_is_literal_and_case_sensitive(
+    tmp_path: Path,
+    selected_directory: str,
+    outside_directory: str,
+) -> None:
+    """A source root selects its actual descendants, never a LIKE-expanded sibling.
+
+    Anti-vacuity: replacing the canonical source-path interval with a LIKE
+    prefix admits the ``1000`` or case-folded sibling into this scoped pass.
+    """
+    bootstrap_archive_root(tmp_path)
+    selected_root = tmp_path / selected_directory
+    selected = _admit(tmp_path, ("selected",), path=str(selected_root / "member.json"))
+    outside = _admit(tmp_path, ("outside",), path=str(tmp_path / outside_directory / "member.json"))
+
+    report = _derive(tmp_path, source_roots=(selected_root,), limit=2)
+
+    assert report.done == 1 and report.failed == report.pending == 0
+    assert _inspect(tmp_path, selected) == "valid"
+    assert _inspect(tmp_path, outside) == "missing"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [("selected",)]
+
+
+def test_canonical_authority_refusal_blocks_only_its_raw_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused source path cannot publish while an unrelated sibling converges.
+
+    Anti-vacuity: treating every attributed refusal as global leaves the
+    healthy raw pending; omitting publication authority checks materializes
+    the refused raw.
+    """
+    bootstrap_archive_root(tmp_path)
+    healthy_path = "healthy.json"
+    refused_path = "refused.json"
+    healthy = _admit(tmp_path, ("healthy",), path=healthy_path)
+    refused = _admit(tmp_path, ("refused",), path=refused_path)
+
+    def blocked_raws(_archive_root: Path, raw_ids: tuple[str, ...]) -> RawFrontierBlockedPaths:
+        if refused in raw_ids:
+            return RawFrontierBlockedPaths(frozenset({refused_path}), None)
+        return RawFrontierBlockedPaths(frozenset(), None)
+
+    monkeypatch.setattr("polylogue.storage.raw_retention.raw_frontier_blocked_raw_ids", blocked_raws)
+    report = _derive(tmp_path, limit=2)
+
+    assert report.done == 1 and report.pending == 1 and report.failed == 0
+    assert _inspect(tmp_path, healthy) == "valid"
+    assert _inspect(tmp_path, refused) == "missing"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("healthy",)]
 
 
 def test_canonical_component_budget_fails_only_the_oversized_component(tmp_path: Path) -> None:

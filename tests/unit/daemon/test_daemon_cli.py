@@ -396,83 +396,6 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     assert debt_after == []
 
 
-@pytest.mark.contract
-@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
-def test_drain_convergence_debt_retries_global_messages_fts_surface(
-    tmp_path: Path,
-    frozen_clock: FrozenClock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    db = tmp_path / "index.db"
-    cursor = CursorStore(db)
-    cursor.record_convergence_debt(
-        stage="fts",
-        subject_type="fts_surface",
-        subject_id="messages_fts",
-        error="startup found stale messages_fts freshness ledger",
-    )
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        conn.execute(
-            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
-        )
-        conn.commit()
-    repairs: list[tuple[Path, tuple[str, ...]]] = []
-
-    def fake_owner_run(self: Any, *, reason: object, surfaces: tuple[str, ...]) -> object:
-        repairs.append((self._db_path, surfaces))
-        return SimpleNamespace(ready=True, deferred=False)
-
-    monkeypatch.setattr(
-        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
-        fake_owner_run,
-    )
-
-    retried = daemon_cli._drain_convergence_debt_once(db)
-    debt_after = cursor.list_convergence_debt()
-
-    assert retried == 1
-    assert repairs == [(db, ("messages_fts",))]
-    assert debt_after == []
-
-
-@pytest.mark.contract
-@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
-def test_drain_convergence_debt_retries_optional_fts_surface(
-    tmp_path: Path,
-    frozen_clock: FrozenClock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    db = tmp_path / "index.db"
-    cursor = CursorStore(db)
-    cursor.record_convergence_debt(
-        stage="fts",
-        subject_type="fts_surface",
-        subject_id="session_work_events_fts",
-        error="optional FTS startup repair failed",
-    )
-    repairs: list[tuple[Path, tuple[str, ...]]] = []
-
-    def fake_owner_run(self: Any, *, reason: object, surfaces: tuple[str, ...]) -> object:
-        repairs.append((self._db_path, surfaces))
-        return SimpleNamespace(ready=True, deferred=False)
-
-    monkeypatch.setattr(
-        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
-        fake_owner_run,
-    )
-
-    retried = daemon_cli._drain_convergence_debt_once(db)
-    debt_after = cursor.list_convergence_debt()
-
-    assert retried == 1
-    assert repairs == [(db, ("session_work_events_fts",))]
-    assert debt_after == []
-
-
 def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -482,16 +405,12 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
-    async def noop_embedding_debt(_db: Path) -> None:
-        return None
-
     with (
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
             return_value=SimpleNamespace(run_sync=fake_run_sync),
         ),
-        patch.object(daemon_cli, "_converge_embedding_debt_off_writer", noop_embedding_debt),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
@@ -882,18 +801,21 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
     db = tmp_path / "index.db"
     db.touch()
     actors: list[str] = []
+    fts_scopes: list[object] = []
     profile_scopes: list[tuple[str, ...] | None] = []
     drained = asyncio.Event()
 
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         actors.append(_actor)
-        drained.set()
-        if _actor == "maintenance.embedding_debt_scan":
-            return (), ()
         return 0
 
     async def fake_session_profiles(scope: tuple[str, ...] | None) -> object:
         profile_scopes.append(scope)
+        return SimpleNamespace()
+
+    async def fake_fts_converge() -> object:
+        fts_scopes.append(None)
+        drained.set()
         return SimpleNamespace()
 
     async def exercise() -> None:
@@ -908,6 +830,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
         task = asyncio.create_task(
             daemon_cli._periodic_convergence_check(
                 (),
+                fts_owner=SimpleNamespace(converge=fake_fts_converge),
                 catch_up_complete=catch_up_complete,
                 session_profile_callback=fake_session_profiles,
             )
@@ -923,11 +846,8 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
 
     asyncio.run(exercise())
 
-    assert actors == [
-        "maintenance.embedding_debt_scan",
-        "maintenance.convergence_debt",
-        "maintenance.fts_convergence",
-    ]
+    assert actors == ["maintenance.convergence_debt"]
+    assert fts_scopes == [None]
     assert profile_scopes == [None]
 
 
@@ -940,16 +860,12 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise RuntimeError("unexpected convergence retry failure")
 
-    async def noop_embedding_debt(_db: Path) -> None:
-        return None
-
     with (
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
             return_value=SimpleNamespace(run_sync=fake_run_sync),
         ),
-        patch.object(daemon_cli, "_converge_embedding_debt_off_writer", noop_embedding_debt),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
@@ -2643,9 +2559,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         def stop(self) -> None:
             events.append("stop")
 
-    def fake_fts_owner_run(self: object, *, reason: object, surfaces: tuple[str, ...] = ()) -> object:
+    async def fake_fts_owner_run(self: object, *args: object, **kwargs: object) -> object:
+        del self, args, kwargs
         events.append("fts")
-        return SimpleNamespace(ready=True, exact=True, repaired_surfaces=0)
+        return SimpleNamespace(failed=0)
 
     def fake_embedding_lifecycle_startup(_archive_root_path: Path) -> Path:
         events.append("embedding-lifecycle")
@@ -2738,9 +2655,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         stack.enter_context(
             patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", fake_embedding_lifecycle_startup)
         )
-        stack.enter_context(
-            patch("polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync", fake_fts_owner_run)
-        )
+        stack.enter_context(patch("polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge", fake_fts_owner_run))
         stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", fake_lineage_startup))
         stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", fake_reconcile_blob_publications))
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
@@ -2991,7 +2906,6 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
                 patch.object(session_profile_composition, "compose_session_profile_callback", compose_with_oracle)
             )
             stack.enter_context(patch.object(daemon_cli, "_retry_convergence_debt_once", noop_periodic_work))
-            stack.enter_context(patch.object(daemon_cli, "_run_periodic_fts_convergence_once", noop_periodic_work))
             stack.enter_context(patch.object(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 0.05))
             for attribute in (
                 "_periodic_lifecycle_heartbeat",
@@ -3460,6 +3374,9 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     async def noop() -> None:
         return None
 
+    async def ready_fts(*_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(failed=0)
+
     def noop_sync(*_args: object) -> None:
         return None
 
@@ -3517,7 +3434,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     patches = (
         patch.object(daemon_cli, "make_server", return_value=browser_server),
         patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", noop_sync),
-        patch.object(daemon_cli, "_run_startup_fts_readiness", lambda _coordinator: noop()),
+        patch("polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge", ready_fts),
         patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", noop_sync),
         patch.object(daemon_cli, "_reconcile_blob_publications", noop),
         patch.object(daemon_cli, "_configure_fts_automerge", noop),
@@ -4148,9 +4065,6 @@ def test_raw_owner_cancellation_settles_publication_and_fts(
             with sqlite3.connect(tmp_path / "index.db") as conn:
                 assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
                 assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] > 0
-                assert conn.execute(
-                    "SELECT state FROM fts_freshness_state WHERE surface = 'messages_fts'"
-                ).fetchone() == ("ready",)
         finally:
             release.set()
             if not task.done():
@@ -4509,6 +4423,9 @@ def _daemon_startup_stubs(
     async def _noop_raw_census_recovery(*_args: object, **_kwargs: object) -> None:
         return None
 
+    async def _noop_fts(*_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(failed=0)
+
     stack.enter_context(patch("polylogue.paths.archive_root", return_value=tmp_path))
     stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
     stack.enter_context(
@@ -4517,8 +4434,8 @@ def _daemon_startup_stubs(
     stack.enter_context(patch.object(daemon_cli, "_run_startup_raw_census_recovery", _noop_raw_census_recovery))
     stack.enter_context(
         patch(
-            "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
-            lambda *a, **k: SimpleNamespace(ready=True, exact=True, repaired_surfaces=0),
+            "polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge",
+            _noop_fts,
         )
     )
     stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", lambda: 0))

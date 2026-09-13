@@ -2,9 +2,7 @@
 
 Exercises ``run_secret_scan_sweep_once_sync`` -- the sync body the periodic
 daemon loop (``periodic_secret_scan_sweep``) schedules on a quiet cadence --
-directly against a real archive fixture. Mirrors
-``tests/unit/daemon/test_fts_orphan_audit.py``'s shape for the sibling
-"missing feeder" sweep.
+directly against a real archive fixture.
 """
 
 from __future__ import annotations

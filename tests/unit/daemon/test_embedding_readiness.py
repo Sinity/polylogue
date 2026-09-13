@@ -1,18 +1,14 @@
 """Unit coverage for embedding readiness branches (issue #828).
 
-These tests pin the readiness/reconciliation/cost-cap behaviour added by the
-embedding substrate work so the branches called out in the issue reopen
-comment have explicit, fast unit coverage:
+These tests pin readiness and cost-cap behaviour from the embedding substrate
+so the relevant branches have explicit, fast unit coverage:
 
 1. configured readiness branch (api key present, dim matches stored)
 2. unconfigured readiness branch (no api key)
 3. embedding failure branch (status reports failures)
-4. dimension-mismatch / model-mismatch triggers ``needs_reindex``
+4. stale or missing vector evidence remains pending
 5. cost-cap exhaustion halts further embedding work
 
-The production code is exercised directly: ``_reconcile_embedding_config_change``
-operate on real (in-memory) SQLite handles
-plus a mocked ``EmbedSessionOutcome`` stream for the embed loop, and
 ``embedding_readiness_info`` is exercised through the tiny ``cfg``/db seam.
 """
 
@@ -21,20 +17,13 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-import polylogue.daemon.convergence_stages as stages
 from polylogue.config import PolylogueConfig
-from polylogue.daemon.convergence_stages import (
-    _reconcile_embedding_config_change,
-)
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
-from polylogue.storage.search_providers.sqlite_vec_runtime import (
-    _reconcile_vec0_dimension,
-    _vec0_table_dimension,
-)
 
 # ── helpers ────────────────────────────────────────────────────────
 
@@ -72,25 +61,7 @@ def _seed_embedding_tables(
     dimension: int,
     session_ids: tuple[str, ...] = (),
 ) -> None:
-    """Create message_embeddings_meta + embedding_status with seeded rows.
-
-    v4: message_embeddings_meta is keyed by ``vector_derivation_hash`` and
-    carries ``recipe_hash`` -- ``_reconcile_embedding_config_change``'s
-    model-change detection (``meta_recipe_changed``) reads that column
-    directly (a bare model-name mismatch alone deliberately does not trigger
-    reindex any more; the recipe hash, which embeds the model name, is the
-    monotonic signal). Seed it with the *stored* recipe's hash (computed from
-    ``model``/``dimension`` here) so a caller's subsequent "configure a
-    different model" step produces a genuine, detectable mismatch.
-
-    A model-only (non-dimension) config change only actually marks
-    ``embedding_status.needs_reindex`` for sessions whose
-    ``embedding_derivation_state`` generation advances (the bulk-mark path is
-    reserved for dimension changes, which invalidate every stored vector
-    archive-wide) -- so each seeded session also gets a derivation_state row
-    pinned to the *stored* recipe, matching what a genuinely-embedded session
-    would carry.
-    """
+    """Create legacy attempt telemetry for the failure-count read branch."""
     from polylogue.storage.embeddings.identity import EmbeddingRecipe
 
     stored_recipe = EmbeddingRecipe.current(model=model, dimensions=dimension)
@@ -161,23 +132,6 @@ def _seed_embedding_tables(
     conn.commit()
 
 
-def _create_vec0_table(conn: sqlite3.Connection, dimension: int) -> None:
-    """Simulate the vec0 virtual table by faking its DDL signature.
-
-    The real table requires the sqlite-vec extension. ``_vec0_table_dimension``
-    parses ``float[N]`` out of the DDL string returned by ``sqlite_master.sql``
-    and accesses the row by column name, so we need ``sqlite3.Row`` factory and
-    a column literally named ``embedding_float_NNNN`` so the regex matches the
-    stored DDL text.
-    """
-    conn.row_factory = sqlite3.Row
-    # The substring ``float[N]`` must appear verbatim in the stored DDL. SQLite
-    # only allows it inside identifiers if quoted. Quoted column name keeps the
-    # exact text inside ``sqlite_master.sql``.
-    conn.execute(f'CREATE TABLE message_embeddings (message_id TEXT, "embedding float[{dimension}]" TEXT)')
-    conn.commit()
-
-
 # v4 (polylogue-q88p): distinct, >=20-char prose per message so each
 # message's vector_derivation_hash -- computed from exactly this text -- is
 # real and unique, matching what production actually sends to the embedder.
@@ -188,7 +142,7 @@ _READINESS_ERROR_TEXT = "authored prose for the failed readiness session message
 
 
 def _seed_archive_embedding_readiness_db(path: Path) -> None:
-    """Build a real v4-shaped index.db + embeddings.db pair for readiness reads.
+    """Build a real index.db + embeddings.db pair for readiness reads.
 
     ``codex-session:complete`` is embedded through the real
     begin_embedding_attempt/complete_embedding_attempt_success write path;
@@ -240,20 +194,20 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
             """
         )
         conn.execute(
-            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'01')",
-            ("codex-session:complete:m1", "codex-session:complete", _READINESS_COMPLETE_TEXT),
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, ?)",
+            ("codex-session:complete:m1", "codex-session:complete", _READINESS_COMPLETE_TEXT, b"\x01" * 32),
         )
         conn.execute(
-            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'02')",
-            ("codex-session:pending:m1", "codex-session:pending", _READINESS_PENDING_TEXT_1),
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, ?)",
+            ("codex-session:pending:m1", "codex-session:pending", _READINESS_PENDING_TEXT_1, b"\x02" * 32),
         )
         conn.execute(
-            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'03')",
-            ("codex-session:pending:m2", "codex-session:pending", _READINESS_PENDING_TEXT_2),
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, ?)",
+            ("codex-session:pending:m2", "codex-session:pending", _READINESS_PENDING_TEXT_2, b"\x03" * 32),
         )
         conn.execute(
-            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'04')",
-            ("codex-session:error:m1", "codex-session:error", _READINESS_ERROR_TEXT),
+            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, ?)",
+            ("codex-session:error:m1", "codex-session:error", _READINESS_ERROR_TEXT, b"\x04" * 32),
         )
         conn.commit()
 
@@ -281,6 +235,7 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
                     message_id="codex-session:complete:m1",
                     session_id="codex-session:complete",
                     origin="codex-session",
+                    message_content_hash=b"\x01" * 32,
                     embedding=[0.01] * EMBEDDING_DIMENSION,
                     model="voyage-4",
                     embedded_at_ms=1_767_225_700_000,
@@ -542,119 +497,3 @@ def test_readiness_query_failure_logs_instead_of_looking_like_a_clean_archive(
     assert info["embedding_retrieval_ready"] is False
     assert "embedding readiness query failed" in caplog.text
     assert "database is locked" in caplog.text
-
-
-def test_reconcile_embedding_dimension_mismatch_marks_reindex_and_drops_vec0(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Dimension change marks every embedding_status row and drops vec0."""
-    conn = sqlite3.connect(":memory:")
-    try:
-        _seed_embedding_tables(
-            conn,
-            model="voyage-4",
-            dimension=1024,
-            session_ids=("conv-a", "conv-b"),
-        )
-        _create_vec0_table(conn, dimension=1024)
-        assert _vec0_table_dimension(conn) == 1024
-
-        cfg = _config(
-            embedding_enabled=True,
-            voyage_api_key="vk-live",
-            embedding_model="voyage-4",
-            embedding_dimension=512,  # changed
-        )
-        monkeypatch.setattr(stages, "load_polylogue_config", lambda: cfg)
-
-        _reconcile_embedding_config_change(conn)
-
-        rows = conn.execute(
-            "SELECT session_id, needs_reindex, error_message FROM embedding_status ORDER BY session_id"
-        ).fetchall()
-        assert [(r[0], r[1], r[2]) for r in rows] == [("conv-a", 1, None), ("conv-b", 1, None)]
-        # vec0 dropped because dimension differed.
-        assert _vec0_table_dimension(conn) is None
-    finally:
-        conn.close()
-
-
-def test_reconcile_embedding_model_mismatch_marks_reindex_without_dropping_vec0(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Model change triggers reindex but leaves vec0 table intact when dim matches."""
-    conn = sqlite3.connect(":memory:")
-    try:
-        _seed_embedding_tables(
-            conn,
-            model="voyage-3",
-            dimension=1024,
-            session_ids=("conv-a",),
-        )
-        _create_vec0_table(conn, dimension=1024)
-
-        cfg = _config(
-            embedding_enabled=True,
-            voyage_api_key="vk-live",
-            embedding_model="voyage-4",  # changed
-            embedding_dimension=1024,
-        )
-        monkeypatch.setattr(stages, "load_polylogue_config", lambda: cfg)
-
-        _reconcile_embedding_config_change(conn)
-
-        (needs_reindex,) = conn.execute(
-            "SELECT needs_reindex FROM embedding_status WHERE session_id='conv-a'"
-        ).fetchone()
-        assert needs_reindex == 1
-        # vec0 untouched — dimension still matches configured.
-        assert _vec0_table_dimension(conn) == 1024
-    finally:
-        conn.close()
-
-
-def test_reconcile_embedding_no_change_keeps_status_clean(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Matching model+dim leaves ``needs_reindex`` unchanged (idempotent)."""
-    conn = sqlite3.connect(":memory:")
-    try:
-        _seed_embedding_tables(
-            conn,
-            model="voyage-4",
-            dimension=1024,
-            session_ids=("conv-a",),
-        )
-        cfg = _config(
-            embedding_enabled=True,
-            voyage_api_key="vk-live",
-            embedding_model="voyage-4",
-            embedding_dimension=1024,
-        )
-        monkeypatch.setattr(stages, "load_polylogue_config", lambda: cfg)
-
-        _reconcile_embedding_config_change(conn)
-
-        (needs_reindex,) = conn.execute(
-            "SELECT needs_reindex FROM embedding_status WHERE session_id='conv-a'"
-        ).fetchone()
-        assert needs_reindex == 0
-    finally:
-        conn.close()
-
-
-def test_reconcile_vec0_dimension_drop_helper() -> None:
-    """``_reconcile_vec0_dimension`` drops the table only when configured differs from stored."""
-    conn = sqlite3.connect(":memory:")
-    try:
-        _create_vec0_table(conn, dimension=1024)
-        _reconcile_vec0_dimension(conn, configured_dimension=1024)
-        assert _vec0_table_dimension(conn) == 1024  # match → kept
-
-        _reconcile_vec0_dimension(conn, configured_dimension=2048)
-        assert _vec0_table_dimension(conn) is None  # mismatch → dropped
-    finally:
-        conn.close()
-
-
-# ── 5. cost-cap exhaustion ─────────────────────────────────────────

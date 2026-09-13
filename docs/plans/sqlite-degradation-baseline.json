@@ -33,8 +33,6 @@
     "polylogue/daemon/embedding_readiness.py": 1,
     "polylogue/daemon/events.py": 1,
     "polylogue/daemon/fts_automerge.py": 1,
-    "polylogue/daemon/fts_identity_convergence.py": 1,
-    "polylogue/daemon/fts_orphan_audit.py": 2,
     "polylogue/daemon/fts_status.py": 3,
     "polylogue/daemon/health.py": 1,
     "polylogue/daemon/http.py": 11,

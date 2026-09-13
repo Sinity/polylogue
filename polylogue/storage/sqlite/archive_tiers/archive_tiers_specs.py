@@ -589,49 +589,6 @@ BLOCKS_SPEC = _make_table_spec(
 # and virtual tables remain in index.py because they are not row schemas.
 
 
-FTS_FRESHNESS_STATE_SPEC = _make_table_spec(
-    "fts_freshness_state",
-    (
-        _raw_column("surface", """surface TEXT PRIMARY KEY"""),
-        _raw_column("state", f"""state TEXT NOT NULL CHECK ({literal_check("state", "ready", "stale", "unknown")})"""),
-        _raw_column("checked_at", """checked_at TEXT NOT NULL"""),
-        _raw_column("source_rows", """source_rows INTEGER NOT NULL DEFAULT 0"""),
-        _raw_column("indexed_rows", """indexed_rows INTEGER NOT NULL DEFAULT 0"""),
-        _raw_column("missing_rows", """missing_rows INTEGER NOT NULL DEFAULT 0"""),
-        _raw_column("excess_rows", """excess_rows INTEGER NOT NULL DEFAULT 0"""),
-        _raw_column("duplicate_rows", """duplicate_rows INTEGER NOT NULL DEFAULT 0"""),
-        _raw_column("identity_mismatch_rows", """identity_mismatch_rows INTEGER NOT NULL DEFAULT 0"""),
-        _raw_column(
-            "verification_kind",
-            f"""verification_kind TEXT NOT NULL DEFAULT 'unknown' CHECK ({literal_check("verification_kind", "unknown", "bounded", "exact")})""",
-        ),
-        _raw_column("exact_checked_at", """exact_checked_at TEXT"""),
-        _raw_column("exact_generation", """exact_generation INTEGER"""),
-        _raw_column("detail", """detail TEXT"""),
-    ),
-    table_constraints=(
-        """-- polylogue-rlvj (v52): a 'ready' verdict must be backed by an exact
-    -- count that actually balances -- a scoped/targeted repair's correct
-    -- answer to a narrower question must not be written here as a global
-    -- 'ready'. See INDEX_SCHEMA_VERSION's v52 comment above for the live
-    -- incident (messages_fts reported ready/missing_rows=0 while 12,659
-    -- blocks were unindexed).
-    CHECK (
-        state != 'ready'
-        OR (
-            missing_rows = 0
-            AND excess_rows = 0
-            AND duplicate_rows = 0
-            AND identity_mismatch_rows = 0
-            AND source_rows = indexed_rows
-            AND verification_kind = 'exact'
-            AND exact_checked_at IS NOT NULL
-            AND exact_generation IS NOT NULL
-        )
-    )""",
-    ),
-)
-
 QUERY_UNIT_FRAME_STATE_SPEC = _make_table_spec(
     "query_unit_frame_state",
     (
@@ -1966,7 +1923,6 @@ WORK_EVIDENCE_EDGES_SPEC = _make_table_spec(
 )
 
 INDEX_TABLE_SPECS = {
-    "fts_freshness_state": FTS_FRESHNESS_STATE_SPEC,
     "query_unit_frame_state": QUERY_UNIT_FRAME_STATE_SPEC,
     "raw_revision_applications": RAW_REVISION_APPLICATIONS_SPEC,
     "raw_revision_heads": RAW_REVISION_HEADS_SPEC,

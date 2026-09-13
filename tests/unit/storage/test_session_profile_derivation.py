@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.derived.session.derivation import (
+    SESSION_PROFILE_DOMAIN,
+    SESSION_PROFILE_RECIPE_VERSION,
     excess_session_profiles,
     inspect_session_profiles,
     publish_session_profile,
@@ -27,6 +29,11 @@ from polylogue.storage.derived.session.derivation import (
 from polylogue.storage.derived.session.input_binding import (
     SESSION_INPUT_PROJECTION_COLUMNS,
     session_input_bindings,
+)
+from polylogue.storage.derived.session.summary import (
+    SESSION_SUMMARY_DOMAIN,
+    SESSION_SUMMARY_RECIPE_VERSION,
+    SessionSummaryDerivation,
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -292,7 +299,14 @@ def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
     from polylogue.storage.derived.session.derivation import SessionProfileDerivation
 
     index_db, session_id = archive
-    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
+    frame = DerivationFrame(
+        archive_root=str(index_db.parent),
+        source_revision="r1",
+        recipe_versions={
+            SESSION_SUMMARY_DOMAIN: SESSION_SUMMARY_RECIPE_VERSION,
+            SESSION_PROFILE_DOMAIN: SESSION_PROFILE_RECIPE_VERSION,
+        },
+    )
 
     adapter = SessionProfileDerivation(
         lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
@@ -300,7 +314,12 @@ def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
     )
-    registry = DerivationRegistry([adapter])
+    summary = SessionSummaryDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        session_scope=lambda _frame: [session_id],
+    )
+    registry = DerivationRegistry([summary, adapter])
 
     first = converge(registry, frame)
     assert first.done == 1, first.outcomes
@@ -309,7 +328,7 @@ def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
     assert converge(registry, frame).wrote_nothing
 
     _mutate(index_db, session_id, "role", "'assistant'")
-    assert converge(registry, frame).done == 1
+    assert converge(registry, frame).done == 2
     assert _status(index_db, session_id) == "valid"
 
 
@@ -332,7 +351,14 @@ def test_prepared_partition_refuses_a_value_binding_that_moved_before_publish(
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
     )
-    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
+    frame = DerivationFrame(
+        archive_root=str(index_db.parent),
+        source_revision="r1",
+        recipe_versions={
+            SESSION_SUMMARY_DOMAIN: SESSION_SUMMARY_RECIPE_VERSION,
+            SESSION_PROFILE_DOMAIN: SESSION_PROFILE_RECIPE_VERSION,
+        },
+    )
     prepared = adapter.compute(frame, session_id)
 
     _mutate(index_db, session_id, "word_count", "word_count + 1")
@@ -540,7 +566,12 @@ def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path,
         session_scope=lambda _frame: [session_id],
         quiet_keys=lambda _frame: frozenset({session_id}),
     )
-    report = converge(DerivationRegistry([adapter]), frame)
+    summary = SessionSummaryDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        session_scope=lambda _frame: [session_id],
+    )
+    report = converge(DerivationRegistry([summary, adapter]), frame)
 
     assert report.done == 0
     assert report.by_outcome(Outcome.PENDING)[0].reason is PendingReason.QUIET

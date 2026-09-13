@@ -67,6 +67,7 @@ class ArchiveEmbeddingWrite:
     model: str
     embedded_at_ms: int
     vector_derivation_hash: bytes
+    message_content_hash: bytes | None = None
     recipe_hash: bytes | None = None
     output_contract_hash: bytes | None = None
     derivation_key: bytes | None = None
@@ -309,6 +310,8 @@ def _prepared_write(write: ArchiveEmbeddingWrite) -> ArchiveEmbeddingWrite:
         raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
     if len(write.vector_derivation_hash) != 32:
         raise ValueError("vector_derivation_hash must be a SHA-256 value")
+    if write.message_content_hash is not None and len(write.message_content_hash) != 32:
+        raise ValueError("message_content_hash must be a SHA-256 value")
     recipe = (
         write.request_spec.recipe
         if write.request_spec is not None
@@ -337,6 +340,7 @@ def _prepared_write(write: ArchiveEmbeddingWrite) -> ArchiveEmbeddingWrite:
         model=write.model,
         embedded_at_ms=write.embedded_at_ms,
         vector_derivation_hash=write.vector_derivation_hash,
+        message_content_hash=write.message_content_hash,
         recipe_hash=recipe_hash,
         output_contract_hash=output_contract_hash,
         derivation_key=derivation_key,
@@ -392,15 +396,23 @@ def _write_message_embeddings(conn: sqlite3.Connection, writes: Sequence[Archive
         conn.execute(
             """
             INSERT INTO message_embedding_refs (
-                message_id, session_id, origin, vector_derivation_hash, embedded_at_ms
-            ) VALUES (?, ?, ?, ?, ?)
+                message_id, session_id, origin, message_content_hash, vector_derivation_hash, embedded_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 origin = excluded.origin,
+                message_content_hash = excluded.message_content_hash,
                 vector_derivation_hash = excluded.vector_derivation_hash,
                 embedded_at_ms = excluded.embedded_at_ms
             """,
-            (write.message_id, write.session_id, origin_value, write.vector_derivation_hash, write.embedded_at_ms),
+            (
+                write.message_id,
+                write.session_id,
+                origin_value,
+                write.message_content_hash,
+                write.vector_derivation_hash,
+                write.embedded_at_ms,
+            ),
         )
 
 
@@ -417,6 +429,37 @@ def upsert_message_embeddings(
 
     with conn:
         _write_message_embeddings(conn, writes)
+
+
+def replace_message_embedding_derivation(
+    conn: sqlite3.Connection,
+    write: ArchiveEmbeddingWrite,
+) -> None:
+    """Atomically replace one message ref and certify its current recipe.
+
+    A vector address is intentionally reusable for an identical provider
+    request.  The message derivation's validity also includes the complete
+    recipe and output contract, so a provider-computed replacement updates the
+    colocated metadata in the same transaction as its message reference.
+    """
+
+    prepared = _prepared_write(write)
+    with conn:
+        _write_message_embeddings(conn, (prepared,))
+        conn.execute(
+            """
+            UPDATE message_embeddings_meta
+            SET recipe_hash = ?, output_contract_hash = ?, model = ?, dimension = ?
+            WHERE vector_derivation_hash = ?
+            """,
+            (
+                prepared.recipe_hash,
+                prepared.output_contract_hash,
+                prepared.model,
+                EMBEDDING_DIMENSION,
+                prepared.vector_derivation_hash,
+            ),
+        )
 
 
 def complete_embedding_attempt_success(

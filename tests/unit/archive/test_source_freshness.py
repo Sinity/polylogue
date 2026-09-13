@@ -131,12 +131,30 @@ def _create_schema(root: Path) -> None:
             );
             CREATE INDEX messages_session_id_idx ON messages(session_id);
             CREATE TABLE blocks (
+                block_id TEXT,
                 message_id TEXT,
-                search_text TEXT
+                session_id TEXT,
+                block_type TEXT,
+                search_text TEXT,
+                content_hash BLOB
             );
             CREATE INDEX blocks_message_id_idx ON blocks(message_id);
             CREATE VIRTUAL TABLE messages_fts
-                USING fts5(search_text, content='');
+                USING fts5(
+                    block_id UNINDEXED,
+                    message_id UNINDEXED,
+                    session_id UNINDEXED,
+                    block_type UNINDEXED,
+                    text,
+                    content='',
+                    contentless_delete=1
+                );
+            CREATE TABLE messages_fts_identity (
+                rowid INTEGER PRIMARY KEY,
+                block_id TEXT NOT NULL,
+                source_hash BLOB,
+                recipe_id TEXT NOT NULL
+            );
             CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN
                 SELECT 1;
             END;
@@ -146,16 +164,6 @@ def _create_schema(root: Path) -> None:
             CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN
                 SELECT 1;
             END;
-            CREATE TABLE fts_freshness_state (
-                surface TEXT PRIMARY KEY,
-                state TEXT,
-                checked_at TEXT,
-                source_rows INTEGER,
-                indexed_rows INTEGER,
-                missing_rows INTEGER,
-                excess_rows INTEGER,
-                duplicate_rows INTEGER
-            );
             """
         )
 
@@ -256,16 +264,18 @@ def _seed_searchable(
         )
         conn.execute("INSERT INTO messages VALUES (?, ?)", ("message-1", "session-1"))
         conn.execute(
-            "INSERT INTO blocks(rowid, message_id, search_text) VALUES (?, ?, ?)",
-            (1, "message-1", "searchable fixture text"),
+            "INSERT INTO blocks(rowid, block_id, message_id, session_id, block_type, search_text, content_hash) "
+            "VALUES (?, ?, ?, ?, 'text', ?, ?)",
+            (1, "block-1", "message-1", "session-1", "searchable fixture text", b"a" * 32),
         )
         conn.execute(
-            "INSERT INTO messages_fts(rowid, search_text) VALUES (?, ?)",
-            (1, "searchable fixture text"),
+            "INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text) "
+            "VALUES (?, ?, ?, ?, 'text', ?)",
+            (1, "block-1", "message-1", "session-1", "searchable fixture text"),
         )
         conn.execute(
-            "INSERT INTO fts_freshness_state VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("messages_fts", "ready", _NOW.isoformat(), 1, 1, 0, 0, 0),
+            "INSERT INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id) VALUES (?, ?, ?, ?)",
+            (1, "block-1", b"a" * 32, "messages_fts.v1:unicode61-remove_diacritics2+pl_fold"),
         )
 
 
@@ -288,19 +298,20 @@ def _seed_stage(root: Path, source: Path, stage: str) -> None:
         conn.execute("INSERT INTO sessions VALUES (?, ?, ?)", ("session-stage", "raw-stage", 4_000))
         conn.execute("INSERT INTO messages VALUES (?, ?)", ("message-stage", "session-stage"))
         conn.execute(
-            "INSERT INTO blocks(rowid, message_id, search_text) VALUES (?, ?, ?)",
-            (2, "message-stage", "stage fixture text"),
+            "INSERT INTO blocks(rowid, block_id, message_id, session_id, block_type, search_text, content_hash) "
+            "VALUES (?, ?, ?, ?, 'text', ?, ?)",
+            (2, "block-stage", "message-stage", "session-stage", "stage fixture text", b"s" * 32),
         )
-        state = "stale" if stage == "indexed-unconverged" else "ready"
         if stage == "searchable":
             conn.execute(
-                "INSERT INTO messages_fts(rowid, search_text) VALUES (?, ?)",
-                (2, "stage fixture text"),
+                "INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text) "
+                "VALUES (?, ?, ?, ?, 'text', ?)",
+                (2, "block-stage", "message-stage", "session-stage", "stage fixture text"),
             )
-        conn.execute(
-            "INSERT INTO fts_freshness_state VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("messages_fts", state, _NOW.isoformat(), 1, int(stage == "searchable"), 0, 0, 0),
-        )
+            conn.execute(
+                "INSERT INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id) VALUES (?, ?, ?, ?)",
+                (2, "block-stage", b"s" * 32, "messages_fts.v1:unicode61-remove_diacritics2+pl_fold"),
+            )
 
 
 @pytest.mark.parametrize(
@@ -665,38 +676,21 @@ def test_healthy_cursor_does_not_replay_stale_attempt_reason(tmp_path: Path) -> 
     assert projection.retry.reason_source is None
 
 
-def test_unindexed_fts_freshness_ledger_is_rejected_not_scanned(tmp_path: Path) -> None:
+def test_source_freshness_rejects_an_exact_source_identity_substitution(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     _create_schema(root)
     source = _source(root, size=64)
     _seed_cursor(root, source, observed_size=64, offset=64)
     _seed_searchable(root, source)
     with sqlite3.connect(root / "index.db") as conn:
-        conn.executescript(
-            """
-            DROP TABLE fts_freshness_state;
-            CREATE TABLE fts_freshness_state (
-                surface TEXT,
-                state TEXT,
-                checked_at TEXT,
-                source_rows INTEGER,
-                indexed_rows INTEGER,
-                missing_rows INTEGER,
-                excess_rows INTEGER,
-                duplicate_rows INTEGER
-            );
-            """
-        )
         conn.execute(
-            "INSERT INTO fts_freshness_state VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("messages_fts", "ready", _NOW.isoformat(), 1, 1, 0, 0, 0),
+            "UPDATE messages_fts_identity SET block_id = 'wrong:block' WHERE rowid = 1",
         )
 
     projection = project_named_source_freshness(root, source, now=_NOW)
 
     assert projection.stage is NamedSourceStage.INDEXED_UNCONVERGED
     assert projection.fts.converged is False
-    assert any("fts-freshness-state-by-surface" in item for item in projection.receipt.unsafe_scan_rejections)
 
 
 def test_insight_debt_keeps_target_type_namespaces_distinct(tmp_path: Path) -> None:

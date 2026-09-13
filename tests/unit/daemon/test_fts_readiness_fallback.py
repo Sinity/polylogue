@@ -1,79 +1,17 @@
-"""FTS readiness reports durable freshness evidence without a new scan.
-
-Status, health, and metrics must treat bounded or legacy evidence as stale.
-They may calculate a read-only fallback for callers that explicitly request an
-exact answer, but ordinary status reads do not publish or trigger a new exact
-invariant snapshot.
-"""
+"""FTS readiness reports the current authoritative input/output relation."""
 
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.fts.freshness import (
-    record_fts_invariant_snapshot_sync,
-    record_fts_surface_stale_preserving_counts_sync,
-    record_fts_surface_state_sync,
-)
-from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-
-
-def _populated_index(db: Path) -> None:
-    initialize_archive_database(db, ArchiveTier.INDEX)
-    conn = sqlite3.connect(db)
-    try:
-        session = ParsedSession(
-            source_name=Provider.CLAUDE_CODE,
-            provider_session_id="fts-cov-1",
-            title="coverage probe",
-            messages=[
-                ParsedMessage(
-                    provider_message_id="u1",
-                    role=Role.USER,
-                    text="searchable content here",
-                    position=0,
-                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="searchable content here")],
-                ),
-            ],
-        )
-        write_parsed_session_to_archive(conn, session)
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def test_status_remeasures_nonexact_evidence_before_refusing_search(
-    tmp_path: Path,
-) -> None:
-    db = tmp_path / "index.db"
-    _populated_index(db)
-
-    # A stale observation is not authority to refuse the whole surface.
-    conn = sqlite3.connect(db)
-    try:
-        record_fts_surface_state_sync(conn, surface="messages_fts", state="stale", source_rows=0, indexed_rows=0)
-        conn.commit()
-    finally:
-        conn.close()
-
-    fts = fts_readiness_info(db, exact=False)
-
-    assert fts["messages_ready"] is True
-    assert fts["coverage_exact"] is False
-    indexable = int(cast(int, fts["message_indexable_count"]))
-    indexed = int(cast(int, fts["message_indexed_count"]))
-    assert indexable > 0
-    assert indexed == indexable
-    assert fts["coverage_pct"] == 100.0
 
 
 def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
@@ -129,77 +67,6 @@ def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
     fts = fts_readiness_info(db, exact=True)
     assert fts["coverage_pct"] == 100.0
     assert fts["messages_ready"] is True
-
-
-def test_readiness_trusts_a_healthy_freshness_record_without_recompute(tmp_path: Path) -> None:
-    """A trusted ready|N|N record is used directly (fast path), not recomputed."""
-    db = tmp_path / "index.db"
-    _populated_index(db)
-
-    conn = sqlite3.connect(db)
-    try:
-        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
-        conn.commit()
-    finally:
-        conn.close()
-
-    fts = fts_readiness_info(db, exact=False)
-
-    assert fts["messages_ready"] is True
-    assert fts["coverage_pct"] == 100.0
-    assert fts["coverage_exact"] is False
-
-
-def test_single_session_defer_does_not_falsely_zero_archive_wide_coverage(tmp_path: Path) -> None:
-    """polylogue-5eyy: a single deferred session repair must not report 0% archive-wide.
-
-    ``archive.py``'s raw-revision-authoritative write path marks ``messages_fts``
-    STALE (without touching the DB rows themselves) whenever a single session's
-    FTS repair is deferred during a live write. Before the fix,
-    ``record_fts_surface_state_sync`` was called with no ``source_rows``/
-    ``indexed_rows`` -- its defaults are 0 -- which unconditionally clobbered the
-    *entire* surface's durable counts to 0/0 even though the archive-wide FTS
-    index remains fully populated and only one session's repair was deferred.
-    Downstream this made every status/readiness consumer (CLI ops status,
-    daemon status API, MCP status tool) report coverage_pct=0.0 and
-    state=missing for the whole archive.
-    """
-    db = tmp_path / "index.db"
-    _populated_index(db)
-
-    conn = sqlite3.connect(db)
-    try:
-        indexed = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0])
-        assert indexed > 0
-        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
-        conn.commit()
-
-        # Simulate a single session's FTS repair being deferred during a live
-        # authoritative write (archive.py's ``defer_fts`` branch) -- the real
-        # archive-wide FTS rows are untouched, only the freshness ledger is
-        # marked stale to force a later targeted recheck.
-        record_fts_surface_stale_preserving_counts_sync(
-            conn,
-            surface="messages_fts",
-            detail="live authoritative replay deferred targeted session FTS repair",
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    fts = fts_readiness_info(db, exact=False)
-
-    # The pending single-session repair legitimately means the surface isn't
-    # trusted as fully "ready", but the real, still-populated archive-wide
-    # counts must survive -- not be falsely reported as 0/missing.
-    surfaces = fts["surfaces"]
-    assert isinstance(surfaces, dict)
-    messages_fts_surface = surfaces["messages_fts"]
-    assert isinstance(messages_fts_surface, dict)
-    assert messages_fts_surface["freshness_recorded_state"] == "stale"
-    assert fts["message_indexed_count"] == indexed
-    assert fts["message_indexable_count"] == indexed
-    assert fts["coverage_pct"] == 100.0
 
 
 def test_genuinely_empty_archive_reports_coverage_as_unmeasured_not_exact(tmp_path: Path) -> None:

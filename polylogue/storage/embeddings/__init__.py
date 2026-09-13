@@ -1,5 +1,6 @@
 """Embedding storage, materialization, and readiness helpers."""
 
+from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
 from polylogue.storage.embeddings.materialization import (
     EmbedSessionOutcome,
     EmbedSingleStatus,
@@ -21,6 +22,7 @@ from polylogue.storage.embeddings.status_payload import (
 
 __all__ = [
     "EmbedSessionOutcome",
+    "EmbeddingDerivationAdapter",
     "EmbedSingleStatus",
     "EmbeddingOrphanReconcileReport",
     "EmbeddingOrphanSample",

@@ -794,7 +794,6 @@ class _Pass:
             after = _coerce_statuses(dict(adapter.inspect(self.frame, (key,)))).get(key, KeyStatus.MISSING)
         except Exception as exc:
             logger.warning("derivation %s: post-publication inspection failed for %s: %s", adapter.domain, key, exc)
-            self.unreadable_domains.add(adapter.domain)
             self.record(
                 KeyOutcome(
                     key=derivation_key,
@@ -866,17 +865,39 @@ class _Pass:
                     statuses = _coerce_statuses(dict(adapter.inspect(self.frame, keys)))
                 except Exception as exc:
                     logger.warning("derivation %s: inspection failed: %s", domain, exc, exc_info=True)
-                    self.record(
-                        KeyOutcome(key=DerivationKey(domain, "*"), outcome=Outcome.FAILED, error=f"inspect: {exc}")
-                    )
-                    self.unreadable_domains.add(domain)
-                    break
+                    # A bulk inspection can fail because one key is poison.
+                    # Its page is already bounded, so retry each key to keep
+                    # that failure in its own dependency closure instead of
+                    # declaring the entire output relation unreadable.
+                    statuses = {}
+                    for key in keys:
+                        try:
+                            statuses[key] = _coerce_statuses(dict(adapter.inspect(self.frame, (key,)))).get(
+                                key, KeyStatus.MISSING
+                            )
+                        except Exception as key_exc:
+                            logger.warning(
+                                "derivation %s: inspection failed for %s: %s", domain, key, key_exc, exc_info=True
+                            )
+                            self.record(
+                                KeyOutcome(
+                                    key=DerivationKey(domain, key),
+                                    outcome=Outcome.FAILED,
+                                    error=f"inspect: {key_exc}",
+                                )
+                            )
+                            # A recorded verdict prevents the main loop from
+                            # trying to compute a key whose authority it could
+                            # not inspect; exact dependants observe FAILED.
+                            statuses[key] = KeyStatus.VALID
                 self.inspected += len(keys)
             else:
                 statuses = dict.fromkeys(keys, KeyStatus.EXCESS)
 
             stopped_at: int | None = None
             for index, key in enumerate(keys):
+                if self.verdicts.get(DerivationKey(domain, key)) is Outcome.FAILED:
+                    continue
                 if statuses.get(key, KeyStatus.MISSING) is KeyStatus.VALID:
                     continue
                 if stopped_at is not None or self.work_exhausted():

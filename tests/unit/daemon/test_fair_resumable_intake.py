@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +29,8 @@ from polylogue.daemon.intake import (
 from polylogue.daemon.observation import ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 from polylogue.operations.intake_adapters import (
+    DaemonIntakeContext,
+    FileIntakeAdapter,
     RawMaterializationDiscovery,
     RawMaterializationIntakeAdapter,
     _bounded_source_paths,
@@ -168,10 +171,10 @@ def test_raw_discovery_bounds_valid_prefix_and_resumes_after_it(
 
 
 @pytest.mark.asyncio
-async def test_raw_discovery_moves_past_an_isolated_poison_in_the_fair_dispatcher(
+async def test_raw_discovery_moves_past_a_cooled_down_poison_in_the_fair_dispatcher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Mutation: reset discovery each pass, and the isolated head starves the healthy raw."""
+    """Mutation: reset discovery each pass, and the cooled-down head starves the healthy raw."""
     bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         valid = archive.write_raw_payload(
@@ -235,7 +238,7 @@ async def test_raw_discovery_moves_past_an_isolated_poison_in_the_fair_dispatche
     await dispatcher.run_once(budget=1)
     await dispatcher.run_once(budget=1)
 
-    assert dispatcher.isolated_items("raw_materialization") == frozenset({poison})
+    assert dispatcher.isolated_items("raw_materialization") == frozenset()
     assert admitted == [healthy]
 
 
@@ -447,23 +450,79 @@ async def test_weight_decides_the_share_of_one_pass() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_poison_item_is_isolated_and_its_siblings_continue() -> None:
-    """Mutation: drop the attempt bound and the head item blocks the class."""
+async def test_retryable_item_recovers_after_process_local_cooldown() -> None:
+    """Mutation: isolate retryables permanently and a repaired item never returns."""
+
+    clock = [0.0]
+    poison_attempts = 0
 
     def outcome(item: IntakeItem) -> AdmissionResult:
+        nonlocal poison_attempts
         if item.item_id == "poison":
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="cannot parse")
+            poison_attempts += 1
+            if poison_attempts <= 3:
+                return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="temporary refusal")
         return AdmissionResult(AdmissionOutcome.ADMITTED)
 
-    adapter = FakeAdapter("hooks", ["poison", "good0", "good1"], outcome_for=outcome)
-    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="hooks", adapter=adapter, max_attempts=2, page_size=8)])
+    adapter = FakeAdapter("hooks", ["poison"], outcome_for=outcome)
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="hooks", adapter=adapter, max_attempts=3, retry_cooldown_s=10.0, page_size=8)],
+        clock=lambda: clock[0],
+    )
 
-    await dispatcher.run_once(budget=8)
-    await dispatcher.run_once(budget=8)
+    for _ in range(3):
+        await dispatcher.run_once(budget=1)
+    assert dispatcher.isolated_items("hooks") == frozenset()
+    assert poison_attempts == 3
 
-    assert dispatcher.isolated_items("hooks") == frozenset({"poison"})
-    assert adapter.admitted == ["good0", "good1", "good0", "good1"] or set(adapter.admitted) == {"good0", "good1"}
     assert adapter.pending == ["poison"]
+    await dispatcher.run_once(budget=1)
+    assert poison_attempts == 3
+
+    clock[0] = 10.0
+    await dispatcher.run_once(budget=1)
+
+    assert poison_attempts == 4
+    assert adapter.acknowledged == ["poison"]
+
+
+@pytest.mark.asyncio
+async def test_file_intake_retries_a_stale_cursor_write_before_acknowledging_success(tmp_path: Path) -> None:
+    """Mutation: count a stale cursor write as success and lose the retained source retry."""
+
+    capture = tmp_path / "capture.json"
+    capture.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+    convergence_paths: list[tuple[Path, ...]] = []
+
+    class StaleCursorWatcher:
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            assert paths == [capture]
+            return SimpleNamespace(
+                succeeded_file_count=1,
+                failed_file_count=0,
+                stale_cursor_write_count=1,
+                source_payload_read_bytes=len("{}"),
+            )
+
+        async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
+            convergence_paths.append(tuple(paths))
+
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=StaleCursorWatcher(), sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+
+    result = await adapter.admit(
+        IntakeItem(item_id=f"file:{capture.resolve()}", class_name="capture", payload=capture, estimated_cost=2)
+    )
+
+    assert result.outcome is AdmissionOutcome.RETRYABLE
+    assert "stale" in (result.reason or "")
+    assert convergence_paths == []
 
 
 @pytest.mark.asyncio
@@ -479,7 +538,7 @@ async def test_an_adapter_that_raises_is_one_item_retried_not_a_dead_class() -> 
     result = await dispatcher.run_once(budget=8)
 
     assert result.require_report("hooks").admitted == 1
-    assert dispatcher.isolated_items("hooks") == frozenset({"boom"})
+    assert dispatcher.isolated_items("hooks") == frozenset()
 
 
 @pytest.mark.asyncio

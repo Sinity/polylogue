@@ -1574,6 +1574,7 @@ class _ArchiveEmbeddingInput:
     message_id: str
     text: str
     input_hash: bytes
+    message_content_hash: bytes | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1760,6 +1761,7 @@ def _archive_embedding_write(
         model=plan.model,
         embedded_at_ms=plan.now_ms,
         vector_derivation_hash=item.input_hash,
+        message_content_hash=item.message_content_hash,
         recipe_hash=plan.attempt.recipe_hash,
         derivation_key=message_embedding_derivation_key(
             message_id=item.message_id,
@@ -1889,10 +1891,10 @@ def _prepare_archive_embedding_attempt(
 
             now_ms = int(datetime.now(UTC).timestamp() * 1000)
             existing_refs = {
-                str(row[0]): bytes(row[1])
+                str(row[0]): (bytes(row[1]), None if row[2] is None else bytes(row[2]))
                 for row in embeddings_conn.execute(
                     """
-                    SELECT r.message_id, r.vector_derivation_hash
+                    SELECT r.message_id, r.vector_derivation_hash, r.message_content_hash
                     FROM message_embedding_refs AS r
                     JOIN message_embeddings_meta AS em
                       ON em.vector_derivation_hash = r.vector_derivation_hash
@@ -1904,7 +1906,11 @@ def _prepare_archive_embedding_attempt(
             pending_embeddable = [
                 row
                 for row in embeddable
-                if existing_refs.get(str(row["message_id"])) != input_hash_by_message_id[str(row["message_id"])]
+                if existing_refs.get(str(row["message_id"]))
+                != (
+                    input_hash_by_message_id[str(row["message_id"])],
+                    None if row["content_hash"] is None else bytes(row["content_hash"]),
+                )
             ]
             present_hashes = _present_vector_addresses(
                 embeddings_conn,
@@ -1929,6 +1935,7 @@ def _prepare_archive_embedding_attempt(
                         message_id=str(row["message_id"]),
                         text=str(row["text"]),
                         input_hash=input_hash_by_message_id[str(row["message_id"])],
+                        message_content_hash=None if row["content_hash"] is None else bytes(row["content_hash"]),
                     )
                     for row in pending_embeddable
                     if input_hash_by_message_id[str(row["message_id"])] not in present_hashes
@@ -1943,6 +1950,7 @@ def _prepare_archive_embedding_attempt(
                         message_id=str(row["message_id"]),
                         text="",
                         input_hash=input_hash_by_message_id[str(row["message_id"])],
+                        message_content_hash=None if row["content_hash"] is None else bytes(row["content_hash"]),
                     ),
                     [],
                 )

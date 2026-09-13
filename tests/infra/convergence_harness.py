@@ -1,8 +1,8 @@
 """Real-SQLite fixtures and independent facts for convergence survivor tests.
 
-This module adapts the production archive writers, FTS stage, typed
-session-profile owner, and ops ledger. It deliberately owns no alternate
-convergence state machine.
+This module adapts the production archive writers, common FTS derivation,
+typed session-profile owner, and ops ledger. It deliberately owns no
+alternate convergence state machine.
 
 The harness starts at the production ``ParsedSession`` boundary. Its
 deterministic JSON payload gives the raw writer real bytes to retain, but does
@@ -33,14 +33,17 @@ from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
-    SessionState,
 )
-from polylogue.daemon.convergence_stages import make_fts_stage
 from polylogue.daemon.derivation import DerivationReport
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
-from polylogue.operations.session_profile_convergence import make_session_profile_derivation, make_session_profile_frame
+from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
+from polylogue.operations.session_profile_convergence import (
+    make_session_profile_derivation,
+    make_session_profile_frame,
+    make_session_summary_derivation,
+)
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
@@ -302,11 +305,10 @@ def ingest_composed_sources(
         session_id = payload_model.session_id
         source_paths.append(source_path)
         session_ids.append(session_id)
-        # Model the debt caused by a content-changing write. A stale revision
-        # that governance rejects does not mutate FTS in production, so
-        # corrupting it here would manufacture table-level freshness debt with
-        # no downstream insight work available to publish the final exact
-        # snapshot.
+        # Model a missing FTS partition after a content-changing write. A stale
+        # revision that governance rejects does not mutate FTS in production,
+        # so corrupting it here would fabricate an output obligation with no
+        # downstream insight work available to publish the final snapshot.
         if changed:
             # Some valid provider fixtures contain no text-bearing blocks and
             # therefore have no FTS rows to corrupt. The corpus builder may skip
@@ -337,7 +339,10 @@ def converge_session_profiles(
                 archive_root=archive_root,
                 now=now,
             )
-            converger = DaemonConverger((), derivations=[adapter])
+            converger = DaemonConverger(
+                (),
+                derivations=(make_session_summary_derivation(index_db, archive_root=archive_root), adapter),
+            )
             owner = SessionProfileConvergenceOwner(
                 converger,
                 compute_adapter=compute,
@@ -364,20 +369,34 @@ def converge_session_profiles(
     return report
 
 
-def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, SessionState]:
-    """Run FTS plus typed session-profile convergence for materialized sessions."""
+def converge_convergence_archive(archive: ConvergenceArchive) -> None:
+    """Run FTS and session profiles through their common derivation adapters."""
     with sqlite3.connect(archive.root / "index.db") as conn:
         persisted_session_ids = tuple(
             str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id")
         )
-    converger = DaemonConverger((make_fts_stage(archive.root / "index.db"),))
-    states, _timings = converger.converge_sessions(persisted_session_ids)
-    not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
-    if not_converged:
-        raise AssertionError(f"production convergence left pending work: {not_converged}")
+    fts_adapter = make_fts_derivation(archive.root / "index.db", archive_root=archive.root)
+    fts = DaemonConverger(
+        (),
+        derivations=(fts_adapter,),
+    )
+    fts_frame = make_fts_frame(archive.root / "index.db", archive_root=archive.root, scope=persisted_session_ids)
+    fts_report = fts.converge_derivations(
+        fts_frame,
+        resume=False,
+    )
+    fts_invalid = {
+        session_id: status
+        for session_id, status in fts_adapter.inspect(fts_frame, persisted_session_ids).items()
+        if status != "valid"
+    }
+    if fts_report.failed or fts_report.pending or fts_invalid:
+        raise AssertionError(
+            "common FTS derivation left pending work: "
+            f"failed={fts_report.failed} pending={fts_report.pending} invalid={fts_invalid}"
+        )
     converge_session_profiles(archive.root / "index.db", archive.root, persisted_session_ids, now=lambda: 0.0)
     _analyze_registry_tables(archive.root / "index.db")
-    return states
 
 
 def assert_archive_verification_green(root: Path) -> ArchiveVerificationReport:
@@ -460,8 +479,8 @@ def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
             )
         # The status projection also reports secondary work-event FTS and
         # retrieval surfaces. They remain in the equality snapshot, as does
-        # the production messages_fts status. The two-stage route owns
-        # messages-FTS repair for changed sessions, while the neutral parser
+        # the production messages_fts status. The common FTS derivation owns
+        # changed-session repair, while the neutral parser
         # fixture can expose archive-wide excess rows from provider-derived
         # blocks. Keep that production readiness signal in the equality law
         # instead of asserting a global repair this route does not promise.
@@ -781,7 +800,7 @@ def set_debt_retry_at(
 
 
 def make_messages_fts_stale(index_db: Path, *, session_id: str, require_rows: bool = True) -> int:
-    """Delete only this session's real FTS rows to create unrelated stage debt."""
+    """Delete only this session's real FTS rows to create a missing partition."""
     with closing(open_connection(index_db)) as conn:
         block_ids = tuple(
             str(row[0])

@@ -233,6 +233,18 @@ def _attached_table_name(conn: sqlite3.Connection, schema_name: str, table_name:
     return ""
 
 
+def _embedding_refs_have_message_semantics(conn: sqlite3.Connection, refs_table: str) -> bool:
+    """Return whether a ref relation can bind exact current message semantics."""
+
+    if not refs_table:
+        return False
+    try:
+        conn.execute(f"SELECT message_content_hash FROM {refs_table} LIMIT 0")
+    except sqlite3.Error:
+        return False
+    return True
+
+
 def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     from polylogue.storage.embeddings.support import is_missing_table_error
 
@@ -531,6 +543,79 @@ def _archive_embedding_session_state_summary(
     )
     pending_sessions = max(total_sessions - embedded_sessions, 0)
     return embedded_sessions, pending_sessions
+
+
+def _authoritative_archive_embedding_state(
+    conn: sqlite3.Connection,
+    *,
+    refs_table: str,
+    meta_table: str,
+    vectors_table: str,
+    recipe: EmbeddingRecipe,
+    timeout_ms: int | None,
+) -> tuple[int, int, int, int] | None:
+    """Count readiness from desired message membership and vector provenance.
+
+    ``embedding_status`` and ``embedding_derivation_state`` are attempt
+    telemetry.  They cannot certify a vector: a session is ready only when
+    every currently required message has its current ref and a vector meta row
+    carrying the complete configured recipe/output contract.  Sessions with no
+    embeddable messages are valid-empty partitions.
+    """
+
+    if (
+        not refs_table
+        or not meta_table
+        or not vectors_table
+        or not _embedding_refs_have_message_semantics(conn, refs_table)
+    ):
+        return None
+    relation = archive_embeddable_messages_relation(conn, alias="desired", model=recipe.model)
+    rows = _rows_with_timeout(
+        conn,
+        f"""
+        WITH desired_messages AS (
+            SELECT message_id, session_id, content_hash, vector_derivation_hash FROM {relation}
+        ), per_session AS (
+            SELECT d.session_id,
+                   COUNT(*) AS required_count,
+                   SUM(CASE WHEN r.message_id IS NOT NULL
+                              AND r.session_id = d.session_id
+                              AND r.message_content_hash = d.content_hash
+                              AND r.vector_derivation_hash = d.vector_derivation_hash
+                              AND em.recipe_hash = ?
+                              AND em.output_contract_hash = ?
+                              AND em.model = ?
+                              AND em.dimension = ?
+                              AND EXISTS(
+                                SELECT 1 FROM {vectors_table} AS vectors
+                                WHERE vectors.vector_derivation_hash = lower(hex(r.vector_derivation_hash))
+                              )
+                            THEN 1 ELSE 0 END) AS valid_count
+            FROM desired_messages AS d
+            LEFT JOIN {refs_table} AS r ON r.message_id = d.message_id
+            LEFT JOIN {meta_table} AS em ON em.vector_derivation_hash = r.vector_derivation_hash
+            GROUP BY d.session_id
+        )
+        SELECT
+            COALESCE(SUM(CASE WHEN COALESCE(p.required_count, 0) = COALESCE(p.valid_count, 0) THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN COALESCE(p.required_count, 0) > COALESCE(p.valid_count, 0) THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(COALESCE(p.valid_count, 0)), 0),
+            COALESCE(SUM(COALESCE(p.required_count, 0) - COALESCE(p.valid_count, 0)), 0)
+        FROM sessions AS s
+        LEFT JOIN per_session AS p ON p.session_id = s.session_id
+        """,
+        (
+            recipe.recipe_hash,
+            recipe.output_contract_hash,
+            recipe.model,
+            recipe.dimensions,
+        ),
+        timeout_ms=timeout_ms,
+    )
+    if not rows:
+        return None
+    return tuple(_payload_int(value) for value in rows[0])  # type: ignore[return-value]
 
 
 def _archive_embedding_session_state_exact_with_timeout(
@@ -852,21 +937,25 @@ def _archive_embedding_status_payload(
             meta_table = _attached_table_name(conn, _embeddings_schema, "message_embeddings_meta")
             failure_table = _attached_table_name(conn, _embeddings_schema, "embedding_failures")
             refs_table = _attached_table_name(conn, _embeddings_schema, "message_embedding_refs")
+            vectors_table = _attached_table_name(conn, _embeddings_schema, "message_embeddings")
         elif embeddings_db.exists():
             conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
             status_table = _attached_table_name(conn, "embeddings", "embedding_status")
             meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
             failure_table = _attached_table_name(conn, "embeddings", "embedding_failures")
             refs_table = _attached_table_name(conn, "embeddings", "message_embedding_refs")
+            vectors_table = _attached_table_name(conn, "embeddings", "message_embeddings")
         else:
             status_table = ""
             meta_table = ""
             failure_table = ""
             refs_table = ""
+            vectors_table = ""
         has_messages = _table_exists(conn, "messages")
         has_status = bool(status_table)
         has_meta = bool(meta_table)
         has_refs = bool(refs_table)
+        has_ref_semantics = _embedding_refs_have_message_semantics(conn, refs_table)
         total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
         legacy_blocked_sessions = (
             _scalar_int(
@@ -882,26 +971,30 @@ def _archive_embedding_status_payload(
             if has_status
             else 0
         )
-        embedded_sessions, pending_sessions = _archive_embedding_session_state_summary(
+        authoritative_state = _authoritative_archive_embedding_state(
             conn,
-            status_table=status_table,
-            total_sessions=total_sessions,
-        )
-        blocked_sessions = legacy_blocked_sessions
-        exact_session_state = _archive_embedding_session_state_exact_with_timeout(
-            conn,
-            status_table=status_table,
-            timeout_ms=detail_timeout_ms if include_detail else metadata_timeout_ms,
+            refs_table=refs_table,
+            meta_table=meta_table,
+            vectors_table=vectors_table,
             recipe=recipe,
+            timeout_ms=detail_timeout_ms if include_detail else metadata_timeout_ms,
         )
-        pending_messages_exact = include_detail
-        if exact_session_state is None:
-            pending_sessions = max(pending_sessions - legacy_blocked_sessions, 0)
-            if include_detail:
-                pending_messages_exact = False
+        pending_messages_exact = authoritative_state is not None
+        if authoritative_state is None:
+            # Pre-v6 fixtures retain their historical summary.  Current
+            # archives take the refs/meta path above; attempt state never
+            # certifies readiness there.
+            embedded_sessions, pending_sessions = _archive_embedding_session_state_summary(
+                conn,
+                status_table=status_table,
+                total_sessions=total_sessions,
+            )
+            blocked_sessions = legacy_blocked_sessions
+            embedded_messages = 0
         else:
-            embedded_sessions, pending_sessions, blocked_sessions = exact_session_state
-        if has_status:
+            embedded_sessions, pending_sessions, embedded_messages, pending_messages = authoritative_state
+            blocked_sessions = 0
+        if authoritative_state is None and has_status:
             embedded_messages = _scalar_int(
                 conn,
                 f"""
@@ -910,7 +1003,7 @@ def _archive_embedding_status_payload(
                 JOIN sessions AS s ON s.session_id = e.session_id
                 """,
             )
-        elif refs_table:
+        elif authoritative_state is None and refs_table:
             # message_embedding_refs is per-message; message_embeddings_meta
             # is per-distinct-vector (deduped) and would undercount identical
             # content shared across sessions as one message.
@@ -923,7 +1016,7 @@ def _archive_embedding_status_payload(
                 timeout_ms=detail_timeout_ms,
             )
             embedded_messages = exact_embedded_messages if exact_embedded_messages is not None else 0
-        elif has_meta:
+        elif authoritative_state is None and has_meta:
             exact_embedded_messages = _scalar_int_with_timeout(
                 conn,
                 f"""
@@ -933,7 +1026,7 @@ def _archive_embedding_status_payload(
                 timeout_ms=detail_timeout_ms,
             )
             embedded_messages = exact_embedded_messages if exact_embedded_messages is not None else 0
-        else:
+        elif authoritative_state is None:
             embedded_messages = 0
         failure_count = (
             _scalar_int(
@@ -985,7 +1078,8 @@ def _archive_embedding_status_payload(
             include_detail=include_detail,
             timeout_ms=detail_timeout_ms,
         )
-        pending_messages = 0
+        if authoritative_state is None:
+            pending_messages = 0
         candidate_prose_messages: int | None = None
         candidate_prose_messages_exact = False
         stale_messages = 0
@@ -1046,12 +1140,14 @@ def _archive_embedding_status_payload(
             )
             configured_model = settings.configured_model or ""
             messages_ref = archive_embeddable_messages_relation(conn, alias="m", model=configured_model)
-            status_join = f"LEFT JOIN {status_table} e ON e.session_id = m.session_id" if has_status else ""
-            blocked_session_clause = (
-                "AND NOT (e.session_id IS NOT NULL AND COALESCE(e.needs_reindex, 0) = 0 "
-                "AND e.error_message IS NOT NULL)"
-                if has_status
-                else ""
+            meta_join = (
+                f"LEFT JOIN {meta_table} em ON em.vector_derivation_hash = r.vector_derivation_hash" if has_meta else ""
+            )
+            vector_present = (
+                f"EXISTS(SELECT 1 FROM {vectors_table} AS vectors "
+                "WHERE vectors.vector_derivation_hash = lower(hex(r.vector_derivation_hash)))"
+                if vectors_table
+                else "0"
             )
             total_messages = _scalar_int_with_timeout(
                 conn,
@@ -1065,24 +1161,34 @@ def _archive_embedding_status_payload(
             # AND that ref's recorded hash matches the message's *current*
             # vector_derivation_hash (computed by the relation above). Presence-
             # based -- there is no per-vector "needs_reindex" anymore.
-            if has_refs and embedded_messages == 0 and blocked_sessions == 0:
+            if has_refs and embedded_messages == 0:
                 pending_messages = total_messages
-            elif has_refs:
-                status_reindex_clause = "OR COALESCE(e.needs_reindex, 0) = 1" if has_status else ""
+            elif has_refs and has_ref_semantics and has_meta and vectors_table:
                 exact_pending_messages = _scalar_int_with_timeout(
                     conn,
                     f"""
                     SELECT COUNT(*)
                     FROM {messages_ref}
                     LEFT JOIN {refs_table} r ON r.message_id = m.message_id
-                    {status_join}
+                    {meta_join}
                     WHERE (
                         r.message_id IS NULL
                         OR r.vector_derivation_hash != m.vector_derivation_hash
-                        {status_reindex_clause}
+                        OR r.message_content_hash IS NOT m.content_hash
+                        OR em.vector_derivation_hash IS NULL
+                        OR em.recipe_hash != ?
+                        OR em.output_contract_hash != ?
+                        OR em.model != ?
+                        OR em.dimension != ?
+                        OR NOT {vector_present}
                       )
-                      {blocked_session_clause}
                     """,
+                    (
+                        recipe.recipe_hash,
+                        recipe.output_contract_hash,
+                        recipe.model,
+                        recipe.dimensions,
+                    ),
                     timeout_ms=detail_timeout_ms,
                 )
                 if exact_pending_messages is None:
@@ -1120,9 +1226,7 @@ def _archive_embedding_status_payload(
                         SELECT COUNT(*)
                         FROM {messages_ref}
                         JOIN {refs_table} r ON r.message_id = m.message_id
-                        {status_join}
                         WHERE r.vector_derivation_hash != m.vector_derivation_hash
-                          {blocked_session_clause}
                         """,
                         timeout_ms=detail_timeout_ms,
                     )

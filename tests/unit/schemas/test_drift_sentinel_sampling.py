@@ -1,8 +1,7 @@
 """Tests for the ops.db drift-sample bridge (polylogue-da1).
 
-Mirrors ``sample_fts_drift_to_ops_sync``'s contract test
-(tests/unit/daemon/test_fts_identity_convergence.py): best-effort, sibling
-ops.db, silently returns 0 on a missing tier rather than raising.
+The sampler is best-effort against a sibling ops.db and silently returns 0 on
+a missing tier rather than raising.
 """
 
 from __future__ import annotations

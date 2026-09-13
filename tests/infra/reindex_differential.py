@@ -19,7 +19,7 @@ from typing import Any
 
 from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.index import FTS_FRESHNESS_STATE_DDL, INDEX_DDL
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 
 SqlValue = str | int | float | bytes | None
 FactRow = tuple[SqlValue, ...]
@@ -31,11 +31,10 @@ _CREATE_VIRTUAL_TABLE = re.compile(
 
 # These tables record maintenance attempts rather than the logical index
 # model. Their stable semantic consequences are compared through the current
-# revision heads, FTS readiness, materialization markers, and debt state.
+# revision heads, FTS membership, materialization markers, and debt state.
 _NON_COMPARABLE_TABLES: dict[str, str] = {
     "candidate_source_membership": ("generation-local rebuild resume state is validated by IndexGenerationStore"),
-    "fts_freshness_state": "compared through FtsReadiness without its wall-clock check timestamp",
-    "messages_fts_identity": "FTS support relation compared through public search and FtsReadiness",
+    "messages_fts_identity": "FTS support relation compared through public search and exact membership counts",
     "query_unit_frame_state": "cursor invalidation epoch depends on write-route history",
     "raw_revision_applications": "attempt receipts contain generated decision ids and wall-clock timestamps",
     "schema_identity": "stores a hash of the DDL identity itself, not derived model data",
@@ -99,7 +98,6 @@ class TableProjection:
 
 @dataclass(frozen=True, slots=True)
 class FtsReadiness:
-    ledger: tuple[FactRow, ...]
     source_rows: int
     indexed_rows: int
     public_index_count: int
@@ -116,9 +114,8 @@ class DerivedModelSnapshot:
 
 def compared_table_census() -> tuple[str, ...]:
     """Return all ordinary current-DDL index tables with a declared policy."""
-    ddl = f"{FTS_FRESHNESS_STATE_DDL}\n{INDEX_DDL}"
-    tables = frozenset(_CREATE_TABLE.findall(ddl))
-    virtual_tables = frozenset(_CREATE_VIRTUAL_TABLE.findall(ddl))
+    tables = frozenset(_CREATE_TABLE.findall(INDEX_DDL))
+    virtual_tables = frozenset(_CREATE_VIRTUAL_TABLE.findall(INDEX_DDL))
     if virtual_tables != {"messages_fts", "blocks_command_trigram", "session_work_events_fts"}:
         raise AssertionError(f"unclassified virtual index tables: {sorted(virtual_tables)}")
     classified = set(_VOLATILE_COLUMNS) | set(_NON_COMPARABLE_TABLES)
@@ -140,7 +137,6 @@ def snapshot_derived_model(
     census = compared_table_census()
     with _connect(index_path) as conn:
         tables = tuple((table, _project_table(conn, table)) for table in census)
-        fts_ledger = _fts_ledger_rows(conn)
         source_rows = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
         indexed_rows = int(conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
     with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
@@ -151,7 +147,6 @@ def snapshot_derived_model(
         tables=tables,
         public_reads=public_reads,
         fts=FtsReadiness(
-            ledger=fts_ledger,
             source_rows=source_rows,
             indexed_rows=indexed_rows,
             public_index_count=public_index_count,
@@ -179,7 +174,7 @@ def assert_derived_models_equivalent(expected: DerivedModelSnapshot, actual: Der
             f"public insight reads differ: {_value_difference(expected.public_reads, actual.public_reads)}"
         )
     if expected.fts != actual.fts:
-        raise AssertionError("FTS readiness or public FTS reads differ")
+        raise AssertionError("FTS membership or public FTS reads differ")
     if expected.open_debt != actual.open_debt:
         raise AssertionError(f"open convergence debt differs: expected={expected.open_debt}, actual={actual.open_debt}")
 
@@ -211,18 +206,6 @@ def _project_table(conn: sqlite3.Connection, table: str) -> TableProjection:
     quoted = ", ".join(f'"{column}"' for column in columns)
     rows = tuple(sorted((_fact_row(row) for row in conn.execute(f'SELECT {quoted} FROM "{table}"')), key=repr))
     return TableProjection(columns=columns, rows=rows)
-
-
-def _fts_ledger_rows(conn: sqlite3.Connection) -> tuple[FactRow, ...]:
-    rows = conn.execute(
-        """
-        SELECT surface, state, source_rows, indexed_rows, missing_rows,
-               excess_rows, duplicate_rows, detail
-        FROM fts_freshness_state
-        ORDER BY surface
-        """
-    )
-    return tuple(_fact_row(row) for row in rows)
 
 
 def _open_debt_rows(ops_path: Path) -> tuple[FactRow, ...]:

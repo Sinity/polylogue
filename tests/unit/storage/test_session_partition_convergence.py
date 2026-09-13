@@ -1144,8 +1144,8 @@ def test_event_order_permutations_converge_to_the_same_relation(archive_root: Pa
 def test_deleting_every_scheduling_hint_reconstructs_the_same_pending_set(archive_root: Path) -> None:
     """The domain-side half of the kernel's deleted-hint law.
 
-    ``derived_refresh_guard``, ``fts_freshness_state`` and
-    ``delegation_refresh_scope`` are the index tier's disposable refresh hints.
+    ``derived_refresh_guard`` and ``delegation_refresh_scope`` are the index
+    tier's disposable refresh hints.
     Emptying all of them must not change which session partitions are pending,
     because required membership is the ``sessions`` relation itself and validity
     is re-derived from the inputs. Red if any of them became authority.
@@ -1161,7 +1161,6 @@ def test_deleting_every_scheduling_hint_reconstructs_the_same_pending_set(archiv
     with write_lease("test.hints"), closing(_write_connection(index_db)) as conn:
         for relation in (
             "derived_refresh_guard",
-            "fts_freshness_state",
             "delegation_refresh_scope",
         ):
             conn.execute(f"DELETE FROM {relation}")

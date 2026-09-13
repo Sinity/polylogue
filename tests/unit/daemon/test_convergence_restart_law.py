@@ -18,7 +18,11 @@ from polylogue.daemon.convergence import (
 from polylogue.daemon.derivation import Budget
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-from polylogue.operations.session_profile_convergence import make_session_profile_derivation, make_session_profile_frame
+from polylogue.operations.session_profile_convergence import (
+    make_session_profile_derivation,
+    make_session_profile_frame,
+    make_session_summary_derivation,
+)
 from tests.infra.convergence_harness import (
     converge_session_profiles,
     raw_authority_facts,
@@ -61,12 +65,11 @@ def _run_typed_owner_in_fresh_process(
 @pytest.mark.contract
 @pytest.mark.timeout(90)
 def test_typed_session_owner_survives_restart_and_leaves_unrelated_sessions_absent(tmp_path: Path) -> None:
-    """Restart re-enumerates durable output rather than a legacy debt row.
+    """Restart re-enumerates durable output from its authoritative relation.
 
-    Anti-vacuity: replace the typed owner with a generic-stage shortcut or make
+    Anti-vacuity: replace the typed owner with an in-memory shortcut or make
     the owner retain an in-memory pending set and this no longer exercises the typed owner from a
-    fresh interpreter against its output relation. The obsolete ``derived``
-    debt is not retried here: production CLI filtering owns its disposal.
+    fresh interpreter against its output relation.
     """
     recovered = seed_partial_convergence_archive(tmp_path / "recovered", target_hot=False)
     raw_before = raw_authority_facts(recovered.source_db)
@@ -84,13 +87,12 @@ def test_typed_session_owner_survives_restart_and_leaves_unrelated_sessions_abse
 
 @pytest.mark.contract
 @pytest.mark.timeout(90)
-def test_fresh_no_hint_owner_sweeps_all_session_profiles_before_legacy_debt_can_clear(tmp_path: Path) -> None:
+def test_fresh_no_hint_owner_sweeps_all_session_profiles_before_reporting_complete(tmp_path: Path) -> None:
     """A fresh no-hint owner run reconstructs and completes the whole archive.
 
     Anti-vacuity: replace ``scope=None`` with the changed-session callback,
-    stop after the first page, or clear legacy debt without a terminal owner
-    report and the unrelated partition remains absent despite durable source
-    evidence requiring it.
+    stop after the first page, and the unrelated partition remains absent
+    despite durable source evidence requiring it.
     """
     recovered = seed_partial_convergence_archive(tmp_path / "recovered", target_hot=False)
     raw_before = raw_authority_facts(recovered.source_db)
@@ -171,7 +173,10 @@ async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(
         archive_root=recovered.root,
         now=lambda: observed_now,
     )
-    converger = DaemonConverger((), derivations=[adapter])
+    converger = DaemonConverger(
+        (),
+        derivations=(make_session_summary_derivation(recovered.index_db, archive_root=recovered.root), adapter),
+    )
     owner = SessionProfileConvergenceOwner(
         converger,
         compute_adapter=compute,

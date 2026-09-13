@@ -30,6 +30,7 @@ from polylogue.storage.derived.session.input_binding import (
     session_input_bindings,
     session_input_bindings_async,
 )
+from polylogue.storage.derived.session.summary import SESSION_SUMMARY_DOMAIN
 from polylogue.storage.sqlite.write_lease import write_lease
 
 __all__ = [
@@ -541,7 +542,10 @@ class SessionProfileDerivation:
     """
 
     domain = SESSION_PROFILE_DOMAIN
-    prerequisites: tuple[str, ...] = ()
+    # ``prepare_session_insight_partition`` reads the materialized counters
+    # from ``sessions`` for the bounded profile projection, so profile
+    # publication must wait for this session's authoritative counter part.
+    prerequisites = (SESSION_SUMMARY_DOMAIN,)
     recipe_version = SESSION_PROFILE_RECIPE_VERSION
 
     def __init__(
@@ -692,10 +696,10 @@ class SessionProfileDerivation:
             return self._quiet_key(frame, key)
         return key in self._quiet_keys(frame) if self._quiet_keys is not None else False
 
-    def prerequisite_keys(self, frame: object, key: str) -> tuple[()]:
-        """Session profiles have no derivation-kernel prerequisite domain."""
-        del frame, key
-        return ()
+    def prerequisite_keys(self, frame: object, key: str) -> tuple[tuple[str, str]]:
+        """The profile reads this session's materialized summary counters."""
+        del frame
+        return ((SESSION_SUMMARY_DOMAIN, key),)
 
     def compute(self, frame: object, key: str) -> SessionProfileReplacement:
         """Prepare the complete replacement from a lease-free read frame."""

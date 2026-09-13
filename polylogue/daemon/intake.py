@@ -114,7 +114,10 @@ class IntakeClassSpec:
     """Upper bound on one discovery call."""
 
     max_attempts: int = 3
-    """Retryable attempts on one item identity before it is isolated."""
+    """Retryable attempts on one item identity before a process-local cooldown."""
+
+    retry_cooldown_s: float = 5.0
+    """Delay before retrying an item that exhausted ``max_attempts``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +129,7 @@ class IntakeClassReport:
     duplicates: int = 0
     retried: int = 0
     isolated: int = 0
-    """Items that exhausted their attempts and were set aside."""
+    """Terminal items set aside for the remainder of this process."""
 
     discovered: int = 0
     estimated_cost: int = 0
@@ -172,6 +175,7 @@ class _ClassRuntime:
 
     deficit: int = 0
     attempts: dict[str, int] = field(default_factory=dict)
+    retry_after: dict[str, float] = field(default_factory=dict)
     isolated: set[str] = field(default_factory=set)
 
 
@@ -273,6 +277,11 @@ class FairIntakeDispatcher:
                 break
             if item.item_id in runtime.isolated:
                 continue
+            retry_after = runtime.retry_after.get(item.item_id)
+            if retry_after is not None:
+                if self._clock() < retry_after:
+                    continue
+                runtime.retry_after.pop(item.item_id, None)
             item_cost = max(1, int(item.estimated_cost))
             # A single item may be larger than the per-class byte budget. It
             # still gets one bounded admission attempt; otherwise a large
@@ -303,6 +312,7 @@ class FairIntakeDispatcher:
             if result.acknowledgeable:
                 await _maybe_await(spec.adapter.acknowledge(item))
                 runtime.attempts.pop(item.item_id, None)
+                runtime.retry_after.pop(item.item_id, None)
                 item_actual_cost = max(1, int(result.actual_cost or item_cost))
                 actual_cost += item_actual_cost
                 # Reconcile the estimate after preparation. A larger actual
@@ -314,6 +324,8 @@ class FairIntakeDispatcher:
                     duplicates += 1
                 continue
             if result.outcome is AdmissionOutcome.TERMINAL:
+                runtime.attempts.pop(item.item_id, None)
+                runtime.retry_after.pop(item.item_id, None)
                 runtime.isolated.add(item.item_id)
                 isolated += 1
                 logger.warning("intake: %s/%s terminal: %s", spec.name, item.item_id, result.reason)
@@ -322,10 +334,10 @@ class FairIntakeDispatcher:
             runtime.attempts[item.item_id] = attempts
             retried += 1
             if attempts >= spec.max_attempts:
-                runtime.isolated.add(item.item_id)
-                isolated += 1
+                runtime.attempts.pop(item.item_id, None)
+                runtime.retry_after[item.item_id] = self._clock() + max(0.0, spec.retry_cooldown_s)
                 logger.warning(
-                    "intake: %s/%s isolated after %d attempts: %s",
+                    "intake: %s/%s cooling down after %d attempts: %s",
                     spec.name,
                     item.item_id,
                     attempts,

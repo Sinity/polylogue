@@ -48,13 +48,9 @@ def test_hyphenated_token_does_not_raise(workspace_env: dict[str, Path]) -> None
         assert isinstance(hits, list)
 
 
-def test_search_rejects_ready_freshness_row_when_triggers_missing(workspace_env: dict[str, Path]) -> None:
+def test_search_rejects_missing_triggers(workspace_env: dict[str, Path]) -> None:
     archive_root = _seed(workspace_env)
     with sqlite3.connect(archive_root / "index.db") as conn:
-        from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-        from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
-
-        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
         conn.executescript(
             """
             DROP TRIGGER IF EXISTS messages_fts_ai;
@@ -68,18 +64,8 @@ def test_search_rejects_ready_freshness_row_when_triggers_missing(workspace_env:
             archive.search_summaries("drive-file-1")
 
 
-def test_search_remeasures_stale_freshness_before_refusing(workspace_env: dict[str, Path]) -> None:
+def test_search_accepts_current_fts_membership(workspace_env: dict[str, Path]) -> None:
     archive_root = _seed(workspace_env)
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        from polylogue.storage.fts.freshness import record_fts_surface_stale_preserving_counts_sync
-
-        record_fts_surface_stale_preserving_counts_sync(
-            conn,
-            surface="messages_fts",
-            detail="targeted repair deferred",
-        )
-        conn.commit()
-
     with ArchiveStore.open_existing(archive_root) as archive:
         hits = archive.search_summaries("drive-file-1")
 

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-EMBEDDINGS_SCHEMA_VERSION = 5
+EMBEDDINGS_SCHEMA_VERSION = 6
 EMBEDDING_DIMENSION = 1024
 
-# v5: vectors are addressed by the complete typed provider request and output
-# contract, including exact normalized input. Metadata is complete by schema,
-# so a legacy row with unknown output identity cannot authorize reuse.
+# v6: refs bind the current canonical message semantic hash as well as the
+# content-addressed provider request. Metadata carries the complete recipe and
+# output contract, so a legacy row with incomplete identity cannot authorize
+# reuse.
 #
 # embeddings.db is a rebuildable derived tier (no migration chain): a schema
 # mismatch blue-green-replaces the tier from source
@@ -40,6 +41,10 @@ CREATE TABLE IF NOT EXISTS message_embedding_refs (
     message_id            TEXT PRIMARY KEY,
     session_id            TEXT NOT NULL,
     origin                TEXT NOT NULL,
+    -- The exact canonical message semantic identity.  A vector address is
+    -- text/request-only and may be reused, but a ref is current only when it
+    -- also names the current message content identity.
+    message_content_hash  BLOB CHECK(message_content_hash IS NULL OR length(message_content_hash) = 32),
     vector_derivation_hash  BLOB NOT NULL CHECK(length(vector_derivation_hash) = 32),
     embedded_at_ms        INTEGER
 ) STRICT;

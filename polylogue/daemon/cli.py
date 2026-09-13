@@ -88,6 +88,7 @@ from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
     from polylogue.config import Config
+    from polylogue.daemon.fts_convergence import FtsConvergenceOwner
     from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.session_profile_composition import SessionProfileCallback
@@ -123,20 +124,6 @@ _RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_WHALE_B
 # A spool file younger than this is in the live route's normal debounce/
 # batch flow, not stalled; only older cursor-less files park the conveyor.
 _SPOOL_PENDING_GRACE_SECONDS = 300
-
-
-# polylogue-m6tp phase (a): one parse-stage warmer lives for the daemon
-# process's lifetime, lazily created on first use. It is deliberately
-async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> object:
-    """Run the single FTS convergence owner before the watcher starts."""
-    from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
-    from polylogue.paths import archive_root
-
-    return await coordinator.run_sync(
-        "startup.fts_convergence",
-        FtsConvergenceOwner(_active_index_db_path(), archive_root=archive_root()).run_once_sync,
-        reason=FtsRunReason.STARTUP,
-    )
 
 
 async def _run_startup_raw_census_recovery(coordinator: DaemonWriteCoordinator, root: Path) -> None:
@@ -831,6 +818,7 @@ async def _periodic_db_optimize() -> None:
 async def _periodic_convergence_check(
     sources: tuple[WatchSource, ...],
     *,
+    fts_owner: FtsConvergenceOwner,
     catch_up_complete: asyncio.Event | None = None,
     catch_up_active: Callable[[], bool] | None = None,
     session_profile_callback: Callable[[tuple[str, ...] | None], Awaitable[object]] | None = None,
@@ -847,69 +835,16 @@ async def _periodic_convergence_check(
     while True:
         await _retry_convergence_debt_once(db)
         if catch_up_active is None or not catch_up_active():
-            await _run_periodic_fts_convergence_once(db)
+            await fts_owner.converge()
             if session_profile_callback is not None:
                 await session_profile_callback(None)
         await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
-
-
-async def _converge_ingest_embeddings_off_writer(index_db_path: Path, paths: Sequence[Path]) -> bool:
-    """The watcher's embedding owner: converge one ingest batch off the writer."""
-    from polylogue.daemon.embedding_owner import converge_archive_embeddings
-
-    return await converge_archive_embeddings(index_db_path, paths=paths)
-
-
-def _due_embedding_debt_subjects(db: Path) -> tuple[tuple[Path, ...], tuple[str, ...]]:
-    """The ``embed``-stage debt subjects due now, read under writer ownership."""
-    from polylogue.sources.live.cursor import CursorStore
-
-    now = datetime.now(UTC)
-    cursor = CursorStore(db)
-    due = [
-        debt
-        for debt in cursor.list_convergence_debt(limit=_CONVERGENCE_DEBT_RETRY_LIMIT)
-        if debt.stage == "embed" and _debt_retry_due(debt, now=now)
-    ]
-    return (
-        tuple(dict.fromkeys(Path(debt.subject_id) for debt in due if debt.subject_type == "source_path")),
-        tuple(dict.fromkeys(debt.subject_id for debt in due if debt.subject_type == "session_id")),
-    )
-
-
-async def _converge_embedding_debt_off_writer(db: Path) -> None:
-    """Embed the recorded ``embed`` debt before the admitted debt-retry pass.
-
-    The retry pass itself runs under the writer gate, where the embedding stage
-    deliberately defers rather than calling a provider. Running the owner first
-    means the admitted pass that follows finds those subjects already converged
-    and clears their ledger rows, instead of re-deferring them forever. Only the
-    ledger read is admitted here; the provider work that follows is not.
-    """
-    from polylogue.daemon.embedding_owner import converge_archive_embeddings
-
-    try:
-        paths, session_ids = await daemon_write_coordinator().run_sync(
-            "maintenance.embedding_debt_scan",
-            _due_embedding_debt_subjects,
-            db,
-        )
-    except Exception:
-        logger.warning("embed: failed to read recorded embedding debt", exc_info=True)
-        return
-    if not paths and not session_ids:
-        return
-    try:
-        await converge_archive_embeddings(db, paths=paths, session_ids=session_ids)
-    except Exception:
-        logger.warning("embed: lease-free embedding debt retry did not complete", exc_info=True)
 
 
 async def _retry_convergence_debt_once(db: Path) -> None:
     """Run one logged derived-debt retry pass when the archive exists."""
     if not db.exists():
         return
-    await _converge_embedding_debt_off_writer(db)
     try:
         repaired = await daemon_write_coordinator().run_sync(
             "maintenance.convergence_debt",
@@ -925,24 +860,6 @@ async def _retry_convergence_debt_once(db: Path) -> None:
         logger.warning("convergence: check failed", exc_info=True)
     except Exception:
         logger.warning("convergence: check failed", exc_info=True)
-
-
-async def _run_periodic_fts_convergence_once(db: Path) -> None:
-    """Run the owner-only archive-wide exact FTS audit when it is due."""
-    from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
-    from polylogue.paths import archive_root
-
-    result = await daemon_write_coordinator().run_sync(
-        "maintenance.fts_convergence",
-        FtsConvergenceOwner(db, archive_root=archive_root()).run_once_sync,
-        reason=FtsRunReason.PERIODIC,
-    )
-    if bool(getattr(result, "exact", False)):
-        logger.info(
-            "fts convergence: state=%s repaired_surfaces=%d",
-            getattr(result, "state", "unknown"),
-            int(getattr(result, "repaired_surfaces", 0)),
-        )
 
 
 async def _periodic_raw_materialization_convergence(
@@ -1026,41 +943,6 @@ async def _reconcile_blob_publications(
             retained,
         )
     return outcome
-
-
-def _raw_materialization_refused_source_paths(archive: Path, *, route: str) -> tuple[str, ...]:
-    """Resolve which physical paths this raw-materialization pass must leave out.
-
-    The source-selection proof names the paths whose authority is broken;
-    only those are refused, and each refusal is recorded as retryable
-    ``raw_parse_recovery`` convergence debt so the path is re-driven once
-    its authority resolves. A refusal no path explains raises: nothing may
-    be selected under it.
-    """
-    from polylogue.readiness.capability import raw_frontier_source_selection_refusal
-
-    refusal = raw_frontier_source_selection_refusal(archive)
-    if refusal.unattributed_reason is not None:
-        raise RuntimeError(f"{route} source-selection gate blocked: {refusal.unattributed_reason}")
-    refused = tuple(sorted(refusal.source_paths))
-    if not refused:
-        return ()
-    logger.warning(
-        "%s: source-selection gate refused %d source path(s); converging the rest",
-        route,
-        len(refused),
-    )
-    from polylogue.sources.live.cursor import CursorStore
-
-    cursor_store = CursorStore(_active_index_db_path(), initialize=False, ops_db_path=archive / "ops.db")
-    for path in refused:
-        cursor_store.record_convergence_debt(
-            stage="raw_parse_recovery",
-            subject_type="source_path",
-            subject_id=path,
-            error="raw materialization refused: source-selection authority is broken for this path",
-        )
-    return refused
 
 
 def _raw_source_path(archive: Path, raw_id: str) -> str | None:
@@ -1579,96 +1461,6 @@ def _emit_raw_materialization_pass(result: Any) -> None:
     )
 
 
-def _close_raw_materialization_fts(index_db: Path, *, ops_db_path: Path) -> None:
-    """Return message search to ready or leave explicit retryable debt.
-
-    Large raw replay batches deliberately suspend FTS triggers and may skip
-    inline repair.  This closure runs under the same daemon write lease as the
-    replay, including replay exception/cancellation cleanup.
-    """
-    if not index_db.exists():
-        return
-    from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
-
-    try:
-        needs_repair = _raw_materialization_fts_needs_repair(index_db, archive_root=ops_db_path.parent)
-    except Exception as exc:
-        _record_raw_materialization_fts_debt(
-            index_db, ops_db_path=ops_db_path, error=f"FTS readiness probe failed after raw materialization: {exc}"
-        )
-        return
-    if not needs_repair:
-        return
-    try:
-        result = FtsConvergenceOwner(index_db, archive_root=ops_db_path.parent).run_once_sync(
-            reason=FtsRunReason.PERIODIC,
-        )
-    except Exception as exc:
-        # Preserve the original raw-materialization outcome. A stale
-        # freshness row plus explicit debt keeps readiness negative and makes
-        # this closure retryable instead of masking the initiating failure.
-        _record_raw_materialization_fts_debt(
-            index_db,
-            ops_db_path=ops_db_path,
-            error=f"FTS convergence failed after raw materialization: {type(exc).__name__}: {exc}",
-        )
-        return
-    if result.ready:
-        try:
-            from polylogue.sources.live.cursor import CursorStore
-
-            CursorStore(index_db, ops_db_path=ops_db_path).clear_convergence_debt(
-                subject_type="fts_surface",
-                subject_id="messages_fts",
-                stage="fts",
-            )
-        except Exception:
-            logger.warning("raw materialization: failed to clear repaired message FTS debt", exc_info=True)
-        return
-    _record_raw_materialization_fts_debt(
-        index_db,
-        ops_db_path=ops_db_path,
-        error=(
-            f"FTS convergence after raw materialization: {result.detail}"
-            if result.detail
-            else f"FTS convergence after raw materialization ended {result.state}"
-        ),
-        deferred=result.deferred,
-    )
-
-
-def _record_raw_materialization_fts_debt(
-    index_db: Path, *, ops_db_path: Path, error: str, deferred: bool = False
-) -> None:
-    from polylogue.sources.live.cursor import CursorStore
-
-    try:
-        CursorStore(index_db, ops_db_path=ops_db_path).record_convergence_debt(
-            stage="fts",
-            subject_type="fts_surface",
-            subject_id="messages_fts",
-            error=error,
-            deferred=deferred,
-        )
-    except Exception:
-        # The stale FTS freshness row remains a durable negative readiness
-        # verdict even if the richer retry queue cannot be updated.
-        logger.warning("raw materialization: failed to record message FTS convergence debt", exc_info=True)
-
-
-def _raw_materialization_fts_needs_repair(index_db: Path, *, archive_root: Path) -> bool:
-    from polylogue.storage.fts.freshness import message_fts_recorded_readiness_sync
-    from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
-    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
-
-    with open_daemon_connection(index_db, timeout=5.0, archive_root=archive_root) as conn:
-        recorded = message_fts_recorded_readiness_sync(conn)
-        if recorded is not None:
-            return not bool(recorded["ready"])
-        readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
-        return bool(readiness["exists"]) and not bool(readiness["ready"])
-
-
 def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT) -> int:
     """Retry due derived convergence debt without rereading source payloads.
 
@@ -1687,23 +1479,12 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     due_debt = [
         debt
         for debt in cursor.list_convergence_debt(limit=limit)
-        if debt.subject_type in {"source_path", "session_id", "fts_surface"}
-        and debt.stage != "derived"
+        if debt.subject_type in {"source_path", "session_id"}
+        and debt.stage not in {"derived", "fts", "fts_readiness", "raw_parse_recovery", "embed"}
         and _debt_retry_due(debt, now=now)
     ]
     if not due_debt:
         return 0
-
-    fts_surfaces = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "fts_surface"))
-    fts_owner_result: object | None = None
-    if fts_surfaces:
-        from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
-        from polylogue.paths import archive_root
-
-        fts_owner_result = FtsConvergenceOwner(db, archive_root=archive_root()).run_once_sync(
-            reason=FtsRunReason.DEBT_RETRY,
-            surfaces=fts_surfaces,
-        )
 
     subject_states: dict[tuple[str, str, str], object] = {}
     retryable_debt = tuple(debt for debt in due_debt if debt.subject_type in {"source_path", "session_id"})
@@ -1740,24 +1521,6 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     retried = 0
     for debt in due_debt:
         retried += 1
-        if debt.subject_type == "fts_surface":
-            if bool(getattr(fts_owner_result, "ready", False)):
-                cursor.clear_convergence_debt(
-                    stage=debt.stage,
-                    subject_type=debt.subject_type,
-                    subject_id=debt.subject_id,
-                )
-                continue
-            cursor.record_convergence_debt(
-                stage=debt.stage,
-                subject_type=debt.subject_type,
-                subject_id=debt.subject_id,
-                error="FTS convergence owner retained outstanding exact-verification debt",
-                materializer_version=debt.materializer_version,
-                deferred=bool(getattr(fts_owner_result, "deferred", False)),
-            )
-            continue
-
         state = subject_states.get((debt.stage, debt.subject_type, debt.subject_id))
         if state is None:
             cursor.record_convergence_debt(
@@ -2499,11 +2262,11 @@ async def _run_daemon_services_under_active_writer_lease(
     # Periodic maintenance tasks. If schema preflight blocks the watcher, do
     # not start any background loop that opens the archive: a mismatched
     # runtime/database pair must remain observable without doing catch-up,
-    # FTS freshness recovery, status snapshots, WAL checkpointing, or convergence work.
+    # FTS convergence, status snapshots, WAL checkpointing, or convergence work.
     #
     # The task list is populated only after startup FTS readiness completes.
     # Several maintenance loops can write the archive, especially convergence
-    # debt retry; starting them before FTS startup freshness recovery self-contends on
+    # debt retry; starting them before the first FTS pass self-contends on
     # SQLite during daemon bootstrap.
     # The lifecycle tick is deliberately scheduled before the schema-block
     # guard. It writes only the disposable ops tier and proves that the
@@ -2696,7 +2459,22 @@ async def _run_daemon_services_under_active_writer_lease(
                     write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                     now=time.time,
                 )
+            from polylogue.daemon.embedding_owner import compose_embedding_convergence
             from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+            from polylogue.operations.embedding_derivation import embedding_session_ids_for_paths
+
+            embedding_convergence = compose_embedding_convergence(
+                archive_root_path / "index.db",
+                compute_adapter=daemon_compute,
+                write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                quiet=lambda: bool(watcher_holder and watcher_holder[0].catch_up_active),
+            )
+
+            async def converge_ingest_embeddings(index_db: Path, paths: Sequence[Path]) -> bool:
+                ids = embedding_session_ids_for_paths(index_db, archive_root=archive_root_path, paths=paths)
+                if not ids:
+                    return True
+                return (await embedding_convergence(ids)).converged
 
             raw_observation_owner = RawObservationConvergenceOwner(
                 archive_root_path,
@@ -2714,11 +2492,24 @@ async def _run_daemon_services_under_active_writer_lease(
                 max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
             )
 
+            from polylogue.daemon.convergence import DerivationConvergenceOwner
+            from polylogue.daemon.fts_convergence import FtsConvergenceOwner
+            from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
+
+            fts_index = archive_root_path / "index.db"
+            fts_owner = FtsConvergenceOwner(
+                DerivationConvergenceOwner(
+                    DaemonConverger((), derivations=(make_fts_derivation(fts_index, archive_root=archive_root_path),)),
+                    compute_adapter=daemon_compute,
+                    write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                ),
+                lambda scope: make_fts_frame(fts_index, archive_root=archive_root_path, scope=scope),
+            )
             await _run_startup_raw_census_recovery(write_coordinator, archive_root_path)
-            fts_startup = await _run_startup_fts_readiness(write_coordinator)
+            fts_startup = await fts_owner.converge()
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
-                    "component_ready" if bool(getattr(fts_startup, "ready", False)) else "component_degraded",
+                    "component_degraded" if fts_startup.failed else "component_started",
                     archive_root_path=archive_root_path,
                     component="fts",
                 )
@@ -2743,6 +2534,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     "convergence_check",
                     lambda: _periodic_convergence_check(
                         sources,
+                        fts_owner=fts_owner,
                         catch_up_complete=gate,
                         catch_up_active=lambda: bool(watcher_holder and watcher_holder[0].catch_up_active),
                         session_profile_callback=session_profile_callback,
@@ -2760,7 +2552,12 @@ async def _run_daemon_services_under_active_writer_lease(
                 ("wal_checkpoint", _periodic_wal_checkpoint),
                 ("fts_merge", _periodic_fts_merge),
                 ("heartbeat", _periodic_heartbeat),
-                ("embedding_backlog", lambda: periodic_embedding_backlog_check(catch_up_complete=gate)),
+                (
+                    "embedding_backlog",
+                    lambda: periodic_embedding_backlog_check(
+                        catch_up_complete=gate, converge=embedding_convergence.callback
+                    ),
+                ),
                 (
                     "embedding_orphan_reconcile",
                     lambda: periodic_embedding_orphan_reconcile_check(catch_up_complete=gate),
@@ -2784,17 +2581,7 @@ async def _run_daemon_services_under_active_writer_lease(
             for service_name, service_factory in periodic_services:
                 supervisor.start(service_name, service_factory)
             _db = _active_index_db_path()
-            # While the watcher's initial source catch-up is still running,
-            # per-chunk embedding (serial network I/O) is deferred into
-            # convergence debt; the gated embedding backlog loop drains it
-            # once catch-up completes.
-            embed_gate = catch_up_complete_gate
-            converger = DaemonConverger(
-                stages=make_default_convergence_stages(
-                    _db,
-                    embed_defer=(lambda: embed_gate is not None and not embed_gate.is_set()),
-                ),
-            )
+            converger = DaemonConverger(stages=make_default_convergence_stages(_db))
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
                     "component_started",
@@ -2829,7 +2616,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         event_emitter=_emit_live_batch_event,
                         catch_up_event_emitter=emit_catch_up_cycle,
                         write_coordinator=write_coordinator,
-                        embedding_owner=_converge_ingest_embeddings_off_writer,
+                        embedding_owner=converge_ingest_embeddings if not watcher_blocked else None,
                         session_profile_callback=session_profile_callback,
                         intake_hints_only=True,
                         intake_wakeup=raw_intake_wakeup,

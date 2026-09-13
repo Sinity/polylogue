@@ -24,9 +24,7 @@ from typing import Any
 import aiosqlite
 import pytest
 
-import polylogue.storage.fts.fts_lifecycle as fts_lifecycle
-from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+import polylogue.storage.sqlite.queries.sessions_search as sessions_search
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.queries.sessions_search import (
     search_action_session_hits,
@@ -80,7 +78,6 @@ def searchable_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "index.db"
     with open_connection(db_path) as conn:
         _seed_session(conn, "conv-snapshot", f"searchable {_TERM} content")
-        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
         conn.commit()
     return db_path
 
@@ -138,22 +135,16 @@ async def test_commit_between_readiness_probes_does_not_refuse(
 ) -> None:
     """A commit landing mid-measurement must not fake an incomplete index.
 
-    The count-only fallback runs only when no trusted freshness record exists,
-    so the record is removed first. ``fts_index_status_async`` is then wrapped
-    to commit a new indexable block from a *separate* connection at the exact
-    point between the indexed-row count and the indexable-row count -- the
-    interleaving the daemon produces continuously.
+    ``message_fts_search_readiness_async`` is wrapped to commit a new indexable
+    block from a *separate* connection after its authoritative relation check.
+    The daemon produces this interleaving continuously.
 
     Mutation that fails this: remove the ``BEGIN``/``owns_snapshot`` arm. The
     second count then reads a newer snapshot than the first, the totals
     disagree by the racing row, and ``check_fts_readiness`` raises
     "Search index is incomplete" against an archive that is in fact complete.
     """
-    with open_connection(searchable_db) as setup_conn:
-        setup_conn.execute("DELETE FROM fts_freshness_state WHERE surface = 'messages_fts'")
-        setup_conn.commit()
-
-    real_status = fts_lifecycle.fts_index_status_async
+    real_status = sessions_search.message_fts_search_readiness_async
     counter = itertools.count()
     raced = False
 
@@ -166,7 +157,7 @@ async def test_commit_between_readiness_probes_does_not_refuse(
         raced = True
         return status
 
-    monkeypatch.setattr(fts_lifecycle, "fts_index_status_async", racing_status)
+    monkeypatch.setattr(sessions_search, "message_fts_search_readiness_async", racing_status)
 
     async with aiosqlite.connect(searchable_db) as conn:
         conn.row_factory = aiosqlite.Row

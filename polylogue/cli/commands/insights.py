@@ -206,12 +206,9 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
     def origin_label(value: str | None) -> str:
         return value or "-"
 
-    if report.converged is None:
-        click.echo("Convergence: unknown (debt ledger unreadable)")
-    elif report.converged:
-        click.echo("Convergence: caught up")
-    else:
-        click.echo(f"Convergence: debt in {', '.join(report.debt_stages)}")
+    click.echo("Readiness: ready" if report.converged else "Readiness: derived domains incomplete")
+    if report.debt_stages:
+        click.echo(f"Operation debt: {', '.join(report.debt_stages)}")
     click.echo(f"Total sessions: {report.total_sessions}")
     if report.origin or report.since or report.until:
         click.echo(

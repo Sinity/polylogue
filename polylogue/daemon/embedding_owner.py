@@ -22,27 +22,26 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
-from polylogue.daemon.execution import daemon_compute_adapter
-from polylogue.daemon.write_coordinator import (
-    DaemonWriteThreadBridge,
-    daemon_write_coordinator,
-    daemon_write_lease_active,
-)
-from polylogue.logging import get_logger
+from polylogue.daemon.execution import BoundedComputeAdapter
+from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 
-logger = get_logger(__name__)
+if TYPE_CHECKING:
+    from polylogue.daemon.derivation import DerivationReport
 
 T = TypeVar("T")
 
 __all__ = [
+    "ComposedEmbeddingConvergence",
     "DaemonEmbeddingAdmission",
-    "converge_archive_embeddings",
-    "run_lease_free_embedding_work",
+    "EmbeddingConvergenceResult",
+    "compose_embedding_convergence",
 ]
 
 
@@ -71,49 +70,212 @@ class DaemonEmbeddingAdmission:
         return self._bridge.run_sync_with_timeout(actor, None, function)
 
 
-async def run_lease_free_embedding_work(
-    function: Callable[..., T],
-    /,
-    *args: object,
-    **kwargs: object,
-) -> T:
-    """Run one embedding pass on the shared compute capacity, off the writer.
+@dataclass(frozen=True, slots=True)
+class EmbeddingConvergenceResult:
+    """One embedding pass, with policy deferral distinct from output readiness."""
 
-    ``function`` is called with an ``admit`` keyword bound to this daemon's
-    coordinator, so every write it performs is a separate short admitted
-    operation while the provider call between them holds nothing.
-    """
-    if daemon_write_lease_active():
-        # The admitted phases below queue for the writer gate this caller is
-        # already holding, so running here would deadlock rather than merely
-        # serialize. Callers release the gate first; this makes the mistake a
-        # typed refusal instead of a hang.
-        raise RuntimeError("lease-free embedding work was started while this context holds the daemon writer gate")
-    loop = asyncio.get_running_loop()
-    bridge = DaemonWriteThreadBridge(daemon_write_coordinator(), loop)
-    admission = DaemonEmbeddingAdmission(bridge, loop)
-    submitted = daemon_compute_adapter().submit(
-        partial(function, *args, admit=admission, **kwargs),
-        admission_class="incremental-background",
-    )
-    return await asyncio.wrap_future(submitted.future, loop=loop)
+    report: DerivationReport | None
+    deferred_reason: str | None = None
+
+    @property
+    def converged(self) -> bool:
+        return (
+            self.deferred_reason is None
+            and self.report is not None
+            and self.report.pending == 0
+            and self.report.failed == 0
+        )
 
 
-async def converge_archive_embeddings(
-    db_path: Path,
+EmbeddingConvergenceCallback = Callable[[Sequence[str] | None], Awaitable[EmbeddingConvergenceResult]]
+
+# Preserve the former daemon catch-up envelope at the message partition grain.
+# A report budget counts provider computations, which is the paid unit here.
+EMBEDDING_PASS_MAX_MESSAGES = 2_500
+EMBEDDING_PASS_DEADLINE_S = 30.0
+
+
+@dataclass(frozen=True, slots=True)
+class ComposedEmbeddingConvergence:
+    """One retained owner and adapter for the daemon's shared compute capacity."""
+
+    callback: EmbeddingConvergenceCallback
+
+    async def __call__(self, scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
+        return await self.callback(scope)
+
+
+def compose_embedding_convergence(
+    index_db_path: Path,
     *,
-    paths: Sequence[Path] = (),
-    session_ids: Sequence[str] = (),
-) -> bool:
-    """Converge embeddings for these subjects without holding writer authority."""
-    if not paths and not session_ids:
-        return True
-    from polylogue.daemon.convergence_stages import run_archive_embedding_convergence
+    compute_adapter: BoundedComputeAdapter,
+    write_bridge: DaemonWriteThreadBridge,
+    quiet: Callable[[], bool] | None = None,
+) -> ComposedEmbeddingConvergence:
+    """Compose the common-kernel embedding owner once for a daemon process.
 
-    result = await run_lease_free_embedding_work(
-        run_archive_embedding_convergence,
-        db_path,
-        paths=tuple(paths),
-        session_ids=tuple(session_ids),
+    The callback keeps the legacy daemon envelope: no more than 2,500 message
+    computations and 30 seconds per pass, with the remaining monthly estimate
+    converted into a smaller compute budget before a provider call can start.
+    Limits produce pending work or a typed policy deferral; they never certify
+    output from a receipt or a cursor.
+    """
+
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.convergence import DaemonConverger, DerivationConvergenceOwner
+    from polylogue.daemon.derivation import Budget, Outcome
+    from polylogue.operations.embedding_derivation import make_embedding_frame
+    from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
+    from polylogue.storage.search_providers import create_vector_provider
+    from polylogue.storage.search_providers.sqlite_vec_support import (
+        ESTIMATED_TOKENS_PER_MESSAGE,
+        VOYAGE_4_COST_PER_1M_TOKENS,
     )
-    return bool(result)
+
+    archive_root = index_db_path.parent
+    loop = asyncio.get_running_loop()
+    admission = DaemonEmbeddingAdmission(write_bridge, loop)
+    cfg = load_polylogue_config()
+    if not bool(cfg.embedding_enabled):
+
+        async def disabled(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
+            return EmbeddingConvergenceResult(None, "disabled")
+
+        return ComposedEmbeddingConvergence(disabled)
+    voyage_key = cfg.get("voyage_api_key")
+    if not voyage_key:
+
+        async def no_key(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
+            return EmbeddingConvergenceResult(None, "provider_unavailable")
+
+        return ComposedEmbeddingConvergence(no_key)
+    provider = create_vector_provider(
+        voyage_api_key=str(voyage_key),
+        db_path=archive_root / "embeddings.db",
+        archive_root=archive_root,
+        model=cfg.embedding_model,
+        dimension=cfg.embedding_dimension,
+    )
+    if provider is None:
+
+        async def unavailable(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
+            return EmbeddingConvergenceResult(None, "provider_unavailable")
+
+        return ComposedEmbeddingConvergence(unavailable)
+    monthly_cap = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
+    estimated_cost_per_message = ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
+    pass_lock = asyncio.Lock()
+    receipt_lock = threading.Lock()
+    active_receipt: dict[str, object] | None = None
+
+    def reserve(actor: str, function: Callable[[], T], /) -> T:
+        """Create one conservative spend reservation before the first provider call."""
+
+        nonlocal active_receipt
+        with receipt_lock:
+            receipt = active_receipt
+            if receipt is None:
+                raise RuntimeError("embedding reservation has no active convergence pass")
+            if receipt["run_id"] is None:
+                from polylogue.core.enums import OperationStatus
+                from polylogue.daemon.embedding_backlog import _upsert_archive_embedding_catchup_run
+
+                receipt["run_id"] = admission(
+                    "embedding.catchup_receipt",
+                    partial(
+                        _upsert_archive_embedding_catchup_run,
+                        archive_root / "ops.db",
+                        status=OperationStatus.RUNNING,
+                        started_at_ms=int(receipt["started_at_ms"]),
+                        scanned_sessions=int(receipt["scanned_sessions"]),
+                        estimated_cost_usd=float(receipt["reserved_cost_usd"]),
+                    ),
+                )
+        return admission(actor, function)
+
+    adapter = EmbeddingDerivationAdapter(
+        index_db_path,
+        provider,
+        archive_root=archive_root,
+        reserve=reserve,
+        quiet=(lambda _frame, _key: quiet()) if quiet is not None else None,
+    )
+    owner = DerivationConvergenceOwner(
+        DaemonConverger(stages=(), derivations=(adapter,)),
+        compute_adapter=compute_adapter,
+        write_bridge=write_bridge,
+    )
+
+    async def converge(scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
+        nonlocal active_receipt
+        async with pass_lock:
+            compute_budget = EMBEDDING_PASS_MAX_MESSAGES
+            if monthly_cap > 0.0:
+                from polylogue.daemon.embedding_backlog import _archive_embedding_catchup_estimated_cost_this_month
+
+                spent = _archive_embedding_catchup_estimated_cost_this_month(archive_root / "ops.db")
+                remaining = monthly_cap - spent
+                compute_budget = min(compute_budget, max(0, int(remaining / estimated_cost_per_message)))
+                if compute_budget <= 0:
+                    return EmbeddingConvergenceResult(None, "monthly_cost_cap")
+            receipt: dict[str, object] = {
+                "run_id": None,
+                "started_at_ms": int(time.time() * 1000),
+                "scanned_sessions": len(tuple(scope or ())),
+                # An interrupted pass keeps this conservative reserve, so a
+                # restart cannot spend beyond the configured monthly cap.
+                "reserved_cost_usd": compute_budget * estimated_cost_per_message,
+            }
+            with receipt_lock:
+                active_receipt = receipt
+            try:
+                frame = make_embedding_frame(index_db_path, archive_root=archive_root, adapter=adapter, scope=scope)
+                report = await owner.converge(
+                    frame,
+                    budget=Budget(
+                        page=min(128, compute_budget),
+                        discovery=compute_budget,
+                        inspection=compute_budget,
+                        compute=compute_budget,
+                        publication=compute_budget,
+                        retained_outcomes=compute_budget,
+                        deadline_s=EMBEDDING_PASS_DEADLINE_S,
+                    ),
+                    domains=(adapter.domain,),
+                )
+                computed = report.work.computed
+                run_id = receipt["run_id"]
+                if run_id is not None:
+                    # Attempt rows are telemetry only.  This final estimate is
+                    # deliberately conservative: a failed provider call can
+                    # still be billable, while refs/meta/vector inspection is
+                    # the sole readiness authority.
+                    from polylogue.core.enums import OperationStatus
+                    from polylogue.daemon.embedding_backlog import _upsert_archive_embedding_catchup_run
+
+                    failures = report.count(Outcome.FAILED)
+                    await write_bridge.run_async(
+                        "embedding.catchup_receipt",
+                        partial(
+                            _upsert_archive_embedding_catchup_run,
+                            archive_root / "ops.db",
+                            run_id=str(run_id),
+                            status=OperationStatus.FAILED if failures else OperationStatus.COMPLETED,
+                            started_at_ms=int(receipt["started_at_ms"]),
+                            finished_at_ms=int(time.time() * 1000),
+                            scanned_sessions=int(receipt["scanned_sessions"]),
+                            error_count=failures,
+                            embedded_messages=computed,
+                            estimated_cost_usd=computed * estimated_cost_per_message,
+                            error_message="embedding derivation key failures" if failures else None,
+                        ),
+                    )
+                deferred = (
+                    "monthly_cost_cap" if compute_budget < EMBEDDING_PASS_MAX_MESSAGES and report.pending else None
+                )
+                return EmbeddingConvergenceResult(report, deferred)
+            finally:
+                with receipt_lock:
+                    active_receipt = None
+
+    return ComposedEmbeddingConvergence(converge)

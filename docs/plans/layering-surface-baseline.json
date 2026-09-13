@@ -1021,51 +1021,6 @@
   },
   {
     "target": "polylogue/daemon",
-    "file": "polylogue/daemon/fts_identity_convergence.py",
-    "import": "polylogue.sources.live.sqlite_locking"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/fts_identity_convergence.py",
-    "import": "polylogue.storage.fts.drift_sampling"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/fts_identity_convergence.py",
-    "import": "polylogue.storage.fts.freshness"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/fts_identity_convergence.py",
-    "import": "polylogue.storage.fts.fts_lifecycle"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/fts_identity_convergence.py",
-    "import": "polylogue.storage.sqlite.connection_profile"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/fts_orphan_audit.py",
-    "import": "polylogue.sources.live.cursor"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/fts_orphan_audit.py",
-    "import": "polylogue.sources.live.sqlite_locking"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/fts_orphan_audit.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/fts_orphan_audit.py",
-    "import": "polylogue.storage.introspection"
-  },
-  {
-    "target": "polylogue/daemon",
     "file": "polylogue/daemon/fts_status.py",
     "import": "polylogue.storage.archive_identity"
   },

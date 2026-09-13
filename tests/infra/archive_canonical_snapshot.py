@@ -62,7 +62,6 @@ RUN_LOCAL_NORMALIZATION_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "index.session_latency_profiles": frozenset({"materialized_at"}),
     "index.session_tag_rollups": frozenset({"materialized_at"}),
     "index.threads": frozenset({"materialized_at"}),
-    "index.fts_freshness_state": frozenset({"checked_at", "exact_checked_at"}),
     "source.raw_authority_verdicts": frozenset({"computed_at_ms"}),
     "ops.convergence_debt": frozenset({"debt_id", "created_at_ms", "updated_at_ms", "next_retry_at"}),
 }
@@ -161,7 +160,6 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
         ("index", "repo_checkouts"),
         ("index", "actions"),
         ("index", "delegations"),
-        ("index", "fts_freshness_state"),
         ("ops", "convergence_debt"),
     ),
 }

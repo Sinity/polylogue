@@ -514,6 +514,36 @@ def test_an_inspection_failure_blocks_its_dependants_and_reports_the_domain() ->
     assert downstream.published == []
 
 
+def test_a_bulk_inspection_poison_isolated_to_its_key_and_dependent_closure() -> None:
+    """A bounded batch inspection retry isolates one unreadable key.
+
+    Anti-vacuity: retain the former ``unreadable_domains.add(domain)`` after a
+    bulk inspection exception and the unrelated ``good`` key plus its exact
+    dependent are skipped.
+    """
+
+    class BatchPoisonedUpstream(RecordingDerivation):
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            if "poison" in keys:
+                raise RuntimeError("poison output")
+            return super().inspect(frame, keys)
+
+    upstream = BatchPoisonedUpstream("up", required=("poison", "good"))
+    downstream = RecordingDerivation(
+        "down",
+        required=("from-good",),
+        prerequisites=("up",),
+        bindings={"from-good": (("up", "good"),)},
+    )
+
+    report = converge(DerivationRegistry([upstream, downstream]), FRAME)
+
+    assert upstream.published == ["good"]
+    assert downstream.published == ["from-good"]
+    failed = report.by_outcome(Outcome.FAILED)
+    assert [(item.key.domain, item.key.key) for item in failed] == [("up", "poison")]
+
+
 # ── bounded work ───────────────────────────────────────────────────
 
 

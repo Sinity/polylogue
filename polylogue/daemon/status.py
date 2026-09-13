@@ -65,7 +65,7 @@ from polylogue.maintenance.archive_verification import read_raw_failure_lifecycl
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
-from polylogue.readiness.claim_guard import derive_claim_guard
+from polylogue.readiness.claim_guard import DerivedDomainReadiness, derive_claim_guard
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -201,6 +201,7 @@ class InsightFreshness(BaseModel):
     # successfully measured empty relation (polylogue-20d.17).
     sessions_with_profiles: int | None = None
     total_sessions: int | None = None
+    profile_ready: bool | None = None
 
 
 class EmbeddingReadiness(BaseModel):
@@ -798,7 +799,7 @@ def _fts_readiness_info() -> dict[str, object]:
 
 
 def _insight_freshness_info() -> dict[str, object]:
-    """Check insight materialization status through bounded SQL counts."""
+    """Inspect session-profile outputs through their domain-owned read model."""
     # _active_status_db_path() always names "index.db" (resolve_active_index_path
     # raises otherwise), so the old sibling_index_db(dbf, require_exists=False)
     # call was provably an identity operation on dbf itself.
@@ -823,34 +824,9 @@ def _insight_freshness_info() -> dict[str, object]:
     try:
         conn = open_readonly_connection(dbf, validate_schema=False)
         try:
-            tables = {
-                row[0]
-                for row in conn.execute(
-                    """
-                    SELECT name
-                    FROM sqlite_master
-                    WHERE type = 'table'
-                      AND name IN ('sessions', 'session_profiles')
-                    """
-                ).fetchall()
-            }
-            if "sessions" not in tables:
-                return {
-                    "checked": False,
-                    "reason": "index tier is missing sessions",
-                    "sessions_with_profiles": None,
-                    "total_sessions": None,
-                }
-            total_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
-            sessions_with_profiles = 0
-            if "session_profiles" in tables:
-                sessions_with_profiles = int(conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] or 0)
+            return _insight_freshness_from_connection(conn)
         finally:
             conn.close()
-        return {
-            "sessions_with_profiles": sessions_with_profiles,
-            "total_sessions": total_sessions,
-        }
     except sqlite3.Error as exc:
         logger.warning("status: insight-freshness query failed for %s: %s", dbf, exc, exc_info=True)
         return {"checked": False, "reason": str(exc), "sessions_with_profiles": None, "total_sessions": None}
@@ -862,36 +838,43 @@ def _archive_insight_freshness_info(archive_db: Path) -> dict[str, object] | Non
     try:
         conn = open_readonly_connection(archive_db, validate_schema=False)
         try:
-            tables = {
-                row[0]
-                for row in conn.execute(
-                    """
-                    SELECT name
-                    FROM sqlite_master
-                    WHERE type = 'table'
-                      AND name IN ('sessions', 'session_profiles')
-                    """
-                ).fetchall()
-            }
-            if "sessions" not in tables:
-                return {
-                    "checked": False,
-                    "reason": "index tier is missing sessions",
-                    "sessions_with_profiles": None,
-                    "total_sessions": None,
-                }
-            total_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0)
-            sessions_with_profiles = 0
-            if "session_profiles" in tables:
-                sessions_with_profiles = int(conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] or 0)
+            return _insight_freshness_from_connection(conn)
         finally:
             conn.close()
-        return {
-            "sessions_with_profiles": sessions_with_profiles,
-            "total_sessions": total_sessions,
-        }
     except sqlite3.Error:
         return None
+
+
+def _insight_freshness_from_connection(conn: sqlite3.Connection) -> dict[str, object]:
+    """Adapt one authoritative profile inspection for the status surface."""
+    from polylogue.storage.derived.session.status import session_insight_status_sync
+
+    status = session_insight_status_sync(conn, verify_freshness=True)
+    profile_ready = (
+        status.missing_profile_row_count == 0
+        and status.stale_profile_row_count == 0
+        and status.orphan_profile_row_count == 0
+        and status.profile_row_count == status.total_sessions
+    )
+    return {
+        "sessions_with_profiles": status.profile_row_count,
+        "total_sessions": status.total_sessions,
+        "profile_ready": profile_ready,
+        "missing_profile_rows": status.missing_profile_row_count,
+        "stale_profile_rows": status.stale_profile_row_count,
+        "orphan_profile_rows": status.orphan_profile_row_count,
+    }
+
+
+def _session_summary_readiness_info() -> ComponentReadiness:
+    """Project the summary domain's own inspection for daemon status."""
+    from polylogue.operations.daemon_status import session_summary_component_from_connection
+
+    conn = open_readonly_connection(_active_status_db_path(), validate_schema=False)
+    try:
+        return session_summary_component_from_connection(conn)
+    finally:
+        conn.close()
 
 
 def _raw_failure_info() -> dict[str, object]:
@@ -1855,6 +1838,7 @@ _COLLECTION_STATE_BY_READINESS_KEY: dict[str, str] = {
     "search": "fts_readiness",
     "raw_materialization": "raw_materialization",
     "session_profiles": "insight_freshness",
+    "session_summary": "session_summary",
     "embeddings": "embedding_readiness",
     "archive_storage": "archive_storage",
     "daemon_ingest": "live_ingest_attempts",
@@ -1926,6 +1910,7 @@ def _daemon_component_readiness(
     component_state: ComponentState,
     fts_readiness: FTSReadiness,
     insight_freshness: InsightFreshness,
+    session_summary_readiness: ComponentReadiness,
     embedding_readiness: EmbeddingReadiness,
     raw_materialization_readiness: RawMaterializationReadiness,
     raw_frontier_integrity: RawFrontierIntegrity,
@@ -1948,6 +1933,7 @@ def _daemon_component_readiness(
         "raw_materialization": _component_from_raw_materialization_readiness(raw_materialization_readiness).to_dict(),
         "raw_frontier_integrity": _component_from_raw_frontier_integrity(raw_frontier_integrity).to_dict(),
         "session_profiles": _component_from_insight_freshness(insight_freshness).to_dict(),
+        "session_summary": session_summary_readiness.to_dict(),
         "embeddings": _component_from_daemon_embedding_readiness(embedding_readiness).to_dict(),
         "archive_storage": _component_from_archive_storage(archive_storage).to_dict(),
         "daemon_ingest": _component_from_live_ingest(live_ingest_attempts).to_dict(),
@@ -1961,43 +1947,64 @@ def _daemon_claim_guard(
     raw_materialization_readiness: RawMaterializationReadiness,
     raw_frontier_integrity: RawFrontierIntegrity,
     fts_readiness: FTSReadiness,
+    insight_freshness: InsightFreshness,
+    session_summary_readiness: ComponentReadiness,
+    embedding_readiness: EmbeddingReadiness,
     live_ingest_attempts: LiveIngestAttemptSummary,
-    convergence: ConvergenceDebtSummary,
 ) -> dict[str, object]:
     """Derive the claim-guard block for the daemon-serving status path."""
     raw_component = _component_from_raw_materialization_readiness(raw_materialization_readiness)
     fts_component = _component_from_fts_readiness(fts_readiness)
+    profile_component = _component_from_insight_freshness(insight_freshness)
+    embedding_component = _component_from_daemon_embedding_readiness(embedding_readiness)
     active_writer = bool(live_ingest_attempts.running_count)
     writer_parts: list[str] = []
     if live_ingest_attempts.running_count:
         writer_parts.append(f"{live_ingest_attempts.running_count} live ingest attempt(s) running")
-    convergence_debt_pending = convergence.failed_count > 0 or convergence.deferred_count > 0
-    if not convergence.available:
-        convergence_debt_summary = convergence.error or "convergence debt unavailable; convergence state is unknown"
-    elif convergence_debt_pending:
-        pending_parts: list[str] = []
-        if convergence.failed_count:
-            pending_parts.append(f"{convergence.failed_count} failed")
-        if convergence.deferred_count:
-            pending_parts.append(f"{convergence.deferred_count} deferred")
-        convergence_debt_summary = f"convergence debt pending: {', '.join(pending_parts)}"
-    else:
-        convergence_debt_summary = "no pending convergence debt"
+    derived_domains = [
+        DerivedDomainReadiness(
+            domain="raw_materialization",
+            ready=raw_materialization_ready(raw_materialization_readiness),
+            summary=raw_component.summary,
+        ),
+        DerivedDomainReadiness(
+            domain="raw_frontier_integrity",
+            ready=raw_frontier_integrity.overall_status == "healthy",
+            summary=raw_frontier_integrity_summary(raw_frontier_integrity.model_dump()),
+        ),
+        DerivedDomainReadiness(
+            domain="session_profiles",
+            ready=profile_component.state is CapabilityReadinessState.READY,
+            summary=profile_component.summary,
+        ),
+        DerivedDomainReadiness(
+            domain="session_summary",
+            ready=session_summary_readiness.state is CapabilityReadinessState.READY,
+            summary=session_summary_readiness.summary,
+        ),
+        DerivedDomainReadiness(
+            domain="fts",
+            ready=fts_readiness.messages_ready,
+            summary=fts_component.summary,
+        ),
+    ]
+    if embedding_readiness.embedding_config_enabled:
+        derived_domains.append(
+            DerivedDomainReadiness(
+                domain="embeddings",
+                ready=embedding_component.state is CapabilityReadinessState.READY,
+                summary=embedding_component.summary,
+            )
+        )
     guard = derive_claim_guard(
         archive_schema_ready=archive_storage.archive_schema_ready,
         schema_mismatches=archive_storage.schema_mismatches,
         missing_tiers=archive_storage.missing_tiers,
-        raw_materialization_ready=raw_materialization_ready(raw_materialization_readiness),
-        raw_materialization_summary=raw_component.summary,
-        raw_frontier_integrity_ready=raw_frontier_integrity.overall_status == "healthy",
-        raw_frontier_integrity_summary=raw_frontier_integrity_summary(raw_frontier_integrity.model_dump()),
+        derived_domains=derived_domains,
         search_ready=fts_readiness.messages_ready,
         search_summary=fts_component.summary,
         active_writer=active_writer,
         active_writer_summary="; ".join(writer_parts),
-        convergence_debt_available=convergence.available,
-        convergence_debt_pending=convergence_debt_pending,
-        convergence_debt_summary=convergence_debt_summary,
     )
     return cast(dict[str, object], guard.to_dict())
 
@@ -2056,7 +2063,7 @@ def _component_from_raw_frontier_integrity(integrity: RawFrontierIntegrity) -> C
 def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentReadiness:
     total = freshness.total_sessions
     with_profiles = freshness.sessions_with_profiles
-    if total is None or with_profiles is None:
+    if total is None or with_profiles is None or freshness.profile_ready is None:
         return ComponentReadiness(
             component="session_profiles",
             scope="insights",
@@ -2070,12 +2077,12 @@ def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentR
             caveats=("index tier/session profile counts could not be read",),
             repair_hint="polylogued run",
         )
-    if total <= 0:
-        state = CapabilityReadinessState.MISSING
-        summary = "no sessions"
-    elif with_profiles >= total:
+    if freshness.profile_ready:
         state = CapabilityReadinessState.READY
         summary = "ready"
+    elif total <= 0:
+        state = CapabilityReadinessState.DEGRADED
+        summary = "profile inspection incomplete"
     elif with_profiles > 0:
         state = CapabilityReadinessState.DEGRADED
         summary = "partial"
@@ -2340,6 +2347,14 @@ def _daemon_status_component_specs(
             fingerprint=fingerprint,
         ),
         StatusComponentSpec(
+            name="session_summary",
+            scope="archive",
+            collector=_session_summary_readiness_info,
+            deadline_s=1.5,
+            cost_class="moderate",
+            fingerprint=fingerprint,
+        ),
+        StatusComponentSpec(
             name="raw_materialization",
             scope="archive",
             collector=lambda: _raw_materialization_readiness_info(
@@ -2599,6 +2614,22 @@ def build_daemon_status(
     storage_info = _v("archive_storage", ArchiveStorageStatus())
     fts: dict[str, object] = _v("fts_readiness", {})
     freshness: dict[str, object] = _v("insight_freshness", {})
+    session_summary_readiness = _v(
+        "session_summary",
+        ComponentReadiness(
+            component="session_summary",
+            scope="archive",
+            state=CapabilityReadinessState.UNKNOWN,
+            summary="session-summary inspection unavailable",
+        ),
+    )
+    if not isinstance(session_summary_readiness, ComponentReadiness):
+        session_summary_readiness = ComponentReadiness(
+            component="session_summary",
+            scope="archive",
+            state=CapabilityReadinessState.UNKNOWN,
+            summary="session-summary inspection returned an unexpected value",
+        )
     raw_materialization_readiness = _v("raw_materialization", RawMaterializationReadiness())
     raw_frontier_integrity = _raw_frontier_integrity_info(raw_materialization_readiness)
     raw_replay_backlog: dict[str, object] = _v("raw_replay_backlog", {})
@@ -2738,6 +2769,7 @@ def build_daemon_status(
     insight_freshness = InsightFreshness(
         sessions_with_profiles=_optional_int(freshness.get("sessions_with_profiles")),
         total_sessions=_optional_int(freshness.get("total_sessions")),
+        profile_ready=(bool(freshness["profile_ready"]) if freshness.get("profile_ready") is not None else None),
     )
 
     from polylogue.daemon.lifecycle import lifecycle_status
@@ -2747,6 +2779,7 @@ def build_daemon_status(
         component_state=component_state,
         fts_readiness=fts_readiness,
         insight_freshness=insight_freshness,
+        session_summary_readiness=session_summary_readiness,
         embedding_readiness=embedding_readiness,
         raw_materialization_readiness=raw_materialization_readiness,
         raw_frontier_integrity=raw_frontier_integrity,
@@ -2797,8 +2830,10 @@ def build_daemon_status(
             raw_materialization_readiness=raw_materialization_readiness,
             raw_frontier_integrity=raw_frontier_integrity,
             fts_readiness=fts_readiness,
+            insight_freshness=insight_freshness,
+            session_summary_readiness=session_summary_readiness,
+            embedding_readiness=embedding_readiness,
             live_ingest_attempts=live_ingest_attempts,
-            convergence=convergence,
         ),
         health=health,
         health_tiers=health_tiers,

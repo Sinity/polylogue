@@ -22,7 +22,6 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.message.roles import Role
 from polylogue.config import Config
 from polylogue.core.enums import ArtifactSupportStatus, BlockType, Origin, Provider
-from polylogue.core.errors import DatabaseError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.types import SessionId
 from polylogue.daemon.status import RawFailureSample, raw_failure_info_for_root
@@ -69,8 +68,6 @@ from polylogue.storage.blob_gc import BlobGCResult, run_blob_gc_report
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived.session.refresh import SessionInsightRefreshChunkObservation
-from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.repository import SessionRepository
@@ -3254,7 +3251,7 @@ def test_iter_ingest_results_sync_keeps_completion_racing_deadline(
     assert shutdown_calls == [{"wait": True, "cancel_futures": True}]
 
 
-def test_process_ingest_batch_sync_commits_targeted_fts_repair_and_invalidates_search_cache(
+def test_process_ingest_batch_sync_indexes_changed_session_and_invalidates_search_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3289,10 +3286,6 @@ def test_process_ingest_batch_sync_commits_targeted_fts_repair_and_invalidates_s
             )
         ],
     )
-
-    with open_connection(db_path) as conn:
-        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
-        conn.commit()
 
     first_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
     cache_version_before = get_cache_stats()["cache_version"]
@@ -3347,11 +3340,8 @@ def test_process_ingest_batch_sync_commits_targeted_fts_repair_and_invalidates_s
             == 1
         )
 
-    # The targeted repair proves this session's rows but cannot publish an
-    # archive-wide READY snapshot. Readers remain fail-closed until the daemon
-    # runs the exact invariant pass; direct SQL above proves the bounded repair.
-    with pytest.raises(DatabaseError, match="Search index is incomplete"):
-        search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
+    public_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
+    assert [hit.session_id for hit in public_result.hits] == [session_id]
 
 
 @pytest.mark.parametrize("payload", [b"production ingest attachment", b""], ids=["nonempty", "empty"])

@@ -7,9 +7,8 @@ hosts and CI shapes.
 1. ``_SESSION_INSIGHT_REBUILD_PAGE_SIZE`` must be at least 50; the
    page-size-1 regression produced ~17K SQL round-trips for ~4K
    sessions.
-2. ``search_session_hits`` must skip archive-scale FTS COUNT(*) probes
-   when the daemon-maintained freshness ledger says the message FTS surface is
-   ready, and must fall back to exact verification when that row is absent.
+2. ``search_session_hits`` must return current FTS membership through its
+   authoritative relation check.
 3. ``get_origin_metrics_rows`` must read the per-session aggregates on
    ``sessions`` instead of scanning ``messages``.
 4. The hydration path (``get_messages*``) must not call pydantic
@@ -20,7 +19,6 @@ hosts and CI shapes.
 from __future__ import annotations
 
 import shutil
-import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -81,57 +79,20 @@ def test_session_insight_rebuild_page_size_is_at_least_50() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Item 2: exact FTS freshness before retrieval.
+# Item 2: authoritative FTS membership before retrieval.
 # ---------------------------------------------------------------------------
 
 
-def test_search_session_hits_uses_freshness_ledger_before_match(isolated_bench_db_1k: Path) -> None:
-    """Search should not pay archive-scale COUNT(*) probes after daemon readiness."""
-    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
-
-    with sqlite3.connect(isolated_bench_db_1k) as conn:
-        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
-        conn.commit()
-
+def test_search_session_hits_returns_current_fts_membership(isolated_bench_db_1k: Path) -> None:
+    """Search returns indexed sessions after checking the canonical FTS relation."""
     with open_bench_store(isolated_bench_db_1k) as store:
         backend = store.backend
 
-        async def _run(statements: list[str]) -> None:
+        async def _run() -> list[str]:
             async with backend.connection() as conn:
-                await search_session_hits(conn, "analysis", limit=5)
+                return (await search_session_hits(conn, "analysis", limit=5)).session_ids()
 
-        with _capture_aiosqlite_sql() as statements:
-            store.run(_run(statements))
-
-        lowered = [" ".join(sql.lower().split()) for sql in statements]
-        match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
-        assert all("count(*) from messages_fts_docsize" not in sql for sql in lowered[:match_index])
-        assert all("count(*) from messages where text is not null" not in sql for sql in lowered[:match_index])
-
-
-def test_search_session_hits_falls_back_to_exact_freshness(isolated_bench_db_1k: Path) -> None:
-    """Absent ledger rows fall back to exact FTS verification before MATCH."""
-    with open_bench_store(isolated_bench_db_1k) as store:
-        backend = store.backend
-
-        async def _run(statements: list[str]) -> None:
-            async with backend.connection() as conn:
-                await conn.execute("DELETE FROM fts_freshness_state WHERE surface = 'messages_fts'")
-                await conn.commit()
-                await search_session_hits(conn, "analysis", limit=5)
-
-        with _capture_aiosqlite_sql() as statements:
-            store.run(_run(statements))
-
-        lowered = [sql.lower() for sql in statements]
-        docsize_count_index = next(i for i, sql in enumerate(lowered) if "count(*) from messages_fts_docsize" in sql)
-        block_probe_index = next(
-            i for i, sql in enumerate(lowered) if "from blocks" in sql and ("count(*)" in sql or "limit 1" in sql)
-        )
-        match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
-        assert docsize_count_index < match_index
-        assert block_probe_index < match_index
+        assert store.run(_run()), "benchmark fixture must retain at least one searchable analysis session"
 
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,11 @@ from polylogue.daemon.convergence import (
 )
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-from polylogue.operations.session_profile_convergence import make_session_profile_derivation, make_session_profile_frame
+from polylogue.operations.session_profile_convergence import (
+    make_session_profile_derivation,
+    make_session_profile_frame,
+    make_session_summary_derivation,
+)
 from polylogue.storage.derived.session import derivation as session_derivation
 from polylogue.storage.derived.session.derivation import SessionProfilePartFacts, SessionProfileReplacement
 from tests.infra.convergence_harness import (
@@ -45,12 +49,20 @@ async def _owner_for(
     coordinator = DaemonWriteCoordinator()
     return (
         SessionProfileConvergenceOwner(
-            DaemonConverger((), derivations=[adapter]),
+            _converger_for(index_db, archive_root, adapter),
             compute_adapter=compute,
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
         ),
         compute,
         coordinator,
+    )
+
+
+def _converger_for(index_db: Path, archive_root: Path, adapter: object) -> DaemonConverger:
+    """Keep selected-profile tests on the production summary/profile graph."""
+    return DaemonConverger(
+        (),
+        derivations=(make_session_summary_derivation(index_db, archive_root=archive_root), adapter),
     )
 
 
@@ -73,7 +85,7 @@ def test_session_inspection_cannot_certify_a_partition_from_mixed_commits(
     frame = make_session_profile_frame(
         recovered.index_db, archive_root=recovered.root, scope=(recovered.target_session_id,)
     )
-    converger = DaemonConverger((), derivations=[adapter])
+    converger = _converger_for(recovered.index_db, recovered.root, adapter)
     assert converger.converge_derivations(frame).done == 1
     with sqlite3.connect(recovered.index_db) as conn:
         title = conn.execute(
@@ -107,7 +119,7 @@ def test_session_inspection_cannot_certify_a_partition_from_mixed_commits(
     assert commits == 1
     assert adapter.inspect(frame, (recovered.target_session_id,)) == {recovered.target_session_id: "stale"}
 
-    restarted = DaemonConverger((), derivations=[adapter])
+    restarted = _converger_for(recovered.index_db, recovered.root, adapter)
     assert restarted.converge_derivations(frame).done == 1
     assert adapter.inspect(frame, (recovered.target_session_id,)) == {recovered.target_session_id: "valid"}
     assert restarted.converge_derivations(frame).wrote_nothing
@@ -361,7 +373,7 @@ async def test_selected_part_retries_only_the_same_binding_moved_target(tmp_path
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator()
     owner = SessionProfileConvergenceOwner(
-        DaemonConverger((), derivations=[adapter]),
+        _converger_for(recovered.index_db, recovered.root, adapter),
         compute_adapter=compute,
         write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
     )
@@ -416,7 +428,7 @@ async def test_selected_part_retains_a_committed_effect_when_post_certification_
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator()
     owner = SessionProfileConvergenceOwner(
-        DaemonConverger((), derivations=[adapter]),
+        _converger_for(recovered.index_db, recovered.root, adapter),
         compute_adapter=compute,
         write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
     )
@@ -474,7 +486,7 @@ async def test_selected_marker_failure_preserves_committed_index_effect_and_retr
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator()
     owner = SessionProfileConvergenceOwner(
-        DaemonConverger((), derivations=[adapter]),
+        _converger_for(recovered.index_db, recovered.root, adapter),
         compute_adapter=compute,
         write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
     )
@@ -584,7 +596,7 @@ async def test_selected_part_cancellation_waits_for_the_bridged_publication(tmp_
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator()
     owner = SessionProfileConvergenceOwner(
-        DaemonConverger((), derivations=[adapter]),
+        _converger_for(recovered.index_db, recovered.root, adapter),
         compute_adapter=compute,
         write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
     )
