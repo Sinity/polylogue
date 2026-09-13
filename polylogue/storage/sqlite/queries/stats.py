@@ -5,8 +5,6 @@ from __future__ import annotations
 import aiosqlite
 from typing_extensions import TypedDict
 
-from polylogue.storage.runtime import MessageRecord
-
 
 class AggregateMessageStats(TypedDict):
     total: int
@@ -55,7 +53,6 @@ __all__ = [
     "OriginSessionCountRow",
     "OriginMetricsRow",
     "aggregate_message_stats",
-    "upsert_session_stats",
     "get_stats_by",
     "get_origin_session_counts",
     "get_origin_metrics_rows",
@@ -228,69 +225,6 @@ async def aggregate_message_stats(
         "max_sort_key": _row_float(date_row, "max_sk"),
         "origins": origins,
     }
-
-
-async def upsert_session_stats(
-    conn: aiosqlite.Connection,
-    session_id: str,
-    _source_name: str,
-    messages: list[MessageRecord],
-    transaction_depth: int,
-) -> None:
-    """Update the current per-session aggregate columns on ``sessions``."""
-    message_count = len(messages)
-    word_count = sum(m.word_count for m in messages)
-    tool_use_count = sum(1 for m in messages if m.has_tool_use)
-    thinking_count = sum(1 for m in messages if m.has_thinking)
-    paste_count = sum(1 for m in messages if m.has_paste)
-    from polylogue.archive.message.roles import Role
-    from polylogue.core.enums import MaterialOrigin
-
-    user_msg_count = sum(1 for m in messages if m.role == Role.USER)
-    authored_user_msg_count = sum(1 for m in messages if m.material_origin == MaterialOrigin.HUMAN_AUTHORED)
-    assistant_msg_count = sum(1 for m in messages if m.role == Role.ASSISTANT)
-    system_msg_count = sum(1 for m in messages if m.role == Role.SYSTEM)
-    tool_msg_count = sum(1 for m in messages if m.role == Role.TOOL)
-    user_word_count = sum(m.word_count for m in messages if m.role == Role.USER)
-    authored_user_word_count = sum(m.word_count for m in messages if m.material_origin == MaterialOrigin.HUMAN_AUTHORED)
-    assistant_word_count = sum(m.word_count for m in messages if m.role == Role.ASSISTANT)
-    await conn.execute(
-        """
-        UPDATE sessions
-        SET message_count = ?,
-            word_count = ?,
-            tool_use_count = ?,
-            thinking_count = ?,
-            paste_count = ?,
-            user_message_count = ?,
-            authored_user_message_count = ?,
-            assistant_message_count = ?,
-            system_message_count = ?,
-            tool_message_count = ?,
-            user_word_count = ?,
-            authored_user_word_count = ?,
-            assistant_word_count = ?
-        WHERE session_id = ?
-        """,
-        (
-            message_count,
-            word_count,
-            tool_use_count,
-            thinking_count,
-            paste_count,
-            user_msg_count,
-            authored_user_msg_count,
-            assistant_msg_count,
-            system_msg_count,
-            tool_msg_count,
-            user_word_count,
-            authored_user_word_count,
-            assistant_word_count,
-            session_id,
-        ),
-    )
-    if transaction_depth == 0:
-        await conn.commit()
 
 
 async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "origin") -> dict[str, int]:
