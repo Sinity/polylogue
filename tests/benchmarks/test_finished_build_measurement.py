@@ -56,6 +56,7 @@ _RAW_PAYLOAD_TARGET_BYTES = 408_129
 _SEALED_INPUT_BYTES = 210_554_832
 _SEALED_INPUT_DIGEST = "b970c56fd5478c928e12eb97c92737fe351907e1e1edeafc14c7104489a345ed"
 _WORKER_COUNTS = (1, 4, 12)
+_INTERLEAVED_REPETITIONS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,7 @@ class _ArmReceipt:
     arm: str
     worker_mode: str
     worker_count: int
+    repetition: int
     input_digest: str
     wall_seconds: float
     self_cpu_seconds: float
@@ -87,7 +89,12 @@ class _ArmReceipt:
     archive_bytes: int
     stage_timings_s: dict[str, float]
     metrics: dict[str, object]
+    fresh_build: bool
+    deferred_secondary_indexes: bool
     derived_table_census: tuple[str, ...]
+    schema_object_census: tuple[tuple[str, str], ...]
+    schema_identity: str
+    canonical_logical_digest: str
     fts_source_rows: int
     fts_indexed_rows: int
     public_index_count: int
@@ -98,6 +105,9 @@ class _ArmReceipt:
     deferred_raw_count: int
     failed_raw_count: int
     skipped_raw_count: int
+    output_session_count: int
+    output_message_count: int
+    output_block_count: int
     snapshot: DerivedModelSnapshot
 
 
@@ -146,6 +156,27 @@ _ARMS = (
         "retained-index-inline-process",
         uses_owned_inactive_generation=False,
         uses_shard_transport=False,
+        worker_mode="process",
+        refusal_reason="raw replay dispatches its production parser through ThreadPoolExecutor only",
+    ),
+    _Arm(
+        "retained-index-shard-process",
+        uses_owned_inactive_generation=False,
+        uses_shard_transport=True,
+        worker_mode="process",
+        refusal_reason="raw replay dispatches its production parser through ThreadPoolExecutor only",
+    ),
+    _Arm(
+        "deferred-index-fresh-inline-process",
+        uses_owned_inactive_generation=True,
+        uses_shard_transport=False,
+        worker_mode="process",
+        refusal_reason="raw replay dispatches its production parser through ThreadPoolExecutor only",
+    ),
+    _Arm(
+        "deferred-index-fresh-shard-process",
+        uses_owned_inactive_generation=True,
+        uses_shard_transport=True,
         worker_mode="process",
         refusal_reason="raw replay dispatches its production parser through ThreadPoolExecutor only",
     ),
@@ -248,6 +279,38 @@ def _session_ids(index_path: Path) -> tuple[str, ...]:
         return tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
 
 
+def _finished_schema_census(index_path: Path) -> tuple[tuple[tuple[str, str], ...], str]:
+    """Read the declared finished schema shape after the route has closed."""
+    with sqlite3.connect(index_path) as conn:
+        objects = tuple(
+            (str(kind), str(name))
+            for kind, name in conn.execute(
+                """
+                SELECT type, name
+                FROM sqlite_master
+                WHERE name NOT LIKE 'sqlite_%'
+                ORDER BY type, name
+                """
+            )
+        )
+        row = conn.execute("SELECT identity FROM schema_identity WHERE tier = 'index'").fetchone()
+    if row is None or not str(row[0]):
+        raise AssertionError("finished build has no index schema identity")
+    return objects, str(row[0])
+
+
+def _canonical_logical_digest(snapshot: DerivedModelSnapshot) -> str:
+    """Hash the sorted differential projection rather than a database image."""
+
+    def default(value: object) -> str:
+        if isinstance(value, bytes):
+            return value.hex()
+        raise TypeError(f"cannot canonically encode {type(value).__name__}")
+
+    payload = json.dumps(asdict(snapshot), default=default, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def _archive_bytes(index_path: Path) -> int:
     return sum(path.stat().st_size for path in (index_path, index_path.with_suffix(".db-wal")) if path.exists())
 
@@ -293,7 +356,14 @@ def _live_metrics(
     )
 
 
-def _run_arm(root: Path, sealed: _SealedInput, arm: _Arm, *, worker_count: int) -> _ArmReceipt:
+def _run_arm(
+    root: Path,
+    sealed: _SealedInput,
+    arm: _Arm,
+    *,
+    worker_count: int,
+    repetition: int = 1,
+) -> _ArmReceipt:
     if arm.worker_mode != "thread" or (arm.uses_shard_transport and not arm.uses_owned_inactive_generation):
         raise RuntimeError(arm.refusal_reason or "unsupported finished-build capability")
     destination, owned_generation = _candidate_root(root, arm)
@@ -320,6 +390,13 @@ def _run_arm(root: Path, sealed: _SealedInput, arm: _Arm, *, worker_count: int) 
         search_queries=("amg1-payload",),
     )
     assert_derived_model_ready(snapshot)
+    schema_object_census, schema_identity = _finished_schema_census(index_path)
+    canonical_logical_digest = _canonical_logical_digest(snapshot)
+    with sqlite3.connect(index_path) as conn:
+        output_session_count, output_message_count, output_block_count = (
+            int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in ("sessions", "messages", "blocks")
+        )
     archive_bytes = _archive_bytes(index_path)
     metrics = _live_metrics(
         result,
@@ -336,10 +413,21 @@ def _run_arm(root: Path, sealed: _SealedInput, arm: _Arm, *, worker_count: int) 
             f"{arm.name} cannot produce a speed verdict with quarantined={result.quarantined} "
             f"or adoption_deferred={result.adoption_deferred}"
         )
+    population_total = result.replayed_logical_sources + result.adoption_deferred + result.quarantined
+    if population_total != sealed.raw_count:
+        raise AssertionError(
+            f"{arm.name} has unclassified raw population: offered={sealed.raw_count} classified={population_total}"
+        )
+    if output_session_count != result.replayed_logical_sources:
+        raise AssertionError(
+            f"{arm.name} output population differs from replay receipt: "
+            f"sessions={output_session_count} replayed={result.replayed_logical_sources}"
+        )
     return _ArmReceipt(
         arm=arm.name,
         worker_mode=arm.worker_mode,
         worker_count=worker_count,
+        repetition=repetition,
         input_digest=sealed.digest,
         wall_seconds=wall_seconds,
         self_cpu_seconds=(after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime),
@@ -349,7 +437,12 @@ def _run_arm(root: Path, sealed: _SealedInput, arm: _Arm, *, worker_count: int) 
         archive_bytes=archive_bytes,
         stage_timings_s=dict(result.stage_timings_s),
         metrics=metrics.to_payload(),
+        fresh_build=arm.uses_owned_inactive_generation,
+        deferred_secondary_indexes=arm.uses_owned_inactive_generation,
         derived_table_census=tuple(table for table, _projection in snapshot.tables),
+        schema_object_census=schema_object_census,
+        schema_identity=schema_identity,
+        canonical_logical_digest=canonical_logical_digest,
         fts_source_rows=snapshot.fts.source_rows,
         fts_indexed_rows=snapshot.fts.indexed_rows,
         public_index_count=snapshot.fts.public_index_count,
@@ -360,6 +453,9 @@ def _run_arm(root: Path, sealed: _SealedInput, arm: _Arm, *, worker_count: int) 
         deferred_raw_count=result.adoption_deferred,
         failed_raw_count=result.quarantined,
         skipped_raw_count=0,
+        output_session_count=output_session_count,
+        output_message_count=output_message_count,
+        output_block_count=output_block_count,
         snapshot=snapshot,
     )
 
@@ -382,12 +478,16 @@ def _capability_receipts(*, worker_count: int) -> tuple[_CapabilityReceipt, ...]
 def test_finished_build_measurement_declares_capability_boundary() -> None:
     """No direct writer attachment may impersonate a production replay arm."""
     assert _WORKER_COUNTS == (1, 4, 12)
+    assert _INTERLEAVED_REPETITIONS == 2
     assert {arm.name for arm in _ARMS} == {
         "retained-index-inline",
         "deferred-index-fresh-inline",
         "retained-index-shard",
         "deferred-index-fresh-shard",
         "retained-index-inline-process",
+        "retained-index-shard-process",
+        "deferred-index-fresh-inline-process",
+        "deferred-index-fresh-shard-process",
     }
     refused = [
         arm
@@ -421,36 +521,41 @@ def test_finished_build_measurement_runs_sealed_production_arms_at_declared_scal
 ) -> None:
     """Measure the supported thread counts with fresh, interleaved arm roots.
 
-    Every arm gets a clone of the one sealed source tree.  N=4 reverses the
-    retained/fresh order, avoiding a fixed route-order conclusion while still
-    retaining an immediately comparable pair at each supported worker count.
+    Every completed arm gets a clone of the one sealed source tree. The two
+    repetitions reverse their order, and N=4 changes the leading arm, so a
+    route cannot inherit one fixed cache or order position. Process and
+    retained-index shard cells remain explicit production-policy refusals.
     """
     template, sealed, source_census = _censused_input_template
-    retained, deferred_fresh, _retained_shard, deferred_fresh_shard, _process = _ARMS
-    ordered_arms = (
-        (deferred_fresh_shard, deferred_fresh, retained)
-        if worker_count == 4
-        else (retained, deferred_fresh, deferred_fresh_shard)
-    )
-    receipts = [
-        _run_arm(
-            _arm_root(template, tmp_path / f"{arm.name}-n{worker_count}", sealed),
-            sealed,
-            arm,
-            worker_count=worker_count,
+    arms_by_name = {arm.name: arm for arm in _ARMS}
+    retained = arms_by_name["retained-index-inline"]
+    deferred_fresh = arms_by_name["deferred-index-fresh-inline"]
+    deferred_fresh_shard = arms_by_name["deferred-index-fresh-shard"]
+    supported_arms = (retained, deferred_fresh, deferred_fresh_shard)
+    ordered_first = (deferred_fresh_shard, deferred_fresh, retained) if worker_count == 4 else supported_arms
+    receipts: list[_ArmReceipt] = []
+    for repetition in range(1, _INTERLEAVED_REPETITIONS + 1):
+        ordered_arms = ordered_first if repetition % 2 else tuple(reversed(ordered_first))
+        receipts.extend(
+            _run_arm(
+                _arm_root(template, tmp_path / f"{arm.name}-n{worker_count}-r{repetition}", sealed),
+                sealed,
+                arm,
+                worker_count=worker_count,
+                repetition=repetition,
+            )
+            for arm in ordered_arms
         )
-        for arm in ordered_arms
-    ]
     assert {receipt.input_digest for receipt in receipts} == {sealed.digest}
-    by_arm = {receipt.arm: receipt for receipt in receipts}
-    assert_derived_models_equivalent(
-        by_arm[retained.name].snapshot,
-        by_arm[deferred_fresh.name].snapshot,
-    )
-    assert_derived_models_equivalent(
-        by_arm[deferred_fresh.name].snapshot,
-        by_arm[deferred_fresh_shard.name].snapshot,
-    )
+    assert len(receipts) == len(supported_arms) * _INTERLEAVED_REPETITIONS
+    assert {receipt.arm for receipt in receipts} == {arm.name for arm in supported_arms}
+    reference = receipts[0]
+    for receipt in receipts[1:]:
+        assert_derived_models_equivalent(reference.snapshot, receipt.snapshot)
+    assert len({receipt.canonical_logical_digest for receipt in receipts}) == 1
+    assert len({receipt.derived_table_census for receipt in receipts}) == 1
+    assert len({receipt.schema_object_census for receipt in receipts}) == 1
+    assert len({receipt.schema_identity for receipt in receipts}) == 1
     assert all(receipt.metrics["unaccounted_bytes"] == 0 for receipt in receipts)
     assert all(receipt.metrics["failed_file_count"] == 0 for receipt in receipts)
     assert all(receipt.metrics["refused_bytes"] == 0 for receipt in receipts)
@@ -465,14 +570,18 @@ def test_finished_build_measurement_runs_sealed_production_arms_at_declared_scal
     )
     assert all(receipt.fts_source_rows == receipt.fts_indexed_rows for receipt in receipts)
     assert all(receipt.open_convergence_debt_count == 0 for receipt in receipts)
-    # Each count has one interleaved pair. The receipts show the observed
-    # ordering, but one pair is insufficient to declare a timing winner.
+    assert all(receipt.output_session_count == sealed.raw_count for receipt in receipts)
+    assert all(receipt.output_message_count and receipt.output_block_count for receipt in receipts)
+    assert {receipt.fresh_build for receipt in receipts if "fresh" in receipt.arm} == {True}
+    assert {receipt.deferred_secondary_indexes for receipt in receipts if "fresh" in receipt.arm} == {True}
+    # Two interleaved controls are useful evidence, but there is no declared
+    # statistical decision rule for a route ranking. Keep that limit explicit.
     capability_receipts = _capability_receipts(worker_count=worker_count)
     verdict = {
-        "conclusion": "incomplete-no-winner",
+        "conclusion": "no-winner",
         "reason": (
-            "one interleaved retained/fresh-inline/fresh-shard set at this worker count; "
-            "repeat before ranking, and do not rank process mode until a production policy supports it"
+            "two interleaved retained/fresh-inline/fresh-shard controls have no pre-registered "
+            "ranking rule; process mode remains unsupported by production policy"
         ),
     }
     print(
