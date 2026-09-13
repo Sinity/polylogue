@@ -267,6 +267,8 @@ def verify_command(
         for problem in result.problems:
             env.ui.console.print(f"  - {problem}")
     if not result.ok:
+        if output_format == "json":
+            click.get_current_context().exit(1)
         raise click.ClickException("demo archive verification failed")
 
 
@@ -322,6 +324,8 @@ def tour_command(
         for problem in result.problems:
             env.ui.console.print(f"  - {problem}")
     if not result.ok:
+        if output_format == "json":
+            click.get_current_context().exit(1)
         raise click.ClickException("demo tour failed")
 
 

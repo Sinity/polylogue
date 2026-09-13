@@ -28,6 +28,7 @@ from polylogue.scenarios import (
     DEMO_CLAUDE_CODE_LINEAGE_SIDECHAIN_SESSION_ID,
     DEMO_CLAUDE_CODE_SESSION_ID,
     DEMO_EMBEDDING_PROSE_SESSION_ID,
+    DEMO_HERMES_SESSION_ID,
     DEMO_SESSION_IDS,
 )
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
@@ -47,7 +48,11 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert seed.archive_root == archive_root
     assert seed.session_count == len(DEMO_SESSION_IDS)
     assert seed.message_count >= 35
-    assert seed.session_ids == tuple(sorted(DEMO_SESSION_IDS))
+    hermes_ids = tuple(session_id for session_id in seed.session_ids if session_id.startswith("hermes-session:"))
+    assert len(hermes_ids) == 1
+    assert hermes_ids[0].startswith(f"{DEMO_HERMES_SESSION_ID}@profile-")
+    expected_session_ids = (set(DEMO_SESSION_IDS) - {DEMO_HERMES_SESSION_ID}) | set(hermes_ids)
+    assert set(seed.session_ids) == expected_session_ids
     assert seed.overlays_seeded is True
     assert seed.assertion_count >= 4
     assert seed.construct_coverage
