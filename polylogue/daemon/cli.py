@@ -1087,6 +1087,9 @@ async def _run_periodic_fts_convergence_once(db: Path) -> None:
 async def _periodic_raw_materialization_convergence(
     *,
     catch_up_complete: asyncio.Event | None = None,
+    raw_observation_owner: Any | None = None,
+    raw_intake_wakeup: asyncio.Event | None = None,
+    raw_intake_discovery: Any | None = None,
 ) -> None:
     """Continuously converge durable raw source rows into the index tier.
 
@@ -1103,6 +1106,24 @@ async def _periodic_raw_materialization_convergence(
     drain into weeks.
     """
     await _await_catch_up_gate(catch_up_complete, loop_name="raw materialization convergence")
+
+    # The production composition supplies the canonical owner and the wake
+    # shared with fair intake.  Periodic maintenance is then only a wake
+    # source: it never re-discovers the complete raw scope, takes a second
+    # writer route, or overtakes another intake class.  The legacy branch is
+    # retained temporarily for direct compatibility callers while scanner
+    # retirement remains a separate slice.
+    if raw_observation_owner is not None and raw_intake_wakeup is not None:
+        while True:
+            raw_intake_wakeup.set()
+            try:
+                await _maybe_run_raw_materialization_whale_pass(
+                    raw_observation_owner=raw_observation_owner,
+                    raw_intake_discovery=raw_intake_discovery,
+                )
+            except Exception:
+                logger.warning("raw materialization: canonical whale-pass scheduling failed", exc_info=True)
+            await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
 
     while True:
         # A non-empty live spool narrows this loop's share of the writer to one
@@ -1761,7 +1782,11 @@ async def _emit_whale_completion_after_admission(
     logger.error("raw materialization: terminal whale receipt deferred to durable outbox recovery")
 
 
-async def _maybe_run_raw_materialization_whale_pass() -> bool:
+async def _maybe_run_raw_materialization_whale_pass(
+    *,
+    raw_observation_owner: Any | None = None,
+    raw_intake_discovery: Any | None = None,
+) -> bool:
     """Escalate one resource-blocked, stream-safe component when quiescent.
 
     polylogue-t93b: called only after the ordinary trickle conveyor has
@@ -1774,17 +1799,101 @@ async def _maybe_run_raw_materialization_whale_pass() -> bool:
     Returns whether a pass was genuinely attempted this call so the caller
     can decide burst-vs-outer-interval pacing.
     """
-    from polylogue.config import Config
     from polylogue.daemon.events import emit_daemon_event
-    from polylogue.maintenance import raw_authority
     from polylogue.paths import archive_root, render_root
 
     root = archive_root()
     global _WHALE_RECEIPT_ROOT
     _WHALE_RECEIPT_ROOT = root
-    config = Config(archive_root=root, render_root=render_root(), sources=[])
     whale_limit = _resolve_raw_materialization_whale_blob_limit_bytes()
     await _drain_whale_receipt_outbox()
+    if raw_observation_owner is not None and raw_intake_discovery is not None:
+        # Discovery is the same bounded, process-local traversal used by fair
+        # intake.  It is not a whale-specific scanner or a validity cache.
+        # Only an observation above the normal envelope may bypass ordinary
+        # fair admission on this escalation path.
+        candidates = await asyncio.to_thread(raw_intake_discovery.discover_pending_raw_ids, 1)
+        candidate = next(
+            (
+                raw_id
+                for raw_id, payload_bytes in candidates
+                if payload_bytes > _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES
+            ),
+            None,
+        )
+        if candidate is None:
+            return False
+        receipt_id = f"whale:{candidate}:{uuid4().hex}"
+        emit_daemon_event(
+            "raw_materialization_whale_pass_started",
+            payload={"seed_raw_id": candidate, "max_payload_bytes": whale_limit},
+        )
+        started = time.perf_counter()
+        try:
+            report = await raw_observation_owner.converge_raw_id(candidate, max_payload_bytes=whale_limit)
+        except asyncio.CancelledError as exc:
+            await _publish_whale_receipt(
+                kind="raw_materialization_whale_pass_completed",
+                idempotency_key=f"{receipt_id}:terminal",
+                operation_id=receipt_id,
+                payload=_raw_materialization_whale_completion_payload(
+                    candidate,
+                    status="cancelled",
+                    receipt_id=receipt_id,
+                    success=False,
+                    detail=str(exc) or "canonical whale pass caller cancelled",
+                ),
+            )
+            raise
+        except Exception as exc:
+            await _publish_whale_receipt(
+                kind="raw_materialization_whale_pass_completed",
+                idempotency_key=f"{receipt_id}:terminal",
+                operation_id=receipt_id,
+                payload=_raw_materialization_whale_completion_payload(
+                    candidate,
+                    status="error",
+                    receipt_id=receipt_id,
+                    success=False,
+                    detail=str(exc),
+                    metrics={"duration_ms": (time.perf_counter() - started) * 1000.0},
+                ),
+            )
+            return True
+        from polylogue.daemon.derivation import Outcome
+
+        failed = next((outcome for outcome in report.outcomes if outcome.outcome is Outcome.FAILED), None)
+        pending = next((outcome for outcome in report.outcomes if outcome.outcome is Outcome.PENDING), None)
+        success = failed is None and pending is None
+        detail = (
+            failed.error
+            if failed is not None
+            else (
+                pending.reason.value
+                if pending is not None and pending.reason is not None
+                else "canonical raw observation converged"
+            )
+        )
+        await _publish_whale_receipt(
+            kind="raw_materialization_whale_pass_completed",
+            idempotency_key=f"{receipt_id}:terminal",
+            operation_id=receipt_id,
+            payload=_raw_materialization_whale_completion_payload(
+                candidate,
+                status="success" if success else "error",
+                receipt_id=receipt_id,
+                success=success,
+                detail=detail,
+                repaired_count=report.done,
+                metrics={"duration_ms": (time.perf_counter() - started) * 1000.0},
+            ),
+        )
+        return True
+
+    from polylogue.config import Config
+    from polylogue.maintenance import raw_authority
+
+    config = Config(archive_root=root, render_root=render_root(), sources=[])
     try:
         candidate = await asyncio.to_thread(
             raw_authority.whale_pass_candidate,
@@ -3107,6 +3216,7 @@ async def _run_daemon_services_under_active_writer_lease(
     converger: DaemonConverger | None = None
     session_profile_callback: SessionProfileCallback | None = None
     catch_up_complete_gate: asyncio.Event | None = None
+    raw_intake_wakeup = asyncio.Event()
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
     termination: BaseException | None = None
@@ -3249,6 +3359,15 @@ async def _run_daemon_services_under_active_writer_lease(
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                 max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
             )
+            from polylogue.daemon.intake_adapters import RawMaterializationDiscovery
+
+            # One long-lived discovery cursor belongs to the daemon's fair
+            # intake owner. Periodic maintenance and whale escalation borrow
+            # it rather than restarting a separate all-raw scan.
+            raw_intake_discovery = RawMaterializationDiscovery(
+                archive_root_path,
+                max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+            )
 
             fts_startup = await _run_startup_fts_readiness(write_coordinator)
             if lifecycle_events_enabled:
@@ -3281,6 +3400,15 @@ async def _run_daemon_services_under_active_writer_lease(
                         catch_up_complete=gate,
                         catch_up_active=lambda: bool(watcher_holder and watcher_holder[0].catch_up_active),
                         session_profile_callback=session_profile_callback,
+                    ),
+                ),
+                (
+                    "raw_materialization_convergence",
+                    lambda: _periodic_raw_materialization_convergence(
+                        catch_up_complete=gate,
+                        raw_observation_owner=raw_observation_owner,
+                        raw_intake_wakeup=raw_intake_wakeup,
+                        raw_intake_discovery=raw_intake_discovery,
                     ),
                 ),
                 ("wal_checkpoint", _periodic_wal_checkpoint),
@@ -3344,11 +3472,9 @@ async def _run_daemon_services_under_active_writer_lease(
                     from polylogue.daemon.intake_adapters import (
                         DaemonIntakeContext,
                         DaemonIntakeService,
-                        RawMaterializationDiscovery,
                         build_intake_adapters,
                     )
 
-                    intake_wakeup = asyncio.Event()
                     watcher = LiveWatcher(
                         polylogue,
                         sources,
@@ -3360,7 +3486,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         embedding_owner=_converge_ingest_embeddings_off_writer,
                         session_profile_callback=session_profile_callback,
                         intake_hints_only=True,
-                        intake_wakeup=intake_wakeup,
+                        intake_wakeup=raw_intake_wakeup,
                     )
                     watcher_holder.append(watcher)
 
@@ -3375,11 +3501,6 @@ async def _run_daemon_services_under_active_writer_lease(
 
                     async def run_remote_intake() -> int:
                         return await _run_drive_source_catchup_safely()
-
-                    raw_intake_discovery = RawMaterializationDiscovery(
-                        archive_root_path,
-                        max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
-                    )
 
                     async def discover_raw_intake(limit: int) -> tuple[tuple[str, int], ...]:
                         submitted = daemon_compute.submit(
@@ -3445,7 +3566,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         board=supervisor.board,
                         frame=f"daemon:{os.getpid()}",
                     )
-                    intake_service = DaemonIntakeService(dispatcher, wakeup=intake_wakeup)
+                    intake_service = DaemonIntakeService(dispatcher, wakeup=raw_intake_wakeup)
                     supervisor.start("fair_intake", intake_service.run)
                     if enable_watch:
                         watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
