@@ -305,9 +305,17 @@ def test_codex_append_plan_recovers_identity_from_session_meta_when_source_row_m
     assert plan.payload == source.read_bytes()[old_offset:]
 
 
+@pytest.mark.parametrize(
+    "has_changed_sessions",
+    [
+        pytest.param(True, id="with-session-changes"),
+        pytest.param(False, id="without-session-changes"),
+    ],
+)
 def test_catch_up_ingests_needed_files_in_bounded_chunks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    has_changed_sessions: bool,
 ) -> None:
     root = tmp_path / "src"
     root.mkdir()
@@ -339,7 +347,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
             failed_file_count=0,
             stage_timings_s={},
             succeeded_paths=tuple(paths),
-            changed_session_ids=tuple(f"session-{path.stem}" for path in paths),
+            changed_session_ids=(tuple(f"session-{path.stem}" for path in paths) if has_changed_sessions else ()),
         )
 
     async def fake_flush(
@@ -361,8 +369,16 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     # Two source chunks coalesce into one bounded derived pass; the final
     # source chunk runs its own pass and the archive-wide stages exactly once.
     assert convergence_batches == [
-        (tuple(files[:4]), tuple(f"session-{path.stem}" for path in files[:4]), False),
-        (tuple(files[4:]), tuple(f"session-{path.stem}" for path in files[4:]), True),
+        (
+            tuple(files[:4]),
+            tuple(f"session-{path.stem}" for path in files[:4]) if has_changed_sessions else (),
+            False,
+        ),
+        (
+            tuple(files[4:]),
+            tuple(f"session-{path.stem}" for path in files[4:]) if has_changed_sessions else (),
+            True,
+        ),
     ]
     assert retry_scan_calls == [3]
 

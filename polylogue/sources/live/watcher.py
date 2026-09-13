@@ -930,7 +930,12 @@ class LiveWatcher:
                             stage_timings_s[stage] = stage_timings_s.get(stage, 0.0) + elapsed_s
                         completed_paths = tuple(getattr(metrics, "succeeded_paths", ()) or ())
                         changed_session_ids = tuple(getattr(metrics, "changed_session_ids", ()) or ())
-                        if changed_session_ids:
+                        # A source observation can commit without creating or
+                        # updating a session.  Session IDs only narrow the
+                        # profile follow-up; the completed path still needs
+                        # the bounded generic convergence pass and its debt
+                        # outcome recorded.
+                        if completed_paths:
                             deferred_convergence_paths.extend(completed_paths)
                             deferred_session_ids.extend(changed_session_ids)
                             if whole_archive_anchor is None and completed_paths:
