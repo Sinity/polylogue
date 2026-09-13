@@ -72,6 +72,20 @@ from polylogue.core.refs import ObjectRef
 from polylogue.storage.runtime import MessageRecord
 from tests.infra.identity import archive_block_id, archive_message_id
 from tests.infra.live_ingest import write_index_session
+from tests.infra.query_field_laws import (
+    QUERY_BOUNDARY_LAWS,
+    QUERY_COMPOSITION_LAWS,
+    QUERY_FIELD_LAWS,
+    RETIRED_FIELD_EXAMPLES,
+    BooleanFact,
+    BoundaryLaw,
+    CompositionLaw,
+    FieldProjection,
+    LineageFact,
+    NotFact,
+    PredicateFact,
+    QueryFieldLaw,
+)
 
 
 def _mid(session_id: str, native_id: str, *, position: int = 0) -> str:
@@ -5460,93 +5474,14 @@ class TestBooleanQueryExpression:
 
 
 class TestLowererFieldMapping:
-    def test_repo(self) -> None:
-        spec = compile_expression("repo:polylogue")
-        assert spec.repo_names == ("polylogue",)
-
-    def test_origin(self) -> None:
-        spec = compile_expression("origin:claude-code-session")
-        assert spec.origins == ("claude-code-session",)
-
-    def test_origin_negated(self) -> None:
-        spec = compile_expression("-origin:chatgpt-export")
-        assert spec.excluded_origins == ("chatgpt-export",)
-
-    def test_origin_alternation(self) -> None:
-        spec = compile_expression("origin:(claude-code-session|codex-session)")
-        assert set(spec.origins) == {"claude-code-session", "codex-session"}
-
-    def test_tag(self) -> None:
-        spec = compile_expression("tag:review")
-        assert spec.tags == ("review",)
-
-    def test_tag_negated(self) -> None:
-        spec = compile_expression("-tag:wip")
-        assert spec.excluded_tags == ("wip",)
-
-    def test_path(self) -> None:
-        spec = compile_expression("path:polylogue/cli")
-        assert spec.referenced_path == ("polylogue/cli",)
-
-    def test_cwd(self) -> None:
-        spec = compile_expression("cwd:/realm/project")
-        assert spec.cwd_prefix == "/realm/project"
-
-    def test_tool(self) -> None:
-        spec = compile_expression("tool:bash")
-        assert spec.tool_terms == ("bash",)
-
-    def test_tool_negated(self) -> None:
-        spec = compile_expression("-tool:bash")
-        assert spec.excluded_tool_terms == ("bash",)
-
-    def test_action_file_edit(self) -> None:
-        spec = compile_expression("action:file_edit")
-        assert spec.action_terms == ("file_edit",)
-
-    def test_action_negated(self) -> None:
-        spec = compile_expression("-action:shell")
-        assert spec.excluded_action_terms == ("shell",)
-
     def test_action_unknown_raises(self) -> None:
         with pytest.raises(ExpressionCompileError, match="unknown action"):
             compile_expression("action:unknown_action_type")
-
-    def test_has_paste(self) -> None:
-        spec = compile_expression("has:paste")
-        assert spec.filter_has_paste is True
-        assert spec.filter_has_tool_use is False
-
-    def test_has_tools(self) -> None:
-        spec = compile_expression("has:tools")
-        assert spec.filter_has_tool_use is True
-
-    def test_has_thinking(self) -> None:
-        spec = compile_expression("has:thinking")
-        assert spec.filter_has_thinking is True
-
-    def test_has_custom_type(self) -> None:
-        spec = compile_expression("has:summary")
-        assert "summary" in spec.has_types
-
-    def test_id(self) -> None:
-        session_id = "abc123def456"
-        spec = compile_expression(f"id:{session_id}")
-        assert spec.session_id == session_id
-
-    def test_session_alias(self) -> None:
-        session_id = "claude-code-session:abc123def456"
-        spec = compile_expression(f"session:{session_id}")
-        assert spec.session_id == session_id
 
     def test_session_alias_inside_boolean_predicate(self) -> None:
         session_id = "claude-code-session:abc123def456"
         spec = compile_expression(f"sessions where session:{session_id}")
         assert spec.boolean_predicate == QueryFieldPredicate(field="session", values=(session_id,))
-
-    def test_title(self) -> None:
-        spec = compile_expression("title:refactor")
-        assert spec.title == "refactor"
 
     def test_near_quoted(self) -> None:
         spec = compile_expression('near:"semantic search test"')
@@ -5581,14 +5516,6 @@ class TestLowererFieldMapping:
         merged = compile_expression_into("near:id:abc123", base)
         assert merged.similar_session_id == "abc123"
 
-    def test_contains(self) -> None:
-        spec = compile_expression("contains:foo")
-        assert spec.contains_terms == ("foo",)
-
-    def test_lane(self) -> None:
-        spec = compile_expression("lane:dialogue")
-        assert spec.retrieval_lane == "dialogue"
-
     def test_lane_invalid_raises(self) -> None:
         with pytest.raises(ExpressionCompileError, match="unknown retrieval lane"):
             compile_expression("lane:nosuchlane")
@@ -5600,36 +5527,6 @@ class TestLowererFieldMapping:
     def test_negated_word_to_exclude_text(self) -> None:
         spec = compile_expression("-error")
         assert spec.exclude_text_terms == ("error",)
-
-    def test_messages_gte(self) -> None:
-        spec = compile_expression("messages:>=10")
-        assert spec.min_messages == 10
-        assert spec.max_messages is None
-
-    def test_messages_lte(self) -> None:
-        spec = compile_expression("messages:<=50")
-        assert spec.max_messages == 50
-        assert spec.min_messages is None
-
-    def test_readable_messages_comparison(self) -> None:
-        spec = compile_expression("messages > 10")
-
-        assert spec.min_messages == 11
-        assert spec.max_messages is None
-
-    def test_readable_words_less_than(self) -> None:
-        spec = compile_expression("words < 500")
-
-        assert spec.max_words == 499
-        assert spec.min_words is None
-
-    def test_readable_count_range(self) -> None:
-        spec = compile_expression("messages between 5 and 20 words between 100 and 500")
-
-        assert spec.min_messages == 5
-        assert spec.max_messages == 20
-        assert spec.min_words == 100
-        assert spec.max_words == 500
 
     def test_aggregate_count_comparison_requires_boolean_query(self) -> None:
         with pytest.raises(ExpressionCompileError, match="supported only inside `sessions where`"):
@@ -5654,46 +5551,9 @@ class TestLowererFieldMapping:
         with pytest.raises(ExpressionCompileError, match="lower bound 20 is greater than upper bound 5"):
             compile_expression("messages between 20 and 5")
 
-    def test_readable_date_range(self) -> None:
-        spec = compile_expression("date between 2026-01-01 and 2026-02-01")
-
-        assert spec.since == "2026-01-01"
-        assert spec.until == "2026-02-01"
-
-    def test_readable_date_gte(self) -> None:
-        spec = compile_expression("date >= 2026-01-01")
-
-        assert spec.since == "2026-01-01"
-        assert spec.until is None
-
-    def test_readable_date_lte(self) -> None:
-        spec = compile_expression("date <= 2026-02-01")
-
-        assert spec.until == "2026-02-01"
-        assert spec.since is None
-
     def test_readable_date_equality_raises(self) -> None:
         with pytest.raises(ExpressionCompileError, match="date equality is not supported"):
             compile_expression("date = 2026-01-01")
-
-    def test_words_gte(self) -> None:
-        spec = compile_expression("words:>=200")
-        assert spec.min_words == 200
-
-    def test_since_relative(self) -> None:
-        spec = compile_expression("since:7d")
-        assert spec.since is not None
-        assert "days" in spec.since
-
-    def test_until_relative(self) -> None:
-        spec = compile_expression("until:2w")
-        assert spec.until is not None
-        assert "weeks" in spec.until
-
-    def test_since_absolute(self) -> None:
-        spec = compile_expression("since:2024-01-15")
-        # Absolute dates pass through as-is (dateparser handles them later)
-        assert spec.since == "2024-01-15"
 
     def test_empty_expression(self) -> None:
         spec = compile_expression("")
@@ -5711,6 +5571,101 @@ class TestLowererFieldMapping:
         assert spec.filter_has_paste is True
         assert spec.referenced_path == ("polylogue/cli",)
         assert spec.tool_terms == ("bash",)
+
+
+def _assert_predicate_fact(actual: object, expected: object) -> None:
+    """Compare an independent primitive predicate fact with the AST object."""
+    if isinstance(expected, PredicateFact):
+        assert actual == QueryFieldPredicate(field=expected.field, values=expected.values, op=expected.op)
+    elif isinstance(expected, LineageFact):
+        assert actual == QueryLineagePredicate(seed_session_id=expected.seed_session_id)
+    elif isinstance(expected, BooleanFact):
+        assert isinstance(actual, QueryBoolPredicate)
+        assert actual.op == expected.operator
+        assert len(actual.children) == len(expected.children)
+        for actual_child, expected_child in zip(actual.children, expected.children, strict=True):
+            _assert_predicate_fact(actual_child, expected_child)
+    elif isinstance(expected, NotFact):
+        assert isinstance(actual, QueryNotPredicate)
+        _assert_predicate_fact(actual.child, expected.child)
+    else:
+        raise AssertionError(f"unrecognized independent predicate fact: {expected!r}")
+
+
+def _assert_projection(spec: SessionQuerySpec, projection: FieldProjection) -> None:
+    actual = getattr(spec, projection.name)
+    if projection.name == "boolean_predicate":
+        _assert_predicate_fact(actual, projection.value)
+    elif projection.contains:
+        assert isinstance(actual, str)
+        assert str(projection.value) in actual
+    else:
+        assert actual == projection.value, f"wrong lowering for {projection.name}: {actual!r} != {projection.value!r}"
+
+
+class TestIndependentFieldLoweringLaws:
+    """Known-answer field laws replace only subsumed one-off examples."""
+
+    @pytest.mark.parametrize("law", QUERY_FIELD_LAWS, ids=lambda law: law.law_id)
+    def test_field_projection(self, law: QueryFieldLaw) -> None:
+        for projection in law.expected:
+            _assert_projection(compile_expression(law.expression), projection)
+
+    @pytest.mark.parametrize(
+        "law",
+        tuple(law for law in QUERY_FIELD_LAWS if law.negated_expression is not None),
+        ids=lambda law: f"{law.law_id}-negated",
+    )
+    def test_negated_projection(self, law: QueryFieldLaw) -> None:
+        assert law.negated_expression is not None
+        spec = compile_expression(law.negated_expression)
+        for projection in law.negated_expected:
+            _assert_projection(spec, projection)
+
+    @pytest.mark.parametrize(
+        "law",
+        tuple(law for law in QUERY_FIELD_LAWS if law.structured_params),
+        ids=lambda law: f"{law.law_id}-structured",
+    )
+    def test_expression_matches_independent_structured_flag(self, law: QueryFieldLaw) -> None:
+        expression_spec = compile_expression(law.expression)
+        structured_spec = SessionQuerySpec.from_params(dict(law.structured_params))
+        for projection in law.expected:
+            expression_value = getattr(expression_spec, projection.name)
+            structured_value = getattr(structured_spec, projection.name)
+            if projection.contains:
+                assert isinstance(expression_value, str)
+                assert str(projection.value) in expression_value
+            else:
+                assert expression_value == structured_value
+
+    def test_registry_is_fully_bound_to_independent_laws(self) -> None:
+        assert set(EXPRESSION_FIELD_REGISTRY) == {law.field for law in QUERY_FIELD_LAWS}
+
+    def test_retired_examples_are_each_mapped_to_a_law(self) -> None:
+        available = {law.law_id for law in QUERY_FIELD_LAWS}
+        available.update(law.law_id for law in QUERY_BOUNDARY_LAWS)
+        assert RETIRED_FIELD_EXAMPLES
+        assert all(candidate.replacement_law in available for candidate in RETIRED_FIELD_EXAMPLES)
+        assert len({candidate.old_test for candidate in RETIRED_FIELD_EXAMPLES}) == len(RETIRED_FIELD_EXAMPLES)
+
+    @pytest.mark.parametrize("law", QUERY_BOUNDARY_LAWS, ids=lambda law: law.law_id)
+    def test_boundary_lowering(self, law: BoundaryLaw) -> None:
+        spec = compile_expression(law.expression)
+        for projection in law.expected:
+            _assert_projection(spec, projection)
+
+    @pytest.mark.parametrize("law", QUERY_COMPOSITION_LAWS, ids=lambda law: law.law_id)
+    def test_boolean_composition_lowering(self, law: CompositionLaw) -> None:
+        actual = parse_expression_ast(law.expression).boolean_predicate
+        _assert_predicate_fact(actual, law.expected)
+
+    def test_empty_expression_remains_null_default(self) -> None:
+        assert compile_expression("") == SessionQuerySpec()
+
+    def test_unknown_field_remains_a_refusal_witness(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="unknown query field"):
+            compile_expression("nosuchfield:value")
 
 
 # ---------------------------------------------------------------------------
@@ -6029,111 +5984,12 @@ class TestCLIRootRequestWiring:
 
 
 class TestFieldRegistry:
-    FIELD_DESCRIPTOR_CASES = {
-        "repo": ("repo:polylogue", "repo_names", ("polylogue",)),
-        "project": ("project:g-p-6a40343a", "project_refs", ("g-p-6a40343a",)),
-        "origin": ("origin:claude-code-session", "origins", ("claude-code-session",)),
-        "tag": ("tag:review", "tags", ("review",)),
-        "path": ("path:polylogue/cli", "referenced_path", ("polylogue/cli",)),
-        "cwd": ("cwd:/realm/project", "cwd_prefix", "/realm/project"),
-        "tool": ("tool:bash", "tool_terms", ("bash",)),
-        "action": ("action:file_edit", "action_terms", ("file_edit",)),
-        "action_sequence": (
-            "action_sequence:file_edit>shell",
-            "action_sequence",
-            ("file_edit", "shell"),
-        ),
-        "action_text": ("action_text:pytest", "action_text_terms", ("pytest",)),
-        "since_session": (
-            "since_session:claude-code-session:abc123",
-            "since_session_id",
-            "claude-code-session:abc123",
-        ),
-        "has": ("has:paste", "filter_has_paste", True),
-        "id": ("id:abc123", "session_id", "abc123"),
-        "session": ("session:claude-code-session:abc123", "session_id", "claude-code-session:abc123"),
-        "title": ("title:refactor", "title", "refactor"),
-        "since": ("since:7d", "since", "7 days ago"),
-        "until": ("until:2024-01-15", "until", "2024-01-15"),
-        "near": ('near:"semantic search"', "similar_text", "semantic search"),
-        "contains": ("contains:foo", "contains_terms", ("foo",)),
-        "messages": ("messages:>=10", "min_messages", 10),
-        "words": ("words:>=200", "min_words", 200),
-        "user_messages": (
-            "sessions where user_messages >= 2",
-            "boolean_predicate",
-            QueryFieldPredicate(field="user_messages", values=("2",), op=">="),
-        ),
-        "authored_user_messages": (
-            "sessions where authored_user_messages >= 2",
-            "boolean_predicate",
-            QueryFieldPredicate(field="authored_user_messages", values=("2",), op=">="),
-        ),
-        "assistant_messages": (
-            "sessions where assistant_messages >= 2",
-            "boolean_predicate",
-            QueryFieldPredicate(field="assistant_messages", values=("2",), op=">="),
-        ),
-        "system_messages": (
-            "sessions where system_messages = 0",
-            "boolean_predicate",
-            QueryFieldPredicate(field="system_messages", values=("0",), op="="),
-        ),
-        "tool_messages": (
-            "sessions where tool_messages = 0",
-            "boolean_predicate",
-            QueryFieldPredicate(field="tool_messages", values=("0",), op="="),
-        ),
-        "tool_use_messages": (
-            "sessions where tool_use_messages >= 1",
-            "boolean_predicate",
-            QueryFieldPredicate(field="tool_use_messages", values=("1",), op=">="),
-        ),
-        "thinking_messages": (
-            "sessions where thinking_messages >= 1",
-            "boolean_predicate",
-            QueryFieldPredicate(field="thinking_messages", values=("1",), op=">="),
-        ),
-        "paste_messages": (
-            "sessions where paste_messages = 0",
-            "boolean_predicate",
-            QueryFieldPredicate(field="paste_messages", values=("0",), op="="),
-        ),
-        "duration_ms": (
-            "sessions where duration_ms >= 60000",
-            "boolean_predicate",
-            QueryFieldPredicate(field="duration_ms", values=("60000",), op=">="),
-        ),
-        "user_words": (
-            "sessions where user_words >= 100",
-            "boolean_predicate",
-            QueryFieldPredicate(field="user_words", values=("100",), op=">="),
-        ),
-        "authored_user_words": (
-            "sessions where authored_user_words >= 100",
-            "boolean_predicate",
-            QueryFieldPredicate(field="authored_user_words", values=("100",), op=">="),
-        ),
-        "assistant_words": (
-            "sessions where assistant_words >= 500",
-            "boolean_predicate",
-            QueryFieldPredicate(field="assistant_words", values=("500",), op=">="),
-        ),
-        "lane": ("lane:dialogue", "retrieval_lane", "dialogue"),
-        "root": ("root:true", "root", True),
-        "lineage": (
-            "lineage:id:chatgpt-export:ext-root",
-            "boolean_predicate",
-            QueryLineagePredicate(seed_session_id="chatgpt-export:ext-root"),
-        ),
-    }
-
     def test_registry_has_required_fields(self) -> None:
         required = {"repo", "origin", "tag", "path", "cwd", "tool", "action", "has", "id", "since", "until", "near"}
         assert required.issubset(EXPRESSION_FIELD_REGISTRY.keys())
 
     def test_descriptor_cases_cover_every_registry_field(self) -> None:
-        assert set(self.FIELD_DESCRIPTOR_CASES) == set(EXPRESSION_FIELD_REGISTRY)
+        assert {law.field for law in QUERY_FIELD_LAWS} == set(EXPRESSION_FIELD_REGISTRY)
 
     def test_all_registry_entries_have_required_descriptor_keys(self) -> None:
         for field, info in EXPRESSION_FIELD_REGISTRY.items():
@@ -6145,34 +6001,23 @@ class TestFieldRegistry:
 
     @pytest.mark.parametrize("field", sorted(EXPRESSION_FIELD_REGISTRY))
     def test_registry_example_reaches_declared_spec_field(self, field: str) -> None:
-        expression, spec_field, expected = self.FIELD_DESCRIPTOR_CASES[field]
-        assert EXPRESSION_FIELD_REGISTRY[field]["example"].split(" | ")[0] == expression
-        advertised_fields = EXPRESSION_FIELD_REGISTRY[field]["spec_field"].split("/")
-        assert spec_field in advertised_fields
+        info = EXPRESSION_FIELD_REGISTRY[field]
+        expression = info["example"].split(" | ")[0]
+        law = next(law for law in QUERY_FIELD_LAWS if law.field == field and law.expression == expression)
+        projection = law.expected[0]
+        advertised_fields = info["spec_field"].split("/")
+        assert projection.name in advertised_fields
+        _assert_projection(compile_expression(expression), projection)
 
-        spec = compile_expression(expression)
-        assert getattr(spec, spec_field) == expected
-
-    @pytest.mark.parametrize("field", sorted(EXPRESSION_FIELD_REGISTRY))
-    def test_registry_negatable_descriptor_matches_behavior(self, field: str) -> None:
-        expression, spec_field, expected = self.FIELD_DESCRIPTOR_CASES[field]
-        negated = "-" + expression
-
-        if EXPRESSION_FIELD_REGISTRY[field]["negatable"] == "no":
-            with pytest.raises(ExpressionCompileError):
-                compile_expression(negated)
-            return
-
-        spec = compile_expression(negated)
-        if field == "origin":
-            assert spec.excluded_origins == expected
-        elif field == "tag":
-            assert spec.excluded_tags == expected
-        elif field == "tool":
-            assert spec.excluded_tool_terms == expected
-        elif field == "action":
-            assert spec.excluded_action_terms == expected
-        assert getattr(spec, spec_field) in {(), None, False}
+    def test_registry_negatable_descriptor_matches_behavior(self) -> None:
+        negatable = {law.field for law in QUERY_FIELD_LAWS if law.negated_expression is not None}
+        assert negatable == {field for field, info in EXPRESSION_FIELD_REGISTRY.items() if info["negatable"] == "yes"}
+        for law in QUERY_FIELD_LAWS:
+            if law.negated_expression is None:
+                continue
+            spec = compile_expression(law.negated_expression)
+            for projection in law.negated_expected:
+                _assert_projection(spec, projection)
 
     def test_cross_field_or_reaches_boolean_predicate(self) -> None:
         spec = compile_expression("repo:x OR origin:chatgpt-export")

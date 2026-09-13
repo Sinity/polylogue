@@ -466,7 +466,7 @@ class TestResourceErrorEnvelopes:
         ):
             from tests.infra.mcp import invoke_surface
 
-            result = invoke_surface(_resource(read_server, "polylogue://origin/{name}/recent"), name="chatgpt")
+            result = invoke_surface(_resource(read_server, "polylogue://origin/{name}/recent"), name="chatgpt-export")
         _assert_structured_error(result, expected_code="internal_error")
 
     def test_readiness_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:

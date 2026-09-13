@@ -29,6 +29,7 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -146,12 +147,22 @@ def remove_temp_tree(path: Path) -> None:
     """Delete a pytest temporary tree, including the read-only trees tests seal.
 
     Sealed archive generations are written without write permission, so a plain
-    rmtree cannot unlink them and silently leaves the tree behind.
+    rmtree cannot unlink them and silently leaves the tree behind. Unlinking
+    needs a writable parent directory, not writable files; changing a regular
+    file's mode can also mutate a retained fixture when the tree contains a
+    hard link to it.
     """
-    for parent, directories, files in os.walk(path, topdown=False):
-        for name in (*directories, *files):
+    for parent, directories, _files in os.walk(path, topdown=False):
+        for name in directories:
+            directory = os.path.join(parent, name)
             with contextlib.suppress(OSError):
-                os.chmod(os.path.join(parent, name), 0o700)
+                mode = os.lstat(directory).st_mode
+                if stat.S_ISDIR(mode):
+                    os.chmod(directory, mode | stat.S_IWUSR)
+        with contextlib.suppress(OSError):
+            mode = os.lstat(parent).st_mode
+            if stat.S_ISDIR(mode):
+                os.chmod(parent, mode | stat.S_IWUSR)
     shutil.rmtree(path, ignore_errors=True)
 
 
