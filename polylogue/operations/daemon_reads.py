@@ -107,8 +107,15 @@ def execute_read_operation(
     dependencies = dependencies or DaemonReadDependencies()
     cacheable = _cacheable_read(name, payload)
     cache_key_payload = _params(payload) if name in {"cli.query", "facets"} else payload
-    generation = str(archive.index_db_path.resolve())
+    # Completion is a pure protocol read and deliberately accepts the minimal
+    # archive-shaped object used by the public operation seam.  Every other
+    # operation retains the existing index validation, including operations
+    # that do not use the result cache.
+    generation: str | None = None
+    if name != "completion":
+        generation = str(archive.index_db_path.resolve())
     if cacheable:
+        assert generation is not None
         from polylogue.storage.search.cache import get_cached_result
 
         cached = get_cached_result(
@@ -147,6 +154,7 @@ def execute_read_operation(
         raise ValueError(f"read operation is not declared: {name}")
 
     if cacheable:
+        assert generation is not None
         from polylogue.storage.search.cache import put_cached_result
 
         put_cached_result(
