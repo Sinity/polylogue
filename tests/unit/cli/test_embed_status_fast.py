@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.commands.embed import embed_command
+from polylogue.config import PolylogueConfig
 from polylogue.storage.embeddings import status_payload as status_payload_mod
 from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, vector_derivation_hash
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
@@ -19,20 +20,25 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     record_embedding_failure,
     resolve_embedding_failure,
 )
+from tests.infra.embedding_config import embedding_config
 
 
-class _Cfg:
-    def __init__(
-        self,
-        *,
-        embedding_enabled: bool,
-        voyage_api_key: str | None,
-    ) -> None:
-        self.embedding_enabled = embedding_enabled
-        self.voyage_api_key = voyage_api_key
-        self.embedding_model = "voyage-4"
-        self.embedding_dimension = 1024
-        self.embedding_max_cost_usd = 5.0
+def _cfg(*, embedding_enabled: bool, voyage_api_key: str | None) -> PolylogueConfig:
+    """A real ``PolylogueConfig``, not a duck-typed stand-in.
+
+    ``embedding_status_settings_from_config`` dispatches nominally over
+    ``PolylogueConfig``/``Config`` and refuses anything else; see
+    ``tests/infra/embedding_config.py`` for why structural matching cannot
+    stand in for it.
+    """
+
+    return embedding_config(
+        embedding_enabled=embedding_enabled,
+        voyage_api_key=voyage_api_key,
+        embedding_model="voyage-4",
+        embedding_dimension=1024,
+        embedding_max_cost_usd=5.0,
+    )
 
 
 def _env(db_path: Path) -> Any:
@@ -248,7 +254,7 @@ def _payload(result_output: str) -> dict[str, Any]:
     return cast("dict[str, Any]", json.loads(result_output))
 
 
-def _run_status(db_path: Path, *args: str, cfg: _Cfg | None = None) -> dict[str, Any]:
+def _run_status(db_path: Path, *args: str, cfg: PolylogueConfig | None = None) -> dict[str, Any]:
     index_db = db_path if db_path.name == "index.db" else db_path.with_name("index.db")
     if index_db.exists():
         from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -260,7 +266,7 @@ def _run_status(db_path: Path, *args: str, cfg: _Cfg | None = None) -> dict[str,
     runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
     with patch(
         "polylogue.config.load_polylogue_config",
-        return_value=cfg or _Cfg(embedding_enabled=False, voyage_api_key=None),
+        return_value=cfg or _cfg(embedding_enabled=False, voyage_api_key=None),
     ):
         result = runner.invoke(
             embed_command,
@@ -272,7 +278,7 @@ def _run_status(db_path: Path, *args: str, cfg: _Cfg | None = None) -> dict[str,
     return _payload(result.output)
 
 
-def _run_status_text(db_path: Path, *, detail: bool = False, cfg: _Cfg | None = None) -> str:
+def _run_status_text(db_path: Path, *, detail: bool = False, cfg: PolylogueConfig | None = None) -> str:
     index_db = db_path if db_path.name == "index.db" else db_path.with_name("index.db")
     if index_db.exists():
         from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -284,7 +290,7 @@ def _run_status_text(db_path: Path, *, detail: bool = False, cfg: _Cfg | None = 
     runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
     with patch(
         "polylogue.config.load_polylogue_config",
-        return_value=cfg or _Cfg(embedding_enabled=False, voyage_api_key=None),
+        return_value=cfg or _cfg(embedding_enabled=False, voyage_api_key=None),
     ):
         result = runner.invoke(
             embed_command,
@@ -315,7 +321,7 @@ def test_status_json_reads_archive_file_set_from_archive_index(tmp_path: Path) -
     db_anchor = tmp_path / "custom.sqlite"
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
 
-    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["status"] == "partial"
     assert payload["total_sessions"] == 2
@@ -340,7 +346,7 @@ def test_status_json_reports_archive_embedding_metadata_without_detail(tmp_path:
     db_anchor = tmp_path / "custom.sqlite"
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
 
-    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["pending_messages"] is None
     assert payload["pending_messages_exact"] is False
@@ -393,7 +399,7 @@ def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Pat
             """
         )
 
-    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["failure_count"] == 1
     assert payload["terminal_failure_count"] == 1
@@ -420,7 +426,7 @@ def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Pat
             ),
         }
     ]
-    text = _run_status_text(db_anchor, detail=True, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    text = _run_status_text(db_anchor, detail=True, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
     assert "embedding-failure:terminal: terminal" in text
     assert "refs: codex-session:pending:m1" in text
     assert "resolve: polylogue ops embed resolve-failure embedding-failure:terminal" in text
@@ -592,7 +598,7 @@ def test_status_excludes_acknowledged_terminal_failure_from_retry_backlog(tmp_pa
             resolved_at_ms=1_800_000_001_000,
         )
 
-    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["failure_count"] == 0
     assert payload["terminal_failure_count"] == 0
@@ -628,7 +634,7 @@ def test_status_json_detail_does_not_derive_coverage_from_analyzed_prose_estimat
             """
         )
 
-    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["candidate_prose_messages"] == 3
     assert payload["candidate_prose_messages_exact"] is False
@@ -689,7 +695,7 @@ def test_status_json_does_not_report_over_100_percent_from_retained_embedding_ro
             ],
         )
 
-    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     # codex-session:complete's inflated message_count_embedded (4) no longer
     # matches its real eligible count (1) or its embedding_derivation_state
@@ -723,7 +729,7 @@ def test_status_json_default_uses_bounded_exact_archive_session_state(
         fake_exact_session_state,
     )
 
-    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert observed["status_table"] == "embeddings.embedding_status"
     assert observed["timeout_ms"] == status_payload_mod.METADATA_SUMMARY_TIMEOUT_MS
@@ -754,7 +760,7 @@ def test_status_json_default_skips_embedding_metadata_summary_scans(
 
     monkeypatch.setattr(status_payload_mod, "_rows_with_timeout", reject_metadata_summary_rows)
 
-    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["status"] == "partial"
     assert payload["embedding_models"] == {}
@@ -781,7 +787,7 @@ def test_status_json_detail_uses_uniform_metadata_probe_when_grouping_times_out(
 
     monkeypatch.setattr(status_payload_mod, "_rows_with_timeout", fake_rows_with_timeout)
 
-    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["embedding_models"] == {"voyage-4": 1}
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
@@ -837,7 +843,7 @@ def test_status_json_uses_status_ledger_for_archive_embedded_sessions(tmp_path: 
             """
         )
 
-    payload = _run_status(tmp_path / "custom.sqlite", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(tmp_path / "custom.sqlite", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["embedded_sessions"] == 1
     assert payload["pending_sessions"] == 1
@@ -859,7 +865,7 @@ def test_status_json_detail_falls_back_when_exact_pending_count_times_out(
 
     monkeypatch.setattr(status_payload_mod, "_scalar_int_with_timeout", fake_scalar_int_with_timeout)
 
-    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["status"] == "partial"
     assert payload["pending_sessions"] == 1
@@ -884,7 +890,7 @@ def test_status_json_detail_falls_back_when_exact_session_state_times_out(
 
     monkeypatch.setattr(status_payload_mod, "count_archive_embedding_session_state", interrupted_session_state)
 
-    payload = _run_status(db_anchor, "--detail", cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["status"] == "partial"
     assert payload["embedded_sessions"] == 1
@@ -915,7 +921,7 @@ def test_status_text_detail_does_not_claim_zero_cost_when_exact_pending_count_ti
     runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
     with patch(
         "polylogue.config.load_polylogue_config",
-        return_value=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"),
+        return_value=_cfg(embedding_enabled=True, voyage_api_key="vk-live"),
     ):
         result = runner.invoke(
             embed_command,
@@ -936,7 +942,7 @@ def test_status_json_reports_manual_backfill_when_config_disabled_but_partial(tm
     db_anchor = tmp_path / "custom.sqlite"
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
 
-    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, cfg=_cfg(embedding_enabled=False, voyage_api_key="vk-live"))
 
     assert payload["status"] == "partial"
     assert payload["retrieval_ready"] is True
@@ -976,7 +982,7 @@ def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
             estimated_cost_usd=0.001,
         )
 
-    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     latest = payload["latest_catchup_run"]
     assert latest["run_id"] == "v1-run"
@@ -1047,7 +1053,7 @@ def test_status_json_distinguishes_latest_material_archive_catchup(tmp_path: Pat
             estimated_cost_usd=0.0,
         )
 
-    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     latest = payload["latest_catchup_run"]
     material = payload["latest_material_catchup_run"]
@@ -1085,7 +1091,7 @@ def test_status_json_treats_skipped_archive_catchup_as_material(tmp_path: Path) 
             estimated_cost_usd=0.0,
         )
 
-    payload = _run_status(db_anchor, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_anchor, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     latest = payload["latest_catchup_run"]
     material = payload["latest_material_catchup_run"]
@@ -1101,7 +1107,7 @@ def test_status_json_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
 
     payload = _run_status(
         db_anchor,
-        cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"),
+        cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"),
     )
 
     assert payload["status"] == "partial"
@@ -1116,7 +1122,7 @@ def test_status_json_bypasses_schema_version_gate_for_operator_readiness(tmp_pat
     with sqlite3.connect(db_path) as conn:
         conn.execute("PRAGMA user_version = 9")
 
-    payload = _run_status(db_path, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
+    payload = _run_status(db_path, cfg=_cfg(embedding_enabled=False, voyage_api_key="vk-live"))
 
     assert payload["status"] == "none"
     assert payload["config_enabled"] is False
@@ -1146,13 +1152,13 @@ def test_status_json_counts_empty_vec0_rowids_as_zero_embeddings(tmp_path: Path)
 @pytest.mark.parametrize(
     ("cfg", "config_enabled", "has_key", "stage_enabled"),
     [
-        (_Cfg(embedding_enabled=False, voyage_api_key="vk-live"), False, True, False),
-        (_Cfg(embedding_enabled=True, voyage_api_key=None), True, False, False),
+        (_cfg(embedding_enabled=False, voyage_api_key="vk-live"), False, True, False),
+        (_cfg(embedding_enabled=True, voyage_api_key=None), True, False, False),
     ],
 )
 def test_status_json_reports_config_gate_combinations(
     tmp_path: Path,
-    cfg: _Cfg,
+    cfg: PolylogueConfig,
     config_enabled: bool,
     has_key: bool,
     stage_enabled: bool,
@@ -1276,7 +1282,7 @@ def test_status_text_prints_machine_readable_next_action(tmp_path: Path) -> None
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)
 
-    output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
+    output = _run_status_text(db_path, cfg=_cfg(embedding_enabled=False, voyage_api_key="vk-live"))
 
     assert "Configured model:     voyage-4 (1024d)" in output
     assert "Monthly cost cap:     $5.00" in output
@@ -1291,7 +1297,7 @@ def test_status_text_prints_manual_backfill_when_config_disabled_but_partial(tmp
     db_anchor = tmp_path / "custom.sqlite"
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
 
-    output = _run_status_text(db_anchor, cfg=_Cfg(embedding_enabled=False, voyage_api_key="vk-live"))
+    output = _run_status_text(db_anchor, cfg=_cfg(embedding_enabled=False, voyage_api_key="vk-live"))
 
     assert "Next action:          continue_backfill" in output
     assert "Command:              polylogue ops embed backfill --yes --max-sessions 10" in output
@@ -1301,7 +1307,7 @@ def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)
 
-    output = _run_status_text(db_path, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    output = _run_status_text(db_path, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert "Next action:          drain_backlog" in output
     assert "Command:              polylogue ops embed backfill --yes --max-sessions 10" in output
@@ -1329,7 +1335,7 @@ def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
         conn.executemany("INSERT INTO message_embeddings (message_id) VALUES (?)", [("msg-1",), ("msg-2",)])
         conn.commit()
 
-    payload = _run_status(db_path, cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(db_path, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["status"] == "complete"
     assert payload["retrieval_ready"] is True
@@ -1404,7 +1410,7 @@ def test_status_json_reports_terminal_failures_before_ready(tmp_path: Path) -> N
     payload = _run_status(
         db_anchor,
         "--detail",
-        cfg=_Cfg(embedding_enabled=True, voyage_api_key="vk-live"),
+        cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"),
     )
 
     assert payload["status"] == "partial"

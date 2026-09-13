@@ -23,6 +23,7 @@ import pytest
 
 from polylogue.config import PolylogueConfig
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
+from tests.infra.embedding_config import embedding_config
 
 # ── helpers ────────────────────────────────────────────────────────
 
@@ -42,14 +43,12 @@ def _config(
     double here could only ever prove that the double matches itself --
     and would go on passing after the production type it imitates changed.
     """
-    return PolylogueConfig(
-        {
-            "embedding_enabled": embedding_enabled,
-            "voyage_api_key": voyage_api_key,
-            "embedding_model": embedding_model,
-            "embedding_dimension": embedding_dimension,
-            "embedding_max_cost_usd": embedding_max_cost_usd,
-        }
+    return embedding_config(
+        embedding_enabled=embedding_enabled,
+        voyage_api_key=voyage_api_key,
+        embedding_model=embedding_model,
+        embedding_dimension=embedding_dimension,
+        embedding_max_cost_usd=embedding_max_cost_usd,
     )
 
 
