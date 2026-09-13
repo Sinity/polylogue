@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +19,7 @@ from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN as _RAW_OBSERVA
 from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationScope
 
 RAW_OBSERVATION_DOMAIN = _RAW_OBSERVATION_DOMAIN
+_RAW_OBSERVATION_RECIPE_VERSION = RawObservationDerivation.recipe_version
 
 
 def make_raw_observation_derivation(
@@ -33,22 +33,21 @@ def make_raw_observation_derivation(
 
 def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple[str, ...]:
     """Read every active session output in the seed raw's replay component."""
-    from polylogue.storage.archive_identity import resolve_active_index_path
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+    from polylogue.operations.operation_context import open_operation_read
 
-    with ArchiveStore.open_existing(archive_root, read_only=True) as source:
-        component_raw_ids, _logical_keys = source.expand_raw_membership_selection([raw_id])
-    if not component_raw_ids:
-        return ()
-    index_db = resolve_active_index_path(archive_root)
-    with closing(open_readonly_connection(index_db, timeout=5.0)) as conn:
-        rows = conn.execute(
+    with open_operation_read(archive_root) as pinned:
+        component_raw_ids, _logical_keys = pinned.archive.expand_raw_membership_selection([raw_id])
+        if not component_raw_ids:
+            return ()
+        index = pinned.archive.index_connection
+        if index is None:
+            return ()
+        rows = index.execute(
             f"SELECT session_id FROM sessions WHERE raw_id IN ({','.join('?' for _ in component_raw_ids)}) "
             "ORDER BY session_id",
             component_raw_ids,
         ).fetchall()
-    return tuple(str(row[0]) for row in rows)
+        return tuple(str(row[0]) for row in rows)
 
 
 def raw_observation_frame(
@@ -60,7 +59,7 @@ def raw_observation_frame(
     return DerivationFrame(
         archive_root=str(archive_root),
         source_revision=str(ArchiveLocation.resolve(archive_root).active_index_path.resolve()),
-        recipe_versions={RAW_OBSERVATION_DOMAIN: RawObservationDerivation.recipe_version},
+        recipe_versions={RAW_OBSERVATION_DOMAIN: _RAW_OBSERVATION_RECIPE_VERSION},
         scope=RawObservationScope(source_roots=tuple(source_roots), raw_ids=tuple(raw_ids)),
     )
 
