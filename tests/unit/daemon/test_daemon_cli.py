@@ -4760,6 +4760,100 @@ def test_periodic_raw_materialization_convergence_schedules_whale_pass_on_quiesc
     assert whale_calls == [1]
 
 
+def test_periodic_raw_materialization_wakes_fair_intake_without_legacy_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The composed periodic route only wakes the fair owner.
+
+    Anti-vacuity: restoring the legacy drain or its all-valid scanner makes
+    this fail before the bounded canonical whale probe can run.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    wakeup = asyncio.Event()
+    whale_calls: list[tuple[object, object]] = []
+
+    async def fake_whale(**kwargs: object) -> bool:
+        whale_calls.append((kwargs["raw_observation_owner"], kwargs["raw_intake_discovery"]))
+        return False
+
+    async def stop_after_one_tick(seconds: float) -> None:
+        assert seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
+        assert wakeup.is_set()
+        raise asyncio.CancelledError
+
+    owner = object()
+    discovery = object()
+    monkeypatch.setattr(daemon_cli, "_maybe_run_raw_materialization_whale_pass", fake_whale)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_drain_raw_materialization_once",
+        lambda **_kwargs: pytest.fail("legacy raw authority drain used"),
+    )
+    with patch("asyncio.sleep", side_effect=stop_after_one_tick), pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            daemon_cli._periodic_raw_materialization_convergence(
+                raw_observation_owner=owner,
+                raw_intake_wakeup=wakeup,
+                raw_intake_discovery=discovery,
+            )
+        )
+
+    assert whale_calls == [(owner, discovery)]
+
+
+def test_canonical_whale_pass_uses_bounded_derivation_discovery_not_legacy_scanner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """One oversized pending raw reaches the canonical owner at whale capacity.
+
+    Anti-vacuity: replacing canonical discovery or the owner call with the
+    raw-authority candidate/converge route raises the patched assertion.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    raw_id = "oversized-raw"
+    calls: list[tuple[str, int]] = []
+    receipts: list[dict[str, object]] = []
+
+    class Discovery:
+        def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
+            assert limit == 1
+            return ((raw_id, daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES + 1),)
+
+    class Owner:
+        async def converge_raw_id(self, candidate: str, *, max_payload_bytes: int) -> object:
+            calls.append((candidate, max_payload_bytes))
+            return SimpleNamespace(done=1, outcomes=())
+
+    async def capture_receipt(**kwargs: object) -> None:
+        receipts.append(cast(dict[str, object], kwargs["payload"]))
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(daemon_cli, "_resolve_raw_materialization_whale_blob_limit_bytes", lambda: 4096)
+    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(daemon_cli, "_publish_whale_receipt", capture_receipt)
+    monkeypatch.setattr(
+        "polylogue.maintenance.raw_authority.whale_pass_candidate",
+        lambda *_args, **_kwargs: pytest.fail("legacy whale scanner used"),
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.raw_authority.converge_materialization",
+        lambda *_args, **_kwargs: pytest.fail("legacy whale convergence used"),
+    )
+
+    assert asyncio.run(
+        daemon_cli._maybe_run_raw_materialization_whale_pass(
+            raw_observation_owner=Owner(),
+            raw_intake_discovery=Discovery(),
+        )
+    )
+    assert calls == [(raw_id, 4096)]
+    assert receipts[-1]["status"] == "success"
+    assert receipts[-1]["repaired_count"] == 1
+
+
 def test_periodic_raw_materialization_convergence_skips_whale_pass_mid_burst(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
