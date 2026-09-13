@@ -374,25 +374,29 @@ class IdentityResetActuator(_FailClosedRecovery):
         initialize_archive_database(user_db, ArchiveTier.USER)
         conn = sqlite3.connect(user_db)
         try:
-            with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
                 for session_id in session_ids:
                     upsert_suppression(conn, session_id=session_id, reason=args.reason, mode="hide")
+                from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
+
+                ArchiveWriteGateway(user_db).commit_write_sync(
+                    WriteOperation.RESET,
+                    {"_connection": conn, "changed_session_ids": (), "effect_scope": "user-overlay"},
+                )
+            except BaseException:
+                conn.rollback()
+                raise
         finally:
             conn.close()
         suppressed = len(session_ids)
 
-        index_db = _index_db_path(args.archive_root)
         deleted = 0
-        if index_db.exists():
-            index_conn = sqlite3.connect(index_db)
-            index_conn.execute("PRAGMA foreign_keys = ON")
-            try:
-                with index_conn:
-                    for session_id in session_ids:
-                        cursor = index_conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                        deleted += max(int(cursor.rowcount), 0)
-            finally:
-                index_conn.close()
+        if _index_db_path(args.archive_root).exists():
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+            with ArchiveStore.open_existing(args.archive_root, read_only=False) as archive:
+                deleted = archive.delete_sessions(session_ids, write_operation=WriteOperation.RESET)
 
         return MutationReceipt(
             operation=self.operation,

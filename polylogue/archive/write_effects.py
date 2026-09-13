@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import uuid4
 
-from polylogue.archive.write_gateway import WriteOperation, WriteResult
+from polylogue.archive.write_gateway import WriteOperation, WriteResult, write_operation_policy_for
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ class WriteEffectContext:
     payload: dict[str, Any]
     changed_session_ids: tuple[str, ...]
     staleness_key: str
+    run_archive_effects: bool
     deferred_scheduler: Callable[[WriteEffect, WriteEffectContext], None] | None = None
 
 
@@ -292,6 +293,9 @@ def commit_archive_write_effects(
             Operation payload. Expected keys:
             - ``changed_session_ids``: sequence of session IDs whose
               FTS rows should be repaired.
+            - ``effect_scope``: ``"archive-index"`` (the default) runs
+              registered index effects; ``"user-overlay"`` commits a
+              declared user.db writer without index effects.
             - ``repair_message_fts``: bool, default True — set False to skip
               the message-FTS repair effect even when session IDs changed.
             - ``_connection``: (optional) forwarded from the gateway when an
@@ -303,28 +307,36 @@ def commit_archive_write_effects(
     """
     changed_ids: Sequence[str] = payload.get("changed_session_ids", [])
     sorted_ids: tuple[str, ...] = tuple(sorted(set(changed_ids))) if changed_ids else ()
+    effect_scope = payload.get("effect_scope", "archive-index")
+    policy = write_operation_policy_for(op, effect_scope)
     if "_db_path" not in payload:
         database_row = conn.execute("PRAGMA database_list").fetchall()
         if database_row and database_row[0][2]:
             payload = {**payload, "_db_path": database_row[0][2]}
-    staleness_key = f"{op.value}:{','.join(sorted_ids)}"
+    staleness_key = f"{effect_scope}:{op.value}:{','.join(sorted_ids)}"
     ctx = WriteEffectContext(
         conn=conn,
         op=op,
         payload=payload,
         changed_session_ids=sorted_ids,
         staleness_key=staleness_key,
+        run_archive_effects=policy.run_archive_effects,
         deferred_scheduler=payload.get("deferred_scheduler"),
     )
 
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
-    receipts = _run_registered_effects(WRITE_EFFECT_REGISTRY, "in-transaction", ctx, timings)
+    receipts = (
+        _run_registered_effects(WRITE_EFFECT_REGISTRY, "in-transaction", ctx, timings)
+        if policy.run_archive_effects
+        else []
+    )
     t_commit = time.perf_counter()
     conn.commit()
     commit_elapsed_s = time.perf_counter() - t_commit
-    receipts.extend(_run_registered_effects(WRITE_EFFECT_REGISTRY, "post-commit", ctx, timings))
-    receipts.extend(_run_registered_effects(WRITE_EFFECT_REGISTRY, "async-deferred", ctx, timings))
+    if policy.run_archive_effects:
+        receipts.extend(_run_registered_effects(WRITE_EFFECT_REGISTRY, "post-commit", ctx, timings))
+        receipts.extend(_run_registered_effects(WRITE_EFFECT_REGISTRY, "async-deferred", ctx, timings))
     total_effect_elapsed_s = time.perf_counter() - t0
 
     if total_effect_elapsed_s >= 1.0:

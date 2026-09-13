@@ -118,6 +118,7 @@ from polylogue.archive.semantic.subscription_pricing import compute_credit_cost,
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
+from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.digest import REFERENCE, canonical_bytes
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import ArchiveTierUnavailableError
@@ -3914,7 +3915,8 @@ class ArchiveStore:
         user_conn = self._open_user_write_connection(initialize=True)
         user_conn.row_factory = sqlite3.Row
         try:
-            with user_conn:
+            user_conn.execute("BEGIN IMMEDIATE")
+            try:
                 for session_id in tuple(
                     dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids)
                 ):
@@ -3939,6 +3941,13 @@ class ArchiveStore:
                             author_kind=author_kind,
                             evidence={"source": "archive_query"},
                         )
+                ArchiveWriteGateway(self.user_db_path).commit_write_sync(
+                    WriteOperation.TAG_UPDATE,
+                    {"_connection": user_conn, "changed_session_ids": (), "effect_scope": "user-overlay"},
+                )
+            except BaseException:
+                user_conn.rollback()
+                raise
         finally:
             user_conn.close()
         self._attach_user_tier_if_present()
@@ -3953,7 +3962,8 @@ class ArchiveStore:
         removed = 0
         user_conn = self._open_user_write_connection()
         try:
-            with user_conn:
+            user_conn.execute("BEGIN IMMEDIATE")
+            try:
                 for session_id in resolved_session_ids:
                     for tag in tags:
                         normalized_tag = tag.strip().lower()
@@ -3965,6 +3975,13 @@ class ArchiveStore:
                             continue
                         if mark_assertion_status(user_conn, assertion_id, "deleted"):
                             removed += 1
+                ArchiveWriteGateway(self.user_db_path).commit_write_sync(
+                    WriteOperation.TAG_UPDATE,
+                    {"_connection": user_conn, "changed_session_ids": (), "effect_scope": "user-overlay"},
+                )
+            except BaseException:
+                user_conn.rollback()
+                raise
         finally:
             user_conn.close()
         self._attach_user_tier_if_present()
@@ -4497,7 +4514,8 @@ class ArchiveStore:
         user_conn.row_factory = sqlite3.Row
         try:
             changed = 0
-            with user_conn:
+            user_conn.execute("BEGIN IMMEDIATE")
+            try:
                 for session_id in tuple(
                     dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids)
                 ):
@@ -4522,6 +4540,13 @@ class ArchiveStore:
                             value=value,
                         )
                         changed += 1
+                ArchiveWriteGateway(self.user_db_path).commit_write_sync(
+                    WriteOperation.METADATA_UPDATE,
+                    {"_connection": user_conn, "changed_session_ids": (), "effect_scope": "user-overlay"},
+                )
+            except BaseException:
+                user_conn.rollback()
+                raise
         finally:
             user_conn.close()
         return changed
@@ -4554,12 +4579,22 @@ class ArchiveStore:
             return 0
         user_conn = self._open_user_write_connection()
         try:
-            with user_conn:
+            user_conn.execute("BEGIN IMMEDIATE")
+            try:
                 assertion_id = assertion_id_for_session_metadata(resolved_session_id, normalized_key)
                 assertion = read_assertion_envelope(user_conn, assertion_id)
                 if assertion is None or assertion.status == "deleted":
-                    return 0
-                return 1 if mark_assertion_status(user_conn, assertion_id, "deleted") else 0
+                    deleted = 0
+                else:
+                    deleted = 1 if mark_assertion_status(user_conn, assertion_id, "deleted") else 0
+                ArchiveWriteGateway(self.user_db_path).commit_write_sync(
+                    WriteOperation.METADATA_UPDATE,
+                    {"_connection": user_conn, "changed_session_ids": (), "effect_scope": "user-overlay"},
+                )
+                return deleted
+            except BaseException:
+                user_conn.rollback()
+                raise
         finally:
             user_conn.close()
 
@@ -5229,7 +5264,12 @@ class ArchiveStore:
         ).fetchone()
         return row is not None and row["sql"] is not None and "derived_refresh_guard" in row["sql"]
 
-    def delete_sessions(self, session_ids: tuple[str, ...]) -> int:
+    def delete_sessions(
+        self,
+        session_ids: tuple[str, ...],
+        *,
+        write_operation: WriteOperation = WriteOperation.DELETE,
+    ) -> int:
         """Delete rebuildable archive sessions by id.
 
         User-tier overlays are intentionally left in ``user.db``; the user
@@ -5287,8 +5327,10 @@ class ArchiveStore:
         conn.execute("PRAGMA foreign_keys = ON")
         trigram_guarded = self._trigram_trigger_is_guarded(conn)
         deleted = 0
+        deleted_session_ids: list[str] = []
         try:
-            with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
                 for session_id in resolved_session_ids:
                     # Must run before the blocks rows are removed below --
                     # external-content FTS5 deletion needs the OLD text/rowid
@@ -5321,7 +5363,9 @@ class ArchiveStore:
                         orphan_candidates = session_attachment_ids(conn, session_id)
                         cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
                         refresh_and_sweep_attachment_rows(conn, orphan_candidates)
-                        deleted += max(int(cursor.rowcount), 0)
+                        if int(cursor.rowcount) > 0:
+                            deleted += int(cursor.rowcount)
+                            deleted_session_ids.append(session_id)
                 finally:
                     conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
                     if trigram_guarded:
@@ -5329,6 +5373,19 @@ class ArchiveStore:
                             "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
                             (FTS_BULK_SESSION_WRITE_GUARD,),
                         )
+                ArchiveWriteGateway(self.index_db_path).commit_write_sync(
+                    write_operation,
+                    {
+                        "_connection": conn,
+                        "changed_session_ids": tuple(deleted_session_ids),
+                        # Explicit pre-delete cleanup above is the only safe
+                        # FTS repair once the external-content rows are gone.
+                        "repair_message_fts": False,
+                    },
+                )
+            except BaseException:
+                conn.rollback()
+                raise
         finally:
             conn.close()
         return deleted
