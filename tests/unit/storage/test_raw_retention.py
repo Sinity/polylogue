@@ -1763,6 +1763,36 @@ def test_address_scoped_frontier_preserves_cursor_refusal(tmp_path: Path, cursor
     assert refusal.source_paths == (frozenset({str(path)}) if blocked else frozenset())
 
 
+@pytest.mark.parametrize("tier", ["source.db", "index.db", "ops.db"])
+def test_address_scoped_frontier_preserves_unreadable_tier_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tier: str
+) -> None:
+    from polylogue.core.evidence import Measured
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"[]", source_path="neutral.json", acquired_at_ms=1
+        )
+    assert raw_retention_mod.raw_frontier_blocked_raw_ids(tmp_path, (raw_id,)).unattributed_reason is None
+    (tmp_path / tier).write_bytes(b"not a sqlite database")
+
+    def require_refusal() -> None:
+        refusal = raw_retention_mod.raw_frontier_blocked_raw_ids(tmp_path, (raw_id,))
+        assert refusal.unattributed_reason is not None
+        assert "unreadable" in refusal.unattributed_reason
+
+    require_refusal()
+    # Red twin: collapsing a failed read into healthy empty evidence would
+    # authorize publication without inspecting the selected source frontier.
+    monkeypatch.setattr(
+        "polylogue.storage.tier_access.capture_sqlite_read",
+        lambda _read: Measured(raw_retention_mod.RawFrontierBlockedPaths(frozenset(), None)),
+    )
+    with pytest.raises(AssertionError):
+        require_refusal()
+
+
 def test_address_scoped_frontier_does_not_walk_valid_archive_seeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

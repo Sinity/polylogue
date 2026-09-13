@@ -1364,13 +1364,16 @@ def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
     explicit integrity projection. This admission checks the selected connected
     authority component, including its byte heads, predecessor chains and cursors.
     """
+    from polylogue.core.evidence import Measured, Unavailable
     from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+    from polylogue.storage.tier_access import capture_sqlite_read
 
     if not raw_ids:
         return RawFrontierBlockedPaths(frozenset(), None)
-    try:
+
+    def read_selected() -> RawFrontierBlockedPaths:
         with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(
@@ -1425,8 +1428,18 @@ def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
                     sample.source_path for sample in gap_samples if sample.source_path is not None
                 ).difference(refused),
             )
-    except (OSError, sqlite3.Error, RawRetentionSafetyError) as exc:
+
+    try:
+        evidence = capture_sqlite_read(read_selected)
+    except (OSError, RawRetentionSafetyError) as exc:
         return RawFrontierBlockedPaths(frozenset(), f"selected source frontier is unreadable: {exc}")
+    if isinstance(evidence, Measured):
+        return evidence.value
+    if isinstance(evidence, Unavailable):
+        return RawFrontierBlockedPaths(
+            frozenset(), f"selected source frontier is unreadable: {evidence.detail or evidence.reason}"
+        )
+    raise AssertionError("scoped frontier read produced an unsupported evidence state")
 
 
 def raw_frontier_blocked_source_paths(
