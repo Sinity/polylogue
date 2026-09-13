@@ -73,9 +73,9 @@ def find_orphaned_fts_sessions_sync(
     A block is "FTS-orphaned" when ``blocks.search_text`` is non-empty (it is
     supposed to be indexed) but no corresponding row exists in
     ``messages_fts_docsize`` (the contentless FTS5 shadow table proving a row
-    was actually written). This is the same anti-join
-    ``_archive_fts_needs_repair``/``repair_message_fts_index_sync`` already
-    use for session-scoped work, applied archive-wide via the existing
+    was actually written). This is the same canonical-membership anti-join
+    the FTS derivation adapter uses for session-scoped work, applied
+    archive-wide via the existing
     ``idx_blocks_search_text_populated`` partial index instead of only for a
     caller-supplied session set.
 
