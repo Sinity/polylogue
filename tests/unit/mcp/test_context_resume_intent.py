@@ -459,7 +459,7 @@ class TestComposeContextPreambleEmptyArchive:
 
         mock_poly = make_polylogue_mock()
         mock_poly.get_session = AsyncMock(return_value=MagicMock(git_repository_url=None, git_branch=None))
-        mock_poly.get_session_topology = AsyncMock(side_effect=RuntimeError("topology store corrupt"))
+        mock_poly.compact_lineage = AsyncMock(side_effect=RuntimeError("topology store corrupt"))
         mock_poly.find_resume_candidates = AsyncMock(return_value=())
         mock_poly.list_assertion_claim_payloads = AsyncMock(side_effect=ValueError("bad assertion row"))
 

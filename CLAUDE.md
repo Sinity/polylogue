@@ -154,11 +154,10 @@ explicit-and-retryable or a typed permanent refusal.
   (`archive/query/expression.py`) is a real DSL lowered to SQL.
 - **MCP**: capability-gated operation-dispatcher tools; adding an operation
   updates the dispatcher's verb table (`EXPECTED_TOOL_NAMES` is derived; a
-  missing tool contract fails discovery). Tool contracts are currently
-  per-tool, not per-operation, and MCP insight projections are a hard-coded
-  set that bypasses the registry — per-operation contracts and
-  registry-driven MCP are the direction, owned by polylogue-fja2v/4p1, not
-  current truth.
+  missing tool contract fails discovery). Session operations have typed
+  per-operation contracts (`docs/session-operations.md`); other operations
+  retain tool-level contracts. MCP insight projections still bypass the
+  registry.
 - **Insights** are descriptor-driven (`analysis/registry.py`); one registry
   drives plaintext and JSON (MCP: see the caveat above).
 - **Terminal outcome**: every row-bearing envelope carries `outcome` in
