@@ -63,6 +63,7 @@ CLASS_SOURCE_TRUNCATED = "source_truncated"
 CLASS_IN_FLIGHT = "in_flight_or_interrupted"
 CLASS_SOURCE_OMISSION = "source_omission"
 CLASS_PROVIDER_FANOUT = "provider_fanout"
+CLASS_SIDECAR_OWNED = "sidecar_owned"
 CLASS_PARSER_DEFECT = "parser_or_pairing_defect"
 CLASS_HISTORICAL_DAMAGE = "historical_derived_damage"
 CLASS_UNKNOWN = "unknown"
@@ -173,7 +174,12 @@ def _parser() -> argparse.ArgumentParser:
         prog="devtools archive tool-pairing-census",
         description="Classify every tool call/result pairing gap in an archive against declared evidence.",
     )
-    parser.add_argument("--archive-root", type=Path, default=None, help="Override the active archive root.")
+    parser.add_argument(
+        "--archive-root",
+        type=_archive_root_arg,
+        default=None,
+        help="Candidate archive root (an explicit root must be absolute and non-empty).",
+    )
     parser.add_argument("--index-db", type=Path, default=None, help="Read a specific index database.")
     parser.add_argument("--source-db", type=Path, default=None, help="Read a specific source database.")
     parser.add_argument(
@@ -200,6 +206,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true", help="Emit the JSON report to stdout.")
     return parser
+
+
+def _archive_root_arg(value: str) -> Path:
+    """Reject an empty/relative explicit root instead of falling back to cwd."""
+    if not value.strip():
+        raise argparse.ArgumentTypeError("--archive-root must be a non-empty absolute candidate root")
+    root = Path(value).expanduser()
+    if not root.is_absolute():
+        raise argparse.ArgumentTypeError("--archive-root must be an absolute candidate root")
+    return root
 
 
 # --------------------------------------------------------------------------
@@ -351,7 +367,10 @@ def _classify_call(
     return CLASS_SOURCE_OMISSION
 
 
-def _classify_result(*, owner_present: bool, source: SourceState) -> str:
+def _classify_result(*, owner_present: bool, source: SourceState, sidecar_owned: bool = False) -> str:
+    """Classify an unpaired physical result without hiding sidecar ownership."""
+    if sidecar_owned:
+        return CLASS_SIDECAR_OWNED
     if source.presence == SOURCE_RECORD_ABSENT:
         return CLASS_SOURCE_ABSENT
     if source.presence == SOURCE_BYTES_ABSENT:
@@ -460,6 +479,42 @@ def build_report(args: CensusArgs) -> dict[str, object]:
             """,
         )
         queries.append(timing)
+
+        # Sidecar-backed answers are an independent owner of a result.  Look
+        # up only sessions represented by the unmatched aggregate; this keeps
+        # the census bounded by the gap population instead of scanning every
+        # session event in a large archive.
+        sidecar_owned: set[tuple[str, str]] = set()
+        event_columns = _table_columns(conn, "session_events")
+        if unmatched_rows and {"session_id", "event_type", "payload_json"}.issubset(event_columns):
+            event_sessions = tuple(sorted({str(row[0]) for row in unmatched_rows}))
+            # Keep the bind list below SQLite's default variable limit while
+            # retaining one indexed lookup per bounded chunk.
+            for offset in range(0, len(event_sessions), 900):
+                chunk = event_sessions[offset : offset + 900]
+                marks = ",".join("?" for _ in chunk)
+                event_rows = conn.execute(
+                    f"""
+                    SELECT session_id, payload_json
+                    FROM session_events
+                    WHERE event_type IN ('claude_tool_result_sidecar', 'gemini_cli_tool_output_sidecar')
+                      AND session_id IN ({marks})
+                    """,
+                    chunk,
+                )
+                for session_id, payload_json in event_rows:
+                    try:
+                        payload = json.loads(str(payload_json))
+                    except (TypeError, ValueError):
+                        continue
+                    tool_id = payload.get("tool_use_id") if isinstance(payload, dict) else None
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("acquisition_status") == "matched"
+                        and isinstance(tool_id, str)
+                        and tool_id
+                    ):
+                        sidecar_owned.add((str(session_id), tool_id))
     finally:
         conn.close()
 
@@ -531,7 +586,11 @@ def build_report(args: CensusArgs) -> dict[str, object]:
         totals["unmatched_results"] += count
         construct, _rule = _construct_of(origin, tool_id, None)
         source = source_states.get(session_id, unchecked)
-        classification = _classify_result(owner_present=owner_present, source=source)
+        classification = _classify_result(
+            owner_present=owner_present,
+            source=source,
+            sidecar_owned=(session_id, tool_id or "") in sidecar_owned,
+        )
         result_key = ResultCohortKey(
             origin=origin,
             construct=construct,
