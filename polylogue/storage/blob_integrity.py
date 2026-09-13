@@ -773,14 +773,17 @@ def referenced_blob_hashes(
     """Return distinct blob hashes referenced by archive source evidence."""
 
     resolved_db_path = Path(db_path)
-    with closing(open_readonly_connection(resolved_db_path, immutable=immutable, validate_schema=False)) as conn:
-        return _referenced_blob_hashes(
-            resolved_db_path,
-            conn,
-            require_index=require_index,
-            index_db=index_db,
-            immutable=immutable,
-        )
+    try:
+        with closing(open_readonly_connection(resolved_db_path, immutable=immutable, validate_schema=False)) as conn:
+            return _referenced_blob_hashes(
+                resolved_db_path,
+                conn,
+                require_index=require_index,
+                index_db=index_db,
+                immutable=immutable,
+            )
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"source tier referenced-hash query failed for {resolved_db_path}: {exc}") from exc
 
 
 def _source_db_for_blob_reference_report(db_path: str | Path) -> Path:
