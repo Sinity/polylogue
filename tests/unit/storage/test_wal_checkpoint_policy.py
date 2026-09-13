@@ -178,12 +178,12 @@ def test_a_failed_open_reports_no_mode_and_the_error(tmp_path: Path, monkeypatch
     assert observation.error == "database is locked"
 
 
-def test_unsupported_checkpoint_mode_is_refused(tmp_path: Path) -> None:
+def test_known_but_unauthorized_checkpoint_mode_is_refused(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     _seed_wal(db, rows=1)
     conn = sqlite3.connect(db)
     try:
-        with pytest.raises(ValueError, match="unsupported checkpoint mode"):
+        with pytest.raises(ValueError, match="not permitted at exclusive boundary"):
             wal_checkpoint.checkpoint_connection(conn, "FULL", boundary="exclusive")
     finally:
         conn.close()
