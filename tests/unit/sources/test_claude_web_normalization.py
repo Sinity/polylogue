@@ -1038,6 +1038,27 @@ def test_native_claude_attachment_routes_dedupe_by_provider_identity_and_bytes()
     assert [attachment.message_provider_id for attachment in parsed.attachments] == ["m1", "m1"]
 
 
+def test_native_claude_attachment_routes_pair_equal_uploads_one_to_one() -> None:
+    payload = _claude_attachment_duplicate_routes_payload()
+    first = payload["raw_provider_payload"]["chat_messages"][0]["attachments"][0]
+    second = payload["raw_provider_payload"]["chat_messages"][0]["attachments"][1]
+    second["extracted_content"] = first["extracted_content"]
+    second["file_size"] = first["file_size"]
+    envelope_first = payload["session"]["turns"][0]["attachments"][0]
+    envelope_second = payload["session"]["turns"][0]["attachments"][1]
+    envelope_second["extracted_content"] = envelope_first["extracted_content"]
+    envelope_second["size_bytes"] = envelope_first["size_bytes"]
+
+    parsed = _parse_real_route(payload)
+
+    assert [attachment.provider_attachment_id for attachment in parsed.attachments] == [
+        "provider-first",
+        "provider-second",
+    ]
+    assert [attachment.upload_origin for attachment in parsed.attachments] == ["oauth", "oauth"]
+    assert [attachment.inline_bytes for attachment in parsed.attachments] == [b"first-paste", b"first-paste"]
+
+
 def test_native_browser_envelope_supplies_only_missing_optional_metadata() -> None:
     """Envelope projection fills omissions but never replaces native conversation identity."""
     raw = _native_claude_payload()
