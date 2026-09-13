@@ -4144,15 +4144,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.topology_http import (
             build_topology_envelope,
             coerce_node_limit,
+            coerce_node_offset,
         )
 
         node_limit = coerce_node_limit(self._get_param(params, "limit"))
         if node_limit is None:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_limit")
             return
+        node_offset = coerce_node_offset(self._get_param(params, "continuation"))
+        if node_offset is None:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_continuation")
+            return
 
         async def _get(poly: Polylogue) -> object:
-            topology = await poly.get_session_topology(conv_id)
+            topology = await poly.get_session_topology(conv_id, node_offset=node_offset, node_limit=node_limit)
             if topology is None:
                 return None
             return build_topology_envelope(topology, node_limit=node_limit)

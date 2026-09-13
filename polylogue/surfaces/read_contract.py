@@ -115,6 +115,7 @@ READ_PRESETS: tuple[ReadPreset, ...] = tuple(
         "correlation",
         "temporal",
         "chronicle",
+        "topology",
     )
 )
 _PRESETS = {preset.name: preset for preset in READ_PRESETS}

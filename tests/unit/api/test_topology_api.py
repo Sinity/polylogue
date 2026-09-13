@@ -226,3 +226,21 @@ async def test_topology_api_root_only_session(workspace_env: dict[str, Path]) ->
     assert siblings == []
     # Thread on a lonely node is just that node.
     assert [str(ref.session_id) for ref in thread] == [_native("lonely")]
+
+
+@pytest.mark.asyncio
+async def test_topology_api_pages_a_stable_bounded_bfs_envelope(workspace_env: dict[str, Path]) -> None:
+    db_path = db_setup(workspace_env)
+    _seed_lineage(db_path)
+    polylogue = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        first = await polylogue.get_session_topology(_native("root"), node_limit=2)
+        second = await polylogue.get_session_topology(_native("root"), node_offset=2, node_limit=2)
+    finally:
+        await polylogue.close()
+    assert first is not None and second is not None
+    assert [str(node.session_id) for node in first.nodes] == [_native("root"), _native("continuation")]
+    assert first.nodes_complete is False
+    assert first.continuation == "node-offset:2"
+    assert [str(node.session_id) for node in second.nodes] == [_native("sidechain"), _native("subagent")]
+    assert {str(node.session_id) for node in first.nodes}.isdisjoint(str(node.session_id) for node in second.nodes)

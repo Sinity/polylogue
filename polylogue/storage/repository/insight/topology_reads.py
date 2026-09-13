@@ -22,7 +22,14 @@ class RepositoryInsightTopologyReadMixin:
     if TYPE_CHECKING:
         queries: SQLiteQueryStore
 
-    async def get_session_topology(self, session_id: str) -> SessionTopology | None:
+    async def get_session_topology(
+        self,
+        session_id: str,
+        *,
+        node_offset: int = 0,
+        node_limit: int = 200,
+        edge_limit: int = 500,
+    ) -> SessionTopology | None:
         """Return the resolved lineage graph rooted at ``session_id``.
 
         Returns ``None`` when the session is not present in the
@@ -30,7 +37,13 @@ class RepositoryInsightTopologyReadMixin:
         through the returned :class:`SessionTopology`.
         """
 
-        return await derive_session_topology_async(self.queries, session_id)
+        return await derive_session_topology_async(
+            self.queries,
+            session_id,
+            node_offset=node_offset,
+            node_limit=node_limit,
+            edge_limit=edge_limit,
+        )
 
 
 __all__ = ["RepositoryInsightTopologyReadMixin"]

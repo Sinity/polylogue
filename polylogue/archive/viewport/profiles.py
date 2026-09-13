@@ -221,6 +221,20 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         degraded_states=("missing session", "unresolved parent edge", "cycle in the lineage graph"),
     ),
     SessionViewProfile(
+        view_id="topology",
+        label="Topology",
+        owner="polylogue.storage.derived.topology.derivation",
+        purpose="Canonical session_links-owned graph and provenance envelope.",
+        input_scope="single session id",
+        included_kinds=("session link assertions", "resolution state", "composition evidence"),
+        lossiness="derived",
+        evidence_policy="required",
+        privacy_policy="renders normalized session-link evidence, not raw source payloads",
+        formats=("json",),
+        machine_payload="SessionTopology public envelope",
+        degraded_states=("missing session", "unresolved parent", "excluded edge", "cycle", "conflicting parent"),
+    ),
+    SessionViewProfile(
         view_id="file-edits",
         label="File Edits",
         owner="polylogue.cli.read_views.file_edits.run_read_file_edits",
@@ -394,6 +408,7 @@ READ_VIEW_HTTP_CAPABILITIES: dict[str, ReadViewHttpCapability] = {
     ),
     "effective_context": ReadViewHttpCapability("effective_context", ("json",), ("at_position",)),
     "lineage": ReadViewHttpCapability("lineage", ("json",), ("node_offset", "node_limit", "edge_offset", "edge_limit")),
+    "topology": ReadViewHttpCapability("topology", ("json",), ("limit",), "/api/sessions/{session_id}/topology"),
 }
 
 

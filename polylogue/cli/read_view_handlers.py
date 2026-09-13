@@ -42,7 +42,7 @@ from polylogue.cli.read_views.correlation import build_correlation_options, run_
 from polylogue.cli.read_views.effective_context import build_effective_context_options, run_read_effective_context
 from polylogue.cli.read_views.events import build_events_options, run_read_events
 from polylogue.cli.read_views.file_edits import run_read_agent_policies, run_read_file_edits
-from polylogue.cli.read_views.lineage import build_lineage_options, run_read_lineage
+from polylogue.cli.read_views.lineage import build_lineage_options, run_read_lineage, run_read_topology
 from polylogue.cli.read_views.messages import (
     build_message_options,
     run_read_hooks,
@@ -126,6 +126,12 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         default_format="json",
         accepted_options=LINEAGE_READ_VIEW_OPTION_NAMES,
         option_builder=build_lineage_options,
+    ),
+    "topology": ReadViewHandler(
+        "topology",
+        "required",
+        run_read_topology,
+        default_format="json",
     ),
     "file-edits": ReadViewHandler(
         "file-edits",

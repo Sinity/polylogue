@@ -1034,7 +1034,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         continuation: str | None = None,
     ) -> str:
         """Read a stable URI or public ref through an explicitly named view."""
-        if continuation is not None:
+        if continuation is not None and view != "topology":
             return hooks.error_json(
                 "read continuations are not implemented for this view; use query for exhaustive rows",
                 code="invalid_continuation",
@@ -1048,7 +1048,19 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         async def run() -> str:
             if view == "topology":
                 topology_session_id = normalized.removeprefix("session:")
-                topology = await hooks.get_polylogue().get_session_topology(topology_session_id)
+                node_offset = 0
+                if continuation is not None:
+                    token = continuation.removeprefix("node-offset:")
+                    if not token.isdecimal():
+                        return hooks.error_json(
+                            "invalid topology continuation", code="invalid_continuation", tool="read"
+                        )
+                    node_offset = int(token)
+                topology = await hooks.get_polylogue().get_session_topology(
+                    topology_session_id,
+                    node_offset=node_offset,
+                    node_limit=hooks.clamp_limit(limit),
+                )
                 if topology is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="read")
                 return hooks.json_payload(session_topology_payload(topology, session_id=str(topology.target_id)))
