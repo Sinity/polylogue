@@ -151,6 +151,14 @@ GATES: tuple[Gate, ...] = (
         blocking=False,
     ),
     Gate(
+        "test-packages",
+        "Verify every directory holding collectible test modules is a package.",
+        "module",
+        ("devtools.verify_test_packages",),
+        label="gate test-packages",
+        in_quick=True,
+    ),
+    Gate(
         "timestamp-doctrine",
         "Verify durable-tier DDL never stores a timestamp column as TEXT.",
         "module",
