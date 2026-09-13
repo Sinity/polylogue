@@ -237,11 +237,10 @@ def _embedding_refs_have_message_semantics(conn: sqlite3.Connection, refs_table:
 
     if not refs_table:
         return False
-    try:
-        conn.execute(f"SELECT message_content_hash FROM {refs_table} LIMIT 0")
-    except sqlite3.Error:
-        return False
-    return True
+    from polylogue.storage.introspection import column_exists
+
+    schema, _, table = refs_table.rpartition(".")
+    return column_exists(conn, table, "message_content_hash", schema=schema or "main")
 
 
 def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
