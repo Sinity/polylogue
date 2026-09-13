@@ -18,7 +18,7 @@ from polylogue.storage.fts.derivation import (
     FtsOrphanReplacement,
     FtsPartitionReplacement,
 )
-from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
+from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
 
 
 def _adapter(db_path: Path, *, orphan_interval_s: float | None = None) -> FtsDerivationAdapter:
@@ -310,3 +310,44 @@ def test_orphan_retirement_succeeds_despite_poisoned_session(
     assert report.by_outcome(Outcome.FAILED)[0].key.key == session_id
     assert report.by_outcome(Outcome.DONE)[0].key.key == GLOBAL_PARTITION
     assert test_conn.execute("SELECT 1 FROM messages_fts_docsize WHERE id = 999999").fetchone() is None
+
+
+def test_session_partition_retires_fts_rows_whose_block_was_deleted(
+    test_conn: sqlite3.Connection, test_db: Path
+) -> None:
+    """A block deleted behind suspended triggers is session-visible excess.
+
+    Bulk ingest suspends the FTS triggers around block writes, so a deleted
+    block leaves an FTS/identity row with no canonical block behind it. That
+    residue belongs to its session partition, not only to the global residue
+    key: searching must not keep returning a row for a block that is gone.
+
+    Anti-vacuity: resolve the partition's residue through an inner join to
+    ``blocks`` — which by construction cannot see a row whose block was
+    deleted — and inspection calls this partition VALID while ``messages_fts``
+    still matches the deleted block, so this goes red.
+    """
+    session_id, _ = _seed_session(test_conn, "residue")
+    second_rowid = test_conn.execute(
+        "SELECT rowid FROM blocks WHERE session_id = ? ORDER BY rowid", (session_id,)
+    ).fetchone()[0]
+
+    suspend_fts_triggers_sync(test_conn)
+    test_conn.execute("DELETE FROM blocks WHERE rowid = ?", (second_rowid,))
+    test_conn.commit()
+    restore_fts_triggers_sync(test_conn)
+
+    # The residue is real: FTS still holds a row for the deleted block.
+    assert test_conn.execute("SELECT 1 FROM messages_fts_docsize WHERE id = ?", (second_rowid,)).fetchone()
+
+    adapter = _adapter(test_db)
+    stale = adapter.inspect_partition(test_conn, session_id)
+    assert stale.status is FtsKeyStatus.EXCESS, stale
+    assert stale.excess_rows == 1
+
+    report = _converge(adapter, _frame(test_db, (session_id,)))
+
+    assert report.done == 1
+    assert test_conn.execute("SELECT 1 FROM messages_fts_docsize WHERE id = ?", (second_rowid,)).fetchone() is None
+    assert test_conn.execute("SELECT 1 FROM messages_fts_identity WHERE rowid = ?", (second_rowid,)).fetchone() is None
+    assert adapter.inspect_partition(test_conn, session_id).valid

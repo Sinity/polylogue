@@ -134,6 +134,23 @@ def _has_content_hash(conn: sqlite3.Connection) -> bool:
     return any(str(row[1]) == "content_hash" for row in conn.execute("PRAGMA table_info(blocks)"))
 
 
+def _session_block_id_range(key: str) -> tuple[str, str]:
+    """Half-open ``block_id`` range covering exactly one session's blocks.
+
+    ``block_id`` is ``session_id || ':' || ...``; ``';'`` is the code point
+    after ``':'``, so ``[key || ':', key || ';')`` selects the session's rows
+    through the ``block_id`` UNIQUE index instead of a ``substr`` table scan.
+
+    The range, not a join to ``blocks``, is what lets a partition see residue
+    whose canonical block no longer exists — the exact class of row that must
+    be retired. The range alone is not the whole rule: a colon-prefixed child
+    session's block ids also fall inside it, so every caller pairs the range
+    with ``b.block_id IS NULL OR b.session_id = key`` and claims only residue
+    plus its own rows.
+    """
+    return f"{key}:", f"{key};"
+
+
 def _indexable_row_count(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()
     return 0 if row is None else int(row[0] or 0)
@@ -444,10 +461,11 @@ class FtsDerivationAdapter:
                     """
                     SELECT COUNT(*) FROM messages_fts_identity AS i
                     JOIN messages_fts_docsize AS d ON d.id = i.rowid
-                    JOIN blocks AS b ON b.block_id = i.block_id
-                    WHERE b.session_id = ? AND b.search_text = ''
+                    LEFT JOIN blocks AS b ON b.block_id = i.block_id
+                    WHERE i.block_id >= ? AND i.block_id < ?
+                      AND (b.block_id IS NULL OR (b.session_id = ? AND b.search_text = ''))
                     """,
-                    (key,),
+                    (*_session_block_id_range(key), key),
                 ).fetchone()[0]
             )
             wrong_rows = int(
@@ -474,11 +492,12 @@ class FtsDerivationAdapter:
             duplicate_sql = (
                 "SELECT COALESCE(SUM(n - 1), 0) FROM ("
                 "SELECT i.block_id, COUNT(*) AS n FROM messages_fts_identity AS i "
-                "JOIN blocks AS b ON b.block_id = i.block_id "
-                "WHERE b.session_id = ? "
+                "LEFT JOIN blocks AS b ON b.block_id = i.block_id "
+                "WHERE i.block_id >= ? AND i.block_id < ? "
+                "AND (b.block_id IS NULL OR b.session_id = ?) "
                 "GROUP BY i.block_id HAVING n > 1)"
             )
-            duplicate_params = (key,)
+            duplicate_params = (*_session_block_id_range(key), key)
         duplicate_rows = int(conn.execute(duplicate_sql, duplicate_params).fetchone()[0])
         status = FtsKeyStatus.VALID
         detail: str | None = None
@@ -541,10 +560,11 @@ class FtsDerivationAdapter:
                     for row in conn.execute(
                         """
                         SELECT i.rowid FROM messages_fts_identity AS i
-                        JOIN blocks AS b ON b.block_id = i.block_id
-                        WHERE b.session_id = ?
+                        LEFT JOIN blocks AS b ON b.block_id = i.block_id
+                        WHERE i.block_id >= ? AND i.block_id < ?
+                          AND (b.block_id IS NULL OR b.session_id = ?)
                         """,
-                        (computed.key,),
+                        (*_session_block_id_range(computed.key), computed.key),
                     )
                 )
                 if rowids:
@@ -636,24 +656,28 @@ class FtsDerivationAdapter:
         del frame
         if cursor is not None or limit < 1:
             return (), None
+        now: float | None = None
         if self._orphan_interval_s is not None:
             if self._monotonic is None:
                 raise RuntimeError("FTS orphan cadence requires a monotonic clock")
             now = self._monotonic()
             if self._last_orphan_attempt is not None and now - self._last_orphan_attempt < self._orphan_interval_s:
                 return (), None
-            # This is a scheduling hint only. It is not written to SQLite and
-            # cannot certify readiness; direct readiness inspection still sees
-            # residue immediately.
-            self._last_orphan_attempt = now
         read_connection, _ = self._connections()
         conn = read_connection()
         try:
             if not _schema_compatible(conn):
                 return (), None
-            return ((GLOBAL_PARTITION,) if _has_orphan_rows(conn) else ()), None
+            found = _has_orphan_rows(conn)
         finally:
             conn.close()
+        if now is not None:
+            # A scheduling hint only, stamped after the probe actually ran: a
+            # pass that never reached the probe must not burn the interval. It
+            # is not written to SQLite and cannot certify readiness; direct
+            # readiness inspection still sees residue immediately.
+            self._last_orphan_attempt = now
+        return ((GLOBAL_PARTITION,) if found else ()), None
 
     def quiet(self, frame: object, key: str) -> bool:
         """FTS has no hot-source policy; orphan cadence is discovery-only."""
