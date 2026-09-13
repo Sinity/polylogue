@@ -36,6 +36,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.materials import MaterialObservation
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 _THREAD_ID = "66c7b83d-1b42-43a5-977c-870299c489a6"
 _CHILD_THREAD_ID = "449dd1eb-ea3d-4710-925b-7398a78fe3a7"
@@ -649,6 +650,32 @@ async def test_retained_codex_state_raw_without_receipt_is_resolved_from_the_blo
     assert raw_frontier_source_selection_block_reason(archive_root) is None
     # Idempotent: a second pass finds nothing left to resolve.
     assert resolve_retained_codex_state_receipts(archive_root) == 0
+
+
+def test_historical_codex_page_image_is_not_finalized_as_current_state(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The resolver must require the declared export, not merely a database
+    whose table shape happens to match an old ``state_5.sqlite`` page image."""
+    from polylogue.core.enums import Provider
+    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
+
+    archive_root = workspace_env["archive_root"]
+    state_path = workspace_env["data_root"] / "state_5.sqlite"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_state_5_sqlite(state_path)
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=state_path.read_bytes(),
+            source_path=str(state_path),
+            acquired_at_ms=1_767_000_000_000,
+        )
+        archive.commit()
+
+    assert resolve_retained_codex_state_receipts(archive_root) == 0
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
 
 
 @pytest.mark.asyncio

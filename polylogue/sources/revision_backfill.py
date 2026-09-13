@@ -69,6 +69,7 @@ from polylogue.sources.parsers import antigravity, codex_state, hermes_state, he
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
+from polylogue.sources.sqlite_snapshot import is_declared_logical_export
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -3663,6 +3664,8 @@ def _retained_codex_state_descriptor(archive: ArchiveStore, raw_id: str) -> tupl
     state_path = archive.blob_path_for_hash(blob_hash)
     if state_path is None:
         return None
+    if not is_declared_logical_export(state_path, source_path):
+        return None
     state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
     if state_kind not in codex_state.IN_SCOPE_KINDS:
         return None
@@ -4582,6 +4585,8 @@ def _parse_one_raw(
     fallback_id = fallback_id_override or Path(source_path).stem
     if provider is Provider.HERMES and looks_like_logical_source_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
+            if not is_declared_logical_export(sqlite_path, source_path):
+                raise RuntimeError(f"retained Hermes SQLite material is not the declared logical export: {source_path}")
             if hermes_state.looks_like_state_db_path(sqlite_path, immutable=True):
                 return hermes_state.parse_state_db(
                     sqlite_path,

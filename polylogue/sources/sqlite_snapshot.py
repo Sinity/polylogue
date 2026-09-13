@@ -15,19 +15,17 @@ from typing import TYPE_CHECKING, Literal
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_like_sqlite_bytes
-from polylogue.logging import get_logger
 from polylogue.sources.sqlite_export import (
     MemberExportScope,
     logical_export_digest,
     looks_like_logical_export_path,
+    read_export_header,
     write_logical_export,
 )
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 
 if TYPE_CHECKING:
     from polylogue.sources.origin_specs import DatabaseMemberBinding
-
-logger = get_logger(__name__)
 
 _SQLITE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
@@ -235,41 +233,49 @@ def sqlite_member_revision(path: Path, *, immutable: bool = False) -> str:
     return logical_export_digest(path, scope=member_export_scope(path), immutable=immutable)
 
 
+def is_declared_logical_export(blob_path: Path, source_path: Path | str) -> bool:
+    """Return whether *blob_path* is the canonical export for *source_path*.
+
+    A SQLite page image is neither an acquisition product nor a replay input
+    for a declared mutable member. The header binds the retained bytes to the
+    member declaration, so an export from a sibling database cannot be parsed
+    under a copied filename either.
+    """
+    binding = declared_database_member(Path(source_path))
+    if binding is None or not looks_like_logical_export_path(blob_path):
+        return False
+    try:
+        header = read_export_header(blob_path)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    member = binding.member
+    expected_tables = tuple(member.logical_tables)
+    return (
+        header.member == member.filename
+        and header.origin == binding.origin.value
+        and header.kind == member.kind
+        and tuple(sorted((*header.tables, *header.missing))) == tuple(sorted(expected_tables))
+    )
+
+
 def retained_content_revision(blob_path: Path, blob_hash: str) -> str:
     """Return the content term identifying one retained acquisition.
 
-    Live acquisition of a mutable database identifies it by
-    :func:`sqlite_logical_revision`, so the import and replay routes must
-    derive the same term from the retained blob or the two routes mint
-    different raw identities for one database state. Material that is not a
-    SQLite database is already identified by its bytes, and its blob hash is
-    that term.
+    Live acquisition of a mutable database identifies it by the canonical
+    logical export's digest, so import and replay use that digest directly.
+    Material that is not a canonical export is identified by its bytes.
 
     A retained export is already the canonical form of its member's logical
     revision, so its blob hash -- sha256 over exactly those bytes -- is that
     term with nothing to recompute.
 
-    An unreadable or damaged blob falls back to the blob hash: identity must
-    stay derivable so the raw remains addressable and its parse failure is
-    reported as a parse failure rather than as a missing acquisition.
+    In particular, an old SQLite page image remains addressable by its blob
+    hash but cannot regain logical-source identity. It is historical opaque
+    material, not a compatibility input for the current source contract.
     """
     if looks_like_logical_export_path(blob_path):
         return blob_hash
-    try:
-        with blob_path.open("rb") as handle:
-            header = handle.read(len(SQLITE_MAGIC_HEADER))
-    except OSError:
-        logger.warning(
-            "sqlite_snapshot: retained blob %s is unreadable; identifying the acquisition by its blob hash",
-            blob_hash,
-        )
-        return blob_hash
-    if header != SQLITE_MAGIC_HEADER:
-        return blob_hash
-    try:
-        return sqlite_logical_revision(blob_path, immutable=True)
-    except (sqlite3.Error, OSError, UnicodeDecodeError):
-        return blob_hash
+    return blob_hash
 
 
 def snapshot_sqlite_database(source: Path, destination: Path) -> None:
@@ -394,6 +400,7 @@ __all__ = [
     "declared_logical_tables",
     "member_export_scope",
     "hermes_profile_raw_id",
+    "is_declared_logical_export",
     "is_sqlite_path",
     "original_sqlite_source_path",
     "retained_content_revision",
