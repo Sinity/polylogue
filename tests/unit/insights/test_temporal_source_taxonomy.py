@@ -34,7 +34,7 @@ from polylogue.analysis.temporal_source import (
     weakest_of,
     weakest_source,
 )
-from tests.infra.storage_records import SessionBuilder, db_setup
+from tests.infra.storage_records import SessionBuilder, db_setup, materialize_session_insights
 
 # Strongest to weakest, matching the taxonomy docstring order exactly.
 _ORDERED_SOURCES: tuple[TemporalSource, ...] = (
@@ -189,18 +189,11 @@ def temporal_source_db(workspace_env: Mapping[str, Path]) -> Path:
         role="user", text="please refactor"
     ).add_message(role="assistant", text="ok").add_message(role="user", text="done").save()
 
-    from polylogue.api import Polylogue
-
-    async def _rebuild() -> None:
-        archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
-        try:
-            await archive.rebuild_insights()
-        finally:
-            await archive.close()
-
-    import asyncio
-
-    asyncio.run(_rebuild())
+    # ``Polylogue.rebuild_insights`` refuses in-process execution
+    # (``InsightMaintenanceRequiresDaemonError``); this test asserts what the
+    # materializer produces, so it calls the shared production materializer
+    # both sanctioned owners reach.
+    materialize_session_insights(db_path)
     return db_path
 
 
