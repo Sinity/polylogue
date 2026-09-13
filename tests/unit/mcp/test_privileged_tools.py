@@ -1166,7 +1166,10 @@ class TestMaintenanceConfirmGates:
 
 class TestQuerySessionsProjection:
     @pytest.mark.asyncio
-    async def test_session_projection_forwards_offset_into_disjoint_pages(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("origin", [None, "chatgpt-export,codex-session"])
+    async def test_session_projection_forwards_offset_into_disjoint_pages(
+        self, tmp_path: Path, origin: str | None
+    ) -> None:
         """Each registered MCP page reaches its requested session window."""
         from polylogue.mcp.server import build_server
 
@@ -1176,9 +1179,11 @@ class TestQuerySessionsProjection:
         query_fn = server._tool_manager._tools["query"].fn
 
         with installed_runtime_services(archive_root):
-            full = json.loads(await invoke_surface_async(query_fn, projection="sessions", limit=100))
+            full = json.loads(await invoke_surface_async(query_fn, projection="sessions", limit=100, origin=origin))
             pages = [
-                json.loads(await invoke_surface_async(query_fn, projection="sessions", limit=2, offset=offset))
+                json.loads(
+                    await invoke_surface_async(query_fn, projection="sessions", limit=2, offset=offset, origin=origin)
+                )
                 for offset in (0, 2, 4, 6)
             ]
 
@@ -1224,7 +1229,7 @@ class TestQuerySessionsProjection:
             assert result["total"] >= 1
 
     @pytest.mark.asyncio
-    async def test_sessions_projection_rejects_continuation(self, tmp_path: Path) -> None:
+    async def test_sessions_projection_rejects_malformed_continuation(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"

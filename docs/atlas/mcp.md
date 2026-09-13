@@ -40,5 +40,13 @@ The live MCP surface is a twelve-tool operation algebra. Six read tools are alwa
 
 ## Operation to contract flow
 
+Session operations have individual request/result/error schemas generated from
+owner models (`polylogue/operations/session_contracts.py:1-80`). The existing
+`query` dispatcher accepts these as a discriminated `session_operation`
+request. `polylogue.operations.session_reads.execute_session_operation` owns
+execution; the MCP and machine CLI are adapters. Other MCP operations retain
+the tool-level contracts above. See [session operations](../session-operations.md) for paging,
+original-source fallback, and clock semantics.
+
 
 verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11

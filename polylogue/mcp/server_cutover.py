@@ -24,6 +24,7 @@ from polylogue.mcp.payloads import (
     MCPRootPayload,
     session_topology_payload,
 )
+from polylogue.operations.session_contracts import SessionOperation
 from polylogue.surfaces.outcome import decide_outcome
 
 if TYPE_CHECKING:
@@ -214,6 +215,129 @@ async def _cost_outlook_payload(hooks: ServerCallbacks, *, plan_name: str, metho
 
 
 async def _query_sessions(
+    hooks: ServerCallbacks,
+    *,
+    expression: str | None,
+    limit: int | None,
+    origin: str | None,
+    tag: str | None,
+    repo: str | None,
+    since: str | None,
+    until: str | None,
+    sort: str | None,
+    min_messages: int | None,
+    max_messages: int | None,
+    min_words: int | None,
+    continuation: str | None = None,
+    offset: int | None = None,
+) -> str:
+    """Session-level rows for ``query(projection="sessions", ...)``.
+
+    Ranked (top-k) search when ``expression`` is given as free text;
+    otherwise an exhaustive session listing filtered by the other
+    parameters. Reuses the same ``archive_search_payload`` /
+    ``archive_session_list_payload`` machinery the retired ``search`` /
+    ``list_sessions`` tools used, since ``query_units`` (the DSL path)
+    explicitly rejects ``sessions`` as a terminal unit source.
+    """
+    from polylogue.operations.session_contracts import SessionList, SessionSearch
+    from polylogue.operations.session_reads import execute_session_operation
+
+    if continuation is None:
+        from polylogue.mcp.query_contracts import build_session_query_request
+
+        probe = (
+            build_session_query_request(
+                query=expression,
+                origin=origin,
+                tag=tag,
+                repo=repo,
+                since=since,
+                until=until,
+                sort=sort,
+                limit=limit,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+            )
+            .build_spec(hooks.clamp_limit)
+            .to_plan()
+        )
+        if (
+            probe.has_post_filters()
+            or probe.similar_text
+            or probe.similar_session_id
+            or probe.retrieval_lane == "hybrid"
+            or sort == "random"
+            or (origin and "," in origin)
+        ):
+            return await _query_advanced_sessions(
+                hooks,
+                expression=expression,
+                limit=limit,
+                offset=offset,
+                origin=origin,
+                tag=tag,
+                repo=repo,
+                since=since,
+                until=until,
+                sort=sort,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+            )
+
+    cls = SessionSearch if expression else SessionList
+    if continuation:
+        from polylogue.archive.query.transaction import QueryContinuation
+
+        cls = (
+            SessionSearch
+            if QueryContinuation.decode(continuation).request.operation == "sessions.search"
+            else SessionList
+        )
+    values = {
+        "expression": expression,
+        "origin": origin,
+        "tag": tag,
+        "repo": repo,
+        "since": since,
+        "until": until,
+        "sort": sort,
+        "min_messages": min_messages,
+        "max_messages": max_messages,
+        "min_words": min_words,
+        "limit": limit,
+        "offset": offset,
+        "continuation": continuation,
+    }
+    request = cls.model_validate({key: value for key, value in values.items() if value is not None})
+    payload = await execute_session_operation(hooks.get_polylogue(), request)
+    if isinstance(request, SessionSearch):
+        from polylogue.surfaces.payloads import build_search_envelope
+
+        envelope = build_search_envelope(
+            tuple(payload.items),
+            total=payload.total,
+            limit=payload.limit,
+            offset=payload.offset,
+            query=request.expression or "",
+            retrieval_lane="dialogue",
+            sort=request.sort,
+        )
+        return hooks.json_payload(
+            MCPRootPayload(
+                root={
+                    **envelope.model_dump(mode="json"),
+                    "continuation": payload.continuation,
+                    "coverage": payload.coverage.model_dump(mode="json"),
+                }
+            )
+        )
+    return hooks.json_payload(payload)
+
+
+async def _query_advanced_sessions(
     hooks: ServerCallbacks,
     *,
     expression: str | None,
@@ -727,6 +851,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         min_messages: int | None = None,
         max_messages: int | None = None,
         min_words: int | None = None,
+        session_operation: SessionOperation | None = None,
     ) -> str:
         """Execute a terminal DSL page, or resume it using only its q2 token.
 
@@ -763,6 +888,33 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         """
 
         async def run() -> str:
+            if projection == "session-operations" and session_operation is None:
+                return hooks.error_json(
+                    "session-operations projection requires session_operation", code="invalid_argument", tool="query"
+                )
+
+            if session_operation is not None:
+                from polylogue.operations.session_contracts import SESSION_OPERATION_ADAPTER
+                from polylogue.operations.session_reads import session_operation_response
+
+                request = SESSION_OPERATION_ADAPTER.validate_python(session_operation)
+                return hooks.json_payload(await session_operation_response(hooks.get_polylogue(), request))
+            if projection == "timeline":
+                from polylogue.operations.session_contracts import SessionTimeline
+                from polylogue.operations.session_reads import execute_session_operation
+
+                values = {
+                    "origin": origin,
+                    "since": since,
+                    "until": until,
+                    "expression": expression,
+                    "limit": limit,
+                    "offset": offset,
+                    "continuation": continuation,
+                }
+                request = SessionTimeline.model_validate({k: v for k, v in values.items() if v is not None})
+                return hooks.json_payload(await execute_session_operation(hooks.get_polylogue(), request))
+
             # Validate before the reference-pipeline shortcut.  That pipeline
             # can return a result without constructing a SessionQuerySpec, so
             # validating only below it lets an invalid Provider-wire token
@@ -794,27 +946,25 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 )
 
             if projection == "sessions":
-                if continuation is not None:
-                    return hooks.error_json(
-                        "query(projection='sessions') does not support continuation yet",
-                        code="invalid_continuation",
-                        tool="query",
+                try:
+                    return await _query_sessions(
+                        hooks,
+                        expression=expression,
+                        limit=limit,
+                        origin=origin,
+                        tag=tag,
+                        repo=repo,
+                        since=since,
+                        until=until,
+                        sort=sort,
+                        min_messages=min_messages,
+                        max_messages=max_messages,
+                        min_words=min_words,
+                        continuation=continuation,
+                        offset=offset,
                     )
-                return await _query_sessions(
-                    hooks,
-                    expression=expression,
-                    limit=limit,
-                    offset=offset,
-                    origin=origin,
-                    tag=tag,
-                    repo=repo,
-                    since=since,
-                    until=until,
-                    sort=sort,
-                    min_messages=min_messages,
-                    max_messages=max_messages,
-                    min_words=min_words,
-                )
+                except ValueError as exc:
+                    return hooks.error_json(str(exc), code=str(getattr(exc, "code", "invalid_argument")), tool="query")
 
             if projection in _PERSONAL_STATE_PROJECTIONS:
                 try:
@@ -1067,7 +1217,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         return await hooks.async_safe_call("get", run, session_id=session_id)
 
     async def explain(
-        subject: Literal["query", "capability", "ref", "result", "recovery"],
+        subject: Literal["query", "capability", "ref", "result", "recovery", "session-operations"],
         expression: str | None = None,
         ref: str | None = None,
         offset: int = 0,
@@ -1086,6 +1236,27 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         offset = max(0, offset)
 
         async def run() -> str:
+            if subject == "session-operations":
+                from polylogue.operations.session_contracts import session_operation_contracts
+
+                manifest = session_operation_contracts()
+                operations = manifest["operations"]
+                if expression is not None:
+                    if expression not in operations:
+                        return hooks.error_json("unknown session operation", code="invalid_argument", tool="explain")
+                    return hooks.json_payload(MCPRootPayload(root=operations[expression]))
+                return hooks.json_payload(
+                    MCPRootPayload(
+                        root={
+                            "schema": manifest["schema"],
+                            "operations": {
+                                name: {key: value for key, value in row.items() if not key.endswith("_schema")}
+                                for name, row in operations.items()
+                            },
+                        }
+                    )
+                )
+
             if subject == "query":
                 if expression is None:
                     return hooks.error_json(
