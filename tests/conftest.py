@@ -540,6 +540,18 @@ def _clear_polylogue_env(
 
     reset_status_snapshot()
 
+    # Quiesce the process-global MCP call-log dispatcher. ``call_log._DISPATCHER``
+    # owns a daemon thread that keeps scanning every registered outbox root until
+    # its deliveries are acknowledged; no test daemon acknowledges them, so the
+    # thread outlives the test that started it. It resolves the API bearer-token
+    # path (``XDG_DATA_HOME``) at delivery time, so a later test that re-points
+    # XDG gets a surprise ``os.replace`` of ``api-auth-token`` inside its own
+    # tmp_path -- which is exactly how it broke
+    # tests/unit/storage/test_archive_tier_init.py's os.replace accounting.
+    from polylogue.mcp.call_log import reset_mcp_call_log
+
+    reset_mcp_call_log()
+
     # Strip every POLYLOGUE_* host env var so tests never inherit operator
     # configuration (archive root, daemon api host/port, validation mode,
     # notification webhook, etc.) from the developer host (#1325). A live

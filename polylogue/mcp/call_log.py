@@ -203,6 +203,42 @@ class _McpCallLogDispatcher:
         if thread is not None:
             thread.join(timeout=timeout)
 
+    def quiesce(self, timeout: float = 5.0) -> None:
+        """Stop the worker, drop in-process routing state, and allow restart.
+
+        The durable outbox is untouched -- only this process's wake queue,
+        registered roots, retry backoff and counters are released. Unlike
+        :meth:`shutdown`, the dispatcher is usable again afterwards.
+
+        The worker thread resolves ``api_auth_token_path()`` (and therefore
+        ``XDG_DATA_HOME``) at delivery time, so a dispatcher left scanning a
+        root whose daemon never answers keeps minting token files into
+        whatever environment the process happens to have later. That is
+        correct for a long-lived MCP server, whose environment is fixed, and
+        wrong for any process that re-points XDG between units of work.
+        """
+        thread = self._thread
+        self._stop.set()
+        if thread is not None:
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                raise RuntimeError("MCP call-log dispatcher thread did not stop")
+        with self._state_lock:
+            self._roots.clear()
+            self._retry_state.clear()
+            self._wakeups_dropped = 0
+            self._delivery_failures = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                self._queue.task_done()
+        with self._start_lock:
+            self._thread = None
+            self._stop.clear()
+
     def _ensure_started(self) -> None:
         if self._thread is not None:
             return
@@ -384,6 +420,11 @@ def start_mcp_call_log() -> None:
     _DISPATCHER.register(config)
 
 
+def reset_mcp_call_log(timeout: float = 5.0) -> None:
+    """Quiesce the process-global call-log dispatcher; durable spool is kept."""
+    _DISPATCHER.quiesce(timeout)
+
+
 def mcp_call_outbox_status() -> McpCallOutboxStatus:
     """Return current durable delivery debt and wake-queue pressure."""
     from polylogue.config import load_polylogue_config
@@ -397,5 +438,6 @@ __all__ = [
     "enqueue_mcp_call_log",
     "flush_mcp_call_log",
     "mcp_call_outbox_status",
+    "reset_mcp_call_log",
     "start_mcp_call_log",
 ]

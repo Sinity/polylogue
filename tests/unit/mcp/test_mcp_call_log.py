@@ -18,6 +18,7 @@ from urllib.error import HTTPError
 import pytest
 
 from polylogue.config import PolylogueConfig, load_polylogue_config
+from polylogue.mcp import call_log
 from polylogue.mcp.call_log import (
     McpCallLogEvent,
     _Delivery,
@@ -489,3 +490,51 @@ def test_two_dispatchers_can_quarantine_the_same_conflict(
     assert not failures
     assert not path.exists()
     assert (path.parent.parent / "quarantine" / path.name).is_file()
+
+
+def test_quiesce_stops_the_worker_clears_routing_and_allows_restart(tmp_path: Path) -> None:
+    """``quiesce`` releases in-process routing state without killing the dispatcher.
+
+    Anti-vacuity: dropping ``self._roots.clear()`` leaves the stale root
+    registered; dropping ``self._stop.clear()``/``self._thread = None`` leaves
+    the dispatcher permanently dead, so the post-reset ``register`` never
+    starts a worker and the final assertion fails.
+    """
+    dispatcher = call_log._McpCallLogDispatcher()
+    base_config = load_polylogue_config()
+    config = replace(base_config, _data={**base_config.raw, "archive_root": str(tmp_path / "archive")})
+
+    dispatcher.register(config)
+    _wait_until(lambda: dispatcher._thread is not None)
+    assert dispatcher._roots
+
+    dispatcher.quiesce()
+
+    assert dispatcher._thread is None
+    assert dispatcher._roots == {}
+    assert dispatcher._retry_state == {}
+    assert not dispatcher._stop.is_set()
+
+    dispatcher.register(config)
+    try:
+        assert dispatcher._thread is not None
+        assert dispatcher._thread.is_alive()
+    finally:
+        dispatcher.shutdown()
+
+
+def test_global_dispatcher_is_quiesced_before_every_test() -> None:
+    """No test inherits another test's live call-log worker or outbox roots.
+
+    The process-global ``_DISPATCHER`` resolves ``api_auth_token_path()`` --
+    and therefore ``XDG_DATA_HOME`` -- at delivery time, so a worker that
+    survives its own test mints an API token inside a later test's tmp_path.
+
+    Anti-vacuity: delete the ``reset_mcp_call_log()`` call from
+    ``tests/conftest.py`` and run this file after any file that invokes an MCP
+    tool (for example ``tests/unit/mcp/test_contract_evidence.py``); this test
+    then sees the inherited thread and roots and fails. Run alone it is
+    vacuous, which is why the combined selector is named here.
+    """
+    assert call_log._DISPATCHER._thread is None
+    assert call_log._DISPATCHER._roots == {}
