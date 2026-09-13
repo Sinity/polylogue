@@ -4,10 +4,60 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation, WriteResultStatus
+from polylogue.archive.write_gateway import (
+    WRITE_OPERATION_POLICIES,
+    ArchiveWriteGateway,
+    WriteOperation,
+    WriteResultStatus,
+    write_operation_policy_for,
+)
 from polylogue.storage.sqlite.connection import open_connection
 
 COMMITTED: WriteResultStatus = "committed"
+
+
+def test_declared_write_operations_have_exhaustive_production_effect_policies() -> None:
+    """Every enum value names its production writer and transaction policy."""
+    assert set(WRITE_OPERATION_POLICIES) == set(WriteOperation)
+    assert write_operation_policy_for(WriteOperation.RESET, "archive-index").run_archive_effects is True
+    assert write_operation_policy_for(WriteOperation.RESET, "user-overlay").run_archive_effects is False
+    assert write_operation_policy_for(WriteOperation.DELETE, "archive-index").actuator == "ArchiveStore.delete_sessions"
+    assert write_operation_policy_for(WriteOperation.TAG_UPDATE, "user-overlay").run_archive_effects is False
+    assert write_operation_policy_for(WriteOperation.METADATA_UPDATE, "user-overlay").run_archive_effects is False
+
+
+def test_user_overlay_gateway_commits_without_index_effects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tag/metadata policy commits its real transaction but cannot schedule FTS/cache work.
+
+    Anti-vacuity: changing this route to the archive-index policy invokes the
+    patched FTS function and fails, while removing the gateway call leaves the
+    insert uncommitted after the connection closes.
+    """
+    db_path = tmp_path / "user.db"
+    cache_invalidations: list[bool] = []
+
+    monkeypatch.setattr(
+        "polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync",
+        lambda _conn: pytest.fail("user overlays must not touch index FTS"),
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.search.cache.invalidate_search_cache",
+        lambda: cache_invalidations.append(True),
+    )
+
+    with open_connection(db_path) as conn:
+        conn.execute("CREATE TABLE writes (value TEXT NOT NULL)")
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO writes VALUES ('tag')")
+        result = ArchiveWriteGateway(db_path).commit_write_sync(
+            WriteOperation.TAG_UPDATE,
+            {"_connection": conn, "changed_session_ids": (), "effect_scope": "user-overlay"},
+        )
+
+    with open_connection(db_path) as conn:
+        assert conn.execute("SELECT value FROM writes").fetchone()[0] == "tag"
+    assert result.effect_receipts == ()
+    assert cache_invalidations == []
 
 
 def test_write_gateway_commits_effects_on_caller_owned_connection(tmp_path: Path) -> None:

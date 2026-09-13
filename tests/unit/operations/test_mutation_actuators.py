@@ -33,6 +33,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.analysis.feedback import LearningCorrection
+from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.enums import AssertionKind, Provider
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.mutation_actuators import (
@@ -136,6 +137,42 @@ def _seed_archive_session(archive_root: Path, *, native_id: str) -> str:
 
 
 class TestSessionDeleteActuator:
+    def test_production_delete_runs_post_commit_archive_effects(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real delete actuator reaches the gateway after index mutation.
+
+        Anti-vacuity: bypassing ``ArchiveStore.delete_sessions``' gateway
+        commit leaves this cache/deferred-effect observation empty even though
+        the session row was deleted.
+        """
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="delete-effects")
+        invalidated: list[bool] = []
+        deferred: list[tuple[str, bool]] = []
+
+        monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync", lambda _conn: None)
+        monkeypatch.setattr("polylogue.storage.search.cache.invalidate_search_cache", lambda: invalidated.append(True))
+        monkeypatch.setattr(
+            "polylogue.archive.write_effects.DEFERRED_EFFECT_QUEUE.enqueue",
+            lambda effect, ctx: deferred.append((effect.name, ctx.conn.in_transaction)),
+        )
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator = SessionDeleteActuator()
+            executor = OperationExecutor()
+            args = SessionDeleteArgs(archive=archive, session_ids=(session_id,))
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+
+        assert receipt.affected_count == 1
+        assert invalidated == [True]
+        assert deferred == [("invalidate_session_insights", False)]
+
     def test_prepare_only_plans_currently_existing_sessions(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
@@ -442,6 +479,42 @@ class TestSessionDeleteActuator:
 
 
 class TestIdentityResetActuator:
+    def test_production_reset_commits_user_and_index_policies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Identity reset commits its durable suppression and index delete separately.
+
+        Anti-vacuity: deleting the index gateway call still removes the row
+        but leaves the required post-commit cache invalidation absent.
+        """
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="reset-effects")
+        invalidated: list[bool] = []
+        routes: list[tuple[WriteOperation, str]] = []
+        original_commit = ArchiveWriteGateway.commit_write_sync
+
+        def observe_commit(self: ArchiveWriteGateway, op: WriteOperation, payload: dict[str, object]) -> object:
+            routes.append((op, str(payload.get("effect_scope", "archive-index"))))
+            return original_commit(self, op, payload)
+
+        monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync", lambda _conn: None)
+        monkeypatch.setattr("polylogue.storage.search.cache.invalidate_search_cache", lambda: invalidated.append(True))
+        monkeypatch.setattr(ArchiveWriteGateway, "commit_write_sync", observe_commit)
+
+        actuator = IdentityResetActuator()
+        executor = OperationExecutor()
+        args = IdentityResetArgs(archive_root=archive_root, session_ids=(session_id,), reason="test reset")
+        plan = executor.prepare(actuator, args)
+        authorization = executor.authorize(
+            actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+        )
+        receipt = executor.execute(actuator, plan, authorization, args)
+
+        assert receipt.affected_count == 1
+        assert routes == [(WriteOperation.RESET, "user-overlay"), (WriteOperation.RESET, "archive-index")]
+        assert invalidated == [True]
+
     def test_full_lifecycle_suppresses_and_deletes(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
@@ -480,6 +553,53 @@ class TestIdentityResetActuator:
 
 
 class TestTagAddActuator:
+    def test_production_tag_and_metadata_writes_use_user_overlay_policy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """User assertions commit through the gateway without stale-index work.
+
+        Anti-vacuity: routing either writer as an archive-index write invokes
+        the failing FTS stub; removing either gateway call makes its recorded
+        production route disappear.
+        """
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="user-overlay-effects")
+        routes: list[tuple[WriteOperation, str]] = []
+        cache_invalidations: list[bool] = []
+        original_commit = ArchiveWriteGateway.commit_write_sync
+
+        def observe_commit(self: ArchiveWriteGateway, op: WriteOperation, payload: dict[str, object]) -> object:
+            routes.append((op, str(payload.get("effect_scope", "archive-index"))))
+            return original_commit(self, op, payload)
+
+        monkeypatch.setattr(
+            "polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync",
+            lambda _conn: pytest.fail("user-overlay mutation touched index FTS"),
+        )
+        monkeypatch.setattr(
+            "polylogue.storage.search.cache.invalidate_search_cache", lambda: cache_invalidations.append(True)
+        )
+        monkeypatch.setattr(ArchiveWriteGateway, "commit_write_sync", observe_commit)
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            assert archive.add_user_tags((session_id,), ("review",)) == 1
+            assert archive.set_user_metadata((session_id,), (("priority", "high"),)) == 1
+            assert archive.remove_user_tags((session_id,), ("review",)) == 1
+            assert archive.delete_user_metadata(session_id, "priority") == 1
+            assert archive.add_user_tags((session_id,), ("review",)) == 1
+            assert archive.add_user_tags((session_id,), ("review",)) == 0
+
+        assert routes == [
+            (WriteOperation.TAG_UPDATE, "user-overlay"),
+            (WriteOperation.METADATA_UPDATE, "user-overlay"),
+            (WriteOperation.TAG_UPDATE, "user-overlay"),
+            (WriteOperation.METADATA_UPDATE, "user-overlay"),
+            (WriteOperation.TAG_UPDATE, "user-overlay"),
+            (WriteOperation.TAG_UPDATE, "user-overlay"),
+        ]
+        assert cache_invalidations == []
+
     def test_full_lifecycle_writes_the_tag_assertion(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
