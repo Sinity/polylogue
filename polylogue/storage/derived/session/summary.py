@@ -227,6 +227,16 @@ def inspect_session_summary(
         with query_deadline(conn, seconds=deadline_s):
             for row in conn.execute(_SUMMARY_CENSUS_SQL):
                 if deadline is not None and time.monotonic() >= deadline:
+                    # A partial scan cannot prove readiness, but one drifted
+                    # session is a complete counterexample to it. Reporting
+                    # ``unknown`` here would discard a proof already in hand.
+                    if stale_sessions:
+                        return SessionSummaryInspection(
+                            state="stale",
+                            total_sessions=total_sessions,
+                            stale_sessions=stale_sessions,
+                            reason="session-summary inspection stopped early on measured drift",
+                        )
                     return SessionSummaryInspection(
                         state="unknown",
                         total_sessions=total_sessions,
@@ -249,6 +259,16 @@ def inspect_session_summary(
 
     evidence = capture_sqlite_read(scan)
     if isinstance(evidence, Unavailable):
+        # ``query_deadline`` interrupts the running statement, so an expired
+        # scan arrives here rather than through the row-loop check above. The
+        # rows already compared are still measured: keep a counterexample.
+        if stale_sessions:
+            return SessionSummaryInspection(
+                state="stale",
+                total_sessions=total_sessions,
+                stale_sessions=stale_sessions,
+                reason="session-summary inspection stopped early on measured drift",
+            )
         return SessionSummaryInspection(
             state="unknown",
             total_sessions=total_sessions,
