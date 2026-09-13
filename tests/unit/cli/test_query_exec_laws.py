@@ -3180,12 +3180,18 @@ class TestSearchQueryContracts:
     def test_debug_timing_keeps_query_output_on_stdout(
         self, search_workspace: SearchWorkspace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Opt-in timing reports real CLI phases without corrupting JSON output.
+        """Opt-in timing reports the real phases of the route taken, on stderr.
 
-        This invokes the production Click root, query compiler, archive open,
-        list execution, and renderer.  Removing any checkpoint around those
-        production dependencies makes the corresponding stderr phase assertion
-        fail while the JSON assertion protects the stdout/stderr contract.
+        This invokes the production Click root, query compiler, list execution
+        and renderer.  Removing any checkpoint around those production
+        dependencies makes the corresponding stderr phase assertion fail, while
+        the JSON assertion protects the stdout/stderr contract.
+
+        ``db-open`` is deliberately absent: it is recorded inside
+        ``archive_read_context`` in ``_execute_archive_query_stdout``, and a
+        list read served by the daemon session page returns before reaching it.
+        Asserting its absence keeps this a claim about which route ran rather
+        than a phase list quietly trimmed until it passed.
         """
         from polylogue.cli import cli
 
@@ -3197,8 +3203,9 @@ class TestSearchQueryContracts:
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["mode"] == "list"
         assert "polylogue timing" in result.stderr
-        for phase in ("cli-callback", "archive-query-import", "config", "compile", "db-open", "execute", "render"):
+        for phase in ("cli-callback", "archive-query-import", "config", "compile", "execute", "render"):
             assert phase in result.stderr
+        assert "db-open" not in result.stderr
 
     def test_structured_only_cli_query_skips_absent_message_fts(self, search_workspace: SearchWorkspace) -> None:
         """A field-only CLI query must keep working when lexical search is unavailable.
