@@ -33,6 +33,7 @@ does not have to re-derive them from the audit comments:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -53,8 +54,11 @@ import pytest
 # module's trees to NVMe scratch so every other test keeps the tmpfs lane.
 pytestmark = pytest.mark.storage_scale
 
-from polylogue.config import Config
-from polylogue.maintenance import raw_authority
+from polylogue.daemon.derivation import DerivationReport
+from polylogue.daemon.execution import BoundedComputeAdapter
+from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+from polylogue.operations.intake_adapters import RawMaterializationDiscovery
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadPhaseObservation,
@@ -81,6 +85,46 @@ SESSION_NATIVE_ID = CodexRevisionChainFixture().session_native_id
 SOURCE_PATH = "codex/incident-804-sanitized.jsonl"
 _BASELINE_MESSAGE_IDS = tuple(f"{SESSION_NATIVE_ID}-message-{index}" for index in range(2))
 _BASELINE_MESSAGE_TIMESTAMPS = ("2026-07-31T04:25:20Z", "2026-07-31T04:25:20Z")
+
+
+async def _admit_whale_component(
+    root: Path,
+    *,
+    ordinary_max_payload_bytes: int,
+    whale_max_payload_bytes: int,
+) -> tuple[str, DerivationReport, DerivationReport]:
+    """Discover pending work, refuse the ordinary envelope, then widen it."""
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    owner = RawObservationConvergenceOwner(
+        root,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        max_payload_bytes=ordinary_max_payload_bytes,
+    )
+    discovery = RawMaterializationDiscovery(root, max_payload_bytes=ordinary_max_payload_bytes)
+    try:
+        pending = discovery.discover_pending_raw_ids(limit=1)
+        assert pending, "canonical discovery must find a pending raw component"
+        raw_id, estimated_bytes = pending[0]
+        assert estimated_bytes > 0
+        source_before = _source_facts(root)
+        with sqlite3.connect(root / "index.db") as conn:
+            index_session_count_before = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        ordinary = await owner.converge_raw_id(raw_id)
+        assert ordinary.failed == 1
+        assert ordinary.done == 0
+        assert ordinary.pending == 0
+        assert any("payload budget" in (outcome.error or "") for outcome in ordinary.outcomes)
+        assert _source_facts(root) == source_before
+        with sqlite3.connect(root / "index.db") as conn:
+            assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) == index_session_count_before
+        widened = await owner.converge_raw_id(raw_id, max_payload_bytes=whale_max_payload_bytes)
+        followup = await owner.converge_raw_id(raw_id, max_payload_bytes=whale_max_payload_bytes)
+        return raw_id, widened, followup
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
 
 
 def _baseline_message_timestamps(path: Path) -> tuple[str, ...]:
@@ -300,7 +344,8 @@ def _source_facts(
 
 @pytest.mark.timeout(900)
 @pytest.mark.uses_real_clock("measures wall-clock cost of an incident-scale convergence pass")
-def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise acquisition through raw-authority convergence at incident scale.
 
     Anti-vacuity: deleting the production ``AcquisitionService`` call from
@@ -424,13 +469,6 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     assert pre_recovery_unresolved_count == REVISION_COUNT - 1
     assert pre_recovery_membership_count == 0
     assert pre_recovery_census_count == 0
-    whale_candidate = raw_authority.whale_pass_candidate(
-        Config(archive_root=root, render_root=root / "render", sources=[]),
-        ordinary_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes,
-        whale_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.whale_blob_limit_bytes,
-    )
-    assert whale_candidate is not None
-    assert whale_candidate == acquired_raw_ids[0]
     whale_component_bytes = sum(sizes) + sum(row[3] for row in append_rows)
     assert (
         WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes
@@ -460,37 +498,19 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     clone_blob_tree(root / "blob", source_ready_root / "blob")
     with sqlite3.connect(source_ready_root / "source.db") as conn:
         assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) == expected_raw_count
-    whale_repair = raw_authority.converge_materialization(
-        Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
-        dry_run=False,
-        raw_artifact_id=whale_candidate,
-        raw_artifact_limit=1,
-        max_payload_bytes=whale_component_bytes + 1,
+    whale_candidate, whale_repair, followup_repair = await _admit_whale_component(
+        source_ready_root,
+        ordinary_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes,
+        whale_max_payload_bytes=whale_component_bytes + 1,
     )
-    assert whale_repair.success is True
-    assert whale_repair.repaired_count >= 1
-    assert whale_repair.metrics["raw_materialization_limit"] == 1.0
-    assert whale_repair.metrics["raw_materialization_selected_component_count"] == 1.0
-    assert whale_repair.metrics["raw_materialization_selected_count"] == 1.0
-    assert whale_repair.plan_outcomes
-    assert all(whale_candidate in outcome.input_raw_ids for outcome in whale_repair.plan_outcomes)
-    followup_repair = raw_authority.converge_materialization(
-        Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
-        dry_run=False,
-        raw_artifact_limit=1,
-        max_payload_bytes=whale_component_bytes + 1,
-    )
-    assert followup_repair.metrics["raw_materialization_limit"] == 1.0
-    assert followup_repair.success is True
+    assert whale_repair.failed == 0
+    assert whale_repair.pending == 0
+    assert whale_repair.done == 1
+    assert whale_repair.work.discovered == 1
+    assert followup_repair.failed == 0
+    assert followup_repair.pending == 0
+    assert followup_repair.done == 0
     copy_sqlite_database(source_ready_root / "source.db", root / "source.db")
-    assert (
-        raw_authority.whale_pass_candidate(
-            Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
-            ordinary_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes,
-            whale_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.whale_blob_limit_bytes,
-        )
-        is None
-    )
     phases.append(
         _phase(
             "replay",

@@ -18,6 +18,7 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteThreadBridge,
     daemon_write_lease_active,
 )
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -84,6 +85,48 @@ async def test_exact_raw_admission_uses_canonical_derivation_not_legacy_authorit
         assert report.done == 1
         with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
             assert archive.raw_payload_sizes((raw_id,))[raw_id] > 0
+    finally:
+        await _shutdown(compute, coordinator)
+
+
+@pytest.mark.asyncio
+async def test_widened_owner_refuses_nonstream_before_blob_open_but_ordinary_owner_can_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, "nonstream")
+    owner, compute, coordinator = await _owner(tmp_path)
+
+    def forbidden_verify(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("widened nonstream refusal must precede blob verification")
+
+    try:
+        with monkeypatch.context() as widened:
+            widened.setattr(BlobStore, "verify", forbidden_verify)
+            for _ in range(2):
+                refused = await owner.converge_raw_id(raw_id, max_payload_bytes=2_000_000)
+                assert refused.done == 0 and refused.failed == 1
+                assert any(outcome.error and "stream-safe" in outcome.error for outcome in refused.outcomes)
+        ordinary = await owner.converge_raw_id(raw_id)
+        assert ordinary.done == 1 and ordinary.failed == ordinary.pending == 0
+    finally:
+        await _shutdown(compute, coordinator)
+
+
+@pytest.mark.asyncio
+async def test_owner_refuses_a_preheld_writer_lease_before_preparation(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, "preheld")
+    owner, compute, coordinator = await _owner(tmp_path)
+
+    async def nested() -> None:
+        with pytest.raises(RuntimeError, match="writer lease is released"):
+            await owner.converge_raw_id(raw_id)
+
+    try:
+        await coordinator.run("raw-observation-test", nested)
+        report = await owner.converge_raw_id(raw_id)
+        assert report.done == 1
     finally:
         await _shutdown(compute, coordinator)
 

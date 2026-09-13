@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -1357,6 +1357,78 @@ class RawFrontierBlockedPaths:
     gap_source_paths: frozenset[str] = frozenset()
 
 
+def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> RawFrontierBlockedPaths:
+    """Authorize selected observations against only their source frontier.
+
+    Archive-wide missing-source diagnostics remain the responsibility of the
+    explicit integrity projection. This admission checks the selected connected
+    authority component, including its byte heads, predecessor chains and cursors.
+    """
+    from polylogue.storage.archive_identity import resolve_active_index_path
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    if not raw_ids:
+        return RawFrontierBlockedPaths(frozenset(), None)
+    try:
+        with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                "ATTACH DATABASE ? AS index_tier", (resolve_active_index_path(archive_root).as_uri() + "?mode=ro",)
+            )
+            conn.execute("BEGIN")
+            component, logical_keys = expand_raw_membership_selection_sync(conn, list(raw_ids))
+            paths_by_raw = _source_paths_for_raw_ids(conn, set(component))
+            if any(raw_id not in paths_by_raw for raw_id in raw_ids):
+                return RawFrontierBlockedPaths(frozenset(), "selected raw has no durable source path")
+            paths = frozenset(paths_by_raw.values())
+            marks = ",".join("?" for _ in component)
+            key_marks = ",".join("?" for _ in logical_keys)
+            rows = conn.execute(
+                f"""SELECT logical_source_key, accepted_raw_id, accepted_source_revision,
+                    accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset
+                FROM index_tier.raw_revision_heads
+                WHERE accepted_raw_id IN ({marks}) OR logical_source_key IN ({key_marks})""",
+                (*component, *logical_keys),
+            ).fetchall()
+            heads = tuple(_IndexRawRevisionHead(*tuple(row)) for row in rows)
+            sessions = frozenset(
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT DISTINCT raw_id FROM index_tier.sessions WHERE raw_id IN ({marks})", component
+                )
+            )
+            broken, count, _checked, _samples, reason = _check_broken_active_chains(
+                conn, sessions, heads, sample_limit=len(component) + len(heads)
+            )
+            if broken == "unknown":
+                return RawFrontierBlockedPaths(frozenset(), reason)
+            if count:
+                return RawFrontierBlockedPaths(paths, None)
+            ops_path = archive_root / "ops.db"
+            # A reset disposable tier has no cursor claims to compare. The
+            # selected durable chain above remains mandatory authority.
+            if not ops_path.exists():
+                return RawFrontierBlockedPaths(frozenset(), None)
+            with closing(open_readonly_connection(ops_path, validate_schema=False)) as ops:
+                cursor = _check_cursor_ahead_of_accepted(
+                    conn, None, heads, sample_limit=len(paths) + len(heads), ops_conn=ops, source_paths=paths
+                )
+            status, count, _checked, _comparisons, _ahead, samples, gaps, gap_samples, _deferred, reason = cursor
+            if status == "unknown" and not gaps:
+                return RawFrontierBlockedPaths(frozenset(), reason)
+            refused = frozenset(sample.source_path for sample in samples)
+            return RawFrontierBlockedPaths(
+                refused,
+                None,
+                gap_source_paths=frozenset(
+                    sample.source_path for sample in gap_samples if sample.source_path is not None
+                ).difference(refused),
+            )
+    except (OSError, sqlite3.Error, RawRetentionSafetyError) as exc:
+        return RawFrontierBlockedPaths(frozenset(), f"selected source frontier is unreadable: {exc}")
+
+
 def raw_frontier_blocked_source_paths(
     archive_root: Path,
     raw_materialization_readiness: Mapping[str, object],
@@ -1740,6 +1812,7 @@ def _check_cursor_ahead_of_accepted(
     sample_limit: int,
     ops_conn: sqlite3.Connection | None = None,
     ops_schema: str = "main",
+    source_paths: frozenset[str] | None = None,
 ) -> tuple[
     RawFrontierIntegrityStatus,
     int,
@@ -1754,7 +1827,7 @@ def _check_cursor_ahead_of_accepted(
 ]:
     try:
         cursor_map = (
-            _ops_cursor_byte_offsets_from_connection(ops_conn, schema=ops_schema)
+            _ops_cursor_byte_offsets_from_connection(ops_conn, schema=ops_schema, source_paths=source_paths)
             if ops_conn is not None
             else _ops_cursor_byte_offsets(_required_ops_path(ops_db_path))
         )
@@ -1797,7 +1870,7 @@ def _check_cursor_ahead_of_accepted(
     comparison_count = 0
     ahead_comparison_count = 0
     try:
-        source_paths = _source_paths_for_paths(conn, set(cursor_map))
+        retained_source_paths = _source_paths_for_paths(conn, set(cursor_map))
     except sqlite3.Error as exc:
         logger.warning("raw frontier integrity: cursor source path lookup failed: %s", exc)
         return "unknown", 0, 0, 0, 0, (), 0, (), 0, f"cursor source path lookup failed: {exc}"
@@ -1828,7 +1901,7 @@ def _check_cursor_ahead_of_accepted(
                     CursorAuthorityGapSample(
                         state=(
                             "source_raws_without_accepted_head"
-                            if path in source_paths
+                            if path in retained_source_paths
                             else "cursor_path_absent_from_source"
                         ),
                         source_path=path,
@@ -1836,7 +1909,7 @@ def _check_cursor_ahead_of_accepted(
                         cursor_byte_offset=cursor_offset,
                         reason=(
                             "source tier has raw evidence but index has no accepted byte head"
-                            if path in source_paths
+                            if path in retained_source_paths
                             else "ingest cursor path is absent from source tier"
                         ),
                     )
@@ -2121,6 +2194,7 @@ def _ops_cursor_byte_offsets_from_connection(
     conn: sqlite3.Connection,
     *,
     schema: str = "main",
+    source_paths: frozenset[str] | None = None,
 ) -> dict[str, _OpsCursorAuthority]:
     """Read cursor authority from an operation's pinned ops handle."""
 
@@ -2131,12 +2205,15 @@ def _ops_cursor_byte_offsets_from_connection(
     ).fetchone()
     if has_table is None:
         raise RawRetentionSafetyError("ops tier has no ingest_cursor table")
+    path_filter = "" if source_paths is None else f"AND source_path IN ({','.join('?' for _ in source_paths)})"
     rows = conn.execute(
         f"""
         SELECT source_path, byte_offset, deferred_end_offset
         FROM {schema}.ingest_cursor
         WHERE COALESCE(excluded, 0) = 0 AND byte_offset IS NOT NULL
-        """
+        {path_filter}
+        """,
+        tuple(source_paths) if source_paths is not None else (),
     ).fetchall()
     return {
         str(row[0]): _OpsCursorAuthority(

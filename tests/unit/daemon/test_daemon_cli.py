@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import functools
 import hashlib
 import inspect
 import json
@@ -28,12 +27,11 @@ from polylogue.daemon.derivation import DerivationReport
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
-from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
-from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
@@ -504,304 +502,6 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     warning.assert_not_called()
 
 
-def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    calls: dict[str, object] = {}
-    order: list[str] = []
-
-    class FakeResult:
-        success = True
-        repaired_count = 7
-        detail = "ok"
-
-    class FakeRestoreResult:
-        restored_count = 2
-
-    def fake_restore_direct_blob_reference_debt(
-        db_path: Path,
-        *,
-        dry_run: bool,
-        max_count: int,
-        sample_size: int,
-    ) -> FakeRestoreResult:
-        order.append("restore")
-        calls["restore_db_path"] = db_path
-        calls["restore_dry_run"] = dry_run
-        calls["restore_max_count"] = max_count
-        calls["restore_sample_size"] = sample_size
-        return FakeRestoreResult()
-
-    def fake_converge_raw_materialization(
-        config: Config,
-        *,
-        dry_run: bool,
-        raw_artifact_limit: int,
-        max_payload_bytes: int,
-        prefetch_cache: object = None,
-        raw_artifact_id: str | None = None,
-        source_root: Path | None = None,
-        max_pass_seconds: float | None = None,
-        excluded_source_paths: tuple[str, ...] = (),
-    ) -> FakeResult:
-        order.append("materialize")
-        calls["archive_root"] = config.archive_root
-        calls["render_root"] = config.render_root
-        calls["dry_run"] = dry_run
-        calls["raw_artifact_limit"] = raw_artifact_limit
-        calls["max_payload_bytes"] = max_payload_bytes
-        calls["prefetch_cache"] = prefetch_cache
-        calls["raw_artifact_id"] = raw_artifact_id
-        calls["source_root"] = source_root
-        calls["max_pass_seconds"] = max_pass_seconds
-        calls["excluded_source_paths"] = excluded_source_paths
-        return FakeResult()
-
-    def fake_recover(config: Config) -> tuple[str, ...]:
-        order.append("recover-frontier")
-        calls["recover_archive_root"] = config.archive_root
-        return ()
-
-    def fake_converge(config: Config, *, limit: int) -> int:
-        order.append("frontier")
-        calls["frontier_archive_root"] = config.archive_root
-        calls["frontier_limit"] = limit
-        return 3
-
-    def fake_gate(_root: Path) -> RawFrontierBlockedPaths:
-        order.append("gate")
-        return RawFrontierBlockedPaths(frozenset(), None)
-
-    def fake_finalize_codex_state(config: Config) -> int:
-        # polylogue-6q16u: retained Codex state snapshots without a terminal
-        # receipt are finalized BEFORE the gate consults them.
-        order.append("codex-state-receipts")
-        calls["codex_state_archive_root"] = config.archive_root
-        return 0
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_refusal", fake_gate)
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.finalize_codex_state_snapshots", fake_finalize_codex_state)
-    monkeypatch.setattr(
-        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
-        fake_restore_direct_blob_reference_debt,
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.raw_convergence.converge_raw_materialization", fake_converge_raw_materialization
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.raw_reconciler.recover_interrupted_raw_authority_frontier",
-        fake_recover,
-    )
-    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", fake_converge)
-
-    counts = daemon_cli._drain_raw_materialization_once(limit=11)  # type: ignore[attr-defined]  # polylogue-3sd53
-    assert counts.repaired_sessions == 7
-    assert counts.executed_plans == 3
-    assert order == ["codex-state-receipts", "gate", "restore", "recover-frontier", "materialize", "frontier"]
-    # polylogue-de2a: the ordinary trickle pass must always request a
-    # declared, enforced per-call wall-clock ceiling on the writer hold --
-    # a component-count limit alone did not bound observed hold time.
-    assert calls["max_pass_seconds"] == daemon_cli._RAW_MATERIALIZATION_MAX_PASS_SECONDS
-
-    order.clear()
-    daemon_cli._drain_raw_materialization_once(limit=11, recover=False)  # type: ignore[attr-defined]  # polylogue-3sd53
-    assert order == ["codex-state-receipts", "gate", "restore", "materialize", "frontier"]
-    assert calls == {
-        "codex_state_archive_root": tmp_path / "archive",
-        "restore_db_path": tmp_path / "archive" / "source.db",
-        "restore_dry_run": False,
-        "restore_max_count": 25,
-        "restore_sample_size": 0,
-        "archive_root": tmp_path / "archive",
-        "render_root": tmp_path / "render",
-        "dry_run": False,
-        "raw_artifact_limit": 11,
-        "max_payload_bytes": daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
-        "prefetch_cache": None,
-        "raw_artifact_id": None,
-        "source_root": None,
-        "recover_archive_root": tmp_path / "archive",
-        "frontier_archive_root": tmp_path / "archive",
-        "frontier_limit": 8,
-        "max_pass_seconds": daemon_cli._RAW_MATERIALIZATION_MAX_PASS_SECONDS,
-        "excluded_source_paths": (),
-    }
-
-
-def test_drain_raw_materialization_once_blocks_unattributed_refusal(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A refusal no path explains still blocks the whole pass."""
-    from polylogue.daemon import cli as daemon_cli
-
-    archive = tmp_path / "archive"
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
-    monkeypatch.setattr(
-        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
-        lambda _root: RawFrontierBlockedPaths(frozenset(), "source tier is unreadable"),
-    )
-
-    with pytest.raises(RuntimeError, match="source-selection gate blocked"):
-        daemon_cli._drain_raw_materialization_once()  # type: ignore[attr-defined]  # polylogue-3sd53
-
-    assert not archive.exists()
-
-
-def test_drain_raw_materialization_once_refuses_only_the_broken_paths(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A broken path is left out and recorded as debt; the rest of the backlog converges.
-
-    Anti-vacuity: raising on any attributed refusal (the pre-split gate)
-    never reaches ``converge_materialization``; dropping the
-    ``excluded_source_paths`` passthrough materializes the refused path; and
-    not recording the refusal leaves ``convergence_debt`` empty. Each turns
-    one assertion red.
-    """
-    from polylogue.daemon import cli as daemon_cli
-
-    archive = tmp_path / "archive"
-    archive.mkdir()
-    initialize_archive_database(archive / "ops.db", ArchiveTier.OPS)
-    refused = archive / "broken-chain.jsonl"
-    admitted_gap = archive / "no-head-yet.jsonl"
-    calls: dict[str, object] = {}
-
-    def fake_repair(config: Config, **kwargs: object) -> object:
-        calls["excluded_source_paths"] = kwargs.get("excluded_source_paths")
-        return SimpleNamespace(success=True, repaired_count=1, detail="ok", metrics={})
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: archive / "index.db")
-    monkeypatch.setattr(
-        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
-        lambda _root: RawFrontierBlockedPaths(
-            frozenset({str(refused)}),
-            None,
-            gap_source_paths=frozenset({str(admitted_gap)}),
-        ),
-    )
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.finalize_codex_state_snapshots", lambda _config: 0)
-    monkeypatch.setattr(
-        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
-        lambda *_args, **_kwargs: SimpleNamespace(restored_count=0),
-    )
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.converge_materialization", fake_repair)
-    monkeypatch.setattr(
-        "polylogue.storage.raw_reconciler.recover_interrupted_raw_authority_frontier",
-        lambda _config: (),
-    )
-    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path, *, ops_db_path: None)
-    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", lambda _config, *, limit: 0)
-    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
-
-    counts = daemon_cli._drain_raw_materialization_once()  # type: ignore[attr-defined]  # polylogue-3sd53
-
-    assert counts.repaired_sessions == 1
-    assert calls["excluded_source_paths"] == (str(refused),)
-    with sqlite3.connect(archive / "ops.db") as conn:
-        debt = conn.execute(
-            "SELECT stage, target_type, target_id, status FROM convergence_debt ORDER BY target_id"
-        ).fetchall()
-    assert debt == [("raw_parse_recovery", "source_path", str(refused), "failed")]
-
-
-@pytest.mark.parametrize("authority_state", ["violated", "unknown"])
-def test_whale_writer_route_blocks_unproven_cursor_authority(
-    authority_state: str,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The real whale writer callback must not mutate under unproven authority."""
-    from polylogue.daemon import cli as daemon_cli
-
-    archive = tmp_path / "archive"
-    mutations: list[str] = []
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
-    monkeypatch.setattr(
-        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
-        lambda _root: RawFrontierBlockedPaths(frozenset(), f"{authority_state} cursor authority"),
-    )
-
-    def fake_converge(*_args: object, **_kwargs: object) -> object:
-        mutations.append("converge_materialization")
-        (archive / "writer-mutated").write_text("unsafe", encoding="utf-8")
-        return SimpleNamespace(success=True, repaired_count=1, detail="unexpected writer call")
-
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.converge_materialization", fake_converge)
-    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path, *, ops_db_path: None)
-    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
-
-    with pytest.raises(RuntimeError, match="source-selection gate blocked"):
-        daemon_cli._run_raw_materialization_whale_pass_once(  # type: ignore[attr-defined]  # polylogue-3sd53
-            raw_artifact_id="whale-seed-raw-id",
-            max_payload_bytes=daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
-        )
-    assert mutations == []
-    assert not (archive / "writer-mutated").exists()
-
-
-def test_whale_writer_route_refuses_a_seed_on_a_refused_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A whale seed whose own path is refused is a typed refusal, not an empty clean pass.
-
-    Anti-vacuity: dropping the seed-path check lets the fake repair run and
-    ``mutations`` becomes non-empty.
-    """
-    from polylogue.daemon import cli as daemon_cli
-
-    archive = tmp_path / "archive"
-    archive.mkdir()
-    initialize_archive_database(archive / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(archive / "ops.db", ArchiveTier.OPS)
-    seed_path = archive / "whale.jsonl"
-    with sqlite3.connect(archive / "source.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
-            ) VALUES ('whale-seed-raw-id', 'codex-session', 'whale', ?, 0, ?, 1, 1)
-            """,
-            (str(seed_path), bytes(32)),
-        )
-        conn.commit()
-    mutations: list[str] = []
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: archive / "index.db")
-    monkeypatch.setattr(
-        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
-        lambda _root: RawFrontierBlockedPaths(frozenset({str(seed_path)}), None),
-    )
-
-    def fake_repair(*_args: object, **_kwargs: object) -> object:
-        mutations.append("converge_materialization")
-        return SimpleNamespace(success=True, repaired_count=1, detail="unexpected writer call")
-
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.converge_materialization", fake_repair)
-    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path, *, ops_db_path: None)
-    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
-
-    with pytest.raises(RuntimeError, match="refused source path"):
-        daemon_cli._run_raw_materialization_whale_pass_once(  # type: ignore[attr-defined]  # polylogue-3sd53
-            raw_artifact_id="whale-seed-raw-id",
-            max_payload_bytes=daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
-        )
-    assert mutations == []
-
-
 def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1038,499 +738,6 @@ def test_raw_materialization_pass_projects_durable_census_handle(monkeypatch: py
     }
 
 
-def test_raw_materialization_closes_fts_on_cancellation(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    archive = tmp_path / "archive"
-    archive.mkdir()
-    # A managed generation lives under the archive root. A pointer naming a
-    # target outside it is admitted only as a symlink farm, and this test is
-    # about FTS closure rather than pointer topology.
-    active_index = archive / ".index-generations" / "active" / "index.db"
-    active_index.parent.mkdir(parents=True)
-    active_index.touch()
-    (archive / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
-    closed: list[tuple[Path, Path]] = []
-
-    class FakeRestoreResult:
-        restored_count = 0
-
-    def cancel_converge(*_args: object, **_kwargs: object) -> object:
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
-    monkeypatch.setattr(
-        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
-        lambda *_args, **_kwargs: FakeRestoreResult(),
-    )
-    monkeypatch.setattr("polylogue.storage.raw_convergence.converge_raw_materialization", cancel_converge)
-    monkeypatch.setattr(
-        daemon_cli,
-        "_close_raw_materialization_fts",
-        lambda index_db, *, ops_db_path: closed.append((index_db, ops_db_path)),
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        daemon_cli._drain_raw_materialization_once()  # type: ignore[attr-defined]  # polylogue-3sd53
-
-    assert closed == [(active_index, archive / "ops.db")]
-
-
-@pytest.mark.parametrize("whale", [False, True])
-def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    whale: bool,
-) -> None:
-    """FTS closure must finish under the same promotion-excluding lease as replay."""
-    from polylogue.daemon import cli as daemon_cli
-
-    archive = tmp_path / "archive"
-    archive.mkdir()
-    # A managed generation lives under the archive root. A pointer naming a
-    # target outside it is admitted only as a symlink farm, and this test is
-    # about FTS closure rather than pointer topology.
-    active_index = archive / ".index-generations" / "active" / "index.db"
-    active_index.parent.mkdir(parents=True)
-    active_index.touch()
-    (archive / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
-    lease_events: list[str] = []
-    held = 0
-
-    @contextlib.contextmanager
-    def fake_generation_lease(_config: Config) -> Any:
-        nonlocal held
-        held += 1
-        lease_events.append("acquire")
-        try:
-            yield active_index
-        finally:
-            lease_events.append("close")
-            held -= 1
-
-    class FakeRestoreResult:
-        restored_count = 0
-
-    def restore_debt(*_args: object, **_kwargs: object) -> FakeRestoreResult:
-        assert held == 1
-        lease_events.append("restore")
-        return FakeRestoreResult()
-
-    result = SimpleNamespace(
-        success=True,
-        repaired_count=1,
-        detail="repaired",
-        metrics={"raw_materialization_remaining_candidate_count": 0},
-    )
-    closed: list[tuple[Path, Path]] = []
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
-    monkeypatch.setattr(
-        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
-        restore_debt,
-    )
-
-    def recover_frontier(_config: Config) -> tuple[()]:
-        assert held == 1
-        lease_events.append("recover")
-        return ()
-
-    def resolve_stale(_config: Config) -> int:
-        assert held == 1
-        lease_events.append("stale")
-        return 0
-
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.recover_interrupted_frontier", recover_frontier)
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.auto_resolve_stale_plan_blockers", resolve_stale)
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.converge_materialization", lambda *_args, **_kwargs: result
-    )
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.materialization_generation_lease", fake_generation_lease)
-
-    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
-
-    def converge_frontier(_config: Config, **_kwargs: object) -> int:
-        assert held == 1
-        lease_events.append("frontier")
-        return 0
-
-    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", converge_frontier)
-
-    def close_fts(index_db: Path, *, ops_db_path: Path) -> None:
-        assert held == 1
-        closed.append((index_db, ops_db_path))
-        lease_events.append("fts")
-
-    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", close_fts)
-
-    if whale:
-        assert (
-            daemon_cli._run_raw_materialization_whale_pass_once(  # type: ignore[attr-defined]  # polylogue-3sd53
-                raw_artifact_id="raw-whale", max_payload_bytes=123
-            )
-            is result
-        )
-    else:
-        assert daemon_cli._drain_raw_materialization_once().repaired_sessions == 1  # type: ignore[attr-defined]  # polylogue-3sd53
-
-    assert closed == [(active_index, archive / "ops.db")]
-    expected_events = (
-        ["acquire", "fts", "close"] if whale else ["acquire", "restore", "recover", "stale", "fts", "frontier", "close"]
-    )
-    assert lease_events == expected_events
-    assert held == 0
-
-
-@pytest.mark.parametrize("whale", [False, True])
-def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    whale: bool,
-) -> None:
-    """Both daemon routes must emit the convergence contract when pinning is refused."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
-    from polylogue.storage.raw_convergence import RawConvergenceResult
-
-    archive = tmp_path / "archive"
-    archive.mkdir()
-    emitted: list[RawConvergenceResult] = []
-
-    def refuse_outer_lease(_lease: ActiveWriterLease) -> None:
-        raise RebuildLeaseUnavailableError("offline rebuild is active")
-
-    def reject_restore(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("blob-reference restoration requires an acquired generation pin")
-
-    def reject_converge(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("convergence must not run when the outer generation pin is refused")
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
-    monkeypatch.setattr(
-        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
-        reject_restore,
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.recover_interrupted_frontier",
-        lambda _config: pytest.fail("frontier recovery requires an acquired generation pin"),
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.auto_resolve_stale_plan_blockers",
-        lambda _config: pytest.fail("stale-plan recovery requires an acquired generation pin"),
-    )
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.converge_materialization", reject_converge)
-    monkeypatch.setattr(ActiveWriterLease, "acquire", refuse_outer_lease)
-    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", emitted.append)
-    monkeypatch.setattr(
-        daemon_cli,
-        "_converge_raw_authority_frontier",
-        lambda _config, **_kwargs: pytest.fail("frontier convergence requires an acquired generation pin"),
-    )
-    monkeypatch.setattr(
-        daemon_cli,
-        "_close_raw_materialization_fts",
-        lambda *_args, **_kwargs: pytest.fail("FTS closure requires an acquired generation pin"),
-    )
-
-    if whale:
-        returned = daemon_cli._run_raw_materialization_whale_pass_once(  # type: ignore[attr-defined]  # polylogue-3sd53
-            raw_artifact_id="raw-whale",
-            max_payload_bytes=123,
-        )
-        assert returned is emitted[0]
-    else:
-        counts = daemon_cli._drain_raw_materialization_once()  # type: ignore[attr-defined]  # polylogue-3sd53
-        assert counts.repaired_sessions == 0
-
-    assert len(emitted) == 1
-    result = emitted[0]
-    assert isinstance(result, RawConvergenceResult)
-    assert result.name == "raw_materialization"
-    assert result.success is False
-    assert result.repaired_count == 0
-    assert result.detail == (
-        "Skipped raw materialization while offline index rebuild owns archive: offline rebuild is active"
-    )
-
-
-def test_raw_materialization_fts_failure_records_durable_debt(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon.fts_convergence import FtsOwnerResult, FtsOwnerState
-
-    index_db = tmp_path / "generations" / "active" / "index.db"
-    ops_db = tmp_path / "ops.db"
-    index_db.parent.mkdir(parents=True)
-    index_db.touch()
-    calls: list[tuple[str, str, str, str | None, bool]] = []
-
-    class FakeCursor:
-        def __init__(self, db: Path, *, ops_db_path: Path) -> None:
-            assert db == index_db
-            assert ops_db_path == ops_db
-
-        def clear_convergence_debt(self, **_kwargs: object) -> None:
-            raise AssertionError("failed FTS repair must not clear debt")
-
-        def record_convergence_debt(
-            self,
-            *,
-            stage: str,
-            subject_type: str,
-            subject_id: str,
-            error: str | None = None,
-            deferred: bool = False,
-        ) -> None:
-            calls.append((stage, subject_type, subject_id, error, deferred))
-
-    monkeypatch.setattr(
-        daemon_cli,
-        "_raw_materialization_fts_needs_repair",
-        lambda _db, *, archive_root: True,
-    )
-    monkeypatch.setattr(
-        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
-        lambda *_args, **_kwargs: FtsOwnerResult(FtsOwnerState.FAILED, exact=False, detail="injected failure"),
-    )
-    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
-
-    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
-
-    assert calls == [
-        (
-            "fts",
-            "fts_surface",
-            "messages_fts",
-            "FTS convergence after raw materialization: injected failure",
-            False,
-        )
-    ]
-
-
-def test_raw_materialization_fts_deferred_owner_result_keeps_debt_retryable(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Anti-vacuity: treating a typed result as truthy would clear busy debt."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon.fts_convergence import FtsOwnerResult, FtsOwnerState
-
-    index_db = tmp_path / "generations" / "active" / "index.db"
-    ops_db = tmp_path / "ops.db"
-    index_db.parent.mkdir(parents=True)
-    index_db.touch()
-    recorded: list[dict[str, object]] = []
-
-    class FakeCursor:
-        def __init__(self, _db: Path, *, ops_db_path: Path) -> None:
-            assert ops_db_path == ops_db
-
-        def clear_convergence_debt(self, **_kwargs: object) -> None:
-            raise AssertionError("deferred FTS convergence must retain debt")
-
-        def record_convergence_debt(self, **kwargs: object) -> None:
-            recorded.append(kwargs)
-
-    monkeypatch.setattr(daemon_cli, "_raw_materialization_fts_needs_repair", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
-        lambda *_args, **_kwargs: FtsOwnerResult(FtsOwnerState.DEFERRED, exact=False, detail="SQLite writer busy"),
-    )
-    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
-
-    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
-
-    assert recorded == [
-        {
-            "stage": "fts",
-            "subject_type": "fts_surface",
-            "subject_id": "messages_fts",
-            "error": "FTS convergence after raw materialization: SQLite writer busy",
-            "deferred": True,
-        }
-    ]
-
-
-def test_raw_materialization_fts_success_clears_prior_debt(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon.fts_convergence import FtsOwnerResult, FtsOwnerState
-
-    index_db = tmp_path / "generations" / "active" / "index.db"
-    ops_db = tmp_path / "ops.db"
-    index_db.parent.mkdir(parents=True)
-    index_db.touch()
-    cleared: list[dict[str, object]] = []
-
-    class FakeCursor:
-        def __init__(self, db: Path, *, ops_db_path: Path) -> None:
-            assert db == index_db
-            assert ops_db_path == ops_db
-
-        def clear_convergence_debt(self, **kwargs: object) -> None:
-            cleared.append(kwargs)
-
-        def record_convergence_debt(self, **_kwargs: object) -> None:
-            raise AssertionError("successful FTS repair must not record debt")
-
-    monkeypatch.setattr(
-        daemon_cli,
-        "_raw_materialization_fts_needs_repair",
-        lambda _db, *, archive_root: True,
-    )
-    monkeypatch.setattr(
-        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
-        lambda *_args, **_kwargs: FtsOwnerResult(FtsOwnerState.READY_EXACT, exact=True),
-    )
-    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
-
-    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
-
-    assert cleared == [{"subject_type": "fts_surface", "subject_id": "messages_fts", "stage": "fts"}]
-
-
-def test_raw_materialization_fts_exception_becomes_explicit_debt(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    index_db = tmp_path / "generations" / "active" / "index.db"
-    ops_db = tmp_path / "ops.db"
-    index_db.parent.mkdir(parents=True)
-    index_db.touch()
-    errors: list[str | None] = []
-
-    class FakeCursor:
-        def __init__(self, db: Path, *, ops_db_path: Path) -> None:
-            assert db == index_db
-            assert ops_db_path == ops_db
-
-        def record_convergence_debt(self, *, error: str | None = None, **_kwargs: object) -> None:
-            errors.append(error)
-
-    monkeypatch.setattr(
-        daemon_cli,
-        "_raw_materialization_fts_needs_repair",
-        lambda _db, *, archive_root: True,
-    )
-    monkeypatch.setattr(
-        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected FTS failure")),
-    )
-    monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
-
-    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
-
-    assert errors == ["FTS convergence failed after raw materialization: RuntimeError: injected FTS failure"]
-
-
-def test_periodic_raw_materialization_convergence_treats_sqlite_lock_as_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    sleep_calls = 0
-
-    async def fake_sleep(_seconds: float) -> None:
-        nonlocal sleep_calls
-        sleep_calls += 1
-        raise asyncio.CancelledError
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(
-        daemon_cli,
-        "daemon_write_coordinator",
-        lambda: SimpleNamespace(run_sync=fake_run_sync),
-    )
-    with (
-        patch("asyncio.sleep", side_effect=fake_sleep),
-        patch.object(daemon_cli.logger, "info") as info,
-        patch.object(daemon_cli.logger, "warning") as warning,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    info.assert_called_once()
-    assert info.call_args.args[0] == "raw materialization: archive busy; retrying on next tick: %s"
-    warning.assert_not_called()
-
-
-def test_periodic_raw_materialization_convergence_starts_without_catch_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Materializing durable local raws has no acquisition precondition."""
-    from polylogue.daemon import cli as daemon_cli
-
-    calls: list[str] = []
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        calls.append("fts" if _actor == "maintenance.fts_convergence" else "drain")
-        raise asyncio.CancelledError
-
-    async def exercise() -> None:
-        monkeypatch.setattr(
-            daemon_cli,
-            "daemon_write_coordinator",
-            lambda: SimpleNamespace(run_sync=fake_run_sync),
-        )
-        task = asyncio.create_task(daemon_cli._periodic_raw_materialization_convergence())
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(exercise())
-
-    assert calls == ["drain"]
-
-
-def test_periodic_raw_materialization_convergence_waits_for_watcher_catch_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Initial live acquisition keeps the writer ahead of frontier recovery."""
-    from polylogue.daemon import cli as daemon_cli
-
-    calls: list[str] = []
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        calls.append("fts" if _actor == "maintenance.fts_convergence" else "drain")
-        raise asyncio.CancelledError
-
-    async def exercise() -> None:
-        catch_up_complete = asyncio.Event()
-        monkeypatch.setattr(
-            daemon_cli,
-            "daemon_write_coordinator",
-            lambda: SimpleNamespace(run_sync=fake_run_sync),
-        )
-        task = asyncio.create_task(
-            daemon_cli._periodic_raw_materialization_convergence(catch_up_complete=catch_up_complete)
-        )
-        await asyncio.sleep(0)
-        assert calls == []
-        catch_up_complete.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(exercise())
-
-    assert calls == ["drain"]
-
-
 def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1568,358 +775,6 @@ def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
     asyncio.run(exercise())
 
     assert calls == ["drive"]
-
-
-def test_periodic_raw_materialization_bursts_through_backlog(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A backlog drains in back-to-back bounded passes within one cycle,
-    recovery scans run on the first pass only, and quiescence returns the
-    loop to the plain interval sleep."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    remaining_schedule = [40, 24, 8, 0]
-    recover_flags: list[bool] = []
-    sleeps: list[float] = []
-
-    async def fake_run_sync(_actor: str, func: object, *args: object, **kwargs: object) -> object:
-        partial = cast(functools.partial[object], func)
-        recover_flags.append(bool(partial.keywords["recover"]))
-        remaining = remaining_schedule.pop(0)
-        return RawMaterializationCounts(
-            repaired_sessions=daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
-            executed_plans=0,
-            remaining_candidates=remaining,
-        )
-
-    async def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        if seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS:
-            raise asyncio.CancelledError
-
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(
-        daemon_cli,
-        "daemon_write_coordinator",
-        lambda: SimpleNamespace(run_sync=fake_run_sync),
-    )
-    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert remaining_schedule == []
-    assert recover_flags == [True, False, False, False]
-    assert sleeps == [
-        daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
-        daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
-        daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
-        daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS,
-    ]
-
-
-def test_periodic_raw_materialization_burst_continues_through_census_passes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A census-paused pass repairs nothing but IS progress: the burst must
-    keep going until the persisted parser census completes (22k-raw census
-    at one pass per interval would take half a day).
-
-    polylogue-m6tp item 4: the writer-held pass's limit no longer escalates
-    on a census-mode guess (that mechanism is deleted); with the parse-stage
-    warmer off (the default, unmocked config here), every pass -- census-only
-    or repairing -- uses the plain replay-sized floor. Census throughput is
-    now the warmer's job (see
-    ``test_periodic_raw_materialization_flag_on_widens_limit_to_match_warmed_count``
-    for the flag-on case that actually widens it).
-    """
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    schedule = [
-        RawMaterializationCounts(
-            repaired_sessions=0, executed_plans=0, remaining_candidates=200, censused_components=16
-        ),
-        RawMaterializationCounts(
-            repaired_sessions=0, executed_plans=0, remaining_candidates=100, censused_components=16
-        ),
-        RawMaterializationCounts(repaired_sessions=16, executed_plans=0, remaining_candidates=0),
-    ]
-    sleeps: list[float] = []
-    limits: list[int] = []
-
-    async def fake_run_sync(_actor: str, func: object, *_args: object, **_kwargs: object) -> object:
-        limits.append(int(cast(functools.partial[object], func).keywords["limit"]))
-        return schedule.pop(0)
-
-    async def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        if seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS:
-            raise asyncio.CancelledError
-
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(
-        daemon_cli,
-        "daemon_write_coordinator",
-        lambda: SimpleNamespace(run_sync=fake_run_sync),
-    )
-    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert schedule == []
-    assert sleeps == [
-        daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
-        daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
-        daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS,
-    ]
-    assert limits == [daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT] * 3
-
-
-def test_periodic_raw_materialization_flag_on_widens_limit_to_match_warmed_count(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """polylogue-m6tp item 4's replacement for the deleted ``census_mode``
-    escalation: when the parse-stage warmer actually fills its cache, the
-    writer-held pass's own limit widens to match (bounded by the warm
-    ceiling) -- driven by REAL warmed state, not a guess about whether the
-    prior pass "looked like" a census-only pass."""
-    from polylogue.daemon import cli as daemon_cli
-
-    class FakeStage:
-        cache = object()
-
-        def warm(self, config: object, *, limit: int, max_payload_bytes: int) -> int:
-            assert limit == daemon_cli._RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT
-            return 40
-
-    seen_limits: list[int] = []
-
-    async def fake_run_sync(_actor: str, func: object, *_args: object, **_kwargs: object) -> object:
-        seen_limits.append(int(cast(functools.partial[object], func).keywords["limit"]))
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", lambda: FakeStage())
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
-
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert seen_limits == [40]
-    assert daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT < 40
-    assert daemon_cli._RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT >= 40
-
-
-def test_periodic_raw_materialization_burst_stops_without_progress(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Blocked candidates must not hot-loop the burst: no progress ends it."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    drains = 0
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        nonlocal drains
-        drains += 1
-        return RawMaterializationCounts(
-            repaired_sessions=0,
-            executed_plans=0,
-            remaining_candidates=1906,
-        )
-
-    async def fake_sleep(seconds: float) -> None:
-        assert seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(
-        daemon_cli,
-        "daemon_write_coordinator",
-        lambda: SimpleNamespace(run_sync=fake_run_sync),
-    )
-    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert drains == 1
-
-
-def test_a_pending_browser_capture_spool_narrows_but_never_removes_the_raw_share(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A spool that never drains must not stop unrelated admitted work.
-
-    Anti-vacuity: restore the class-global ``continue`` and ``drains`` is 0,
-    which is the starvation this replaces -- one permanently pending spool
-    class used to skip every raw-materialization pass indefinitely.
-    """
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    drains = 0
-    sleeps: list[float] = []
-
-    async def fake_run_sync(_actor: str, func: object, *_args: object, **_kwargs: object) -> object:
-        nonlocal drains
-        drains += 1
-        return RawMaterializationCounts(
-            repaired_sessions=0,
-            executed_plans=1,
-            remaining_candidates=1906,
-        )
-
-    async def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: True)
-    monkeypatch.setattr(
-        daemon_cli,
-        "daemon_write_coordinator",
-        lambda: SimpleNamespace(run_sync=fake_run_sync),
-    )
-    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert drains == daemon_cli._RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET
-    assert sleeps == [daemon_cli._RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS]
-
-
-def test_periodic_raw_materialization_flag_on_warms_off_writer_lease_before_drain(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """polylogue-m6tp phase (a) anti-vacuity: the parse-stage warmer must run
-    BEFORE the writer hold is acquired, and the drain pass must run WHILE the
-    lease IS held -- proven against the REAL ``DaemonWriteCoordinator`` /
-    ``daemon_write_lease_active`` machinery (a mock coordinator would
-    trivially report ``False`` for both, proving nothing). Reverting the
-    warm-before-run_sync ordering, or moving the warm call inside
-    ``run_sync``, would flip one of these two assertions."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, daemon_write_lease_active
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    order: list[str] = []
-    lease_during_warm: list[bool] = []
-    lease_during_drain: list[bool] = []
-    _sentinel_cache = object()
-
-    class FakeStage:
-        cache = _sentinel_cache
-
-        def warm(self, config: object, *, limit: int, max_payload_bytes: int) -> int:
-            order.append("warm")
-            lease_during_warm.append(daemon_write_lease_active())
-            return 0
-
-    def fake_drain(*, limit: int, recover: bool, prefetch_cache: object = None) -> RawMaterializationCounts:
-        order.append("drain")
-        lease_during_drain.append(daemon_write_lease_active())
-        assert prefetch_cache is _sentinel_cache
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", lambda: FakeStage())
-    monkeypatch.setattr(daemon_cli, "_drain_raw_materialization_once", fake_drain)
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: DaemonWriteCoordinator())
-
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert order == ["warm", "drain"]
-    assert lease_during_warm == [False]
-    assert lease_during_drain == [True]
-
-
-def test_periodic_raw_materialization_flag_on_warm_exception_still_hands_back_cache(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """CodeRabbit test-gap (PR #3168): ``_maybe_warm_raw_materialization_parse_stage``
-    catches any exception ``stage.warm`` raises and falls back to returning
-    ``stage.cache`` -- whatever partial progress the warmer made before
-    failing -- rather than crashing the pass or discarding the cache back to
-    ``None``. A warm failure must degrade to "parse fewer raws off the
-    writer hold than usual", never "the drain pass never runs" or "every
-    cache-warmed raw this tick is silently lost"."""
-    from polylogue.daemon import cli as daemon_cli
-
-    _sentinel_cache = object()
-    seen_prefetch_cache: list[object] = []
-
-    class FakeStage:
-        cache = _sentinel_cache
-
-        def warm(self, config: object, *, limit: int, max_payload_bytes: int) -> int:
-            raise RuntimeError("simulated parse-stage prefetch failure")
-
-    async def fake_run_sync(_actor: str, func: object, *_args: object, **_kwargs: object) -> object:
-        partial = cast(functools.partial[object], func)
-        seen_prefetch_cache.append(partial.keywords["prefetch_cache"])
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", lambda: FakeStage())
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
-
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    # The exception from warm() never propagated (it would have surfaced as
-    # something other than CancelledError above), and the drain pass still
-    # received the stage's cache object -- not None, not a fresh cache.
-    assert seen_prefetch_cache == [_sentinel_cache]
-
-
-def test_periodic_raw_materialization_flag_on_writer_hold_excludes_parse_stage_warm_time(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The writer hold must stay short even when the parse-stage warm step is
-    slow: ``hold_seconds`` (measured by the REAL ``DaemonWriteCoordinator``
-    around the drain call only) must be far smaller than the warm delay,
-    proving the write window genuinely excludes parse time rather than just
-    reordering it."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    warm_delay_seconds = 0.2
-    released_hold_seconds: list[float] = []
-
-    class FakeStage:
-        cache = None
-
-        def warm(self, config: object, *, limit: int, max_payload_bytes: int) -> int:
-            time.sleep(warm_delay_seconds)
-            return 0
-
-    def fake_drain(*, limit: int, recover: bool, prefetch_cache: object = None) -> RawMaterializationCounts:
-        raise asyncio.CancelledError
-
-    def observe(event: DaemonWriteEvent) -> None:
-        if event.phase == "released" and event.hold_seconds is not None:
-            released_hold_seconds.append(event.hold_seconds)
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", lambda: FakeStage())
-    monkeypatch.setattr(daemon_cli, "_drain_raw_materialization_once", fake_drain)
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: DaemonWriteCoordinator(observer=observe))
-
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert len(released_hold_seconds) == 1
-    assert released_hold_seconds[0] < warm_delay_seconds / 2
 
 
 def test_spool_pending_check_ignores_terminal_cursor_states(
@@ -3913,7 +2768,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
             patch.object(
                 daemon_cli,
                 "_periodic_raw_materialization_convergence",
-                lambda **_kwargs: fake_loop("raw-materialization"),
+                lambda **_kwargs: fake_loop("raw-observation"),
             )
         )
         stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")))
@@ -3963,6 +2818,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     assert events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("lineage") < events.index("watcher")
     assert events.index("lineage") < events.index("blob-publications") < events.index("watcher")
+    assert events.index("fts") < events.index("raw-observation") < events.index("watcher")
     assert "blob-gc" in events
     assert "blob-publication-reconciliation" in events
     # Source acquisition belongs to fair intake after startup readiness.
@@ -3971,7 +2827,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     else:
         assert "drive-once" not in events
     assert events.index("lineage") < events.index("convergence")
-    assert "raw-materialization" not in events
+    assert "raw-observation" in events
     assert "drive" not in events
     assert events.index("converger") < events.index("watcher")
     assert events.count("convergence") == 1
@@ -4839,48 +3695,6 @@ def test_periodic_schema_preflight_recheck_exits_on_recovery(
 # genuinely quiescent for the tick.
 
 
-def test_periodic_raw_materialization_convergence_schedules_whale_pass_on_quiescence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Quiescence (no remaining candidates, no progress) must trigger exactly
-    one whale-pass attempt per tick, after the trickle burst settles.
-
-    Anti-vacuity: deleting the ``if quiescent and not ...: await
-    _maybe_run_raw_materialization_whale_pass()`` call this test patches
-    (i.e. reverting the daemon wiring in polylogue/daemon/cli.py) makes
-    ``whale_calls == [1]`` fail with an empty list -- verified by running
-    this exact assertion against the unmodified pre-patch source tree
-    during implementation.
-    """
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    whale_calls: list[int] = []
-
-    async def fake_whale_pass() -> bool:
-        whale_calls.append(1)
-        return False
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        return RawMaterializationCounts(remaining_candidates=0)
-
-    sleeps: list[float] = []
-
-    async def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        if seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS:
-            raise asyncio.CancelledError
-
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(daemon_cli, "_maybe_run_raw_materialization_whale_pass", fake_whale_pass)
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
-
-    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert whale_calls == [1]
-
-
 def test_periodic_raw_materialization_wakes_fair_intake_without_legacy_scan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4918,14 +3732,70 @@ def test_periodic_raw_materialization_wakes_fair_intake_without_legacy_scan(
     assert whale_calls == [(owner, discovery)]
 
 
+@pytest.mark.parametrize("catch_up_initially_complete", [False, True])
+def test_periodic_raw_materialization_respects_catch_up_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    catch_up_initially_complete: bool,
+) -> None:
+    """Canonical raw maintenance wakes only after the watcher catch-up gate."""
+    from polylogue.daemon import cli as daemon_cli
+
+    async def exercise() -> tuple[list[tuple[object, object]], bool]:
+        catch_up_complete = asyncio.Event()
+        if catch_up_initially_complete:
+            catch_up_complete.set()
+        raw_intake_wakeup = asyncio.Event()
+        whale_calls: list[tuple[object, object]] = []
+        owner = object()
+        discovery = object()
+
+        async def fake_whale(**kwargs: object) -> bool:
+            whale_calls.append((kwargs["raw_observation_owner"], kwargs["raw_intake_discovery"]))
+            return False
+
+        monkeypatch.setattr(daemon_cli, "_maybe_run_raw_materialization_whale_pass", fake_whale)
+        task = asyncio.create_task(
+            daemon_cli._periodic_raw_materialization_convergence(
+                catch_up_complete=catch_up_complete,
+                raw_observation_owner=owner,
+                raw_intake_wakeup=raw_intake_wakeup,
+                raw_intake_discovery=discovery,
+            )
+        )
+        await asyncio.sleep(0)
+        if not catch_up_initially_complete:
+            assert whale_calls == []
+            assert not raw_intake_wakeup.is_set()
+            catch_up_complete.set()
+
+            async def stop_after_one_tick(seconds: float) -> None:
+                assert seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
+                raise asyncio.CancelledError
+
+            with patch(
+                "asyncio.sleep",
+                side_effect=stop_after_one_tick,
+            ):
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        else:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert whale_calls == [(owner, discovery)]
+        return raw_intake_wakeup.is_set()
+
+    assert asyncio.run(exercise()) is True
+
+
 def test_canonical_whale_pass_uses_bounded_derivation_discovery_not_legacy_scanner(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """One oversized pending raw reaches the canonical owner at whale capacity.
 
-    Anti-vacuity: replacing canonical discovery or the owner call with the
-    raw-authority candidate/converge route raises the patched assertion.
+    Anti-vacuity: the bounded discovery limit and the owner call each assert
+    their canonical arguments, so a legacy scanner cannot satisfy this proof.
     """
     from polylogue.daemon import cli as daemon_cli
 
@@ -4950,15 +3820,6 @@ def test_canonical_whale_pass_uses_bounded_derivation_discovery_not_legacy_scann
     monkeypatch.setattr(daemon_cli, "_resolve_raw_materialization_whale_blob_limit_bytes", lambda: 4096)
     monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
     monkeypatch.setattr(daemon_cli, "_publish_whale_receipt", capture_receipt)
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.whale_pass_candidate",
-        lambda *_args, **_kwargs: pytest.fail("legacy whale scanner used"),
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.converge_materialization",
-        lambda *_args, **_kwargs: pytest.fail("legacy whale convergence used"),
-    )
-
     assert asyncio.run(
         daemon_cli._maybe_run_raw_materialization_whale_pass(
             raw_observation_owner=Owner(),
@@ -4970,132 +3831,494 @@ def test_canonical_whale_pass_uses_bounded_derivation_discovery_not_legacy_scann
     assert receipts[-1]["repaired_count"] == 1
 
 
-def test_periodic_raw_materialization_convergence_skips_whale_pass_mid_burst(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """While the ordinary trickle conveyor is still making progress (not
-    quiescent), the whale pass must not be attempted -- it only runs once
-    the ordinary backlog settles for the tick."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    whale_calls: list[int] = []
-
-    async def fake_whale_pass() -> bool:
-        whale_calls.append(1)
-        return False
-
-    remaining_schedule = [5, 0]
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        remaining = remaining_schedule.pop(0)
-        return RawMaterializationCounts(repaired_sessions=1, remaining_candidates=remaining)
-
-    async def fake_sleep(seconds: float) -> None:
-        if seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS:
-            raise asyncio.CancelledError
-
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(daemon_cli, "_maybe_run_raw_materialization_whale_pass", fake_whale_pass)
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
-
-    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert remaining_schedule == []
-    # Quiescence is only reached on the SECOND pass (remaining=0); the whale
-    # pass fires exactly once, after the burst settles -- not on the first,
-    # still-progressing pass.
-    assert whale_calls == [1]
-
-
-def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_events(
+def test_canonical_whale_pass_without_candidate_does_not_call_owner(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A found whale candidate must run through the writer coordinator
-    scoped to that one raw id at the resolved whale envelope, and emit
-    start/completion daemon events carrying the seed id and envelope."""
+    """A bounded empty discovery page must not acquire publication machinery."""
     from polylogue.daemon import cli as daemon_cli
 
-    events: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: events.append((kind, payload)),
-    )
-    # ``archive_root()`` is patched directly (the established seam used
-    # throughout this file) rather than via ``load_polylogue_config``: the
-    # autouse env-clearing fixture removes ``POLYLOGUE_ARCHIVE_ROOT``, so
-    # production's real ``archive_root()`` falls through to
-    # ``resolve_archive_root()``, which calls
-    # ``load_polylogue_config(_bootstrap=...)`` -- a call shape a bare
-    # zero-arg lambda here cannot satisfy without also faking a full
-    # ``ResolvedSettings``-like object. Patching the resolved-path functions
-    # keeps this test focused on the whale-pass call it actually verifies.
+    class Discovery:
+        def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
+            assert limit == 1
+            return ()
+
+    class Owner:
+        async def converge_raw_id(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("empty whale discovery must not call the owner")
+
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        _resolved_config(
-            raw_authority_whale_payload_bytes=None,
-            daemon_parse_stage_workers=1,
-            daemon_parse_stage_max_inflight_bytes=1_000_000,
-            daemon_parse_stage_warm_timeout_seconds=1.0,
-            daemon_parse_stage_max_cached_tree_bytes=1_000_000,
-        ),
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.whale_pass_candidate",
-        lambda _config, **_kwargs: "whale-seed-raw-id",
-    )
-
-    run_sync_calls: list[tuple[str, str, int]] = []
-
-    async def fake_run_sync(actor: str, func: object, *_args: object, **_kwargs: object) -> object:
-        partial = cast("functools.partial[object]", func)
-        assert partial.keywords["prefetch_cache"] is not None
-        run_sync_calls.append((actor, partial.keywords["raw_artifact_id"], partial.keywords["max_payload_bytes"]))
-        return SimpleNamespace(success=True, repaired_count=3, detail="whale converged")
-
+    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
     monkeypatch.setattr(
         daemon_cli,
-        "daemon_write_coordinator",
-        lambda: SimpleNamespace(run_sync_with_completion=fake_run_sync),
+        "_resolve_raw_materialization_whale_blob_limit_bytes",
+        lambda: 4096,
+    )
+    monkeypatch.setattr(
+        daemon_cli,
+        "_publish_whale_receipt",
+        lambda **_kwargs: pytest.fail("empty whale discovery must not publish a receipt"),
     )
 
-    attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
-
-    assert attempted is True
-    assert run_sync_calls == [
-        (
-            "maintenance.raw_materialization_whale",
-            "whale-seed-raw-id",
-            daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
+    assert (
+        asyncio.run(
+            daemon_cli._maybe_run_raw_materialization_whale_pass(
+                raw_observation_owner=Owner(),
+                raw_intake_discovery=Discovery(),
+            )
         )
+        is False
+    )
+
+
+@pytest.mark.parametrize("outcome_kind", ["pending", "failed"])
+def test_canonical_whale_pass_maps_pending_and_failed_reports_to_receipts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    outcome_kind: str,
+) -> None:
+    """Canonical derivation outcomes remain truthful in the whale receipt."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.derivation import Outcome, PendingReason
+
+    events: list[tuple[str, dict[str, object]]] = []
+    receipts: list[dict[str, object]] = []
+    raw_id = f"{outcome_kind}-raw"
+
+    class Discovery:
+        def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
+            assert limit == 1
+            return ((raw_id, daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES + 1),)
+
+    class Owner:
+        async def converge_raw_id(self, candidate: str, *, max_payload_bytes: int) -> object:
+            assert candidate == raw_id
+            assert max_payload_bytes == 4096
+            if outcome_kind == "pending":
+                outcome = SimpleNamespace(
+                    key=SimpleNamespace(key=raw_id),
+                    outcome=Outcome.PENDING,
+                    reason=PendingReason.BLOCKED,
+                )
+            else:
+                outcome = SimpleNamespace(
+                    key=SimpleNamespace(key=raw_id),
+                    outcome=Outcome.FAILED,
+                    error="source frontier changed",
+                )
+            return SimpleNamespace(done=0, outcomes=(outcome,))
+
+    async def capture_receipt(**kwargs: object) -> None:
+        receipts.append(cast(dict[str, object], kwargs["payload"]))
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(daemon_cli, "_resolve_raw_materialization_whale_blob_limit_bytes", lambda: 4096)
+    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((str(kind), cast(dict[str, object], payload))),
+    )
+    monkeypatch.setattr(daemon_cli, "_publish_whale_receipt", capture_receipt)
+
+    assert (
+        asyncio.run(
+            daemon_cli._maybe_run_raw_materialization_whale_pass(
+                raw_observation_owner=Owner(),
+                raw_intake_discovery=Discovery(),
+            )
+        )
+        is True
+    )
+    assert [kind for kind, _payload in events] == ["raw_materialization_whale_pass_started"]
+    assert len(receipts) == 1
+    assert receipts[0]["status"] == "error"
+    assert receipts[0]["success"] is False
+    assert receipts[0]["detail"] == ("blocked" if outcome_kind == "pending" else "source frontier changed")
+
+
+@pytest.mark.parametrize(
+    ("refusal", "pattern"),
+    [
+        (
+            SimpleNamespace(source_paths=frozenset(), unattributed_reason="source tier is unreadable"),
+            "source-selection gate blocked",
+        ),
+        (
+            SimpleNamespace(source_paths=frozenset({"/archive/refused.jsonl"}), unattributed_reason=None),
+            "refused source path",
+        ),
+    ],
+)
+def test_raw_observation_owner_preserves_source_frontier_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    refusal: object,
+    pattern: str,
+) -> None:
+    """Canonical owner admission refuses only what the frontier proves unsafe."""
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+
+    raw_id = "refused-raw"
+    observed_raw_ids: list[tuple[str, ...]] = []
+
+    def refusal_gate(_root: Path, *, raw_ids: Sequence[str]) -> object:
+        observed_raw_ids.append(tuple(raw_ids))
+        return refusal
+
+    monkeypatch.setattr(
+        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
+        refusal_gate,
+    )
+
+    class Derivation:
+        def source_paths(self, raw_ids: Sequence[str]) -> dict[str, str]:
+            assert tuple(raw_ids) == (raw_id,)
+            return {raw_id: "/archive/refused.jsonl"}
+
+    monkeypatch.setattr(
+        "polylogue.operations.raw_observation_derivation.make_raw_observation_derivation",
+        lambda *_args, **_kwargs: Derivation(),
+    )
+    owner = RawObservationConvergenceOwner(
+        tmp_path,
+        compute_adapter=cast(BoundedComputeAdapter, object()),
+        write_bridge=cast(DaemonWriteThreadBridge, object()),
+        max_payload_bytes=4096,
+    )
+
+    with pytest.raises(RuntimeError, match=pattern):
+        owner._require_source_frontier_authority(raw_id)
+    assert observed_raw_ids == [(raw_id,)]
+
+
+def test_raw_observation_publication_holds_writer_lease_through_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Canonical replay keeps FTS/index publication under one writer lease."""
+    from contextlib import contextmanager
+
+    from polylogue.sources.revision_backfill import RawParsePrefetchCache
+    from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
+
+    held = 0
+    replay_held: list[int] = []
+    blocked_checks: list[tuple[str, ...]] = []
+
+    class Lease:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def acquire(self) -> None:
+            nonlocal held
+            held += 1
+
+        def close(self) -> None:
+            nonlocal held
+            held -= 1
+
+    class FakeArchive:
+        def expand_raw_membership_selection(self, _raw_ids: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+            return ("raw-1",), ()
+
+        def raw_revision_descriptor(self, _raw_id: str) -> tuple[str, str, str, str, int]:
+            return ("codex-session", "blob-hash", "/archive/source.jsonl", "full", 1)
+
+    @contextmanager
+    def open_archive() -> Any:
+        yield FakeArchive()
+
+    def fake_replay(*_args: object, **_kwargs: object) -> None:
+        replay_held.append(held)
+
+    monkeypatch.setattr("polylogue.storage.index_generation.ActiveWriterLease", Lease)
+
+    def record_blocked_check(_root: Path, raw_ids: Sequence[str]) -> object:
+        blocked_checks.append(tuple(raw_ids))
+        return SimpleNamespace(source_paths=frozenset(), unattributed_reason=None)
+
+    monkeypatch.setattr(
+        "polylogue.storage.raw_retention.raw_frontier_blocked_raw_ids",
+        record_blocked_check,
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
+        lambda *_args, **_kwargs: open_archive(),
+    )
+    monkeypatch.setattr("polylogue.storage.blob_store.BlobStore.verify", lambda _self, _blob_hash: True)
+    monkeypatch.setattr("polylogue.sources.revision_backfill.backfill_historical_revision_evidence", fake_replay)
+
+    adapter = RawObservationDerivation(tmp_path, max_payload_bytes=4096)
+    monkeypatch.setattr(adapter, "_current", lambda _frame: True)
+    monkeypatch.setattr(adapter, "_binding", lambda _raw_ids: "binding")
+    monkeypatch.setattr(adapter, "source_paths", lambda _raw_ids: {"raw-1": "/archive/source.jsonl"})
+    frame = SimpleNamespace(
+        archive_root=str(tmp_path),
+        source_revision=str(tmp_path / "index.db"),
+        recipe_version=lambda _domain: adapter.recipe_version,
+    )
+    replacement = RawObservationReplacement(
+        key="raw-1",
+        input_binding="binding",
+        payload=RawParsePrefetchCache(max_inflight_bytes=4096),
+        raw_ids=("raw-1",),
+    )
+
+    assert adapter.publish(frame, replacement) is True
+    assert blocked_checks == [("raw-1",)]
+    assert replay_held == [1]
+    assert held == 0
+
+
+def test_raw_owner_cancellation_settles_publication_and_fts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cancelling preparation still settles the shielded canonical publication."""
+    from polylogue.core.enums import Provider
+    from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
+    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+    from polylogue.daemon.write_coordinator import (
+        DaemonWriteCoordinator,
+        DaemonWriteThreadBridge,
+        daemon_write_lease_active,
+    )
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    payload = [
+        {
+            "id": "cancelled-owner",
+            "title": "cancelled-owner",
+            "create_time": 1,
+            "current_node": "m",
+            "mapping": {
+                "m": {
+                    "id": "m",
+                    "parent": None,
+                    "children": [],
+                    "message": {
+                        "id": "m",
+                        "author": {"role": "user"},
+                        "create_time": 1,
+                        "content": {"content_type": "text", "parts": ["cancelled-owner"]},
+                    },
+                }
+            },
+        }
     ]
-    kinds = [kind for kind, _payload in events]
-    assert kinds == ["raw_materialization_whale_pass_started", "raw_materialization_whale_pass_completed"]
-    assert events[0][1] == {
-        "seed_raw_id": "whale-seed-raw-id",
-        "max_payload_bytes": daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=json.dumps(payload).encode(),
+            source_path="cancelled-owner.json",
+            acquired_at_ms=1,
+        )
+
+    async def scenario() -> None:
+        compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+        coordinator = DaemonWriteCoordinator()
+        owner = RawObservationConvergenceOwner(
+            tmp_path,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            max_payload_bytes=1_000_000,
+        )
+        adapter = owner._converger._derivation_adapter("raw_observation")
+        original_compute = adapter.compute
+        started = threading.Event()
+        release = threading.Event()
+
+        def paused_compute(frame: DerivationFrame, key: str) -> ReplacementLike:
+            assert not daemon_write_lease_active()
+            started.set()
+            assert release.wait(timeout=2.0)
+            return original_compute(frame, key)
+
+        monkeypatch.setattr(adapter, "compute", paused_compute)
+        task = asyncio.create_task(owner.converge_raw_id(raw_id))
+        try:
+            assert await asyncio.to_thread(started.wait, 2.0)
+            task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            with sqlite3.connect(tmp_path / "index.db") as conn:
+                assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+                assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] > 0
+                assert conn.execute(
+                    "SELECT state FROM fts_freshness_state WHERE surface = 'messages_fts'"
+                ).fetchone() == ("ready",)
+        finally:
+            release.set()
+            if not task.done():
+                await task
+            compute.shutdown(wait=True)
+            assert await coordinator.shutdown(timeout=2.0) is True
+
+    asyncio.run(scenario())
+
+
+def test_whale_cancellation_publishes_canonical_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cancellation of canonical whale admission leaves a terminal receipt."""
+    from polylogue.daemon import cli as daemon_cli
+
+    started = asyncio.Event()
+    receipts: list[dict[str, object]] = []
+
+    class Discovery:
+        def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
+            assert limit == 1
+            return (("cancelled-raw", daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES + 1),)
+
+    class Owner:
+        async def converge_raw_id(self, _raw_id: str, *, max_payload_bytes: int) -> object:
+            assert max_payload_bytes == 4096
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    async def capture_receipt(**kwargs: object) -> None:
+        receipts.append(cast(dict[str, object], kwargs["payload"]))
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(daemon_cli, "_resolve_raw_materialization_whale_blob_limit_bytes", lambda: 4096)
+    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(daemon_cli, "_publish_whale_receipt", capture_receipt)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            daemon_cli._maybe_run_raw_materialization_whale_pass(
+                raw_observation_owner=Owner(),
+                raw_intake_discovery=Discovery(),
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert len(receipts) == 1
+    assert receipts[0]["seed_raw_id"] == "cancelled-raw"
+    assert receipts[0]["status"] == "cancelled"
+    assert receipts[0]["cancelled"] is True
+    assert receipts[0]["success"] is False
+
+
+def test_raw_source_refusal_is_retryable_and_does_not_starve_sibling(
+    tmp_path: Path,
+) -> None:
+    """The raw adapter isolates a refused ID while fair intake admits its sibling."""
+    from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
+    from polylogue.operations.intake_adapters import RawMaterializationIntakeAdapter
+
+    pending = [("refused-raw", 1), ("healthy-raw", 1)]
+    admitted: list[str] = []
+
+    def discover(limit: int) -> tuple[tuple[str, int], ...]:
+        return tuple(pending[:limit])
+
+    def admit(raw_id: str) -> int:
+        if raw_id == "refused-raw":
+            raise RuntimeError("source-selection gate blocked: refused source path")
+        admitted.append(raw_id)
+        return 1
+
+    adapter = RawMaterializationIntakeAdapter(discover, admit)
+    dispatcher = FairIntakeDispatcher(
+        (IntakeClassSpec(name="raw_materialization", adapter=adapter, page_size=8, max_attempts=3),),
+        frame=f"daemon:{tmp_path}",
+    )
+
+    result = asyncio.run(dispatcher.run_once(budget=8))
+    report = result.require_report("raw_materialization")
+    assert report.admitted == 1
+    assert report.retried == 1
+    assert report.isolated == 0
+    assert admitted == ["healthy-raw"]
+
+
+def test_startup_raw_census_recovery_pages_named_ids_under_coordinator(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Startup recovery forwards only bounded, durable census IDs to the writer."""
+    from polylogue.daemon import cli as daemon_cli
+
+    pages = {
+        0: (("census-a", 3),),
+        3: (("census-b", 7),),
+        7: (),
     }
-    assert events[1][1]["seed_raw_id"] == "whale-seed-raw-id"
-    assert events[1][1]["success"] is True
-    assert events[1][1]["repaired_count"] == 3
-    assert events[1][1]["detail"] == "whale converged"
-    assert events[1][1]["candidate_count"] == 0
-    assert events[1][1]["selected_count"] == 0
-    assert events[1][1]["executed_count"] == 0
-    assert events[1][1]["resource_blocked_count"] == 0
-    assert events[1][1]["remaining_candidates"] == 0
-    assert events[1][1]["status"] == "success"
-    assert events[1][1]["fenced"] is False
-    assert events[1][1]["cancelled"] is False
-    assert events[1][1]["census_pending"] is False
-    assert events[1][1]["census_incomplete_count"] == 0
-    assert events[1][1]["continuation"] is False
-    assert isinstance(events[1][1]["duration_ms"], float)
-    assert events[1][1]["duration_ms"] >= 0.0
+    discoveries: list[tuple[int, int]] = []
+    recoveries: list[tuple[str, tuple[str, ...], Path]] = []
+
+    def discover(root: Path, *, after_sequence: int, limit: int) -> tuple[tuple[str, int], ...]:
+        assert root == tmp_path
+        discoveries.append((after_sequence, limit))
+        return pages[after_sequence]
+
+    def recover(config: Config, *, census_ids: Sequence[str]) -> None:
+        recoveries.append(("startup.raw_authority_censuses", tuple(census_ids), config.archive_root))
+
+    class Coordinator:
+        async def run_sync(self, actor: str, function: object, config: Config, **kwargs: object) -> None:
+            assert function is recover
+            census_ids = cast(Sequence[str], kwargs["census_ids"])
+            recover(config, census_ids=census_ids)
+            recoveries[-1] = (actor, recoveries[-1][1], recoveries[-1][2])
+
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.unfinished_materialization_census_ids", discover)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.recover_materialization_censuses", recover)
+
+    asyncio.run(
+        daemon_cli._run_startup_raw_census_recovery(
+            cast(DaemonWriteCoordinator, Coordinator()),
+            tmp_path,
+        )
+    )
+
+    assert discoveries == [(0, 128), (3, 128), (7, 128)]
+    assert recoveries == [
+        ("startup.raw_authority_censuses", ("census-a",), tmp_path),
+        ("startup.raw_authority_censuses", ("census-b",), tmp_path),
+    ]
+
+
+def test_startup_raw_census_recovery_failure_is_restartable_by_named_page(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed startup recovery leaves the same named page for the next boot."""
+    from polylogue.daemon import cli as daemon_cli
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.raw_authority.unfinished_materialization_census_ids",
+        lambda _root, *, after_sequence, limit: (("census-retry", 11),) if after_sequence == 0 else (),
+    )
+    calls = 0
+    recovered_ids: list[tuple[str, ...]] = []
+
+    class Coordinator:
+        async def run_sync(self, _actor: str, _function: object, _config: Config, **kwargs: object) -> None:
+            nonlocal calls
+            calls += 1
+            recovered_ids.append(tuple(cast(Sequence[str], kwargs["census_ids"])))
+            if calls == 1:
+                raise RuntimeError("writer unavailable")
+
+    coordinator = cast(DaemonWriteCoordinator, Coordinator())
+    with pytest.raises(RuntimeError, match="writer unavailable"):
+        asyncio.run(daemon_cli._run_startup_raw_census_recovery(coordinator, tmp_path))
+    asyncio.run(daemon_cli._run_startup_raw_census_recovery(coordinator, tmp_path))
+
+    assert recovered_ids == [("census-retry",), ("census-retry",)]
 
 
 def test_startup_drain_recovers_valid_recovery_receipt_and_acknowledges_after_publish(
@@ -5258,407 +4481,6 @@ def test_recovery_name_exhaustion_leaves_fallback_receipt_startup_drainable(
     assert whale_outbox.list_pending(root=tmp_path) == []
 
 
-def test_whale_worker_timeout_fences_before_coordinator_acquisition(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A live timed-out worker yields no coordinator acquired event or lease."""
-    from polylogue.daemon import cli as daemon_cli
-
-    events: list[tuple[str, dict[str, object]]] = []
-    coordinator_calls: list[str] = []
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: events.append((kind, payload)),
-    )
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        _resolved_config(
-            raw_authority_whale_payload_bytes=None,
-            daemon_parse_stage_warm_timeout_seconds=0.01,
-        ),
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.whale_pass_candidate",
-        lambda _config, **_kwargs: "blocked-seed",
-    )
-
-    class BlockedStage:
-        cache = SimpleNamespace()
-
-        def writer_admission_ready(self) -> bool:
-            return False
-
-        def wait_until_idle(self, *, timeout: float) -> bool:
-            return False
-
-    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage_singleton", BlockedStage())
-
-    async def fake_warm(**_kwargs: object) -> tuple[object, int]:
-        return SimpleNamespace(), 0
-
-    monkeypatch.setattr(daemon_cli, "_maybe_warm_raw_materialization_parse_stage", fake_warm)
-
-    async def unexpected_run_sync(*_args: object, **_kwargs: object) -> object:
-        coordinator_calls.append("acquired")
-        raise AssertionError("coordinator must not be acquired while worker remains alive")
-
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=unexpected_run_sync))
-    assert asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass()) is True
-    assert coordinator_calls == []
-    from polylogue.daemon import whale_outbox
-
-    pending = whale_outbox.list_pending(root=tmp_path)
-    assert len(pending) == 1
-    completed = cast(dict[str, object], pending[0]["payload"])
-    assert completed["status"] == "fenced"
-    assert completed["fenced"] is True
-    assert completed["remaining_candidates"] == 0
-
-
-def test_whale_completion_accounts_for_census_pending_debt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A successful replay with incomplete census is reported as pending debt."""
-    from polylogue.daemon import cli as daemon_cli
-
-    events: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: events.append((kind, payload)),
-    )
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        _resolved_config(raw_authority_whale_payload_bytes=None, daemon_parse_stage_warm_timeout_seconds=1.0),
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.whale_pass_candidate",
-        lambda _config, **_kwargs: "census-seed",
-    )
-    monkeypatch.setattr(
-        daemon_cli,
-        "_daemon_parse_stage_singleton",
-        SimpleNamespace(cache=SimpleNamespace(), writer_admission_ready=lambda: True),
-    )
-
-    async def fake_warm(**_kwargs: object) -> tuple[object, int]:
-        return SimpleNamespace(), 0
-
-    monkeypatch.setattr(daemon_cli, "_maybe_warm_raw_materialization_parse_stage", fake_warm)
-
-    async def fake_run_sync(*_args: object, **_kwargs: object) -> object:
-        return SimpleNamespace(
-            success=True,
-            repaired_count=2,
-            detail="census incomplete",
-            metrics={
-                "raw_materialization_candidate_count": 7,
-                "raw_materialization_selected_count": 1,
-                "raw_materialization_executed_count": 1,
-                "raw_materialization_remaining_candidate_count": 3,
-                "raw_materialization_census_incomplete_raw_count": 2,
-            },
-        )
-
-    monkeypatch.setattr(
-        daemon_cli,
-        "daemon_write_coordinator",
-        lambda: SimpleNamespace(run_sync_with_completion=fake_run_sync),
-    )
-    assert asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass()) is True
-    completed = next(payload for kind, payload in events if kind == "raw_materialization_whale_pass_completed")
-    assert completed["status"] == "census_pending"
-    assert completed["success"] is False
-    assert completed["census_pending"] is True
-    assert completed["census_incomplete_count"] == 2
-    assert completed["remaining_candidates"] == 5
-
-
-def test_whale_cancellation_after_admission_records_continuation_then_real_completion(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Shielded coordinator work gets a ledger continuation and real counters."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon import events as daemon_events
-    from polylogue.daemon.events import query_daemon_events
-    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-    initialize_active_archive_root(tmp_path)
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        _resolved_config(
-            archive_root=tmp_path,
-            raw_authority_whale_payload_bytes=None,
-            daemon_parse_stage_warm_timeout_seconds=1.0,
-        ),
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.whale_pass_candidate",
-        lambda _config, **_kwargs: "cancelled-seed",
-    )
-    monkeypatch.setattr(
-        daemon_cli,
-        "_maybe_warm_raw_materialization_parse_stage",
-        lambda **_kwargs: asyncio.sleep(0, result=(SimpleNamespace(), 0)),
-    )
-    monkeypatch.setattr(
-        daemon_cli,
-        "_daemon_parse_stage_singleton",
-        SimpleNamespace(writer_admission_ready=lambda: True),
-    )
-    started = threading.Event()
-    release = threading.Event()
-
-    def blocked_converge(**_kwargs: object) -> object:
-        started.set()
-        release.wait(timeout=5)
-        return SimpleNamespace(
-            success=True,
-            repaired_count=4,
-            detail="eventual coordinator result",
-            metrics={
-                "raw_materialization_candidate_count": 4,
-                "raw_materialization_selected_count": 2,
-                "raw_materialization_executed_count": 2,
-                "raw_materialization_remaining_candidate_count": 1,
-            },
-        )
-
-    monkeypatch.setattr(daemon_cli, "_run_raw_materialization_whale_pass_once", blocked_converge)
-    coordinator = DaemonWriteCoordinator()
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: coordinator)
-    real_emit = daemon_events.emit_daemon_event
-    failed_terminal_writes = 0
-
-    def flaky_emit(kind: str, **kwargs: Any) -> None:
-        nonlocal failed_terminal_writes
-        payload = kwargs.get("payload")
-        if (
-            kind == "raw_materialization_whale_pass_completed"
-            and isinstance(payload, dict)
-            and payload.get("status") == "cancelled"
-            and failed_terminal_writes < 2
-        ):
-            failed_terminal_writes += 1
-            raise OSError("transient ops ledger lock")
-        real_emit(kind, **kwargs)
-
-    monkeypatch.setattr(daemon_events, "emit_daemon_event", flaky_emit)
-
-    async def scenario() -> None:
-        task = asyncio.create_task(daemon_cli._maybe_run_raw_materialization_whale_pass())
-        assert await asyncio.to_thread(started.wait, 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        release.set()
-        # Shutdown must drain both the shielded writer and its managed
-        # terminal-receipt retry task before this event loop can close.
-        assert await coordinator.shutdown(timeout=2) is True
-
-    try:
-        asyncio.run(scenario())
-    finally:
-        release.set()
-
-    assert failed_terminal_writes >= 1
-    completions = query_daemon_events(kind="raw_materialization_whale_pass_completed", limit=10)
-    payloads = [cast(dict[str, object], event["payload"]) for event in completions]
-    statuses = [payload["status"] for payload in payloads]
-    if len(statuses) >= 2:
-        assert statuses[:2] == ["cancelled", "in_progress"]
-        final = payloads[0]
-        assert final["repaired_count"] == 4
-        assert final["candidate_count"] == 4
-        assert final["remaining_candidates"] == 1
-        assert final["continuation"] is False
-    else:
-        # Shutdown may close coordinator admission while the managed retry is
-        # still running. The filesystem-first receipt is then intentionally
-        # left pending for the next startup rather than executing an
-        # uncancelable SQLite thread after the deadline.
-        from polylogue.daemon import whale_outbox
-
-        pending = whale_outbox.list_pending(root=tmp_path)
-        assert any(record["idempotency_key"].endswith(":terminal") for record in pending)
-
-
-def test_whale_callback_runs_real_coordinator_product_convergence_and_census(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Production whale route consumes the warmed cache and materializes one component."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
-    from polylogue.sources.revision_backfill import RawParsePrefetchCache
-    from tests.infra.revision_backfill_benchmark import build_revision_chain_corpus
-
-    raw_ids = build_revision_chain_corpus(tmp_path, superseded_count=7, final_payload_bytes=2_000)
-    ordinary_limit = daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES
-    whale_limit = 1_000_000_000
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.executemany(
-            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
-            [((ordinary_limit // len(raw_ids)) + 1, raw_id) for raw_id in raw_ids],
-        )
-        conn.commit()
-    from polylogue.config import Config
-    from polylogue.storage import raw_convergence as raw_convergence_mod
-
-    blocked = raw_convergence_mod.converge_raw_materialization(
-        Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[]),
-        raw_artifact_id=raw_ids[0],
-        max_payload_bytes=ordinary_limit,
-    )
-    assert blocked.success is False
-    events: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        _resolved_config(
-            raw_authority_whale_payload_bytes=whale_limit,
-            daemon_parse_stage_workers=1,
-            daemon_parse_stage_max_inflight_bytes=whale_limit,
-            daemon_parse_stage_warm_timeout_seconds=10.0,
-            daemon_parse_stage_max_cached_tree_bytes=whale_limit,
-            raw_authority_commit_batch_size=None,
-        ),
-    )
-    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: events.append((kind, payload)),
-    )
-    coordinator = DaemonWriteCoordinator()
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: coordinator)
-    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage_singleton", None)
-
-    cache_pops = 0
-    original_pop = RawParsePrefetchCache.pop
-
-    def counting_pop(cache: RawParsePrefetchCache, raw_id: str) -> object:
-        nonlocal cache_pops
-        value = original_pop(cache, raw_id)
-        if value is not None:
-            cache_pops += 1
-        return value
-
-    monkeypatch.setattr(RawParsePrefetchCache, "pop", counting_pop)
-    attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
-    assert attempted is True
-    assert cache_pops >= 1
-    completed = next(payload for kind, payload in events if kind == "raw_materialization_whale_pass_completed")
-    assert raw_ids[0] == completed["seed_raw_id"]
-    # Materialization candidates contain only the accepted head; parser census
-    # still covers every member of the eight-raw authority component below.
-    assert completed["candidate_count"] == 1
-    assert completed["selected_count"] == 1
-    assert completed["executed_count"] == 1
-    assert completed["resource_blocked_count"] == 0
-    assert completed["remaining_candidates"] == 0
-
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        census_count = conn.execute("SELECT COUNT(*) FROM raw_authority_parser_census").fetchone()[0]
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    assert census_count == len(raw_ids)
-    assert session_count == 1
-    assert asyncio.run(coordinator.shutdown(timeout=2.0)) is True
-
-
-def test_maybe_run_raw_materialization_whale_pass_interruption_is_pre_hold(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Cancellation during whale warming cannot mutate durable archive state."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-    initialize_active_archive_root(tmp_path)
-    before = {name: hashlib.sha256((tmp_path / name).read_bytes()).digest() for name in ("source.db", "index.db")}
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        _resolved_config(
-            archive_root=tmp_path,
-            raw_authority_whale_payload_bytes=None,
-        ),
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.whale_pass_candidate",
-        lambda _config, **_kwargs: "whale-seed-raw-id",
-    )
-
-    async def cancel_warm(**_kwargs: object) -> tuple[object, int]:
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(daemon_cli, "_maybe_warm_raw_materialization_parse_stage", cancel_warm)
-
-    def fail_coordinator() -> object:
-        pytest.fail("writer hold must not be requested after warm interruption")
-
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", fail_coordinator)
-
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
-
-    after = {name: hashlib.sha256((tmp_path / name).read_bytes()).digest() for name in ("source.db", "index.db")}
-    assert after == before
-    from polylogue.daemon import whale_outbox
-
-    pending = whale_outbox.list_pending(root=tmp_path)
-    assert len(pending) == 1
-    payload = cast(dict[str, object], pending[0]["payload"])
-    assert payload["status"] == "cancelled"
-    assert payload["candidate_count"] == 0
-    assert payload["remaining_candidates"] == 0
-
-
-def test_maybe_run_raw_materialization_whale_pass_no_candidate_skips_writer(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """No qualifying component this tick must never touch the writer
-    coordinator -- the read-only candidate lookup is the only thing that
-    runs."""
-    from polylogue.daemon import cli as daemon_cli
-
-    # See the sibling whale-pass test above for why ``archive_root()``/
-    # ``render_root()`` are patched directly instead of relying solely on
-    # ``load_polylogue_config`` to satisfy production's env-fallback path.
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        _resolved_config(
-            raw_authority_whale_payload_bytes=None,
-            daemon_parse_stage_workers=1,
-            daemon_parse_stage_max_inflight_bytes=1_000_000,
-            daemon_parse_stage_warm_timeout_seconds=1.0,
-            daemon_parse_stage_max_cached_tree_bytes=1_000_000,
-        ),
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.whale_pass_candidate",
-        lambda _config, **_kwargs: None,
-    )
-
-    def fail_coordinator() -> object:
-        pytest.fail("no candidate found -- must not touch the writer coordinator")
-
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", fail_coordinator)
-
-    attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
-
-    assert attempted is False
-
-
 def _daemon_startup_stubs(
     stack: contextlib.ExitStack,
     daemon_cli: Any,
@@ -5684,11 +4506,15 @@ def _daemon_startup_stubs(
     async def _noop() -> None:
         return None
 
+    async def _noop_raw_census_recovery(*_args: object, **_kwargs: object) -> None:
+        return None
+
     stack.enter_context(patch("polylogue.paths.archive_root", return_value=tmp_path))
     stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
     stack.enter_context(
         patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", lambda _root: tmp_path / "embeddings.db")
     )
+    stack.enter_context(patch.object(daemon_cli, "_run_startup_raw_census_recovery", _noop_raw_census_recovery))
     stack.enter_context(
         patch(
             "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
@@ -5876,5 +4702,5 @@ def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_p
     assert elapsed < 10.0
 
     supervisor = supervisors[0]
-    assert supervisor.state("raw_materialization_convergence") is ServiceState.SKIPPED
+    assert supervisor.state("raw_observation_convergence") is ServiceState.SKIPPED
     assert supervisor.state("lifecycle_heartbeat") is ServiceState.STOPPED

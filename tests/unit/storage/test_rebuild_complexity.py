@@ -10,10 +10,11 @@ from typing import Any
 
 import pytest
 
-from polylogue.config import Config
 from polylogue.core.enums import Provider
+from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, PassCursor, converge
+from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.sources import revision_backfill
-from polylogue.storage import raw_convergence as raw_convergence_mod
+from polylogue.storage.derived.raw import RawObservationDerivation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.growth_budgets import GrowthBudget, GrowthObservation, evaluate_growth_budgets
@@ -24,11 +25,15 @@ _COMPONENT_DERIVED_WORK_BUDGET = GrowthBudget(metric="component_derived_vm_steps
 _COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET = 9
 
 
-def _config(root: Path) -> Config:
-    # The index tier is index.db; "archive.db" is the pre-split-file monolith
-    # name, and pointing db_path at it made every reader attach an empty file
-    # and fail with "no such table: index_tier.sessions".
-    return Config(archive_root=root, render_root=root, sources=[], db_path=root / "index.db")
+def _run(
+    root: Path, *, limit: int, raw_ids: tuple[str, ...] = (), cursor: PassCursor | None = None
+) -> DerivationReport:
+    return converge(
+        DerivationRegistry((RawObservationDerivation(root, max_payload_bytes=1024 * 1024 * 1024),)),
+        raw_observation_frame(root, raw_ids=raw_ids),
+        budget=Budget(page=limit, discovery=limit, inspection=2 * limit, compute=limit, publication=limit),
+        cursor=cursor,
+    )
 
 
 def _tool_call_payload(native_id: str) -> bytes:
@@ -83,19 +88,9 @@ def _seed_raw_archive(root: Path, count: int, *, prefix: str = "session") -> lis
 
 
 def _materialize_all(root: Path, raw_count: int) -> None:
-    result = raw_convergence_mod.converge_raw_materialization(_config(root), raw_artifact_limit=raw_count)
-    assert result.success is True
-    assert result.repaired_count == raw_count
-
-
-def _quiesce_census(root: Path, *, limit: int) -> None:
-    config = _config(root)
-    for _ in range(100):
-        result = raw_convergence_mod.converge_raw_materialization(config, dry_run=True, raw_artifact_limit=limit)
-        assert result.census_receipt is not None
-        if result.census_receipt.quiescent:
-            return
-    raise AssertionError("bounded census did not reach a fixed point")
+    result = _run(root, limit=raw_count)
+    assert result.failed == result.pending == 0
+    assert result.done == raw_count
 
 
 def _run_component_measurement(
@@ -110,30 +105,33 @@ def _run_component_measurement(
     _seed_raw_archive(root, archive_size, prefix="existing")
     _materialize_all(root, archive_size)
 
+    selected: list[str] = []
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index in range(component_count):
             native_id = f"target-{index}"
-            archive.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=_tool_call_payload(native_id),
-                source_path=f"{native_id}.jsonl",
-                acquired_at_ms=archive_size + index + 1,
+            selected.append(
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=_tool_call_payload(native_id),
+                    source_path=f"{native_id}.jsonl",
+                    acquired_at_ms=archive_size + index + 1,
+                )
             )
 
     with sqlite_work_counter(step_interval=1) as counter:
-        result = raw_convergence_mod.converge_raw_materialization(_config(root), raw_artifact_limit=component_count)
+        result = _run(root, limit=component_count, raw_ids=tuple(selected))
 
-    assert result.repaired_count == component_count
+    assert result.done == component_count
     return GrowthObservation(
         tier=str(archive_size),
         size=archive_size,
         metrics={
             "component_derived_vm_steps": float(counter.metric("derived_vm_steps")),
             "archive_wide_derived_statements": float(counter.metric("archive_wide_derived_statements")),
-            "component_rows_scanned": result.metrics["raw_materialization_scanned_raw_count"],
-            "component_rows_written": result.metrics["raw_materialization_replayed_logical_source_count"],
-            "component_bytes": result.metrics["raw_materialization_selected_total_blob_bytes"],
-            "component_passes": result.metrics["raw_materialization_executed_count"],
+            "component_rows_scanned": float(result.work.discovered),
+            "component_rows_written": float(result.work.published),
+            "component_bytes": float(sum(len(_tool_call_payload(f"target-{i}")) for i in range(component_count))),
+            "component_passes": float(result.done),
             "selected_component_count": float(component_count),
         },
     )
@@ -178,7 +176,6 @@ def test_bounded_replay_work_is_batch_bounded_independent_of_backlog(
     for archive_size in (4, 16, 64):
         root = tmp_path / f"batch-{archive_size}"
         _seed_raw_archive(root, archive_size, prefix="batch")
-        _quiesce_census(root, limit=batch_size)
         selected_work = 0
         original_backfill = revision_backfill.backfill_historical_revision_evidence
 
@@ -190,16 +187,16 @@ def test_bounded_replay_work_is_batch_bounded_independent_of_backlog(
 
         with monkeypatch.context() as mutation:
             mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", counted_backfill)
-            result = raw_convergence_mod.converge_raw_materialization(_config(root), raw_artifact_limit=batch_size)
+            result = _run(root, limit=batch_size)
 
-        assert result.metrics["raw_materialization_executed_count"] == float(batch_size)
-        assert result.metrics["raw_materialization_scanned_raw_count"] <= float(batch_size)
+        assert result.done == batch_size
+        assert result.work.discovered <= batch_size
         observed.append(
             (
                 archive_size,
                 selected_work,
-                result.repaired_count,
-                int(result.metrics["raw_materialization_executed_count"]),
+                result.done,
+                result.work.published,
             )
         )
 
@@ -217,10 +214,9 @@ def test_mixed_hot_cold_large_small_components_all_receive_a_turn(
     with sqlite3.connect(root / "source.db") as conn:
         conn.execute(
             "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
-            (raw_convergence_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES // 2, large_raw_id),
+            (512 * 1024 * 1024, large_raw_id),
         )
         conn.commit()
-    _quiesce_census(root, limit=1)
 
     original_backfill = revision_backfill.backfill_historical_revision_evidence
     attempted = Counter[str]()
@@ -235,36 +231,32 @@ def test_mixed_hot_cold_large_small_components_all_receive_a_turn(
 
     with monkeypatch.context() as mutation:
         mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", fail_hot_component)
-        selected: list[str] = []
-        for _ in range(3):
-            result = raw_convergence_mod.converge_raw_materialization(_config(root), raw_artifact_limit=1)
-            assert len(result.plan_outcomes) == 1
-            selected.append(result.plan_outcomes[0].input_raw_ids[0])
+        cursor = None
+        for _ in range(4):
+            result = _run(root, limit=1, cursor=cursor)
+            cursor = result.cursor
+            assert result.work.discovered == 1
 
-    assert selected[0] == raw_ids[0]
-    assert set(selected[1:]) == {raw_ids[1], raw_ids[2]}
-    assert attempted[raw_ids[0]] == 1
-    assert attempted[raw_ids[1]] == 1
-    assert attempted[raw_ids[2]] == 1
+    assert set(attempted) == set(raw_ids)
+    assert all(count == 1 for count in attempted.values())
 
 
 def test_progress_counter_is_monotonic_and_resumable_across_bounded_passes(tmp_path: Path) -> None:
     root = tmp_path / "resumable"
     raw_count = 7
     _seed_raw_archive(root, raw_count, prefix="resume")
-    _quiesce_census(root, limit=2)
 
     remaining: list[int] = []
     repaired: list[int] = []
     selected: list[str] = []
-    config = _config(root)
+    cursor = None
     for _ in range(4):
-        result = raw_convergence_mod.converge_raw_materialization(config, raw_artifact_limit=2)
-        remaining.append(int(result.metrics["raw_materialization_remaining_candidate_count"]))
-        repaired.append(result.repaired_count)
-        selected.extend(
-            outcome.input_raw_ids[0] for outcome in result.plan_outcomes if outcome.status.value == "executed"
-        )
+        result = _run(root, limit=2, cursor=cursor)
+        cursor = result.cursor
+        with sqlite3.connect(root / "index.db") as conn:
+            remaining.append(raw_count - conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        repaired.append(result.done)
+        selected.extend(outcome.key.key for outcome in result.outcomes if outcome.outcome.value == "done")
         if remaining[-1] == 0:
             break
 
@@ -272,4 +264,4 @@ def test_progress_counter_is_monotonic_and_resumable_across_bounded_passes(tmp_p
     assert repaired == [2, 2, 2, 1]
     assert len(selected) == raw_count
     assert len(set(selected)) == raw_count
-    assert raw_convergence_mod.converge_raw_materialization(config, raw_artifact_limit=2).success is True
+    assert _run(root, limit=2).work.published == 0

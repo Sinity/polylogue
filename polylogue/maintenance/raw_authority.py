@@ -9,50 +9,19 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Final
 
 from polylogue.config import Config, active_archive_root
 from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
-    from polylogue.sources.revision_backfill import RawParsePrefetchCache
-    from polylogue.storage.raw_convergence import RawConvergenceResult
+    from polylogue.storage.raw_authority import RawAuthorityCensusReceipt
     from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport, RawAuthorityFrontierCensus
 
 
 RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES: Final = 64 * 1024 * 1024
 RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES: Final = 8 * 1024 * 1024 * 1024
-
-
-@dataclass(frozen=True, slots=True)
-class RawMaterializationCounts:
-    """Separate units produced by one bounded maintenance pass.
-
-    ``censused_components`` counts parser-census work performed toward a
-    paused replay plan: no sessions were repaired yet, but the pass moved
-    the backlog and the caller's backlog burst must continue instead of
-    treating the census phase as quiescence.
-
-    ``candidate_count`` and ``pending_blob_bytes`` describe the *whole*
-    unbounded backlog the pass measured (not the bounded per-pass batch):
-    ``converge_materialization`` enumerates every matching raw before
-    applying ``raw_artifact_limit``, so these two fields are how a caller
-    detects a bulk-scale backlog the trickle conveyor is not designed for
-    (polylogue-m6tp) without re-querying storage itself.
-    """
-
-    repaired_sessions: int = 0
-    executed_plans: int = 0
-    remaining_candidates: int = 0
-    censused_components: int = 0
-    candidate_count: int = 0
-    pending_blob_bytes: int = 0
-
-    @property
-    def made_progress(self) -> bool:
-        return self.repaired_sessions > 0 or self.executed_plans > 0 or self.censused_components > 0
 
 
 def inspect_frontier(config: Config) -> RawAuthorityFrontierCensus:
@@ -125,9 +94,8 @@ def auto_resolve_stale_plan_blockers(config: Config) -> int:
 
     See ``storage.raw_authority.auto_resolve_stale_plan_blockers`` for why
     this is safe to run unattended: a stale-plan blocker requires no
-    judgment content, and this is the one non-frontier blocker kind
-    ``converge_materialization`` checks archive-wide before doing any
-    work at all (``unresolved_raw_replay_blockers``).
+    judgment content. This explicit maintenance operation does not run
+    during ordinary address-scoped publication.
     """
     from polylogue.storage.raw_authority import auto_resolve_stale_plan_blockers as _auto_resolve
 
@@ -188,93 +156,57 @@ def archive_writer_rebuild_exclusion(archive_root: Path) -> Iterator[ArchiveWrit
         exclusion.release_if_safe()
 
 
-def materialization_lease_refusal_result(error: BaseException) -> RawConvergenceResult | None:
-    """Translate only a rebuild-lease refusal into the typed pass result."""
-    from polylogue.storage.index_generation import RebuildLeaseUnavailableError
+def unfinished_materialization_census_ids(
+    archive_root: Path, *, after_sequence: int = 0, limit: int = 128
+) -> tuple[tuple[str, int], ...]:
+    """Page named durable startup obligations, not the observation backlog."""
+    from polylogue.storage.raw_authority import unfinished_raw_authority_census_ids
 
-    if not isinstance(error, RebuildLeaseUnavailableError):
-        return None
-    from polylogue.storage.raw_convergence import raw_materialization_lease_refusal_result
-
-    return raw_materialization_lease_refusal_result(error)
+    return unfinished_raw_authority_census_ids(archive_root, after_sequence=after_sequence, limit=limit)
 
 
-def converge_materialization(
-    config: Config,
-    *,
-    dry_run: bool,
-    raw_artifact_limit: int,
-    max_payload_bytes: int,
-    prefetch_cache: RawParsePrefetchCache | None = None,
-    raw_artifact_id: str | None = None,
-    source_root: Path | None = None,
-    max_pass_seconds: float | None = None,
-    excluded_source_paths: Sequence[str] = (),
-) -> Any:
-    """Run one bounded raw source->index convergence pass.
+def recover_materialization_censuses(
+    config: Config, *, census_ids: Sequence[str]
+) -> tuple[RawAuthorityCensusReceipt, ...]:
+    """Finish named crash-left ledger obligations without replaying source bytes.
 
-    ``excluded_source_paths`` are the physical paths the source-selection
-    proof refused; the pass converges every other raw around them.
-
-    ``prefetch_cache`` (polylogue-m6tp phase (a), default ``None``) lets a
-    caller substitute parse output already computed off the writer hold for
-    this pass's census phase; see
-    ``polylogue.sources.revision_backfill.RawParsePrefetchCache``.
-
-    ``raw_artifact_id`` (polylogue-t93b, default ``None``) scopes the pass to
-    the single logical authority component containing that raw -- the
-    daemon's escalation-tier whale pass uses this to converge one
-    resource-blocked component at a time under a widened ``max_payload_bytes``
-    envelope instead of re-scanning the whole archive-wide backlog.
-
-    ``source_root`` (polylogue-61jg, default ``None``) scopes the pass to raws
-    whose ``source_path`` equals or is nested under this root -- the daemon's
-    ``raw_parse_recovery`` convergence stage uses this to re-drive exactly the
-    source path an interrupted ingest attempt covered, instead of relying on
-    the archive-wide trickle conveyor to reach it eventually.
-
-    ``max_pass_seconds`` (polylogue-de2a, default ``None`` = unbounded) bounds
-    this call's own wall-clock duration so a caller running it under a
-    process-wide writer lock (the daemon's trickle conveyor) has a declared,
-    enforced ceiling on how long it can hold that lock in one call,
-    independent of ``raw_artifact_limit`` -- see
-    ``polylogue.storage.raw_convergence.converge_raw_materialization`` for why a fixed
-    component count alone did not bound hold time in practice.
+    Startup supplies durable census IDs. The canonical adapter checks their
+    exact component outputs; unrelated archive rows never enter this recovery.
+    Failed source/application evidence remains an explicit durable blocker.
     """
-    from polylogue.storage.raw_convergence import converge_raw_materialization
-
-    return converge_raw_materialization(
-        config,
-        dry_run=dry_run,
-        raw_artifact_limit=raw_artifact_limit,
-        max_payload_bytes=max_payload_bytes,
-        prefetch_cache=prefetch_cache,
-        raw_artifact_id=raw_artifact_id,
-        source_root=source_root,
-        max_pass_seconds=max_pass_seconds,
-        excluded_source_paths=excluded_source_paths,
+    from polylogue.operations.raw_observation_derivation import raw_observation_frame
+    from polylogue.storage.derived.raw import RawObservationDerivation
+    from polylogue.storage.raw_authority import (
+        build_raw_replay_plans,
+        finalize_raw_authority_census,
+        raw_authority_census_replay_plans,
+        recover_interrupted_raw_authority_censuses,
     )
 
-
-def whale_pass_candidate(
-    config: Config,
-    *,
-    ordinary_max_payload_bytes: int,
-    whale_max_payload_bytes: int,
-) -> str | None:
-    """Read-only: pick one resource-blocked, stream-safe component to escalate.
-
-    polylogue-t93b. See
-    ``polylogue.storage.raw_convergence.raw_materialization_whale_pass_candidate`` for
-    the selection contract; safe to call without the writer hold.
-    """
-    from polylogue.storage.raw_convergence import raw_materialization_whale_pass_candidate
-
-    return raw_materialization_whale_pass_candidate(
-        config,
-        ordinary_max_payload_bytes=ordinary_max_payload_bytes,
-        whale_max_payload_bytes=whale_max_payload_bytes,
-    )
+    root = active_archive_root(config)
+    completed = []
+    with materialization_generation_lease(config) as index_db:
+        scopes = recover_interrupted_raw_authority_censuses(root, index_db_path=index_db, census_ids=census_ids)
+        adapter = RawObservationDerivation(root)
+        frame = raw_observation_frame(root)
+        for census_id, _scope in scopes:
+            plans = raw_authority_census_replay_plans(root, census_id)
+            components = []
+            for plan in plans:
+                states = adapter.inspect(frame, plan.input_raw_ids)
+                if any(state != "valid" for state in states.values()):
+                    components.append(plan.input_raw_ids)
+            post_plans = build_raw_replay_plans(root, components, index_db_path=index_db) if components else ()
+            completed.append(
+                finalize_raw_authority_census(
+                    root,
+                    census_id,
+                    post_plans=post_plans,
+                    post_residual={},
+                    interrupted=True,
+                )
+            )
+    return tuple(completed)
 
 
 def read_census(archive_root: Path, query_handle: str, *, limit: int, offset: int | None) -> JSONDocument:
@@ -304,15 +236,14 @@ def list_blockers(archive_root: Path, *, limit: int = 100, offset: int = 0) -> J
 
 __all__ = [
     "ArchiveWriterRebuildExclusion",
-    "RawMaterializationCounts",
     "apply_frontier",
     "archive_writer_rebuild_exclusion",
     "inspect_frontier",
     "list_blockers",
     "materialization_generation_lease",
-    "materialization_lease_refusal_result",
     "read_census",
     "read_detail",
     "recover_interrupted_frontier",
-    "converge_materialization",
+    "recover_materialization_censuses",
+    "unfinished_materialization_census_ids",
 ]

@@ -505,6 +505,8 @@ def raw_frontier_source_selection_block_reason(
 def raw_frontier_source_selection_refusal(
     archive_root: Path,
     raw_materialization_readiness: Mapping[str, object] | None = None,
+    *,
+    raw_ids: Sequence[str] | None = None,
 ) -> RawFrontierBlockedPaths:
     """Attribute the source-selection block to the exact source paths it names.
 
@@ -513,7 +515,10 @@ def raw_frontier_source_selection_refusal(
     (``unattributed_reason``) still blocks the whole pass. Authority gaps
     are admitted: materializing the path is what resolves them.
     """
-    from polylogue.storage.raw_retention import raw_frontier_blocked_source_paths
+    from polylogue.storage.raw_retention import raw_frontier_blocked_raw_ids, raw_frontier_blocked_source_paths
+
+    if raw_ids is not None:
+        return raw_frontier_blocked_raw_ids(archive_root, raw_ids)
 
     return raw_frontier_blocked_source_paths(
         archive_root,

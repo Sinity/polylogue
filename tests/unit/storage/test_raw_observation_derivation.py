@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, converge
 from polylogue.operations.raw_observation_derivation import converge_raw_observations, raw_observation_frame
-from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.derived.raw import RawFrame, RawObservationDerivation, RawObservationReplacement
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -233,3 +234,167 @@ def test_bounded_source_pass_publishes_every_selected_observation(tmp_path: Path
     unchanged = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit, max_payload_bytes=1_000_000)
     assert unchanged.wrote_nothing
     assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "field", ["source_revision", "accepted_source_revision", "decision_id", "accepted_content_hash"]
+)
+def test_inspection_requires_exact_application_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """Red twin: bypassing receipt validation falsely certifies a forged application."""
+    from polylogue.storage.derived import raw as raw_adapter
+
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, ("receipt",))
+    assert _run(tmp_path).done == 1
+    frame = raw_observation_frame(tmp_path)
+    adapter = RawObservationDerivation(tmp_path)
+    assert adapter.inspect(frame, (raw_id,))[raw_id] == "valid"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        value = bytes(32) if field == "accepted_content_hash" else "forged"
+        conn.execute(f"UPDATE raw_revision_applications SET {field} = ? WHERE raw_id = ?", (value, raw_id))
+    assert adapter.inspect(frame, (raw_id,))[raw_id] == "stale"
+    monkeypatch.setattr(raw_adapter, "validate_raw_replay_application_receipt", lambda *_args: (True, ()))
+    assert adapter.inspect(frame, (raw_id,))[raw_id] == "valid"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "OperationalError: database is locked",
+        "MembershipReplayConflictError: retained comparison",
+        "RuntimeError: raw revision CAS rejected an older accepted frontier",
+        "RuntimeError: membership replay cannot replace an unconvertible byte head",
+        "decode: No such file or directory retained-blob",
+    ],
+)
+def test_historical_replay_refusal_is_retried_by_canonical_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str
+) -> None:
+    """Red twin: removing the legacy spelling bridge strands retained source work."""
+    from polylogue.storage.derived import raw as raw_adapter
+
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, ("retry",))
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parse_error = ? WHERE raw_id = ?", (error, raw_id))
+    adapter = RawObservationDerivation(tmp_path)
+    frame = raw_observation_frame(tmp_path)
+    assert adapter.inspect(frame, (raw_id,))[raw_id] == "missing"
+    monkeypatch.setattr(raw_adapter, "raw_replay_error_is_retryable", lambda *_args: False)
+    assert adapter.inspect(frame, (raw_id,))[raw_id] == "valid"
+
+
+@pytest.mark.timeout(600)
+def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Red twin: exhausting all valid pages exceeds the invocation's read bound."""
+    from polylogue.daemon.convergence_stages import make_raw_parse_recovery_stage
+    from tests.infra.sqlite_work_counter import sqlite_work_counter
+
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "sources"
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = [
+            archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=b"[]",
+                source_path=str(source / "prefix.json"),
+                source_index=index,
+                acquired_at_ms=1,
+            )
+            for index in range(4096)
+        ]
+    assert len(set(raw_ids)) == 4096
+    # A real source component lets one canonical publication census every
+    # acquired observation. The observer counts successful publication members,
+    # not setup rows or a synthetic inspection verdict.
+    published: list[str] = []
+    publish = RawObservationDerivation.publish
+
+    def counted_publish(
+        self: RawObservationDerivation, frame: RawFrame, replacement: RawObservationReplacement
+    ) -> bool:
+        committed = publish(self, frame, replacement)
+        if committed:
+            published.extend(replacement.raw_ids)
+        return committed
+
+    with monkeypatch.context() as setup:
+        setup.setattr(RawObservationDerivation, "publish", counted_publish)
+        publication = converge(
+            DerivationRegistry((RawObservationDerivation(tmp_path),)),
+            raw_observation_frame(tmp_path, raw_ids=(raw_ids[0],)),
+            budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+        )
+    assert publication.done == 1 and publication.failed == publication.pending == 0
+    assert len(published) == len(set(published)) == 4096
+    assert set(published) == set(raw_ids)
+    adapter = RawObservationDerivation(tmp_path)
+    frame = raw_observation_frame(tmp_path, source_roots=(source,))
+    with sqlite_work_counter(step_interval=1) as indexed:
+        keys, continuation = adapter.required_page(frame, cursor=None, limit=128)
+    assert len(keys) == 128 and continuation is not None
+    assert indexed.metric("vm_steps", "source") < 10_000, indexed.summary()
+    # Red twin: LIMIT after source filtering/sorting still consumes the full
+    # matching scope. Returned-row counts alone cannot detect that work.
+    with sqlite_work_counter(step_interval=1) as sorted_scope:
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            rows = conn.execute(
+                "SELECT raw_id FROM raw_sessions INDEXED BY idx_raw_sessions_source_path "
+                "WHERE source_path >= ? AND source_path < ? ORDER BY raw_id LIMIT 128",
+                (str(source) + "/", str(source) + "0"),
+            ).fetchall()
+    assert len(rows) == 128
+    assert sorted_scope.metric("vm_steps", "source") > 10_000
+    before = _snapshot(tmp_path)
+    seen: list[str] = []
+    inspect = RawObservationDerivation.inspect
+
+    def counted(self: RawObservationDerivation, frame: RawFrame, keys: Sequence[str]) -> Mapping[str, str]:
+        seen.extend(keys)
+        return inspect(self, frame, keys)
+
+    monkeypatch.setattr(RawObservationDerivation, "inspect", counted)
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db", archive_root=tmp_path)
+    assert stage.check_many is not None
+    for page in range(32):
+        with sqlite_work_counter(step_interval=1) as work:
+            assert stage.check_many((source,)) == {source}
+        assert len(seen) == (page + 1) * 128
+        assert work.metric("vm_steps", "source") < 500_000, work.summary()
+    assert stage.check_many((source,)) == set()
+    assert len(seen) == len(set(seen)) == 4096
+    assert _snapshot(tmp_path) == before
+
+    def exhaustive(root: Path) -> set[Path]:
+        adapter = RawObservationDerivation(root)
+        frame = raw_observation_frame(root, source_roots=(source,))
+        cursor = None
+        while True:
+            keys, cursor = adapter.required_page(frame, cursor=cursor, limit=128)
+            adapter.inspect(frame, keys)
+            if cursor is None:
+                return set()
+
+    seen.clear()
+    with sqlite_work_counter(step_interval=1) as unbounded:
+        assert exhaustive(tmp_path) == set()
+    assert len(seen) > 128
+    assert unbounded.metric("vm_steps", "source") > 500_000
+
+    # A fresh traversal must not treat its first all-valid page as ready when
+    # an output obligation follows the long valid prefix.
+    late = _admit(tmp_path, ("late-obligation",), path=str(source / "zz-late.json"))
+    restarted = make_raw_parse_recovery_stage(tmp_path / "index.db", archive_root=tmp_path)
+    assert restarted.check_many is not None
+    for _ in range(33):
+        assert restarted.check_many((source,)) == {source}
+    assert seen[-1] == late
+    report = converge_raw_observations(
+        tmp_path, source_roots=(source / "zz-late.json",), limit=2, max_payload_bytes=64 * 1024 * 1024
+    )
+    assert report.done == 1 and report.failed == report.pending == 0
+    assert restarted.check_many((source,)) == set()

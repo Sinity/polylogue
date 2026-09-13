@@ -1733,6 +1733,105 @@ def _seed_ops_cursor(
         conn.commit()
 
 
+@pytest.mark.parametrize("cursor_offset,blocked", [(10, False), (11, True)])
+def test_address_scoped_frontier_preserves_cursor_refusal(tmp_path: Path, cursor_offset: int, blocked: bool) -> None:
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "selected.jsonl"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="selected",
+            source_path=path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-0",
+            generation=0,
+            blob_size=10,
+        )
+    _seed_index_authority(
+        tmp_path / "index.db",
+        session_raw_id="selected",
+        accepted_raw_id="selected",
+        accepted_revision="revision-0",
+        generation=0,
+        frontier=10,
+        append_end_offset=None,
+    )
+    _seed_ops_cursor(tmp_path / "ops.db", source_path=path, byte_offset=cursor_offset)
+    refusal = raw_retention_mod.raw_frontier_blocked_raw_ids(tmp_path, ("selected",))
+    assert refusal.unattributed_reason is None
+    assert refusal.source_paths == (frozenset({str(path)}) if blocked else frozenset())
+
+
+def test_address_scoped_frontier_does_not_walk_valid_archive_seeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Red twin: the archive-wide diagnostic validates every unrelated seed."""
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "selected.jsonl"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="selected",
+            source_path=path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-0",
+            generation=0,
+            blob_size=10,
+        )
+        conn.executemany(
+            """INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                source_revision, acquisition_generation, revision_authority)
+            VALUES (?, 'codex-session', ?, ?, 0, ?, 10, 1, ?, 'full', 'revision-0', 0, 'byte_proven')""",
+            (
+                (f"valid-{i}", f"valid-{i}", f"unrelated/{i}.jsonl", bytes(32), f"codex-session:valid-{i}")
+                for i in range(4096)
+            ),
+        )
+    _seed_index_authority(
+        tmp_path / "index.db",
+        session_raw_id="selected",
+        accepted_raw_id="selected",
+        accepted_revision="revision-0",
+        generation=0,
+        frontier=10,
+        append_end_offset=None,
+    )
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.executemany(
+            "INSERT INTO sessions(native_id, origin, raw_id, content_hash) VALUES (?, 'codex-session', ?, ?)",
+            ((f"valid-{i}", f"valid-{i}", bytes(32)) for i in range(4096)),
+        )
+        conn.executemany(
+            """INSERT INTO raw_revision_heads(logical_source_key, session_id, accepted_raw_id,
+                accepted_source_revision, accepted_content_hash, accepted_frontier_kind,
+                accepted_frontier, acquisition_generation, decided_at_ms)
+            VALUES (?, ?, ?, 'revision-0', ?, 'byte', 10, 0, 1)""",
+            ((f"codex-session:valid-{i}", f"codex-session:valid-{i}", f"valid-{i}", bytes(32)) for i in range(4096)),
+        )
+    _seed_ops_cursor(tmp_path / "ops.db", source_path=path, byte_offset=10)
+    checked: list[int] = []
+    original = raw_retention_mod._raw_revision_rows
+
+    def observed(conn: sqlite3.Connection, raw_ids: set[str], *, allow_missing: bool = False) -> dict[str, sqlite3.Row]:
+        checked.append(len(raw_ids))
+        return original(conn, raw_ids, allow_missing=allow_missing)
+
+    monkeypatch.setattr(raw_retention_mod, "_raw_revision_rows", observed)
+    refusal = raw_retention_mod.raw_frontier_blocked_raw_ids(tmp_path, ("selected",))
+    assert refusal.source_paths == frozenset() and refusal.unattributed_reason is None
+    assert sum(checked) == 1
+    checked.clear()
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        diagnostic = raw_frontier_integrity_snapshot(
+            conn, index_db_path=tmp_path / "index.db", ops_db_path=tmp_path / "ops.db"
+        )
+    assert diagnostic.overall_status == "healthy"
+    assert sum(checked) == 4097
+
+
 # ---------------------------------------------------------------------------
 # raw_frontier_integrity_snapshot (polylogue-yla8.7)
 # ---------------------------------------------------------------------------
