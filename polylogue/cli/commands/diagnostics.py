@@ -915,11 +915,10 @@ def latency_command(
     presented as a reliable percentile.
     """
     import json as _json
-    import sqlite3
     import time as _time
-    from contextlib import closing
 
     from polylogue.cli.shared.helpers import load_effective_config
+    from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
     from polylogue.operations.route_observation import compute_latency_percentiles
     from polylogue.storage.sqlite.archive_tiers.ops_write import list_mcp_calls, list_route_observations
 
@@ -935,7 +934,7 @@ def latency_command(
             env.ui.console.print("[yellow]No ops.db found -- no latency telemetry has been recorded yet.[/yellow]")
         return
 
-    with closing(sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True, timeout=2.0)) as conn:
+    with one_shot_diagnostic_read(ops_db) as conn:
         observations = list_route_observations(conn, surface=surface, since_ms=since_ms, limit=limit)
         calls = list_mcp_calls(conn, limit=limit) if surface in (None, "mcp") else ()
         calls = tuple(call for call in calls if call.started_at_ms >= since_ms)
@@ -1027,8 +1026,6 @@ def codex_title_census_command(
     coverage without naming what remains.
     """
     import json as _json
-    import sqlite3
-    from contextlib import closing
 
     from polylogue.archive.codex_title_census import (
         CodexTitleCensus,
@@ -1037,6 +1034,7 @@ def codex_title_census_command(
         compute_codex_title_census,
     )
     from polylogue.cli.shared.helpers import fail, load_effective_config
+    from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
 
     if compare is not None:
         before_path, after_path = compare
@@ -1058,7 +1056,7 @@ def codex_title_census_command(
     if not index_db.exists():
         fail("codex-title-census", f"no index.db found at {index_db}")
 
-    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=2.0)) as conn:
+    with one_shot_diagnostic_read(index_db) as conn:
         census = compute_codex_title_census(conn)
 
         coverage = None

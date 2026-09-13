@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -87,8 +88,18 @@ def test_schema_version_health_ok_when_versions_match(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = workspace_env["archive_root"] / "index.db"
+    from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read as real_diagnostic_read
 
     monkeypatch.setattr("polylogue.daemon.health._active_health_db_path", lambda: db)
+    observed: list[Path] = []
+
+    @contextmanager
+    def diagnostic_read(path: str | Path, *, tier: ArchiveTier | None = None) -> Iterator[sqlite3.Connection]:
+        observed.append(Path(path))
+        with real_diagnostic_read(path, tier=tier) as conn:
+            yield conn
+
+    monkeypatch.setattr("polylogue.daemon.health.one_shot_diagnostic_read", diagnostic_read)
 
     alert = _check_schema_version_fast()
 
@@ -96,6 +107,7 @@ def test_schema_version_health_ok_when_versions_match(
     assert alert.tier == HealthTier.FAST
     assert alert.severity == HealthSeverity.OK
     assert "archive tier layout matches runtime" in alert.message
+    assert db in observed
 
 
 def test_schema_version_health_critical_when_db_ahead(

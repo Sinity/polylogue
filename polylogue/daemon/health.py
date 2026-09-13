@@ -37,7 +37,7 @@ from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read, open_readonly_connection
 
 logger = get_logger(__name__)
 
@@ -388,11 +388,8 @@ def durable_tier_schema_mismatch() -> bool:
         path = archive_dir / spec.filename
         if not path.exists():
             return True
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
-        try:
+        with one_shot_diagnostic_read(path, tier=spec.tier) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()
-        finally:
-            conn.close()
         current = int(row[0]) if row else 0
         if current != spec.version:
             return True
@@ -432,11 +429,8 @@ def _check_schema_version_fast() -> HealthAlert:
                     continue
                 missing.append(spec.filename)
                 continue
-            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
-            try:
+            with one_shot_diagnostic_read(path, tier=spec.tier) as conn:
                 row = conn.execute("PRAGMA user_version").fetchone()
-            finally:
-                conn.close()
             current = int(row[0]) if row else 0
             if current != spec.version:
                 mismatches.append(f"{spec.filename}:{current}!={spec.version}")
