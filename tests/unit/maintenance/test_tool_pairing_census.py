@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools.tool_pairing_census import (
+    CLASS_SIDECAR_OWNED,
     CLASS_SOURCE_OMISSION,
     CLASS_SOURCE_TRUNCATED,
     CLASS_UNKNOWN,
@@ -177,6 +178,12 @@ def test_unowned_result_with_surviving_source_stays_unknown() -> None:
     """A physical result without a declared owner must not borrow one."""
     source = SourceState(SOURCE_PRESENT, COMPLETION_SETTLED)
     assert _classify_result(owner_present=False, source=source) == CLASS_UNKNOWN
+
+
+def test_sidecar_owned_result_is_not_reported_as_unknown() -> None:
+    """A retained tool-result sidecar is an explicit owner of its answer."""
+    source = SourceState(SOURCE_PRESENT, COMPLETION_SETTLED)
+    assert _classify_result(owner_present=False, source=source, sidecar_owned=True) == CLASS_SIDECAR_OWNED
 
 
 def test_superseded_source_is_truncated_before_position_heuristics() -> None:
