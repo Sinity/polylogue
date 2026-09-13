@@ -14,7 +14,7 @@ from polylogue.analysis.archive import ArchiveInsightProvenance, SessionProfileI
 from polylogue.analysis.archive_models import SessionEvidencePayload
 from polylogue.analysis.resume import ResumeOperations
 from polylogue.api import Polylogue
-from tests.infra.storage_records import SessionBuilder
+from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
 # Archive session ids derived from the builder's provider_session_id
 # (``ext-<conv_id>``) and the claude-code origin.
@@ -126,7 +126,7 @@ async def test_resume_brief_composes_insights_and_related_sessions(cli_workspace
     _seed_resume_sessions(db_path)
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    await archive.rebuild_insights()
+    materialize_session_insights(db_path)
     brief = await archive.resume_brief(CHILD_ID)
 
     assert brief is not None
@@ -154,7 +154,7 @@ async def test_resume_brief_provenance_cites_substrate_rows(cli_workspace: dict[
     _seed_resume_sessions(db_path)
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    await archive.rebuild_insights()
+    materialize_session_insights(db_path)
     brief = await archive.resume_brief(CHILD_ID)
 
     assert brief is not None
@@ -202,7 +202,7 @@ async def test_resume_brief_flags_partial_merged_profile(
     _seed_resume_sessions(db_path)
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    await archive.rebuild_insights()
+    materialize_session_insights(db_path)
     profile = await archive.get_session_profile_insight(ROOT_ID)
     assert profile is not None
     partial_profile = profile.model_copy(
@@ -238,7 +238,7 @@ async def test_resume_candidates_rank_and_dedupe_logical_sessions(cli_workspace:
     )
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    await archive.rebuild_insights()
+    materialize_session_insights(db_path)
     # The candidate surfaces the lineage-strongest terminal_state/workflow_shape
     # across every physical session in the logical group (root + continuation),
     # so the ranking-signal override must cover both members; otherwise the
@@ -281,7 +281,7 @@ async def test_resume_candidates_empty_context_prefers_unfinished_sessions(
     _seed_resume_sessions(db_path)
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    await archive.rebuild_insights()
+    materialize_session_insights(db_path)
     _set_profile_state(db_path, ROOT_ID, terminal_state="clean_finish")
     _set_profile_state(db_path, CHILD_ID, terminal_state="question_left")
 
@@ -505,7 +505,7 @@ async def test_resume_brief_projects_overlap_basis_for_current_work(
     current.write_text("# current CLI\n", encoding="utf-8")
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    await archive.rebuild_insights()
+    materialize_session_insights(db_path)
     brief = await archive.resume_brief(
         ROOT_ID,
         repo_path=str(repo_root),

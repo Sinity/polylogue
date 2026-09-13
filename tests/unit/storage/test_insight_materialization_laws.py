@@ -7,7 +7,6 @@ agrees, no phantom insights for non-existent sessions.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
@@ -15,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.infra.storage_records import SessionBuilder, db_setup
+from tests.infra.storage_records import SessionBuilder, db_setup, materialize_session_insights
 
 
 def _open_archive(db_path: Path) -> sqlite3.Connection:
@@ -49,16 +48,7 @@ def materialized_db(workspace_env: Mapping[str, Path]) -> Path:
         role="user", text="Generate tests"
     ).add_message(role="assistant", text="Here are the tests").add_message(role="user", text="Add edge cases").save()
 
-    from polylogue.api import Polylogue
-
-    async def _rebuild() -> None:
-        archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
-        try:
-            await archive.rebuild_insights()
-        finally:
-            await archive.close()
-
-    asyncio.run(_rebuild())
+    materialize_session_insights(db_path)
 
     return db_path
 
@@ -120,9 +110,6 @@ class TestInsightMaterializationIdempotence:
     """Running materialization twice produces the same profile set."""
 
     def test_rebuild_is_idempotent(self, materialized_db: Path) -> None:
-        import asyncio
-
-        from polylogue.api import Polylogue
 
         with closing(_open_archive(materialized_db)) as conn:
             has_profiles = conn.execute(
@@ -133,14 +120,7 @@ class TestInsightMaterializationIdempotence:
 
             ids_before = {r["session_id"] for r in conn.execute("SELECT session_id FROM session_profiles").fetchall()}
 
-        async def _rebuild() -> None:
-            archive = Polylogue(archive_root=materialized_db.parent, db_path=materialized_db)
-            try:
-                await archive.rebuild_insights()
-            finally:
-                await archive.close()
-
-        asyncio.run(_rebuild())
+        materialize_session_insights(materialized_db)
 
         with closing(_open_archive(materialized_db)) as conn:
             ids_after = {r["session_id"] for r in conn.execute("SELECT session_id FROM session_profiles").fetchall()}

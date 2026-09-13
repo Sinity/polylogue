@@ -1529,3 +1529,36 @@ class DbFactory:
                 )
             index_conn.commit()
         return raw_id
+
+
+def materialize_session_insights(
+    db_path: Path,
+    *,
+    session_ids: Sequence[str] | None = None,
+    progress_callback: Any | None = None,
+) -> Any:
+    """Materialize session insights through the shared production materializer.
+
+    ``Polylogue.rebuild_insights`` deliberately refuses in-process execution
+    (:class:`InsightMaintenanceRequiresDaemonError`): a rebuild sweep is a
+    sealed, page-bounded machine owned by ``polylogued run``.  Tests that
+    assert *what the materializer produces* — not *who may authorize a sweep* —
+    call the same function both sanctioned owners ultimately reach:
+    ``InsightsRebuildActuator.apply`` (the plan builder) and the daemon's
+    per-session publication path
+    (``storage/derived/session/derivation.py``) both call
+    ``rebuild_session_insights_sync``.
+
+    Authorization-route coverage lives in
+    ``tests/unit/api/test_operation_executor_routes.py`` instead.
+    """
+
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.sqlite.connection import open_connection
+
+    with open_connection(db_path) as conn:
+        return rebuild_session_insights_sync(
+            conn,
+            session_ids=None if session_ids is None else list(session_ids),
+            progress_callback=progress_callback,
+        )
