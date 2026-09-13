@@ -4,9 +4,9 @@ Production dependencies exercised here:
 
 * ``DaemonParseStage.warm`` -- the actual off-writer-hold pre-parse entry
   point the daemon conveyor calls.
-* ``polylogue.storage.raw_convergence.raw_materialization_pending_census_raw_ids`` /
-  ``raw_materialization_readonly_descriptors`` -- the read-only candidate
-  and descriptor lookups ``warm`` uses.
+* ``polylogue.sources.census_parse_stage._bounded_pending_raw_ids`` /
+  ``_readonly_descriptors`` -- the read-only candidate and descriptor
+  lookups ``warm`` uses.
 * ``polylogue.sources.revision_backfill.census_parse_worker`` -- the same
   pure parse function the production census path dispatches; these tests
   prove it is genuinely reached via a background thread, not called inline.
@@ -232,14 +232,10 @@ def test_warm_async_cancellation_does_not_join_default_executor(
 
     bootstrap_archive_root(tmp_path)
     descriptor = (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 67)
+    monkeypatch.setattr(census_parse_stage, "_bounded_pending_raw_ids", lambda *_args, **_kwargs: ("raw-67",))
     monkeypatch.setattr(
         census_parse_stage,
-        "raw_materialization_pending_census_raw_ids",
-        lambda *_args, **_kwargs: ["raw-67"],
-    )
-    monkeypatch.setattr(
-        census_parse_stage,
-        "raw_materialization_readonly_descriptors",
+        "_readonly_descriptors",
         lambda *_args: {"raw-67": descriptor},
     )
     started = threading.Event()
@@ -296,7 +292,7 @@ def test_warm_source_payload_admission_bounds_submitted_full_parses(
         submitted.append(raw_id)
         return raw_id, [], None
 
-    monkeypatch.setattr(census_parse_stage, "raw_materialization_readonly_descriptors", lambda *_args: descriptors)
+    monkeypatch.setattr(census_parse_stage, "_readonly_descriptors", lambda *_args: descriptors)
     monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
     stage = DaemonParseStage(max_workers=3, max_inflight_bytes=100, max_cached_tree_bytes=10_000_000)
     try:
@@ -318,7 +314,7 @@ def test_completed_result_retains_payload_reservation_until_consumed(
     descriptor = (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 67)
     monkeypatch.setattr(
         census_parse_stage,
-        "raw_materialization_readonly_descriptors",
+        "_readonly_descriptors",
         lambda *_args: {"raw-67": descriptor},
     )
     submitted: list[str] = []
@@ -376,7 +372,7 @@ def test_submit_failure_cleans_every_admitted_future_and_reservation(
         ("raw-a", "raw-b", "raw-c"),
         (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 60),
     )
-    monkeypatch.setattr(census_parse_stage, "raw_materialization_readonly_descriptors", lambda *_args: descriptors)
+    monkeypatch.setattr(census_parse_stage, "_readonly_descriptors", lambda *_args: descriptors)
     started = threading.Event()
     release = threading.Event()
 
@@ -427,7 +423,7 @@ def test_consecutive_timeout_retries_share_global_payload_admission(
     descriptor = (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 67)
     monkeypatch.setattr(
         census_parse_stage,
-        "raw_materialization_readonly_descriptors",
+        "_readonly_descriptors",
         lambda *_args: {"raw-67": descriptor},
     )
     started = threading.Event()
