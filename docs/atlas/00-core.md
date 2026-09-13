@@ -10,7 +10,7 @@ Polylogue is a local, single-writer archive for AI coding and chat sessions.
 It acquires heterogeneous exports and live captures, parses them into a
 normalized session tree, stores durable evidence in split SQLite tiers, and
 serves query-first reads through the CLI, MCP, Python API, and daemon
-(`polylogue/daemon/cli.py:2542-2600`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:45-82`).
+(`polylogue/daemon/cli.py:1854-1897`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:49-85`).
 
 The useful mental model is a flight recorder: every derived answer should be
 able to resolve to stored source bytes, structured records, and provenance.
@@ -25,7 +25,7 @@ dashboard or an unbounded semantic-memory promise.
    evidence boundaries are explicit (`polylogue/analysis/registry.py:1-100`).
 3. **Audit** — inspect operation previews, authorization, attempts, and
    continuity, with durable audit records separate from rebuildable indexes
-   (`polylogue/storage/sqlite/archive_tiers/audit.py:20-35`).
+   (`polylogue/storage/sqlite/archive_tiers/audit.py:53-67`).
 4. **Remember** — retain user assertions and context-delivery provenance in
    the durable user tier; claims remain typed and evidence-linked
    (`polylogue/storage/sqlite/archive_tiers/user.py:19-40`).
@@ -41,24 +41,31 @@ source acquisition → detection → parsing → archive write → derived reads
 
 The parsed-session write choke point computes public origin, native identity,
 session identity, and parser fingerprints before lowering records
-(`polylogue/storage/sqlite/archive_tiers/write.py:578-730`). The daemon owns
+(`polylogue/storage/sqlite/archive_tiers/write.py:1063-1068`). The daemon owns
 the normal live write path and serializes admitted mutations; read surfaces
-adapt through operations and insights (`polylogue/daemon/write_coordinator.py:280-340`).
+adapt through operations and insights (`polylogue/daemon/write_coordinator.py:284-340`).
+
+Session summaries, profiles, raw observations, FTS, and embeddings use
+domain-owned inspection and publication through the derivation kernel. The
+daemon sheet identifies the remaining stage-based owners; the presence of the
+kernel does not imply their retirement (`polylogue/daemon/session_profile_composition.py:37-62`;
+`polylogue/daemon/convergence_stages.py:439-477`).
 
 ## Identity you must preserve
 
 Sessions, messages, and blocks form the core tree. Identity is generated, not
 duplicated in caller metadata:
 
-- `session_id = origin:native_id`.
-- `message_id` uses explicit native (`:n:`) or positional (`:p:`) namespaces.
-- `block_id = message_id:position`.
+- `session_id = origin:native_id` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:692-705`).
+- `message_id` uses explicit native (`:n:`) or positional (`:p:`) namespaces (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:281-300`).
+- `block_id = message_id:position` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:478-495`).
 
 `material_origin` is independent from role and expresses authoredness. Tool
 outcomes use the canonical `blocks.tool_outcome` enum; deliberate unknown
 outcomes preserve `tool_result_outcome_unknown_reason`. Lineage
 children physically store only their divergent tail and reads recompose the
-parent prefix (`polylogue/storage/sqlite/archive_tiers/write.py:735-812`).
+parent prefix (`polylogue/storage/sqlite/archive_tiers/write.py:755-801`;
+`polylogue/storage/sqlite/archive_tiers/write.py:1903-1951`).
 
 ## Where to start
 
@@ -89,4 +96,4 @@ not rotted.
 - Tests use synthetic fixtures and managed `devtools test` commands; ambient
   personal archives never enter tracked files.
 
-verified: f6df6366a 2026-09-11
+verified: 0ba47b3d3cc0835ff328ca59826bf148ee48ae96 2026-09-13

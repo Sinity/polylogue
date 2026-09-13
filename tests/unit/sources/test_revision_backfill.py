@@ -187,13 +187,12 @@ def test_owned_empty_generation_uses_cold_build_policy_and_finishes_ready(
     assert stamped_tiers == ["index"]
 
 
-def test_retained_replay_terminal_fts_readiness_publishes_exact_nonempty_ledger(tmp_path: Path) -> None:
-    """A settled retained replay replaces its scoped STALE ledger with exact READY.
+def test_retained_replay_terminal_fts_verifies_nonempty_membership(tmp_path: Path) -> None:
+    """A settled retained replay leaves every replayed searchable block indexed.
 
-    Anti-vacuity: this fixture seeds the historical zero-count STALE shape
-    and invokes only the ordinary retained replay route. Removing its terminal
-    snapshot/record publication leaves that ledger stale and makes the READY
-    assertions below fail; the test never publishes readiness itself.
+    Anti-vacuity: this invokes only the retained replay route. Removing its
+    FTS rebuild leaves ``messages_fts`` incomplete and fails the direct
+    canonical membership assertion below.
     """
     bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -211,16 +210,6 @@ def test_retained_replay_terminal_fts_readiness_publishes_exact_nonempty_ledger(
             ),
         )
         archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:retained-readiness")
-        # Model the retained archive's prior scoped-repair ledger: it is
-        # explicitly stale and has no exact population evidence yet.
-        from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_sync
-
-        record_fts_surface_state_sync(
-            archive._conn,
-            surface="messages_fts",
-            state=STALE,
-            detail="seeded stale retained replay ledger",
-        )
         archive.commit()
 
     census_historical_revision_evidence(tmp_path)
@@ -228,30 +217,18 @@ def test_retained_replay_terminal_fts_readiness_publishes_exact_nonempty_ledger(
     assert result.replayed_logical_sources == 1
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        readiness = conn.execute(
-            """
-            SELECT state, verification_kind, source_rows, indexed_rows,
-                   missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows
-            FROM fts_freshness_state
-            WHERE surface = 'messages_fts'
-            """
-        ).fetchone()
+        from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 
-    assert readiness is not None
-    (
-        state,
-        verification_kind,
-        source_rows,
-        indexed_rows,
-        missing_rows,
-        excess_rows,
-        duplicate_rows,
-        identity_mismatch_rows,
-    ) = readiness
-    assert state == "ready"
-    assert verification_kind == "exact"
-    assert source_rows == indexed_rows > 0
-    assert (missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows) == (0, 0, 0, 0)
+        messages = fts_invariant_snapshot_sync(conn).messages
+
+    assert messages.ready
+    assert messages.source_rows == messages.indexed_rows > 0
+    assert (messages.missing_rows, messages.excess_rows, messages.duplicate_rows, messages.identity_mismatch_rows) == (
+        0,
+        0,
+        0,
+        0,
+    )
 
 
 def test_owned_nonempty_generation_refuses_cold_build_deferral(tmp_path: Path) -> None:
@@ -329,9 +306,6 @@ def test_frozen_inactive_generation_replays_through_sealed_session_shards(
     with sqlite3.connect(generation.index_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
-        assert conn.execute("SELECT state FROM fts_freshness_state WHERE surface = 'messages_fts'").fetchone() == (
-            "ready",
-        )
     assert not list(Path(generation.index_path).parent.glob(".frozen-replay-shards-*"))
 
 

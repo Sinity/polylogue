@@ -1597,12 +1597,6 @@ class LiveBatchProcessor:
                 "live.watcher: refusing to advance cursor past bytes that left no source evidence: %s",
                 path,
             )
-            self._cursor.record_convergence_debt(
-                stage="raw_parse_recovery",
-                subject_type="source_path",
-                subject_id=str(path),
-                error="cursor advance refused: ingest retained no source-tier evidence for this path",
-            )
             return 0
         # SQLite-backed sources are identified by an acquisition revision,
         # not by the snapshot file's byte length. Record the live database
@@ -3593,13 +3587,6 @@ class LiveBatchProcessor:
                                             source_raw_id, parsed_by_raw_id, shard_bindings
                                         ),
                                     )
-                                self._cursor.record_convergence_debt(
-                                    stage="fts",
-                                    subject_type="session_id",
-                                    subject_id=session_id,
-                                    error="live full ingest deferred FTS to preserve writer availability",
-                                    deferred=True,
-                                )
                                 record_session_ids.append(session_id)
                                 record_session_count = 1
                                 record_message_count = sum(
@@ -3971,13 +3958,6 @@ class LiveBatchProcessor:
             )
             if membership_session_id is not None:
                 session_ids.append(membership_session_id)
-                self._cursor.record_convergence_debt(
-                    stage="fts",
-                    subject_type="session_id",
-                    subject_id=membership_session_id,
-                    error="live membership ingest deferred FTS to preserve writer availability",
-                    deferred=True,
-                )
                 session_count += 1
                 message_count += len(member_sessions[classification.accepted_raw_ids[-1]].messages)
         return (

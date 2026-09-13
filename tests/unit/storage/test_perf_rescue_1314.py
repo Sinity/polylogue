@@ -7,9 +7,8 @@ hosts and CI shapes.
 1. ``_SESSION_INSIGHT_REBUILD_PAGE_SIZE`` must be at least 50; the
    page-size-1 regression produced ~17K SQL round-trips for ~4K
    sessions.
-2. ``search_session_hits`` must skip archive-scale FTS COUNT(*) probes
-   when the daemon-maintained freshness ledger says the message FTS surface is
-   ready, and must fall back to exact verification when that row is absent.
+2. ``search_session_hits`` must return current FTS membership through its
+   authoritative relation check.
 3. ``get_origin_metrics_rows`` must read the per-session aggregates on
    ``sessions`` instead of scanning ``messages``.
 4. The hydration path (``get_messages*``) must not call pydantic
@@ -19,6 +18,7 @@ hosts and CI shapes.
 
 from __future__ import annotations
 
+import re
 import shutil
 import sqlite3
 from collections.abc import Iterator
@@ -30,6 +30,7 @@ import aiosqlite
 import pytest
 
 from polylogue.storage.derived.session.rebuild import _SESSION_INSIGHT_REBUILD_PAGE_SIZE
+from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync, restore_fts_triggers_sync
 from polylogue.storage.sqlite.queries.sessions_search import search_session_hits
 from polylogue.storage.sqlite.queries.stats import get_origin_metrics_rows
 from tests.benchmarks.helpers import open_bench_store
@@ -81,57 +82,80 @@ def test_session_insight_rebuild_page_size_is_at_least_50() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Item 2: exact FTS freshness before retrieval.
+# Item 2: authoritative FTS membership before retrieval.
 # ---------------------------------------------------------------------------
 
 
-def test_search_session_hits_uses_freshness_ledger_before_match(isolated_bench_db_1k: Path) -> None:
-    """Search should not pay archive-scale COUNT(*) probes after daemon readiness."""
-    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+def _fixture_search_term(index_db: Path) -> str:
+    """Pick a term the fixture corpus actually indexes, rather than guessing one.
+
+    The benchmark corpus is generated, so hard-coding a word makes the test
+    assert the generator's vocabulary instead of search behaviour.
+    """
+    with sqlite3.connect(index_db) as conn:
+        counts: dict[str, int] = {}
+        for (text,) in conn.execute("SELECT search_text FROM blocks WHERE search_text IS NOT NULL LIMIT 500"):
+            for token in set(re.findall(r"[a-z]{5,}", str(text).lower())):
+                counts[token] = counts.get(token, 0) + 1
+    # Deterministic: most frequent, ties broken alphabetically.
+    term = min(counts, key=lambda token: (-counts[token], token))
+    assert counts[term] >= 2, "benchmark fixture produced no repeated searchable term"
+    return term
+
+
+def test_search_session_hits_returns_current_fts_membership(isolated_bench_db_1k: Path) -> None:
+    """Search reports exactly the sessions the message FTS relation currently holds.
+
+    Anti-vacuity: serve results from a cached or ledger-declared membership
+    instead of the live relation, drop the session scope so every session is
+    returned, or let a repaired-away session keep matching, and this goes red.
+    """
+    term = _fixture_search_term(isolated_bench_db_1k)
 
     with sqlite3.connect(isolated_bench_db_1k) as conn:
-        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+        expected = {
+            str(row[0])
+            for row in conn.execute(
+                # messages_fts is contentless, so its own columns read back
+                # NULL; the FTS rowid is the canonical block rowid, which is
+                # what names the session behind a match.
+                """
+                SELECT DISTINCT b.session_id
+                FROM messages_fts AS f
+                JOIN blocks AS b ON b.rowid = f.rowid
+                WHERE messages_fts MATCH ?
+                """,
+                (term,),
+            )
+        }
+    assert expected, f"fixture term {term!r} matched no indexed session"
+
+    with open_bench_store(isolated_bench_db_1k) as store:
+        backend = store.backend
+
+        async def _search() -> list[str]:
+            async with backend.connection() as conn:
+                return (await search_session_hits(conn, term, limit=1000)).session_ids()
+
+        assert set(store.run(_search())) == expected
+
+    # Remove one session's content through the canonical repair route; search
+    # must follow the relation's new membership on the very next read.
+    retired = sorted(expected)[0]
+    with sqlite3.connect(isolated_bench_db_1k) as conn:
+        restore_fts_triggers_sync(conn)
+        conn.execute("DELETE FROM blocks WHERE session_id = ?", (retired,))
+        repair_message_fts_index_sync(conn, [retired], record_exact_snapshot=False)
         conn.commit()
 
     with open_bench_store(isolated_bench_db_1k) as store:
         backend = store.backend
 
-        async def _run(statements: list[str]) -> None:
+        async def _search_again() -> list[str]:
             async with backend.connection() as conn:
-                await search_session_hits(conn, "analysis", limit=5)
+                return (await search_session_hits(conn, term, limit=1000)).session_ids()
 
-        with _capture_aiosqlite_sql() as statements:
-            store.run(_run(statements))
-
-        lowered = [" ".join(sql.lower().split()) for sql in statements]
-        match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
-        assert all("count(*) from messages_fts_docsize" not in sql for sql in lowered[:match_index])
-        assert all("count(*) from messages where text is not null" not in sql for sql in lowered[:match_index])
-
-
-def test_search_session_hits_falls_back_to_exact_freshness(isolated_bench_db_1k: Path) -> None:
-    """Absent ledger rows fall back to exact FTS verification before MATCH."""
-    with open_bench_store(isolated_bench_db_1k) as store:
-        backend = store.backend
-
-        async def _run(statements: list[str]) -> None:
-            async with backend.connection() as conn:
-                await conn.execute("DELETE FROM fts_freshness_state WHERE surface = 'messages_fts'")
-                await conn.commit()
-                await search_session_hits(conn, "analysis", limit=5)
-
-        with _capture_aiosqlite_sql() as statements:
-            store.run(_run(statements))
-
-        lowered = [sql.lower() for sql in statements]
-        docsize_count_index = next(i for i, sql in enumerate(lowered) if "count(*) from messages_fts_docsize" in sql)
-        block_probe_index = next(
-            i for i, sql in enumerate(lowered) if "from blocks" in sql and ("count(*)" in sql or "limit 1" in sql)
-        )
-        match_index = next(i for i, sql in enumerate(lowered) if "messages_fts match" in sql)
-        assert docsize_count_index < match_index
-        assert block_probe_index < match_index
+        assert set(store.run(_search_again())) == expected - {retired}
 
 
 # ---------------------------------------------------------------------------

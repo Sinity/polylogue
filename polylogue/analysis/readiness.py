@@ -86,10 +86,10 @@ class InsightReadinessReport(ArchiveInsightModel):
     since: str | None = None
     until: str | None = None
     insights: tuple[InsightReadinessEntry, ...] = ()
-    # Readiness is one signal: has convergence caught up. ``None`` means the
-    # debt ledger could not be read -- unknown is never success. ``debt_stages``
-    # names the stages still holding retryable debt when it has not.
-    converged: bool | None = None
+    # Readiness comes from the selected domains' current output inspections.
+    # ``debt_stages`` separately reports retryable operation history and never
+    # certifies or withholds this result.
+    converged: bool = False
     debt_stages: tuple[str, ...] = ()
 
 

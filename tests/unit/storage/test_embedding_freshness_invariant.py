@@ -11,10 +11,11 @@ that route silently trust the clean status row.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TypeVar, cast
 
 import pytest
 
@@ -45,6 +46,8 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from tests.infra.live_ingest import write_index_session
+
+T = TypeVar("T")
 
 _INITIAL_TEXT = "Initial authored archive prose that is long enough for an embedding vector."
 _CHANGED_TEXT = "Changed authored archive prose that keeps the same identity and message count."
@@ -100,7 +103,14 @@ def _materialization_uses_freshness_baseline_recipe(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(materialization, "load_polylogue_config", lambda: _EmbeddingConfig())
 
 
-def _write_archive_session(root: Path, *, native_id: str, text: str) -> str:
+def _write_archive_session(
+    root: Path,
+    *,
+    native_id: str,
+    text: str,
+    role: Role = Role.USER,
+    material_origin: MaterialOrigin = MaterialOrigin.HUMAN_AUTHORED,
+) -> str:
     with ArchiveStore(root) as archive:
         return write_index_session(
             archive,
@@ -110,10 +120,10 @@ def _write_archive_session(root: Path, *, native_id: str, text: str) -> str:
                 messages=[
                     ParsedMessage(
                         provider_message_id="m1",
-                        role=Role.USER,
+                        role=role,
                         text=text,
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
-                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                        material_origin=material_origin,
                     )
                 ],
             ),
@@ -146,46 +156,57 @@ def _open_embeddings(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def test_per_source_convergence_mutation_removing_shared_predicate_misses_changed_content(
+def test_message_derivation_inspection_rejects_ref_after_message_semantics_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Production dependency: convergence's per-source pending-id selector."""
-    from polylogue.daemon import convergence_stages
-    from polylogue.storage.embeddings import materialization
+    """The common-kernel route requires the exact current message semantics.
 
-    index_db, _embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
+    Anti-vacuity: remove ``refs.message_content_hash = messages.content_hash``
+    from adapter inspection and this stale ref is marked valid because its
+    provider text, vector address, recipe, and output contract all match.
+    """
+
+    from polylogue.operations.embedding_derivation import make_embedding_frame
+    from polylogue.storage.embeddings import materialization
+    from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
+
+    root = tmp_path / "archive"
+    session_id = _write_archive_session(root, native_id="semantic-identity", text=_INITIAL_TEXT)
+    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
+    assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id).status == "embedded"
+    # The provider sees the same prose, but canonical message semantics include
+    # author role/material origin and therefore have a different content hash.
+    assert (
+        _write_archive_session(
+            root,
+            native_id="semantic-identity",
+            text=_INITIAL_TEXT,
+            role=Role.ASSISTANT,
+            material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+        )
+        == session_id
+    )
+    index_db = root / "index.db"
     monkeypatch.setattr(materialization, "load_polylogue_config", lambda: _EmbeddingConfig())
+    adapter = EmbeddingDerivationAdapter(index_db, _FakeVectorProvider(), archive_root=root)
+    frame = make_embedding_frame(index_db, archive_root=root, adapter=adapter, scope=(session_id,))
+    keys, cursor = adapter.required_page(frame, cursor=None, limit=10)
+    empty_scope = make_embedding_frame(index_db, archive_root=root, adapter=adapter, scope=())
 
-    with sqlite3.connect(index_db) as conn:
-        selected = convergence_stages._archive_pending_embedding_session_ids(conn, [session_id])
-
-    assert selected == [session_id]
-
-
-def test_daemon_backlog_mutation_restoring_stale_check_bypass_misses_changed_content(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Production dependency: the daemon catch-up loop's real selection route."""
-    from polylogue.daemon import embedding_backlog
-    from polylogue.storage import search_providers
-    from polylogue.storage.embeddings import materialization
-
-    index_db, _embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
-    selected: list[str] = []
-
-    def _observe_embed(
-        _index_db: Path, _provider: object, selected_session_id: str, **_kwargs: object
-    ) -> EmbedSessionOutcome:
-        selected.append(selected_session_id)
-        return EmbedSessionOutcome(status="embedded", session_id=selected_session_id, embedded_message_count=1)
-
-    monkeypatch.setattr(embedding_backlog, "load_polylogue_config", lambda: _EmbeddingConfig())
-    monkeypatch.setattr(search_providers, "create_vector_provider", lambda **_kwargs: object())
-    monkeypatch.setattr(materialization, "embed_archive_session_sync", _observe_embed)
-    monkeypatch.setattr(embedding_backlog, "_upsert_archive_embedding_catchup_run", lambda *_args, **_kwargs: "run")
-
-    assert embedding_backlog._drain_archive_embedding_backlog_once(index_db, archive_root=index_db.parent) == 1
-    assert selected == [session_id]
+    assert cursor is None
+    assert keys
+    assert adapter.inspect(frame, keys) == dict.fromkeys(keys, "stale")
+    # A watcher path that resolves to no sessions must not turn into a full
+    # archive sweep merely because an empty tuple is falsey.
+    assert adapter.required_page(empty_scope, cursor=None, limit=10) == ((), None)
+    assert adapter.excess_page(empty_scope, cursor=None, limit=10) == ((), None)
+    quiet_adapter = EmbeddingDerivationAdapter(
+        index_db,
+        _FakeVectorProvider(),
+        archive_root=root,
+        quiet=lambda _frame, _key: True,
+    )
+    assert quiet_adapter.quiet(frame, keys[0]) is True
 
 
 def test_manual_backfill_mutation_restoring_stale_check_bypass_misses_changed_content(
@@ -294,198 +315,16 @@ def test_status_payload_uses_its_resolved_recipe_for_exact_archive_counts(
     initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
     assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id).status == "embedded"
 
-    monkeypatch.setattr(config_module, "load_polylogue_config", lambda: _EmbeddingConfig(model="voyage-5"))
+    monkeypatch.setattr(
+        config_module,
+        "load_polylogue_config",
+        lambda: config_module.PolylogueConfig(_EmbeddingConfig(model="voyage-5")),
+    )
     payload = embedding_status_payload(SimpleNamespace(config=SimpleNamespace(db_path=root / "index.db")))
 
     assert payload["configured_model"] == "voyage-5"
     assert payload["embedded_sessions"] == 0
     assert payload["pending_sessions"] == 1
-
-
-def test_config_change_then_old_terminal_error_cannot_clear_new_generation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Deterministic actor ordering; deleting the generation/key WHERE guard fails."""
-    from polylogue.daemon import convergence_stages
-
-    embeddings_db = tmp_path / "embeddings.db"
-    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
-    conn = sqlite3.connect(embeddings_db)
-    conn.row_factory = sqlite3.Row
-    try:
-        source = EmbeddingSourceDigest()
-        source.update(b"x" * 32)
-        old_attempt = begin_embedding_attempt(
-            conn,
-            session_id="codex-session:race",
-            origin=Origin.CODEX_SESSION,
-            source_hash=source.digest(),
-            recipe=_recipe("voyage-4"),
-            started_at_ms=1_800_000_000_000,
-        )
-
-        monkeypatch.setattr(
-            convergence_stages,
-            "load_polylogue_config",
-            lambda: _EmbeddingConfig(model="voyage-5"),
-        )
-        convergence_stages._reconcile_embedding_config_change(conn)
-        conn.commit()
-
-        status = mark_session_embedding_error(
-            conn,
-            session_id=old_attempt.session_id,
-            origin=Origin.CODEX_SESSION,
-            error_message="Embedding generation failed: HTTP 400",
-            retryable=False,
-            attempt=old_attempt,
-        )
-        state = conn.execute(
-            """
-            SELECT generation, recipe_hash, attempt_state
-            FROM embedding_derivation_state WHERE session_id = ?
-            """,
-            (old_attempt.session_id,),
-        ).fetchone()
-        failure = conn.execute(
-            """
-            SELECT lifecycle_state, generation, derivation_key
-            FROM embedding_failures WHERE session_id = ? ORDER BY created_at_ms DESC LIMIT 1
-            """,
-            (old_attempt.session_id,),
-        ).fetchone()
-    finally:
-        conn.close()
-
-    assert state is not None
-    assert state["generation"] == old_attempt.generation + 1
-    assert bytes(state["recipe_hash"]) == _recipe("voyage-5").recipe_hash
-    assert state["attempt_state"] == "pending"
-    assert status.needs_reindex is True
-    assert status.error_message is None
-    assert failure is not None
-    assert failure["lifecycle_state"] == "superseded"
-    assert failure["generation"] == old_attempt.generation
-    assert bytes(failure["derivation_key"]) == old_attempt.derivation_key
-
-
-def test_archive_check_reconciles_recipe_on_sibling_embeddings_tier(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Production dependency: convergence must advance ``embeddings.db``, not ``index.db``."""
-    from polylogue.daemon import convergence_stages
-    from polylogue.storage.embeddings import materialization
-
-    root = tmp_path / "archive"
-    session_id = _write_archive_session(root, native_id="sibling-recipe", text=_INITIAL_TEXT)
-    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
-    assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id).status == "embedded"
-
-    with sqlite3.connect(root / "embeddings.db") as conn:
-        before = conn.execute(
-            "SELECT generation FROM embedding_derivation_state WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-    assert before is not None
-
-    changed_config = _EmbeddingConfig(model="voyage-5")
-    monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: changed_config)
-    monkeypatch.setattr(materialization, "load_polylogue_config", lambda: changed_config)
-
-    assert convergence_stages._archive_embed_check_sessions(root / "index.db", [session_id]) == {session_id}
-
-    with sqlite3.connect(root / "embeddings.db") as conn:
-        state = conn.execute(
-            """
-            SELECT generation, recipe_hash, attempt_state
-            FROM embedding_derivation_state WHERE session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
-        status = conn.execute(
-            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-
-    assert state is not None
-    assert state[0] == int(before[0]) + 1
-    assert bytes(state[1]) == _recipe("voyage-5").recipe_hash
-    assert state[2] == "pending"
-    assert status == (1, None)
-
-
-def test_recipe_change_reconciliation_does_not_restarve_sessions_already_succeeded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Production dependency: convergence must not un-fresh already-succeeded sessions.
-
-    When an archive has more pending sessions than one bounded convergence
-    window (``_DAEMON_EMBED_MAX_SESSIONS``), ``message_embeddings_meta`` for
-    the not-yet-reembedded remainder still carries the old recipe hash on the
-    next convergence pass, so ``meta_recipe_changed`` stays true archive-wide.
-    The bulk ``embedding_status`` reindex mark must scope to the sessions
-    whose ``embedding_derivation_state`` generation actually advanced *this*
-    pass, not the whole table -- otherwise sessions that already succeeded
-    under the new generation/key get re-flagged ``needs_reindex=1`` on every
-    subsequent pass and the daemon loops on the same first batch forever
-    instead of covering the rest of the archive (polylogue PR #3067 review).
-    """
-    from polylogue.daemon import convergence_stages
-    from polylogue.storage.embeddings import materialization
-
-    root = tmp_path / "archive"
-    session_ids = [
-        _write_archive_session(root, native_id=f"progress-{index:02d}", text=f"{_INITIAL_TEXT} {index}")
-        for index in range(30)
-    ]
-    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
-    for session_id in session_ids:
-        assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id).status == "embedded"
-
-    changed_config = _EmbeddingConfig(model="voyage-5")
-    monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: changed_config)
-    monkeypatch.setattr(materialization, "load_polylogue_config", lambda: changed_config)
-
-    # Pass 1: recipe change is reconciled. Every session becomes pending, but
-    # the production check function only ever returns one bounded window.
-    first_batch = convergence_stages._archive_embed_check_sessions(root / "index.db", session_ids)
-    assert len(first_batch) == convergence_stages._DAEMON_EMBED_MAX_SESSIONS
-    assert first_batch.issubset(set(session_ids))
-    remaining = set(session_ids) - first_batch
-    assert remaining
-
-    # The daemon actually re-embeds exactly the returned first batch under
-    # the new recipe -- the rest of the archive is still untouched.
-    new_recipe_provider = _FakeVectorProvider(0.02)
-    new_recipe_provider.model = "voyage-5"
-    for session_id in first_batch:
-        outcome = embed_archive_session_sync(root / "index.db", new_recipe_provider, session_id)
-        assert outcome.status == "embedded"
-
-    with sqlite3.connect(root / "embeddings.db") as conn:
-        needs_reindex_after_batch = dict(
-            conn.execute("SELECT session_id, needs_reindex FROM embedding_status").fetchall()
-        )
-    assert all(needs_reindex_after_batch[sid] == 0 for sid in first_batch)
-
-    # Pass 2: convergence runs again before the remaining sessions are
-    # embedded. meta_recipe_changed is still true (the remaining sessions'
-    # message_embeddings_meta rows still carry the old recipe hash), so the
-    # bug reproduces here if the bulk mark is not scoped: it would re-flag the
-    # already-succeeded first batch as needs_reindex=1 and the returned
-    # pending set would loop back over the same first batch instead of
-    # advancing to `remaining`.
-    second_batch = convergence_stages._archive_embed_check_sessions(root / "index.db", session_ids)
-
-    with sqlite3.connect(root / "embeddings.db") as conn:
-        needs_reindex_after_pass2 = dict(
-            conn.execute("SELECT session_id, needs_reindex FROM embedding_status").fetchall()
-        )
-
-    assert all(needs_reindex_after_pass2[sid] == 0 for sid in first_batch), (
-        "sessions that already succeeded under the new recipe/generation must not be re-marked needs_reindex=1"
-    )
-    assert second_batch == remaining, "convergence must advance to the untouched remainder, not loop on batch one"
 
 
 def test_unscoped_or_legacy_failure_receipt_cannot_project_over_keyed_generation(tmp_path: Path) -> None:
@@ -678,3 +517,53 @@ def test_recipe_mutation_removing_any_declared_computational_field_preserves_wro
     changed = replace(baseline, **{field_name: changed_value})  # type: ignore[arg-type]
 
     assert changed.recipe_hash != baseline.recipe_hash
+
+
+@pytest.mark.parametrize("damage", ["recipe", "missing-vector"])
+def test_common_derivation_replaces_physical_vector_with_existing_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    """Anti-vacuity: metadata-only publication leaves V1 or no vector, never V2."""
+    from polylogue.daemon.derivation import DerivationRegistry, converge
+    from polylogue.operations.embedding_derivation import make_embedding_frame
+    from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    root = tmp_path / "archive"
+    session_id = _write_archive_session(root, native_id="recipe-output", text=_INITIAL_TEXT)
+    index_db = root / "index.db"
+    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
+    assert embed_archive_session_sync(index_db, _FakeVectorProvider(0.01), session_id).status == "embedded"
+    conn = _open_embeddings(root / "embeddings.db")
+    try:
+        _message_id, address, old_vector = _current_ref_and_vector(conn, session_id)
+        if damage == "missing-vector":
+            conn.execute("DELETE FROM message_embeddings WHERE vector_derivation_hash = ?", (address.hex(),))
+            conn.commit()
+    finally:
+        conn.close()
+    if damage == "recipe":
+        monkeypatch.setattr("polylogue.storage.embeddings.identity.EMBEDDING_RECORD_SELECTOR", "changed-selector")
+
+    def admit(actor: str, function: Callable[[], T]) -> T:
+        with write_lease(actor, archive_root=root):
+            return function()
+
+    adapter = EmbeddingDerivationAdapter(index_db, _FakeVectorProvider(0.25), archive_root=root, reserve=admit)
+    frame = make_embedding_frame(index_db, archive_root=root, adapter=adapter, scope=(session_id,))
+    report = converge(DerivationRegistry([adapter]), frame, publisher=admit)
+    assert report.done == 1, report.outcomes
+    assert report.failed == 0
+    conn = _open_embeddings(root / "embeddings.db")
+    try:
+        _, new_address, new_vector = _current_ref_and_vector(conn, session_id)
+        assert new_address == address
+        assert new_vector != old_vector
+        import struct
+
+        assert struct.unpack("<f", new_vector[:4])[0] == 0.25
+    finally:
+        conn.close()
+    assert converge(DerivationRegistry([adapter]), frame).wrote_nothing

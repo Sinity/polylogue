@@ -14,8 +14,7 @@ without ever doing a full-archive rescan on a single tick.
 Deliberately NOT a ``DaemonConverger``/``ConvergenceStage`` (see
 ``docs/retro/2026-05-24-1498-cascade.md``: ``convergence_stages.py`` is
 already large and its own verdict is "refactor before adding a fourth
-stage"). Instead this follows the ``fts_orphan_audit``/
-``periodic_fts_identity_drift_recompute`` shape: a plain ``asyncio`` loop
+stage"). Instead this is a plain ``asyncio`` maintenance loop
 scheduled directly in ``daemon/cli.py`` alongside the other maintenance
 loops, self-contained and independently testable. Runs on
 ``daemon_write_coordinator`` like every other periodic write, so it

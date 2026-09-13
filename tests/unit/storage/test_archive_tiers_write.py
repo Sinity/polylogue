@@ -2441,10 +2441,7 @@ def test_merge_append_clears_only_existing_active_leaf(tmp_path: Path) -> None:
     assert append_changes < 80
 
 
-def test_merge_append_increments_session_counts_without_full_refresh(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_merge_append_recomputes_session_counts_from_messages(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     first = ParsedSession(
         source_name=Provider.CODEX,
@@ -2489,10 +2486,6 @@ def test_merge_append_increments_session_counts_without_full_refresh(
 
     session_id = write_parsed_session_to_archive(conn, first)
 
-    def _fail_full_refresh(_conn: sqlite3.Connection, _session_id: str) -> None:
-        raise AssertionError("merge_append should increment counts instead of rescanning messages")
-
-    monkeypatch.setattr(archive_tier_write, "_refresh_session_counts", _fail_full_refresh)
     write_parsed_session_to_archive(conn, second, merge_append=True)
 
     row = conn.execute(

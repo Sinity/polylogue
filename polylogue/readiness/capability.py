@@ -663,12 +663,11 @@ def normalize_raw_frontier_status_payload(
 
 
 def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentReadiness:
+    failure_count = int(payload.get("failure_count") or 0)
     if not bool(payload.get("config_enabled")):
         state = CapabilityReadinessState.MISSING
     elif not bool(payload.get("has_voyage_api_key")):
         state = CapabilityReadinessState.BLOCKED
-    elif int(payload.get("failure_count") or 0) > 0:
-        state = CapabilityReadinessState.DEGRADED
     elif str(payload.get("freshness_status") or "") == "stale" or int(payload.get("stale_messages") or 0) > 0:
         state = CapabilityReadinessState.STALE
     elif bool(payload.get("retrieval_ready")):
@@ -678,6 +677,9 @@ def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentRea
 
     pending_messages_exact = bool(payload.get("pending_messages_exact"))
     pending_messages = int(payload.get("pending_messages") or 0) if pending_messages_exact else None
+    caveats = (
+        (f"{failure_count} historical embedding failure(s) remain operation-health evidence",) if failure_count else ()
+    )
 
     return ComponentReadiness(
         component="embeddings",
@@ -692,9 +694,10 @@ def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentRea
             "pending_messages": pending_messages,
             "pending_messages_exact": pending_messages_exact,
             "stale_messages": int(payload.get("stale_messages") or 0),
-            "failure_count": int(payload.get("failure_count") or 0),
+            "failure_count": failure_count,
             "retrieval_ready": bool(payload.get("retrieval_ready")),
         },
+        caveats=caveats,
         repair_hint=_embedding_repair_hint(payload.get("next_action")),
     )
 

@@ -289,21 +289,6 @@ class TestFormatMetricsReadsArchiveState:
                     cgroup_memory_inactive_file_mb REAL,
                     source_paths_json TEXT
                 );
-                CREATE TABLE fts_freshness_state (
-                    surface TEXT PRIMARY KEY,
-                    state TEXT NOT NULL,
-                    checked_at TEXT NOT NULL,
-                    source_rows INTEGER NOT NULL DEFAULT 0,
-                    indexed_rows INTEGER NOT NULL DEFAULT 0,
-                    missing_rows INTEGER NOT NULL DEFAULT 0,
-                    excess_rows INTEGER NOT NULL DEFAULT 0,
-                    duplicate_rows INTEGER NOT NULL DEFAULT 0,
-                    identity_mismatch_rows INTEGER NOT NULL DEFAULT 0,
-                    verification_kind TEXT NOT NULL DEFAULT 'unknown',
-                    exact_checked_at TEXT,
-                    exact_generation INTEGER,
-                    detail TEXT
-                );
                 CREATE TABLE live_convergence_debt (
                     debt_id TEXT PRIMARY KEY,
                     stage TEXT NOT NULL,
@@ -359,16 +344,6 @@ class TestFormatMetricsReadsArchiveState:
                     ("a2", "completed", "2026-05-01T00:00:01Z", "2026-05-01T00:00:01Z", 2.5, 1, 42.0, 82.0, 21.0, 11.0),
                     ("a3", "failed", "2026-05-01T00:00:02Z", "2026-05-01T00:00:02Z", None, 0, 43.0, 83.0, 22.0, 12.0),
                     ("a4", "running", "2026-05-01T00:00:03Z", "2026-05-01T00:00:03Z", None, 0, 44.0, 84.0, 23.0, 13.0),
-                ],
-            )
-            conn.executemany(
-                """
-                INSERT INTO fts_freshness_state (
-                    surface, state, checked_at, verification_kind, exact_checked_at, exact_generation
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    ("messages_fts", "ready", "2026-05-01T00:00:04Z", "exact", "2026-05-01T00:00:04Z", 0),
                 ],
             )
             conn.executemany(
@@ -617,48 +592,6 @@ class TestFormatMetricsReadsArchiveState:
         # active triggers are exported.
         assert 'polylogue_fts_trigger_present{trigger="messages_fts_ai"} 1' in body
         assert "polylogue_fts_triggers_all_present 1" in body
-
-    def test_fts_freshness_and_memory_state(self, tmp_path: Path) -> None:
-        body = format_metrics(self._make_db(tmp_path))
-        assert 'polylogue_fts_freshness_ready{surface="messages_fts"} 1' in body
-        assert 'polylogue_live_ingest_memory_mebibytes{kind="rss_current"} 44.0' in body
-        assert 'polylogue_live_ingest_memory_mebibytes{kind="cgroup_file"} 23.0' in body
-
-    def test_archive_fts_metrics_follow_bounded_readiness_not_stale_optional_ledger(self, tmp_path: Path) -> None:
-        from polylogue.storage.fts.freshness import (
-            ensure_fts_freshness_table_sync,
-            record_fts_invariant_snapshot_sync,
-            record_fts_surface_state_sync,
-        )
-        from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-        index_db = tmp_path / "index.db"
-        initialize_archive_database(index_db, ArchiveTier.INDEX)
-        with sqlite3.connect(index_db) as conn:
-            ensure_fts_freshness_table_sync(conn)
-            record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
-            record_fts_surface_state_sync(
-                conn,
-                surface="session_work_events_fts",
-                state="stale",
-                detail="old optional-surface ledger row",
-            )
-            record_fts_surface_state_sync(
-                conn,
-                surface="threads_fts",
-                state="stale",
-                detail="old optional-surface ledger row",
-            )
-            conn.commit()
-
-        body = format_metrics(index_db)
-
-        assert "polylogue_archive_ready 1" in body
-        assert 'polylogue_fts_freshness_ready{surface="messages_fts"} 1' in body
-        assert 'polylogue_fts_freshness_ready{surface="session_work_events_fts"}' not in body
-        assert 'polylogue_fts_freshness_ready{surface="threads_fts"}' not in body
 
     def test_embedding_backlog_and_latest_catchup_state(self, tmp_path: Path) -> None:
         db = self._make_db(tmp_path)

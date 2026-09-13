@@ -5553,7 +5553,16 @@ class ArchiveStore:
             )
             is not None
         )
-        converged, debt_stages = self._derived_convergence_signal()
+        # Session-profile inspection recomputes its partition binding from
+        # sessions/messages. Retry/debt rows remain operation-health evidence,
+        # but a stale historical row cannot replace this authoritative verdict.
+        converged = (
+            status.missing_profile_row_count == 0
+            and status.stale_profile_row_count == 0
+            and status.orphan_profile_row_count == 0
+            and status.profile_row_count == status.total_sessions
+        )
+        debt_stages = self._derived_operation_debt_stages()
         return InsightReadinessReport(
             checked_at=datetime.now(UTC).isoformat(),
             converged=converged,
@@ -5686,29 +5695,23 @@ class ArchiveStore:
                 reason_totals[reason] = reason_totals.get(reason, 0) + int(row["occurrences"])
         return (degraded_count, dict(sorted(reason_totals.items())))
 
-    def _derived_convergence_signal(self) -> tuple[bool | None, tuple[str, ...]]:
-        """Report whether convergence has caught up, and which stages have not.
-
-        Derived rows have no lifecycle of their own: their readiness is exactly
-        the ordinary convergence signal. A missing ledger reports ``None``;
-        read failures remain visible to the status error boundary.
-        """
+    def _derived_operation_debt_stages(self) -> tuple[str, ...]:
+        """Return retryable operation debt without using it as readiness truth."""
         if not self.ops_db_path.exists():
-            return (None, ())
+            return ()
         conn = sqlite3.connect(f"file:{self.ops_db_path}?mode=ro", uri=True)
         try:
             present = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"
             ).fetchone()
             if present is None:
-                return (None, ())
+                return ()
             rows = conn.execute(
                 "SELECT DISTINCT stage FROM convergence_debt WHERE status IN ('failed', 'deferred') ORDER BY stage"
             ).fetchall()
         finally:
             conn.close()
-        stages = tuple(str(row[0]) for row in rows)
-        return (not stages, stages)
+        return tuple(str(row[0]) for row in rows)
 
     def _insight_readiness_entry(
         self,

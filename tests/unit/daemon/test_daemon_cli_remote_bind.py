@@ -126,7 +126,7 @@ def test_non_loopback_bind_with_allow_remote_and_no_explicit_token_auto_mints(
         patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=api_server),
         patch("polylogue.daemon.uds.DaemonAPIUnixHTTPServer", return_value=MagicMock()),
         patch(
-            "polylogue.daemon.cli._run_startup_fts_readiness",
+            "polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge",
             side_effect=RuntimeError("post-gate sentinel"),
         ),
         pytest.raises(RuntimeError, match="post-gate sentinel"),
@@ -204,7 +204,7 @@ def test_loopback_bind_passes_remote_check() -> None:
 
     with (
         patch(
-            "polylogue.daemon.cli._run_startup_fts_readiness",
+            "polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge",
             side_effect=RuntimeError("post-gate sentinel"),
         ),
         patch("polylogue.daemon.status_snapshot.configure_runtime_components", side_effect=record_runtime_components),
@@ -249,7 +249,7 @@ def test_api_disabled_skips_remote_check() -> None:
     from unittest.mock import patch
 
     with patch(
-        "polylogue.daemon.cli._run_startup_fts_readiness",
+        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge",
         side_effect=RuntimeError("post-gate sentinel"),
     ):
         with pytest.raises(RuntimeError, match="post-gate sentinel"):

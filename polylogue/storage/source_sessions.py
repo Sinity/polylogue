@@ -12,18 +12,25 @@ from polylogue.storage.introspection import table_exists as _table_exists
 logger = get_logger(__name__)
 
 
-def session_ids_for_source_path(conn: sqlite3.Connection, path: Path) -> list[str]:
-    return session_ids_for_source_paths(conn, [path]).get(path, [])
+def session_ids_for_source_path(
+    conn: sqlite3.Connection,
+    path: Path,
+    *,
+    source_db: Path | None = None,
+) -> list[str]:
+    return session_ids_for_source_paths(conn, [path], source_db=source_db).get(path, [])
 
 
 def session_ids_for_source_paths(
     conn: sqlite3.Connection,
     paths: Sequence[Path],
+    *,
+    source_db: Path | None = None,
 ) -> dict[Path, list[str]]:
     normalized_paths = tuple(dict.fromkeys(Path(path) for path in paths))
     if not normalized_paths:
         return {}
-    archive_result = _schema_archive_session_ids_for_source_paths(conn, normalized_paths)
+    archive_result = _schema_archive_session_ids_for_source_paths(conn, normalized_paths, source_db=source_db)
     if archive_result is not None:
         return archive_result
     return {path: [] for path in normalized_paths}
@@ -32,17 +39,19 @@ def session_ids_for_source_paths(
 def _schema_archive_session_ids_for_source_paths(
     conn: sqlite3.Connection,
     paths: Sequence[Path],
+    *,
+    source_db: Path | None,
 ) -> dict[Path, list[str]] | None:
     try:
         if not _table_exists(conn, "sessions"):
             return None
-        source_db = _sibling_source_db(conn)
-        if source_db is None or not source_db.exists():
+        resolved_source_db = source_db if source_db is not None else _sibling_source_db(conn)
+        if resolved_source_db is None or not resolved_source_db.exists():
             return None
         result: dict[Path, list[str]] = {path: [] for path in paths}
         paths_by_text = {str(path): path for path in paths}
         placeholders = ", ".join("?" for _ in paths)
-        source_alias = _ensure_source_tier_attached(conn, source_db)
+        source_alias = _ensure_source_tier_attached(conn, resolved_source_db)
         if not _table_exists(conn, "raw_sessions", schema=source_alias):
             return None
         rows = conn.execute(

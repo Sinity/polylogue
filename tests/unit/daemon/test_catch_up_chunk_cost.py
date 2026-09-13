@@ -25,7 +25,6 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.daemon import convergence_stages
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_default_convergence_stages
 from polylogue.sources.live import hook_paste_enrichment
@@ -118,11 +117,9 @@ class _ChunkProbe:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.statements = 0
         self.hook_events_read = 0
-        self.snapshot_calls = 0
         self.active = False
         real_connect = sqlite3.connect
         real_iter_hook_paste_events = hook_paste_enrichment._iter_hook_paste_events
-        real_snapshot = convergence_stages._record_fts_freshness_after_insights
 
         def counting_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
             conn = cast(sqlite3.Connection, real_connect(*args, **kwargs))
@@ -135,14 +132,8 @@ class _ChunkProbe:
                 self.hook_events_read += len(events)
             return events
 
-        def counting_snapshot(conn: sqlite3.Connection) -> bool:
-            if self.active:
-                self.snapshot_calls += 1
-            return real_snapshot(conn)
-
         monkeypatch.setattr(sqlite3, "connect", counting_connect)
         monkeypatch.setattr(hook_paste_enrichment, "_iter_hook_paste_events", counting_hook_paste_events)
-        monkeypatch.setattr(convergence_stages, "_record_fts_freshness_after_insights", counting_snapshot)
 
     def _count_statement(self, sql: str) -> None:
         # SQLite reports its own virtual-table maintenance (FTS5 segment
@@ -210,28 +201,26 @@ def test_chunk_convergence_cost_does_not_grow_with_archive_size(
 ) -> None:
     small_sessions, large_sessions = 2, 14
     probe = _ChunkProbe(monkeypatch)
-    results: dict[int, tuple[int, int, int, dict[str, float]]] = {}
+    results: dict[int, tuple[int, int, dict[str, float]]] = {}
     for seeded_sessions in (small_sessions, large_sessions):
         processor, corpus_root, source_db = _build(tmp_path, monkeypatch=monkeypatch, seeded_sessions=seeded_sessions)
         chunk = [_write_session(corpus_root, seeded_sessions + offset) for offset in range(chunk_files)]
         for offset in range(chunk_files):
             _seed_hook_event(source_db, seeded_sessions + offset)
-        probe.statements = probe.hook_events_read = probe.snapshot_calls = 0
+        probe.statements = probe.hook_events_read = 0
         metrics = _converge_chunk(processor, probe, chunk, whole_archive=False)
         assert metrics.succeeded_file_count == chunk_files
         results[seeded_sessions] = (
             probe.statements,
             probe.hook_events_read,
-            probe.snapshot_calls,
             dict(metrics.stage_timings_s),
         )
 
-    small_statements, small_events, small_snapshots, small_stages = results[small_sessions]
-    large_statements, large_events, large_snapshots, large_stages = results[large_sessions]
-    deferred = {"raw_authority_verdict_cache", "claude_workflow", "delegation_work_evidence", "fts_readiness"}
+    small_statements, small_events, small_stages = results[small_sessions]
+    large_statements, large_events, large_stages = results[large_sessions]
+    deferred = {"raw_authority_verdict_cache", "claude_workflow", "delegation_work_evidence"}
 
     assert small_events == large_events == chunk_files
-    assert small_snapshots == large_snapshots == 0
     assert not deferred & set(small_stages) and not deferred & set(large_stages)
     assert "hook_paste_enrichment" in large_stages
     # A chunk's statements are a function of its own files; the slack covers
@@ -246,9 +235,8 @@ def test_final_catch_up_chunk_runs_the_whole_archive_stages(tmp_path: Path, monk
     chunk = [_write_session(corpus_root, 2)]
     _seed_hook_event(source_db, 2)
 
-    probe.statements = probe.hook_events_read = probe.snapshot_calls = 0
+    probe.statements = probe.hook_events_read = 0
     metrics = _converge_chunk(processor, probe, chunk, whole_archive=True)
 
     assert metrics.succeeded_file_count == 1
-    assert probe.snapshot_calls == 1
-    assert {"fts_readiness", "raw_authority_verdict_cache"} <= set(metrics.stage_timings_s)
+    assert "raw_authority_verdict_cache" in metrics.stage_timings_s

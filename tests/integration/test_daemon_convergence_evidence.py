@@ -1,7 +1,7 @@
 """Production convergence evidence for the daemon (#1245, slice B of #845).
 
-Drives a real-shape synthetic corpus through ``LiveBatchProcessor`` +
-``DaemonConverger`` (the same primitives ``polylogued run`` wires up at
+Drives a real-shape synthetic corpus through ``LiveBatchProcessor`` and the
+common FTS derivation (the same primitives ``polylogued run`` wires up at
 :func:`polylogue.daemon.cli.run_daemon_services`) and asserts the
 convergence shape using before/after snapshots from
 ``polylogue.operations.daemon_workload_probe.probe`` and its arithmetic
@@ -18,7 +18,6 @@ but never landed as a final acceptance test. The shape proved here:
    - ``sessions`` and ``messages`` rows grew by the expected
      deltas (no silently dropped sessions);
    - zero ``failed`` / ``running`` live-ingest attempts remain;
-   - zero ``live_convergence_debt`` rows remain;
    - all six FTS sync triggers are present.
 
 3. The ``compare()`` diff between the two probe snapshots is the
@@ -43,8 +42,8 @@ from typing import Any, cast
 import pytest
 
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import make_default_convergence_stages
 from polylogue.operations.daemon_workload_probe import REPORT_VERSION, compare, probe
+from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
@@ -146,7 +145,7 @@ def test_daemon_convergence_evidence_full_archive_state(
 ) -> None:
     """End-to-end convergence evidence against a real-shape Claude Code corpus.
 
-    Drives ``LiveBatchProcessor`` + ``DaemonConverger`` (the same primitives
+    Drives ``LiveBatchProcessor`` and the common FTS derivation (the same primitives
     ``polylogued run`` wires up at
     :func:`polylogue.daemon.cli.run_daemon_services`) over N sessions and
     asserts the resulting archive state via ``daemon_workload_probe``.
@@ -181,7 +180,7 @@ def test_daemon_convergence_evidence_full_archive_state(
     assert before["fts_trigger_state"]["all_present"] is True, before["fts_trigger_state"]
 
     # ── Drive convergence: same primitives as polylogued run ─────────
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
+    converger = DaemonConverger(())
     polylogue = _MinimalPolylogue(tmp_path, db_path)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
@@ -200,6 +199,16 @@ def test_daemon_convergence_evidence_full_archive_state(
     assert metrics.succeeded_file_count == len(files), (
         f"convergence evidence: expected {len(files)} successes, got {metrics.succeeded_file_count}"
     )
+
+    fts_converger = DaemonConverger(
+        (),
+        derivations=(make_fts_derivation(db_path, archive_root=tmp_path),),
+    )
+    fts_report = fts_converger.converge_derivations(
+        make_fts_frame(db_path, archive_root=tmp_path),
+        resume=False,
+    )
+    assert fts_report.failed == fts_report.pending == 0, fts_report
 
     # ── AFTER snapshot ──────────────────────────────────────────────
     after = probe(db_path, exact_table_counts=True)
@@ -247,10 +256,6 @@ def test_daemon_convergence_evidence_full_archive_state(
     )
     assert attempt_counts["failed"] == 0, f"convergence left {attempt_counts['failed']} failed live_ingest_attempt rows"
 
-    # ── Zero convergence debt ───────────────────────────────────────
-    debt = after["convergence_debt"]
-    assert debt["failed_count"] == 0, f"convergence left {debt['failed_count']} unresolved debt rows: {debt}"
-
     # ── FTS sync triggers intact ────────────────────────────────────
     fts_state = after["fts_trigger_state"]
     assert fts_state["all_present"] is True, f"FTS trigger drift after convergence: {fts_state}"
@@ -261,18 +266,6 @@ def test_daemon_convergence_evidence_full_archive_state(
     # consistent with the FTS triggers throughout convergence.
     with sqlite3.connect(db_path) as conn:
         (fts_rows,) = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()
-        fts_state = dict(conn.execute("SELECT surface, state FROM fts_freshness_state").fetchall())
     assert fts_rows >= expected_messages, (
         f"FTS index under-populated: {fts_rows} rows vs {expected_messages} expected messages"
-    )
-    # FTS coverage is an unconditional convergence invariant, and the durable
-    # marker has to agree with the rows. Live ingest defers the write-time insert
-    # to preserve writer availability and marks `messages_fts` stale on the index
-    # connection inside the same transaction as the session write -- so a crash
-    # before convergence leaves a durable "index is behind" record in the same
-    # database as the data, and nothing can mistake it for a converged archive.
-    # A settled pass must end `ready`; a stale marker here means convergence
-    # reported success without clearing the staleness it was there to resolve.
-    assert fts_state.get("messages_fts") == "ready", (
-        f"messages_fts surface not converged after a settled ingest pass: {fts_state!r}"
     )

@@ -5,9 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 
-from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 from polylogue.storage.fts.fts_lifecycle import (
-    fts_invariant_snapshot_sync,
     rebuild_fts_index_sync,
     repair_fts_index_sync,
 )
@@ -27,7 +25,6 @@ def repair_fts_for_sessions(session_ids: Sequence[str], conn: sqlite3.Connection
     """Repair FTS rows for specific sessions from persisted blocks."""
     with connection_context(conn) as db_conn:
         repair_fts_index_sync(db_conn, session_ids)
-        record_fts_invariant_snapshot_sync(db_conn, fts_invariant_snapshot_sync(db_conn))
         db_conn.commit()
     if session_ids:
         invalidate_search_cache()

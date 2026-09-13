@@ -37,3 +37,16 @@ def test_pinned_status_scalar_preserves_operation_cancellation_handler() -> None
     finally:
         conn.set_progress_handler(None, 0)
         conn.close()
+
+
+def test_timed_status_scalar_preserves_operation_cancellation_handler() -> None:
+    """Anti-vacuity: a local timeout cannot disable the operation's cancellation."""
+    conn = sqlite3.connect(":memory:")
+    conn.set_progress_handler(lambda: 1, 1)
+    try:
+        assert _scalar_int_with_timeout(conn, "SELECT 1", timeout_ms=1_000) is None
+        with pytest.raises(sqlite3.OperationalError, match="interrupted"):
+            conn.execute("SELECT 1").fetchone()
+    finally:
+        conn.set_progress_handler(None, 0)
+        conn.close()

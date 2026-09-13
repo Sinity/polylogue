@@ -3201,14 +3201,6 @@ def apply_raw_revision_replay(
         )
         if not bulk_build and not defer_fts:
             repair_message_fts_index_sync(store._conn, [session_id], record_exact_snapshot=False)
-        if defer_fts:
-            from polylogue.storage.fts.freshness import record_fts_surface_stale_preserving_counts_sync
-
-            record_fts_surface_stale_preserving_counts_sync(
-                store._conn,
-                surface="messages_fts",
-                detail="live authoritative replay deferred targeted session FTS repair",
-            )
         assert_session_fts_exact_sync(
             store._conn,
             session_id,
@@ -3671,14 +3663,6 @@ def apply_raw_membership_classification(
                 session_id = result.session_id
                 if not bulk_build and not defer_fts:
                     repair_message_fts_index_sync(store._conn, [session_id], record_exact_snapshot=False)
-                if defer_fts:
-                    from polylogue.storage.fts.freshness import record_fts_surface_stale_preserving_counts_sync
-
-                    record_fts_surface_stale_preserving_counts_sync(
-                        store._conn,
-                        surface="messages_fts",
-                        detail="live membership replay deferred targeted session FTS repair",
-                    )
                 assert_session_fts_exact_sync(
                     store._conn,
                     session_id,

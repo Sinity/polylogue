@@ -49,10 +49,8 @@ varies on a known-bounded dimension):
 - ``polylogue_fts_triggers_all_present`` (gauge, 0/1)
 - ``polylogue_fts_freshness_ready`` (gauge, 0/1) — labels: surface
 - ``polylogue_fts_drift_rows`` (gauge) — labels: surface, kind
-  (missing/excess/duplicate/identity_mismatch). Drift MAGNITUDE, not just the
-  boolean ready/stale of ``polylogue_fts_freshness_ready`` above; read O(1)
-  from the ``fts_freshness_state`` ledger, no scan on scrape
-  (polylogue-1xc.12).
+  (missing/excess/duplicate/identity_mismatch), read from the current
+  authoritative FTS membership inspection.
 - ``polylogue_live_ingest_memory_mebibytes`` (gauge) — labels: kind
 - ``polylogue_stale_cursor_writes_total`` (counter)
 - ``polylogue_embedding_sessions`` (gauge) — labels: state
@@ -444,60 +442,35 @@ def _fts_trigger_presence(conn: sqlite3.Connection) -> dict[str, bool]:
     return {name: (name in present) for name in expected}
 
 
-def _fts_freshness_ready(conn: sqlite3.Connection) -> list[tuple[str, int]]:
+def _fts_surface_metrics(
+    conn: sqlite3.Connection,
+) -> tuple[list[tuple[str, int]], list[tuple[str, str, int]]]:
+    """Project readiness and drift from one authoritative domain inspection."""
     from polylogue.daemon.fts_status import fts_readiness_info
 
     database_row = conn.execute("PRAGMA database_list").fetchone()
     if database_row is None:
-        return []
-    readiness = fts_readiness_info(Path(str(database_row[2])), exact=False)
+        return [], []
+    readiness = fts_readiness_info(Path(str(database_row[2])))
     surfaces = readiness.get("surfaces")
     if not isinstance(surfaces, dict):
-        return []
-    samples: list[tuple[str, int]] = []
+        return [], []
+    ready_samples: list[tuple[str, int]] = []
+    drift_samples: list[tuple[str, str, int]] = []
     for surface, payload in sorted(surfaces.items()):
-        ready = bool(payload.get("ready")) if isinstance(payload, dict) else False
-        samples.append((str(surface), 1 if ready else 0))
-    return samples
-
-
-# polylogue-1xc.12: drift MAGNITUDE gauges, not just the boolean
-# polylogue_fts_freshness_ready above. Reads straight from the
-# fts_freshness_state ledger row (O(1), no COUNT(*) on scrape) written by
-# the same exact-invariant/repair paths that already populate that table --
-# this function never recomputes anything itself.
-_FTS_DRIFT_KINDS: tuple[str, ...] = ("missing", "excess", "duplicate", "identity_mismatch")
-
-
-def _fts_drift_magnitude(conn: sqlite3.Connection) -> list[tuple[str, str, int]]:
-    if not _table_exists(conn, "fts_freshness_state"):
-        return []
-    columns = _columns(conn, "fts_freshness_state")
-    kind_columns = {
-        "missing": "missing_rows",
-        "excess": "excess_rows",
-        "duplicate": "duplicate_rows",
-        "identity_mismatch": "identity_mismatch_rows",
-    }
-    available = {kind: column for kind, column in kind_columns.items() if column in columns}
-    if not available:
-        return []
-    selected = ["surface", *available.values()]
-    try:
-        rows = conn.execute(f"SELECT {', '.join(selected)} FROM fts_freshness_state ORDER BY surface").fetchall()
-    except sqlite3.Error as exc:
-        logger.warning("metrics: fts drift magnitude query failed: %s", exc, exc_info=True)
-        return []
-    samples: list[tuple[str, str, int]] = []
-    for row in rows:
-        surface = str(row[0])
-        for index, kind in enumerate(available, start=1):
-            try:
-                value = int(row[index] or 0)
-            except (TypeError, ValueError):
-                value = 0
-            samples.append((surface, kind, value))
-    return samples
+        if not isinstance(payload, dict):
+            continue
+        ready_samples.append((str(surface), int(bool(payload.get("ready")))))
+        for kind, column in (
+            ("missing", "missing_rows"),
+            ("excess", "excess_rows"),
+            ("duplicate", "duplicate_rows"),
+            ("identity_mismatch", "identity_mismatch_rows"),
+        ):
+            value = payload.get(column)
+            if isinstance(value, int) and not isinstance(value, bool):
+                drift_samples.append((str(surface), kind, value))
+    return ready_samples, drift_samples
 
 
 def _latest_ingest_memory(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> list[tuple[str, float]]:
@@ -1299,22 +1272,21 @@ def format_metrics(
             samples=[(None, 1 if all(triggers.values()) else 0)],
         )
 
-        freshness = _fts_freshness_ready(conn)
+        freshness, drift = _fts_surface_metrics(conn)
         _emit_metric(
             lines,
             name="polylogue_fts_freshness_ready",
-            help_text="1 when the bounded FTS readiness contract marks a surface ready.",
+            help_text="1 when authoritative FTS membership inspection marks a surface ready.",
             metric_type="gauge",
             samples=[({"surface": surface}, ready) for surface, ready in freshness],
         )
 
-        drift = _fts_drift_magnitude(conn)
         _emit_metric(
             lines,
             name="polylogue_fts_drift_rows",
             help_text=(
                 "FTS drift magnitude by surface and kind (missing/excess/duplicate/"
-                "identity_mismatch), read O(1) from the fts_freshness_state ledger."
+                "identity_mismatch), inspected from canonical output membership."
             ),
             metric_type="gauge",
             samples=[({"surface": surface, "kind": kind}, value) for surface, kind, value in drift],

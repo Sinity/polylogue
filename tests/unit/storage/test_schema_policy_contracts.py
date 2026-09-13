@@ -75,20 +75,6 @@ _CANONICAL_FTS_TRIGGERS = frozenset(
 )
 
 
-def test_fts_freshness_state_has_one_production_ddl_owner() -> None:
-    """The index tier owns the freshness ledger shape; lifecycle code reuses it."""
-
-    storage_root = Path(__file__).parents[3] / "polylogue" / "storage"
-    create_sites: list[str] = []
-    needle = "CREATE TABLE IF NOT EXISTS fts_freshness_state"
-    for path in storage_root.rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        if needle in text:
-            create_sites.append(str(path.relative_to(storage_root)))
-
-    assert create_sites == ["sqlite/archive_tiers/index.py"]
-
-
 # ---------------------------------------------------------------------------
 # § Schema Versioning Model — fresh-first; mismatch is rejected.
 # ---------------------------------------------------------------------------
@@ -134,13 +120,11 @@ def test_fresh_database_initialises_to_current_version(tmp_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     _ensure_schema(conn)
     version = conn.execute("PRAGMA user_version").fetchone()[0]
-    freshness_table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fts_freshness_state'"
-    ).fetchone()
+    messages_fts = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
     block_indexes = {row[1] for row in conn.execute("PRAGMA index_list(blocks)")}
     conn.close()
     assert version == SCHEMA_VERSION
-    assert freshness_table is not None
+    assert messages_fts is not None
     assert "idx_blocks_search_text_populated" in block_indexes
 
 

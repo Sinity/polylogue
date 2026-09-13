@@ -118,19 +118,17 @@ class _DerivationAdmission:
 
     def __call__(self, domain: str, publish: Callable[[], bool]) -> bool:
         if threading.get_ident() == self._loop_thread_id:
-            raise RuntimeError("session derivation publish was invoked on the daemon event loop thread")
+            raise RuntimeError("derivation publish was invoked on the daemon event loop thread")
         # The bridge owns the coordinator until the transaction really returns;
         # a caller-side timeout must not admit a second archive writer.
         return self._bridge.run_sync_with_timeout(f"derivation.{domain}", None, publish)
 
 
-class SessionProfileConvergenceOwner:
-    """Run the registered session domain on daemon-shared lease-free compute.
+class DerivationConvergenceOwner:
+    """Run domain inspection and computation on the daemon-shared executor.
 
-    Composition supplies the already-constructed converger and its one
-    session-profile adapter.  This owner deliberately does not construct a
-    pool or a writer: it borrows the process adapter and bridges only each
-    short publication back to the daemon's coordinator.
+    Only per-partition publication enters the writer. The owner serializes
+    its disposable cursor and settles active work before cancellation returns.
     """
 
     def __init__(
@@ -155,6 +153,7 @@ class SessionProfileConvergenceOwner:
         budget: Budget | int | None = None,
         deadline_s: float | None = None,
         resume: bool = True,
+        domains: Sequence[str] | None = None,
     ) -> DerivationReport:
         async with self._converge_lock:
             return await self._converge_serialized(
@@ -162,7 +161,61 @@ class SessionProfileConvergenceOwner:
                 budget=budget,
                 deadline_s=deadline_s,
                 resume=resume,
+                domains=domains,
             )
+
+    async def _converge_serialized(
+        self,
+        frame: DerivationFrame,
+        *,
+        budget: Budget | int | None = None,
+        deadline_s: float | None = None,
+        resume: bool = True,
+        domains: Sequence[str] | None = None,
+    ) -> DerivationReport:
+        from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+        if daemon_write_lease_active():
+            raise RuntimeError("derivation convergence must start after the daemon writer lease is released")
+        loop = asyncio.get_running_loop()
+        admission = _DerivationAdmission(self._write_bridge, loop_thread_id=threading.get_ident())
+        # A targeted ingest scope is not a continuation of archive keyset
+        # paging: reusing the archive cursor could skip an earlier changed id.
+        # Only no-hint archive sweeps retain their own cursor across passes.
+        pass_resume = resume if frame.scope is None else False
+        submitted = self._compute_adapter.submit(
+            partial(
+                self._converger.converge_derivations,
+                frame,
+                budget=budget,
+                deadline_s=deadline_s,
+                domains=domains,
+                resume=pass_resume,
+                publisher=admission,
+            ),
+            admission_class="incremental-background",
+        )
+        operation = asyncio.wrap_future(submitted.future, loop=loop)
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            # A caller may stop awaiting this sweep, but cannot let a compute
+            # worker that already owns a bridged publication outlive owner
+            # shutdown.  Settle it before propagating cancellation so the
+            # composition layer can drain the coordinator safely.
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(operation)
+            raise
+
+
+class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
+    """Run the registered session domain on daemon-shared lease-free compute.
+
+    Composition supplies the already-constructed converger and its one
+    session-profile adapter.  This owner deliberately does not construct a
+    pool or a writer: it borrows the process adapter and bridges only each
+    short publication back to the daemon's coordinator.
+    """
 
     async def converge_selected(
         self,
@@ -197,48 +250,6 @@ class SessionProfileConvergenceOwner:
                 expected_recipe=expected_recipe,
                 stop_requested=stop_requested,
             )
-
-    async def _converge_serialized(
-        self,
-        frame: DerivationFrame,
-        *,
-        budget: Budget | int | None = None,
-        deadline_s: float | None = None,
-        resume: bool = True,
-    ) -> DerivationReport:
-        from polylogue.daemon.write_coordinator import daemon_write_lease_active
-
-        if daemon_write_lease_active():
-            raise RuntimeError("session profile convergence must start after the daemon writer lease is released")
-        loop = asyncio.get_running_loop()
-        admission = _DerivationAdmission(self._write_bridge, loop_thread_id=threading.get_ident())
-        # A targeted ingest scope is not a continuation of archive keyset
-        # paging: reusing the archive cursor could skip an earlier changed id.
-        # Only no-hint archive sweeps retain their own cursor across passes.
-        pass_resume = resume if frame.scope is None else False
-        submitted = self._compute_adapter.submit(
-            partial(
-                self._converger.converge_derivations,
-                frame,
-                budget=budget,
-                deadline_s=deadline_s,
-                domains=("session_profile",),
-                resume=pass_resume,
-                publisher=admission,
-            ),
-            admission_class="incremental-background",
-        )
-        operation = asyncio.wrap_future(submitted.future, loop=loop)
-        try:
-            return await asyncio.shield(operation)
-        except asyncio.CancelledError:
-            # A caller may stop awaiting this sweep, but cannot let a compute
-            # worker that already owns a bridged publication outlive owner
-            # shutdown.  Settle it before propagating cancellation so the
-            # composition layer can drain the coordinator safely.
-            with contextlib.suppress(BaseException):
-                await asyncio.shield(operation)
-            raise
 
     async def _converge_selected_serialized(
         self,

@@ -8,7 +8,7 @@ script gated four distinct claims behind four distinct signals:
 
 * per-tier schema-version match => the archive is **openable**, but that is
   *not* the same claim as being converged.
-* zero (or fully classified) raw-materialization debt => **converged**.
+* authoritative domain inspections => **converged**.
 * FTS freshness => **search-ready**.
 * absence of concurrent heavy archive activity => **perf-measurable**. The
   script's ``live_performance_proof_blocked`` flag grepped the host process
@@ -36,14 +36,27 @@ class ClaimGuardEntry:
     """One claim state: may you honestly say X about this archive right now?"""
 
     claim: str
-    value: bool
+    value: bool | None
     reason: str
     signal: str
+
+    @property
+    def determinate(self) -> bool:
+        """Whether inspection actually reached a verdict for this claim.
+
+        ``value is None`` is the third state: not "false", but "not proven
+        either way". It exists because collapsing an unfinished inspection
+        into ``False`` publishes a claim about the archive that was never
+        measured. It mirrors the terminal-outcome rule that a named gap is
+        never reported as an ordinary negative result.
+        """
+        return self.value is not None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "claim": self.claim,
             "value": self.value,
+            "determinate": self.determinate,
             "reason": self.reason,
             "signal": self.signal,
         }
@@ -67,35 +80,47 @@ class ClaimGuard:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DerivedDomainReadiness:
+    """One authoritative derived-domain verdict used to certify convergence.
+
+    This is deliberately a small status projection, rather than a new
+    freshness/debt store.  Its producer has already inspected the domain's
+    own output relation and inputs; the claim guard only combines those
+    verdicts.  Operation attempts and convergence-debt rows remain useful
+    health evidence, but cannot certify or withhold this public claim.
+    """
+
+    domain: str
+    ready: bool
+    summary: str
+    determinate: bool = True
+    """False when the domain's inspection did not finish inside its budget.
+
+    An indeterminate domain cannot certify convergence and cannot refute it
+    either, so it withholds the claim instead of negating it.
+    """
+
+
 def derive_claim_guard(
     *,
     archive_schema_ready: bool,
     schema_mismatches: Sequence[str] = (),
     missing_tiers: Sequence[str] = (),
-    raw_materialization_ready: bool,
-    raw_materialization_summary: str,
-    raw_frontier_integrity_ready: bool,
-    raw_frontier_integrity_summary: str,
+    derived_domains: Sequence[DerivedDomainReadiness],
     search_ready: bool,
     search_summary: str,
     active_writer: bool,
-    convergence_debt_available: bool,
     active_writer_summary: str = "",
-    convergence_debt_pending: bool = False,
-    convergence_debt_summary: str = "no pending convergence debt",
 ) -> ClaimGuard:
     """Derive the claim-guard block from already-computed readiness signals.
 
     Every argument here is a primitive the caller already derived from a
-    canonical readiness surface (``ArchiveStorageStatus.archive_schema_ready``,
-    :func:`polylogue.storage.archive_readiness.raw_materialization_ready`, the
-    raw-frontier-integrity projection
-    (:func:`polylogue.storage.raw_retention.raw_frontier_integrity_snapshot`,
-    polylogue-yla8.7 — accepted append head chains and ingest cursors proven
-    consistent), the ``search``/FTS component, and the
-    live-ingest/rebuild-attempt signal) — this function only classifies, it
-    never queries storage itself, so it is cheap to call from both the
-    daemon and direct-fallback status paths.
+    canonical readiness surface (``ArchiveStorageStatus.archive_schema_ready``
+    and domain-owned raw, frontier, profile, FTS, and enabled-embedding
+    inspections) plus the live-ingest/rebuild-attempt signal.  This function
+    only classifies, so both daemon and direct status can reuse the same
+    already-inspected domain facts without opening another connection.
     """
     if archive_schema_ready:
         openable_reason = "all archive tiers present with matching schema version"
@@ -120,45 +145,30 @@ def derive_claim_guard(
             reason=f"not openable: {openable_reason}",
             signal="archive_storage.archive_schema_ready and raw_materialization_readiness",
         )
-    elif not raw_materialization_ready:
+    elif refuted := next((domain for domain in derived_domains if domain.determinate and not domain.ready), None):
+        # Proven not converged: a domain inspected its own output relation and
+        # found it wanting. This is the only case that may say False.
         converged = ClaimGuardEntry(
             claim="converged",
             value=False,
-            reason=raw_materialization_summary,
-            signal="raw_materialization_readiness (debt zero or fully classified)",
+            reason=refuted.summary,
+            signal=f"derived_domain_readiness.{refuted.domain}",
         )
-    elif not convergence_debt_available:
+    elif unmeasured := next((domain for domain in derived_domains if not domain.determinate), None):
+        # Inspection incomplete: withhold the claim and name the gap rather
+        # than publishing a negative verdict nothing measured.
         converged = ClaimGuardEntry(
             claim="converged",
-            value=False,
-            reason=convergence_debt_summary or "convergence debt unavailable; convergence state is unknown",
-            signal="convergence_debt_summary.available (unknown debt blocks convergence)",
-        )
-    elif convergence_debt_pending:
-        converged = ClaimGuardEntry(
-            claim="converged",
-            value=False,
-            reason=convergence_debt_summary,
-            signal="convergence_debt_summary (pending failed or deferred debt)",
-        )
-    elif not raw_frontier_integrity_ready:
-        # polylogue-yla8.7: raw materialization can look fully converged while
-        # an accepted append head references a deleted predecessor or an
-        # ingest cursor sits ahead of accepted material — yla8.6 found this
-        # only through manual SQL. Converged must not be claimable while that
-        # authority gap is open or unproven.
-        converged = ClaimGuardEntry(
-            claim="converged",
-            value=False,
-            reason=raw_frontier_integrity_summary,
-            signal="raw_frontier_integrity (accepted append head chains and ingest cursors proven consistent)",
+            value=None,
+            reason=f"inspection incomplete for {unmeasured.domain}: {unmeasured.summary}",
+            signal=f"derived_domain_readiness.{unmeasured.domain}",
         )
     else:
         converged = ClaimGuardEntry(
             claim="converged",
             value=True,
-            reason=raw_materialization_summary,
-            signal="raw_materialization_readiness (debt zero or fully classified)",
+            reason="ready",
+            signal="derived_domain_readiness (all required domains inspected ready)",
         )
 
     search = ClaimGuardEntry(
@@ -183,4 +193,4 @@ def derive_claim_guard(
     return ClaimGuard(openable=openable, converged=converged, search_ready=search, perf_measurable=perf)
 
 
-__all__ = ["ClaimGuard", "ClaimGuardEntry", "derive_claim_guard"]
+__all__ = ["ClaimGuard", "ClaimGuardEntry", "DerivedDomainReadiness", "derive_claim_guard"]

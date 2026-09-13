@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
 import aiosqlite
 
@@ -24,16 +24,12 @@ from polylogue.storage.fts.sql import (
     TRIGRAM_REBUILD_DELETE_ALL_SQL,
     IndexedMessage,
     chunked,
-    delete_session_identity_rows_sql,
-    delete_session_rows_sql,
     excess_message_rows_sql,
     insert_all_message_identity_rows_sql,
     insert_all_message_rows_sql,
     insert_all_trigram_rows_sql,
     insert_missing_message_rows_range_sql,
     insert_missing_message_rows_sql,
-    insert_session_identity_rows_sql,
-    insert_session_rows_sql,
     message_identity_mismatch_sql,
     repair_all_message_identity_rows_sql,
     repair_message_identity_rows_range_sql,
@@ -42,6 +38,10 @@ from polylogue.storage.fts.sql import (
 )
 from polylogue.storage.introspection import table_exists as _table_exists_sync
 from polylogue.storage.introspection import table_exists_async as _table_exists_async
+from polylogue.storage.sqlite.connection_profile import (
+    BOUNDED_REPAIR_CACHE_SIZE_KIB,
+    BOUNDED_REPAIR_MMAP_SIZE_BYTES,
+)
 
 _chunked = chunked
 IndexedMessageLike: TypeAlias = tuple[str, str, str | None] | IndexedMessage
@@ -192,12 +192,16 @@ _SESSION_WORK_EVENT_FTS_TRIGGER_DDL = SESSION_WORK_EVENT_FTS_TRIGGER_DDL
 _FTS_TRIGGER_DDL = FTS_TRIGGER_DDL
 
 
+def configure_bounded_fts_repair_connection(conn: sqlite3.Connection) -> None:
+    """Apply the bounded profile retained for explicit bulk FTS maintenance."""
+    conn.execute("PRAGMA temp_store = FILE")
+    conn.execute(f"PRAGMA cache_size = -{BOUNDED_REPAIR_CACHE_SIZE_KIB}")
+    conn.execute(f"PRAGMA main.mmap_size = {BOUNDED_REPAIR_MMAP_SIZE_BYTES}")
+
+
 def suspend_fts_triggers_sync(conn: sqlite3.Connection, *, mark_stale: bool = True) -> None:
     """Drop FTS triggers for bulk sync operations."""
-    if mark_stale:
-        from polylogue.storage.fts.freshness import mark_all_fts_stale_sync
-
-        mark_all_fts_stale_sync(conn, detail="FTS triggers suspended for bulk write")
+    del mark_stale
     for name in _FTS_TRIGGER_NAMES:
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
 
@@ -329,13 +333,6 @@ def rebuild_fts_index_sync(
         rebuild_messages_fts_content_sync(conn)
         rebuild_messages_fts_identity_sync(conn)
     _rebuild_session_work_events_fts_sync(conn)
-    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-
-    record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
-
-    from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
-
-    sample_fts_drift_to_ops_sync(conn)
 
 
 def rebuild_command_trigram_index_sync(conn: sqlite3.Connection) -> None:
@@ -374,9 +371,6 @@ def reset_message_fts_index_sync(conn: sqlite3.Connection) -> None:
         for ddl in _BLOCKS_FTS_TRIGGER_DDL:
             conn.execute(ddl)
         insert_missing_message_rows_batched_sync(conn)
-    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-
-    record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
 
 
 def _blocks_content_hash_available_sync(conn: sqlite3.Connection) -> bool:
@@ -498,13 +492,6 @@ def rebuild_session_insight_fts_sync(conn: sqlite3.Connection) -> None:
     """Rebuild only the durable session-insight FTS projections."""
     restore_fts_triggers_sync(conn)
     _rebuild_session_work_events_fts_sync(conn)
-    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-
-    record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
-
-    from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
-
-    sample_fts_drift_to_ops_sync(conn)
 
 
 def _rebuild_session_work_events_fts_sync(conn: sqlite3.Connection) -> None:
@@ -562,45 +549,19 @@ def repair_message_fts_index_sync(
     """
     if not session_ids:
         return
-    for chunk in chunked(list(session_ids), size=500):
-        params = tuple(chunk)
-        # FTS5 cannot efficiently plan ``rowid IN (SELECT ...)``: even when
-        # the subquery is session-indexed, SQLite scans the entire virtual
-        # table to evaluate the delete.  First use the ordinary docsize shadow
-        # table to identify rows that are actually indexed (preserving the
-        # malformed-index guard in ``delete_session_rows_sql``), then issue
-        # direct rowid deletes that FTS5 can seek.
-        rowids = conn.execute(
-            f"""
-            SELECT b.rowid
-            FROM blocks AS b INDEXED BY idx_blocks_session_position
-            JOIN messages_fts_docsize AS d ON d.id = b.rowid
-            WHERE b.session_id IN ({", ".join("?" for _ in chunk)})
-            """,
-            params,
-        ).fetchall()
-        if rowids:
-            conn.executemany("DELETE FROM messages_fts WHERE rowid = ?", rowids)
-        conn.execute(delete_session_identity_rows_sql(len(chunk)), params)
-        conn.execute(insert_session_rows_sql(len(chunk)), params)
-        conn.execute(insert_session_identity_rows_sql(len(chunk)), params)
-        # A deferred full-replace deletes a session's blocks_command_trigram
-        # postings at write time (using the old block text) but skips the
-        # matching reinsert, so this repair is the only catch-up: reissue the
-        # delete (a no-op unless something re-populated it) then repopulate
-        # from the current blocks table. Trigram SQL is session-scoped, not
-        # chunked like the calls above.
-        for session_id in chunk:
-            conn.execute(trigram_delete_session_rows_sql(), (session_id,))
-            conn.execute(trigram_insert_session_rows_sql(), (session_id,))
-    del record_exact_snapshot
-    from polylogue.storage.fts.freshness import record_fts_surface_stale_preserving_counts_sync
+    from polylogue.storage.fts.derivation import replace_fts_partition_sync
 
-    record_fts_surface_stale_preserving_counts_sync(
-        conn,
-        surface="messages_fts",
-        detail="targeted message FTS repair requires exact invariant verification",
-    )
+    for session_id in dict.fromkeys(session_ids):
+        replace_fts_partition_sync(conn, session_id)
+    # A deferred full-replace deletes a session's blocks_command_trigram
+    # postings at write time (using the old block text) but skips the matching
+    # reinsert, so this repair is the only catch-up. The message FTS partition
+    # above is owned by the derivation adapter; trigram remains a separate
+    # canonical write projection.
+    for session_id in dict.fromkeys(session_ids):
+        conn.execute(trigram_delete_session_rows_sql(), (session_id,))
+        conn.execute(trigram_insert_session_rows_sql(), (session_id,))
+    del record_exact_snapshot
 
 
 def repair_fts_index_sync(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
@@ -620,19 +581,10 @@ async def repair_fts_index_async(
     await ensure_fts_index_async(conn)
     if not session_ids:
         return
-    total = len(session_ids)
-    processed = 0
-    for chunk in chunked(list(session_ids), size=500):
-        params = tuple(chunk)
-        await conn.execute(delete_session_rows_sql(len(chunk)), params)
-        await conn.execute(delete_session_identity_rows_sql(len(chunk)), params)
-        await conn.execute(insert_session_rows_sql(len(chunk)), params)
-        await conn.execute(insert_session_identity_rows_sql(len(chunk)), params)
-        processed += len(chunk)
-        if progress_callback is not None:
-            desc = progress_desc(processed, total) if progress_desc is not None else None
-            progress_callback(len(chunk), desc)
-    await _record_message_fts_exact_state_async(conn)
+    await conn._execute(repair_message_fts_index_sync, conn._conn, tuple(session_ids))  # type: ignore[no-untyped-call]
+    if progress_callback is not None:
+        total = len(session_ids)
+        progress_callback(total, progress_desc(total, total) if progress_desc is not None else None)
 
 
 def replace_fts_rows_for_messages_sync(
@@ -645,75 +597,7 @@ def replace_fts_rows_for_messages_sync(
         return
 
     session_ids = sorted({_indexed_message_parts(message)[1] for message in messages})
-    for chunk in chunked(session_ids, size=500):
-        params = tuple(chunk)
-        conn.execute(delete_session_rows_sql(len(chunk)), params)
-        conn.execute(delete_session_identity_rows_sql(len(chunk)), params)
-        conn.execute(insert_session_rows_sql(len(chunk)), params)
-        conn.execute(insert_session_identity_rows_sql(len(chunk)), params)
-    from polylogue.storage.fts.freshness import record_fts_surface_stale_preserving_counts_sync
-
-    record_fts_surface_stale_preserving_counts_sync(
-        conn,
-        surface="messages_fts",
-        detail="scoped message replacement requires exact invariant verification",
-    )
-
-
-async def _record_message_fts_exact_state_async(conn: aiosqlite.Connection) -> None:
-    """Leave async targeted rewrites stale for the sync exact publisher."""
-    from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_async
-
-    source_exists = await _table_exists_async(conn, "blocks")
-    exists = await _table_exists_async(conn, "messages_fts")
-    source_rows = 0
-    indexed_rows = 0
-    missing_rows = 0
-    excess_rows = 0
-    if source_exists:
-        source_rows = _row_int(
-            await (await conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''")).fetchone(),
-            0,
-        )
-    if exists:
-        indexed_rows = _row_int(await (await conn.execute("SELECT COUNT(*) FROM messages_fts_docsize")).fetchone(), 0)
-    if source_exists and exists:
-        missing_rows = _row_int(
-            await (
-                await conn.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM blocks AS b
-                    LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
-                    WHERE b.search_text != '' AND d.id IS NULL
-                    """
-                )
-            ).fetchone(),
-            0,
-        )
-        excess_rows = _row_int(
-            await (
-                await conn.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM messages_fts_docsize AS d
-                    LEFT JOIN blocks AS b ON b.rowid = d.id AND b.search_text != ''
-                    WHERE b.rowid IS NULL
-                    """
-                )
-            ).fetchone(),
-            0,
-        )
-    await record_fts_surface_state_async(
-        conn,
-        surface="messages_fts",
-        state=STALE,
-        source_rows=source_rows,
-        indexed_rows=indexed_rows,
-        missing_rows=missing_rows,
-        excess_rows=excess_rows,
-        detail="async targeted repair requires exact invariant verification",
-    )
+    repair_message_fts_index_sync(conn, session_ids, record_exact_snapshot=False)
 
 
 def fts_index_status_sync(conn: sqlite3.Connection) -> dict[str, object]:
@@ -742,53 +626,30 @@ def message_fts_readiness_sync(
     *,
     verify_total_rows: bool = True,
 ) -> dict[str, int | bool]:
-    """Return whether the message FTS index is present and fully populated."""
-    if verify_total_rows:
-        status = fts_index_status_sync(conn)
-        indexed_rows = _status_int(status, "count")
-        exists = bool(status.get("exists", False))
-        total_rows = _row_int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone(), 0)
-        triggers_present = exists and _triggers_present_sync(conn, _message_trigger_names_for_sync(conn))
-        ready = exists and triggers_present and indexed_rows == total_rows
-    else:
-        exists = bool(conn.execute(FTS_INDEX_EXISTS_SQL).fetchone())
-        has_indexed_rows = exists and bool(conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1").fetchone())
-        has_indexable_rows = bool(conn.execute("SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1").fetchone())
-        triggers_present = exists and _triggers_present_sync(conn, _message_trigger_names_for_sync(conn))
-        indexed_rows = 0
-        total_rows = 0
-        ready = exists and triggers_present and (has_indexed_rows or not has_indexable_rows)
+    """Inspect the canonical message/FTS relation used by search.
+
+    ``verify_total_rows`` remains call-compatible but cannot select a weaker
+    readiness proxy.  A count-only comparison misses wrong identities and
+    orphan residue; a recorded freshness row is merely telemetry.  The domain
+    adapter's global inspection is the one authoritative classifier for both
+    search admission and daemon convergence.
+    """
+    del verify_total_rows
+    from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
+
+    inspection = FtsDerivationAdapter().inspect_partition(conn, GLOBAL_PARTITION)
     return {
-        "exists": exists,
-        "indexed_rows": indexed_rows,
-        "total_rows": total_rows,
-        "ready": ready,
-        "triggers_present": triggers_present,
+        "exists": bool(conn.execute(FTS_INDEX_EXISTS_SQL).fetchone()),
+        "indexed_rows": inspection.present_rows,
+        "total_rows": inspection.required_rows,
+        "ready": inspection.valid,
+        "triggers_present": inspection.triggers_compatible,
     }
 
 
 def message_fts_search_readiness_sync(conn: sqlite3.Connection) -> dict[str, int | bool]:
     """Return retrieval readiness measured for the relation used by search."""
-    from polylogue.storage.fts.freshness import (
-        message_fts_recorded_exact_stale_sync,
-        message_fts_recorded_readiness_sync,
-    )
-
-    recorded_readiness = message_fts_recorded_readiness_sync(conn)
-    if recorded_readiness is not None:
-        return recorded_readiness
-    if message_fts_recorded_exact_stale_sync(conn):
-        status = fts_index_status_sync(conn)
-        return {
-            "exists": bool(status.get("exists", False)),
-            "indexed_rows": _status_int(status, "count"),
-            "total_rows": _row_int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone(), 0),
-            "ready": False,
-            "triggers_present": bool(status.get("exists", False))
-            and _triggers_present_sync(conn, _message_trigger_names_for_sync(conn)),
-        }
-    readiness = message_fts_readiness_sync(conn, verify_total_rows=True)
-    return readiness
+    return message_fts_readiness_sync(conn)
 
 
 async def message_fts_readiness_async(
@@ -796,60 +657,15 @@ async def message_fts_readiness_async(
     *,
     verify_total_rows: bool = True,
 ) -> dict[str, int | bool]:
-    """Return whether the message FTS index is present and fully populated."""
-    if verify_total_rows:
-        status = await fts_index_status_async(conn)
-        indexed_rows = _status_int(status, "count")
-        exists = bool(status.get("exists", False))
-        row = await (await conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL)).fetchone()
-        total_rows = _row_int(row, 0)
-        triggers_present = exists and await _triggers_present_async(conn, await _message_trigger_names_for_async(conn))
-        ready = exists and triggers_present and indexed_rows == total_rows
-    else:
-        exists = bool(await (await conn.execute(FTS_INDEX_EXISTS_SQL)).fetchone())
-        has_indexed_rows = exists and bool(
-            await (await conn.execute("SELECT 1 FROM messages_fts_docsize LIMIT 1")).fetchone()
-        )
-        has_indexable_rows = bool(
-            await (await conn.execute("SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1")).fetchone()
-        )
-        triggers_present = exists and await _triggers_present_async(conn, await _message_trigger_names_for_async(conn))
-        indexed_rows = 0
-        total_rows = 0
-        ready = exists and triggers_present and (has_indexed_rows or not has_indexable_rows)
-    return {
-        "exists": exists,
-        "indexed_rows": indexed_rows,
-        "total_rows": total_rows,
-        "ready": ready,
-        "triggers_present": triggers_present,
-    }
+    """Async form of the same authoritative message FTS inspection."""
+    del verify_total_rows
+    result = await conn._execute(message_fts_readiness_sync, conn._conn)  # type: ignore[no-untyped-call]
+    return cast(dict[str, int | bool], result)
 
 
 async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict[str, int | bool]:
     """Async retrieval readiness measured for the relation used by search."""
-    from polylogue.storage.fts.freshness import (
-        message_fts_recorded_exact_stale_async,
-        message_fts_recorded_readiness_async,
-    )
-
-    recorded_readiness = await message_fts_recorded_readiness_async(conn)
-    if recorded_readiness is not None:
-        return recorded_readiness
-    if await message_fts_recorded_exact_stale_async(conn):
-        status = await fts_index_status_async(conn)
-        exists = bool(status.get("exists", False))
-        row = await (await conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL)).fetchone()
-        return {
-            "exists": exists,
-            "indexed_rows": _status_int(status, "count"),
-            "total_rows": _row_int(row, 0),
-            "ready": False,
-            "triggers_present": exists
-            and await _triggers_present_async(conn, await _message_trigger_names_for_async(conn)),
-        }
-    readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
-    return readiness
+    return await message_fts_readiness_async(conn)
 
 
 # A caller-visible hint must never presume the reader knows whether a daemon
@@ -1045,6 +861,7 @@ __all__ = [
     "_BLOCKS_FTS_TRIGGER_DDL",
     "_chunked",
     "check_fts_readiness",
+    "configure_bounded_fts_repair_connection",
     "ensure_fts_index_async",
     "ensure_fts_index_sync",
     "ensure_fts_triggers_sync",

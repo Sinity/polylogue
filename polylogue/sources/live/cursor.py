@@ -344,21 +344,11 @@ class CursorStore:
             conn.close()
 
     def _mark_interrupted_ops_attempts(self) -> None:
-        """Stamp dangling 'running' attempts interrupted and register retry debt.
+        """Record interrupted attempts and rewind acquisition that outran parsing.
 
-        A daemon crash/restart mid-batch leaves ``ingest_attempts`` rows stuck
-        at ``status = 'running'``. This unconditionally sweeps them to
-        ``interrupted`` on the next ``CursorStore`` initialization, but until
-        polylogue-61jg the trail ended there: nothing registered the affected
-        source paths as retryable ``convergence_debt``, so validation/parse
-        for the interrupted batch waited for an accidental future touch (a
-        later unrelated re-acquire of the same path) instead of being driven
-        by the daemon's own convergence loop. Reading each affected attempt's
-        ``source_paths_json`` *before* the sweep and recording one
-        ``raw_parse_recovery`` debt row per distinct path closes that gap
-        using the same durable, restart-surviving retry substrate every other
-        convergence stage already uses (see
-        ``daemon.convergence_stages.make_raw_parse_recovery_stage``).
+        Retained raw observations are rediscovered from source membership by
+        fair intake. Rewound file cursors retain acquisition's independent
+        obligation to revisit an interrupted input.
         """
         now_ms = _epoch_ms(datetime.now(UTC).isoformat())
         interrupted_source_paths: list[str] = []
@@ -385,13 +375,6 @@ class CursorStore:
                 conn.commit()
 
         best_effort_cursor_write("archive ops interrupted attempt recovery", write)
-        for source_path in dict.fromkeys(interrupted_source_paths):
-            self.record_convergence_debt(
-                stage="raw_parse_recovery",
-                subject_type="source_path",
-                subject_id=source_path,
-                error="daemon stopped before completing this ingest attempt",
-            )
         self._rewind_interrupted_unparsed_cursors(interrupted_source_paths)
 
     def _rewind_interrupted_unparsed_cursors(self, source_paths: Iterable[str]) -> None:

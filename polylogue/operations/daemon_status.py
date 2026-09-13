@@ -19,6 +19,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 if TYPE_CHECKING:
     from polylogue.config import Config, PolylogueConfig
+    from polylogue.readiness.capability import ComponentReadiness
     from polylogue.storage.embeddings.status_payload import EmbeddingStatusSettings
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -61,7 +62,7 @@ def produce_direct_status(
         component_from_raw_materialization_readiness,
         normalize_raw_frontier_status_payload,
     )
-    from polylogue.readiness.claim_guard import derive_claim_guard
+    from polylogue.readiness.claim_guard import DerivedDomainReadiness, derive_claim_guard
     from polylogue.storage.archive_readiness import archive_readiness_status_from_connections
 
     index_conn = _required_index_connection(archive)
@@ -150,14 +151,52 @@ def produce_direct_status(
     raw_component = components.get("raw_materialization", {})
     frontier_component = components.get("raw_frontier_integrity", {})
     search_component = components.get("search", {})
+    profile_component = components.get("session_profiles", {})
+    summary_component = components.get("session_summary", {})
+    embedding_component = components.get("embeddings", {})
+    derived_domains = [
+        DerivedDomainReadiness(
+            domain="raw_materialization",
+            ready=_raw_ready(materialization),
+            summary=str(raw_component.get("summary", "unknown")),
+        ),
+        DerivedDomainReadiness(
+            domain="raw_frontier_integrity",
+            ready=frontier_component.get("state") == "ready",
+            summary=str(frontier_component.get("summary", "unknown")),
+        ),
+        DerivedDomainReadiness(
+            domain="session_profiles",
+            ready=profile_component.get("state") == "ready",
+            summary=str(profile_component.get("summary", "unknown")),
+            determinate=profile_component.get("state") != "unknown",
+        ),
+        DerivedDomainReadiness(
+            domain="session_summary",
+            ready=summary_component.get("state") == "ready",
+            summary=str(summary_component.get("summary", "unknown")),
+            determinate=summary_component.get("state") != "unknown",
+        ),
+        DerivedDomainReadiness(
+            domain="fts",
+            ready=search_component.get("state") == "ready",
+            summary=str(search_component.get("summary", "unknown")),
+            determinate=search_component.get("state") != "unknown",
+        ),
+    ]
+    if embedding_status.get("config_enabled") is True:
+        derived_domains.append(
+            DerivedDomainReadiness(
+                domain="embeddings",
+                ready=embedding_component.get("state") == "ready",
+                summary=str(embedding_component.get("summary", "unknown")),
+            )
+        )
     claim_guard = derive_claim_guard(
         archive_schema_ready=not missing_tiers and not mismatched_tiers,
         schema_mismatches=mismatched_tiers,
         missing_tiers=missing_tiers,
-        raw_materialization_ready=_raw_ready(materialization),
-        raw_materialization_summary=str(raw_component.get("summary", "unknown")),
-        raw_frontier_integrity_ready=frontier_component.get("state") == "ready",
-        raw_frontier_integrity_summary=str(frontier_component.get("summary", "unknown")),
+        derived_domains=derived_domains,
         search_ready=search_component.get("state") == "ready",
         search_summary=str(search_component.get("summary", "unknown")),
         active_writer=not bool(workload.get("available"))
@@ -170,9 +209,6 @@ def produce_direct_status(
             if workload.get("actively_ingesting")
             else ""
         ),
-        convergence_debt_available=bool(convergence.get("available")),
-        convergence_debt_pending=bool(convergence.get("failed_count") or convergence.get("deferred_count")),
-        convergence_debt_summary=str(convergence.get("error") or "no pending convergence debt"),
     ).to_dict()
     payload: dict[str, object] = {
         "ok": _status_ok(components, raw_failures),
@@ -534,6 +570,12 @@ def _components(
     components[str(material["component"])] = material
     frontier_component = component_from_raw_frontier_integrity(frontier).to_dict()
     components[str(frontier_component["component"])] = frontier_component
+    search = _search_component(index_conn).to_dict()
+    components[str(search["component"])] = search
+    profiles = _session_profile_component(index_conn).to_dict()
+    components[str(profiles["component"])] = profiles
+    summary = session_summary_component_from_connection(index_conn).to_dict()
+    components[str(summary["component"])] = summary
     components["embeddings"] = component_from_embedding_payload(embedding_status).to_dict()
     has_user = _attached_connection(index_conn, "user_tier") is not None
     has_assertions = has_user and _table_exists(index_conn, "assertions", schema="user_tier")
@@ -574,6 +616,103 @@ def _components(
             session_digest_transform_version=SESSION_DIGEST_TRANSFORM_VERSION,
         ).to_dict()
     return components
+
+
+def _search_component(index_conn: sqlite3.Connection) -> Any:
+    """Adapt the FTS domain's existing partition inspection to direct status."""
+    from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+    from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
+
+    if not _table_exists(index_conn, "blocks") or not _table_exists(index_conn, "messages_fts"):
+        return ComponentReadiness(
+            component="search",
+            scope="lexical",
+            state=CapabilityReadinessState.MISSING,
+            summary="fts index incomplete",
+            repair_hint="polylogued run",
+        )
+    inspection = FtsDerivationAdapter().inspect_partition(index_conn, GLOBAL_PARTITION)
+    return ComponentReadiness(
+        component="search",
+        scope="lexical",
+        state=CapabilityReadinessState.READY if inspection.valid else CapabilityReadinessState.STALE,
+        summary="ready" if inspection.valid else "fts index incomplete",
+        counts={
+            "message_indexed_count": inspection.present_rows,
+            "message_indexable_count": inspection.required_rows,
+            "missing_rows": inspection.missing_rows,
+            "excess_rows": inspection.excess_rows,
+            "identity_mismatch_rows": inspection.wrong_identity_rows,
+        },
+        repair_hint=None if inspection.valid else "polylogued run",
+    )
+
+
+def _session_profile_component(index_conn: sqlite3.Connection) -> Any:
+    """Adapt the profile domain's canonical inspection to direct status."""
+    from polylogue.core.evidence import Measured, Unavailable
+    from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+    from polylogue.storage.derived.session.status import session_insight_status_sync
+    from polylogue.storage.tier_access import capture_sqlite_read
+
+    evidence = capture_sqlite_read(lambda: session_insight_status_sync(index_conn, verify_freshness=True))
+    if isinstance(evidence, Unavailable):
+        return ComponentReadiness(
+            component="session_profiles",
+            scope="insights",
+            state=CapabilityReadinessState.UNKNOWN,
+            summary="session-profile inspection unavailable",
+            caveats=(evidence.detail or evidence.reason,),
+            repair_hint="polylogued run",
+        )
+    if not isinstance(evidence, Measured):
+        raise AssertionError("profile inspection produced unsupported evidence")
+    status = evidence.value
+    ready = (
+        status.missing_profile_row_count == 0
+        and status.stale_profile_row_count == 0
+        and status.orphan_profile_row_count == 0
+        and status.profile_row_count == status.total_sessions
+    )
+    return ComponentReadiness(
+        component="session_profiles",
+        scope="insights",
+        state=CapabilityReadinessState.READY if ready else CapabilityReadinessState.STALE,
+        summary="ready" if ready else "session profiles incomplete",
+        counts={
+            "sessions_with_profiles": status.profile_row_count,
+            "total_sessions": status.total_sessions,
+            "missing_profiles": status.missing_profile_row_count,
+            "stale_profiles": status.stale_profile_row_count,
+            "orphan_profiles": status.orphan_profile_row_count,
+        },
+        repair_hint=None if ready else "polylogued run",
+    )
+
+
+def session_summary_component_from_connection(index_conn: sqlite3.Connection) -> ComponentReadiness:
+    """Inspect stored session counters against their authoritative messages relation."""
+    from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+    from polylogue.storage.derived.session.summary import inspect_session_summary
+
+    inspection = inspect_session_summary(index_conn)
+    if inspection.state == "unknown":
+        return ComponentReadiness(
+            component="session_summary",
+            scope="archive",
+            state=CapabilityReadinessState.UNKNOWN,
+            summary=inspection.reason or "session-summary inspection unavailable",
+            repair_hint="polylogued run",
+        )
+    ready = inspection.state == "ready"
+    return ComponentReadiness(
+        component="session_summary",
+        scope="archive",
+        state=CapabilityReadinessState.READY if ready else CapabilityReadinessState.STALE,
+        summary="ready" if ready else "session counters stale",
+        counts={"total_sessions": inspection.total_sessions, "stale_sessions": inspection.stale_sessions},
+        repair_hint=None if ready else "polylogued run",
+    )
 
 
 def _sqlite_maintenance(conn: sqlite3.Connection) -> dict[str, object]:
@@ -641,3 +780,41 @@ def _status_ok(components: Mapping[str, Mapping[str, object]], raw_failures: Map
         if state == "missing" and name in required_missing:
             return False
     return True
+
+
+def insight_freshness_from_connection(conn: sqlite3.Connection, *, verify: bool = False) -> dict[str, object]:
+    """Adapt one authoritative profile inspection for the status surface.
+
+    Staleness verification recomputes every profile against its sessions and
+    is archive-proportional; a request-budget probe cannot afford it inside a
+    sub-second component deadline. The default form reads the cheap counts,
+    which can still prove NOT-ready, and otherwise reports
+    ``profile_ready=None`` — rendered as UNKNOWN — rather than asserting a
+    readiness it never checked.
+    """
+    from polylogue.storage.derived.session.status import session_insight_status_sync
+
+    status = session_insight_status_sync(conn, verify_freshness=verify)
+    # Cheap counts can refute readiness but cannot certify it: a missing,
+    # orphaned or uncounted profile row is a complete counterexample, while
+    # "every row present" says nothing about whether those rows are stale.
+    refuted = (
+        status.missing_profile_row_count != 0
+        or status.orphan_profile_row_count != 0
+        or status.profile_row_count != status.total_sessions
+    )
+    profile_ready: bool | None
+    if refuted:
+        profile_ready = False
+    elif verify:
+        profile_ready = status.stale_profile_row_count == 0
+    else:
+        profile_ready = None
+    return {
+        "sessions_with_profiles": status.profile_row_count,
+        "total_sessions": status.total_sessions,
+        "profile_ready": profile_ready,
+        "missing_profile_rows": status.missing_profile_row_count,
+        "stale_profile_rows": status.stale_profile_row_count if verify else None,
+        "orphan_profile_rows": status.orphan_profile_row_count,
+    }

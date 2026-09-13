@@ -16,13 +16,12 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.errors import DatabaseError
 from polylogue.core.outcomes import OutcomeStatus
-from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.blob_gc import MIN_AGE_S, read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
+from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync, message_fts_readiness_sync
 from polylogue.storage.search import search_messages
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
@@ -225,10 +224,11 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
                 search_failure = str(exc)
             else:
                 raise AssertionError("search should fail while a canonical messages_fts trigger is missing")
-            convergence = FtsConvergenceOwner(root / "index.db", archive_root=root).run_once_sync(
-                reason=FtsRunReason.PERIODIC,
-            )
+            # Trigger presence belongs to canonical schema construction. FTS
+            # derivation refuses incompatible schema instead of repairing it.
             with sqlite3.connect(root / "index.db") as conn:
+                ensure_fts_index_sync(conn)
+                conn.commit()
                 after_readiness = message_fts_readiness_sync(conn)
                 after_rows = _row_count(conn, "messages_fts")
             search_hits = search_messages("sentinel", archive_root=root, db_path=root / "index.db").hits
@@ -243,8 +243,6 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
         raise AssertionError("first FTS scenario ingest should write content")
     if bool(drifted_readiness["ready"]) or bool(drifted_readiness["triggers_present"]):
         raise AssertionError(f"dropped trigger did not fail exact readiness: {drifted_readiness}")
-    if not convergence.ready:
-        raise AssertionError(f"production FTS convergence did not complete: {convergence.detail}")
     if after_readiness != exact_ready:
         raise AssertionError(f"production FTS repair did not restore exact readiness: {after_readiness}")
     if after_rows != 1 or len(search_hits) != 1:
@@ -252,7 +250,7 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
     return {
         "drifted_readiness": drifted_readiness,
         "search_failure": search_failure,
-        "production_repair": convergence.ready,
+        "production_repair": bool(after_readiness["ready"]),
         "after_readiness": after_readiness,
         "after_fts_rows": after_rows,
         "search_hits": [asdict(hit) for hit in search_hits],

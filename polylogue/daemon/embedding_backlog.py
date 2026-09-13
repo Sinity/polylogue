@@ -6,11 +6,9 @@ import asyncio
 import sqlite3
 import time
 from contextlib import closing
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.config import load_polylogue_config
 from polylogue.core.enums import OperationStatus
 from polylogue.logging import get_logger
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -18,7 +16,9 @@ from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
-    from polylogue.storage.embeddings.materialization import EmbeddingWriteAdmission
+    from collections.abc import Awaitable, Callable, Sequence
+
+    from polylogue.daemon.embedding_owner import EmbeddingConvergenceResult
     from polylogue.storage.embeddings.reconcile import EmbeddingOrphanReconcileReport
 
 logger = get_logger(__name__)
@@ -54,25 +54,36 @@ def recover_embedding_catchup_receipts(archive_root: Path) -> int:
 async def periodic_embedding_backlog_check(
     *,
     catch_up_complete: asyncio.Event | None = None,
+    converge: Callable[[Sequence[str] | None], Awaitable[EmbeddingConvergenceResult]] | None = None,
 ) -> None:
-    """Periodically drain one bounded pending-embedding window."""
+    """Periodically run the same authoritative embedding derivation as ingest."""
     from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.paths import archive_root
 
     db = archive_root() / "index.db"
     await _await_catch_up_gate(catch_up_complete, loop_name="embedding backlog catch-up")
+    callback = converge
+    if callback is None:
+        # Direct daemon startup remains safe while callers migrate to retained
+        # composition: it still drives the common adapter, never the former
+        # backlog runner.
+        from polylogue.daemon.embedding_owner import compose_embedding_convergence
+        from polylogue.daemon.execution import daemon_compute_adapter
+        from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge, daemon_write_coordinator
+
+        callback = compose_embedding_convergence(
+            db,
+            compute_adapter=daemon_compute_adapter(),
+            write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), asyncio.get_running_loop()),
+        ).callback
     while True:
         await asyncio.sleep(EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS)
         try:
-            from polylogue.daemon.embedding_owner import run_lease_free_embedding_work
-
-            # The drain calls a provider, so it runs on the daemon's compute
-            # capacity with no writer authority; the receipts and vector
-            # publications it produces are admitted one at a time through the
-            # write coordinator (polylogue-c0l7n).
-            processed = await run_lease_free_embedding_work(drain_embedding_backlog_once, db)
-            if processed:
-                logger.info("embed: drained %d pending session(s)", processed)
+            result = await callback(None)
+            if result.deferred_reason is not None:
+                logger.info("embed: backlog deferred by policy: %s", result.deferred_reason)
+            elif result.report is not None and result.report.done:
+                logger.info("embed: converged %d message partition(s)", int(result.report.done))
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
                 logger.info("embed: archive busy; retrying backlog on next tick: %s", exc)
@@ -80,26 +91,6 @@ async def periodic_embedding_backlog_check(
             logger.warning("embed: backlog check failed", exc_info=True)
         except Exception:
             logger.warning("embed: backlog check failed", exc_info=True)
-
-
-def drain_embedding_backlog_once(db_path: Path, *, admit: EmbeddingWriteAdmission | None = None) -> int:
-    """Run one bounded daemon embedding catch-up window over pending backlog.
-
-    ``admit`` is the writer-admission seam. When the caller runs this off the
-    writer -- the production route -- every write below is admitted through it
-    individually, so the provider calls between them hold neither the writer
-    gate nor the embedding generation lock.
-    """
-
-    from polylogue.daemon.convergence_stages import _embedding_config_enabled
-
-    if not _embedding_config_enabled():
-        return 0
-
-    index_db = _active_archive_index_path(db_path)
-    if index_db is None:
-        return 0
-    return _drain_archive_embedding_backlog_once(index_db, archive_root=db_path.parent, admit=admit)
 
 
 async def periodic_embedding_orphan_reconcile_check(
@@ -198,190 +189,6 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
         return None
 
 
-def _drain_archive_embedding_backlog_once(
-    index_db: Path,
-    *,
-    archive_root: Path,
-    admit: EmbeddingWriteAdmission | None = None,
-) -> int:
-    from polylogue.daemon.convergence_stages import (
-        _DAEMON_EMBED_MAX_ERRORS,
-        _DAEMON_EMBED_MAX_MESSAGES,
-        _DAEMON_EMBED_MAX_SESSIONS,
-        _DAEMON_EMBED_STOP_AFTER_SECONDS,
-    )
-    from polylogue.storage.embeddings.materialization import (
-        embed_archive_session_sync,
-        inline_embedding_admission,
-        select_pending_archive_session_window,
-    )
-
-    admit_phase = inline_embedding_admission if admit is None else admit
-    from polylogue.storage.search_providers import create_vector_provider
-    from polylogue.storage.search_providers.sqlite_vec_support import (
-        ESTIMATED_TOKENS_PER_MESSAGE,
-        VOYAGE_4_COST_PER_1M_TOKENS,
-    )
-
-    cfg = load_polylogue_config()
-    voyage_key = cfg.get("voyage_api_key")
-    if not voyage_key:
-        return 0
-    embeddings_db = archive_root / "embeddings.db"
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-    admit_phase(
-        "embedding.bootstrap",
-        partial(initialize_archive_database, embeddings_db, ArchiveTier.EMBEDDINGS),
-    )
-    monthly_cap = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
-    ops_db = archive_root / "ops.db"
-    if monthly_cap > 0:
-        month_spend = _archive_embedding_catchup_estimated_cost_this_month(ops_db)
-        if month_spend >= monthly_cap:
-            logger.info(
-                "embed: archive monthly cost cap exhausted (%.4f >= %.2f); backlog drain paused",
-                month_spend,
-                monthly_cap,
-            )
-            return 0
-        monthly_cap = max(monthly_cap - month_spend, 0.0)
-    try:
-        with closing(open_readonly_connection(index_db, timeout=5.0)) as conn:
-            conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
-            from polylogue.storage.embeddings.identity import EmbeddingRecipe
-
-            pending = select_pending_archive_session_window(
-                conn,
-                status_table="embeddings.embedding_status",
-                max_sessions=_DAEMON_EMBED_MAX_SESSIONS,
-                max_messages=_DAEMON_EMBED_MAX_MESSAGES,
-                recipe=EmbeddingRecipe.current(
-                    model=str(cfg.embedding_model),
-                    dimensions=int(cfg.embedding_dimension),
-                ),
-            )
-    except Exception:
-        logger.warning("embed: failed to inspect archive pending backlog", exc_info=True)
-        return 0
-    if not pending:
-        return 0
-
-    started_at_ms = int(time.time() * 1000)
-    run_id = admit_phase(
-        "embedding.catchup_receipt",
-        partial(
-            _upsert_archive_embedding_catchup_run,
-            ops_db,
-            status=OperationStatus.RUNNING,
-            started_at_ms=started_at_ms,
-            scanned_sessions=0,
-            embedded_messages=0,
-            estimated_cost_usd=0.0,
-        ),
-    )
-    vec_provider = create_vector_provider(
-        voyage_api_key=str(voyage_key),
-        db_path=embeddings_db,
-        archive_root=archive_root,
-        model=cfg.embedding_model,
-        dimension=cfg.embedding_dimension,
-    )
-    if vec_provider is None:
-        logger.warning("embed: archive vector provider unavailable")
-        admit_phase(
-            "embedding.catchup_receipt",
-            partial(
-                _upsert_archive_embedding_catchup_run,
-                ops_db,
-                run_id=run_id,
-                status=OperationStatus.FAILED,
-                started_at_ms=started_at_ms,
-                finished_at_ms=int(time.time() * 1000),
-                error_message="vector provider unavailable",
-            ),
-        )
-        return 0
-
-    embedded = 0
-    embedded_messages = 0
-    errors = 0
-    skipped = 0
-    processed = 0
-    error_message: str | None = None
-    cumulative_cost = 0.0
-    start_monotonic = time.monotonic()
-    for item in pending:
-        if time.monotonic() - start_monotonic >= _DAEMON_EMBED_STOP_AFTER_SECONDS:
-            break
-        estimated_batch_cost = (
-            item.message_count * ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
-        )
-        if monthly_cap > 0.0 and cumulative_cost + estimated_batch_cost > monthly_cap:
-            logger.info(
-                "embed: archive cost cap would be exceeded (%.4f > %.2f); backlog drain paused",
-                cumulative_cost + estimated_batch_cost,
-                monthly_cap,
-            )
-            break
-        outcome = embed_archive_session_sync(
-            index_db,
-            vec_provider,
-            item.session_id,
-            embeddings_db_path=embeddings_db,
-            stop_after_seconds=_DAEMON_EMBED_STOP_AFTER_SECONDS,
-            admit=admit,
-        )
-        processed += 1
-        if outcome.status == "deferred":
-            embedded_messages += outcome.embedded_message_count
-            logger.info("embed: archive %s deferred with resumable progress", item.session_id)
-            break
-        if outcome.status == "embedded":
-            embedded += 1
-            embedded_messages += outcome.embedded_message_count
-            cumulative_cost += (
-                outcome.embedded_message_count * ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
-            )
-            if monthly_cap > 0.0 and cumulative_cost > monthly_cap:
-                logger.info(
-                    "embed: archive cost cap reached (%.4f > %.2f); backlog drain paused",
-                    cumulative_cost,
-                    monthly_cap,
-                )
-                break
-        elif outcome.status in {"no_messages", "no_embeddable_messages"}:
-            skipped += 1
-            logger.info("embed: archive %s has no embeddable messages", item.session_id)
-        elif outcome.status == "error":
-            errors += 1
-            error_message = outcome.error
-            logger.warning("embed: archive %s failed: %s", outcome.session_id, outcome.error)
-            if errors >= _DAEMON_EMBED_MAX_ERRORS:
-                break
-    logger.info("embed: archive %d done, %d errors, est. cost $%.4f", embedded, errors, cumulative_cost)
-    admit_phase(
-        "embedding.catchup_receipt",
-        partial(
-            _upsert_archive_embedding_catchup_run,
-            ops_db,
-            run_id=run_id,
-            status=OperationStatus.FAILED if errors else OperationStatus.COMPLETED,
-            started_at_ms=started_at_ms,
-            finished_at_ms=int(time.time() * 1000),
-            scanned_sessions=processed,
-            embedded_sessions=embedded,
-            skipped_sessions=skipped,
-            error_count=errors,
-            embedded_messages=embedded_messages,
-            estimated_cost_usd=cumulative_cost,
-            error_message=error_message,
-        ),
-    )
-    return processed if errors == 0 else 0
-
-
 def _archive_embedding_catchup_estimated_cost_this_month(ops_db: Path) -> float:
     if not ops_db.exists():
         return 0.0
@@ -458,7 +265,6 @@ __all__ = [
     "EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS",
     "EMBEDDING_ORPHAN_RECONCILE_MAX_COUNT",
     "EMBEDDING_ORPHAN_RECONCILE_QUIET_WINDOW_MS",
-    "drain_embedding_backlog_once",
     "embedding_catchup_estimated_cost_this_month",
     "periodic_embedding_backlog_check",
     "periodic_embedding_orphan_reconcile_check",

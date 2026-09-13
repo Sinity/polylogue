@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.readiness.claim_guard import ClaimGuard, derive_claim_guard
+from polylogue.readiness.claim_guard import ClaimGuard, DerivedDomainReadiness, derive_claim_guard
 
 
 def _base_kwargs() -> dict[str, object]:
@@ -10,14 +10,15 @@ def _base_kwargs() -> dict[str, object]:
         "archive_schema_ready": True,
         "schema_mismatches": (),
         "missing_tiers": (),
-        "raw_materialization_ready": True,
-        "raw_materialization_summary": "ready",
-        "raw_frontier_integrity_ready": True,
-        "raw_frontier_integrity_summary": "ready",
+        "derived_domains": (
+            DerivedDomainReadiness("raw_materialization", True, "ready"),
+            DerivedDomainReadiness("raw_frontier_integrity", True, "ready"),
+            DerivedDomainReadiness("session_profiles", True, "ready"),
+            DerivedDomainReadiness("fts", True, "ready"),
+        ),
         "search_ready": True,
         "search_summary": "ready",
         "active_writer": False,
-        "convergence_debt_available": True,
         "active_writer_summary": "",
     }
 
@@ -58,8 +59,9 @@ def test_missing_tiers_block_openable_with_named_tiers() -> None:
 
 def test_openable_but_not_converged_reports_raw_materialization_reason() -> None:
     kwargs = _base_kwargs()
-    kwargs["raw_materialization_ready"] = False
-    kwargs["raw_materialization_summary"] = "raw evidence pending materialization"
+    kwargs["derived_domains"] = (
+        DerivedDomainReadiness("raw_materialization", False, "raw evidence pending materialization"),
+    )
     guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
 
     assert guard["openable"]["value"] is True
@@ -69,8 +71,11 @@ def test_openable_but_not_converged_reports_raw_materialization_reason() -> None
 
 def test_raw_frontier_integrity_not_ready_blocks_converged_with_reason() -> None:
     kwargs = _base_kwargs()
-    kwargs["raw_frontier_integrity_ready"] = False
-    kwargs["raw_frontier_integrity_summary"] = "1 accepted append head(s) have a broken predecessor chain"
+    kwargs["derived_domains"] = (
+        DerivedDomainReadiness(
+            "raw_frontier_integrity", False, "1 accepted append head(s) have a broken predecessor chain"
+        ),
+    )
     guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
 
     assert guard["openable"]["value"] is True
@@ -80,36 +85,34 @@ def test_raw_frontier_integrity_not_ready_blocks_converged_with_reason() -> None
 
 def test_raw_materialization_not_ready_takes_precedence_over_frontier_integrity() -> None:
     kwargs = _base_kwargs()
-    kwargs["raw_materialization_ready"] = False
-    kwargs["raw_materialization_summary"] = "raw evidence pending materialization"
-    kwargs["raw_frontier_integrity_ready"] = False
-    kwargs["raw_frontier_integrity_summary"] = "1 ingest cursor(s) committed past accepted raw material"
+    kwargs["derived_domains"] = (
+        DerivedDomainReadiness("raw_materialization", False, "raw evidence pending materialization"),
+        DerivedDomainReadiness(
+            "raw_frontier_integrity", False, "1 ingest cursor(s) committed past accepted raw material"
+        ),
+    )
     guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
 
     assert guard["converged"]["value"] is False
     assert guard["converged"]["reason"] == "raw evidence pending materialization"
 
 
-def test_pending_convergence_debt_blocks_converged() -> None:
+def test_convergence_debt_is_not_a_claim_guard_input() -> None:
     kwargs = _base_kwargs()
-    kwargs["convergence_debt_pending"] = True
-    kwargs["convergence_debt_summary"] = "convergence debt pending: 1 deferred"
+    guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
+
+    assert guard["converged"]["value"] is True
+    assert "derived_domain_readiness" in str(guard["converged"]["signal"])
+
+
+def test_profile_inspection_blocks_convergence() -> None:
+    kwargs = _base_kwargs()
+    kwargs["derived_domains"] = (DerivedDomainReadiness("session_profiles", False, "session profiles incomplete"),)
     guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
 
     assert guard["converged"]["value"] is False
-    assert guard["converged"]["reason"] == "convergence debt pending: 1 deferred"
-    assert "convergence_debt_summary" in str(guard["converged"]["signal"])
-
-
-def test_unavailable_convergence_debt_blocks_converged_as_unknown() -> None:
-    kwargs = _base_kwargs()
-    kwargs["convergence_debt_available"] = False
-    kwargs["convergence_debt_summary"] = "convergence debt status unavailable: disk I/O error"
-    guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
-
-    assert guard["converged"]["value"] is False
-    assert guard["converged"]["reason"] == "convergence debt status unavailable: disk I/O error"
-    assert "unknown debt" in str(guard["converged"]["signal"])
+    assert guard["converged"]["reason"] == "session profiles incomplete"
+    assert guard["converged"]["signal"] == "derived_domain_readiness.session_profiles"
 
 
 def test_search_not_ready_reports_component_summary() -> None:
@@ -140,3 +143,54 @@ def test_active_writer_without_summary_falls_back_to_generic_reason() -> None:
 
     assert guard["perf_measurable"]["value"] is False
     assert "in flight" in str(guard["perf_measurable"]["reason"])
+
+
+def test_incomplete_inspection_withholds_converged_instead_of_denying_it() -> None:
+    """An unfinished inspection is a third state, never a negative claim.
+
+    converged:false must mean PROVEN not converged. A domain whose inspection
+    ran out of budget cannot certify convergence and cannot refute it either,
+    so the claim is withheld (value None, determinate False) and the reason
+    names the gap.
+
+    Anti-vacuity: collapse indeterminate domains back into the not-ready scan
+    and ``value`` becomes False with a reason that describes the archive, so
+    both the None assertion and the determinate assertion go red.
+    """
+    kwargs = _base_kwargs()
+    kwargs["derived_domains"] = (
+        DerivedDomainReadiness("raw_materialization", True, "ready"),
+        DerivedDomainReadiness(
+            "session_summary",
+            False,
+            "session-summary inspection deadline exceeded",
+            determinate=False,
+        ),
+    )
+    entry = derive_claim_guard(**kwargs).converged  # type: ignore[arg-type]
+
+    assert entry.value is None
+    assert entry.determinate is False
+    assert "inspection incomplete for session_summary" in entry.reason
+    assert entry.to_dict()["value"] is None
+    assert entry.to_dict()["determinate"] is False
+
+
+def test_a_proven_unready_domain_outranks_an_unmeasured_one() -> None:
+    """A real counterexample is reported as false even beside an unknown.
+
+    Anti-vacuity: pick the first non-ready domain in list order instead of
+    preferring the determinate one, and this reports the unmeasured domain's
+    withheld claim instead of the proven failure.
+    """
+    kwargs = _base_kwargs()
+    kwargs["derived_domains"] = (
+        DerivedDomainReadiness("session_summary", False, "not measured", determinate=False),
+        DerivedDomainReadiness("fts", False, "fts index incomplete"),
+    )
+    entry = derive_claim_guard(**kwargs).converged  # type: ignore[arg-type]
+
+    assert entry.value is False
+    assert entry.determinate is True
+    assert entry.reason == "fts index incomplete"
+    assert entry.signal == "derived_domain_readiness.fts"

@@ -17,6 +17,7 @@ from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.operations.session_profile_convergence import (
     make_session_profile_derivation,
     make_session_profile_frame,
+    make_session_summary_derivation,
 )
 
 SessionProfileCallback = Callable[[Sequence[str] | None], Awaitable[DerivationReport]]
@@ -44,13 +45,14 @@ def compose_session_profile_callback(
     # The owning factories resolve this logical anchor through ArchiveLocation
     # on every generation observation; composition never opens a pointer stub.
     index_path = archive_root / "index.db"
-    adapter = make_session_profile_derivation(
+    summary = make_session_summary_derivation(index_path, archive_root=archive_root)
+    profile = make_session_profile_derivation(
         index_path,
         archive_root=archive_root,
         now=now,
     )
     owner = SessionProfileConvergenceOwner(
-        DaemonConverger(stages=(), derivations=(adapter,)),
+        DaemonConverger(stages=(), derivations=(summary, profile)),
         compute_adapter=compute_adapter,
         write_bridge=write_bridge,
     )

@@ -588,6 +588,10 @@ def test_embedding_payload_maps_missing_blocked_stale_and_ready() -> None:
     assert ready.state is CapabilityReadinessState.READY
     assert ready.counts["pending_messages"] is None
     assert ready.counts["pending_messages_exact"] is False
+    recovered = component_from_embedding_payload({**base, "failure_count": 1})
+    assert recovered.state is CapabilityReadinessState.READY
+    assert recovered.counts["failure_count"] == 1
+    assert recovered.caveats == ("1 historical embedding failure(s) remain operation-health evidence",)
     exact = component_from_embedding_payload({**base, "pending_messages": 7, "pending_messages_exact": True})
     assert exact.counts["pending_messages"] == 7
     assert exact.counts["pending_messages_exact"] is True

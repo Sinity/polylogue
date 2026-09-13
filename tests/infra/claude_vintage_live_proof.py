@@ -20,7 +20,7 @@ from polylogue.archive.session_revision_membership import MembershipRevision, cl
 from polylogue.config import Source
 from polylogue.core.enums import Origin
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import make_fts_stage
+from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
@@ -163,11 +163,18 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
         session_ids = tuple(
             str(row[0]) for row in connection.execute("SELECT session_id FROM sessions ORDER BY session_id")
         )
-    converger = DaemonConverger((make_fts_stage(archive_root / "index.db"),))
-    states, _timings = converger.converge_sessions(session_ids)
-    if any(not state.converged for state in states.values()):
-        pending = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
-        raise AssertionError(f"Claude vintage proof did not converge: {pending}")
+    index_db = archive_root / "index.db"
+    fts = make_fts_derivation(index_db, archive_root=archive_root)
+    fts_frame = make_fts_frame(index_db, archive_root=archive_root, scope=session_ids)
+    fts_report = DaemonConverger((), derivations=(fts,)).converge_derivations(fts_frame, resume=False)
+    invalid_fts = {
+        session_id: status for session_id, status in fts.inspect(fts_frame, session_ids).items() if status != "valid"
+    }
+    if fts_report.failed or fts_report.pending or invalid_fts:
+        raise AssertionError(
+            "Claude vintage proof FTS did not converge: "
+            f"failed={fts_report.failed} pending={fts_report.pending} invalid={invalid_fts}"
+        )
     converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
 
     old_payload = json.loads(old_path.read_text(encoding="utf-8"))
@@ -214,7 +221,7 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
         production_route=(
             "parse_sources_archive",
             "backfill_historical_revision_evidence",
-            "DaemonConverger(make_fts_stage) + SessionProfileConvergenceOwner",
+            "common FTS derivation + SessionProfileConvergenceOwner",
         ),
         parser_branch=(
             ("old_wire_shape", "top_level_text"),
@@ -232,7 +239,7 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
         canonical_content_hash=content_hash,
         verdict="equivalent",
         route_counts=route_counts,
-        convergence_session_count=len(states),
+        convergence_session_count=len(session_ids),
     )
 
 

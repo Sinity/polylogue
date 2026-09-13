@@ -533,8 +533,8 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    # The seeded workspace has an ops tier with an empty debt ledger: readiness
-    # is exactly "convergence has caught up".
+    # The seeded profile partitions are valid; an empty ops ledger is separate
+    # operation-health evidence.
     assert payload["converged"] is True
     assert payload["debt_stages"] == []
     insights = {item["insight_name"]: item for item in json_object_list(payload["insights"])}
@@ -588,7 +588,7 @@ def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
     result = runner.invoke(cli, ["ops", "insights", "status", "--insight", "profiles"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    assert "Convergence: caught up" in result.output
+    assert "Readiness: ready" in result.output
     # Readiness is convergence plus counts: one row per seeded session, and the
     # expected denominator gated on the product table. A reader that stopped
     # reporting either would print a bare name.

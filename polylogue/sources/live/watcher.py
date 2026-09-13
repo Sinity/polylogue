@@ -1093,6 +1093,11 @@ class LiveWatcher:
         whole_archive: bool,
     ) -> None:
         """Converge one bounded set of already-committed catch-up subjects."""
+        reason = degraded_reason()
+        if reason is not None and reason.derived_only:
+            # Source-only admission cannot resolve derived subjects or clear
+            # their retry evidence while the index generation is unavailable.
+            return
         unique_paths = tuple(dict.fromkeys(paths))
         if not unique_paths:
             return

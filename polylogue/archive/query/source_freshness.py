@@ -38,6 +38,7 @@ from polylogue.core.evidence_value import (
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
+from polylogue.storage.fts.derivation import FtsDerivationAdapter
 from polylogue.storage.sqlite.connection_profile import READ_PROFILES, open_readonly_connection
 
 _RAW_AUTHORITY_OWNER: Final = "polylogue-lkrc"
@@ -1405,20 +1406,18 @@ def _load_fts_evidence(
             )
             if messages_truncated:
                 return FtsEvidence(available=True, reason="message scope exceeded bound")
+            adapter = FtsDerivationAdapter()
+            inspections = tuple(
+                adapter.inspect_partition(db._connection(), session_id) for session_id in index.accepted_session_ids
+            )
+            triggers_present = bool(inspections) and all(inspection.triggers_compatible for inspection in inspections)
+            sessions_converged = bool(inspections) and all(inspection.valid for inspection in inspections)
             if not message_ids:
-                (
-                    recorded_state,
-                    checked_at,
-                    recorded_ready,
-                    triggers_present,
-                ) = _recorded_fts_state(db)
                 return FtsEvidence(
                     available=True,
-                    converged=recorded_ready and triggers_present,
-                    recorded_state=recorded_state,
-                    checked_at=checked_at,
+                    converged=sessions_converged,
                     triggers_present=triggers_present,
-                    reason=_fts_reason(recorded_ready, triggers_present, exact_converged=True),
+                    reason=_fts_reason(triggers_present, exact_converged=sessions_converged),
                 )
             block_rows = _bounded_searchable_blocks(
                 db,
@@ -1430,12 +1429,9 @@ def _load_fts_evidence(
                 return FtsEvidence(available=False, reason="unsafe exact block query plan")
             blocks_truncated = len(block_rows) > limits.max_blocks
             block_rowids = tuple(int(row["rowid"]) for row in block_rows[: limits.max_blocks])
-            recorded_state, checked_at, recorded_ready, triggers_present = _recorded_fts_state(db)
             if blocks_truncated:
                 return FtsEvidence(
                     available=True,
-                    recorded_state=recorded_state,
-                    checked_at=checked_at,
                     triggers_present=triggers_present,
                     source_searchable_blocks=len(block_rowids),
                     blocks_truncated=True,
@@ -1444,11 +1440,9 @@ def _load_fts_evidence(
             if not block_rowids:
                 return FtsEvidence(
                     available=True,
-                    converged=recorded_ready and triggers_present,
-                    recorded_state=recorded_state,
-                    checked_at=checked_at,
+                    converged=sessions_converged,
                     triggers_present=triggers_present,
-                    reason=_fts_reason(recorded_ready, triggers_present, exact_converged=True),
+                    reason=_fts_reason(triggers_present, exact_converged=sessions_converged),
                 )
             placeholders = ",".join("?" for _ in block_rowids)
             fts_sql = (
@@ -1464,14 +1458,12 @@ def _load_fts_evidence(
             if fts_rows is None:
                 return FtsEvidence(available=False, reason="FTS row query rejected")
             indexed_rowids = {int(row[0]) for row in fts_rows}
-            exact_converged = indexed_rowids == set(block_rowids)
-            converged = recorded_ready and triggers_present and exact_converged
-            reason = _fts_reason(recorded_ready, triggers_present, exact_converged)
+            exact_converged = indexed_rowids == set(block_rowids) and sessions_converged
+            converged = triggers_present and exact_converged
+            reason = _fts_reason(triggers_present, exact_converged)
             return FtsEvidence(
                 available=True,
                 converged=converged,
-                recorded_state=recorded_state,
-                checked_at=checked_at,
                 triggers_present=triggers_present,
                 source_searchable_blocks=len(block_rowids),
                 indexed_searchable_blocks=len(indexed_rowids),
@@ -1539,61 +1531,10 @@ def _bounded_searchable_blocks(
     return rows
 
 
-def _recorded_fts_state(
-    db: _ReadonlyDatabase,
-) -> tuple[str | None, str | None, bool, bool]:
-    trigger_names = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
-    placeholders = ",".join("?" for _ in trigger_names)
-    trigger_row = db.one(
-        f"SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ({placeholders})",
-        trigger_names,
-    )
-    triggers_present = trigger_row is not None and int(trigger_row[0] or 0) == len(trigger_names)
-    if not db.table_exists("fts_freshness_state"):
-        return None, None, False, triggers_present
-    columns = db.columns("fts_freshness_state")
-    selected = [
-        name if name in columns else f"NULL AS {name}"
-        for name in (
-            "state",
-            "checked_at",
-            "source_rows",
-            "indexed_rows",
-            "missing_rows",
-            "excess_rows",
-            "duplicate_rows",
-        )
-    ]
-    rows = db.exact_rows(
-        label="fts-freshness-state-by-surface",
-        sql=(f"SELECT {', '.join(selected)} FROM fts_freshness_state WHERE surface = ? LIMIT 1"),
-        params=("messages_fts",),
-        protected_tables=("fts_freshness_state",),
-    )
-    if not rows:
-        return None, None, False, triggers_present
-    row = rows[0]
-    state = _optional_str(row["state"])
-    source_rows = _optional_int(row["source_rows"]) or 0
-    indexed_rows = _optional_int(row["indexed_rows"]) or 0
-    ready = (
-        state == "ready"
-        and not (source_rows == 0 and indexed_rows == 0)
-        and source_rows == indexed_rows
-        and (_optional_int(row["missing_rows"]) or 0) == 0
-        and (_optional_int(row["excess_rows"]) or 0) == 0
-        and (_optional_int(row["duplicate_rows"]) or 0) == 0
-    )
-    return state, _optional_str(row["checked_at"]), ready, triggers_present
-
-
 def _fts_reason(
-    recorded_ready: bool,
     triggers_present: bool,
     exact_converged: bool,
 ) -> str | None:
-    if not recorded_ready:
-        return "FTS freshness ledger is not ready"
     if not triggers_present:
         return "FTS maintenance triggers are missing"
     if not exact_converged:

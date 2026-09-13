@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import shlex
 import sqlite3
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,7 +22,6 @@ from polylogue.storage.embeddings.materialization import (
     archive_embeddable_message_where,
     archive_embeddable_messages_relation,
     archive_embedding_messages_table_ref,
-    count_archive_embedding_session_state,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.embeddings.progress import EmbeddingCatchupRunPayload
@@ -33,6 +31,7 @@ from polylogue.storage.search_providers.sqlite_vec_support import (
     VOYAGE_4_COST_PER_1M_TOKENS,
 )
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.deadline import query_deadline
 
 if TYPE_CHECKING:
     from polylogue.config import Config, PolylogueConfig
@@ -233,6 +232,17 @@ def _attached_table_name(conn: sqlite3.Connection, schema_name: str, table_name:
     return ""
 
 
+def _embedding_refs_have_message_semantics(conn: sqlite3.Connection, refs_table: str) -> bool:
+    """Return whether a ref relation can bind exact current message semantics."""
+
+    if not refs_table:
+        return False
+    from polylogue.storage.introspection import column_exists
+
+    schema, _, table = refs_table.rpartition(".")
+    return column_exists(conn, table, "message_content_hash", schema=schema or "main")
+
+
 def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     from polylogue.storage.embeddings.support import is_missing_table_error
 
@@ -247,7 +257,9 @@ def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     return _payload_int(row[0])
 
 
-def _scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: int | None) -> int | None:
+def _scalar_int_with_timeout(
+    conn: sqlite3.Connection, sql: str, *, timeout_ms: int | None, params: tuple[object, ...] = ()
+) -> int | None:
     """Return an exact scalar count, or ``None`` when an owned reader times out.
 
     A supplied operation reader owns its SQLite progress handler for operation
@@ -258,16 +270,12 @@ def _scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: 
     from polylogue.storage.embeddings.support import is_missing_table_error
 
     if timeout_ms is None:
-        return _scalar_int(conn, sql)
+        row = conn.execute(sql, params).fetchone()
+        return _payload_int(row[0]) if row else 0
 
-    deadline = time.monotonic() + (timeout_ms / 1000.0)
-
-    def _interrupt_when_expired() -> int:
-        return 1 if time.monotonic() >= deadline else 0
-
-    conn.set_progress_handler(_interrupt_when_expired, 10_000)
     try:
-        row = conn.execute(sql).fetchone()
+        with query_deadline(conn, seconds=timeout_ms / 1000):
+            row = conn.execute(sql, params).fetchone()
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
         if is_missing_table_error(exc):
@@ -275,8 +283,6 @@ def _scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: 
         if "interrupted" in message or "locked" in message or "busy" in message:
             return None
         raise
-    finally:
-        conn.set_progress_handler(None, 0)
     if row is None:
         return 0
     return _payload_int(row[0])
@@ -296,14 +302,9 @@ def _rows_with_timeout(
     if timeout_ms is None:
         return list(conn.execute(sql, params).fetchall())
 
-    deadline = time.monotonic() + (timeout_ms / 1000.0)
-
-    def _interrupt_when_expired() -> int:
-        return 1 if time.monotonic() >= deadline else 0
-
-    conn.set_progress_handler(_interrupt_when_expired, 10_000)
     try:
-        rows = conn.execute(sql, params).fetchall()
+        with query_deadline(conn, seconds=timeout_ms / 1000):
+            rows = conn.execute(sql, params).fetchall()
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
         if is_missing_table_error(exc):
@@ -311,8 +312,6 @@ def _rows_with_timeout(
         if "interrupted" in message or "locked" in message or "busy" in message:
             return None
         raise
-    finally:
-        conn.set_progress_handler(None, 0)
     return list(rows)
 
 
@@ -507,83 +506,79 @@ def _message_coverage_percent(
     return embedded_messages / candidate_prose_messages * 100
 
 
-def _archive_embedding_session_state_summary(
+def _authoritative_archive_embedding_state(
     conn: sqlite3.Connection,
     *,
-    status_table: str,
-    total_sessions: int,
-) -> tuple[int, int]:
-    """Return embedded/pending session counts without exact prose scans by default."""
-
-    if total_sessions <= 0:
-        return 0, 0
-    if not status_table:
-        return 0, total_sessions
-    embedded_sessions = _scalar_int(
-        conn,
-        f"""
-        SELECT COUNT(*)
-        FROM {status_table} AS e
-        JOIN sessions AS s ON s.session_id = e.session_id
-        WHERE COALESCE(e.needs_reindex, 0) = 0
-          AND e.error_message IS NULL
-        """,
-    )
-    pending_sessions = max(total_sessions - embedded_sessions, 0)
-    return embedded_sessions, pending_sessions
-
-
-def _archive_embedding_session_state_exact_with_timeout(
-    conn: sqlite3.Connection,
-    *,
-    status_table: str,
-    timeout_ms: int | None,
+    refs_table: str,
+    meta_table: str,
+    vectors_table: str,
     recipe: EmbeddingRecipe,
-) -> tuple[int, int, int] | None:
-    """Return exact embedded/pending/blocked counts, or ``None`` when too costly."""
+    timeout_ms: int | None,
+) -> tuple[int, int, int, int] | None:
+    """Count readiness from desired message membership and vector provenance.
 
-    from polylogue.storage.embeddings.support import is_missing_table_error
+    ``embedding_status`` and ``embedding_derivation_state`` are attempt
+    telemetry.  They cannot certify a vector: a session is ready only when
+    every currently required message has its current ref and a vector meta row
+    carrying the complete configured recipe/output contract.  Sessions with no
+    embeddable messages are valid-empty partitions.
+    """
 
-    if timeout_ms is None:
-        session_state = count_archive_embedding_session_state(
-            conn,
-            status_table=status_table,
-            rebuild=False,
-            recipe=recipe,
+    if (
+        not refs_table
+        or not meta_table
+        or not vectors_table
+        or not _embedding_refs_have_message_semantics(conn, refs_table)
+    ):
+        return None
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    loaded, _error = try_load_sqlite_vec(conn)
+    if not loaded:
+        return None
+    relation = archive_embeddable_messages_relation(conn, alias="desired", model=recipe.model)
+    sql = f"""
+        WITH desired_messages AS (
+            SELECT message_id, session_id, content_hash, vector_derivation_hash FROM {relation}
+        ), per_session AS (
+            SELECT d.session_id,
+                   COUNT(*) AS required_count,
+                   SUM(CASE WHEN r.message_id IS NOT NULL
+                              AND r.session_id = d.session_id
+                              AND r.message_content_hash = d.content_hash
+                              AND r.vector_derivation_hash = d.vector_derivation_hash
+                              AND em.recipe_hash = ?
+                              AND em.output_contract_hash = ?
+                              AND em.model = ?
+                              AND em.dimension = ?
+                              AND EXISTS(
+                                SELECT 1 FROM {vectors_table} AS vectors
+                                WHERE vectors.vector_derivation_hash = lower(hex(r.vector_derivation_hash))
+                              )
+                            THEN 1 ELSE 0 END) AS valid_count
+            FROM desired_messages AS d
+            LEFT JOIN {refs_table} AS r ON r.message_id = d.message_id
+            LEFT JOIN {meta_table} AS em ON em.vector_derivation_hash = r.vector_derivation_hash
+            GROUP BY d.session_id
         )
-        return (
-            session_state.embedded_sessions,
-            session_state.pending_sessions,
-            session_state.blocked_sessions,
-        )
-
-    deadline = time.monotonic() + (timeout_ms / 1000.0)
-
-    def _interrupt_when_expired() -> int:
-        return 1 if time.monotonic() >= deadline else 0
-
-    conn.set_progress_handler(_interrupt_when_expired, 10_000)
-    try:
-        session_state = count_archive_embedding_session_state(
-            conn,
-            status_table=status_table,
-            rebuild=False,
-            recipe=recipe,
-        )
-    except sqlite3.OperationalError as exc:
-        message = str(exc).lower()
-        if is_missing_table_error(exc):
-            return (0, 0, 0)
-        if "interrupted" in message or "locked" in message or "busy" in message:
-            return None
-        raise
-    finally:
-        conn.set_progress_handler(None, 0)
-    return (
-        session_state.embedded_sessions,
-        session_state.pending_sessions,
-        session_state.blocked_sessions,
+        SELECT
+            COALESCE(SUM(CASE WHEN COALESCE(p.required_count, 0) = COALESCE(p.valid_count, 0) THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN COALESCE(p.required_count, 0) > COALESCE(p.valid_count, 0) THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(COALESCE(p.valid_count, 0)), 0),
+            COALESCE(SUM(COALESCE(p.required_count, 0) - COALESCE(p.valid_count, 0)), 0)
+        FROM sessions AS s
+        LEFT JOIN per_session AS p ON p.session_id = s.session_id
+        """
+    params = (
+        recipe.recipe_hash,
+        recipe.output_contract_hash,
+        recipe.model,
+        recipe.dimensions,
     )
+    rows = _rows_with_timeout(conn, sql, params=params, timeout_ms=timeout_ms)
+    if not rows:
+        return None
+    return tuple(_payload_int(value) for value in rows[0])  # type: ignore[return-value]
 
 
 def _embedding_status(
@@ -821,9 +816,12 @@ def _archive_embedding_status_payload(
     )
     root = configured_root if configured_root is not None else db_path.parent
     owns_connection = _pinned_connection is None
-    detail_timeout_ms = DETAIL_QUERY_TIMEOUT_MS if owns_connection else None
-    metadata_timeout_ms = METADATA_SUMMARY_TIMEOUT_MS if owns_connection else None
-    candidate_prose_timeout_ms = DETAIL_CANDIDATE_PROSE_TIMEOUT_MS if owns_connection else None
+    # Every global readiness probe has a bounded deadline, including an
+    # operation-supplied snapshot.  The latter preserves its owner progress
+    # handler and receives a thread-safe SQLite interrupt deadline instead.
+    detail_timeout_ms = DETAIL_QUERY_TIMEOUT_MS
+    metadata_timeout_ms = METADATA_SUMMARY_TIMEOUT_MS
+    candidate_prose_timeout_ms = DETAIL_CANDIDATE_PROSE_TIMEOUT_MS
     # Status payloads degrade rather than refuse when the index tier is skewed.
     if _pinned_connection is None:
         index_db = _archive_index_path(db_path)
@@ -852,89 +850,57 @@ def _archive_embedding_status_payload(
             meta_table = _attached_table_name(conn, _embeddings_schema, "message_embeddings_meta")
             failure_table = _attached_table_name(conn, _embeddings_schema, "embedding_failures")
             refs_table = _attached_table_name(conn, _embeddings_schema, "message_embedding_refs")
+            vectors_table = _attached_table_name(conn, _embeddings_schema, "message_embeddings")
         elif embeddings_db.exists():
             conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
             status_table = _attached_table_name(conn, "embeddings", "embedding_status")
             meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
             failure_table = _attached_table_name(conn, "embeddings", "embedding_failures")
             refs_table = _attached_table_name(conn, "embeddings", "message_embedding_refs")
+            vectors_table = _attached_table_name(conn, "embeddings", "message_embeddings")
         else:
             status_table = ""
             meta_table = ""
             failure_table = ""
             refs_table = ""
+            vectors_table = ""
         has_messages = _table_exists(conn, "messages")
         has_status = bool(status_table)
         has_meta = bool(meta_table)
         has_refs = bool(refs_table)
+        has_ref_semantics = _embedding_refs_have_message_semantics(conn, refs_table)
         total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
-        legacy_blocked_sessions = (
-            _scalar_int(
-                conn,
-                f"""
-                SELECT COUNT(*)
-                FROM {status_table} AS e
-                JOIN sessions AS s ON s.session_id = e.session_id
-                WHERE COALESCE(e.needs_reindex, 0) = 0
-                  AND e.error_message IS NOT NULL
-                """,
-            )
-            if has_status
-            else 0
-        )
-        embedded_sessions, pending_sessions = _archive_embedding_session_state_summary(
+        authoritative_state = _authoritative_archive_embedding_state(
             conn,
-            status_table=status_table,
-            total_sessions=total_sessions,
-        )
-        blocked_sessions = legacy_blocked_sessions
-        exact_session_state = _archive_embedding_session_state_exact_with_timeout(
-            conn,
-            status_table=status_table,
-            timeout_ms=detail_timeout_ms if include_detail else metadata_timeout_ms,
+            refs_table=refs_table,
+            meta_table=meta_table,
+            vectors_table=vectors_table,
             recipe=recipe,
+            timeout_ms=detail_timeout_ms if include_detail else metadata_timeout_ms,
         )
+        # ``pending_messages_exact`` reports whether the caller paid for an
+        # exact backlog count, not whether the embedded-state inspection could
+        # certify itself. Those are different questions: when the
+        # authoritative state is unavailable nothing is provably embedded, so
+        # the detail pass below counts every embeddable message as pending --
+        # a conservative backlog that is exact, and consistent with the
+        # pending_sessions = total_sessions set in that same branch. The
+        # detail pass still downgrades this to False when one of its own
+        # queries times out.
         pending_messages_exact = include_detail
-        if exact_session_state is None:
-            pending_sessions = max(pending_sessions - legacy_blocked_sessions, 0)
-            if include_detail:
-                pending_messages_exact = False
-        else:
-            embedded_sessions, pending_sessions, blocked_sessions = exact_session_state
-        if has_status:
-            embedded_messages = _scalar_int(
-                conn,
-                f"""
-                SELECT COALESCE(SUM(e.message_count_embedded), 0)
-                FROM {status_table} AS e
-                JOIN sessions AS s ON s.session_id = e.session_id
-                """,
-            )
-        elif refs_table:
-            # message_embedding_refs is per-message; message_embeddings_meta
-            # is per-distinct-vector (deduped) and would undercount identical
-            # content shared across sessions as one message.
-            exact_embedded_messages = _scalar_int_with_timeout(
-                conn,
-                f"""
-                SELECT COUNT(*)
-                FROM {refs_table}
-                """,
-                timeout_ms=detail_timeout_ms,
-            )
-            embedded_messages = exact_embedded_messages if exact_embedded_messages is not None else 0
-        elif has_meta:
-            exact_embedded_messages = _scalar_int_with_timeout(
-                conn,
-                f"""
-                SELECT COUNT(*)
-                FROM {meta_table}
-                """,
-                timeout_ms=detail_timeout_ms,
-            )
-            embedded_messages = exact_embedded_messages if exact_embedded_messages is not None else 0
-        else:
+        if authoritative_state is None:
+            # Readiness is unavailable until current refs, recipe metadata,
+            # and physical vectors can be inspected together.  Attempt and
+            # failure ledgers remain health evidence below, but cannot certify
+            # an output that may be absent or stale.
+            embedded_sessions = 0
+            pending_sessions = total_sessions
             embedded_messages = 0
+            pending_messages = 0
+            blocked_sessions = 0
+        else:
+            embedded_sessions, pending_sessions, embedded_messages, pending_messages = authoritative_state
+            blocked_sessions = 0
         failure_count = (
             _scalar_int(
                 conn,
@@ -985,7 +951,8 @@ def _archive_embedding_status_payload(
             include_detail=include_detail,
             timeout_ms=detail_timeout_ms,
         )
-        pending_messages = 0
+        if authoritative_state is None:
+            pending_messages = 0
         candidate_prose_messages: int | None = None
         candidate_prose_messages_exact = False
         stale_messages = 0
@@ -1046,12 +1013,14 @@ def _archive_embedding_status_payload(
             )
             configured_model = settings.configured_model or ""
             messages_ref = archive_embeddable_messages_relation(conn, alias="m", model=configured_model)
-            status_join = f"LEFT JOIN {status_table} e ON e.session_id = m.session_id" if has_status else ""
-            blocked_session_clause = (
-                "AND NOT (e.session_id IS NOT NULL AND COALESCE(e.needs_reindex, 0) = 0 "
-                "AND e.error_message IS NOT NULL)"
-                if has_status
-                else ""
+            meta_join = (
+                f"LEFT JOIN {meta_table} em ON em.vector_derivation_hash = r.vector_derivation_hash" if has_meta else ""
+            )
+            vector_present = (
+                f"EXISTS(SELECT 1 FROM {vectors_table} AS vectors "
+                "WHERE vectors.vector_derivation_hash = lower(hex(r.vector_derivation_hash)))"
+                if vectors_table
+                else "0"
             )
             total_messages = _scalar_int_with_timeout(
                 conn,
@@ -1065,24 +1034,34 @@ def _archive_embedding_status_payload(
             # AND that ref's recorded hash matches the message's *current*
             # vector_derivation_hash (computed by the relation above). Presence-
             # based -- there is no per-vector "needs_reindex" anymore.
-            if has_refs and embedded_messages == 0 and blocked_sessions == 0:
+            if has_refs and embedded_messages == 0:
                 pending_messages = total_messages
-            elif has_refs:
-                status_reindex_clause = "OR COALESCE(e.needs_reindex, 0) = 1" if has_status else ""
+            elif has_refs and has_ref_semantics and has_meta and vectors_table:
                 exact_pending_messages = _scalar_int_with_timeout(
                     conn,
                     f"""
                     SELECT COUNT(*)
                     FROM {messages_ref}
                     LEFT JOIN {refs_table} r ON r.message_id = m.message_id
-                    {status_join}
+                    {meta_join}
                     WHERE (
                         r.message_id IS NULL
                         OR r.vector_derivation_hash != m.vector_derivation_hash
-                        {status_reindex_clause}
+                        OR r.message_content_hash IS NOT m.content_hash
+                        OR em.vector_derivation_hash IS NULL
+                        OR em.recipe_hash != ?
+                        OR em.output_contract_hash != ?
+                        OR em.model != ?
+                        OR em.dimension != ?
+                        OR NOT {vector_present}
                       )
-                      {blocked_session_clause}
                     """,
+                    params=(
+                        recipe.recipe_hash,
+                        recipe.output_contract_hash,
+                        recipe.model,
+                        recipe.dimensions,
+                    ),
                     timeout_ms=detail_timeout_ms,
                 )
                 if exact_pending_messages is None:
@@ -1120,9 +1099,7 @@ def _archive_embedding_status_payload(
                         SELECT COUNT(*)
                         FROM {messages_ref}
                         JOIN {refs_table} r ON r.message_id = m.message_id
-                        {status_join}
                         WHERE r.vector_derivation_hash != m.vector_derivation_hash
-                          {blocked_session_clause}
                         """,
                         timeout_ms=detail_timeout_ms,
                     )

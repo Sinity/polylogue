@@ -173,6 +173,18 @@ class FileIntakeAdapter(IntakeAdapter):
             metrics = await self.context.watcher._ingest_files(
                 [path], queued_file_count=1, whole_archive_convergence=False
             )
+            stale_cursor_writes = int(getattr(metrics, "stale_cursor_write_count", 0) or 0)
+            if stale_cursor_writes:
+                return AdmissionResult(
+                    AdmissionOutcome.RETRYABLE,
+                    reason=f"source cursor write was stale: {path}",
+                )
+            failed = int(getattr(metrics, "failed_file_count", 0) or 0)
+            if failed:
+                return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"source admission failed: {path}")
+            succeeded = int(getattr(metrics, "succeeded_file_count", 0) or 0)
+            if not succeeded:
+                return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item.estimated_cost)
             converge_embeddings = getattr(self.context.watcher, "_converge_embeddings_off_writer", None)
             if callable(converge_embeddings):
                 await converge_embeddings([path])
@@ -181,14 +193,8 @@ class FileIntakeAdapter(IntakeAdapter):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
         except (OSError, ValueError, RuntimeError) as exc:
             return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"{type(exc).__name__}: {exc}")
-        succeeded = int(getattr(metrics, "succeeded_file_count", 0) or 0)
-        failed = int(getattr(metrics, "failed_file_count", 0) or 0)
-        if succeeded:
-            actual = int(getattr(metrics, "source_payload_read_bytes", 0) or item.estimated_cost)
-            return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=max(1, actual))
-        if failed:
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"source admission failed: {path}")
-        return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item.estimated_cost)
+        actual = int(getattr(metrics, "source_payload_read_bytes", 0) or item.estimated_cost)
+        return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=max(1, actual))
 
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable

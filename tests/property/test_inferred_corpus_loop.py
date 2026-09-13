@@ -20,8 +20,8 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import make_fts_stage
 from polylogue.maintenance.archive_verification import verify_archive
+from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
@@ -29,8 +29,6 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.models import SyntheticSchemaSelection
 from polylogue.schemas.synthetic.wire_formats import build_wire_support_receipt
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
-from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
-from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_canonical_snapshot import archive_snapshot, assert_archives_equivalent
@@ -67,6 +65,20 @@ def _assert_fts_match(conn: sqlite3.Connection, token: str) -> None:
         (token,),
     ).fetchall()
     assert rows, f"FTS MATCH returned no blocks for generated token {token!r}"
+
+
+def _converge_message_fts(archive_root: Path, session_ids: Sequence[str]) -> None:
+    """Converge and inspect FTS through its common domain adapter."""
+    index_db = archive_root / "index.db"
+    adapter = make_fts_derivation(index_db, archive_root=archive_root)
+    frame = make_fts_frame(index_db, archive_root=archive_root, scope=session_ids)
+    report = DaemonConverger((), derivations=(adapter,)).converge_derivations(frame, resume=False)
+    invalid = {
+        session_id: status for session_id, status in adapter.inspect(frame, session_ids).items() if status != "valid"
+    }
+    assert report.failed == report.pending == 0 and not invalid, (
+        f"common FTS derivation did not settle: failed={report.failed} pending={report.pending} invalid={invalid}"
+    )
 
 
 def _run_session_profile_sweep_in_fresh_process(index_db: Path, archive_root: Path) -> None:
@@ -135,11 +147,8 @@ def _ingest_and_converge_sources(
     assert backfill.adoption_deferred == 0
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-    states, _timings = DaemonConverger((make_fts_stage(archive_root / "index.db"),)).converge_sessions(session_ids)
-    assert states and all(state.converged and state.last_error is None for state in states.values())
+    _converge_message_fts(archive_root, session_ids)
     converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
     return session_ids
 
 
@@ -248,9 +257,7 @@ def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-    converger = DaemonConverger((make_fts_stage(archive_root / "index.db"),))
-    states, _timings = converger.converge_sessions(session_ids)
-    assert states and all(state.converged and state.last_error is None for state in states.values())
+    _converge_message_fts(archive_root, session_ids)
     converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
 
     with sqlite3.connect(archive_root / "index.db") as conn:
@@ -379,8 +386,7 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-    states, _timings = DaemonConverger((make_fts_stage(archive_root / "index.db"),)).converge_sessions(session_ids)
-    assert states and all(state.converged and state.last_error is None for state in states.values())
+    _converge_message_fts(archive_root, session_ids)
     converge_session_profiles(archive_root / "index.db", archive_root, session_ids, now=lambda: 0.0)
     with sqlite3.connect(archive_root / "index.db") as conn:
         conn.execute("ANALYZE")
@@ -403,8 +409,8 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
 def test_inferred_selection_profiles_recover_in_a_fresh_process(tmp_path: Path) -> None:
     """A restarted owner fully discovers and restores inferred corpus profiles.
 
-    Anti-vacuity: replace the no-hint owner sweep with a legacy debt retry or
-    a changed-session callback and a partition not supplied by that callback
+    Anti-vacuity: replace the no-hint owner sweep with a changed-session
+    callback and a partition not supplied by that callback
     stays absent after restart.
     """
     spec, selection = _inferred_selection()

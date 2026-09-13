@@ -15,9 +15,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import FTS_MESSAGES_IDENTITY_RECIPE_ID
@@ -31,14 +32,6 @@ class FtsKeyStatus(StrEnum):
     MISSING = "missing"
     STALE = "stale"
     EXCESS = "excess"
-
-
-class FtsOutcome(StrEnum):
-    """Result of one bounded convergence operation."""
-
-    DONE = "done"
-    PENDING = "pending"
-    FAILED = "failed"
 
 
 GLOBAL_PARTITION = "__global__"
@@ -89,17 +82,47 @@ class FtsPartitionInspection:
 
 
 @dataclass(frozen=True, slots=True)
-class FtsConvergenceResult:
-    """Bounded result returned by the recurring owner."""
+class FtsPartitionReplacement:
+    """Lease-free session replacement in the kernel's structural vocabulary.
 
-    outcome: FtsOutcome
-    partitions: tuple[FtsPartitionInspection, ...]
-    written_partitions: int = 0
-    detail: str | None = None
+    ``payload`` is the complete value projection read from ``blocks``.  The
+    binding includes its recipe and SQLite generation; publication reads the
+    same projection again under ``BEGIN IMMEDIATE`` before replacing just this
+    session's FTS rows.  Sessions with no searchable blocks are valid without
+    a marker row because their correct replacement is empty.
+    """
 
-    @property
-    def ready(self) -> bool:
-        return self.outcome is FtsOutcome.DONE and all(partition.valid for partition in self.partitions)
+    key: str
+    input_binding: str
+    payload: FtsPartitionInput
+    generation_binding: str
+    empty: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class FtsOrphanReplacement:
+    """The low-cadence global residue replacement.
+
+    This is deliberately not an FTS rebuild.  Its only output is the absence
+    of docsize-backed FTS rows whose canonical searchable block vanished (and
+    their identity companions).  The digest binds the entire residue relation;
+    the writer re-reads it before issuing docsize-guarded deletes.
+    """
+
+    key: str
+    input_binding: str
+    payload: FtsOrphanBinding
+    generation_binding: str
+    empty: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class FtsOrphanBinding:
+    """Constant-memory binding of the two global orphan relations."""
+
+    digest: str
+    docsize_rows: int
+    identity_rows: int
 
 
 def _generation(conn: sqlite3.Connection) -> int:
@@ -109,6 +132,28 @@ def _generation(conn: sqlite3.Connection) -> int:
 
 def _has_content_hash(conn: sqlite3.Connection) -> bool:
     return any(str(row[1]) == "content_hash" for row in conn.execute("PRAGMA table_info(blocks)"))
+
+
+def _session_block_id_range(key: str) -> tuple[str, str]:
+    """Half-open ``block_id`` range covering exactly one session's blocks.
+
+    ``block_id`` is ``session_id || ':' || ...``; ``';'`` is the code point
+    after ``':'``, so ``[key || ':', key || ';')`` selects the session's rows
+    through the ``block_id`` UNIQUE index instead of a ``substr`` table scan.
+
+    The range, not a join to ``blocks``, is what lets a partition see residue
+    whose canonical block no longer exists — the exact class of row that must
+    be retired. The range alone is not the whole rule: a colon-prefixed child
+    session's block ids also fall inside it, so every caller pairs the range
+    with ``b.block_id IS NULL OR b.session_id = key`` and claims only residue
+    plus its own rows.
+    """
+    return f"{key}:", f"{key};"
+
+
+def _indexable_row_count(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()
+    return 0 if row is None else int(row[0] or 0)
 
 
 _ARCHIVE_MESSAGE_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -142,16 +187,6 @@ def _schema_compatible(conn: sqlite3.Connection) -> bool:
     return row is not None and int(row[0]) == len(expected)
 
 
-def _session_block_id_range(key: str) -> tuple[str, str]:
-    """Half-open ``block_id`` range covering exactly one session's blocks.
-
-    ``block_id`` is ``session_id || ':' || ...``; ``';'`` is the code point
-    after ``':'``, so ``[key || ':', key || ';')`` selects the session's rows
-    through the ``block_id`` UNIQUE index instead of a ``substr`` table scan.
-    """
-    return f"{key}:", f"{key};"
-
-
 def _digest(rows: Sequence[FtsInputRow]) -> str:
     payload = [
         [
@@ -168,11 +203,114 @@ def _digest(rows: Sequence[FtsInputRow]) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-class FtsDerivationAdapter:
-    """The message FTS domain adapter and its complete write protocol."""
+def _orphan_binding(conn: sqlite3.Connection) -> FtsOrphanBinding:
+    """Bind FTS residue without retaining an archive-sized rowid collection.
 
-    name = "messages_fts"
+    ``messages_fts`` is contentless, so ``messages_fts_docsize`` is the
+    durable SQLite-visible proof that an FTS row exists.  Deletion is therefore
+    driven through docsize rather than an unbounded virtual-table rebuild.
+    Identity-only residue is listed separately and can be retired without ever
+    touching a live FTS row.
+    """
+    digest = hashlib.sha256()
+
+    def update_rows(label: bytes, sql: str) -> int:
+        digest.update(label)
+        count = 0
+        for row in conn.execute(sql):
+            digest.update(f"{int(row[0])},".encode())
+            count += 1
+        return count
+
+    docsize_rows = update_rows(
+        b"docsize:",
+        """
+        SELECT d.id
+        FROM messages_fts_docsize AS d
+        LEFT JOIN blocks AS b ON b.rowid = d.id AND b.search_text != ''
+        WHERE b.rowid IS NULL
+        ORDER BY d.id
+        """,
+    )
+    identity_rows = update_rows(
+        b"identity:",
+        """
+        SELECT i.rowid
+        FROM messages_fts_identity AS i
+        LEFT JOIN messages_fts_docsize AS d ON d.id = i.rowid
+        WHERE d.id IS NULL
+        ORDER BY i.rowid
+        """,
+    )
+    return FtsOrphanBinding(digest.hexdigest(), docsize_rows, identity_rows)
+
+
+def _has_orphan_rows(conn: sqlite3.Connection) -> bool:
+    """Bound discovery for the single global residue partition."""
+    return any(
+        int(conn.execute(sql).fetchone()[0] or 0)
+        for sql in (
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM messages_fts_docsize AS d
+                LEFT JOIN blocks AS b ON b.rowid = d.id AND b.search_text != ''
+                WHERE b.rowid IS NULL
+            )
+            """,
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM messages_fts_identity AS i
+                LEFT JOIN messages_fts_docsize AS d ON d.id = i.rowid
+                WHERE d.id IS NULL
+            )
+            """,
+        )
+    )
+
+
+class FtsDerivationAdapter:
+    """Message FTS as a structural ``DerivationAdapter`` without daemon imports.
+
+    The storage ring owns the queries and the one-session transaction.  The
+    daemon's common kernel supplies only a frame, bounded key paging and a
+    publication admission callback.  Keeping the connection factories here
+    lets computation use read snapshots without acquiring the writer lease.
+    """
+
+    domain = "messages_fts"
+    name = domain
     recipe_id = FTS_MESSAGES_IDENTITY_RECIPE_ID
+    prerequisites: tuple[str, ...] = ()
+
+    def __init__(
+        self,
+        read_connection: Callable[[], sqlite3.Connection] | None = None,
+        write_connection: Callable[[], sqlite3.Connection] | None = None,
+        *,
+        generation_binding: Callable[[], str] | None = None,
+        orphan_interval_s: float | None = None,
+        monotonic: Callable[[], float] | None = None,
+    ) -> None:
+        self._read_connection = read_connection
+        self._write_connection = write_connection
+        self._generation_binding = generation_binding
+        self._orphan_interval_s = orphan_interval_s
+        self._monotonic = monotonic
+        self._last_orphan_attempt: float | None = None
+
+    def _connections(self) -> tuple[Callable[[], sqlite3.Connection], Callable[[], sqlite3.Connection]]:
+        if self._read_connection is None or self._write_connection is None:
+            raise RuntimeError("FTS derivation adapter requires read and write connection factories")
+        return self._read_connection, self._write_connection
+
+    def _frame_current(self, frame: object) -> bool:
+        if self._generation_binding is None:
+            return True
+        return getattr(frame, "source_revision", None) == f"index-generation:{self._generation_binding()}"
+
+    def _frame_recipe_current(self, frame: object) -> bool:
+        versions = getattr(frame, "recipe_versions", {})
+        return isinstance(versions, Mapping) and versions.get(self.domain) == self.recipe_id
 
     def required_partitions(self, conn: sqlite3.Connection) -> tuple[str, ...]:
         """Return all session keys, including sessions with valid empty output."""
@@ -217,24 +355,33 @@ class FtsDerivationAdapter:
         )
         return FtsPartitionInput(key, _generation(conn), self.recipe_id, rows, _digest(rows))
 
-    def inspect(self, conn: sqlite3.Connection, key: str) -> FtsPartitionInspection:
+    def inspect_partition(self, conn: sqlite3.Connection, key: str) -> FtsPartitionInspection:
         """Inspect membership against ``blocks`` without consulting state tables."""
         generation = _generation(conn)
         compatible = _schema_compatible(conn)
-        expected = (
-            self.input_for(conn, key)
-            if table_exists(conn, "blocks")
-            else FtsPartitionInput(key, generation, self.recipe_id, (), _digest(()))
-        )
+        # The global residue key is not a rebuild partition.  Its inspection
+        # must count the shared relation without materializing every block's
+        # input payload; the only values its publisher reads are orphan rowids.
+        # One partition input per inspection: input_for materializes every
+        # block's search_text and hashes it, so calling it twice per session
+        # doubled the cost of the rebuild path for no added evidence.
+        expected: FtsPartitionInput | None = None
+        if key == GLOBAL_PARTITION or not table_exists(conn, "blocks"):
+            expected_rows = (
+                _indexable_row_count(conn) if key == GLOBAL_PARTITION and table_exists(conn, "blocks") else 0
+            )
+        else:
+            expected = self.input_for(conn, key)
+            expected_rows = len(expected.rows)
         if not compatible:
             return FtsPartitionInspection(
                 key,
                 FtsKeyStatus.MISSING,
                 generation,
                 self.recipe_id,
-                len(expected.rows),
+                expected_rows,
                 0,
-                len(expected.rows),
+                expected_rows,
                 0,
                 0,
                 0,
@@ -253,7 +400,7 @@ class FtsDerivationAdapter:
                     """
                 ).fetchone()[0]
             )
-            excess_rows = int(
+            docsize_excess_rows = int(
                 conn.execute(
                     """
                     SELECT COUNT(*) FROM messages_fts_docsize AS d
@@ -262,6 +409,17 @@ class FtsDerivationAdapter:
                     """
                 ).fetchone()[0]
             )
+            identity_excess_rows = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM messages_fts_identity AS i
+                    LEFT JOIN messages_fts_docsize AS d ON d.id = i.rowid
+                    WHERE d.id IS NULL
+                    """
+                ).fetchone()[0]
+            )
+            excess_rows = docsize_excess_rows + identity_excess_rows
             wrong_rows = (
                 int(
                     conn.execute(
@@ -291,6 +449,8 @@ class FtsDerivationAdapter:
                 )
             )
         else:
+            if expected is None:
+                expected = self.input_for(conn, key)
             required = tuple(row.rowid for row in expected.rows)
             placeholders = ", ".join("?" for _ in required)
             present_rows = (
@@ -310,7 +470,7 @@ class FtsDerivationAdapter:
                     JOIN messages_fts_docsize AS d ON d.id = i.rowid
                     LEFT JOIN blocks AS b ON b.block_id = i.block_id
                     WHERE i.block_id >= ? AND i.block_id < ?
-                      AND (b.block_id IS NULL OR b.session_id != ? OR b.search_text = '')
+                      AND (b.block_id IS NULL OR (b.session_id = ? AND b.search_text = ''))
                     """,
                     (*_session_block_id_range(key), key),
                 ).fetchone()[0]
@@ -338,11 +498,13 @@ class FtsDerivationAdapter:
         if key != GLOBAL_PARTITION:
             duplicate_sql = (
                 "SELECT COALESCE(SUM(n - 1), 0) FROM ("
-                "SELECT block_id, COUNT(*) AS n FROM messages_fts_identity "
-                "WHERE block_id >= ? AND block_id < ? "
-                "GROUP BY block_id HAVING n > 1)"
+                "SELECT i.block_id, COUNT(*) AS n FROM messages_fts_identity AS i "
+                "LEFT JOIN blocks AS b ON b.block_id = i.block_id "
+                "WHERE i.block_id >= ? AND i.block_id < ? "
+                "AND (b.block_id IS NULL OR b.session_id = ?) "
+                "GROUP BY i.block_id HAVING n > 1)"
             )
-            duplicate_params = _session_block_id_range(key)
+            duplicate_params = (*_session_block_id_range(key), key)
         duplicate_rows = int(conn.execute(duplicate_sql, duplicate_params).fetchone()[0])
         status = FtsKeyStatus.VALID
         detail: str | None = None
@@ -357,7 +519,7 @@ class FtsDerivationAdapter:
             status,
             generation,
             self.recipe_id,
-            len(expected.rows),
+            expected_rows,
             present_rows,
             missing_rows,
             excess_rows,
@@ -371,14 +533,14 @@ class FtsDerivationAdapter:
         self, conn: sqlite3.Connection, *, keys: Iterable[str] | None = None
     ) -> tuple[FtsPartitionInspection, ...]:
         selected = tuple(sorted(dict.fromkeys(keys))) if keys is not None else self.required_partitions(conn)
-        inspections = [self.inspect(conn, key) for key in selected]
+        inspections = [self.inspect_partition(conn, key) for key in selected]
         if keys is None:
-            global_state = self.inspect(conn, GLOBAL_PARTITION)
+            global_state = self.inspect_partition(conn, GLOBAL_PARTITION)
             if global_state.excess_rows or not global_state.triggers_compatible:
                 inspections.append(global_state)
         return tuple(inspections)
 
-    def publish(self, conn: sqlite3.Connection, computed: FtsPartitionInput) -> bool:
+    def publish_partition(self, conn: sqlite3.Connection, computed: FtsPartitionInput) -> bool:
         """Atomically replace one partition, returning false on revalidation drift."""
         owns_transaction = not conn.in_transaction
         if owns_transaction:
@@ -394,9 +556,7 @@ class FtsDerivationAdapter:
                     conn.execute("ROLLBACK")
                 return False
             if computed.key == GLOBAL_PARTITION:
-                conn.execute("DELETE FROM messages_fts")
-                conn.execute("DELETE FROM messages_fts_identity")
-                self._insert_rows(conn, GLOBAL_PARTITION)
+                raise ValueError("the global FTS key only retires docsize-backed orphan residue")
             else:
                 rowids = {
                     int(row[0])
@@ -407,9 +567,11 @@ class FtsDerivationAdapter:
                     for row in conn.execute(
                         """
                         SELECT i.rowid FROM messages_fts_identity AS i
+                        LEFT JOIN blocks AS b ON b.block_id = i.block_id
                         WHERE i.block_id >= ? AND i.block_id < ?
+                          AND (b.block_id IS NULL OR b.session_id = ?)
                         """,
-                        _session_block_id_range(computed.key),
+                        (*_session_block_id_range(computed.key), computed.key),
                     )
                 )
                 if rowids:
@@ -459,46 +621,224 @@ class FtsDerivationAdapter:
                 (self.recipe_id, *params),
             )
 
-    def converge(
-        self, conn: sqlite3.Connection, *, keys: Sequence[str] | None = None, limit: int | None = None
-    ) -> FtsConvergenceResult:
-        """Inspect and publish a bounded set of stale partitions."""
-        inspections = self.inspect_all(conn, keys=keys)
-        candidates = [inspection for inspection in inspections if not inspection.valid]
-        if limit is not None:
-            candidates = candidates[: max(0, int(limit))]
-        if not candidates:
-            return FtsConvergenceResult(FtsOutcome.DONE, inspections)
-        written = 0
-        for inspection in candidates:
-            computed = self.input_for(conn, inspection.key)
-            if inspection.key == GLOBAL_PARTITION or computed.rows or inspection.status is not FtsKeyStatus.VALID:
-                if not self.publish(conn, computed):
-                    return FtsConvergenceResult(
-                        FtsOutcome.PENDING,
-                        self.inspect_all(conn, keys=keys),
-                        written,
-                        "canonical input changed before publish",
-                    )
-                written += 1
-        remaining = self.inspect_all(conn, keys=keys)
-        if any(not inspection.valid for inspection in remaining):
-            return FtsConvergenceResult(FtsOutcome.PENDING, remaining, written, "bounded FTS convergence remains")
-        return FtsConvergenceResult(FtsOutcome.DONE, remaining, written)
+    # The following methods intentionally mirror the daemon kernel protocol
+    # without importing it.  ``DerivationFrame`` and ``ReplacementLike`` are
+    # structural boundaries so storage remains below daemon in the layering
+    # graph.
+
+    def required_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
+        """Keyset-page required session partitions, including valid-empty sessions."""
+        if limit < 1:
+            raise ValueError("FTS derivation page limit must be positive")
+        read_connection, _ = self._connections()
+        scope = getattr(frame, "scope", None)
+        if scope is not None:
+            if not isinstance(scope, tuple):
+                raise TypeError("FTS derivation frame scope must be a tuple of session ids or None")
+            keys = tuple(sorted(dict.fromkeys(str(key) for key in scope)))
+            start = 0 if cursor is None else next((i for i, key in enumerate(keys) if key > cursor), len(keys))
+            page = keys[start : start + limit]
+            return page, (page[-1] if start + len(page) < len(keys) and page else None)
+        conn = read_connection()
+        try:
+            rows = conn.execute(
+                """
+                SELECT session_id FROM (
+                    SELECT session_id FROM sessions WHERE session_id > ?
+                    UNION
+                    SELECT session_id FROM blocks WHERE session_id IS NOT NULL AND session_id > ?
+                )
+                ORDER BY session_id
+                LIMIT ?
+                """,
+                (cursor or "", cursor or "", limit),
+            ).fetchall()
+            keys = tuple(str(row[0]) for row in rows)
+            return keys, (keys[-1] if len(keys) == limit else None)
+        finally:
+            conn.close()
+
+    def excess_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
+        """Expose one global residue key only when docsize proves excess exists."""
+        del frame
+        if cursor is not None or limit < 1:
+            return (), None
+        now: float | None = None
+        if self._orphan_interval_s is not None:
+            if self._monotonic is None:
+                raise RuntimeError("FTS orphan cadence requires a monotonic clock")
+            now = self._monotonic()
+            if self._last_orphan_attempt is not None and now - self._last_orphan_attempt < self._orphan_interval_s:
+                return (), None
+        read_connection, _ = self._connections()
+        conn = read_connection()
+        try:
+            if not _schema_compatible(conn):
+                return (), None
+            found = _has_orphan_rows(conn)
+        finally:
+            conn.close()
+        if now is not None:
+            # A scheduling hint only, stamped after the probe actually ran: a
+            # pass that never reached the probe must not burn the interval. It
+            # is not written to SQLite and cannot certify readiness; direct
+            # readiness inspection still sees residue immediately.
+            self._last_orphan_attempt = now
+        return ((GLOBAL_PARTITION,) if found else ()), None
+
+    def quiet(self, frame: object, key: str) -> bool:
+        """FTS has no hot-source policy; orphan cadence is discovery-only."""
+        del frame
+        del key
+        return False
+
+    def prerequisite_keys(self, frame: object, key: str) -> tuple[()]:
+        del frame, key
+        return ()
+
+    def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        """Classify keys against the bound generation and each partition's output."""
+        if not self._frame_current(frame) or not self._frame_recipe_current(frame):
+            raise RuntimeError("FTS inspection frame generation or recipe changed")
+        read_connection, _ = self._connections()
+        conn = read_connection()
+        try:
+            conn.execute("BEGIN")
+            statuses: dict[str, str] = {}
+            for key in keys:
+                if key == GLOBAL_PARTITION:
+                    # This key owns only orphan residue. A poisoned session's
+                    # missing membership cannot make successful retirement fail.
+                    if not _schema_compatible(conn):
+                        raise RuntimeError("FTS schema or canonical trigger set is incompatible")
+                    statuses[key] = "excess" if _has_orphan_rows(conn) else "missing"
+                else:
+                    statuses[key] = self.inspect_partition(conn, key).status.value
+            if not self._frame_current(frame):
+                raise RuntimeError("FTS index generation changed during inspection")
+            return statuses
+        finally:
+            conn.close()
+
+    def compute(self, frame: object, key: str) -> FtsPartitionReplacement | FtsOrphanReplacement:
+        """Read one replacement from a stable snapshot while no writer is held."""
+        if not self._frame_current(frame):
+            raise RuntimeError("FTS frame names a retired index generation")
+        if not self._frame_recipe_current(frame):
+            raise RuntimeError("FTS frame recipe does not match the active FTS recipe")
+        read_connection, _ = self._connections()
+        generation_binding = self._generation_binding() if self._generation_binding is not None else ""
+        conn = read_connection()
+        try:
+            conn.execute("BEGIN")
+            if key == GLOBAL_PARTITION:
+                residue = _orphan_binding(conn)
+                replacement: FtsPartitionReplacement | FtsOrphanReplacement = FtsOrphanReplacement(
+                    key=key,
+                    input_binding=residue.digest,
+                    payload=residue,
+                    generation_binding=generation_binding,
+                )
+            else:
+                input_snapshot = self.input_for(conn, key)
+                replacement = FtsPartitionReplacement(
+                    key=key,
+                    input_binding=hashlib.sha256(
+                        f"{input_snapshot.generation}:{input_snapshot.recipe_id}:{input_snapshot.digest}".encode()
+                    ).hexdigest(),
+                    payload=input_snapshot,
+                    generation_binding=generation_binding,
+                    empty=not input_snapshot.rows,
+                )
+        finally:
+            conn.close()
+        if not self._frame_current(frame):
+            raise RuntimeError("FTS index generation changed while computing a replacement")
+        return replacement
+
+    def publish(self, frame: object, replacement: object) -> bool:
+        """Revalidate one frame-bound replacement and replace only its partition."""
+        if not isinstance(replacement, (FtsPartitionReplacement, FtsOrphanReplacement)):
+            raise TypeError(f"expected FTS replacement, got {type(replacement).__name__}")
+        if not self._frame_current(frame) or not self._frame_recipe_current(frame):
+            return False
+        if self._generation_binding is not None and replacement.generation_binding != self._generation_binding():
+            return False
+        _, write_connection = self._connections()
+        conn = write_connection()
+        try:
+            if replacement.generation_binding:
+                database_row = conn.execute("PRAGMA database_list").fetchone()
+                if database_row is None or Path(str(database_row[2])).resolve() != Path(replacement.generation_binding):
+                    return False
+            if isinstance(replacement, FtsOrphanReplacement):
+                return self._publish_orphans(conn, replacement)
+            return self.publish_partition(conn, replacement.payload)
+        finally:
+            conn.close()
+
+    def _publish_orphans(self, conn: sqlite3.Connection, replacement: FtsOrphanReplacement) -> bool:
+        """Delete global FTS residue, never rebuild the virtual table."""
+        owns_transaction = not conn.in_transaction
+        if owns_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        try:
+            if not _schema_compatible(conn) or _orphan_binding(conn) != replacement.payload:
+                if owns_transaction:
+                    conn.execute("ROLLBACK")
+                return False
+            # The FTS deletion is guarded by its docsize shadow relation.  A
+            # current canonical searchable block cannot be selected, even if a
+            # stale reader prepared this global key before a rowid was reused.
+            conn.execute(
+                """
+                DELETE FROM messages_fts
+                WHERE rowid IN (
+                    SELECT d.id
+                    FROM messages_fts_docsize AS d
+                    LEFT JOIN blocks AS b ON b.rowid = d.id AND b.search_text != ''
+                    WHERE b.rowid IS NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                DELETE FROM messages_fts_identity
+                WHERE rowid NOT IN (SELECT id FROM messages_fts_docsize)
+                """
+            )
+            if owns_transaction:
+                conn.execute("COMMIT")
+            return True
+        except Exception:
+            if owns_transaction and conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
 
 
 FtsDomainAdapter = FtsDerivationAdapter
 
 
+def replace_fts_partition_sync(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Replace one canonical-write FTS partition through the derivation SQL.
+
+    Live writes already own their transaction and must retain immediate search
+    membership.  They use the same input binding and one-partition publisher
+    as daemon convergence, without a second repair SQL implementation.
+    """
+    adapter = FtsDerivationAdapter()
+    return adapter.publish_partition(conn, adapter.input_for(conn, session_id))
+
+
 __all__ = [
     "GLOBAL_PARTITION",
-    "FtsConvergenceResult",
     "FtsDomainAdapter",
     "FtsDerivationAdapter",
     "FtsInputRow",
     "FtsKeyStatus",
-    "FtsOutcome",
+    "FtsOrphanReplacement",
     "FtsPartitionInput",
     "FtsPartitionInspection",
+    "FtsPartitionReplacement",
     "active_fts_triggers_sync",
 ]

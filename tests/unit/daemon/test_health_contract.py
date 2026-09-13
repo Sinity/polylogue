@@ -119,34 +119,38 @@ EXPECTED_READINESS_REASONS: frozenset[str] = frozenset(
 
 
 def _seed_ready_message_fts(index_db: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    index_db.parent.mkdir(parents=True, exist_ok=True)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+
+
+def _seed_stale_message_fts(index_db: Path) -> None:
+    _seed_ready_message_fts(index_db)
     with sqlite3.connect(index_db) as conn:
-        conn.executescript(
-            f"""
-            CREATE TABLE IF NOT EXISTS fts_freshness_state (
-                surface TEXT PRIMARY KEY,
-                state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'unknown')),
-                checked_at TEXT NOT NULL,
-                source_rows INTEGER NOT NULL DEFAULT 0,
-                indexed_rows INTEGER NOT NULL DEFAULT 0,
-                missing_rows INTEGER NOT NULL DEFAULT 0,
-                excess_rows INTEGER NOT NULL DEFAULT 0,
-                duplicate_rows INTEGER NOT NULL DEFAULT 0,
-                detail TEXT
-            ) STRICT;
-            INSERT OR REPLACE INTO fts_freshness_state (
-                surface, state, checked_at, source_rows, indexed_rows,
-                missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows,
-                verification_kind, exact_checked_at, exact_generation, detail
-            )
-            VALUES (
-                'messages_fts', 'ready', '2026-05-24T00:00:00+00:00',
-                0, 0, 0, 0, 0, 0, 'exact', '2026-05-24T00:00:00+00:00', {INDEX_SCHEMA_VERSION}, 'ready'
-            );
-            """
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("native-1", "codex-session", bytes(32)),
         )
+        conn.execute(
+            """
+            INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1", "message-1", 0, "user", "message", bytes(32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (message_id, session_id, position, block_type, text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("codex-session:native-1:message-1", "codex-session:native-1", 0, "text", "missing from fts"),
+        )
+        rowid = conn.execute(
+            "SELECT rowid FROM blocks WHERE block_id = ?",
+            ("codex-session:native-1:message-1:0",),
+        ).fetchone()[0]
+        conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
 
 
 # ---------------------------------------------------------------------------
@@ -482,15 +486,14 @@ class TestReadinessProbeContract:
         names = {check["name"] for check in payload["checks"]}
         assert names == EXPECTED_FAST_CHECKS
 
-    def test_readiness_uses_bounded_fts_freshness_not_exact_scan(
+    def test_readiness_inspects_authoritative_fts_membership(
         self,
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         self._patch_healthy_fast(monkeypatch)
-        # The readiness probe reads the index.db messages_fts surface; a
-        # fresh, trigger-backed surface is ready and the bounded path must not
-        # fall back to an exact ``fts_invariant_snapshot_sync`` scan.
+        # The readiness probe inspects the current FTS input/output relation;
+        # a fresh trigger-backed surface is ready without a freshness ledger.
         index_db = workspace_env["archive_root"] / "index.db"
         _seed_ready_message_fts(index_db)
         monkeypatch.setattr(
@@ -504,7 +507,7 @@ class TestReadinessProbeContract:
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
         assert payload["status"] == "ready"
-        assert payload["fts"]["coverage_exact"] is False
+        assert payload["fts"]["coverage_exact"] is True
 
     def test_readiness_returns_503_on_critical_check(
         self,
@@ -543,27 +546,12 @@ class TestReadinessProbeContract:
         workspace_env: dict[str, Path],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import sqlite3
 
         self._patch_healthy_fast(monkeypatch)
-        # index.db with a block source but no fresh messages_fts state means the
-        # message FTS invariant is not ready, so the probe must return 503.
+        # A missing current FTS row, not a stale ledger record, makes the
+        # message FTS invariant not ready.
         index_db = workspace_env["archive_root"] / "index.db"
-        index_db.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(index_db) as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS fts_freshness_state (
-                    surface TEXT PRIMARY KEY,
-                    state TEXT NOT NULL,
-                    checked_at TEXT NOT NULL
-                );
-                DELETE FROM fts_freshness_state WHERE surface = 'messages_fts';
-                INSERT INTO blocks (
-                    message_id, session_id, position, block_type, text
-                ) VALUES ('message-1', 'session-1', 0, 'text', 'missing from fts');
-                """
-            )
+        _seed_stale_message_fts(index_db)
 
         handler = _make_handler("GET", "/healthz/ready")
         _, send_json = _capture_responses(handler)

@@ -59,10 +59,8 @@ from polylogue.archive.query.predicate import (
     QueryTextPredicate,
 )
 
-#: Block types the model understands.  ``tool_use`` and ``thinking`` are the
-#: two that production's session counters key on
-#: (``write.py:_session_count_values``); ``tool_result`` and ``text`` carry
-#: content without moving a counter.
+#: Block types the model independently aggregates for its counter oracle.
+#: ``tool_result`` and ``text`` carry content without moving a counter.
 ModelBlockType = Literal["text", "thinking", "tool_use", "tool_result"]
 
 #: Roles production counts separately in ``sessions``' stat columns.
@@ -118,15 +116,14 @@ class ModelMessage:
 
     @property
     def word_count(self) -> int:
-        """Words as production counts them (``write.py:_word_count``)."""
+        """Words in the declared corpus, reduced independently by this oracle."""
         return len(self.text.split()) if self.text else 0
 
     @property
     def has_tool_use(self) -> bool:
         """Whether a ``tool_use`` block is present.
 
-        ``tool_result`` deliberately does not count: production's
-        ``tool_use_count`` is ``_has_block(message, BlockType.TOOL_USE)``.
+        ``tool_result`` deliberately does not count in this oracle.
         """
         return any(block.type == "tool_use" for block in self.blocks)
 

@@ -39,6 +39,12 @@ from polylogue.daemon.derivation import (
 FRAME = DerivationFrame(archive_root="/archive", source_revision="r1")
 
 
+def _page(keys: Sequence[str], *, cursor: str | None, limit: int) -> KeyPage:
+    start = int(cursor) if cursor else 0
+    stop = min(start + limit, len(keys))
+    return KeyPage(tuple(keys[start:stop]), str(stop) if stop < len(keys) else None)
+
+
 class RecordingDerivation(BaseDerivation):
     """A domain whose whole state is an in-memory output relation.
 
@@ -70,11 +76,11 @@ class RecordingDerivation(BaseDerivation):
         self.computed: list[str] = []
         self.published: list[str] = []
 
-    def required_keys(self, frame: DerivationFrame) -> Iterable[str]:
-        return iter(self._required)
+    def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+        return _page(self._required, cursor=cursor, limit=limit)
 
-    def excess_keys(self, frame: DerivationFrame) -> Iterable[str]:
-        return (key for key in tuple(self.output) if key not in self._required)
+    def excess_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+        return _page(tuple(key for key in self.output if key not in self._required), cursor=cursor, limit=limit)
 
     def prerequisite_keys(self, frame: DerivationFrame, key: str) -> Iterable[tuple[str, str]]:
         return self._bindings.get(key, ())
@@ -508,6 +514,36 @@ def test_an_inspection_failure_blocks_its_dependants_and_reports_the_domain() ->
     assert downstream.published == []
 
 
+def test_a_bulk_inspection_poison_isolated_to_its_key_and_dependent_closure() -> None:
+    """A bounded batch inspection retry isolates one unreadable key.
+
+    Anti-vacuity: retain the former ``unreadable_domains.add(domain)`` after a
+    bulk inspection exception and the unrelated ``good`` key plus its exact
+    dependent are skipped.
+    """
+
+    class BatchPoisonedUpstream(RecordingDerivation):
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            if "poison" in keys:
+                raise RuntimeError("poison output")
+            return super().inspect(frame, keys)
+
+    upstream = BatchPoisonedUpstream("up", required=("poison", "good"))
+    downstream = RecordingDerivation(
+        "down",
+        required=("from-good",),
+        prerequisites=("up",),
+        bindings={"from-good": (("up", "good"),)},
+    )
+
+    report = converge(DerivationRegistry([upstream, downstream]), FRAME)
+
+    assert upstream.published == ["good"]
+    assert downstream.published == ["from-good"]
+    failed = report.by_outcome(Outcome.FAILED)
+    assert [(item.key.domain, item.key.key) for item in failed] == [("up", "poison")]
+
+
 # ── bounded work ───────────────────────────────────────────────────
 
 
@@ -767,13 +803,19 @@ def test_a_page_budget_below_one_key_is_refused() -> None:
 # ── the graph ──────────────────────────────────────────────────────
 
 
-def test_a_prerequisite_cycle_is_refused_rather_than_starving_a_domain() -> None:
-    """An unrunnable graph fails at resolution, not by silently skipping work."""
-    first = RecordingDerivation("a", required=("k",), prerequisites=("b",))
-    second = RecordingDerivation("b", required=("k",), prerequisites=("a",))
-    registry = DerivationRegistry([first, second])
-    with pytest.raises(ValueError, match="cycle"):
-        registry.validate()
+def test_registered_domain_order_must_put_prerequisites_before_consumers() -> None:
+    """Domain order is declared once; the kernel does not topologically sort it.
+
+    Anti-vacuity: restore the generic DFS sorter and this accepts the reverse
+    declaration by silently rewriting it to ``up, down``.
+    """
+    downstream = RecordingDerivation("down", required=("x",), prerequisites=("up",))
+    upstream = RecordingDerivation("up", required=("a",))
+
+    with pytest.raises(ValueError, match="must be registered before its consumer"):
+        DerivationRegistry([downstream, upstream]).ordered()
+
+    assert [adapter.domain for adapter in DerivationRegistry([upstream, downstream]).ordered()] == ["up", "down"]
 
 
 def test_an_undeclared_prerequisite_is_refused() -> None:
@@ -794,25 +836,48 @@ def test_a_binding_into_an_unregistered_domain_blocks_rather_than_publishes() ->
     assert blocked.error is not None and "not registered" in blocked.error
 
 
-def test_registration_order_is_not_load_bearing() -> None:
-    """A domain may be registered before the prerequisite it declares.
+def test_a_poison_prerequisite_inspection_blocks_only_its_dependent_key() -> None:
+    """One unreadable upstream key does not make its whole domain unreadable.
 
-    Anti-vacuity: validate eagerly in ``register`` and this fails, because the
-    dependant is registered first -- which would make a composition root's
-    ordering a correctness concern rather than a listing.
+    Anti-vacuity: add the inspected key's domain to ``unreadable_domains`` on a
+    binding inspection error and ``y`` below is incorrectly blocked with ``x``.
     """
-    downstream = RecordingDerivation("down", required=("x",), prerequisites=("up",))
-    upstream = RecordingDerivation("up", required=("a",))
-    registry = DerivationRegistry()
-    registry.register(downstream)
-    registry.register(upstream)
 
-    assert [adapter.domain for adapter in registry.ordered()] == ["up", "down"]
+    class KeyPoisonedUpstream(RecordingDerivation):
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            if "poison" in keys:
+                raise RuntimeError("poison input")
+            return super().inspect(frame, keys)
+
+    upstream = KeyPoisonedUpstream("up", required=("poison", "good"))
+    upstream.output["good"] = "b0"
+    downstream = RecordingDerivation(
+        "down",
+        required=("x", "y"),
+        prerequisites=("up",),
+        bindings={"x": (("up", "poison"),), "y": (("up", "good"),)},
+    )
+
+    report = converge(DerivationRegistry([upstream, downstream]), FRAME, domains=["down"])
+
+    assert downstream.published == ["y"]
+    assert report.done == 1
+    blocked = report.by_outcome(Outcome.PENDING)
+    assert len(blocked) == 1
+    assert blocked[0].key == DerivationKey("down", "x")
+    assert blocked[0].reason is PendingReason.BLOCKED
 
 
-def test_domains_converge_in_declared_prerequisite_order() -> None:
-    downstream = RecordingDerivation("down", required=("x",), prerequisites=("up",))
-    upstream = RecordingDerivation("up", required=("a",))
-    registry = DerivationRegistry([downstream, upstream])
-
-    assert [adapter.domain for adapter in registry.ordered()] == ["up", "down"]
+def test_inspection_budget_allows_already_inspected_key_to_publish() -> None:
+    """Anti-vacuity: treating inspection exhaustion as compute exhaustion stalls forever."""
+    domain = VirtualDomain(10_000)
+    report = converge(
+        DerivationRegistry([domain]),
+        FRAME,
+        budget=Budget(page=1, discovery=1, inspection=1, compute=1, publication=1),
+    )
+    assert report.done == 1
+    assert domain.calls["compute"] == 1
+    assert report.work.discovered == 1
+    # Publication certification is counted separately from discovery admission.
+    assert report.work.inspected == 2

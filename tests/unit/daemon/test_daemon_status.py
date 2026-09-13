@@ -30,6 +30,7 @@ from polylogue.daemon.status_snapshot import (
     refresh_status_snapshot,
 )
 from polylogue.operations.status_protocol import StatusComponentRegistry
+from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -1006,7 +1007,7 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
         ),
         patch(
             "polylogue.daemon.status._insight_freshness_info",
-            return_value={"sessions_with_profiles": 7, "total_sessions": 10},
+            return_value={"sessions_with_profiles": 7, "total_sessions": 10, "profile_ready": False},
         ),
         patch(
             "polylogue.daemon.status.embedding_readiness_info",
@@ -1448,8 +1449,8 @@ def test_daemon_status_payload_exposes_claim_guard_block(tmp_path: Path) -> None
     claim_guard = cast(dict[str, dict[str, object]], payload["claim_guard"])
     assert set(claim_guard) == {"openable", "converged", "search_ready", "perf_measurable"}
     for entry in claim_guard.values():
-        assert set(entry) == {"claim", "value", "reason", "signal"}
-        assert isinstance(entry["value"], bool)
+        assert set(entry) == {"claim", "value", "determinate", "reason", "signal"}
+        assert entry["value"] is None or isinstance(entry["value"], bool)
         assert entry["signal"]
     # No archive tiers exist under tmp_path — nothing is honestly claimable.
     assert claim_guard["openable"]["value"] is False
@@ -1681,10 +1682,10 @@ def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_
 @pytest.mark.parametrize(
     "debt_setup", ["pending", "unreadable", "missing_db", "missing_table", "collector_error", "empty"]
 )
-def test_build_daemon_status_claim_guard_blocks_pending_or_unknown_convergence_debt(
+def test_build_daemon_status_claim_guard_keeps_operation_debt_separate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, debt_setup: str
 ) -> None:
-    """The production status route must never claim convergence without debt authority."""
+    """Disposed scheduling evidence cannot override inspected domain readiness."""
     storage = status_module.ArchiveStorageStatus(
         active_store="archive_file_set",
         active_db_path=str(tmp_path / "index.db"),
@@ -1736,7 +1737,18 @@ def test_build_daemon_status_claim_guard_blocks_pending_or_unknown_convergence_d
         patch("polylogue.daemon.status._raw_frontier_integrity_info", return_value=frontier),
         patch("polylogue.daemon.status._db_size_info", return_value={}),
         patch("polylogue.daemon.status._fts_readiness_info", return_value={"messages_ready": True}),
-        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+        patch(
+            "polylogue.daemon.status._insight_freshness_info",
+            return_value={"sessions_with_profiles": 0, "total_sessions": 0, "profile_ready": True},
+        ),
+        patch(
+            "polylogue.daemon.status._session_summary_readiness_info",
+            return_value=ComponentReadiness(
+                component="session_summary",
+                state=CapabilityReadinessState.READY,
+                summary="ready",
+            ),
+        ),
         patch("polylogue.daemon.status._live_cursor_summary_info", return_value=status_module.LiveCursorSummary()),
         patch(
             "polylogue.daemon.status._live_ingest_attempt_summary_info",
@@ -1752,24 +1764,16 @@ def test_build_daemon_status_claim_guard_blocks_pending_or_unknown_convergence_d
 
     assert status.convergence.available is (debt_setup in {"pending", "empty"})
     claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
-    reason = str(claim_guard["converged"]["reason"])
-    if debt_setup == "pending":
-        assert claim_guard["converged"]["value"] is False
-        assert reason == "convergence debt pending: 1 deferred"
-    elif debt_setup == "empty":
-        assert claim_guard["converged"]["value"] is True
-        assert reason == "ready"
-    else:
-        assert claim_guard["converged"]["value"] is False
-        assert reason == status.convergence.error
-        assert "unknown debt" in str(claim_guard["converged"]["signal"])
+    assert claim_guard["converged"]["value"] is True
+    assert claim_guard["converged"]["reason"] == "ready"
+    assert "derived_domain_readiness" in str(claim_guard["converged"]["signal"])
 
 
 @pytest.mark.parametrize("collector_state", ["timeout", "error", "empty"])
-def test_build_daemon_status_claim_guard_uses_real_registry_convergence_snapshot(
+def test_build_daemon_status_claim_guard_keeps_registry_debt_health_separate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, collector_state: str
 ) -> None:
-    """A registry failure cannot be converted into a healthy empty ledger."""
+    """A registry failure remains health evidence without replacing readiness."""
     import time
 
     storage = status_module.ArchiveStorageStatus(
@@ -1797,7 +1801,20 @@ def test_build_daemon_status_claim_guard_uses_real_registry_convergence_snapshot
     monkeypatch.setattr(status_module, "_blob_size_info", lambda: 0)
     monkeypatch.setattr(status_module, "_archive_storage_info", lambda: storage)
     monkeypatch.setattr(status_module, "_fts_readiness_info", lambda: {"messages_ready": True})
-    monkeypatch.setattr(status_module, "_insight_freshness_info", lambda: {})
+    monkeypatch.setattr(
+        status_module,
+        "_insight_freshness_info",
+        lambda: {"sessions_with_profiles": 0, "total_sessions": 0, "profile_ready": True},
+    )
+    monkeypatch.setattr(
+        status_module,
+        "_session_summary_readiness_info",
+        lambda: ComponentReadiness(
+            component="session_summary",
+            state=CapabilityReadinessState.READY,
+            summary="ready",
+        ),
+    )
     monkeypatch.setattr(status_module, "_raw_materialization_readiness_info", lambda **_: raw_readiness)
     monkeypatch.setattr(status_module, "_raw_replay_backlog_info", lambda **_: {})
     monkeypatch.setattr(status_module, "_live_cursor_summary_info", lambda: status_module.LiveCursorSummary())
@@ -1836,13 +1853,9 @@ def test_build_daemon_status_claim_guard_uses_real_registry_convergence_snapshot
     )
 
     claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
-    if collector_state == "empty":
-        assert status.convergence.available is True
-        assert claim_guard["converged"]["value"] is True
-        assert claim_guard["converged"]["reason"] == "ready"
-    else:
-        assert status.convergence.available is False
-        assert claim_guard["converged"]["value"] is False
+    assert status.convergence.available is (collector_state == "empty")
+    assert claim_guard["converged"]["value"] is True
+    assert claim_guard["converged"]["reason"] == "ready"
 
 
 def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_path: Path) -> None:
@@ -1857,6 +1870,7 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
         ArchiveTier.EMBEDDINGS,
         ArchiveTier.USER,
         ArchiveTier.OPS,
+        ArchiveTier.AUDIT,
     ):
         initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
 
@@ -2049,7 +2063,7 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
 
 
 def test_daemon_and_shared_claim_guard_share_mixed_frontier_summary(tmp_path: Path) -> None:
-    from polylogue.readiness.claim_guard import derive_claim_guard
+    from polylogue.readiness.claim_guard import DerivedDomainReadiness, derive_claim_guard
 
     integrity = status_module.RawFrontierIntegrity(
         available=False,
@@ -2078,24 +2092,38 @@ def test_daemon_and_shared_claim_guard_share_mixed_frontier_summary(tmp_path: Pa
         raw_materialization_readiness=raw_readiness,
         raw_frontier_integrity=integrity,
         fts_readiness=FTSReadiness(messages_ready=True),
+        insight_freshness=status_module.InsightFreshness(
+            sessions_with_profiles=0,
+            total_sessions=0,
+            profile_ready=True,
+        ),
+        session_summary_readiness=ComponentReadiness(
+            component="session_summary",
+            state=CapabilityReadinessState.READY,
+            summary="ready",
+        ),
+        embedding_readiness=status_module.EmbeddingReadiness(),
         live_ingest_attempts=status_module.LiveIngestAttemptSummary(),
-        convergence=status_module.ConvergenceDebtSummary(),
     )
     direct_guard = derive_claim_guard(
         archive_schema_ready=True,
         schema_mismatches=[],
         missing_tiers=[],
-        raw_materialization_ready=True,
-        raw_materialization_summary="ready",
-        raw_frontier_integrity_ready=False,
-        raw_frontier_integrity_summary="accepted head metadata drift; ops cursor authority unavailable",
+        derived_domains=(
+            DerivedDomainReadiness("raw_materialization", True, "ready"),
+            DerivedDomainReadiness(
+                "raw_frontier_integrity",
+                False,
+                "accepted head metadata drift; ops cursor authority unavailable",
+            ),
+            DerivedDomainReadiness("session_profiles", True, "ready"),
+            DerivedDomainReadiness("session_summary", True, "ready"),
+            DerivedDomainReadiness("fts", True, "ready"),
+        ),
         search_ready=True,
         search_summary="ready",
         active_writer=False,
         active_writer_summary="",
-        convergence_debt_available=True,
-        convergence_debt_pending=False,
-        convergence_debt_summary="no pending convergence debt",
     ).to_dict()
 
     daemon_converged = cast(dict[str, object], daemon_guard["converged"])
@@ -2196,10 +2224,11 @@ def test_insight_freshness_reads_archive_file_set_from_archive_tiers(tmp_path: P
         conn.commit()
 
     with patch("polylogue.daemon.status._active_status_db_path", return_value=archive_db):
-        assert _insight_freshness_info() == {
-            "sessions_with_profiles": 1,
-            "total_sessions": 2,
-        }
+        freshness = _insight_freshness_info()
+
+    assert freshness["sessions_with_profiles"] == 1
+    assert freshness["total_sessions"] == 2
+    assert freshness["profile_ready"] is False
 
 
 def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path) -> None:
@@ -2239,7 +2268,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
             INSERT INTO blocks (message_id, session_id, position, block_type, text)
             VALUES (?, ?, ?, ?, ?)
             """,
-            ("codex-session:native-1:message-1", "codex-session:native-1", 0, "text", "needle"),
+            ("codex-session:native-1:n:message-1", "codex-session:native-1", 0, "text", "needle"),
         )
         conn.commit()
 
@@ -2247,9 +2276,9 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is False
-    assert readiness["invariant_ready"] is False
-    assert readiness["coverage_exact"] is False
+    assert readiness["messages_ready"] is True
+    assert readiness["invariant_ready"] is True
+    assert readiness["coverage_exact"] is True
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
     blocks = surfaces["messages_fts"]
@@ -2257,7 +2286,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
     assert blocks["source_exists"] is True
     assert blocks["exists"] is True
     assert blocks["triggers_present"] is True
-    assert blocks["ready"] is False
+    assert blocks["ready"] is True
 
 
 def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path) -> None:
@@ -2276,51 +2305,11 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
         readiness = status_module._fts_readiness_info()
 
     assert readiness["indexed_surface"] == "messages_fts"
-    assert readiness["messages_ready"] is False
-    assert readiness["invariant_ready"] is False
+    assert readiness["messages_ready"] is True
+    assert readiness["invariant_ready"] is True
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
     assert set(surfaces) == {"messages_fts"}
-
-
-def test_daemon_status_fts_readiness_uses_bounded_structural_probes(tmp_path: Path) -> None:
-    db = tmp_path / "index.db"
-    queries: list[str] = []
-    with sqlite3.connect(db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE blocks (text TEXT);
-            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
-            CREATE TABLE messages_fts (text TEXT);
-            CREATE TABLE messages_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
-            INSERT INTO sessions VALUES ('c1', 2), ('c2', 3);
-            INSERT INTO blocks(rowid, text) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e');
-            INSERT INTO messages_fts_docsize VALUES (1, x''), (2, x''), (3, x''), (4, x''), (5, x'');
-            """
-        )
-
-    original_connect = sqlite3.connect
-
-    def traced_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        conn = original_connect(*args, **kwargs)
-        conn.set_trace_callback(queries.append)
-        return cast(sqlite3.Connection, conn)
-
-    with (
-        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
-        patch("polylogue.storage.sqlite.connection_profile.sqlite3.connect", side_effect=traced_connect),
-    ):
-        readiness = status_module._fts_readiness_info()
-
-    assert readiness["messages_ready"] is True
-    assert readiness["invariant_ready"] is True
-    assert readiness["coverage_exact"] is False
-    assert all("COUNT(*) FROM blocks" not in query for query in queries)
-    assert all("COUNT(*) FROM messages_fts_docsize" not in query for query in queries)
-    assert all("LEFT JOIN messages_fts_docsize" not in query for query in queries)
 
 
 def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None:
@@ -2437,199 +2426,7 @@ def test_fts_readiness_exact_detects_archive_missing_messages_fts_row(tmp_path: 
     assert blocks["ready"] is False
 
 
-def test_fts_readiness_requires_recorded_freshness_when_available(tmp_path: Path) -> None:
-    from polylogue.daemon.fts_status import fts_readiness_info
-
-    db_path = tmp_path / "index.db"
-    with sqlite3.connect(db_path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE blocks (text TEXT, search_text TEXT NOT NULL DEFAULT '');
-            CREATE TABLE messages_fts (text TEXT);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
-            CREATE TABLE fts_freshness_state (
-                surface TEXT PRIMARY KEY,
-                state TEXT NOT NULL,
-                checked_at TEXT NOT NULL
-            );
-            INSERT INTO fts_freshness_state VALUES ('messages_fts', 'stale', '2026-05-24T00:00:00+00:00');
-            """
-        )
-
-    readiness = fts_readiness_info(db_path)
-
-    assert readiness["messages_ready"] is False
-    assert readiness["invariant_ready"] is False
-    surfaces = readiness["surfaces"]
-    assert isinstance(surfaces, dict)
-    messages = surfaces["messages_fts"]
-    assert isinstance(messages, dict)
-    assert messages["freshness_known"] is True
-    assert messages["freshness_state"] == "stale"
-    assert messages["ready"] is False
-
-
-def test_fts_readiness_reports_recorded_freshness_counts_without_exact_scan(tmp_path: Path) -> None:
-    from polylogue.daemon.fts_status import fts_readiness_info
-
-    db_path = tmp_path / "index.db"
-    queries: list[str] = []
-    with sqlite3.connect(db_path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE blocks (text TEXT);
-            CREATE TABLE messages_fts (text TEXT);
-            CREATE TABLE messages_fts_docsize (id INTEGER PRIMARY KEY, sz BLOB);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
-            CREATE TABLE fts_freshness_state (
-                surface TEXT PRIMARY KEY,
-                state TEXT NOT NULL,
-                checked_at TEXT NOT NULL,
-                source_rows INTEGER NOT NULL DEFAULT 0,
-                indexed_rows INTEGER NOT NULL DEFAULT 0,
-                missing_rows INTEGER NOT NULL DEFAULT 0,
-                excess_rows INTEGER NOT NULL DEFAULT 0,
-                duplicate_rows INTEGER NOT NULL DEFAULT 0,
-                detail TEXT
-            );
-            INSERT INTO fts_freshness_state
-                (surface, state, checked_at, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail)
-            VALUES
-                ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 200, 199, 1, 0, 0, 'repair pending');
-            """
-        )
-
-    original_connect = sqlite3.connect
-
-    def traced_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        conn = original_connect(*args, **kwargs)
-        conn.set_trace_callback(queries.append)
-        return cast(sqlite3.Connection, conn)
-
-    with patch("polylogue.storage.sqlite.connection_profile.sqlite3.connect", side_effect=traced_connect):
-        readiness = fts_readiness_info(db_path)
-
-    assert readiness["message_indexable_count"] == 200
-    assert readiness["message_indexed_count"] == 199
-    assert readiness["coverage_pct"] == 99.5
-    assert readiness["messages_ready"] is False
-    assert readiness["invariant_ready"] is False
-    surfaces = readiness["surfaces"]
-    assert isinstance(surfaces, dict)
-    messages = surfaces["messages_fts"]
-    assert isinstance(messages, dict)
-    assert messages["missing_rows"] == 1
-    assert messages["freshness_state"] == "stale"
-    assert messages["freshness_recorded_state"] == "ready"
-    assert messages["freshness_trusted"] is False
-    assert messages["freshness_detail"] == "repair pending"
-    assert all("COUNT(*) FROM blocks" not in query for query in queries)
-    assert all("messages_fts_docsize" not in query for query in queries)
-
-
-def test_fts_readiness_rejects_zero_count_ready_freshness_when_source_has_rows(tmp_path: Path) -> None:
-    from polylogue.daemon.fts_status import fts_readiness_info
-
-    db_path = tmp_path / "index.db"
-    queries: list[str] = []
-    with sqlite3.connect(db_path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE blocks (text TEXT);
-            CREATE TABLE messages_fts (text TEXT);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
-            INSERT INTO blocks VALUES ('needs indexing');
-            CREATE TABLE fts_freshness_state (
-                surface TEXT PRIMARY KEY,
-                state TEXT NOT NULL,
-                checked_at TEXT NOT NULL,
-                source_rows INTEGER NOT NULL DEFAULT 0,
-                indexed_rows INTEGER NOT NULL DEFAULT 0,
-                missing_rows INTEGER NOT NULL DEFAULT 0,
-                excess_rows INTEGER NOT NULL DEFAULT 0,
-                duplicate_rows INTEGER NOT NULL DEFAULT 0,
-                detail TEXT
-            );
-            INSERT INTO fts_freshness_state
-                (surface, state, checked_at, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows)
-            VALUES ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 0, 0, 0, 0, 0);
-            """
-        )
-
-    original_connect = sqlite3.connect
-
-    def traced_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        conn = original_connect(*args, **kwargs)
-        conn.set_trace_callback(queries.append)
-        return cast(sqlite3.Connection, conn)
-
-    with patch("polylogue.storage.sqlite.connection_profile.sqlite3.connect", side_effect=traced_connect):
-        readiness = fts_readiness_info(db_path)
-
-    assert readiness["messages_ready"] is False
-    assert readiness["invariant_ready"] is False
-    # source_rows==0 here is a zero-denominator (unmeasured) reading, not a
-    # genuine "0% indexed" measurement -- the freshness record's counts are
-    # untrusted precisely because the source actually has rows (see
-    # freshness_state below), so coverage_pct must report unmeasured (None)
-    # rather than fabricate 0.0 or 100.0 (polylogue-oitx).
-    assert readiness["coverage_pct"] is None
-    surfaces = readiness["surfaces"]
-    assert isinstance(surfaces, dict)
-    messages = surfaces["messages_fts"]
-    assert isinstance(messages, dict)
-    assert messages["freshness_state"] == "unknown"
-    assert messages["freshness_recorded_state"] == "ready"
-    assert messages["freshness_trusted"] is False
-    assert all("count(*) from messages_fts" not in query.lower() for query in queries)
-
-
-def test_fts_readiness_tolerates_malformed_recorded_counts(tmp_path: Path) -> None:
-    from polylogue.daemon.fts_status import fts_readiness_info
-
-    db_path = tmp_path / "index.db"
-    with sqlite3.connect(db_path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE blocks (text TEXT);
-            CREATE TABLE messages_fts (text TEXT);
-            CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
-            CREATE TRIGGER messages_fts_au AFTER UPDATE ON blocks BEGIN SELECT 1; END;
-            CREATE TABLE fts_freshness_state (
-                surface TEXT PRIMARY KEY,
-                state TEXT NOT NULL,
-                checked_at TEXT NOT NULL,
-                source_rows TEXT,
-                indexed_rows TEXT,
-                missing_rows TEXT,
-                excess_rows TEXT,
-                duplicate_rows TEXT
-            );
-            INSERT INTO fts_freshness_state
-                (surface, state, checked_at, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows)
-            VALUES
-                ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 'not-int', NULL, 'bad', '0', 'bad');
-            """
-        )
-
-    readiness = fts_readiness_info(db_path)
-    surfaces = readiness["surfaces"]
-    assert isinstance(surfaces, dict)
-    messages = surfaces["messages_fts"]
-    assert isinstance(messages, dict)
-    assert messages["source_rows"] == 0
-    assert messages["missing_rows"] == 0
-    assert readiness["message_indexable_count"] == 0
-
-
-def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path) -> None:
+def test_daemon_status_insight_freshness_refuses_incomplete_profile_schema(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     with sqlite3.connect(db) as conn:
         conn.executescript(
@@ -2644,7 +2441,9 @@ def test_daemon_status_insight_freshness_uses_lightweight_counts(tmp_path: Path)
     with patch("polylogue.daemon.status._active_status_db_path", return_value=db):
         freshness = status_module._insight_freshness_info()
 
-    assert freshness == {"sessions_with_profiles": 1, "total_sessions": 2}
+    assert freshness["checked"] is False
+    assert freshness["sessions_with_profiles"] is None
+    assert freshness["total_sessions"] is None
 
 
 @pytest.mark.frozen_clock_modules("polylogue.daemon.status")

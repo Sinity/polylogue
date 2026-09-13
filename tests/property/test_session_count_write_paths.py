@@ -16,13 +16,13 @@ from hypothesis import strategies as st
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedPasteEvidence, ParsedSession
+from polylogue.storage.derived.session.summary import refresh_session_summary
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     _build_message_rows,
     _duplicate_message_native_ids,
-    _refresh_session_counts,
     write_parsed_session_to_archive,
 )
 
@@ -157,7 +157,7 @@ def test_session_counts_agree_across_full_append_and_refresh_paths(messages: lis
             archive_tier_write._messages_insert_sql(),
             _build_message_rows(refresh_id, messages, duplicate_native_ids=duplicate_ids),
         )
-        _refresh_session_counts(refresh_conn, refresh_id)
+        refresh_session_summary(refresh_conn, refresh_id)
 
         observed = [
             _session_counts(conn, session_id)

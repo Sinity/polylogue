@@ -74,6 +74,7 @@ from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestr
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.derived.session.summary import SESSION_SUMMARY_MEASURES, refresh_session_summary
 from polylogue.storage.fts.fts_lifecycle import message_fts_triggers_present_sync
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import (
@@ -1180,8 +1181,6 @@ def write_parsed_session_to_archive(
     ):
         raise PreparedSessionWriteRefusedError("prepared replay lowering is stale or unavailable")
     add_timing("index.prepare", t0)
-    session_counts = _session_count_values(messages)
-
     # When the caller owns the transaction (bulk batching) we must not commit
     # per session; nullcontext leaves BEGIN/COMMIT to the caller.
     transaction = conn if manage_transaction else nullcontext()
@@ -1267,7 +1266,12 @@ def write_parsed_session_to_archive(
                 "content_hash": session_content_hash,
                 "created_at_ms": session_created_at_ms,
                 "updated_at_ms": session_updated_at_ms,
-                **session_counts,
+                # Messages are inserted later in this transaction.  The one
+                # authoritative replacement immediately after that insert
+                # publishes the declared counter projection; fresh rows begin
+                # at the schema's zero value rather than carrying a second
+                # parser-side tally.
+                **{measure.column: 0 for measure in SESSION_SUMMARY_MEASURES},
             }
             sessions_spec = archive_tiers_specs.SESSIONS_SPEC
             conn.execute(
@@ -1538,10 +1542,10 @@ def write_parsed_session_to_archive(
                 _aggregate_provider_usage_into_model_usage(conn, session_id)
                 add_timing("index.provider_usage_rollup", t0)
             t0 = time.perf_counter()
-            if merge_append:
-                _increment_session_counts_for_append(conn, session_id, session_counts)
-            else:
-                _refresh_session_counts(conn, session_id)
+            # The summary is one authoritative projection of stored messages.
+            # Append has no typed disjoint-insert proof, so it takes the same
+            # replacement path as full writes and lineage re-extraction.
+            refresh_session_summary(conn, session_id)
             add_timing("index.session_counts", t0)
             t0 = time.perf_counter()
             graph_kwargs: dict[str, Any] = {
@@ -4061,134 +4065,10 @@ def _replace_full_session_messages_and_blocks(
     return carry_forward
 
 
-def _refresh_session_counts(conn: sqlite3.Connection, session_id: str) -> None:
-    conn.execute(
-        """
-        UPDATE sessions
-        SET message_count = (SELECT COUNT(*) FROM messages WHERE session_id = sessions.session_id),
-            word_count = COALESCE((SELECT SUM(word_count) FROM messages WHERE session_id = sessions.session_id), 0),
-            tool_use_count = COALESCE((SELECT SUM(has_tool_use) FROM messages WHERE session_id = sessions.session_id), 0),
-            thinking_count = COALESCE((SELECT SUM(has_thinking) FROM messages WHERE session_id = sessions.session_id), 0),
-            paste_count = COALESCE((SELECT SUM(has_paste) FROM messages WHERE session_id = sessions.session_id), 0),
-            user_message_count = (
-                SELECT COUNT(*) FROM messages WHERE session_id = sessions.session_id AND role = 'user'
-            ),
-            authored_user_message_count = (
-                SELECT COUNT(*) FROM messages
-                WHERE session_id = sessions.session_id AND material_origin = 'human_authored'
-            ),
-            assistant_message_count = (
-                SELECT COUNT(*) FROM messages WHERE session_id = sessions.session_id AND role = 'assistant'
-            ),
-            system_message_count = (
-                SELECT COUNT(*) FROM messages WHERE session_id = sessions.session_id AND role = 'system'
-            ),
-            tool_message_count = (
-                SELECT COUNT(*) FROM messages WHERE session_id = sessions.session_id AND role = 'tool'
-            ),
-            user_word_count = COALESCE((
-                SELECT SUM(word_count) FROM messages WHERE session_id = sessions.session_id AND role = 'user'
-            ), 0),
-            authored_user_word_count = COALESCE((
-                SELECT SUM(word_count) FROM messages
-                WHERE session_id = sessions.session_id AND material_origin = 'human_authored'
-            ), 0),
-            assistant_word_count = COALESCE((
-                SELECT SUM(word_count) FROM messages WHERE session_id = sessions.session_id AND role = 'assistant'
-            ), 0)
-        WHERE session_id = ?
-        """,
-        (session_id,),
-    )
-
-
-def _session_count_values(messages: list[ParsedMessage]) -> dict[str, int]:
-    counts = {
-        "message_count": 0,
-        "word_count": 0,
-        "tool_use_count": 0,
-        "thinking_count": 0,
-        "paste_count": 0,
-        "user_message_count": 0,
-        "authored_user_message_count": 0,
-        "assistant_message_count": 0,
-        "system_message_count": 0,
-        "tool_message_count": 0,
-        "user_word_count": 0,
-        "authored_user_word_count": 0,
-        "assistant_word_count": 0,
-    }
-    for message in messages:
-        role = _enum_value(message.role)
-        material_origin = _enum_value(message.material_origin)
-        word_count = _word_count(message.text)
-        counts["message_count"] += 1
-        counts["word_count"] += word_count
-        counts["tool_use_count"] += _has_block(message, BlockType.TOOL_USE)
-        counts["thinking_count"] += _has_block(message, BlockType.THINKING)
-        counts["paste_count"] += _has_paste(message)
-        if role == "user":
-            counts["user_message_count"] += 1
-            counts["user_word_count"] += word_count
-        elif role == "assistant":
-            counts["assistant_message_count"] += 1
-            counts["assistant_word_count"] += word_count
-        elif role == "system":
-            counts["system_message_count"] += 1
-        elif role == "tool":
-            counts["tool_message_count"] += 1
-        if material_origin == "human_authored":
-            counts["authored_user_message_count"] += 1
-            counts["authored_user_word_count"] += word_count
-    return counts
-
-
 def _messages_have_token_counts(messages: Sequence[ParsedMessage]) -> bool:
     return any(
         message.input_tokens or message.output_tokens or message.cache_read_tokens or message.cache_write_tokens
         for message in messages
-    )
-
-
-def _increment_session_counts_for_append(
-    conn: sqlite3.Connection,
-    session_id: str,
-    counts: dict[str, int],
-) -> None:
-    conn.execute(
-        """
-        UPDATE sessions
-        SET message_count = COALESCE(message_count, 0) + ?,
-            word_count = COALESCE(word_count, 0) + ?,
-            tool_use_count = COALESCE(tool_use_count, 0) + ?,
-            thinking_count = COALESCE(thinking_count, 0) + ?,
-            paste_count = COALESCE(paste_count, 0) + ?,
-            user_message_count = COALESCE(user_message_count, 0) + ?,
-            authored_user_message_count = COALESCE(authored_user_message_count, 0) + ?,
-            assistant_message_count = COALESCE(assistant_message_count, 0) + ?,
-            system_message_count = COALESCE(system_message_count, 0) + ?,
-            tool_message_count = COALESCE(tool_message_count, 0) + ?,
-            user_word_count = COALESCE(user_word_count, 0) + ?,
-            authored_user_word_count = COALESCE(authored_user_word_count, 0) + ?,
-            assistant_word_count = COALESCE(assistant_word_count, 0) + ?
-        WHERE session_id = ?
-        """,
-        (
-            counts["message_count"],
-            counts["word_count"],
-            counts["tool_use_count"],
-            counts["thinking_count"],
-            counts["paste_count"],
-            counts["user_message_count"],
-            counts["authored_user_message_count"],
-            counts["assistant_message_count"],
-            counts["system_message_count"],
-            counts["tool_message_count"],
-            counts["user_word_count"],
-            counts["authored_user_word_count"],
-            counts["assistant_word_count"],
-            session_id,
-        ),
     )
 
 
@@ -7800,7 +7680,7 @@ def _reextract_prefix_tail_db(
     )
     record_substage("edge_update", t0)
     t0 = time.perf_counter()
-    _refresh_session_counts(conn, child_session_id)
+    refresh_session_summary(conn, child_session_id)
     # Late-parent resolution mutates an already-materialized child outside its
     # own write path, so usage must be rebuilt here: it is aggregated at write
     # time and nothing else revisits it. Derived session rows converge on their

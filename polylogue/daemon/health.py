@@ -617,11 +617,6 @@ def _run_fast_checks() -> list[HealthAlert]:
 # ---------------------------------------------------------------------------
 
 
-def _fts_surface_unmeasured(surface: Mapping[str, object]) -> bool:
-    """Whether the ledger holds no published verdict for this surface."""
-    return bool(surface.get("freshness_known")) and surface.get("freshness_recorded_state") is None
-
-
 def _fts_surface_detail(name: str, surface: Mapping[str, object]) -> str:
     if not surface.get("source_exists"):
         return f"{name}: unexpected table without source"
@@ -642,19 +637,7 @@ def _fts_surface_detail(name: str, surface: Mapping[str, object]) -> str:
 
 
 def _check_fts_readiness_medium() -> HealthAlert:
-    """Report the FTS readiness the convergence ledger published.
-
-    The exact archive-wide audit aggregates every ``blocks`` and
-    ``messages_fts`` row, so it is whole-archive work owned by the
-    ``fts_readiness`` convergence stage. This probe reads that stage's
-    durable verdict instead: it runs on the daemon's sole writer, so
-    recomputing the audit here costs a scan proportional to the archive on
-    every health interval and on every ``/api/status`` request, competing
-    with catch-up chunks for the writer.
-
-    A surface the ledger has never measured is reported as unknown
-    (``WARNING``), never as drift.
-    """
+    """Report FTS readiness from its current canonical/output relations."""
     now = datetime.now(UTC).isoformat()
     dbf = _active_health_db_path()
     if not dbf.exists():
@@ -669,18 +652,14 @@ def _check_fts_readiness_medium() -> HealthAlert:
     try:
         from polylogue.daemon.fts_status import fts_readiness_info
 
-        payload = fts_readiness_info(dbf, exact=False)
+        payload = fts_readiness_info(dbf)
         raw_surfaces = payload.get("surfaces")
         surfaces = raw_surfaces if isinstance(raw_surfaces, Mapping) else {}
         broken: list[str] = []
-        unmeasured: list[str] = []
         for name, surface in surfaces.items():
             if not isinstance(surface, Mapping) or surface.get("ready"):
                 continue
-            if _fts_surface_unmeasured(surface):
-                unmeasured.append(str(name))
-            else:
-                broken.append(_fts_surface_detail(str(name), surface))
+            broken.append(_fts_surface_detail(str(name), surface))
         # The archive payload reports the work-event surface outside
         # ``surfaces``; its readiness is exact and cheap (derived-table counts).
         if not payload.get("session_work_events_ready", True) and "session_work_events_fts" not in surfaces:
@@ -688,9 +667,6 @@ def _check_fts_readiness_medium() -> HealthAlert:
         if broken:
             severity = HealthSeverity.ERROR
             message = "FTS invariant failed: " + "; ".join(broken)
-        elif unmeasured:
-            severity = HealthSeverity.WARNING
-            message = "FTS freshness not published yet: " + ", ".join(sorted(unmeasured))
         else:
             severity = HealthSeverity.OK
             message = "FTS up to date"

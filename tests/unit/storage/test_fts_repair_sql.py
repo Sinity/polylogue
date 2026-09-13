@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 import pytest
 
-from polylogue.storage.fts.dangling_repair import insert_missing_message_fts_rows_sync
+from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
 from polylogue.storage.fts.fts_lifecycle import (
     delete_excess_message_rows_batched_sync,
+    insert_missing_message_rows_batched_sync,
     rebuild_fts_index_sync,
     repair_message_fts_index_sync,
     reset_message_fts_index_sync,
@@ -88,7 +90,12 @@ def test_session_trigram_cleanup_seeks_docsize_by_block_rowid(test_conn: sqlite3
 
 
 def test_incremental_fts_repair_uses_direct_fts_rowid_deletes(test_conn: sqlite3.Connection) -> None:
-    """A changed session must not make FTS5 scan the whole archive to delete."""
+    """A changed session must not make FTS5 scan the whole archive to delete.
+
+    Anti-vacuity: widen any FTS delete back to a ``session_id`` predicate, an
+    unfiltered ``DELETE FROM messages_fts``, or a rowid set that reaches past
+    the repaired session's own blocks, and this goes red.
+    """
     restore_fts_triggers_sync(test_conn)
     message_id = _seed_text_block(
         test_conn,
@@ -105,16 +112,27 @@ def test_incremental_fts_repair_uses_direct_fts_rowid_deletes(test_conn: sqlite3
     finally:
         test_conn.set_trace_callback(None)
 
-    delete_statements = [sql for sql in traced if sql.startswith("DELETE FROM messages_fts")]
-    assert delete_statements == [
-        "DELETE FROM messages_fts WHERE rowid = "
-        + str(
-            test_conn.execute(
-                "SELECT rowid FROM blocks WHERE message_id = ?",
-                (message_id,),
-            ).fetchone()[0]
+    session_rowids = {
+        int(row[0])
+        for row in test_conn.execute(
+            "SELECT rowid FROM blocks WHERE message_id = ?",
+            (message_id,),
         )
-    ]
+    }
+    assert session_rowids, "the fixture must seed at least one block to repair"
+
+    delete_statements = [sql for sql in traced if sql.startswith("DELETE FROM messages_fts")]
+    assert delete_statements, "targeted repair issued no FTS delete at all"
+
+    # Every FTS delete a session repair issues must name the exact block rowids
+    # of that session. A literal rowid predicate is what keeps FTS5 from
+    # scanning the whole archive to find the rows it is about to drop.
+    for sql in delete_statements:
+        predicate = sql.partition(" WHERE ")[2]
+        assert predicate, f"unfiltered FTS delete would drop the whole surface: {sql!r}"
+        assert predicate.startswith("rowid"), f"FTS delete is not keyed by rowid: {sql!r}"
+        named = {int(token) for token in re.findall(r"\d+", predicate)}
+        assert named == session_rowids, f"FTS delete reached beyond the repaired session: {sql!r}"
 
 
 def test_targeted_repair_never_runs_an_archive_wide_exact_snapshot(
@@ -165,7 +183,7 @@ def test_missing_fts_repair_commits_and_checkpoints_batches(test_conn: sqlite3.C
     traced: list[str] = []
     test_conn.set_trace_callback(traced.append)
     try:
-        inserted = insert_missing_message_fts_rows_sync(test_conn, batch_rows=1)
+        inserted = insert_missing_message_rows_batched_sync(test_conn, batch_rows=1)
     finally:
         test_conn.set_trace_callback(None)
 
@@ -191,7 +209,7 @@ def test_bulk_fts_rebuild_resumes_from_committed_missing_rows(test_conn: sqlite3
     test_conn.execute("DELETE FROM messages_fts")
     test_conn.execute("DELETE FROM messages_fts_identity")
 
-    inserted = insert_missing_message_fts_rows_sync(test_conn, batch_rows=1)
+    inserted = insert_missing_message_rows_batched_sync(test_conn, batch_rows=1)
     assert inserted == 3
     identity_before = test_conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0]
 
@@ -270,32 +288,18 @@ def test_message_fts_repair_dedupes_duplicate_session_ids(test_conn: sqlite3.Con
     assert row[0] == 1
 
 
-def test_message_fts_repair_leaves_freshness_stale_for_owner_verification(test_conn: sqlite3.Connection) -> None:
+def test_message_fts_repair_leaves_a_directly_valid_partition(test_conn: sqlite3.Connection) -> None:
     restore_fts_triggers_sync(test_conn)
     _seed_text_block(
         test_conn,
         native_session_id="conv-message-repair-freshness",
         native_message_id="msg-message-repair-freshness",
-        text="freshness ledger needle",
+        text="partition repair needle",
     )
     session_id = "unknown-export:conv-message-repair-freshness"
     repair_message_fts_index_sync(test_conn, [session_id])
 
-    state = test_conn.execute(
-        """
-        SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows
-        FROM fts_freshness_state
-        WHERE surface = 'messages_fts'
-        """
-    ).fetchone()
-    assert dict(state) == {
-        "state": "stale",
-        "source_rows": 0,
-        "indexed_rows": 0,
-        "missing_rows": 0,
-        "excess_rows": 0,
-        "duplicate_rows": 0,
-    }
+    assert FtsDerivationAdapter().inspect_partition(test_conn, session_id).valid
 
 
 def test_message_fts_trigger_rowids_track_block_rowids(test_conn: sqlite3.Connection) -> None:
@@ -352,17 +356,4 @@ def test_message_fts_reset_drops_orphan_docsize_rows(test_conn: sqlite3.Connecti
     reset_message_fts_index_sync(test_conn)
 
     assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
-    state = test_conn.execute(
-        """
-        SELECT state, source_rows, indexed_rows, excess_rows, detail
-        FROM fts_freshness_state
-        WHERE surface = 'messages_fts'
-        """
-    ).fetchone()
-    assert dict(state) == {
-        "state": "ready",
-        "source_rows": 0,
-        "indexed_rows": 0,
-        "excess_rows": 0,
-        "detail": None,
-    }
+    assert FtsDerivationAdapter().inspect_partition(test_conn, GLOBAL_PARTITION).valid
