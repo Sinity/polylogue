@@ -846,24 +846,9 @@ def _archive_insight_freshness_info(archive_db: Path) -> dict[str, object] | Non
 
 
 def _insight_freshness_from_connection(conn: sqlite3.Connection) -> dict[str, object]:
-    """Adapt one authoritative profile inspection for the status surface."""
-    from polylogue.storage.derived.session.status import session_insight_status_sync
+    from polylogue.operations.daemon_status import insight_freshness_from_connection
 
-    status = session_insight_status_sync(conn, verify_freshness=True)
-    profile_ready = (
-        status.missing_profile_row_count == 0
-        and status.stale_profile_row_count == 0
-        and status.orphan_profile_row_count == 0
-        and status.profile_row_count == status.total_sessions
-    )
-    return {
-        "sessions_with_profiles": status.profile_row_count,
-        "total_sessions": status.total_sessions,
-        "profile_ready": profile_ready,
-        "missing_profile_rows": status.missing_profile_row_count,
-        "stale_profile_rows": status.stale_profile_row_count,
-        "orphan_profile_rows": status.orphan_profile_row_count,
-    }
+    return insight_freshness_from_connection(conn)
 
 
 def _session_summary_readiness_info() -> ComponentReadiness:

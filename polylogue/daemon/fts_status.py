@@ -9,14 +9,13 @@ from pydantic import BaseModel, Field
 
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.logging import get_logger
-from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
+from polylogue.operations.fts_derivation import archive_fts_surface
+from polylogue.operations.fts_derivation import fts_triggers_present as _triggers_present
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
-
-_ARCHIVE_BLOCKS_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
 
 class FTSReadiness(BaseModel):
@@ -29,16 +28,6 @@ class FTSReadiness(BaseModel):
     coverage_pct: float | None = 0.0
     coverage_exact: bool = True
     surfaces: dict[str, dict[str, int | bool | str | None]] = Field(default_factory=dict)
-
-
-def _triggers_present(conn: sqlite3.Connection, trigger_names: tuple[str, ...]) -> bool:
-    placeholders = ",".join("?" for _ in trigger_names)
-    rows = conn.execute(
-        f"SELECT name FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
-        trigger_names,
-    ).fetchall()
-    present = {row[0] for row in rows}
-    return all(name in present for name in trigger_names)
 
 
 def _surface_payload(surface: FtsSurfaceInvariant) -> dict[str, int | bool | str | None]:
@@ -68,44 +57,9 @@ def _archive_index_path_for(dbf: Path) -> Path | None:
     return index_db if index_db.exists() else None
 
 
-def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:
-    """Project the FTS domain's global authoritative inspection for status."""
-    source_exists = _table_exists(conn, "blocks")
-    exists = _table_exists(conn, "messages_fts")
-    if not source_exists:
-        ready = not exists
-        return {
-            "source_exists": source_exists,
-            "exists": exists,
-            "source_rows": 0,
-            "indexed_rows": 0,
-            "triggers_present": exists and _triggers_present(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS),
-            "missing_rows": 0,
-            "excess_rows": 0,
-            "duplicate_rows": 0,
-            "identity_mismatch_rows": 0,
-            "ready": ready,
-            "exact": True,
-        }
-    inspection = FtsDerivationAdapter().inspect_partition(conn, GLOBAL_PARTITION)
-    return {
-        "source_exists": source_exists,
-        "exists": exists,
-        "source_rows": inspection.required_rows,
-        "indexed_rows": inspection.present_rows,
-        "triggers_present": inspection.triggers_compatible,
-        "missing_rows": inspection.missing_rows,
-        "excess_rows": inspection.excess_rows,
-        "duplicate_rows": inspection.duplicate_rows,
-        "identity_mismatch_rows": inspection.wrong_identity_rows,
-        "ready": inspection.valid,
-        "exact": True,
-    }
-
-
 def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:
     """Read authoritative FTS membership; freshness rows never certify it."""
-    return _archive_exact_blocks_surface(conn)
+    return archive_fts_surface(conn)
 
 
 def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict[str, object] | None:

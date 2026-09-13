@@ -131,12 +131,10 @@ def compose_embedding_convergence(
     from polylogue.config import load_polylogue_config
     from polylogue.daemon.convergence import DaemonConverger, DerivationConvergenceOwner
     from polylogue.daemon.derivation import Budget, Outcome
-    from polylogue.operations.embedding_derivation import make_embedding_frame
-    from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter, EmbeddingTextProvider
-    from polylogue.storage.search_providers import create_vector_provider
-    from polylogue.storage.search_providers.sqlite_vec_support import (
-        ESTIMATED_TOKENS_PER_MESSAGE,
-        VOYAGE_4_COST_PER_1M_TOKENS,
+    from polylogue.operations.embedding_derivation import (
+        estimated_embedding_message_cost,
+        make_embedding_derivation,
+        make_embedding_frame,
     )
 
     archive_root = index_db_path.parent
@@ -156,21 +154,8 @@ def compose_embedding_convergence(
             return EmbeddingConvergenceResult(None, "provider_unavailable")
 
         return ComposedEmbeddingConvergence(no_key)
-    provider = create_vector_provider(
-        voyage_api_key=str(voyage_key),
-        db_path=archive_root / "embeddings.db",
-        archive_root=archive_root,
-        model=cfg.embedding_model,
-        dimension=cfg.embedding_dimension,
-    )
-    if not isinstance(provider, EmbeddingTextProvider):
-
-        async def unavailable(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
-            return EmbeddingConvergenceResult(None, "provider_unavailable")
-
-        return ComposedEmbeddingConvergence(unavailable)
     monthly_cap = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
-    estimated_cost_per_message = ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
+    estimated_cost_per_message = estimated_embedding_message_cost()
     pass_lock = asyncio.Lock()
     receipt_lock = threading.Lock()
     active_receipt: _PassReceipt | None = None
@@ -200,13 +185,21 @@ def compose_embedding_convergence(
                 )
         return admission(actor, function)
 
-    adapter = EmbeddingDerivationAdapter(
+    adapter = make_embedding_derivation(
         index_db_path,
-        provider,
+        voyage_api_key=str(voyage_key),
+        model=cfg.embedding_model,
+        dimension=cfg.embedding_dimension,
         archive_root=archive_root,
         reserve=reserve,
-        quiet=(lambda _frame, _key: quiet()) if quiet is not None else None,
+        quiet=quiet,
     )
+    if adapter is None:
+
+        async def unavailable(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
+            return EmbeddingConvergenceResult(None, "provider_unavailable")
+
+        return ComposedEmbeddingConvergence(unavailable)
     owner = DerivationConvergenceOwner(
         DaemonConverger(stages=(), derivations=(adapter,)),
         compute_adapter=compute_adapter,

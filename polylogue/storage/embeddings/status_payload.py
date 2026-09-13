@@ -507,15 +507,6 @@ def _message_coverage_percent(
     return embedded_messages / candidate_prose_messages * 100
 
 
-def _query_is_unavailable(exc: sqlite3.Error) -> bool:
-    from polylogue.storage.embeddings.support import is_missing_table_error
-
-    message = str(exc).lower()
-    return (isinstance(exc, sqlite3.OperationalError) and is_missing_table_error(exc)) or any(
-        token in message for token in ("interrupted", "locked", "busy")
-    )
-
-
 def _authoritative_archive_embedding_state(
     conn: sqlite3.Connection,
     *,
@@ -585,12 +576,7 @@ def _authoritative_archive_embedding_state(
         recipe.model,
         recipe.dimensions,
     )
-    try:
-        rows = _rows_with_timeout(conn, sql, params=params, timeout_ms=timeout_ms)
-    except sqlite3.Error as exc:
-        if _query_is_unavailable(exc):
-            return None
-        raise
+    rows = _rows_with_timeout(conn, sql, params=params, timeout_ms=timeout_ms)
     if not rows:
         return None
     return tuple(_payload_int(value) for value in rows[0])  # type: ignore[return-value]

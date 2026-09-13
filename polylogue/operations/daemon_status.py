@@ -647,20 +647,24 @@ def _search_component(index_conn: sqlite3.Connection) -> Any:
 
 def _session_profile_component(index_conn: sqlite3.Connection) -> Any:
     """Adapt the profile domain's canonical inspection to direct status."""
+    from polylogue.core.evidence import Measured, Unavailable
     from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
     from polylogue.storage.derived.session.status import session_insight_status_sync
+    from polylogue.storage.tier_access import capture_sqlite_read
 
-    try:
-        status = session_insight_status_sync(index_conn, verify_freshness=True)
-    except sqlite3.Error as exc:
+    evidence = capture_sqlite_read(lambda: session_insight_status_sync(index_conn, verify_freshness=True))
+    if isinstance(evidence, Unavailable):
         return ComponentReadiness(
             component="session_profiles",
             scope="insights",
             state=CapabilityReadinessState.UNKNOWN,
             summary="session-profile inspection unavailable",
-            caveats=(str(exc),),
+            caveats=(evidence.detail or evidence.reason,),
             repair_hint="polylogued run",
         )
+    if not isinstance(evidence, Measured):
+        raise AssertionError("profile inspection produced unsupported evidence")
+    status = evidence.value
     ready = (
         status.missing_profile_row_count == 0
         and status.stale_profile_row_count == 0
@@ -773,3 +777,24 @@ def _status_ok(components: Mapping[str, Mapping[str, object]], raw_failures: Map
         if state == "missing" and name in required_missing:
             return False
     return True
+
+
+def insight_freshness_from_connection(conn: sqlite3.Connection) -> dict[str, object]:
+    """Adapt one authoritative profile inspection for the status surface."""
+    from polylogue.storage.derived.session.status import session_insight_status_sync
+
+    status = session_insight_status_sync(conn, verify_freshness=True)
+    profile_ready = (
+        status.missing_profile_row_count == 0
+        and status.stale_profile_row_count == 0
+        and status.orphan_profile_row_count == 0
+        and status.profile_row_count == status.total_sessions
+    )
+    return {
+        "sessions_with_profiles": status.profile_row_count,
+        "total_sessions": status.total_sessions,
+        "profile_ready": profile_ready,
+        "missing_profile_rows": status.missing_profile_row_count,
+        "stale_profile_rows": status.stale_profile_row_count,
+        "orphan_profile_rows": status.orphan_profile_row_count,
+    }

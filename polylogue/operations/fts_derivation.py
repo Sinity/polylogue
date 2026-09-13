@@ -14,10 +14,17 @@ from pathlib import Path
 
 from polylogue.daemon.derivation import DerivationFrame
 from polylogue.storage.archive_identity import resolve_active_index_path
-from polylogue.storage.fts.derivation import FtsDerivationAdapter
+from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 
-__all__ = ["FTS_ORPHAN_INTERVAL_S", "make_fts_derivation", "make_fts_frame"]
+__all__ = [
+    "FTS_ORPHAN_INTERVAL_S",
+    "archive_fts_surface",
+    "fts_triggers_present",
+    "make_fts_derivation",
+    "make_fts_frame",
+]
 
 
 # Global residue is defense-in-depth for interrupted/malformed historical
@@ -72,3 +79,51 @@ def make_fts_frame(
         recipe_versions={adapter.domain: adapter.recipe_id},
         scope=None if scope is None else tuple(dict.fromkeys(str(session_id) for session_id in scope)),
     )
+
+
+_ARCHIVE_BLOCKS_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+
+
+def fts_triggers_present(conn: sqlite3.Connection, trigger_names: tuple[str, ...]) -> bool:
+    placeholders = ",".join("?" for _ in trigger_names)
+    rows = conn.execute(
+        f"SELECT name FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})",
+        trigger_names,
+    ).fetchall()
+    present = {row[0] for row in rows}
+    return all(name in present for name in trigger_names)
+
+
+def archive_fts_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:
+    """Project the FTS domain's global authoritative inspection for status."""
+    source_exists = _table_exists(conn, "blocks")
+    exists = _table_exists(conn, "messages_fts")
+    if not source_exists:
+        ready = not exists
+        return {
+            "source_exists": source_exists,
+            "exists": exists,
+            "source_rows": 0,
+            "indexed_rows": 0,
+            "triggers_present": exists and fts_triggers_present(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS),
+            "missing_rows": 0,
+            "excess_rows": 0,
+            "duplicate_rows": 0,
+            "identity_mismatch_rows": 0,
+            "ready": ready,
+            "exact": True,
+        }
+    inspection = FtsDerivationAdapter().inspect_partition(conn, GLOBAL_PARTITION)
+    return {
+        "source_exists": source_exists,
+        "exists": exists,
+        "source_rows": inspection.required_rows,
+        "indexed_rows": inspection.present_rows,
+        "triggers_present": inspection.triggers_compatible,
+        "missing_rows": inspection.missing_rows,
+        "excess_rows": inspection.excess_rows,
+        "duplicate_rows": inspection.duplicate_rows,
+        "identity_mismatch_rows": inspection.wrong_identity_rows,
+        "ready": inspection.valid,
+        "exact": True,
+    }

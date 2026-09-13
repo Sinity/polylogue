@@ -216,9 +216,14 @@ def inspect_session_summary(
     if deadline is not None and time.monotonic() >= deadline:
         return SessionSummaryInspection(state="unknown", reason="session-summary inspection deadline exceeded")
 
+    from polylogue.core.evidence import Measured, Unavailable
+    from polylogue.storage.tier_access import capture_sqlite_read
+
     total_sessions = 0
     stale_sessions = 0
-    try:
+
+    def scan() -> SessionSummaryInspection:
+        nonlocal total_sessions, stale_sessions
         with query_deadline(conn, seconds=deadline_s):
             for row in conn.execute(_SUMMARY_CENSUS_SQL):
                 if deadline is not None and time.monotonic() >= deadline:
@@ -236,18 +241,23 @@ def inspect_session_summary(
                 )
                 if stored != authoritative:
                     stale_sessions += 1
-    except sqlite3.Error as exc:
+        return SessionSummaryInspection(
+            state="ready" if stale_sessions == 0 else "stale",
+            total_sessions=total_sessions,
+            stale_sessions=stale_sessions,
+        )
+
+    evidence = capture_sqlite_read(scan)
+    if isinstance(evidence, Unavailable):
         return SessionSummaryInspection(
             state="unknown",
             total_sessions=total_sessions,
             stale_sessions=stale_sessions,
-            reason=f"session-summary inspection unavailable: {exc}",
+            reason=f"session-summary inspection unavailable: {evidence.detail or evidence.reason}",
         )
-    return SessionSummaryInspection(
-        state="ready" if stale_sessions == 0 else "stale",
-        total_sessions=total_sessions,
-        stale_sessions=stale_sessions,
-    )
+    if not isinstance(evidence, Measured):
+        raise AssertionError("summary inspection produced unsupported evidence")
+    return evidence.value
 
 
 def authoritative_session_summary(conn: sqlite3.Connection, session_id: str) -> SessionSummaryValues | None:
