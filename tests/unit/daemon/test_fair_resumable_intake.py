@@ -116,7 +116,7 @@ def test_raw_discovery_uses_canonical_adapter_and_returns_payload_costs(
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("legacy raw census selector was called")
 
-    monkeypatch.setattr("polylogue.storage.raw_convergence.raw_materialization_pending_census_raw_ids", forbidden)
+    monkeypatch.setattr("polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot", forbidden)
     result = discover_pending_raw_ids(tmp_path, limit=2, max_payload_bytes=1024)
 
     expected = tuple(

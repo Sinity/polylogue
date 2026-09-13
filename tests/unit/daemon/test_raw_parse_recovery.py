@@ -229,7 +229,7 @@ def test_raw_parse_recovery_stage_blocks_unproven_cursor_authority(
         if refusal_shape == "unattributed"
         else RawFrontierBlockedPaths(frozenset({str(path)}), None)
     )
-    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_refusal", lambda _root: refusal)
+    monkeypatch.setattr("polylogue.storage.raw_retention.raw_frontier_blocked_raw_ids", lambda _root, _ids: refusal)
 
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
 
@@ -251,8 +251,8 @@ def test_raw_parse_recovery_stage_proceeds_when_another_path_is_refused(
     path = tmp_path / "stuck.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
     monkeypatch.setattr(
-        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
-        lambda _root: RawFrontierBlockedPaths(frozenset({str(tmp_path / "other-broken.jsonl")}), None),
+        "polylogue.storage.raw_retention.raw_frontier_blocked_raw_ids",
+        lambda _root, _ids: RawFrontierBlockedPaths(frozenset({str(tmp_path / "other-broken.jsonl")}), None),
     )
 
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
@@ -615,20 +615,16 @@ def test_raw_parse_recovery_probe_seeks_the_source_path_index(tmp_path: Path, mo
 
     assert make_raw_parse_recovery_stage(tmp_path / "index.db").check(path) is True
 
-    assert len(plans) <= 3, f"expected bounded discovery, membership inspection and source lookup, got {plans}"
+    assert len(plans) <= 4, f"expected two indexed intervals, membership inspection and source lookup, got {plans}"
     steps = [step for plan in plans for step in plan]
-    assert not [step for step in steps if re.match(r"^SCAN r\b", step)], steps
-    assert [step for step in steps if "SEARCH r USING INDEX idx_raw_sessions_source_path" in step], steps
+    assert not [step for step in steps if re.match(r"^SCAN (r|raw_sessions)\b", step)], steps
+    assert [step for step in steps if "USING INDEX idx_raw_sessions_source_path" in step], steps
 
 
-def test_raw_parse_recovery_probes_a_whole_batch_in_one_statement(
+def test_raw_parse_recovery_probes_a_whole_batch_with_bounded_index_seeks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One converger chunk costs one probe, not one probe per file.
-
-    Anti-vacuity: without ``check_many``/``execute_many`` the converger falls
-    back to the per-path ``check`` and this records four statements.
-    """
+    """A converger chunk uses bounded index intervals, never an archive scan."""
     bootstrap_archive_root(tmp_path)
     paths = [tmp_path / f"batched-{index}.json" for index in range(4)]
     plans = _record_probe_plans(monkeypatch)
@@ -636,7 +632,10 @@ def test_raw_parse_recovery_probes_a_whole_batch_in_one_statement(
     converger = DaemonConverger(stages=(make_raw_parse_recovery_stage(tmp_path / "index.db"),))
     states, _timings = converger.converge_batch(paths)
 
-    assert len(plans) == 1, f"expected one batched probe, got {len(plans)}"
+    assert len(plans) <= 2 * len(paths), plans
+    assert all(
+        "SEARCH raw_sessions USING INDEX idx_raw_sessions_source_path" in step for plan in plans for step in plan
+    )
     for path in paths:
         assert states[path].stages["raw_parse_recovery"] is StageState.DONE
         assert states[path].error_count == 0

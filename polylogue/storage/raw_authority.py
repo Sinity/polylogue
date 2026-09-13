@@ -1314,71 +1314,81 @@ def raw_replay_application_receipt(
         from polylogue.storage.archive_identity import resolve_active_index_path
 
         index_db_path = resolve_active_index_path(archive_root)
-    marks = ",".join("?" for _ in plan.input_raw_ids)
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db_path),))
-        source = _rows(
+        return raw_replay_application_receipt_from_connection(conn, plan, index_db_path=index_db_path)
+
+
+def raw_replay_application_receipt_from_connection(
+    conn: sqlite3.Connection,
+    plan: RawReplayPlan,
+    *,
+    index_db_path: Path,
+) -> JSONDocument:
+    """Read receipt authority from the caller's pinned source/index snapshot."""
+    marks = ",".join("?" for _ in plan.input_raw_ids)
+    source = _rows(
+        conn,
+        f"""
+        SELECT raw_id, source_revision, predecessor_raw_id, baseline_raw_id,
+               append_end_offset, parsed_at_ms, parse_error
+        FROM raw_sessions WHERE raw_id IN ({marks}) ORDER BY raw_id
+        """,
+        plan.input_raw_ids,
+    )
+    memberships = _rows(
+        conn,
+        f"""
+        SELECT raw_id, logical_source_key, source_revision, decision, decided_at_ms
+        FROM raw_session_memberships
+        WHERE raw_id IN ({marks}) ORDER BY raw_id, logical_source_key
+        """,
+        plan.input_raw_ids,
+    )
+    applications = _rows(
+        conn,
+        f"""
+        SELECT decision_id, raw_id, session_id, logical_source_key, decision,
+               source_revision, acquisition_generation, accepted_raw_id,
+               accepted_source_revision, hex(accepted_content_hash) AS accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier, baseline_raw_id,
+               predecessor_raw_id, append_end_offset, decided_at_ms
+        FROM index_tier.raw_revision_applications
+        WHERE raw_id IN ({marks}) ORDER BY raw_id, decision_id
+        """,
+        plan.input_raw_ids,
+    )
+    if plan.logical_keys:
+        key_marks = ",".join("?" for _ in plan.logical_keys)
+        heads = _rows(
             conn,
             f"""
-            SELECT raw_id, source_revision, predecessor_raw_id, baseline_raw_id,
-                   append_end_offset, parsed_at_ms, parse_error
-            FROM raw_sessions WHERE raw_id IN ({marks}) ORDER BY raw_id
+            SELECT logical_source_key, session_id, accepted_raw_id,
+                   accepted_source_revision,
+                   hex(accepted_content_hash) AS accepted_content_hash,
+                   accepted_frontier_kind, accepted_frontier,
+                   acquisition_generation, append_end_offset
+            FROM index_tier.raw_revision_heads
+            WHERE logical_source_key IN ({key_marks})
+            ORDER BY logical_source_key
             """,
-            plan.input_raw_ids,
+            plan.logical_keys,
         )
-        memberships = _rows(
+        sessions = _rows(
             conn,
             f"""
-            SELECT raw_id, logical_source_key, source_revision, decision, decided_at_ms
-            FROM raw_session_memberships
-            WHERE raw_id IN ({marks}) ORDER BY raw_id, logical_source_key
+            SELECT s.session_id, s.raw_id, hex(s.content_hash) AS content_hash,
+                   s.message_count
+            FROM index_tier.sessions AS s
+            JOIN index_tier.raw_revision_heads AS h ON h.session_id = s.session_id
+            WHERE h.logical_source_key IN ({key_marks})
+            ORDER BY s.session_id
             """,
-            plan.input_raw_ids,
+            plan.logical_keys,
         )
-        applications = _rows(
-            conn,
-            f"""
-            SELECT decision_id, raw_id, session_id, logical_source_key, decision,
-                   source_revision, acquisition_generation, accepted_raw_id,
-                   accepted_source_revision, hex(accepted_content_hash) AS accepted_content_hash,
-                   accepted_frontier_kind, accepted_frontier, baseline_raw_id,
-                   predecessor_raw_id, append_end_offset, decided_at_ms
-            FROM index_tier.raw_revision_applications
-            WHERE raw_id IN ({marks}) ORDER BY raw_id, decision_id
-            """,
-            plan.input_raw_ids,
-        )
-        if plan.logical_keys:
-            key_marks = ",".join("?" for _ in plan.logical_keys)
-            heads = _rows(
-                conn,
-                f"""
-                SELECT logical_source_key, session_id, accepted_raw_id,
-                       accepted_source_revision,
-                       hex(accepted_content_hash) AS accepted_content_hash,
-                       accepted_frontier_kind, accepted_frontier,
-                       acquisition_generation, append_end_offset
-                FROM index_tier.raw_revision_heads
-                WHERE logical_source_key IN ({key_marks})
-                ORDER BY logical_source_key
-                """,
-                plan.logical_keys,
-            )
-            sessions = _rows(
-                conn,
-                f"""
-                SELECT s.session_id, s.raw_id, hex(s.content_hash) AS content_hash,
-                       s.message_count
-                FROM index_tier.sessions AS s
-                JOIN index_tier.raw_revision_heads AS h ON h.session_id = s.session_id
-                WHERE h.logical_source_key IN ({key_marks})
-                ORDER BY s.session_id
-                """,
-                plan.logical_keys,
-            )
-        else:
-            heads = []
-            sessions = []
+    else:
+        heads = []
+        sessions = []
     return json_document(
         {
             "schema": "polylogue.raw-replay-application-receipt.v2",
@@ -1831,41 +1841,85 @@ def finalize_raw_authority_census(
         return _raw_authority_census_receipt(conn, census_id)
 
 
+def unfinished_raw_authority_census_ids(
+    archive_root: Path, *, after_sequence: int = 0, limit: int = 128
+) -> tuple[tuple[str, int], ...]:
+    """Page only interrupted legacy replay obligations for explicit startup recovery."""
+    if limit < 1 or not (archive_root / "source.db").is_file():
+        return ()
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+        return tuple(
+            (str(row[0]), int(row[1]))
+            for row in conn.execute(
+                """SELECT census_id, sequence_no FROM raw_authority_censuses
+                WHERE lifecycle_status = 'planned' AND sequence_no > ?
+                  AND COALESCE(json_extract(scope_json, '$.schema'), '') !=
+                      'polylogue.raw-authority-frontier-scope.v1'
+                ORDER BY sequence_no LIMIT ?""",
+                (after_sequence, limit),
+            )
+        )
+
+
+def raw_authority_census_replay_plans(archive_root: Path, census_id: str) -> tuple[RawReplayPlan, ...]:
+    """Read the immutable plan scope of one named recovery obligation."""
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        return tuple(
+            _raw_replay_plan_from_row(row)
+            for row in conn.execute(
+                """SELECT p.* FROM raw_authority_plans p
+                JOIN raw_authority_census_plans cp ON cp.plan_id = p.plan_id
+                WHERE cp.census_id = ? ORDER BY cp.ordinal""",
+                (census_id,),
+            )
+        )
+
+
 def recover_interrupted_raw_authority_censuses(
     archive_root: Path,
     *,
     index_db_path: Path | None = None,
+    census_ids: Sequence[str] | None = None,
 ) -> tuple[tuple[str, JSONDocument], ...]:
     """Reconcile unfinished apply censuses from durable postconditions."""
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return ()
+    if census_ids is not None and not census_ids:
+        return ()
+    census_filter = "" if census_ids is None else f"AND c.census_id IN ({','.join('?' for _ in census_ids)})"
+    parameters = tuple(census_ids) if census_ids is not None else ()
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            """
+            f"""
             SELECT c.census_id, p.*
             FROM raw_authority_censuses AS c
             JOIN raw_authority_census_plans AS cp ON cp.census_id = c.census_id
             JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
             WHERE c.lifecycle_status = 'planned'
+              {census_filter}
               AND cp.selected = 1 AND cp.outcome_recorded = 0
               AND COALESCE(json_extract(c.scope_json, '$.schema'), '') !=
                   'polylogue.raw-authority-frontier-scope.v1'
             ORDER BY c.sequence_no, cp.ordinal
-            """
+            """,
+            parameters,
         ).fetchall()
         census_scopes = tuple(
             (str(row[0]), json_document(json.loads(str(row[1]))))
             for row in conn.execute(
-                """
+                f"""
                 SELECT census_id, scope_json
-                FROM raw_authority_censuses
+                FROM raw_authority_censuses c
                 WHERE lifecycle_status = 'planned'
+                  {census_filter}
                   AND COALESCE(json_extract(scope_json, '$.schema'), '') !=
                       'polylogue.raw-authority-frontier-scope.v1'
                 ORDER BY sequence_no
-                """
+                """,
+                parameters,
             )
         )
     for row in rows:
@@ -2487,6 +2541,8 @@ __all__ = [
     "latest_raw_authority_census_receipt",
     "list_unresolved_raw_authority_blockers",
     "raw_replay_application_receipt",
+    "raw_replay_application_receipt_from_connection",
+    "raw_authority_census_replay_plans",
     "raw_authority_census_query_handle",
     "raw_authority_detail_query_handle",
     "raw_replay_plan_last_attempts",
@@ -2504,6 +2560,7 @@ __all__ = [
     "resolve_raw_authority_blocker",
     "unresolved_raw_authority_blockers",
     "unresolved_raw_replay_blockers",
+    "unfinished_raw_authority_census_ids",
     "validate_raw_replay_plan",
     "validate_raw_replay_application_receipt",
 ]

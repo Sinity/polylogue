@@ -319,6 +319,16 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         cadence_s=60.0,
     ),
     _spec(
+        "raw_observation_convergence",
+        owner="daemon.raw_observation_owner",
+        trigger=ServiceTrigger.PERIODIC,
+        requires=(ServiceCapability.DERIVED_WRITES,),
+        profiles=(ServiceProfile.PRODUCTION,),
+        readiness=ServiceReadiness.ON_FIRST_PASS,
+        status_component="convergence",
+        cadence_s=30.0,
+    ),
+    _spec(
         "wal_checkpoint",
         owner="daemon.storage",
         trigger=ServiceTrigger.PERIODIC,

@@ -7776,11 +7776,11 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
             """,
             (str(incident_recovery),),
         ).fetchone() == ("deferred_cas_frontier",)
-    from polylogue.storage.raw_convergence import _raw_materialization_retryable_missing_blob_error
+    from polylogue.storage.derived.raw import raw_replay_error_is_retryable
 
-    assert _raw_materialization_retryable_missing_blob_error(parse_error) is True
-    assert _raw_materialization_retryable_missing_blob_error("RuntimeError: unrelated parser failure") is False
-    assert _raw_materialization_retryable_missing_blob_error(parse_error, True) is True
+    assert raw_replay_error_is_retryable(parse_error) is True
+    assert raw_replay_error_is_retryable("RuntimeError: unrelated parser failure") is False
+    assert raw_replay_error_is_retryable(parse_error, True) is True
 
     with sqlite3.connect(index_db) as conn:
         assert (

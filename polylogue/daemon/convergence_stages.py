@@ -613,48 +613,36 @@ def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = 
     )
 
     configured_root = archive_root or db_path.parent
-    cursors: dict[Path, PassCursor] = {}
+    cursors: dict[tuple[Path, ...], PassCursor] = {}
+    check_cursors: dict[tuple[Path, ...], tuple[str, str | None]] = {}
 
     def check(path: Path) -> bool:
         return path in check_many((path,))
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
-        return raw_observation_pending_roots(configured_root, paths)
+        return raw_observation_pending_roots(configured_root, paths, continuations=check_cursors)
 
     def execute(path: Path) -> StageExecuteReturn:
         return execute_many((path,))
 
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
-        from polylogue.readiness.capability import raw_frontier_source_selection_refusal
-
         ordered = tuple(dict.fromkeys(paths))
         if not ordered:
             return True
-        refusal = raw_frontier_source_selection_refusal(configured_root)
-        failed: list[str] = []
-        for path in ordered:
-            if (
-                refusal.unattributed_reason
-                or str(path) in refusal.source_paths
-                or str(path.resolve()) in refusal.source_paths
-            ):
-                continue
-            try:
-                report = converge_raw_observations(
-                    configured_root,
-                    source_roots=(path,),
-                    limit=_RAW_PARSE_RECOVERY_BATCH_LIMIT,
-                    max_payload_bytes=_RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES,
-                    cursor=cursors.get(path),
-                )
-            except Exception as exc:
-                failed.append(str(exc))
-                continue
-            cursors[path] = report.cursor
-            if report.failed:
-                failed.extend(outcome.error or "raw observation failed" for outcome in report.outcomes if outcome.error)
-        if failed:
-            raise RuntimeError("; ".join(failed))
+        # One execution budget covers every root in the invocation; the
+        # final readiness probe has its own fixed 128-observation allowance.
+        report = converge_raw_observations(
+            configured_root,
+            source_roots=ordered,
+            limit=_RAW_PARSE_RECOVERY_BATCH_LIMIT,
+            max_payload_bytes=_RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES,
+            cursor=cursors.get(ordered),
+        )
+        cursors[ordered] = report.cursor
+        if report.failed:
+            raise RuntimeError(
+                "; ".join(outcome.error or "raw observation failed" for outcome in report.outcomes if outcome.error)
+            )
         return not check_many(ordered)
 
     return ConvergenceStage(
