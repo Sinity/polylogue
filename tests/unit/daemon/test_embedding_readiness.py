@@ -21,12 +21,12 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 import polylogue.daemon.convergence_stages as stages
+from polylogue.config import PolylogueConfig
 from polylogue.daemon.convergence_stages import (
     _reconcile_embedding_config_change,
 )
@@ -39,26 +39,30 @@ from polylogue.storage.search_providers.sqlite_vec_runtime import (
 # ── helpers ────────────────────────────────────────────────────────
 
 
-class _FakeCfg:
-    """Minimal stand-in for ``PolylogueConfig`` with attribute + ``.get``."""
+def _config(
+    *,
+    embedding_enabled: bool = True,
+    voyage_api_key: str | None = "test-key",
+    embedding_model: str = "voyage-4",
+    embedding_dimension: int = 1024,
+    embedding_max_cost_usd: float = 0.0,
+) -> PolylogueConfig:
+    """A real ``PolylogueConfig``, not a duck-typed stand-in.
 
-    def __init__(
-        self,
-        *,
-        embedding_enabled: bool = True,
-        voyage_api_key: str | None = "test-key",
-        embedding_model: str = "voyage-4",
-        embedding_dimension: int = 1024,
-        embedding_max_cost_usd: float = 0.0,
-    ) -> None:
-        self.embedding_enabled = embedding_enabled
-        self.voyage_api_key = voyage_api_key
-        self.embedding_model = embedding_model
-        self.embedding_dimension = embedding_dimension
-        self.embedding_max_cost_usd = embedding_max_cost_usd
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
+    ``embedding_status_settings_from_config`` dispatches nominally over
+    ``PolylogueConfig``/``Config`` and refuses anything else, so a local
+    double here could only ever prove that the double matches itself --
+    and would go on passing after the production type it imitates changed.
+    """
+    return PolylogueConfig(
+        {
+            "embedding_enabled": embedding_enabled,
+            "voyage_api_key": voyage_api_key,
+            "embedding_model": embedding_model,
+            "embedding_dimension": embedding_dimension,
+            "embedding_max_cost_usd": embedding_max_cost_usd,
+        }
+    )
 
 
 def _seed_embedding_tables(
@@ -329,7 +333,7 @@ def test_readiness_configured_reports_enabled_with_model_and_dimension(
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
         conn.commit()
 
-    cfg = _FakeCfg(
+    cfg = _config(
         embedding_enabled=True,
         voyage_api_key="vk-live",
         embedding_model="voyage-4",
@@ -357,7 +361,7 @@ def test_readiness_unconfigured_reports_disabled_when_no_api_key(
     db.parent.mkdir(parents=True, exist_ok=True)
     db.touch()
 
-    cfg = _FakeCfg(embedding_enabled=True, voyage_api_key=None)
+    cfg = _config(embedding_enabled=True, voyage_api_key=None)
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
         info = embedding_readiness_info(db)
 
@@ -393,7 +397,7 @@ def test_readiness_unconfigured_when_enabled_flag_off(
         conn.execute("INSERT INTO messages (message_id, session_id) VALUES ('msg-1', 'conv-1')")
         conn.commit()
 
-    cfg = _FakeCfg(embedding_enabled=False, voyage_api_key="vk-live")
+    cfg = _config(embedding_enabled=False, voyage_api_key="vk-live")
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
         info = embedding_readiness_info(db)
 
@@ -420,7 +424,7 @@ def test_readiness_reads_archive_index(tmp_path: Path) -> None:
     archive_db = tmp_path / "index.db"
     _seed_archive_embedding_readiness_db(archive_db)
 
-    cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
+    cfg = _config(embedding_enabled=True, voyage_api_key="vk-live")
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
         info = embedding_readiness_info(db_anchor)
 
@@ -439,7 +443,7 @@ def test_readiness_reads_archive_file_set_detail_counts_pending_messages(tmp_pat
     archive_db = tmp_path / "index.db"
     _seed_archive_embedding_readiness_db(archive_db)
 
-    cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
+    cfg = _config(embedding_enabled=True, voyage_api_key="vk-live")
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
         info = embedding_readiness_info(archive_db, detail=True)
 
@@ -459,7 +463,7 @@ def test_readiness_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
         conn.commit()
     _seed_archive_embedding_readiness_db(archive_db)
 
-    cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
+    cfg = _config(embedding_enabled=True, voyage_api_key="vk-live")
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
         info = embedding_readiness_info(db_anchor)
 
@@ -496,7 +500,7 @@ def test_readiness_failure_branch_counts_error_message_rows(tmp_path: Path) -> N
         )
         conn.commit()
 
-    cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
+    cfg = _config(embedding_enabled=True, voyage_api_key="vk-live")
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
         info = embedding_readiness_info(db)
 
@@ -519,7 +523,7 @@ def test_readiness_query_failure_logs_instead_of_looking_like_a_clean_archive(
     db.parent.mkdir(parents=True, exist_ok=True)
     db.touch()
 
-    cfg = _FakeCfg(embedding_enabled=True, voyage_api_key="vk-live")
+    cfg = _config(embedding_enabled=True, voyage_api_key="vk-live")
 
     def _boom(*args: object, **kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
@@ -555,7 +559,7 @@ def test_reconcile_embedding_dimension_mismatch_marks_reindex_and_drops_vec0(
         _create_vec0_table(conn, dimension=1024)
         assert _vec0_table_dimension(conn) == 1024
 
-        cfg = _FakeCfg(
+        cfg = _config(
             embedding_enabled=True,
             voyage_api_key="vk-live",
             embedding_model="voyage-4",
@@ -589,7 +593,7 @@ def test_reconcile_embedding_model_mismatch_marks_reindex_without_dropping_vec0(
         )
         _create_vec0_table(conn, dimension=1024)
 
-        cfg = _FakeCfg(
+        cfg = _config(
             embedding_enabled=True,
             voyage_api_key="vk-live",
             embedding_model="voyage-4",  # changed
@@ -621,7 +625,7 @@ def test_reconcile_embedding_no_change_keeps_status_clean(
             dimension=1024,
             session_ids=("conv-a",),
         )
-        cfg = _FakeCfg(
+        cfg = _config(
             embedding_enabled=True,
             voyage_api_key="vk-live",
             embedding_model="voyage-4",
