@@ -318,9 +318,11 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="test", root=root),))
     monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_FILES", 2)
     monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_BYTES", 100)
+    monkeypatch.setattr(live_watcher, "_CATCH_UP_CONVERGENCE_MAX_FILES", 4)
 
     calls: list[tuple[list[Path], int | None, int]] = []
-    whole_archive_flags: list[bool] = []
+    deferred_flags: list[bool] = []
+    convergence_batches: list[tuple[tuple[Path, ...], tuple[str, ...], bool]] = []
     retry_scan_calls: list[int] = []
 
     async def fake_ingest_files(
@@ -328,12 +330,25 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
-        whole_archive_convergence: bool = True,
-    ) -> None:
+    ) -> object:
         calls.append((paths, queued_file_count, skipped_file_count))
-        whole_archive_flags.append(whole_archive_convergence)
+        deferred_flags.append(watcher._catch_up_convergence_deferred)
+        return SimpleNamespace(
+            needed_file_count=len(paths),
+            succeeded_file_count=len(paths),
+            failed_file_count=0,
+            stage_timings_s={},
+            succeeded_paths=tuple(paths),
+            changed_session_ids=tuple(f"session-{path.stem}" for path in paths),
+        )
+
+    async def fake_flush(
+        paths: list[Path], session_ids: list[str], _timings: dict[str, float], *, whole_archive: bool
+    ) -> None:
+        convergence_batches.append((tuple(paths), tuple(session_ids), whole_archive))
 
     watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
+    watcher._flush_catch_up_convergence = fake_flush  # type: ignore[assignment,method-assign]
     watcher._schedule_failed_retry_scan = lambda: retry_scan_calls.append(len(calls))  # type: ignore[method-assign]
 
     asyncio.run(watcher._catch_up([root]))
@@ -342,8 +357,13 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     assert calls[0][1:] == (5, 0)
     assert calls[1][1:] == (2, 0)
     assert calls[2][1:] == (1, 0)
-    # Whole-archive convergence stages run once, on the last chunk.
-    assert whole_archive_flags == [False, False, True]
+    assert deferred_flags == [True, True, True]
+    # Two source chunks coalesce into one bounded derived pass; the final
+    # source chunk runs its own pass and the archive-wide stages exactly once.
+    assert convergence_batches == [
+        (tuple(files[:4]), tuple(f"session-{path.stem}" for path in files[:4]), False),
+        (tuple(files[4:]), tuple(f"session-{path.stem}" for path in files[4:]), True),
+    ]
     assert retry_scan_calls == [3]
 
 
