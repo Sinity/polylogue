@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -63,11 +65,24 @@ class TestDiagnoseNoArchive:
 class TestDiagnoseSchemaMismatch:
     def test_schema_mismatch(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
-        _create_index_db(data_home, user_version=99)
+        db = _create_index_db(data_home, user_version=99)
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read as real_diagnostic_read
+
+        observed: list[Path] = []
+
+        @contextmanager
+        def diagnostic_read(path: str | Path, *, tier: ArchiveTier | None = None) -> Iterator[sqlite3.Connection]:
+            observed.append(Path(path))
+            with real_diagnostic_read(path, tier=tier) as conn:
+                yield conn
+
+        monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.one_shot_diagnostic_read", diagnostic_read)
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "schema_mismatch"
         assert "99" in diag.headline
         assert diag.next_action == "polylogue ops reset --index && polylogued run"
+        assert observed == [db]
 
         # The diagnostic names two executable recovery routes.  Verify their
         # registered command shapes rather than preserving retired prose.

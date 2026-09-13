@@ -155,18 +155,32 @@ def test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field() -> Non
     assert expected_filter_params == set(produced)
 
 
-def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path) -> None:
+def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.daemon.http import _web_reader_archive_root
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read as real_diagnostic_read
 
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute("PRAGMA user_version = 1")
 
+    observed: list[tuple[Path, ArchiveTier | None]] = []
+
+    @contextmanager
+    def diagnostic_read(path: str | Path, *, tier: ArchiveTier | None = None) -> Iterator[sqlite3.Connection]:
+        observed.append((Path(path), tier))
+        with real_diagnostic_read(path, tier=tier) as conn:
+            yield conn
+
+    monkeypatch.setattr("polylogue.daemon.http.one_shot_diagnostic_read", diagnostic_read)
     with patch("polylogue.paths.archive_root", return_value=tmp_path):
         assert _web_reader_archive_root() is None
+    assert observed == [
+        (tmp_path / "source.db", ArchiveTier.SOURCE),
+        (tmp_path / "index.db", ArchiveTier.INDEX),
+    ]
 
 
 def test_observability_payload_projects_a_new_registry_descriptor(monkeypatch: pytest.MonkeyPatch) -> None:

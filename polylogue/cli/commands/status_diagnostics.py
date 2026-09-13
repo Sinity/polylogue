@@ -10,7 +10,6 @@ operator should see — never a traceback. (#1263)
 
 from __future__ import annotations
 
-import contextlib
 import importlib.util
 import os
 import sqlite3
@@ -145,11 +144,12 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
             next_action="polylogue ops doctor",
         )
 
-    conn: sqlite3.Connection | None = None
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
-        row = conn.execute("PRAGMA user_version").fetchone()
-        current_version = int(row[0]) if row else 0
+        from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read
+
+        with one_shot_diagnostic_read(db) as conn:
+            row = conn.execute("PRAGMA user_version").fetchone()
+            current_version = int(row[0]) if row else 0
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
         if "locked" in message or "busy" in message:
@@ -176,11 +176,6 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
             detail=f"Unexpected error: {exc}. Try `polylogue ops doctor` to diagnose.",
             next_action="polylogue ops doctor",
         )
-    finally:
-        if conn is not None:
-            with contextlib.suppress(Exception):
-                conn.close()
-
     expected_version = INDEX_SCHEMA_VERSION
     if current_version != 0 and current_version != expected_version:
         detail = (
