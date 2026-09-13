@@ -20,6 +20,7 @@ from polylogue.storage.sqlite.connection_profile import (
     CHECKPOINT_ESCALATION_MODES,
     CHECKPOINT_HOLD_BUDGET_S,
     DAEMON_WRITE_CONNECTION_PROFILE,
+    ISOLATED_TIER_WRITE_PROFILE,
     OWNED_WAL_AUTOCHECKPOINT_PAGES,
     WAL_AUTOCHECKPOINT_PAGES,
     WRITE_CONNECTION_PROFILE,
@@ -52,16 +53,14 @@ def _seed_wal(db: Path, *, rows: int) -> None:
 
 def test_unowned_process_keeps_bounded_autocheckpoint() -> None:
     assert not recurring_checkpoint_owner_armed()
-    assert _autocheckpoint(write_connection_pragma_statements(WRITE_CONNECTION_PROFILE)) == WAL_AUTOCHECKPOINT_PAGES
-    assert (
-        _autocheckpoint(write_connection_pragma_statements(DAEMON_WRITE_CONNECTION_PROFILE)) == WAL_AUTOCHECKPOINT_PAGES
-    )
+    for profile in (WRITE_CONNECTION_PROFILE, DAEMON_WRITE_CONNECTION_PROFILE, ISOLATED_TIER_WRITE_PROFILE):
+        assert _autocheckpoint(write_connection_pragma_statements(profile)) == WAL_AUTOCHECKPOINT_PAGES
 
 
 def test_owned_process_disables_implicit_autocheckpoint_for_every_writer() -> None:
     with arm_recurring_checkpoint_owner():
         assert recurring_checkpoint_owner_armed()
-        for profile in (WRITE_CONNECTION_PROFILE, DAEMON_WRITE_CONNECTION_PROFILE):
+        for profile in (WRITE_CONNECTION_PROFILE, DAEMON_WRITE_CONNECTION_PROFILE, ISOLATED_TIER_WRITE_PROFILE):
             assert _autocheckpoint(write_connection_pragma_statements(profile)) == OWNED_WAL_AUTOCHECKPOINT_PAGES
     assert not recurring_checkpoint_owner_armed()
 
@@ -185,7 +184,18 @@ def test_unsupported_checkpoint_mode_is_refused(tmp_path: Path) -> None:
     conn = sqlite3.connect(db)
     try:
         with pytest.raises(ValueError, match="unsupported checkpoint mode"):
-            wal_checkpoint.checkpoint_connection(conn, "FULL")
+            wal_checkpoint.checkpoint_connection(conn, "FULL", boundary="exclusive")
+    finally:
+        conn.close()
+
+
+def test_recurring_boundary_refuses_exclusive_checkpoint_modes(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    _seed_wal(db, rows=1)
+    conn = sqlite3.connect(db)
+    try:
+        with pytest.raises(ValueError, match="not permitted at recurring boundary"):
+            wal_checkpoint.checkpoint_connection(conn, "TRUNCATE", boundary="recurring")
     finally:
         conn.close()
 

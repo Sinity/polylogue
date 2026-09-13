@@ -32,7 +32,6 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.write_lease import write_lease
-from polylogue.daemon.cli import checkpoint_connection, open_isolated_write_connection
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.logging import get_logger
 from polylogue.operations.append_acquisition_replay import codex_legacy_header_size, replay_append_acquisition_payload
@@ -52,6 +51,8 @@ from polylogue.storage.blob_integrity import (
     project_source_blob_liveness,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 logger = get_logger(__name__)
 
@@ -466,7 +467,7 @@ def _checkpoint_sqlite_for_snapshot(conn: sqlite3.Connection, path: Path) -> Non
     partially drained WAL would make the copy an incoherent generation. A busy
     result refuses the backup rather than retrying against the reader.
     """
-    busy, log_frames, checkpointed_frames = checkpoint_connection(conn, "TRUNCATE")
+    busy, log_frames, checkpointed_frames = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
     if busy or log_frames != checkpointed_frames:
         raise RuntimeError(f"could not quiesce {path} before backup")
 

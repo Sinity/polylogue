@@ -69,10 +69,21 @@ def _wal_size(db: Path) -> int:
         return 0
 
 
-def checkpoint_connection(conn: sqlite3.Connection, mode: str) -> tuple[int, int, int]:
-    """Run one declared checkpoint mode and return busy/log/checkpointed pages."""
-    if mode not in CHECKPOINT_MODES:
-        raise ValueError(f"unsupported checkpoint mode: {mode}")
+def checkpoint_connection(
+    conn: sqlite3.Connection,
+    mode: str,
+    *,
+    boundary: CheckpointEscalation,
+) -> tuple[int, int, int]:
+    """Run a checkpoint mode authorized by its declared ownership boundary.
+
+    Ordinary work delegates through :func:`checkpoint_wal`, which supplies the
+    recurring boundary. Direct calls exist only where a caller has already
+    established quiescence or exclusivity, and must name that boundary rather
+    than silently gaining RESTART or TRUNCATE authority.
+    """
+    if mode not in CHECKPOINT_MODES or mode not in CHECKPOINT_ESCALATION_MODES[boundary]:
+        raise ValueError(f"checkpoint mode {mode} is not permitted at {boundary} boundary")
     row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
     if row is None:
         raise sqlite3.OperationalError(f"checkpoint returned no result for {mode}")
@@ -121,7 +132,7 @@ def checkpoint_wal(
         try:
             for candidate in CHECKPOINT_ESCALATION_MODES[escalation]:
                 mode = candidate.lower()
-                busy, log, checkpointed = checkpoint_connection(conn, candidate)
+                busy, log, checkpointed = checkpoint_connection(conn, candidate, boundary=escalation)
                 if busy > 0 or _wal_size(db) < escalation_bytes:
                     break
         finally:

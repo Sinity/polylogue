@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.core.enums import AssertionKind
-from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
 class ExcisionPolicyError(RuntimeError):
@@ -82,11 +84,13 @@ def build_excision_policy_snapshot(
     """Read canonical user intent and audit continuity into an immutable value."""
     user_db = archive_root / archive_tier_spec(ArchiveTier.USER).filename
     audit_db = archive_root / archive_tier_spec(ArchiveTier.AUDIT).filename
-    initialize_archive_database(user_db, ArchiveTier.USER)
-    initialize_archive_database(audit_db, ArchiveTier.AUDIT)
-    user = sqlite3.connect(user_db)
-    audit = sqlite3.connect(audit_db)
-    try:
+    # This is a policy projection, never a bootstrap route. Opening through the
+    # canonical reader keeps an acquisition-side policy read unable to mutate
+    # user or audit intent at SQLite's boundary.
+    with (
+        closing(open_readonly_connection(user_db, tier=ArchiveTier.USER, timeout_class="background-read")) as user,
+        closing(open_readonly_connection(audit_db, tier=ArchiveTier.AUDIT, timeout_class="background-read")) as audit,
+    ):
         hashes: set[bytes] = set()
         refs: list[str] = []
         rows = user.execute(
@@ -123,9 +127,6 @@ def build_excision_policy_snapshot(
             audit_head,
             source_generation_id,
         )
-    finally:
-        user.close()
-        audit.close()
 
 
 def read_excision_policy_projection(conn: sqlite3.Connection, source_generation_id: str) -> dict[str, object] | None:

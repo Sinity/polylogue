@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.security.excision_policy as excision_policy_module
 from polylogue.core.enums import AssertionKind
 from polylogue.security.excision import (
     ExcisionPolicyError,
@@ -52,3 +53,27 @@ def test_snapshot_digest_changes_when_durable_generation_changes() -> None:
     first = ExcisionPolicySnapshot((), (), 1, 0, "a" * 64, "g1")
     second = ExcisionPolicySnapshot((), (), 2, 0, "a" * 64, "g1")
     assert first.digest != second.digest
+
+
+def test_snapshot_reads_durable_policy_through_readonly_connections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A policy projection cannot mutate the intent it is validating."""
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    initialize_archive_database(tmp_path / "audit.db", ArchiveTier.AUDIT)
+    original_open = excision_policy_module.open_readonly_connection
+    opened: list[Path] = []
+
+    def open_checked(path: Path, **kwargs: object) -> sqlite3.Connection:
+        conn = original_open(path, **kwargs)
+        opened.append(path)
+        with pytest.raises(sqlite3.DatabaseError):
+            conn.execute("CREATE TABLE policy_read_must_not_write (value TEXT)")
+        return conn
+
+    monkeypatch.setattr(excision_policy_module, "open_readonly_connection", open_checked)
+
+    snapshot = build_excision_policy_snapshot(tmp_path)
+
+    assert snapshot.removed_hashes == ()
+    assert opened == [tmp_path / "user.db", tmp_path / "audit.db"]
