@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,6 +19,7 @@ from polylogue.security.excision import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection as canonical_open
 
 
 def test_snapshot_contains_identities_and_no_removed_literals(tmp_path: Path) -> None:
@@ -61,10 +63,12 @@ def test_snapshot_reads_durable_policy_through_readonly_connections(
     """A policy projection cannot mutate the intent it is validating."""
     initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     initialize_archive_database(tmp_path / "audit.db", ArchiveTier.AUDIT)
-    original_open = excision_policy_module.open_readonly_connection
+    # The implementation binds the canonical reader locally; patch that bound
+    # name while taking the original callable from its defining module.
+    original_open = canonical_open
     opened: list[Path] = []
 
-    def open_checked(path: Path, **kwargs: object) -> sqlite3.Connection:
+    def open_checked(path: Path, **kwargs: Any) -> sqlite3.Connection:
         conn = original_open(path, **kwargs)
         opened.append(path)
         with pytest.raises(sqlite3.DatabaseError):
