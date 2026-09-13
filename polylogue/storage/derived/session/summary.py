@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from polylogue.storage.sqlite.deadline import query_deadline
 from polylogue.storage.sqlite.write_lease import write_lease
 
 __all__ = [
@@ -206,9 +207,8 @@ def inspect_session_summary(
     """Compare every stored counter with its message-derived value in one bounded scan.
 
     The supplied connection stays open and retains its snapshot ownership.  A
-    status caller owns this temporary progress handler; an expired scan is
-    incomplete authority and therefore reports ``unknown`` rather than a
-    readiness result.
+    nested deadline preserves the operation's cancellation handler. An expired
+    scan reports ``unknown`` rather than certifying partial authority.
     """
     if deadline_s is not None and deadline_s < 0:
         raise ValueError("session summary inspection deadline must be non-negative")
@@ -216,28 +216,26 @@ def inspect_session_summary(
     if deadline is not None and time.monotonic() >= deadline:
         return SessionSummaryInspection(state="unknown", reason="session-summary inspection deadline exceeded")
 
-    def _interrupt_when_expired() -> int:
-        return int(deadline is not None and time.monotonic() >= deadline)
-
-    if deadline is not None:
-        conn.set_progress_handler(_interrupt_when_expired, 10_000)
     total_sessions = 0
     stale_sessions = 0
     try:
-        for row in conn.execute(_SUMMARY_CENSUS_SQL):
-            if deadline is not None and time.monotonic() >= deadline:
-                return SessionSummaryInspection(
-                    state="unknown",
-                    total_sessions=total_sessions,
-                    stale_sessions=stale_sessions,
-                    reason="session-summary inspection deadline exceeded",
+        with query_deadline(conn, seconds=deadline_s):
+            for row in conn.execute(_SUMMARY_CENSUS_SQL):
+                if deadline is not None and time.monotonic() >= deadline:
+                    return SessionSummaryInspection(
+                        state="unknown",
+                        total_sessions=total_sessions,
+                        stale_sessions=stale_sessions,
+                        reason="session-summary inspection deadline exceeded",
+                    )
+                total_sessions += 1
+                stored = tuple(int(row[index] or 0) for index in range(1, len(SESSION_SUMMARY_MEASURES) + 1))
+                start = len(SESSION_SUMMARY_MEASURES) + 1
+                authoritative = tuple(
+                    int(row[index] or 0) for index in range(start, start + len(SESSION_SUMMARY_MEASURES))
                 )
-            total_sessions += 1
-            stored = tuple(int(row[index] or 0) for index in range(1, len(SESSION_SUMMARY_MEASURES) + 1))
-            start = len(SESSION_SUMMARY_MEASURES) + 1
-            authoritative = tuple(int(row[index] or 0) for index in range(start, start + len(SESSION_SUMMARY_MEASURES)))
-            if stored != authoritative:
-                stale_sessions += 1
+                if stored != authoritative:
+                    stale_sessions += 1
     except sqlite3.Error as exc:
         return SessionSummaryInspection(
             state="unknown",
@@ -245,9 +243,6 @@ def inspect_session_summary(
             stale_sessions=stale_sessions,
             reason=f"session-summary inspection unavailable: {exc}",
         )
-    finally:
-        if deadline is not None:
-            conn.set_progress_handler(None, 0)
     return SessionSummaryInspection(
         state="ready" if stale_sessions == 0 else "stale",
         total_sessions=total_sessions,

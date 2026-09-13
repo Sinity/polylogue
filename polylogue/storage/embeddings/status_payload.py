@@ -10,13 +10,9 @@ from __future__ import annotations
 import json
 import shlex
 import sqlite3
-import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Timer
 from typing import TYPE_CHECKING, Protocol
 
 from typing_extensions import TypedDict
@@ -35,6 +31,7 @@ from polylogue.storage.search_providers.sqlite_vec_support import (
     VOYAGE_4_COST_PER_1M_TOKENS,
 )
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.deadline import query_deadline
 
 if TYPE_CHECKING:
     from polylogue.config import Config, PolylogueConfig
@@ -277,14 +274,9 @@ def _scalar_int_with_timeout(
         row = conn.execute(sql, params).fetchone()
         return _payload_int(row[0]) if row else 0
 
-    deadline = time.monotonic() + (timeout_ms / 1000.0)
-
-    def _interrupt_when_expired() -> int:
-        return 1 if time.monotonic() >= deadline else 0
-
-    conn.set_progress_handler(_interrupt_when_expired, 10_000)
     try:
-        row = conn.execute(sql, params).fetchone()
+        with query_deadline(conn, seconds=timeout_ms / 1000):
+            row = conn.execute(sql, params).fetchone()
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
         if is_missing_table_error(exc):
@@ -292,8 +284,6 @@ def _scalar_int_with_timeout(
         if "interrupted" in message or "locked" in message or "busy" in message:
             return None
         raise
-    finally:
-        conn.set_progress_handler(None, 0)
     if row is None:
         return 0
     return _payload_int(row[0])
@@ -313,14 +303,9 @@ def _rows_with_timeout(
     if timeout_ms is None:
         return list(conn.execute(sql, params).fetchall())
 
-    deadline = time.monotonic() + (timeout_ms / 1000.0)
-
-    def _interrupt_when_expired() -> int:
-        return 1 if time.monotonic() >= deadline else 0
-
-    conn.set_progress_handler(_interrupt_when_expired, 10_000)
     try:
-        rows = conn.execute(sql, params).fetchall()
+        with query_deadline(conn, seconds=timeout_ms / 1000):
+            rows = conn.execute(sql, params).fetchall()
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
         if is_missing_table_error(exc):
@@ -328,8 +313,6 @@ def _rows_with_timeout(
         if "interrupted" in message or "locked" in message or "busy" in message:
             return None
         raise
-    finally:
-        conn.set_progress_handler(None, 0)
     return list(rows)
 
 
@@ -524,29 +507,6 @@ def _message_coverage_percent(
     return embedded_messages / candidate_prose_messages * 100
 
 
-@contextmanager
-def _preserving_progress_deadline(conn: sqlite3.Connection, *, timeout_ms: int | None) -> Iterator[None]:
-    """Interrupt one query after ``timeout_ms`` without replacing its owner guard.
-
-    Pinned operation connections can already carry cancellation and workload
-    progress handlers.  SQLite exposes no way to read or compose one, so a
-    nested status projection uses the thread-safe interrupt hook instead of
-    installing and then clearing a competing handler.
-    """
-
-    if timeout_ms is None:
-        yield
-        return
-    timer = Timer(timeout_ms / 1000.0, conn.interrupt)
-    timer.daemon = True
-    timer.start()
-    try:
-        yield
-    finally:
-        timer.cancel()
-        timer.join()
-
-
 def _query_is_unavailable(exc: sqlite3.Error) -> bool:
     from polylogue.storage.embeddings.support import is_missing_table_error
 
@@ -564,7 +524,6 @@ def _authoritative_archive_embedding_state(
     vectors_table: str,
     recipe: EmbeddingRecipe,
     timeout_ms: int | None,
-    preserve_progress_handler: bool = False,
 ) -> tuple[int, int, int, int] | None:
     """Count readiness from desired message membership and vector provenance.
 
@@ -627,11 +586,7 @@ def _authoritative_archive_embedding_state(
         recipe.dimensions,
     )
     try:
-        if preserve_progress_handler:
-            with _preserving_progress_deadline(conn, timeout_ms=timeout_ms):
-                rows = _rows_with_timeout(conn, sql, params=params, timeout_ms=None)
-        else:
-            rows = _rows_with_timeout(conn, sql, params=params, timeout_ms=timeout_ms)
+        rows = _rows_with_timeout(conn, sql, params=params, timeout_ms=timeout_ms)
     except sqlite3.Error as exc:
         if _query_is_unavailable(exc):
             return None
@@ -937,7 +892,6 @@ def _archive_embedding_status_payload(
             vectors_table=vectors_table,
             recipe=recipe,
             timeout_ms=detail_timeout_ms if include_detail else metadata_timeout_ms,
-            preserve_progress_handler=not owns_connection,
         )
         pending_messages_exact = authoritative_state is not None
         if authoritative_state is None:

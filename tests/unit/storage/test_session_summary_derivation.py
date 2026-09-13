@@ -333,3 +333,18 @@ def test_summary_inspection_refuses_retired_generation(tmp_path: Path) -> None:
     assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
     with pytest.raises(RuntimeError, match="retired"):
         adapter.inspect(replace(frame, source_revision="index-generation:retired"), (session_id,))
+
+
+def test_summary_census_preserves_operation_cancellation(tmp_path: Path) -> None:
+    """Anti-vacuity: replacing the owner's progress handler hides cancellation."""
+    import pytest
+
+    conn = _connect(tmp_path / "index.db")
+    conn.set_progress_handler(lambda: 1, 1)
+    try:
+        assert inspect_session_summary(conn).state == "unknown"
+        with pytest.raises(sqlite3.OperationalError, match="interrupted"):
+            conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+    finally:
+        conn.set_progress_handler(None, 0)
+        conn.close()
