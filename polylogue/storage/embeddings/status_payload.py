@@ -878,7 +878,16 @@ def _archive_embedding_status_payload(
             recipe=recipe,
             timeout_ms=detail_timeout_ms if include_detail else metadata_timeout_ms,
         )
-        pending_messages_exact = authoritative_state is not None
+        # ``pending_messages_exact`` reports whether the caller paid for an
+        # exact backlog count, not whether the embedded-state inspection could
+        # certify itself. Those are different questions: when the
+        # authoritative state is unavailable nothing is provably embedded, so
+        # the detail pass below counts every embeddable message as pending --
+        # a conservative backlog that is exact, and consistent with the
+        # pending_sessions = total_sessions set in that same branch. The
+        # detail pass still downgrades this to False when one of its own
+        # queries times out.
+        pending_messages_exact = include_detail
         if authoritative_state is None:
             # Readiness is unavailable until current refs, recipe metadata,
             # and physical vectors can be inspected together.  Attempt and
