@@ -174,7 +174,12 @@ def _parser() -> argparse.ArgumentParser:
         prog="devtools archive tool-pairing-census",
         description="Classify every tool call/result pairing gap in an archive against declared evidence.",
     )
-    parser.add_argument("--archive-root", type=Path, default=None, help="Override the active archive root.")
+    parser.add_argument(
+        "--archive-root",
+        type=_archive_root_arg,
+        default=None,
+        help="Candidate archive root (an explicit root must be absolute and non-empty).",
+    )
     parser.add_argument("--index-db", type=Path, default=None, help="Read a specific index database.")
     parser.add_argument("--source-db", type=Path, default=None, help="Read a specific source database.")
     parser.add_argument(
@@ -201,6 +206,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true", help="Emit the JSON report to stdout.")
     return parser
+
+
+def _archive_root_arg(value: str) -> Path:
+    """Reject an empty/relative explicit root instead of falling back to cwd."""
+    if not value.strip():
+        raise argparse.ArgumentTypeError("--archive-root must be a non-empty absolute candidate root")
+    root = Path(value).expanduser()
+    if not root.is_absolute():
+        raise argparse.ArgumentTypeError("--archive-root must be an absolute candidate root")
+    return root
 
 
 # --------------------------------------------------------------------------
