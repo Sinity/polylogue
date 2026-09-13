@@ -31,9 +31,10 @@ from polylogue.maintenance.durable_reference_transition import (
     resolve_candidate_references,
     source_session_claims,
 )
-from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
+from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL, AUDIT_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
-from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.user import USER_DDL, USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.query_objects import (
     EvaluationReceipt,
     put_evaluation_receipt,
@@ -116,8 +117,10 @@ def _candidate_index(*, native_id_shadowing_a_position: bool = False) -> sqlite3
 def _durable_tiers(refs: tuple[str, ...]) -> tuple[sqlite3.Connection, sqlite3.Connection]:
     user = sqlite3.connect(":memory:")
     user.executescript(USER_DDL)
+    user.execute(f"PRAGMA user_version = {USER_SCHEMA_VERSION}")
     audit = sqlite3.connect(":memory:")
     audit.executescript(AUDIT_DDL)
+    audit.execute(f"PRAGMA user_version = {AUDIT_SCHEMA_VERSION}")
     query = put_query(
         user,
         {"field": "origin", "value": "chatgpt-export"},
@@ -381,6 +384,7 @@ def _archive_root(tmp_path: Path) -> tuple[Path, Path]:
     source = sqlite3.connect(root / "source.db")
     source.execute("CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT)")
     source.execute("INSERT INTO raw_sessions VALUES ('r1', 'chatgpt-export', 's1')")
+    source.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
     source.commit()
     source.close()
     for connection, path in ((_predecessor_index(), root / "index.db"), (_candidate_index(), root / "candidate.db")):
