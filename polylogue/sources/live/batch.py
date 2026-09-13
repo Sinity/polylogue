@@ -807,12 +807,15 @@ class LiveBatchProcessor:
         emit_event: bool = True,
         max_pass_seconds: float | None = None,
         whole_archive_convergence: bool = True,
+        defer_convergence: bool = False,
     ) -> LiveBatchMetrics:
         """Ingest files in batch, run post-ingest convergence, and return metrics.
 
         ``whole_archive_convergence=False`` bounds post-ingest convergence to
-        this batch's own subjects (a catch-up chunk); the caller runs one
-        whole-archive pass at the end of its catch-up.
+        this batch's own subjects. ``defer_convergence`` retains the durable
+        raw and cursor commits while leaving derived work for a later bounded
+        catch-up batch. It also leaves existing convergence debt untouched;
+        only an executed pass may resolve that evidence.
         """
         authorization = self.require_cursor_authority(paths)
         refused_paths = self._refused_paths
@@ -959,23 +962,26 @@ class LiveBatchProcessor:
                 current_path=plans[0].path,
                 stage_payload=append_stage_payload,
             )
-            _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
-                "watcher.live_ingest.append_convergence",
-                self._converge_paths,
-                [plan.path for plan in append_result.succeeded],
-                whole_archive=whole_archive_convergence,
-                session_ids=tuple(append_result.session_ids_by_path.values()),
-            )
-            convergence_time_s += elapsed
-            release_process_memory()
-            _accumulate_stage_timings(stage_timings, timings)
+            convergence_debt: list[ConvergenceDebt] = []
+            if not defer_convergence:
+                _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
+                    "watcher.live_ingest.append_convergence",
+                    self._converge_paths,
+                    [plan.path for plan in append_result.succeeded],
+                    whole_archive=whole_archive_convergence,
+                    session_ids=tuple(append_result.session_ids_by_path.values()),
+                )
+                convergence_time_s += elapsed
+                release_process_memory()
+                _accumulate_stage_timings(stage_timings, timings)
             debt_by_source_path = debt_by_path(convergence_debt)
             for plan in append_result.succeeded:
                 succeeded_paths.add(plan.path)
                 if not self._record_append_cursor(plan):
                     stale_cursor_write_count += 1
                 cursor_fingerprint_read_bytes += self._last_append_cursor_proof_bytes
-                self._record_convergence_outcome(plan.path, debt_by_source_path.get(plan.path, ()))
+                if not defer_convergence:
+                    self._record_convergence_outcome(plan.path, debt_by_source_path.get(plan.path, ()))
                 session_id = append_result.session_ids_by_path.get(plan.path)
                 if session_id:
                     updated_session_touches.append((plan.source_name, session_id))
@@ -1215,7 +1221,7 @@ class LiveBatchProcessor:
                     current_path=source_paths[0] if source_paths else None,
                 )
                 convergence_debt: list[ConvergenceDebt] = []
-                if full_result.changed_session_count:
+                if full_result.changed_session_count and not defer_convergence:
                     _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
                         "watcher.live_ingest.full_convergence",
                         self._converge_paths,
@@ -1247,7 +1253,7 @@ class LiveBatchProcessor:
                     )
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
-                    if not _source_tier_acquisition_required():
+                    if not defer_convergence and not _source_tier_acquisition_required():
                         self._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
                 for path in full_result.failed:
                     failed_paths.append(str(path))
@@ -1344,6 +1350,7 @@ class LiveBatchProcessor:
             stale_cursor_write_count=stale_cursor_write_count,
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
             failed_paths=retry_paths,
+            succeeded_paths=tuple(sorted(succeeded_paths)),
             new_sessions=tuple(new_session_touches),
             updated_sessions=tuple(updated_session_touches),
             time_budget_exceeded=full_ingest_time_budget_exceeded,

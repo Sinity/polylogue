@@ -112,6 +112,11 @@ class LiveBatchMetrics:
     excluded_file_count: int = 0
     excluded_reasons: dict[str, int] = field(default_factory=dict)
     failed_paths: list[str] = field(default_factory=list)
+    # Internal scheduling evidence for a later catch-up convergence batch.
+    # This is deliberately absent from event payloads: source paths are not
+    # operator telemetry, but the watcher needs the exact durable subset so a
+    # deferred pass never widens to failed or refused input.
+    succeeded_paths: tuple[Path, ...] = ()
     # Identity-scoped session touches for this batch (polylogue-20d.13):
     # ``new_sessions`` are session ids materialized for the first time via
     # the full-ingest route; ``updated_sessions`` are session ids that grew
