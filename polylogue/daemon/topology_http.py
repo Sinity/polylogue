@@ -103,7 +103,8 @@ def build_topology_envelope(
     The envelope is shaped for direct JSON serialization:
 
     - ``nodes`` and ``edges`` are bounded by ``node_limit``;
-    - ``truncated_count`` records the number of nodes dropped;
+    - ``truncated_count`` records the number of nodes dropped (or a lower
+      bound of one when the source page is itself incomplete);
     - ``unresolved_edge_count`` and ``cycle_detected`` are surfaced so
       the reader's readiness chip can attribute partial state;
     - edges that point at a dropped node are filtered out — the UI
@@ -116,7 +117,11 @@ def build_topology_envelope(
     full_nodes = list(cast("list[dict[str, object]]", canonical["nodes"]))
     kept_nodes = full_nodes[:effective_limit]
     kept_ids = {str(node["session_id"]) for node in kept_nodes}
-    truncated_count = len(full_nodes) - len(kept_nodes)
+    # A topology read may already be one bounded page.  In that case the
+    # source cannot know the full dropped count, but it can prove that at
+    # least one node remains beyond this envelope.  Preserve that signal so
+    # the reader does not present an incomplete page as a complete graph.
+    truncated_count = max(len(full_nodes) - len(kept_nodes), int(not topology.nodes_complete))
 
     kept_edges: list[dict[str, object]] = []
     unresolved_edge_count = 0
@@ -152,7 +157,13 @@ def build_topology_envelope(
         "unresolved_edge_count": unresolved_edge_count,
         "nodes_complete": truncated_count == 0 and topology.nodes_complete,
         "edges_complete": truncated_count == 0 and topology.edges_complete,
-        "continuation": (f"node-offset:{len(kept_nodes)}" if truncated_count else topology.continuation),
+        # A source-page continuation already includes the requested offset;
+        # only synthesize one when this envelope did the truncation itself.
+        "continuation": (
+            topology.continuation
+            if topology.continuation is not None
+            else (f"node-offset:{len(kept_nodes)}" if truncated_count else None)
+        ),
         "readiness": readiness,
         "node_limit": effective_limit,
     }
