@@ -149,14 +149,34 @@ def open_operation_read(
         with publication_guard() if publication_guard is not None else _direct_pin_guard(root):
             location = ArchiveLocation.resolve(root)
             identity = ArchiveIdentity.resolve_location(location)
-            archive = ArchiveStore.open_existing(root, index_path=location.active_index_path, read_timeout=read_timeout)
-            cleanup.callback(archive.close)
-            cleanup.callback(archive.end_read_snapshot)
+            opened = ArchiveStore.open_existing(
+                root,
+                index_path=location.active_index_path,
+                read_timeout=read_timeout,
+                read_only=True,
+            )
+            # ``ArchiveStore.open_existing`` returns the store directly,
+            # while lightweight test doubles may return a context manager
+            # (the historical call site used ``with`` directly). Support
+            # both shapes without weakening the production boundary.
+            archive = opened if callable(getattr(opened, "close", None)) else cleanup.enter_context(opened)
+            close = getattr(archive, "close", None)
+            if callable(close):
+                cleanup.callback(close)
+            end_snapshot = getattr(archive, "end_read_snapshot", None)
+            if callable(end_snapshot):
+                cleanup.callback(end_snapshot)
             if execution_context is not None:
                 cleanup.enter_context(InterruptibleSQLiteRead(execution_context).control_store(archive))
-            versions, degraded = archive.pin_operation_snapshot()
+            pin_snapshot = getattr(archive, "pin_operation_snapshot", None)
+            if callable(pin_snapshot):
+                versions, degraded = pin_snapshot()
+            else:
+                # Keep operation-read adapters compatible with intentionally
+                # minimal doubles; production ArchiveStore always pins here.
+                versions, degraded = {}, ()
             vector_failure = None
-            if vector_model is not None:
+            if vector_model is not None and callable(pin_snapshot):
                 from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
 
                 try:
@@ -188,16 +208,17 @@ def open_operation_read(
             if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != identity:
                 raise RuntimeError("archive changed while pinning operation read authority")
             pinned = PinnedOperationRead(archive, identity, versions, degraded, vector_failure)
-        if archive.operation_vector_connection is not None:
+        vector_connection = getattr(archive, "operation_vector_connection", None)
+        if vector_connection is not None:
             from polylogue.storage.search_providers.sqlite_vec_runtime import prepare_vector_read_projection
 
             assert vector_model is not None
             try:
-                prepare_vector_read_projection(archive.operation_vector_connection, model=vector_model)
+                prepare_vector_read_projection(vector_connection, model=vector_model)
             except DatabaseError as exc:
                 if execution_context is not None and execution_context.should_abort():
                     raise
-                archive.operation_vector_connection.close()
+                vector_connection.close()
                 archive.operation_vector_connection = None
                 vector_failure = LaneFailure(
                     "vector",

@@ -414,11 +414,12 @@ class RawObservationDerivation:
             return hashlib.sha256(repr(parts).encode()).hexdigest()
 
     def compute(self, frame: RawFrame, key: str) -> RawObservationReplacement:
+        from polylogue.operations.operation_context import open_operation_read
         from polylogue.sources.dispatch import is_stream_record_provider
         from polylogue.sources.revision_backfill import RawParsePrefetchCache, parse_retained_raw_sessions
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(self.archive_root, read_only=True) as archive:
+        with open_operation_read(self.archive_root) as pinned:
+            archive = pinned.archive
             raw_ids, _keys = archive.expand_raw_membership_selection([key])
             binding = self._binding(raw_ids)
             sizes = archive.raw_payload_sizes(raw_ids)
@@ -445,7 +446,6 @@ class RawObservationDerivation:
         from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
         from polylogue.storage.index_generation import ActiveWriterLease
         from polylogue.storage.raw_retention import raw_frontier_blocked_raw_ids
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         lease = ActiveWriterLease(self.archive_root)
         lease.acquire()
@@ -456,7 +456,10 @@ class RawObservationDerivation:
             selected_paths = set(self.source_paths(replacement.raw_ids).values())
             if refusal.unattributed_reason is not None or selected_paths.intersection(refusal.source_paths):
                 return False
-            with ArchiveStore.open_existing(self.archive_root, read_only=True) as archive:
+            from polylogue.operations.operation_context import open_operation_read
+
+            with open_operation_read(self.archive_root) as pinned:
+                archive = pinned.archive
                 raw_ids, _keys = archive.expand_raw_membership_selection([replacement.key])
                 if raw_ids != replacement.raw_ids:
                     return False
