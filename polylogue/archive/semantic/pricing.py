@@ -293,26 +293,65 @@ def _record(value: object) -> Mapping[str, object]:
     return document or {}
 
 
-def _normalize_model(model: str) -> str:
-    """Normalize a provider model name for exact LiteLLM catalog lookup.
+_DATE_SUFFIXES = (
+    re.compile(r"-\d{4}-\d{2}-\d{2}$"),
+    re.compile(r"-\d{8}$"),
+)
 
-    Provider routes may prefix a model with arbitrary path segments. Pricing
-    identifies the model by its final path segment only, then removes a dated
-    snapshot suffix. It deliberately does not prefix-match a predecessor: an
-    unknown model must remain unpriced rather than inherit a nearby rate.
-    """
+
+def _strip_date_suffix(lowered: str) -> str:
+    for pattern in _DATE_SUFFIXES:
+        stripped = pattern.sub("", lowered)
+        if stripped != lowered:
+            return stripped
+    return lowered
+
+
+def _lookup_stem(model: str) -> str:
+    """Lowercase final path segment of a routed model identifier."""
 
     candidate = model.strip()
     if not candidate:
         return candidate
-    lowered = candidate.casefold().rsplit("/", 1)[-1]
-    # Canonicalize trailing date snapshots to the base model so cost rollups
-    # don't fragment by release date (e.g. gpt-4o-2024-08-06 -> gpt-4o,
-    # claude-opus-4-8-20260101 -> claude-opus-4-8). Done before the exact-match
-    # lookup because the vendored LiteLLM catalog carries dated keys too.
-    lowered = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", lowered)
-    lowered = re.sub(r"-\d{8}$", "", lowered)
-    return lowered
+    return candidate.casefold().rsplit("/", 1)[-1]
+
+
+def _normalize_model(model: str) -> str:
+    """Resolve a provider model name to its LiteLLM catalog pricing key.
+
+    Provider routes may prefix a model with arbitrary path segments; pricing
+    identifies the model by its final path segment only. That segment is tried
+    against the catalog **exactly first**, because the vendored catalog carries
+    dated snapshot keys (``claude-sonnet-4-20250514``) alongside bare keys of
+    the same name owned by an unrelated router. Only when the exact key is
+    absent is a dated snapshot suffix removed, so a snapshot whose own rates
+    are not published still resolves to its undated model.
+
+    It deliberately does not prefix-match a predecessor: an unknown model must
+    remain unpriced rather than inherit a nearby rate.
+
+    This is the *pricing resolution* key, not a cohort key. Grouping that must
+    not fragment by release date uses :func:`model_cohort_key`.
+    """
+
+    lowered = _lookup_stem(model)
+    if not lowered:
+        return lowered
+    if lowered in PRICING:
+        return lowered
+    return _strip_date_suffix(lowered)
+
+
+def model_cohort_key(model: str) -> str:
+    """Coarse grouping key that folds dated snapshots into one model cohort.
+
+    Cost rollups report a model, not a release date: ``gpt-4o-2024-08-06`` and
+    ``gpt-4o`` belong in one row. This is deliberately separate from
+    :func:`_normalize_model`, which must stay exact-first so a dated snapshot
+    is priced from its own catalog row.
+    """
+
+    return _strip_date_suffix(_lookup_stem(model))
 
 
 # polylogue-4c27: pure model-name pattern matching for the semantic vendor
@@ -917,6 +956,7 @@ __all__ = [
     "ModelPricing",
     "PRICING",
     "_normalize_model",
+    "model_cohort_key",
     "estimate_session_cost",
     "estimate_cost",
     "estimate_message_cost",
