@@ -38,6 +38,22 @@ from polylogue.daemon.services import (
 
 logger = logging.getLogger(__name__)
 
+TERMINAL_SERVICE_STATES: frozenset[ServiceState] = frozenset(
+    {ServiceState.HALTED, ServiceState.FAILED, ServiceState.ORPHANED}
+)
+"""States that record *why* a service stopped, which plain stopping cannot.
+
+A task reaches ``STOPPED`` both when it finished its work and when it was
+cancelled -- and cancellation is how a halt, a failure and a shutdown
+deadline all end. So every one of these states is followed, one loop turn
+later, by the cancelled child settling ``STOPPED`` over it. Letting that
+land would turn a durable refusal, a crash and an abandoned task alike into
+a clean ``stopped`` on the status board, which is the one thing an operator
+reads to decide nothing is wrong. Ordering the set by "which is truer" is
+not needed: none of these is reachable from another, so first-writer-wins
+is the whole rule.
+"""
+
 __all__ = [
     "DaemonSupervisor",
     "DuplicateServiceStartError",
@@ -384,7 +400,19 @@ class DaemonSupervisor:
         how an empty backlog turns into a spin; the dedup lives here so no
         producer has to remember it.
         """
-        if self._states.get(spec.name) is state:
+        current = self._states.get(spec.name)
+        if current is state:
+            return
+        if current in TERMINAL_SERVICE_STATES:
+            # The child is settling its cancellation; the state that caused
+            # that cancellation is the honest one. See TERMINAL_SERVICE_STATES.
+            logger.debug(
+                "daemon: service %s stayed %s; not demoted to %s (%s)",
+                spec.name,
+                current.value,
+                state.value,
+                reason,
+            )
             return
         self._states[spec.name] = state
         self._record(spec.name, state, reason=reason)
