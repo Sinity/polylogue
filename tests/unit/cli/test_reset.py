@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +18,44 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
+from tests.infra.daemon_operations import DaemonOperationStack, cli_daemon_archive
+
+
+def _no_seed(_root: Path) -> None:
+    """Default seed for cases that only need a bootstrapped archive."""
+    return None
+
+
+@contextlib.contextmanager
+def _daemon_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    seed: Callable[[Path], Any] = _no_seed,
+) -> Iterator[tuple[DaemonOperationStack, Any]]:
+    """Run `ops reset` against a real daemon rooted at ``tmp_path/archive``.
+
+    `ops reset` is no longer a writer: it previews and confirms locally, then
+    lowers to `maintenance.reset` / `mutation.identity-reset`, which
+    `configured_mutation_operation` will only send to a resident daemon. Cases
+    that assert what a reset actually deletes therefore have to supply that
+    daemon.
+
+    ``HOME`` and the XDG roots are redirected under ``tmp_path`` rather than
+    patching ``polylogue.cli.commands.reset.data_home`` and friends: the
+    deleting code is ``_reset_targets`` in the daemon, which resolves its own
+    paths through :mod:`polylogue.paths`. Patching the CLI module attribute
+    would relocate only the preview and leave the writer aimed at the real
+    home directory.
+    """
+
+    seeded: dict[str, Any] = {}
+
+    def _seed(root: Path) -> None:
+        seeded["value"] = seed(root)
+
+    with cli_daemon_archive(tmp_path / "archive", monkeypatch, seed_archive=_seed, home=tmp_path / "home") as stack:
+        yield stack, seeded.get("value")
+
 
 # =============================================================================
 # TEST DATA TABLE
@@ -111,32 +151,44 @@ class TestResetCommandSubprocess:
         output_lower = result.output.lower()
         assert result.exit_code == 0 or "force" in output_lower or "nothing" in output_lower
 
-    def test_reset_force_database(self, tmp_path: Path) -> None:
-        """reset --database --yes deletes database."""
+    def test_reset_force_database_without_a_daemon_refuses(self, tmp_path: Path) -> None:
+        """(a) typed refusal -- the end-to-end offline case.
+
+        These two subprocess cases are the one place in this file answered with
+        (a) rather than (b), and deliberately so: an isolated CLI subprocess
+        with no `polylogued run` behind it *is* the offline scenario, and it is
+        the only check here that exercises a genuinely separate process. They
+        are this file's strongest anti-vacuity guard -- reintroduce an
+        in-process reset writer and both commands start succeeding offline,
+        turning these red.
+        """
         from tests.infra.source_builders import GenericSessionBuilder
 
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
         inbox = workspace["paths"]["inbox"]
 
-        # Create some data first
         (GenericSessionBuilder("to-delete").add_user("will be deleted").write_to(inbox / "test.json"))
         run_cli(["--plain", "run", "parse"], env=env)
 
-        # Now reset
-        result = run_cli(["--plain", "ops", "reset", "--database", "--yes"], env=env)
-        # Should succeed (either deleted or nothing existed)
-        assert result.exit_code == 0
+        archive_db = Path(workspace["paths"]["archive_root"]) / "index.db"
+        assert archive_db.exists()
 
-    def test_reset_all_flag(self, tmp_path: Path) -> None:
-        """reset --all sets all targets."""
+        result = run_cli(["--plain", "ops", "reset", "--database", "--yes"], env=env)
+
+        assert result.exit_code != 0
+        assert "daemon is unavailable; it must execute maintenance.reset" in result.output
+        assert archive_db.exists(), "an offline CLI must not delete the archive it was refused permission to touch"
+
+    def test_reset_all_flag_without_a_daemon_refuses(self, tmp_path: Path) -> None:
+        """(a) typed refusal: --all is lowered to the daemon like any other target set."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
-        # With --yes in plain mode
         result = run_cli(["--plain", "ops", "reset", "--all", "--yes"], env=env)
-        # Should succeed (nothing to delete in fresh workspace)
-        assert result.exit_code == 0
+
+        assert result.exit_code != 0
+        assert "daemon is unavailable; it must execute maintenance.reset" in result.output
 
 
 # =============================================================================
@@ -158,22 +210,11 @@ class TestResetCommandValidation:
         assert "specify" in result.output.lower()
 
     def test_all_flag_sets_all_targets(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """--all enables all reset targets."""
-        # Patch paths to point to tmp_path
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        """(b) daemon route: --all enables every reset target and the daemon applies them."""
+        with _daemon_reset(tmp_path, monkeypatch) as (_stack, _seeded):
+            result = CliRunner().invoke(cli, ["ops", "reset", "--all", "--yes"])
 
-        # Create mock path constants for the test
-        with (
-            patch("polylogue.cli.commands.reset.archive_root", return_value=tmp_path / "archive"),
-            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "data"),
-            patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "cache"),
-            patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "token.json"),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--all", "--yes"])
-
-            # Should not error even if files don't exist
-            assert result.exit_code == 0
+            assert result.exit_code == 0, result.output
 
 
 class TestResetCommandDeletion:
@@ -183,86 +224,65 @@ class TestResetCommandDeletion:
     def test_reset_flag_deletes_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: str, path_attr: str, desc: str
     ) -> None:
-        """Reset flags delete specified targets."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        """(b) daemon route: each flag's target is deleted by the daemon that owns the write.
 
-        # Set up appropriate paths based on path_attr
-        if path_attr in {"archive_db", "index_db"}:
-            archive_root = tmp_path / "archive"
-            archive_root.mkdir()
-            target_path = archive_root / "index.db"
-            target_path.write_text("test database", encoding="utf-8")
-            patches = [
-                patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
-                patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-            ]
-        elif path_attr == "assets_dir":
-            data_home = tmp_path / "data"
-            target_path = data_home / "assets"
-            target_path.mkdir(parents=True)
-            (target_path / "test.png").write_bytes(b"test")
-            patches = [
-                patch("polylogue.cli.commands.reset.archive_root", return_value=tmp_path / "archive"),
-                patch("polylogue.cli.commands.reset.data_home", return_value=data_home),
-            ]
-        elif path_attr == "cache_dir":
-            target_path = tmp_path / "cache"
-            target_path.mkdir(parents=True)
-            (target_path / "index").write_text("index data", encoding="utf-8")
-            patches = [
-                patch("polylogue.cli.commands.reset.archive_root", return_value=tmp_path / "archive"),
-                patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-                patch("polylogue.cli.commands.reset.cache_home", return_value=target_path),
-            ]
-        elif path_attr == "token_path":
-            target_path = tmp_path / "token.json"
-            target_path.write_text(json.dumps({"token": "test"}), encoding="utf-8")
-            patches = [
-                patch("polylogue.cli.commands.reset.archive_root", return_value=tmp_path / "archive"),
-                patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-                patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "nonexistent"),
-                patch("polylogue.cli.commands.reset.drive_token_path", return_value=target_path),
-            ]
-        else:
-            raise AssertionError(f"Unhandled reset target fixture: {path_attr}")
+        The target is materialised at the location ``_reset_targets`` resolves
+        in the daemon (``polylogue.paths`` under the redirected XDG roots),
+        not at a path patched into the CLI module -- the CLI no longer does the
+        deleting, so a CLI-side patch would prove nothing.
+        """
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            from polylogue.paths import cache_home, data_home, drive_token_path
 
-        assert target_path.exists()
+            if path_attr in {"archive_db", "index_db"}:
+                target_path = stack.archive_root / "index.db"
+            elif path_attr == "assets_dir":
+                target_path = data_home() / "assets"
+                target_path.mkdir(parents=True, exist_ok=True)
+                (target_path / "test.png").write_bytes(b"test")
+            elif path_attr == "cache_dir":
+                target_path = cache_home()
+                target_path.mkdir(parents=True, exist_ok=True)
+                (target_path / "index").write_text("index data", encoding="utf-8")
+            elif path_attr == "token_path":
+                target_path = drive_token_path()
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                target_path.write_text(json.dumps({"token": "test"}), encoding="utf-8")
+            else:
+                raise AssertionError(f"Unhandled reset target fixture: {path_attr}")
 
-        with ExitStack() as stack:
-            for p in patches:
-                stack.enter_context(p)
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", flag, "--yes"])
+            assert target_path.exists()
 
-            assert result.exit_code == 0
+            result = CliRunner().invoke(cli, ["ops", "reset", flag, "--yes"])
+
+            assert result.exit_code == 0, result.output
             assert not target_path.exists()
 
     def test_multiple_flags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Multiple flags delete specified targets."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        """(b) daemon route: several flags in one request are all applied."""
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            from polylogue.paths import data_home
 
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        archive_db = archive_root / "index.db"
-        archive_db.write_text("test database", encoding="utf-8")
+            archive_db = stack.archive_root / "index.db"
+            assets_dir = data_home() / "assets"
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            (assets_dir / "keep.png").write_bytes(b"keep")
+            assert archive_db.exists()
 
-        data_home = tmp_path / "data"
-        assets_dir = data_home / "assets"
-        assets_dir.mkdir(parents=True)
-        (assets_dir / "keep.png").write_bytes(b"keep")
+            result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--assets", "--yes"])
 
-        with (
-            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
-            patch("polylogue.cli.commands.reset.data_home", return_value=data_home),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--database", "--assets", "--yes"])
-
-            assert result.exit_code == 0
+            assert result.exit_code == 0, result.output
             assert not archive_db.exists()
             assert not assets_dir.exists()
 
     def _seed_archive_tiers(self, archive_root: Path) -> tuple[Path, list[Path], Path]:
+        """Seed placeholder tier files for the cases that never open them.
+
+        Only the managed-active-generation refusals still use this: they are
+        refused by the CLI before anything is dispatched or opened, so cheap
+        placeholder files are enough. Every case that reaches the daemon uses
+        :meth:`_tier_paths` against a really bootstrapped archive instead.
+        """
         archive_root.mkdir(exist_ok=True)
         source_db = archive_root / "source.db"
         rebuildable = [
@@ -280,25 +300,44 @@ class TestResetCommandDeletion:
             path.write_text("test database", encoding="utf-8")
         return source_db, rebuildable, user_db
 
-    def test_reset_index_deletes_only_index_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``reset --index`` rebuilds the index tier without dropping raw or user evidence."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-        archive_root = tmp_path / "archive"
-        source_db, rebuildable, user_db = self._seed_archive_tiers(archive_root)
-        index_targets = {
+    @staticmethod
+    def _tier_paths(archive_root: Path) -> tuple[Path, list[Path], Path]:
+        """Return (source.db, rebuildable tiers that exist, user.db).
+
+        This used to fabricate each tier by writing the text "test database"
+        over it, which was only viable while nothing opened the archive. The
+        daemon that now performs the deletion opens every tier at startup, so
+        the tiers have to be real databases -- the bootstrapped ones the
+        fixture already creates. Resolving the list after the daemon is up also
+        catches the -wal/-shm sidecars it opened, which the old pre-seeded list
+        could not.
+        """
+        candidates = [
             archive_root / "index.db",
             archive_root / "index.db-wal",
             archive_root / "index.db-shm",
-        }
-        preserved = [path for path in [source_db, *rebuildable, user_db] if path not in index_targets]
+            archive_root / "embeddings.db",
+            archive_root / "embeddings.db-wal",
+            archive_root / "embeddings.db-shm",
+            archive_root / "ops.db",
+        ]
+        return archive_root / "source.db", [path for path in candidates if path.exists()], archive_root / "user.db"
 
-        with (
-            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
-            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-        ):
+    def test_reset_index_deletes_only_index_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``reset --index`` rebuilds the index tier without dropping raw or user evidence."""
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            archive_root = stack.archive_root
+            source_db, rebuildable, user_db = self._tier_paths(archive_root)
+            index_targets = {
+                archive_root / "index.db",
+                archive_root / "index.db-wal",
+                archive_root / "index.db-shm",
+            }
+            preserved = [path for path in [source_db, *rebuildable, user_db] if path not in index_targets]
+
             result = CliRunner().invoke(cli, ["ops", "reset", "--index", "--yes"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert all(not path.exists() for path in index_targets)
         assert all(path.exists() for path in preserved)
         assert "index database" in result.output
@@ -351,17 +390,11 @@ class TestResetCommandDeletion:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``reset --database`` deletes rebuildable tiers but preserves durable tiers."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-        archive_root = tmp_path / "archive"
-        source_db, rebuildable, user_db = self._seed_archive_tiers(archive_root)
-
-        with (
-            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
-            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-        ):
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            source_db, rebuildable, user_db = self._tier_paths(stack.archive_root)
             result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--yes"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert all(not path.exists() for path in rebuildable), "rebuildable tiers should be deleted"
         assert source_db.exists(), "source.db is durable acquired evidence and must survive a plain --database reset"
         assert user_db.exists(), "user.db is irreplaceable and must survive a plain --database reset"
@@ -372,20 +405,14 @@ class TestResetCommandDeletion:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Destructive tier flags explicitly opt into deleting source.db and user.db."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-        archive_root = tmp_path / "archive"
-        source_db, rebuildable, user_db = self._seed_archive_tiers(archive_root)
-
-        with (
-            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
-            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-        ):
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            source_db, rebuildable, user_db = self._tier_paths(stack.archive_root)
             result = CliRunner().invoke(
                 cli,
                 ["ops", "reset", "--database", "--include-source-db", "--include-user-db", "--yes"],
             )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert all(not path.exists() for path in [source_db, *rebuildable, user_db])
 
     def test_reset_database_include_source_db_refuses_missing_source_paths(
@@ -412,17 +439,11 @@ class TestResetCommandDeletion:
 
     def test_reset_all_preserves_user_db_without_opt_in(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Even ``reset --all`` preserves durable tiers without explicit opt-ins."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-        archive_root = tmp_path / "archive"
-        source_db, _rebuildable, user_db = self._seed_archive_tiers(archive_root)
-
-        with (
-            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
-            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-        ):
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            source_db, _rebuildable, user_db = self._tier_paths(stack.archive_root)
             result = CliRunner().invoke(cli, ["ops", "reset", "--all", "--yes"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert source_db.exists(), "source.db must survive --all without an explicit --include-source-db opt-in"
         assert user_db.exists(), "user.db must survive --all without an explicit --include-user-db opt-in"
 
@@ -430,31 +451,35 @@ class TestResetCommandDeletion:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Session tombstone is user-tier suppression plus archive-row deletion."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        # A managed generation lives under the archive root; a pointer naming a
-        # target outside it is refused, which is what the clone hardening added.
-        active_index = archive_root / ".index-generations" / "gen-reset" / "index.db"
-        active_index.parent.mkdir(parents=True)
-        (archive_root / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
-        session_id = _seed_archive_session(archive_root, native_id="reset-one")
+        def seed(root: Path) -> tuple[str, Path]:
+            # A managed generation lives under the archive root; a pointer naming
+            # a target outside it is refused, which is what the clone hardening
+            # added.
+            active = root / ".index-generations" / "gen-reset" / "index.db"
+            active.parent.mkdir(parents=True, exist_ok=True)
+            (root / ".index-active-pointer").write_text(str(active), encoding="utf-8")
+            return _seed_archive_session(root, native_id="reset-one"), active
 
-        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--session", session_id, "--yes"])
+        with _daemon_reset(tmp_path, monkeypatch, seed) as (stack, seeded):
+            archive_root = stack.archive_root
+            session_id, active_index = seeded
+            result = CliRunner().invoke(cli, ["ops", "reset", "--session", session_id, "--yes"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "1 suppression" in result.output
         assert "1 archive row" in result.output
         with sqlite3.connect(active_index) as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
         # The active index is redirected by .index-active-pointer, so the
-        # root-level index.db is not a second copy of the archive -- it simply
-        # does not exist. Connecting to it would CREATE an empty file and then
-        # fail on a missing table, which asserts nothing about reset.
-        assert not (archive_root / "index.db").exists()
+        # reset must act on the generation the pointer names -- asserted above.
+        # The root-level index.db is a bootstrapped empty tier, not a second
+        # live copy: it must not be carrying the session that was just reset.
+        # (This previously asserted the root file did not exist at all, which
+        # was a fact about the old hand-rolled fixture rather than about reset;
+        # a real archive root always has the tier present.)
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
         with sqlite3.connect(archive_root / "user.db") as conn:
             row = conn.execute(
                 "SELECT body_text, json_extract(value_json, '$.mode') FROM assertions WHERE kind = 'suppression' AND target_ref = ?",
@@ -466,27 +491,22 @@ class TestResetCommandDeletion:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Source tombstone matches archive raw_sessions by path-component prefix."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
         source_root = tmp_path / "sources" / "codex"
-        child_session_id = _seed_archive_session(
-            archive_root,
-            native_id="source-child",
-            source_path=source_root / "session.jsonl",
-        )
-        sibling_session_id = _seed_archive_session(
-            archive_root,
-            native_id="source-sibling",
-            source_path=tmp_path / "sources" / "codex-other.jsonl",
-        )
 
-        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--source", str(source_root), "--yes"])
+        def seed(root: Path) -> tuple[str, str]:
+            return (
+                _seed_archive_session(root, native_id="source-child", source_path=source_root / "session.jsonl"),
+                _seed_archive_session(
+                    root, native_id="source-sibling", source_path=tmp_path / "sources" / "codex-other.jsonl"
+                ),
+            )
 
-        assert result.exit_code == 0
+        with _daemon_reset(tmp_path, monkeypatch, seed) as (stack, seeded):
+            archive_root = stack.archive_root
+            child_session_id, sibling_session_id = seeded
+            result = CliRunner().invoke(cli, ["ops", "reset", "--source", str(source_root), "--yes"])
+
+        assert result.exit_code == 0, result.output
         assert "Tombstoned 1 session" in result.output
         with sqlite3.connect(archive_root / "index.db") as conn:
             assert (
@@ -593,17 +613,14 @@ class TestResetIdentityMutationContract:
 
     def test_session_yes_json_envelope_matches_mutation(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """--yes --json emits a stable envelope for the real mutation, matching dry-run's shape."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        with _daemon_reset(
+            tmp_path, monkeypatch, lambda root: _seed_archive_session(root, native_id="json-mutate")
+        ) as (stack, seeded):
+            archive_root = stack.archive_root
+            session_id = str(seeded)
+            result = CliRunner().invoke(cli, ["ops", "reset", "--session", session_id, "--yes", "--json"])
 
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        session_id = _seed_archive_session(archive_root, native_id="json-mutate")
-
-        with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--session", session_id, "--yes", "--json"])
-
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["status"] == "ok"
         assert payload["operation"] == "reset"
@@ -640,22 +657,13 @@ class TestResetConfirmation:
             assert "force" in result.output.lower()
 
     def test_force_bypasses_confirmation(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """--yes bypasses confirmation prompt."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        """(b) daemon route: --yes bypasses the prompt and the daemon performs the delete."""
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            archive_db = stack.archive_root / "index.db"
+            assert archive_db.exists()
+            result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--yes"])
 
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        archive_db = archive_root / "index.db"
-        archive_db.write_text("test database", encoding="utf-8")
-
-        with (
-            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
-            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--database", "--yes"])
-
-            assert result.exit_code == 0
+            assert result.exit_code == 0, result.output
             assert not archive_db.exists()
 
 
@@ -663,38 +671,49 @@ class TestResetEmptyTargets:
     """Tests for reset when targets don't exist."""
 
     def test_nothing_to_reset(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When no files exist, shows 'nothing to reset'."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        """(b) daemon route: a request whose targets are all absent is a no-op.
 
-        with (
-            patch("polylogue.cli.commands.reset.archive_root", return_value=tmp_path / "archive"),
-            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"),
-            patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "nonexistent"),
-            patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "nonexistent.json"),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--all", "--yes"])
+        The flags are narrowed to the two targets that genuinely do not exist
+        in a fresh workspace. ``--all`` no longer expresses "nothing exists":
+        a real archive root always has its six tiers, so --all would have real
+        work to do and the assertion would be testing the fixture, not reset.
 
-            assert result.exit_code == 0
-            assert "nothing to reset" in result.output.lower()
+        Both halves of "nothing to do" are covered, because they are now two
+        different code paths: the "Nothing to reset" message belongs to the
+        CLI's preview branch (reachable only without --yes), while a confirmed
+        request goes to the daemon and comes back reporting nothing deleted.
+        """
+        with _daemon_reset(tmp_path, monkeypatch) as (_stack, _seeded):
+            from polylogue.paths import cache_home, drive_token_path
+
+            assert not cache_home().exists()
+            assert not drive_token_path().exists()
+
+            # Without --yes this is a pure preview and never reaches a writer:
+            # the CLI reports that the selected targets do not exist.
+            preview = CliRunner().invoke(cli, ["ops", "reset", "--cache", "--auth"])
+            assert preview.exit_code == 0, preview.output
+            assert "nothing to reset" in preview.output.lower()
+
+            # With --yes the confirmed intent is lowered to the daemon, which
+            # re-resolves the same empty target set and deletes nothing.
+            result = CliRunner().invoke(cli, ["ops", "reset", "--cache", "--auth", "--yes"])
+
+            assert result.exit_code == 0, result.output
+            assert "0 item(s) deleted" in result.output
 
     def test_partial_targets_exist(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Only deletes targets that exist."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+        """(b) daemon route: only the targets that exist are deleted."""
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            from polylogue.paths import data_home
 
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        archive_db = archive_root / "index.db"
-        archive_db.write_text("test database", encoding="utf-8")
+            archive_db = stack.archive_root / "index.db"
+            assert archive_db.exists()
+            assert not (data_home() / "assets").exists()
 
-        with (
-            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
-            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--database", "--assets", "--yes"])
+            result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--assets", "--yes"])
 
-            assert result.exit_code == 0
+            assert result.exit_code == 0, result.output
             assert not archive_db.exists()
             assert "database" in result.output.lower()
 
@@ -702,27 +721,40 @@ class TestResetEmptyTargets:
 class TestResetErrorHandling:
     """Tests for reset error handling."""
 
-    def test_deletion_failure_shows_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Deletion failure shows error but continues."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    def test_deletion_failure_is_reported_not_swallowed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """(b) daemon route: a delete that cannot be performed surfaces as a refusal.
 
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        archive_db = archive_root / "index.db"
-        archive_db.write_text("test", encoding="utf-8")
+        The failure is produced for real -- the archive directory is made
+        unwritable so the unlink genuinely fails -- rather than by patching
+        ``pathlib.Path.unlink``. A global patch is no longer usable here: the
+        unlink happens inside the daemon, in this same process, so the mock
+        would break the daemon's own bookkeeping instead of the target delete.
 
-        with (
-            patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root),
-            patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
-            patch("pathlib.Path.unlink") as mock_unlink,
-        ):
-            mock_unlink.side_effect = OSError("Permission denied")
+        The old assertion was the disjunction ``"failed" in output or exit_code
+        == 0``, which any successful run satisfied. The contract asserted now
+        is the one the daemon actually provides: the failure is reported and
+        the command does not claim success.
+        """
+        with _daemon_reset(tmp_path, monkeypatch) as (_stack, _seeded):
+            from polylogue.paths import data_home
 
-            runner = CliRunner()
-            result = runner.invoke(cli, ["ops", "reset", "--database", "--yes"])
+            # The assets tree is the target, so the failure is confined to it:
+            # making the archive root itself unwritable would break the daemon's
+            # own journals before it ever reached a delete.
+            assets = data_home() / "assets"
+            locked = assets / "locked"
+            locked.mkdir(parents=True)
+            (locked / "pinned.png").write_bytes(b"pinned")
+            locked.chmod(0o500)
+            try:
+                result = CliRunner().invoke(cli, ["ops", "reset", "--assets", "--yes"])
+            finally:
+                locked.chmod(0o700)
 
-            # Should report failure but not crash
-            assert "failed" in result.output.lower() or result.exit_code == 0
+            assert result.exit_code != 0
+            assert "maintenance.reset" in result.output
+            assert "reset complete" not in result.output.lower()
+            assert locked.exists(), "the undeletable target must still be there"
 
     def test_shows_what_will_be_deleted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Shows summary of what will be deleted."""
