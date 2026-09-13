@@ -74,17 +74,11 @@ async def _shutdown(compute: BoundedComputeAdapter, coordinator: DaemonWriteCoor
 
 
 @pytest.mark.asyncio
-async def test_exact_raw_admission_uses_canonical_derivation_not_legacy_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Anti-vacuity: restoring legacy raw_authority admission makes this fail."""
+async def test_exact_raw_admission_uses_canonical_derivation_not_legacy_authority(tmp_path: Path) -> None:
+    """The owner materializes an exact raw through the canonical derivation."""
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(tmp_path)
     owner, compute, coordinator = await _owner(tmp_path)
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.converge_materialization",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy raw authority route used")),
-    )
     try:
         report = await owner.converge_raw_id(raw_id)
         assert report.done == 1

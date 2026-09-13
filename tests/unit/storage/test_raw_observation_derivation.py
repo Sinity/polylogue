@@ -65,17 +65,11 @@ def _snapshot(root: Path) -> tuple[tuple[tuple[object, ...], ...], ...]:
         )
 
 
-def test_split_member_loss_is_recovered_by_kernel_without_legacy_scanner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_split_member_loss_is_recovered_by_kernel_without_legacy_scanner(tmp_path: Path) -> None:
     """Anti-vacuity: a raw-id/session-exists probe misses the lost split member."""
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(tmp_path, ("split-a", "split-b"))
 
-    def forbidden(*args: object, **kwargs: object) -> None:
-        raise AssertionError("legacy raw candidate scanner was called")
-
-    monkeypatch.setattr("polylogue.storage.raw_convergence._raw_materialization_candidate_ids", forbidden)
     first = _run(tmp_path)
     assert first.done == 1 and first.failed == 0
     with sqlite3.connect(tmp_path / "index.db") as conn:

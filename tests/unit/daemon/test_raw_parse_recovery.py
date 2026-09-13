@@ -168,10 +168,6 @@ def test_single_observation_recovery_survives_output_loss_and_restart(
     raw_id = _write_stuck_raw(tmp_path, source_path=str(source / "first.json"))
     monkeypatch.setattr("polylogue.daemon.convergence_stages._RAW_PARSE_RECOVERY_BATCH_LIMIT", 1)
 
-    def forbidden(*args: object, **kwargs: object) -> None:
-        raise AssertionError("legacy raw candidate scanner was called")
-
-    monkeypatch.setattr("polylogue.storage.raw_convergence._raw_materialization_candidate_ids", forbidden)
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
     assert stage.execute(source) is True
     assert _sessions_for_raw(tmp_path, raw_id) == [("conv-stuck", raw_id)]
@@ -822,7 +818,7 @@ def test_raw_parse_recovery_terminates_on_a_decided_unresolved_membership(tmp_pa
 
     polylogue-plbsn/polylogue-i03t8: the raw carries no ``parse_error`` and no
     session, so the pending probe counted it on every pass while
-    ``converge_raw_materialization`` reported it converged and quarantined --
+    the retired compatibility route reported it converged and quarantined --
     ``execute`` returned False forever and the ``raw_parse_recovery`` debt the
     interrupted-attempt sweep registered for the path was never resolved.
 

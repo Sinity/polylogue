@@ -482,9 +482,10 @@ def _schema_drift_status(conn: sqlite3.Connection | None, *, now_ms: int) -> dic
 
 
 def _raw_replay_backlog_status(index_conn: sqlite3.Connection, *, archive_root: Path) -> dict[str, object]:
-    from polylogue.storage.raw_convergence import raw_materialization_replay_backlog_from_pinned_index
+    del index_conn
+    from polylogue.operations.raw_observation_derivation import raw_observation_backlog_snapshot
 
-    return raw_materialization_replay_backlog_from_pinned_index(index_conn, archive_root=archive_root, limit=5)
+    return raw_observation_backlog_snapshot(archive_root, limit=5)
 
 
 def _components(

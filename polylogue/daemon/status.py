@@ -74,7 +74,6 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
-from polylogue.storage.raw_convergence import raw_materialization_replay_backlog
 from polylogue.storage.raw_retention import raw_frontier_integrity_projection, raw_frontier_integrity_summary
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -2260,13 +2259,9 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
             "source_path_summary": [],
         }
     try:
-        from polylogue.config import Config
-        from polylogue.paths import render_root
+        from polylogue.operations.raw_observation_derivation import raw_observation_backlog_snapshot
 
-        return raw_materialization_replay_backlog(
-            Config(archive_root=archive_root(), render_root=render_root(), sources=[]),
-            limit=5,
-        )
+        return raw_observation_backlog_snapshot(archive_root(), limit=5)
     except Exception as exc:
         return {
             "available": False,

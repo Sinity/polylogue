@@ -599,7 +599,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     )
     monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", fake_converge)
 
-    counts = daemon_cli._drain_raw_materialization_once(limit=11)
+    counts = daemon_cli._drain_raw_materialization_once(limit=11)  # type: ignore[attr-defined]  # polylogue-3sd53
     assert counts.repaired_sessions == 7
     assert counts.executed_plans == 3
     assert order == ["codex-state-receipts", "gate", "restore", "recover-frontier", "materialize", "frontier"]
@@ -609,7 +609,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     assert calls["max_pass_seconds"] == daemon_cli._RAW_MATERIALIZATION_MAX_PASS_SECONDS
 
     order.clear()
-    daemon_cli._drain_raw_materialization_once(limit=11, recover=False)
+    daemon_cli._drain_raw_materialization_once(limit=11, recover=False)  # type: ignore[attr-defined]  # polylogue-3sd53
     assert order == ["codex-state-receipts", "gate", "restore", "materialize", "frontier"]
     assert calls == {
         "codex_state_archive_root": tmp_path / "archive",
@@ -648,7 +648,7 @@ def test_drain_raw_materialization_once_blocks_unattributed_refusal(
     )
 
     with pytest.raises(RuntimeError, match="source-selection gate blocked"):
-        daemon_cli._drain_raw_materialization_once()
+        daemon_cli._drain_raw_materialization_once()  # type: ignore[attr-defined]  # polylogue-3sd53
 
     assert not archive.exists()
 
@@ -703,7 +703,7 @@ def test_drain_raw_materialization_once_refuses_only_the_broken_paths(
     monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", lambda _config, *, limit: 0)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
 
-    counts = daemon_cli._drain_raw_materialization_once()
+    counts = daemon_cli._drain_raw_materialization_once()  # type: ignore[attr-defined]  # polylogue-3sd53
 
     assert counts.repaired_sessions == 1
     assert calls["excluded_source_paths"] == (str(refused),)
@@ -742,7 +742,7 @@ def test_whale_writer_route_blocks_unproven_cursor_authority(
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
 
     with pytest.raises(RuntimeError, match="source-selection gate blocked"):
-        daemon_cli._run_raw_materialization_whale_pass_once(
+        daemon_cli._run_raw_materialization_whale_pass_once(  # type: ignore[attr-defined]  # polylogue-3sd53
             raw_artifact_id="whale-seed-raw-id",
             max_payload_bytes=daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
         )
@@ -795,7 +795,7 @@ def test_whale_writer_route_refuses_a_seed_on_a_refused_path(
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
 
     with pytest.raises(RuntimeError, match="refused source path"):
-        daemon_cli._run_raw_materialization_whale_pass_once(
+        daemon_cli._run_raw_materialization_whale_pass_once(  # type: ignore[attr-defined]  # polylogue-3sd53
             raw_artifact_id="whale-seed-raw-id",
             max_payload_bytes=daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
         )
@@ -1076,7 +1076,7 @@ def test_raw_materialization_closes_fts_on_cancellation(
     )
 
     with pytest.raises(asyncio.CancelledError):
-        daemon_cli._drain_raw_materialization_once()
+        daemon_cli._drain_raw_materialization_once()  # type: ignore[attr-defined]  # polylogue-3sd53
 
     assert closed == [(active_index, archive / "ops.db")]
 
@@ -1172,11 +1172,13 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
 
     if whale:
         assert (
-            daemon_cli._run_raw_materialization_whale_pass_once(raw_artifact_id="raw-whale", max_payload_bytes=123)
+            daemon_cli._run_raw_materialization_whale_pass_once(  # type: ignore[attr-defined]  # polylogue-3sd53
+                raw_artifact_id="raw-whale", max_payload_bytes=123
+            )
             is result
         )
     else:
-        assert daemon_cli._drain_raw_materialization_once().repaired_sessions == 1
+        assert daemon_cli._drain_raw_materialization_once().repaired_sessions == 1  # type: ignore[attr-defined]  # polylogue-3sd53
 
     assert closed == [(active_index, archive / "ops.db")]
     expected_events = (
@@ -1240,13 +1242,13 @@ def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
     )
 
     if whale:
-        returned = daemon_cli._run_raw_materialization_whale_pass_once(
+        returned = daemon_cli._run_raw_materialization_whale_pass_once(  # type: ignore[attr-defined]  # polylogue-3sd53
             raw_artifact_id="raw-whale",
             max_payload_bytes=123,
         )
         assert returned is emitted[0]
     else:
-        counts = daemon_cli._drain_raw_materialization_once()
+        counts = daemon_cli._drain_raw_materialization_once()  # type: ignore[attr-defined]  # polylogue-3sd53
         assert counts.repaired_sessions == 0
 
     assert len(emitted) == 1
@@ -4850,11 +4852,6 @@ def test_periodic_raw_materialization_wakes_fair_intake_without_legacy_scan(
     owner = object()
     discovery = object()
     monkeypatch.setattr(daemon_cli, "_maybe_run_raw_materialization_whale_pass", fake_whale)
-    monkeypatch.setattr(
-        daemon_cli,
-        "_drain_raw_materialization_once",
-        lambda **_kwargs: pytest.fail("legacy raw authority drain used"),
-    )
     with patch("asyncio.sleep", side_effect=stop_after_one_tick), pytest.raises(asyncio.CancelledError):
         asyncio.run(
             daemon_cli._periodic_raw_materialization_convergence(

@@ -90,10 +90,8 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.lifecycle import DaemonLifecycle
-    from polylogue.daemon.parse_prefetch import DaemonParseStage
     from polylogue.daemon.session_profile_composition import SessionProfileCallback
-    from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion, RawMaterializationCounts
-    from polylogue.sources.revision_backfill import RawParsePrefetchCache
+    from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
 logger = get_logger(__name__)
@@ -144,12 +142,12 @@ _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_ORDINA
 # maintenance-priority admission (PR #3289) bounds worst-case queued-actor
 # wait to roughly "this pass's remaining budget + at most one more
 # already-queued, equally-bounded ingest hold" instead of an unbounded
-# multi-minute wait. ``converge_raw_materialization`` checks this budget only
+# multi-minute wait. The retired compatibility drain checked this budget only
 # between components, at a point it already commits and requeries candidates
 # -- a real transaction-boundary checkpoint, not a mid-write yield -- and
 # always completes at least one component regardless of the budget, so a
 # single slower-than-budget component still makes forward progress. Not
-# applied to the whale pass (`_run_raw_materialization_whale_pass_once`),
+# applied to the retired whale compatibility pass,
 # whose entire purpose is converging one oversized, resource-blocked
 # component in a single pass once the ordinary conveyor is quiescent.
 _RAW_MATERIALIZATION_MAX_PASS_SECONDS = 20.0
@@ -181,124 +179,10 @@ _RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET = 1
 # A spool file younger than this is in the live route's normal debounce/
 # batch flow, not stalled; only older cursor-less files park the conveyor.
 _SPOOL_PENDING_GRACE_SECONDS = 300
+
+
 # polylogue-m6tp phase (a): one parse-stage warmer lives for the daemon
 # process's lifetime, lazily created on first use. It is deliberately
-# module-level (not per-pass) so its bounded ``ThreadPoolExecutor`` and
-# ``RawParsePrefetchCache`` persist across ticks -- a raw warmed but not
-# consumed this pass (component-grouping selects a different subset than the
-# flat candidate preview) remains cached for a later one.
-_daemon_parse_stage_singleton: DaemonParseStage | None = None
-
-
-def _daemon_parse_stage() -> DaemonParseStage:
-    global _daemon_parse_stage_singleton
-    if _daemon_parse_stage_singleton is None:
-        from polylogue.daemon.parse_prefetch import DaemonParseStage
-
-        _daemon_parse_stage_singleton = DaemonParseStage()
-    return _daemon_parse_stage_singleton
-
-
-async def _maybe_warm_raw_materialization_parse_stage(
-    *,
-    limit: int,
-    raw_artifact_id: str | None = None,
-    max_payload_bytes: int | None = None,
-) -> tuple[RawParsePrefetchCache | None, int]:
-    """Pre-parse this pass's census candidates outside the writer hold.
-
-    polylogue-m6tp phase (a). Always runs -- there is no correctness reason
-    to skip it: a warm failure (or a genuinely GIL-bound interpreter, where
-    the parse threads give little or no speedup but never regress) degrades
-    to ``_drain_raw_materialization_once`` parsing every candidate inside the
-    writer hold, the unmodified always-correct behavior. Runs entirely BEFORE
-    the write coordinator is ever asked for the writer hold, so it never
-    competes with an active writer thread for the GIL (see
-    ``polylogue.daemon.parse_prefetch`` for why that sequencing is what makes
-    threads safe here even on a standard GIL build).
-
-    The second element of the returned tuple is how many raws were newly
-    admitted to the cache THIS call (0 on a caught warm failure) -- the
-    caller uses it to size the writer-held pass's own limit to match what is
-    already parsed and waiting (see
-    ``docs/design/convergence-simplification-inventory.md`` item 4).
-    """
-    from polylogue.config import Config
-    from polylogue.paths import archive_root, render_root
-
-    stage = _daemon_parse_stage()
-    config = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
-    effective_max_payload_bytes = (
-        max_payload_bytes if max_payload_bytes is not None else _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES
-    )
-    try:
-        warm_async = getattr(stage, "warm_async", None)
-        warm_runner = warm_async if callable(warm_async) else stage.warm
-        if raw_artifact_id is None:
-            if callable(warm_async):
-                warmed = await cast(Callable[..., Awaitable[int]], warm_async)(
-                    config,
-                    limit=limit,
-                    max_payload_bytes=effective_max_payload_bytes,
-                )
-            else:
-                warmed = await asyncio.to_thread(
-                    warm_runner,
-                    config,
-                    limit=limit,
-                    max_payload_bytes=effective_max_payload_bytes,
-                )
-        else:
-            if callable(warm_async):
-                warmed = await cast(Callable[..., Awaitable[int]], warm_async)(
-                    config,
-                    limit=limit,
-                    max_payload_bytes=effective_max_payload_bytes,
-                    raw_artifact_id=raw_artifact_id,
-                )
-            else:
-                warmed = await asyncio.to_thread(
-                    warm_runner,
-                    config,
-                    limit=limit,
-                    max_payload_bytes=effective_max_payload_bytes,
-                    raw_artifact_id=raw_artifact_id,
-                )
-    except asyncio.CancelledError:
-        request_stop = getattr(stage, "request_stop", None)
-        if callable(request_stop):
-            request_stop()
-        raise
-    except Exception:
-        logger.warning("raw materialization: parse-stage prefetch failed; falling back to in-hold parse", exc_info=True)
-        return stage.cache, 0
-    if warmed:
-        logger.info("raw materialization: parse-stage prefetch warmed %d raw(s) off the writer hold", warmed)
-    return stage.cache, warmed
-
-
-async def _await_parse_stage_writer_admission() -> bool:
-    """Drain off-writer parse workers before asking the coordinator for a lease.
-
-    A timed-out ``to_thread(stage.warm, ...)`` cannot stop its executor worker.
-    The coordinator is therefore never even queued until the stage proves idle;
-    a bounded wait defers this tick without cancelling the real worker.
-    """
-    stage = _daemon_parse_stage()
-    writer_ready = getattr(stage, "writer_admission_ready", None)
-    wait_idle = getattr(stage, "wait_until_idle", None)
-    # Tiny test doubles and legacy embedders predate the admission protocol;
-    # their warm() call is synchronous, so there is no outstanding worker to
-    # fence. The real CensusParseStage always supplies both methods.
-    if writer_ready is None or wait_idle is None or writer_ready():
-        return True
-    timeout = float(getattr(stage, "warm_timeout_seconds", 300.0))
-    idle = bool(await asyncio.to_thread(wait_idle, timeout=timeout))
-    if not idle:
-        logger.warning("raw materialization: deferring writer admission while parse-stage worker(s) remain active")
-    return idle
-
-
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> object:
     """Run the single FTS convergence owner before the watcher starts."""
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
@@ -1100,133 +984,20 @@ async def _periodic_raw_materialization_convergence(
     raw_intake_wakeup: asyncio.Event | None = None,
     raw_intake_discovery: Any | None = None,
 ) -> None:
-    """Continuously converge durable raw source rows into the index tier.
-
-    A daemon-owned live watcher supplies ``catch_up_complete``.  Its initial
-    acquisition must get the single writer first: a raw-frontier census can
-    inspect the entire durable archive before its bounded replay begins, and
-    otherwise delays fresh Codex/Claude/browser evidence behind unrelated
-    recovery work.  Callers without a watcher deliberately pass no gate, so
-    maintenance-only use still begins immediately.
-
-    Once the gate is open, a backlog (e.g. after an index rebuild) bursts
-    through bounded passes back-to-back — yielding the writer between passes
-    — instead of waiting a full interval per pass, which would stretch a large
-    drain into weeks.
-    """
+    """Wake the canonical bounded raw-observation intake after catch-up."""
     await _await_catch_up_gate(catch_up_complete, loop_name="raw materialization convergence")
-
-    # The production composition supplies the canonical owner and the wake
-    # shared with fair intake.  Periodic maintenance is then only a wake
-    # source: it never re-discovers the complete raw scope, takes a second
-    # writer route, or overtakes another intake class.  The legacy branch is
-    # retained temporarily for direct compatibility callers while scanner
-    # retirement remains a separate slice.
-    if raw_observation_owner is not None and raw_intake_wakeup is not None:
-        while True:
-            raw_intake_wakeup.set()
-            try:
-                await _maybe_run_raw_materialization_whale_pass(
-                    raw_observation_owner=raw_observation_owner,
-                    raw_intake_discovery=raw_intake_discovery,
-                )
-            except Exception:
-                logger.warning("raw materialization: canonical whale-pass scheduling failed", exc_info=True)
-            await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
-
+    if raw_observation_owner is None or raw_intake_wakeup is None or raw_intake_discovery is None:
+        raise RuntimeError("raw materialization requires the canonical observation owner, discovery, and intake wakeup")
     while True:
-        # A non-empty live spool narrows this loop's share of the writer to one
-        # bounded pass; it never removes it.
-        spool_pending = _browser_capture_spool_has_pending_files()
-        pass_budget = _RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET if spool_pending else None
-        if spool_pending:
-            logger.info(
-                "raw materialization: browser-capture spool pending; limiting this tick to %d pass(es)",
-                _RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET,
-            )
-        passes = 0
-        recover = True
-        # polylogue-t93b: set True only at the genuine-quiescence break below
-        # (no progress AND no remaining ordinary-envelope candidates this
-        # tick) -- never on the spool-pending break, which is a deferral for
-        # an unrelated reason, not evidence the ordinary backlog is settled.
-        quiescent = False
+        raw_intake_wakeup.set()
         try:
-            while True:
-                # polylogue-m6tp item 4: census throughput is no longer bounded
-                # by escalating the writer-held pass's OWN limit (the old
-                # ``census_mode`` switch) -- it is bounded by how much the
-                # parse-stage warmer, running off the writer hold, admits to
-                # its cache. The writer-held pass widens its own limit only
-                # far enough to consume what is already warmed and waiting;
-                # doing so costs a receipt write per already-parsed candidate,
-                # not a reparse, so it does not meaningfully extend the hold.
-                # With the flag off (``warmed_count`` always 0) this reduces
-                # to the plain replay-sized floor, unchanged from before.
-                prefetch_cache, warmed_count = await _maybe_warm_raw_materialization_parse_stage(
-                    limit=_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT
-                )
-                limit = max(
-                    _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
-                    min(warmed_count, _RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT),
-                )
-                if not await _await_parse_stage_writer_admission():
-                    # Do not queue, acquire, or even attempt a coordinator
-                    # lease while a timed-out parse worker still owns source
-                    # payload admission. The worker remains alive and will
-                    # release its reservation when it naturally completes.
-                    break
-                materialized = await daemon_write_coordinator().run_sync(
-                    "maintenance.raw_materialization",
-                    functools.partial(
-                        _drain_raw_materialization_once,
-                        limit=limit,
-                        recover=recover,
-                        prefetch_cache=prefetch_cache,
-                    ),
-                )
-                recover = False
-                if materialized.made_progress:
-                    logger.info(
-                        "raw materialization: repaired %d session(s), executed %d frontier plan(s), %d candidate(s) remaining",
-                        materialized.repaired_sessions,
-                        materialized.executed_plans,
-                        materialized.remaining_candidates,
-                    )
-                passes += 1
-                if materialized.remaining_candidates <= 0 or not materialized.made_progress:
-                    quiescent = True
-                    break
-                if pass_budget is not None and passes >= pass_budget:
-                    break
-                if _browser_capture_spool_has_pending_files():
-                    pass_budget = _RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET
-                    if passes >= pass_budget:
-                        break
-                await asyncio.sleep(_RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS)
-        except sqlite3.OperationalError as exc:
-            if is_transient_sqlite_lock(exc):
-                logger.info("raw materialization: archive busy; retrying on next tick: %s", exc)
-            else:
-                logger.warning("raw materialization: convergence check failed", exc_info=True)
+            await _maybe_run_raw_materialization_whale_pass(
+                raw_observation_owner=raw_observation_owner,
+                raw_intake_discovery=raw_intake_discovery,
+            )
         except Exception:
-            logger.warning("raw materialization: convergence check failed", exc_info=True)
-        # polylogue-t93b: escalate a resource-blocked, stream-safe component
-        # only once the ordinary trickle conveyor is genuinely quiescent for
-        # this tick (see ``quiescent`` above) and not yielding to pending
-        # browser-capture spool files -- keeps the whale pass from ever
-        # competing with ordinary-scale backlog or live-capture ingest for
-        # the writer hold.
-        if quiescent and not _browser_capture_spool_has_pending_files():
-            try:
-                await _maybe_run_raw_materialization_whale_pass()
-            except Exception:
-                logger.warning("raw materialization: whale-pass scheduling failed", exc_info=True)
-        await asyncio.sleep(
-            _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS
-            if spool_pending
-            else _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
-        )
+            logger.warning("raw materialization: canonical whale-pass scheduling failed", exc_info=True)
+        await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
 
 
 async def _bridge_catch_up_complete(
@@ -1377,121 +1148,6 @@ async def _converge_raw_materialized_session_profiles(
         )
 
 
-def _drain_raw_materialization_once(
-    *,
-    limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
-    recover: bool = True,
-    prefetch_cache: RawParsePrefetchCache | None = None,
-) -> Any:
-    """Run one bounded raw source→index convergence pass.
-
-    ``recover`` gates the interrupted-frontier recovery scan: it only has
-    work after a crash/restart, so backlog burst continuations within one
-    healthy cycle skip it instead of re-scanning per pass.
-
-    ``prefetch_cache`` (polylogue-m6tp phase (a), default ``None``) is
-    populated by ``_maybe_warm_raw_materialization_parse_stage`` BEFORE this
-    function is ever scheduled onto the writer hold; passing ``None``
-    (the flag-off default) reproduces the exact unmodified in-hold parse.
-    """
-    from polylogue.config import Config
-    from polylogue.maintenance import raw_authority
-    from polylogue.paths import archive_root, render_root
-    from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
-
-    archive = archive_root()
-    config = Config(
-        archive_root=archive,
-        render_root=render_root(),
-        sources=[],
-    )
-    # A Codex state snapshot admitted without its terminal receipt is an
-    # incomparable cursor row to the gate below, and every route that could
-    # finalize it sits behind that gate; finalize from the retained blob first.
-    raw_authority.finalize_codex_state_snapshots(config)
-    refused_source_paths = _raw_materialization_refused_source_paths(archive, route="raw materialization")
-    generation_pin_refused = False
-    frontier_repaired = 0
-    if prefetch_cache is not None and not _daemon_parse_stage().writer_admission_ready():
-        raise RuntimeError("raw materialization writer admission refused while parse-stage warm is active")
-    with contextlib.ExitStack() as lease_stack:
-        try:
-            index_db = lease_stack.enter_context(raw_authority.materialization_generation_lease(config))
-        except Exception as exc:
-            refused_result = raw_authority.materialization_lease_refusal_result(exc)
-            if refused_result is None:
-                raise
-            result = refused_result
-            generation_pin_refused = True
-        else:
-            restored = restore_direct_blob_reference_debt(
-                archive / "source.db",
-                dry_run=False,
-                max_count=_BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT,
-                sample_size=0,
-            )
-            if restored.restored_count:
-                logger.info(
-                    "blob references: restored %d direct source blob(s) before raw materialization",
-                    restored.restored_count,
-                )
-            if recover:
-                raw_authority.recover_interrupted_frontier(config)
-            # polylogue-d7im: a stale-plan blocker requires no operator
-            # judgment.  Recovery, stale-plan resolution, repair, FTS closure,
-            # and frontier apply all consume the selected index generation,
-            # so the one promotion-excluding lease must cover the complete
-            # sequence rather than only the middle repair call.
-            auto_resolved = raw_authority.auto_resolve_stale_plan_blockers(config)
-            if auto_resolved:
-                logger.info(
-                    "raw authority: auto-resolved %d stale-plan blocker(s) before raw materialization",
-                    auto_resolved,
-                )
-            try:
-                result = raw_authority.converge_materialization(
-                    config,
-                    dry_run=False,
-                    raw_artifact_limit=limit,
-                    max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
-                    prefetch_cache=prefetch_cache,
-                    max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
-                    excluded_source_paths=refused_source_paths,
-                )
-            finally:
-                _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")
-            frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
-    if generation_pin_refused:
-        _emit_raw_materialization_pass(result)
-        if not result.success:
-            logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
-        return _raw_materialization_counts(result)
-    _emit_raw_materialization_pass(result)
-    if not result.success:
-        logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
-    return _raw_materialization_counts(result, executed_plans=frontier_repaired)
-
-
-def _raw_materialization_counts(result: Any, *, executed_plans: int = 0) -> RawMaterializationCounts:
-    """Project one typed raw-materialization result into daemon scheduling counts."""
-    from polylogue.maintenance import raw_authority
-
-    metrics = dict(getattr(result, "metrics", {}))
-    remaining = int(metrics.get("raw_materialization_remaining_candidate_count", 0))
-    # Parser-census debt is not part of the replay candidate count, but it is
-    # still unfinished work. Keep it in scheduling counters so a census-pending
-    # pass cannot be mistaken for quiescence.
-    remaining += int(metrics.get("raw_materialization_census_incomplete_raw_count", 0))
-    return raw_authority.RawMaterializationCounts(
-        repaired_sessions=result.repaired_count,
-        executed_plans=executed_plans,
-        remaining_candidates=remaining,
-        censused_components=int(metrics.get("raw_materialization_census_components_attempted", 0)),
-        candidate_count=int(metrics.get("raw_materialization_candidate_count", 0)),
-        pending_blob_bytes=int(metrics.get("raw_materialization_total_blob_bytes", 0)),
-    )
-
-
 def _resolve_raw_materialization_whale_blob_limit_bytes() -> int:
     """Resolve the whale-pass escalation envelope (polylogue-t93b)."""
     from polylogue.config import load_polylogue_config
@@ -1500,72 +1156,6 @@ def _resolve_raw_materialization_whale_blob_limit_bytes() -> int:
     if configured is None or configured <= 0:
         return _RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
     return configured
-
-
-def _run_raw_materialization_whale_pass_once(
-    *,
-    raw_artifact_id: str,
-    max_payload_bytes: int,
-    prefetch_cache: RawParsePrefetchCache | None = None,
-) -> Any:
-    """Run one bounded, single-component whale pass under the writer hold.
-
-    polylogue-t93b. Mirrors ``_drain_raw_materialization_once`` but scoped to
-    exactly the logical authority component containing ``raw_artifact_id``
-    (the same "one seed expands to the whole component via membership"
-    convention the CLI's ``--raw-artifact-id`` single-source repair already
-    uses), at the widened whale envelope instead of the ordinary fast-path
-    limit. ``raw_artifact_limit=1`` bounds selection to that one component --
-    writer-hold length within it is bounded by
-    ``raw_authority_commit_batch_size`` (PR #3248), unchanged by this call.
-
-    Deliberately skips the general (unscoped) interrupted-frontier recovery
-    and cross-archive frontier convergence that ``_drain_raw_materialization_once``
-    performs: those are ordinary-pass hygiene over the whole backlog, not
-    specific to this one escalated component, and the ordinary pass already
-    runs them on its own cadence.
-    """
-    from polylogue.config import Config
-    from polylogue.maintenance import raw_authority
-    from polylogue.paths import archive_root, render_root
-
-    archive = archive_root()
-    refused_source_paths = _raw_materialization_refused_source_paths(archive, route="raw whale materialization")
-    if refused_source_paths and _raw_source_path(archive, raw_artifact_id) in refused_source_paths:
-        # The seed's own authority is broken: an empty selection would read
-        # as a clean pass, so refuse it as a typed gate outcome instead.
-        raise RuntimeError(
-            f"raw whale materialization source-selection gate blocked: seed raw {raw_artifact_id} "
-            "is on a refused source path"
-        )
-    config = Config(archive_root=archive, render_root=render_root(), sources=[])
-    if not _daemon_parse_stage().writer_admission_ready():
-        raise RuntimeError("raw whale writer admission refused while parse-stage warm is active")
-    with contextlib.ExitStack() as lease_stack:
-        try:
-            index_db = lease_stack.enter_context(raw_authority.materialization_generation_lease(config))
-        except Exception as exc:
-            refused_result = raw_authority.materialization_lease_refusal_result(exc)
-            if refused_result is None:
-                raise
-            result = refused_result
-        else:
-            try:
-                result = raw_authority.converge_materialization(
-                    config,
-                    dry_run=False,
-                    raw_artifact_limit=1,
-                    max_payload_bytes=max_payload_bytes,
-                    prefetch_cache=prefetch_cache,
-                    raw_artifact_id=raw_artifact_id,
-                    excluded_source_paths=refused_source_paths,
-                )
-            finally:
-                _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")
-    _emit_raw_materialization_pass(result)
-    if not result.success:
-        logger.warning("raw materialization: whale pass for %s incomplete: %s", raw_artifact_id, result.detail)
-    return result
 
 
 def _raw_materialization_whale_completion_payload(
@@ -1808,139 +1398,37 @@ async def _maybe_run_raw_materialization_whale_pass(
     Returns whether a pass was genuinely attempted this call so the caller
     can decide burst-vs-outer-interval pacing.
     """
+    if raw_observation_owner is None or raw_intake_discovery is None:
+        raise RuntimeError("raw whale materialization requires canonical owner and bounded discovery")
     from polylogue.daemon.events import emit_daemon_event
-    from polylogue.paths import archive_root, render_root
+    from polylogue.paths import archive_root
 
     root = archive_root()
     global _WHALE_RECEIPT_ROOT
     _WHALE_RECEIPT_ROOT = root
     whale_limit = _resolve_raw_materialization_whale_blob_limit_bytes()
     await _drain_whale_receipt_outbox()
-    if raw_observation_owner is not None and raw_intake_discovery is not None:
-        # Discovery is the same bounded, process-local traversal used by fair
-        # intake.  It is not a whale-specific scanner or a validity cache.
-        # Only an observation above the normal envelope may bypass ordinary
-        # fair admission on this escalation path.
-        candidates = await asyncio.to_thread(raw_intake_discovery.discover_pending_raw_ids, 1)
-        candidate = next(
-            (
-                raw_id
-                for raw_id, payload_bytes in candidates
-                if payload_bytes > _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES
-            ),
-            None,
-        )
-        if candidate is None:
-            return False
-        receipt_id = f"whale:{candidate}:{uuid4().hex}"
-        emit_daemon_event(
-            "raw_materialization_whale_pass_started",
-            payload={"seed_raw_id": candidate, "max_payload_bytes": whale_limit},
-        )
-        started = time.perf_counter()
-        try:
-            report = await raw_observation_owner.converge_raw_id(candidate, max_payload_bytes=whale_limit)
-        except asyncio.CancelledError as exc:
-            await _publish_whale_receipt(
-                kind="raw_materialization_whale_pass_completed",
-                idempotency_key=f"{receipt_id}:terminal",
-                operation_id=receipt_id,
-                payload=_raw_materialization_whale_completion_payload(
-                    candidate,
-                    status="cancelled",
-                    receipt_id=receipt_id,
-                    success=False,
-                    detail=str(exc) or "canonical whale pass caller cancelled",
-                ),
-            )
-            raise
-        except Exception as exc:
-            await _publish_whale_receipt(
-                kind="raw_materialization_whale_pass_completed",
-                idempotency_key=f"{receipt_id}:terminal",
-                operation_id=receipt_id,
-                payload=_raw_materialization_whale_completion_payload(
-                    candidate,
-                    status="error",
-                    receipt_id=receipt_id,
-                    success=False,
-                    detail=str(exc),
-                    metrics={"duration_ms": (time.perf_counter() - started) * 1000.0},
-                ),
-            )
-            return True
-        from polylogue.daemon.derivation import Outcome
-
-        failed = next((outcome for outcome in report.outcomes if outcome.outcome is Outcome.FAILED), None)
-        pending = next((outcome for outcome in report.outcomes if outcome.outcome is Outcome.PENDING), None)
-        success = failed is None and pending is None
-        detail = (
-            failed.error
-            if failed is not None
-            else (
-                pending.reason.value
-                if pending is not None and pending.reason is not None
-                else "canonical raw observation converged"
-            )
-        )
-        await _publish_whale_receipt(
-            kind="raw_materialization_whale_pass_completed",
-            idempotency_key=f"{receipt_id}:terminal",
-            operation_id=receipt_id,
-            payload=_raw_materialization_whale_completion_payload(
-                candidate,
-                status="success" if success else "error",
-                receipt_id=receipt_id,
-                success=success,
-                detail=detail,
-                repaired_count=report.done,
-                metrics={"duration_ms": (time.perf_counter() - started) * 1000.0},
-            ),
-        )
-        return True
-
-    from polylogue.config import Config
-    from polylogue.maintenance import raw_authority
-
-    config = Config(archive_root=root, render_root=render_root(), sources=[])
-    try:
-        candidate = await asyncio.to_thread(
-            raw_authority.whale_pass_candidate,
-            config,
-            ordinary_max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
-            whale_max_payload_bytes=whale_limit,
-        )
-    except Exception:
-        logger.warning("raw materialization: whale-pass candidate lookup failed", exc_info=True)
-        return False
+    # Discovery is the same bounded, process-local traversal used by fair
+    # intake. It is not a whale-specific scanner or a validity cache.
+    candidates = await asyncio.to_thread(raw_intake_discovery.discover_pending_raw_ids, 1)
+    candidate = next(
+        (
+            raw_id
+            for raw_id, payload_bytes in candidates
+            if payload_bytes > _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES
+        ),
+        None,
+    )
     if candidate is None:
         return False
     receipt_id = f"whale:{candidate}:{uuid4().hex}"
-    # Warm only this candidate's authority component before entering the
-    # writer coordinator.  The existing bounded parse-stage cache is reused
-    # so the whale path adds no second adaptive memory budget; its discovery
-    # scope is explicit and cannot accidentally pull ordinary-pass candidates.
+    emit_daemon_event(
+        "raw_materialization_whale_pass_started",
+        payload={"seed_raw_id": candidate, "max_payload_bytes": whale_limit},
+    )
+    started = time.perf_counter()
     try:
-        prefetch_cache, warmed_count = await _maybe_warm_raw_materialization_parse_stage(
-            limit=_RAW_MATERIALIZATION_WHALE_PARSE_STAGE_WARM_LIMIT,
-            raw_artifact_id=candidate,
-            max_payload_bytes=whale_limit,
-        )
-        if not await _await_parse_stage_writer_admission():
-            await _publish_whale_receipt(
-                kind="raw_materialization_whale_pass_completed",
-                idempotency_key=f"{receipt_id}:terminal",
-                operation_id=receipt_id,
-                payload=_raw_materialization_whale_completion_payload(
-                    candidate,
-                    status="fenced",
-                    receipt_id=receipt_id,
-                    success=False,
-                    detail="parse-stage worker remained active; writer admission fenced",
-                ),
-                publish=False,
-            )
-            return True
+        report = await raw_observation_owner.converge_raw_id(candidate, max_payload_bytes=whale_limit)
     except asyncio.CancelledError as exc:
         await _publish_whale_receipt(
             kind="raw_materialization_whale_pass_completed",
@@ -1951,141 +1439,11 @@ async def _maybe_run_raw_materialization_whale_pass(
                 status="cancelled",
                 receipt_id=receipt_id,
                 success=False,
-                detail=str(exc) or "whale prefetch/admission caller cancelled",
-            ),
-            publish=False,
-        )
-        raise
-    logger.info(
-        "raw materialization: starting whale pass for component seeded by %s (envelope=%d bytes, warmed=%d)",
-        candidate,
-        whale_limit,
-        warmed_count,
-    )
-    emit_daemon_event(
-        "raw_materialization_whale_pass_started",
-        payload={"seed_raw_id": candidate, "max_payload_bytes": whale_limit},
-    )
-    pass_started = time.perf_counter()
-    operation_started = False
-    admitted_by_coordinator = False
-    publication_requested = False
-    publication_scheduled = False
-    completed_task: asyncio.Task[object] | None = None
-
-    operation = functools.partial(
-        _run_raw_materialization_whale_pass_once,
-        raw_artifact_id=candidate,
-        max_payload_bytes=whale_limit,
-        prefetch_cache=prefetch_cache,
-    )
-
-    def tracked_whale_pass() -> Any:
-        nonlocal operation_started
-        operation_started = True
-        return operation()
-
-    # Preserve the partial's introspection seam used by coordinator-route
-    # tests and diagnostics. Completion publication is attached to the
-    # coordinator-owned task, not a free-floating asyncio task.
-    cast(Any, tracked_whale_pass).keywords = operation.keywords
-    coordinator = daemon_write_coordinator()
-
-    def mark_admitted() -> None:
-        nonlocal admitted_by_coordinator
-        admitted_by_coordinator = True
-
-    def schedule_completion(done: asyncio.Task[object]) -> None:
-        nonlocal completed_task, publication_scheduled
-        completed_task = done
-        if publication_requested and not publication_scheduled:
-            publication_scheduled = True
-            _ = coordinator.create_managed_task(
-                _emit_whale_completion_after_admission(candidate, done, receipt_id),
-                actor="maintenance.raw_materialization_whale.receipt",
-            )
-
-    try:
-        run_with_completion = getattr(coordinator, "run_sync_with_completion", None)
-        if not callable(run_with_completion):
-            raise RuntimeError(
-                "whale route requires DaemonWriteCoordinator.run_sync_with_completion; "
-                "embedder compatibility contract is fail-closed"
-            )
-        result = await run_with_completion(
-            "maintenance.raw_materialization_whale",
-            tracked_whale_pass,
-            schedule_completion,
-            mark_admitted,
-        )
-    except sqlite3.OperationalError as exc:
-        if is_transient_sqlite_lock(exc):
-            logger.info("raw materialization: whale pass deferred, archive busy: %s", exc)
-        else:
-            logger.warning("raw materialization: whale pass failed", exc_info=True)
-        await _publish_whale_receipt(
-            kind="raw_materialization_whale_pass_completed",
-            idempotency_key=f"{receipt_id}:terminal",
-            operation_id=receipt_id,
-            payload=_raw_materialization_whale_completion_payload(
-                candidate,
-                status="error",
-                receipt_id=receipt_id,
-                success=False,
-                detail=str(exc),
-                metrics={"duration_ms": (time.perf_counter() - pass_started) * 1000.0},
+                detail=str(exc) or "canonical whale pass caller cancelled",
             ),
         )
-        return True
-    except asyncio.CancelledError as exc:
-        admitted = operation_started or admitted_by_coordinator or completed_task is not None
-        if admitted:
-            # ``run_sync`` shields an admitted operation and lets its writer
-            # task finish after this caller is cancelled. Publish a truthful
-            # continuation record now, then exactly one terminal event from
-            # the coordinator-owned completion task with actual counters.
-            # Request publication before attempting continuation delivery: a
-            # transient ops-db failure must not suppress
-            # the terminal receipt.
-            publication_requested = True
-            try:
-                await _publish_whale_receipt(
-                    kind="raw_materialization_whale_pass_completed",
-                    idempotency_key=f"{receipt_id}:continuation",
-                    operation_id=receipt_id,
-                    payload=_raw_materialization_whale_completion_payload(
-                        candidate,
-                        status="in_progress",
-                        receipt_id=receipt_id,
-                        success=False,
-                        detail=str(exc) or "caller cancelled; coordinator operation continues",
-                    ),
-                )
-            except Exception as receipt_exc:
-                logger.error("raw materialization: whale continuation outbox commit failed", exc_info=True)
-                raise RuntimeError("whale continuation could not enter durable outbox") from receipt_exc
-            if completed_task is not None and not publication_scheduled:
-                publication_scheduled = True
-                _ = coordinator.create_managed_task(
-                    _emit_whale_completion_after_admission(candidate, completed_task, receipt_id),
-                    actor="maintenance.raw_materialization_whale.receipt",
-                )
-        else:
-            await _publish_whale_receipt(
-                kind="raw_materialization_whale_pass_completed",
-                idempotency_key=f"{receipt_id}:terminal",
-                operation_id=receipt_id,
-                payload=_raw_materialization_whale_completion_payload(
-                    candidate,
-                    status="cancelled",
-                    receipt_id=receipt_id,
-                    success=False,
-                    detail=str(exc) or "whale pass caller cancelled",
-                ),
-            )
         raise
     except Exception as exc:
-        logger.warning("raw materialization: whale pass failed", exc_info=True)
         await _publish_whale_receipt(
             kind="raw_materialization_whale_pass_completed",
             idempotency_key=f"{receipt_id}:terminal",
@@ -2096,47 +1454,47 @@ async def _maybe_run_raw_materialization_whale_pass(
                 receipt_id=receipt_id,
                 success=False,
                 detail=str(exc),
-                metrics={"duration_ms": (time.perf_counter() - pass_started) * 1000.0},
+                metrics={"duration_ms": (time.perf_counter() - started) * 1000.0},
             ),
         )
         return True
-    metrics = dict(getattr(result, "metrics", {}))
-    metrics["duration_ms"] = (time.perf_counter() - pass_started) * 1000.0
-    census_pending = int(metrics.get("raw_materialization_census_incomplete_raw_count", 0)) > 0
+    from polylogue.daemon.derivation import Outcome
+
+    failed = next((outcome for outcome in report.outcomes if outcome.outcome is Outcome.FAILED), None)
+    pending = next((outcome for outcome in report.outcomes if outcome.outcome is Outcome.PENDING), None)
+    success = failed is None and pending is None
+    detail = (
+        failed.error
+        if failed is not None
+        else (
+            pending.reason.value
+            if pending is not None and pending.reason is not None
+            else "canonical raw observation converged"
+        )
+    )
     await _publish_whale_receipt(
         kind="raw_materialization_whale_pass_completed",
         idempotency_key=f"{receipt_id}:terminal",
         operation_id=receipt_id,
         payload=_raw_materialization_whale_completion_payload(
             candidate,
-            status="census_pending" if census_pending else ("success" if result.success else "error"),
+            status="success" if success else "error",
             receipt_id=receipt_id,
-            success=bool(result.success) and not census_pending,
-            detail=str(result.detail),
-            repaired_count=int(result.repaired_count),
-            metrics=metrics,
+            success=success,
+            detail=detail,
+            repaired_count=report.done,
+            metrics={"duration_ms": (time.perf_counter() - started) * 1000.0},
         ),
     )
     return True
 
 
 def _browser_capture_spool_has_pending_files() -> bool:
-    """Whether live browser evidence is STALLED short of its ingest route.
+    """Whether live browser evidence is stalled short of its ingest route.
 
-    Only files genuinely waiting on the live route's writer count: a file
-    with no cursor yet, or one whose bytes changed since its cursor. Files
-    in a terminal or failure disposition (``excluded``, ``failure_count``)
-    are owned by exclusion/retry policy — the writer is not what they wait
-    for, and treating them as pending parked raw materialization forever
-    (2026-07-18 restore: the conveyor never ran once while failed spool
-    files sat on disk).
-
-    Files younger than the grace window never count either: a capture that
-    arrived seconds ago is in the live watcher's debounce/batch flow — its
-    normal route — and the write coordinator already interleaves that work.
-    The yield exists for a backlog the live route is NOT digesting; without
-    the grace, steady live capture traffic re-parked the conveyor for 60s
-    per fresh file all through the 2026-07-18 restore.
+    Only files genuinely waiting on the live route's writer count. Terminal
+    and failed files remain owned by exclusion/retry policy, while fresh
+    files remain with the live watcher's normal debounce and batch route.
     """
     from polylogue.paths import browser_capture_spool_root
     from polylogue.sources.live.batch import fingerprint_file
@@ -3633,14 +2991,6 @@ async def _run_daemon_services_under_active_writer_lease(
                 )
             if watcher is not None:
                 watcher.stop()
-            if _daemon_parse_stage_singleton is not None:
-                # polylogue-m6tp phase (a), CodeRabbit PR #3168: the parse-stage
-                # warmer's ThreadPoolExecutor is created lazily on first use,
-                # and otherwise never touched here. shutdown() is non-blocking
-                # (wait=False, cancel_futures=True) so no timeout wrapper is
-                # needed: it cannot itself hang the shutdown sequence; it just
-                # stops the pool from keeping the process alive at exit.
-                _daemon_parse_stage_singleton.shutdown()
             if server is not None:
                 await _shutdown_server_if_serving(server, server_task, label="browser-capture")
             if api_server is not None:
