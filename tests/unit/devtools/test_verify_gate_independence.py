@@ -55,8 +55,8 @@ def driven(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], dict[str, Any]]:
     executed: list[str] = []
     payload: dict[str, Any] = {}
 
-    def _run(label: str, command: list[str], *, run: Any) -> tuple[int, float, dict[str, Any]]:
-        del command, run
+    def _run(label: str, command: list[str], *, run: Any, runner: Any = None) -> tuple[int, float, dict[str, Any]]:
+        del command, run, runner
         executed.append(label)
         failed = label == "gate js-tests"
         return (1 if failed else 0), 0.0, {"diagnosis": "gate_failed" if failed else "gate_passed"}

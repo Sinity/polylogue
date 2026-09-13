@@ -1128,6 +1128,7 @@ class TestCliSetup:
             patch("polylogue.cli.click_app.should_use_plain", return_value=True),
             patch("polylogue.cli.click_app.create_ui", return_value=MagicMock()),
             patch("polylogue.cli.click_app._show_stats"),
+            patch("polylogue.cli.query.execute_query_request"),
         ):
             result = cli_runner.invoke(cli, ["read", "--all", "--format", "json"], catch_exceptions=False)
         assert "Plain output active" not in result.output

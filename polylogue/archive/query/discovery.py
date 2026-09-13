@@ -181,6 +181,10 @@ MESSAGE_COLUMNS = (
     "material_origin",
     "occurred_at_ms",
     "position",
+    "parent_message_id",
+    "variant_index",
+    "is_active_path",
+    "is_active_leaf",
     "word_count",
     "text",
 )
@@ -1405,9 +1409,9 @@ QUERY_DISCOVERY_NEGATIVE_EXAMPLES: tuple[QueryDiscoveryNegativeExample, ...] = (
         parser="session",
         diagnostic_class="ExpressionCompileError",
         diagnostic=(
-            "unknown query field 'text'; recognized fields: action, assistant_messages, assistant_words, "
+            "unknown query field 'text'; recognized fields: action, action_sequence, action_text, assistant_messages, assistant_words, "
             "authored_user_messages, authored_user_words, contains, cwd, duration_ms, has, id, lane, lineage, "
-            "messages, near, origin, paste_messages, path, project, repo, root, session, since, system_messages, tag, "
+            "messages, near, origin, paste_messages, path, project, repo, root, session, since, since_session, system_messages, tag, "
             "thinking_messages, title, tool, tool_messages, tool_use_messages, until, user_messages, user_words, words"
         ),
         field="text",

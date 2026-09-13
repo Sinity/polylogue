@@ -131,21 +131,23 @@ def test_init_command_json_format_is_machine_readable(isolated_home: Path) -> No
     assert any(d["family"] == "codex" and d["present"] is False for d in payload["detected"])
 
 
-def test_status_first_run_hint_suggests_init(isolated_home: Path) -> None:
-    """Bare status on a fresh install must point at ``polylogue init``."""
+def test_status_reports_unavailable_daemon_on_a_fresh_install(isolated_home: Path) -> None:
+    """Operational status reports the daemon boundary when no snapshot exists."""
     runner = CliRunner()
-    result = runner.invoke(cli, ["--plain", "ops", "status"], catch_exceptions=False)
+    result = runner.invoke(
+        cli, ["--plain", "--no-daemon", "ops", "status"], catch_exceptions=False, env={"POLYLOGUE_DAEMON": "off"}
+    )
     assert result.exit_code == 1
-    assert "polylogue init" in result.output
+    assert "Status snapshot: unavailable" in result.output
 
 
-def test_status_first_run_hint_drops_init_after_init(isolated_home: Path) -> None:
+def test_status_reports_unavailable_daemon_after_init(isolated_home: Path) -> None:
     runner = CliRunner()
     init_result = runner.invoke(cli, ["--plain", "init"], catch_exceptions=False)
     assert init_result.exit_code == 0
 
-    result = runner.invoke(cli, ["--plain", "ops", "status"], catch_exceptions=False)
+    result = runner.invoke(
+        cli, ["--plain", "--no-daemon", "ops", "status"], catch_exceptions=False, env={"POLYLOGUE_DAEMON": "off"}
+    )
     assert result.exit_code == 1
-    # Once the starter config exists, the hint shifts to the daemon.
-    assert "polylogue init" not in result.output
-    assert "polylogued run" in result.output
+    assert "Status snapshot: unavailable" in result.output

@@ -33,9 +33,16 @@ from tests.infra.storage_records import SessionBuilder
 
 #: Declared examples not executed here, and why.
 _NOT_EXECUTED: dict[str, str] = {
+    'near:"semantic search"': "text similarity needs a configured vector backend",
     "near:id:abc123": "session-seeded similarity needs stored embeddings for the referenced session",
     "near:id:example-origin:session-001": (
         "session-seeded similarity needs stored embeddings for the referenced session"
+    ),
+    'sessions where semantic:"query compiler failure"': "semantic retrieval needs a configured vector backend",
+    "sessions where near:text:timeout": "semantic retrieval needs a configured vector backend",
+    'near:"failed migration rollback"': "text similarity needs a configured vector backend",
+    'sessions where semantic:"unhandled exception" AND tag:review': (
+        "semantic retrieval needs a configured vector backend"
     ),
 }
 

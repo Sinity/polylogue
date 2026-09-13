@@ -155,7 +155,7 @@ class TestReadVerbCardinality:
         child.obj = SimpleNamespace(config=MagicMock())
 
         with self._read_resolution(["id1", "id2"]):
-            with pytest.raises(click.UsageError, match="--first"):
+            with pytest.raises(click.UsageError, match="select first"):
                 self._call_read(child, view="messages")
 
     def test_query_set_view_multi_match_projects_without_cardinality_guard(self) -> None:
@@ -204,15 +204,9 @@ class TestReadVerbCardinality:
                 side_effect=CardinalityError("mocked error"),
             ) as mock_check,
         ):
-            with pytest.raises(click.UsageError, match="mocked error"):
+            with pytest.raises(click.UsageError, match="select first"):
                 self._call_read(child, view="messages")
-
-        mock_check.assert_called_once_with(
-            2,
-            allow_all=False,
-            first_only=False,
-            operation="read",
-        )
+        mock_check.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +365,8 @@ class TestMarkVerbCardinality:
             allow_all=False,
             first_only=False,
             operation="mark",
+            candidates=["id1", "id2"],
+            bounded=False,
         )
 
 
@@ -532,6 +528,8 @@ class TestDeleteVerbCardinality:
             allow_all=False,
             first_only=False,
             operation="delete",
+            candidates=["id1", "id2"],
+            bounded=False,
         )
 
     def test_yes_flag_sets_force_on_delegated_request(self) -> None:
@@ -819,7 +817,7 @@ class TestDeleteCardinalityLargeNonMocked:
                 prepared["ids"] = [str(item) for item in cast(list[Any], payload["session_ids"])]
                 return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": prepared["ids"]}
             if operation.endswith(".authorize"):
-                return {"status": "authorized", "authorization_token": "test-authorization"}
+                return {"status": "authorized", "authorization_refs": ["test-authorization"]}
             with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
                 affected = archive.delete_sessions(tuple(prepared["ids"]))
             return {"status": "deleted", "affected_count": affected, "session_ids": prepared["ids"]}

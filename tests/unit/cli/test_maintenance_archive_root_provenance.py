@@ -40,7 +40,7 @@ def test_maintenance_status_prints_env_archive_root_provenance(
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(user_toml))
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["ops", "maintenance", "status"])
+    result = runner.invoke(cli, ["ops", "maintenance", "archive-plan"])
 
     assert result.exit_code == 0, result.output
     assert f"Archive root: {env_archive_root}" in result.output
@@ -74,7 +74,7 @@ def test_maintenance_status_prints_user_config_archive_root_provenance(
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(user_toml))
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["ops", "maintenance", "status"])
+    result = runner.invoke(cli, ["ops", "maintenance", "archive-plan"])
 
     assert result.exit_code == 0, result.output
     assert f"Archive root: {archive_root}" in result.output
