@@ -362,11 +362,17 @@ class FtsDerivationAdapter:
         # The global residue key is not a rebuild partition.  Its inspection
         # must count the shared relation without materializing every block's
         # input payload; the only values its publisher reads are orphan rowids.
-        expected_rows = (
-            _indexable_row_count(conn)
-            if key == GLOBAL_PARTITION and table_exists(conn, "blocks")
-            else (len(self.input_for(conn, key).rows) if table_exists(conn, "blocks") else 0)
-        )
+        # One partition input per inspection: input_for materializes every
+        # block's search_text and hashes it, so calling it twice per session
+        # doubled the cost of the rebuild path for no added evidence.
+        expected: FtsPartitionInput | None = None
+        if key == GLOBAL_PARTITION or not table_exists(conn, "blocks"):
+            expected_rows = (
+                _indexable_row_count(conn) if key == GLOBAL_PARTITION and table_exists(conn, "blocks") else 0
+            )
+        else:
+            expected = self.input_for(conn, key)
+            expected_rows = len(expected.rows)
         if not compatible:
             return FtsPartitionInspection(
                 key,
@@ -443,7 +449,8 @@ class FtsDerivationAdapter:
                 )
             )
         else:
-            expected = self.input_for(conn, key)
+            if expected is None:
+                expected = self.input_for(conn, key)
             required = tuple(row.rowid for row in expected.rows)
             placeholders = ", ".join("?" for _ in required)
             present_rows = (

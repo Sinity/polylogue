@@ -36,14 +36,27 @@ class ClaimGuardEntry:
     """One claim state: may you honestly say X about this archive right now?"""
 
     claim: str
-    value: bool
+    value: bool | None
     reason: str
     signal: str
+
+    @property
+    def determinate(self) -> bool:
+        """Whether inspection actually reached a verdict for this claim.
+
+        ``value is None`` is the third state: not "false", but "not proven
+        either way". It exists because collapsing an unfinished inspection
+        into ``False`` publishes a claim about the archive that was never
+        measured. It mirrors the terminal-outcome rule that a named gap is
+        never reported as an ordinary negative result.
+        """
+        return self.value is not None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "claim": self.claim,
             "value": self.value,
+            "determinate": self.determinate,
             "reason": self.reason,
             "signal": self.signal,
         }
@@ -81,6 +94,12 @@ class DerivedDomainReadiness:
     domain: str
     ready: bool
     summary: str
+    determinate: bool = True
+    """False when the domain's inspection did not finish inside its budget.
+
+    An indeterminate domain cannot certify convergence and cannot refute it
+    either, so it withholds the claim instead of negating it.
+    """
 
 
 def derive_claim_guard(
@@ -126,12 +145,23 @@ def derive_claim_guard(
             reason=f"not openable: {openable_reason}",
             signal="archive_storage.archive_schema_ready and raw_materialization_readiness",
         )
-    elif pending := next((domain for domain in derived_domains if not domain.ready), None):
+    elif refuted := next((domain for domain in derived_domains if domain.determinate and not domain.ready), None):
+        # Proven not converged: a domain inspected its own output relation and
+        # found it wanting. This is the only case that may say False.
         converged = ClaimGuardEntry(
             claim="converged",
             value=False,
-            reason=pending.summary,
-            signal=f"derived_domain_readiness.{pending.domain}",
+            reason=refuted.summary,
+            signal=f"derived_domain_readiness.{refuted.domain}",
+        )
+    elif unmeasured := next((domain for domain in derived_domains if not domain.determinate), None):
+        # Inspection incomplete: withhold the claim and name the gap rather
+        # than publishing a negative verdict nothing measured.
+        converged = ClaimGuardEntry(
+            claim="converged",
+            value=None,
+            reason=f"inspection incomplete for {unmeasured.domain}: {unmeasured.summary}",
+            signal=f"derived_domain_readiness.{unmeasured.domain}",
         )
     else:
         converged = ClaimGuardEntry(

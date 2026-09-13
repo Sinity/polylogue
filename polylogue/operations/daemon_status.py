@@ -169,16 +169,19 @@ def produce_direct_status(
             domain="session_profiles",
             ready=profile_component.get("state") == "ready",
             summary=str(profile_component.get("summary", "unknown")),
+            determinate=profile_component.get("state") != "unknown",
         ),
         DerivedDomainReadiness(
             domain="session_summary",
             ready=summary_component.get("state") == "ready",
             summary=str(summary_component.get("summary", "unknown")),
+            determinate=summary_component.get("state") != "unknown",
         ),
         DerivedDomainReadiness(
             domain="fts",
             ready=search_component.get("state") == "ready",
             summary=str(search_component.get("summary", "unknown")),
+            determinate=search_component.get("state") != "unknown",
         ),
     ]
     if embedding_status.get("config_enabled") is True:
@@ -779,22 +782,39 @@ def _status_ok(components: Mapping[str, Mapping[str, object]], raw_failures: Map
     return True
 
 
-def insight_freshness_from_connection(conn: sqlite3.Connection) -> dict[str, object]:
-    """Adapt one authoritative profile inspection for the status surface."""
+def insight_freshness_from_connection(conn: sqlite3.Connection, *, verify: bool = False) -> dict[str, object]:
+    """Adapt one authoritative profile inspection for the status surface.
+
+    Staleness verification recomputes every profile against its sessions and
+    is archive-proportional; a request-budget probe cannot afford it inside a
+    sub-second component deadline. The default form reads the cheap counts,
+    which can still prove NOT-ready, and otherwise reports
+    ``profile_ready=None`` — rendered as UNKNOWN — rather than asserting a
+    readiness it never checked.
+    """
     from polylogue.storage.derived.session.status import session_insight_status_sync
 
-    status = session_insight_status_sync(conn, verify_freshness=True)
-    profile_ready = (
-        status.missing_profile_row_count == 0
-        and status.stale_profile_row_count == 0
-        and status.orphan_profile_row_count == 0
-        and status.profile_row_count == status.total_sessions
+    status = session_insight_status_sync(conn, verify_freshness=verify)
+    # Cheap counts can refute readiness but cannot certify it: a missing,
+    # orphaned or uncounted profile row is a complete counterexample, while
+    # "every row present" says nothing about whether those rows are stale.
+    refuted = (
+        status.missing_profile_row_count != 0
+        or status.orphan_profile_row_count != 0
+        or status.profile_row_count != status.total_sessions
     )
+    profile_ready: bool | None
+    if refuted:
+        profile_ready = False
+    elif verify:
+        profile_ready = status.stale_profile_row_count == 0
+    else:
+        profile_ready = None
     return {
         "sessions_with_profiles": status.profile_row_count,
         "total_sessions": status.total_sessions,
         "profile_ready": profile_ready,
         "missing_profile_rows": status.missing_profile_row_count,
-        "stale_profile_rows": status.stale_profile_row_count,
+        "stale_profile_rows": status.stale_profile_row_count if verify else None,
         "orphan_profile_rows": status.orphan_profile_row_count,
     }

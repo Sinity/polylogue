@@ -1961,11 +1961,13 @@ def _daemon_claim_guard(
             domain="session_profiles",
             ready=profile_component.state is CapabilityReadinessState.READY,
             summary=profile_component.summary,
+            determinate=profile_component.state is not CapabilityReadinessState.UNKNOWN,
         ),
         DerivedDomainReadiness(
             domain="session_summary",
             ready=session_summary_readiness.state is CapabilityReadinessState.READY,
             summary=session_summary_readiness.summary,
+            determinate=session_summary_readiness.state is not CapabilityReadinessState.UNKNOWN,
         ),
         DerivedDomainReadiness(
             domain="fts",
@@ -2016,11 +2018,12 @@ def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness
         state = CapabilityReadinessState.MISSING
     else:
         state = CapabilityReadinessState.STALE
+    summary = "ready" if readiness.messages_ready else "fts index incomplete"
     return ComponentReadiness(
         component="search",
         scope="lexical",
         state=state,
-        summary="ready" if readiness.messages_ready else "fts index incomplete",
+        summary=summary,
         counts={
             "message_indexed_count": readiness.message_indexed_count,
             "message_indexable_count": readiness.message_indexable_count,

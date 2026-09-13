@@ -143,3 +143,54 @@ def test_active_writer_without_summary_falls_back_to_generic_reason() -> None:
 
     assert guard["perf_measurable"]["value"] is False
     assert "in flight" in str(guard["perf_measurable"]["reason"])
+
+
+def test_incomplete_inspection_withholds_converged_instead_of_denying_it() -> None:
+    """An unfinished inspection is a third state, never a negative claim.
+
+    converged:false must mean PROVEN not converged. A domain whose inspection
+    ran out of budget cannot certify convergence and cannot refute it either,
+    so the claim is withheld (value None, determinate False) and the reason
+    names the gap.
+
+    Anti-vacuity: collapse indeterminate domains back into the not-ready scan
+    and ``value`` becomes False with a reason that describes the archive, so
+    both the None assertion and the determinate assertion go red.
+    """
+    kwargs = _base_kwargs()
+    kwargs["derived_domains"] = (
+        DerivedDomainReadiness("raw_materialization", True, "ready"),
+        DerivedDomainReadiness(
+            "session_summary",
+            False,
+            "session-summary inspection deadline exceeded",
+            determinate=False,
+        ),
+    )
+    entry = derive_claim_guard(**kwargs).converged  # type: ignore[arg-type]
+
+    assert entry.value is None
+    assert entry.determinate is False
+    assert "inspection incomplete for session_summary" in entry.reason
+    assert entry.to_dict()["value"] is None
+    assert entry.to_dict()["determinate"] is False
+
+
+def test_a_proven_unready_domain_outranks_an_unmeasured_one() -> None:
+    """A real counterexample is reported as false even beside an unknown.
+
+    Anti-vacuity: pick the first non-ready domain in list order instead of
+    preferring the determinate one, and this reports the unmeasured domain's
+    withheld claim instead of the proven failure.
+    """
+    kwargs = _base_kwargs()
+    kwargs["derived_domains"] = (
+        DerivedDomainReadiness("session_summary", False, "not measured", determinate=False),
+        DerivedDomainReadiness("fts", False, "fts index incomplete"),
+    )
+    entry = derive_claim_guard(**kwargs).converged  # type: ignore[arg-type]
+
+    assert entry.value is False
+    assert entry.determinate is True
+    assert entry.reason == "fts index incomplete"
+    assert entry.signal == "derived_domain_readiness.fts"

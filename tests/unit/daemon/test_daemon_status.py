@@ -1449,8 +1449,8 @@ def test_daemon_status_payload_exposes_claim_guard_block(tmp_path: Path) -> None
     claim_guard = cast(dict[str, dict[str, object]], payload["claim_guard"])
     assert set(claim_guard) == {"openable", "converged", "search_ready", "perf_measurable"}
     for entry in claim_guard.values():
-        assert set(entry) == {"claim", "value", "reason", "signal"}
-        assert isinstance(entry["value"], bool)
+        assert set(entry) == {"claim", "value", "determinate", "reason", "signal"}
+        assert entry["value"] is None or isinstance(entry["value"], bool)
         assert entry["signal"]
     # No archive tiers exist under tmp_path — nothing is honestly claimable.
     assert claim_guard["openable"]["value"] is False
