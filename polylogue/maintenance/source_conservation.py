@@ -33,7 +33,7 @@ from typing import Any
 
 from polylogue.archive.revision_authority import logical_head_cohort_sql
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.maintenance.source_manifest_continuity import SourceFrontier
+from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
 from polylogue.storage.introspection import table_exists
 
@@ -777,11 +777,21 @@ def audit_source_conservation(
         for member in frontier.members:
             declaration = declarations[member.source_id]
             root = Path(declaration.root)
-            expected_path = str(root / member.coordinate) if root.is_dir() else str(root)
-            expected_archive_path = f"{root}!{member.coordinate}"
-            expected_paths = {expected_path, expected_archive_path}
             if declaration.role.value == "archive-member":
-                expected_paths.add(str(root))
+                _archive_name, separator, archive_member = member.coordinate.partition("!")
+                if not separator or not archive_member:
+                    raise SourceContinuityError(
+                        f"archive frontier member has no member coordinate: {member.source_id}:{member.coordinate}"
+                    )
+                # ``observe_source_members`` records archive coordinates as
+                # ``archive-name!member`` while acquisition records the
+                # absolute ``archive-path!member`` address.  Joining only on
+                # the archive root loses member ownership (and makes equal
+                # byte siblings indistinguishable); do not prefix the archive
+                # name a second time.
+                expected_paths = {f"{root}!{archive_member}"}
+            else:
+                expected_paths = {str(root / member.coordinate) if root.is_dir() else str(root)}
             digest = member.content_sha256.lower()
             owners = []
             for raw_id, source_path, blob_hash in raw_rows:
