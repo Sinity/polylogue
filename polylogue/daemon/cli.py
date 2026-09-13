@@ -726,7 +726,9 @@ async def _periodic_status_snapshot_refresh() -> None:
         await asyncio.sleep(10)
 
 
-async def _run_drive_source_catchup_once() -> int:
+async def _run_drive_source_catchup_once(
+    session_profile_callback: SessionProfileCallback,
+) -> int:
     """Acquire and parse configured Drive sources once.
 
     The live watcher only observes filesystem roots. Google Drive sources are
@@ -735,7 +737,6 @@ async def _run_drive_source_catchup_once() -> int:
     """
     from polylogue.config import get_config
     from polylogue.daemon.drive_catchup import DriveCatchupExecution
-    from polylogue.pipeline.services.ingest_batch import refresh_session_insights_bulk
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.services import build_runtime_services
 
@@ -747,7 +748,6 @@ async def _run_drive_source_catchup_once() -> int:
     services = build_runtime_services(config=config, db_path=config.db_path)
     try:
         repository = services.get_repository()
-        backend = services.get_backend()
         execution = DriveCatchupExecution(daemon_write_coordinator())
         parser = ParsingService(
             repository=repository,
@@ -761,9 +761,15 @@ async def _run_drive_source_catchup_once() -> int:
             parse_records=True,
             max_pass_seconds=_DRIVE_CATCHUP_MAX_PASS_SECONDS,
         )
-        session_ids = sorted(result.parse_result.processed_ids)
+        session_ids = tuple(sorted(result.parse_result.processed_ids))
         if session_ids:
-            await execution.publish("insights", lambda: refresh_session_insights_bulk(backend, session_ids))
+            try:
+                await session_profile_callback(session_ids)
+            except Exception:
+                logger.warning(
+                    "daemon: Drive session-profile convergence failed (non-fatal)",
+                    exc_info=True,
+                )
         if result.parse_result.time_budget_exceeded:
             logger.info(
                 "daemon: Drive catch-up pass yielded at time-budget checkpoint "
@@ -783,10 +789,12 @@ async def _run_drive_source_catchup_once() -> int:
         await services.close()
 
 
-async def _run_drive_source_catchup_safely() -> int:
+async def _run_drive_source_catchup_safely(
+    session_profile_callback: SessionProfileCallback,
+) -> int:
     """Run Drive catch-up without letting remote-source failures kill daemon."""
     try:
-        return await _run_drive_source_catchup_once()
+        return await _run_drive_source_catchup_once(session_profile_callback)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -796,6 +804,7 @@ async def _run_drive_source_catchup_safely() -> int:
 
 async def _periodic_drive_source_catchup(
     *,
+    session_profile_callback: SessionProfileCallback,
     catch_up_complete: asyncio.Event | None = None,
 ) -> None:
     """Periodically converge remote Drive sources such as AiStudio exports.
@@ -808,7 +817,7 @@ async def _periodic_drive_source_catchup(
     await _await_catch_up_gate(catch_up_complete, loop_name="drive source catch-up")
 
     while True:
-        changed = await _run_drive_source_catchup_safely()
+        changed = await _run_drive_source_catchup_safely(session_profile_callback)
         if changed:
             logger.info("daemon: Drive catch-up refreshed %d session(s)", changed)
         await asyncio.sleep(_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS)
@@ -3500,7 +3509,8 @@ async def _run_daemon_services_under_active_writer_lease(
                         return await write_coordinator.run_sync(actor, function, *args, **kwargs)
 
                     async def run_remote_intake() -> int:
-                        return await _run_drive_source_catchup_safely()
+                        assert session_profile_callback is not None
+                        return await _run_drive_source_catchup_safely(session_profile_callback)
 
                     async def discover_raw_intake(limit: int) -> tuple[tuple[str, int], ...]:
                         submitted = daemon_compute.submit(
