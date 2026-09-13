@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -15,11 +16,18 @@ from polylogue.cli.commands.embed import embed_command
 from polylogue.config import PolylogueConfig
 from polylogue.storage.embeddings import status_payload as status_payload_mod
 from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, vector_derivation_hash
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+    ArchiveEmbeddingWrite,
     begin_embedding_attempt,
+    complete_embedding_attempt_success,
     record_embedding_failure,
     resolve_embedding_failure,
 )
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from tests.infra.embedding_config import embedding_config
 
 
@@ -103,14 +111,46 @@ def _pending_session_source_hash() -> bytes:
     return digest.digest()
 
 
-def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
-    """Build a minimal but real v4-shaped index.db + embeddings.db pair.
+def _message_content_hash_stub(message_id: str) -> bytes:
+    """A deterministic 32-byte stand-in for ``messages.content_hash``.
 
-    ``message_embeddings_meta``/``message_embedding_refs`` mirror the current
-    production DDL (content-addressed by ``vector_derivation_hash``, per-message
-    refs table) -- not the pre-polylogue-q88p message_id-keyed shape -- so the
-    ``--detail`` exact-pending/stale-message code paths in status_payload.py
-    (which join through ``message_embedding_refs``) exercise real behavior.
+    This fixture builds index.db by hand (the status fast path reads only
+    sessions/messages), so nothing here computes the canonical message
+    semantic hash. What matters for v6 is that the value is a real 32-byte
+    hash and that the *same* value reaches ``message_embedding_refs.
+    message_content_hash`` through the production embedding write, because
+    inspection compares those two columns for equality.
+    """
+    return hashlib.sha256(message_id.encode("utf-8")).digest()
+
+
+def _deterministic_vector(seed: str) -> list[float]:
+    """A real 1024-float vector, not a placeholder the write path would reject."""
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return [((digest[i % len(digest)] + i) % 256) / 256.0 for i in range(EMBEDDING_DIMENSION)]
+
+
+def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
+    """Build a minimal but real v6-shaped index.db + embeddings.db pair.
+
+    embeddings.db is created from the production DDL
+    (``initialize_archive_database(..., ArchiveTier.EMBEDDINGS)``) and its one
+    embedded session is published through the production write route --
+    ``begin_embedding_attempt`` then ``complete_embedding_attempt_success`` --
+    so ``message_embeddings`` is the real ``vec0`` virtual table holding a real
+    1024-dimension vector, ``message_embeddings_meta`` carries the complete
+    recipe/output-contract identity, and ``message_embedding_refs`` carries the
+    v6 ``message_content_hash`` column. Nothing here hand-inserts an embedding
+    row; a fabricated row set could drift from what production writes.
+
+    Anti-vacuity: the v6 inspection predicate
+    (``_authoritative_archive_embedding_state`` in status_payload.py) requires, per
+    required message, the current ref *and* the current message semantic hash
+    *and* the complete recipe identity *and*
+    ``EXISTS (SELECT 1 FROM message_embeddings ...)``. Drop any one of those
+    conjuncts -- in particular the physical-vector EXISTS -- and
+    ``test_status_json_reports_metadata_only_row_as_not_ready`` below goes red,
+    because that test deletes only the vector and keeps every metadata row.
     """
     embeddings_db = index_db.with_name("embeddings.db")
     with sqlite3.connect(index_db) as conn:
@@ -134,120 +174,80 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
             INSERT INTO sessions VALUES ('codex-session:pending', 2);
             """
         )
-        conn.execute(
-            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'01')",
+        for message_id, session_id, text in (
             ("codex-session:complete:m1", "codex-session:complete", _COMPLETE_TEXT),
-        )
-        conn.execute(
-            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'02')",
             ("codex-session:pending:m1", "codex-session:pending", _PENDING_TEXT_1),
-        )
-        conn.execute(
-            "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, x'03')",
             ("codex-session:pending:m2", "codex-session:pending", _PENDING_TEXT_2),
-        )
+        ):
+            conn.execute(
+                "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, ?)",
+                (message_id, session_id, text, _message_content_hash_stub(message_id)),
+            )
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
         conn.commit()
 
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-    with sqlite3.connect(index_db) as conn:
-        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
-
-    from polylogue.storage.embeddings.identity import (
-        EmbeddingRecipe,
-        EmbeddingSourceDigest,
-        embedding_derivation_key,
-        vector_derivation_hash,
-    )
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
 
     complete_message_id = "codex-session:complete:m1"
+    recipe = EmbeddingRecipe.current(model="voyage-4", dimensions=EMBEDDING_DIMENSION)
     complete_hash = vector_derivation_hash(model="voyage-4", input_text=_COMPLETE_TEXT)
-    # Compute the real production identity chain (not a stand-in) so the
-    # `embedding_derivation_state` row this fixture writes is one the modern
-    # exact-freshness predicate (_archive_embedding_freshness_predicate)
-    # genuinely recognizes as "succeeded" for codex-session:complete -- a
-    # real v4 archive always carries this table alongside a v4-shaped
-    # message_embeddings_meta, so a fixture with one but not the other would
-    # exercise a hybrid shape production never produces (the pre-v3 fallback
-    # this table's absence used to trigger assumes the OLD message_id-keyed
-    # meta_table and errors against this one).
-    recipe = EmbeddingRecipe.current(model="voyage-4", dimensions=1024)
     source_digest = EmbeddingSourceDigest()
     source_digest.update(complete_hash)
-    source_hash = source_digest.digest()
-    derivation_key = embedding_derivation_key(
-        session_id="codex-session:complete", source_hash=source_hash, recipe=recipe
-    ).digest()
 
-    with sqlite3.connect(embeddings_db) as conn:
-        conn.executescript(
-            """
-            PRAGMA user_version = 5;
-            CREATE TABLE message_embeddings (
-                message_id TEXT PRIMARY KEY
-            );
-            CREATE TABLE message_embeddings_meta (
-                vector_derivation_hash BLOB PRIMARY KEY,
-                model TEXT NOT NULL,
-                dimension INTEGER NOT NULL,
-                embedded_at_ms INTEGER,
-                recipe_hash BLOB NOT NULL,
-                output_contract_hash BLOB NOT NULL
-            );
-            CREATE TABLE message_embedding_refs (
-                message_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                origin TEXT NOT NULL,
-                vector_derivation_hash BLOB NOT NULL,
-                embedded_at_ms INTEGER
-            );
-            CREATE TABLE embedding_status (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL,
-                message_count_embedded INTEGER NOT NULL DEFAULT 0,
-                last_embedded_at_ms INTEGER,
-                needs_reindex INTEGER NOT NULL DEFAULT 0,
-                error_message TEXT
-            );
-            CREATE TABLE embedding_derivation_state (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL DEFAULT '',
-                generation INTEGER NOT NULL,
-                derivation_key BLOB NOT NULL,
-                source_hash BLOB NOT NULL,
-                recipe_hash BLOB NOT NULL,
-                output_contract_hash BLOB NOT NULL,
-                attempt_state TEXT NOT NULL,
-                message_count INTEGER NOT NULL DEFAULT 0,
-                updated_at_ms INTEGER NOT NULL
-            );
-            INSERT INTO embedding_status (session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message)
-            VALUES ('codex-session:complete', 'codex-session', 1, 1767225700000, 0, NULL);
-            """
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        loaded, error = try_load_sqlite_vec(conn)
+        if not loaded:
+            # A stubbed vector would defeat the point of this fixture: the
+            # readiness predicate it exercises is precisely "a physical vector
+            # exists at this address".
+            pytest.fail(f"sqlite-vec is required to build a v6 embedding fixture: {error}")
+        attempt = begin_embedding_attempt(
+            conn,
+            session_id="codex-session:complete",
+            origin="codex-session",
+            source_hash=source_digest.digest(),
+            recipe=recipe,
+            started_at_ms=1767225700000,
         )
-        conn.execute("INSERT INTO message_embeddings VALUES (?)", (complete_message_id,))
-        conn.execute(
-            "INSERT INTO message_embeddings_meta VALUES (?, 'voyage-4', 1024, 1767225700000, ?, ?)",
-            (complete_hash, recipe.recipe_hash, recipe.output_contract_hash),
+        published = complete_embedding_attempt_success(
+            conn,
+            attempt=attempt,
+            writes=[
+                ArchiveEmbeddingWrite(
+                    message_id=complete_message_id,
+                    session_id="codex-session:complete",
+                    origin="codex-session",
+                    embedding=_deterministic_vector(complete_message_id),
+                    model="voyage-4",
+                    embedded_at_ms=1767225700000,
+                    vector_derivation_hash=complete_hash,
+                    message_content_hash=_message_content_hash_stub(complete_message_id),
+                    recipe_hash=recipe.recipe_hash,
+                    output_contract_hash=recipe.output_contract_hash,
+                    generation=attempt.generation,
+                )
+            ],
+            completed_at_ms=1767225700000,
         )
-        conn.execute(
-            """
-            INSERT INTO message_embedding_refs (message_id, session_id, origin, vector_derivation_hash, embedded_at_ms)
-            VALUES (?, 'codex-session:complete', 'codex-session', ?, 1767225700000)
-            """,
-            (complete_message_id, complete_hash),
-        )
-        conn.execute(
-            """
-            INSERT INTO embedding_derivation_state (
-                session_id, origin, generation, derivation_key, source_hash, recipe_hash,
-                output_contract_hash, attempt_state, message_count, updated_at_ms
-            ) VALUES ('codex-session:complete', 'codex-session', 1, ?, ?, ?, ?, 'succeeded', 1, 1767225700000)
-            """,
-            (derivation_key, source_hash, recipe.recipe_hash, recipe.output_contract_hash),
-        )
-        conn.commit()
+        assert published
+    finally:
+        conn.close()
+
+
+def _open_embeddings(path: Path) -> sqlite3.Connection:
+    """Open embeddings.db with the vector extension loaded.
+
+    ``message_embeddings`` is a real ``vec0`` virtual table in v6, so a plain
+    connection fails with "no such module: vec0" on any statement that names
+    it -- including DDL-free DELETEs.
+    """
+    conn = sqlite3.connect(path)
+    loaded, error = try_load_sqlite_vec(conn)
+    if not loaded:
+        conn.close()
+        pytest.fail(f"sqlite-vec is required to read a v6 embedding fixture: {error}")
+    return conn
 
 
 def _payload(result_output: str) -> dict[str, Any]:
@@ -368,29 +368,12 @@ def test_status_detail_exposes_bounded_terminal_failure_resolution(tmp_path: Pat
     with sqlite3.connect(index_db.with_name("embeddings.db")) as conn:
         conn.execute(
             """
-            CREATE TABLE embedding_failures (
-                failure_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                origin TEXT NOT NULL,
-                message_refs_json TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                model TEXT NOT NULL,
-                error_class TEXT NOT NULL,
-                error_message TEXT NOT NULL,
-                retryable INTEGER NOT NULL,
-                lifecycle_state TEXT NOT NULL,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL,
-                resolved_at_ms INTEGER,
-                resolution_action TEXT,
-                resolution_note TEXT,
-                superseded_by TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO embedding_failures VALUES (
+            INSERT INTO embedding_failures (
+                failure_id, session_id, origin, message_refs_json, provider, model,
+                error_class, error_message, retryable, lifecycle_state,
+                created_at_ms, updated_at_ms, resolved_at_ms, resolution_action,
+                resolution_note, superseded_by
+            ) VALUES (
                 'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
                 '[\"codex-session:pending:m1\"]', 'voyage', 'voyage-4', 'provider_http_400',
                 'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
@@ -444,29 +427,18 @@ def test_resolve_failure_cli_requeues_terminal_failure(tmp_path: Path) -> None:
     _seed_archive_file_set_from_archive_tiers(index_db)
     embeddings_db = index_db.with_name("embeddings.db")
     with sqlite3.connect(embeddings_db) as conn:
+        # embedding_failures now comes from the production EMBEDDINGS_DDL; only
+        # the rows this test needs are seeded here.
         conn.executescript(
             """
-            CREATE TABLE embedding_failures (
-                failure_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                origin TEXT NOT NULL,
-                message_refs_json TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                model TEXT NOT NULL,
-                error_class TEXT NOT NULL,
-                error_message TEXT NOT NULL,
-                retryable INTEGER NOT NULL,
-                lifecycle_state TEXT NOT NULL,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL,
-                resolved_at_ms INTEGER,
-                resolution_action TEXT,
-                resolution_note TEXT,
-                superseded_by TEXT
-            );
             INSERT INTO embedding_status (session_id, origin, message_count_embedded, needs_reindex, error_message)
             VALUES ('codex-session:pending', 'codex-session', 0, 0, 'Embedding generation failed: HTTP 400');
-            INSERT INTO embedding_failures VALUES (
+            INSERT INTO embedding_failures (
+                failure_id, session_id, origin, message_refs_json, provider, model,
+                error_class, error_message, retryable, lifecycle_state,
+                created_at_ms, updated_at_ms, resolved_at_ms, resolution_action,
+                resolution_note, superseded_by
+            ) VALUES (
                 'embedding-failure:terminal', 'codex-session:pending', 'codex-session',
                 '["codex-session:pending:m1"]', 'voyage', 'voyage-4', 'provider_http_400',
                 'Embedding generation failed: HTTP 400', 0, 'terminal', 1800000000000, 1800000000000,
@@ -523,8 +495,16 @@ def test_status_excludes_acknowledged_terminal_failure_from_retry_backlog(tmp_pa
     with sqlite3.connect(index_db) as conn:
         conn.execute("DELETE FROM messages WHERE session_id = 'codex-session:complete'")
         conn.execute("DELETE FROM sessions WHERE session_id = 'codex-session:complete'")
-    with sqlite3.connect(embeddings_db) as conn:
-        conn.execute("DELETE FROM message_embeddings WHERE message_id = 'codex-session:complete:m1'")
+    with _open_embeddings(embeddings_db) as conn:
+        conn.execute(
+            """
+            DELETE FROM message_embeddings
+            WHERE vector_derivation_hash = (
+                SELECT lower(hex(vector_derivation_hash)) FROM message_embedding_refs
+                WHERE message_id = 'codex-session:complete:m1'
+            )
+            """
+        )
         # message_embeddings_meta is content-addressed (vector_derivation_hash-
         # keyed, v4) -- resolve via the ref, then delete both.
         conn.execute(
@@ -538,33 +518,7 @@ def test_status_excludes_acknowledged_terminal_failure_from_retry_backlog(tmp_pa
         conn.execute("DELETE FROM message_embedding_refs WHERE message_id = 'codex-session:complete:m1'")
         conn.execute("DELETE FROM embedding_status WHERE session_id = 'codex-session:complete'")
     with sqlite3.connect(embeddings_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE embedding_failures (
-                failure_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                origin TEXT NOT NULL,
-                message_refs_json TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                model TEXT NOT NULL,
-                error_class TEXT NOT NULL,
-                error_message TEXT NOT NULL,
-                retryable INTEGER NOT NULL,
-                lifecycle_state TEXT NOT NULL,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL,
-                resolved_at_ms INTEGER,
-                resolution_action TEXT,
-                resolution_note TEXT,
-                superseded_by TEXT,
-                generation INTEGER NOT NULL DEFAULT 0,
-                derivation_key BLOB,
-                source_hash BLOB,
-                recipe_hash BLOB
-            );
-            """
-        )
-        # v4: "blocked" is read off embedding_derivation_state.attempt_state =
+        # "blocked" is read off embedding_derivation_state.attempt_state =
         # 'failed_terminal' (the unified freshness key), not merely an
         # embedding_status row with an error_message -- go through the real
         # begin_embedding_attempt/record_embedding_failure write path so this
@@ -645,15 +599,13 @@ def test_status_json_does_not_report_over_100_percent_from_retained_embedding_ro
     """An inflated ``message_count_embedded`` ledger entry must never push
     coverage past 100%.
 
-    v4: the exact-freshness predicate ties "embedded" to
-    ``embedding_status.message_count_embedded == embedding_derivation_state.
-    message_count == <current real eligible count>`` (all three, exactly) --
-    stricter than the old ">= eligible count" fallback this test originally
-    exercised. An inflated counter that disagrees with the real count now
-    demotes the session straight back to *pending* rather than being trusted
-    at face value, which is what actually prevents the >100% failure mode:
-    there is no path left where a stale/inflated ledger number can present a
-    session as embedded-and-therefore-100%-covered when it isn't.
+    v6: readiness is inspected directly from desired message membership,
+    current refs, complete recipe metadata and physical vectors.
+    ``embedding_status.message_count_embedded`` is attempt telemetry and is not
+    an input at all, so an inflated counter -- or an extra ledger row for a
+    session that does not exist -- cannot move coverage. That is what removes
+    the >100% failure mode: there is no path where a ledger number can present
+    a session as embedded-and-therefore-covered when no vector backs it.
     """
     db_anchor = tmp_path / "custom.sqlite"
     index_db = tmp_path / "index.db"
@@ -719,19 +671,23 @@ def test_status_json_default_uses_bounded_exact_archive_session_state(
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
     observed: dict[str, object] = {}
 
-    def fake_exact_session_state(*args: object, **kwargs: object) -> tuple[int, int, int]:
+    def fake_exact_session_state(*args: object, **kwargs: object) -> tuple[int, int, int, int]:
         observed.update(kwargs)
-        return (1, 1, 0)
+        return (1, 1, 1, 0)
 
     monkeypatch.setattr(
         status_payload_mod,
-        "_archive_embedding_session_state_exact_with_timeout",
+        "_authoritative_archive_embedding_state",
         fake_exact_session_state,
     )
 
     payload = _run_status(db_anchor, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
-    assert observed["status_table"] == "embeddings.embedding_status"
+    # v6 inspects refs + recipe metadata + physical vectors together; the
+    # session status ledger is no longer an input to readiness.
+    assert observed["refs_table"] == "embeddings.message_embedding_refs"
+    assert observed["meta_table"] == "embeddings.message_embeddings_meta"
+    assert observed["vectors_table"] == "embeddings.message_embeddings"
     assert observed["timeout_ms"] == status_payload_mod.METADATA_SUMMARY_TIMEOUT_MS
     assert payload["status"] == "partial"
     assert payload["embedded_sessions"] == 1
@@ -754,7 +710,10 @@ def test_status_json_default_skips_embedding_metadata_summary_scans(
         timeout_ms: int,
         params: tuple[object, ...] = (),
     ) -> list[sqlite3.Row | tuple[object, ...]] | None:
-        if "message_embeddings_meta" in sql:
+        # The metadata *summaries* are the per-model / per-dimension aggregates.
+        # The v6 readiness inspection also joins message_embeddings_meta, but it
+        # is a bounded per-session predicate, not a summary scan.
+        if "GROUP BY model" in sql or "GROUP BY dimension" in sql:
             raise AssertionError("default embedding status must not scan metadata summaries")
         return real_rows_with_timeout(conn, sql, timeout_ms=timeout_ms, params=params)
 
@@ -781,7 +740,7 @@ def test_status_json_detail_uses_uniform_metadata_probe_when_grouping_times_out(
         timeout_ms: int,
         params: tuple[object, ...] = (),
     ) -> list[sqlite3.Row | tuple[object, ...]] | None:
-        if "GROUP BY" in sql and "message_embeddings_meta" in sql:
+        if "GROUP BY model" in sql or "GROUP BY dimension" in sql:
             return None
         return real_rows_with_timeout(conn, sql, timeout_ms=timeout_ms, params=params)
 
@@ -793,7 +752,22 @@ def test_status_json_detail_uses_uniform_metadata_probe_when_grouping_times_out(
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
 
 
-def test_status_json_uses_status_ledger_for_archive_embedded_sessions(tmp_path: Path) -> None:
+def test_status_json_refuses_to_certify_from_a_legacy_status_ledger(tmp_path: Path) -> None:
+    """A clean session ledger over a pre-v4 metadata shape certifies nothing.
+
+    This archive carries the old ``message_id``-keyed ``message_embeddings_meta``
+    and a clean ``embedding_status`` row claiming one embedded message, but no
+    ``message_embedding_refs`` with current message semantics and no physical
+    vectors. Under v6 readiness is inspected -- current ref, current message
+    content hash, complete recipe identity, and an existing vector -- so an
+    uninspectable archive reports nothing embedded rather than trusting the
+    ledger. (This test previously asserted the opposite; the ledger-trusting
+    behavior is what v6 deliberately removed.)
+
+    Anti-vacuity: make the payload fall back to ``embedding_status.
+    message_count_embedded`` when inspection is unavailable and this goes red
+    with ``embedded_sessions == 1`` for an archive that holds no vector at all.
+    """
     index_db = tmp_path / "index.db"
     embeddings_db = tmp_path / "embeddings.db"
     with sqlite3.connect(index_db) as conn:
@@ -845,9 +819,10 @@ def test_status_json_uses_status_ledger_for_archive_embedded_sessions(tmp_path: 
 
     payload = _run_status(tmp_path / "custom.sqlite", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
-    assert payload["embedded_sessions"] == 1
-    assert payload["pending_sessions"] == 1
-    assert payload["embedding_coverage_percent"] == 50.0
+    assert payload["embedded_sessions"] == 0
+    assert payload["pending_sessions"] == 2
+    assert payload["embedding_coverage_percent"] == 0.0
+    assert payload["retrieval_ready"] is False
 
 
 def test_status_json_detail_falls_back_when_exact_pending_count_times_out(
@@ -858,10 +833,19 @@ def test_status_json_detail_falls_back_when_exact_pending_count_times_out(
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
     original_scalar = status_payload_mod._scalar_int_with_timeout
 
-    def fake_scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: int) -> int | None:
-        if "LEFT JOIN embeddings.message_embedding_refs" in sql and "LEFT JOIN embeddings.embedding_status" in sql:
+    def fake_scalar_int_with_timeout(
+        conn: sqlite3.Connection,
+        sql: str,
+        *,
+        timeout_ms: int,
+        params: tuple[object, ...] = (),
+    ) -> int | None:
+        # The exact pending-message count is the v6 per-message staleness
+        # predicate: current ref, current message semantics, complete recipe,
+        # and a physical vector.
+        if "r.message_content_hash IS NOT m.content_hash" in sql:
             return None
-        return original_scalar(conn, sql, timeout_ms=timeout_ms)
+        return original_scalar(conn, sql, timeout_ms=timeout_ms, params=params)
 
     monkeypatch.setattr(status_payload_mod, "_scalar_int_with_timeout", fake_scalar_int_with_timeout)
 
@@ -885,22 +869,31 @@ def test_status_json_detail_falls_back_when_exact_session_state_times_out(
     db_anchor = tmp_path / "custom.sqlite"
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
 
-    def interrupted_session_state(*args: object, **kwargs: object) -> object:
-        raise sqlite3.OperationalError("interrupted")
+    def unavailable_session_state(*args: object, **kwargs: object) -> None:
+        # The v6 inspection returns None when it cannot certify itself within
+        # its timeout; the caller must degrade rather than guess.
+        return None
 
-    monkeypatch.setattr(status_payload_mod, "count_archive_embedding_session_state", interrupted_session_state)
+    monkeypatch.setattr(
+        status_payload_mod,
+        "_authoritative_archive_embedding_state",
+        unavailable_session_state,
+    )
 
     payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
-    assert payload["status"] == "partial"
-    assert payload["embedded_sessions"] == 1
-    assert payload["pending_sessions"] == 1
-    assert payload["pending_messages"] is None
-    assert payload["pending_messages_exact"] is False
+    # Nothing is provably embedded when readiness cannot be inspected, so the
+    # payload reports the conservative backlog instead of the previous
+    # behaviour of trusting the session ledger's embedded count.
+    #
+    # Anti-vacuity: have the None branch fall back to
+    # ``embedding_status.message_count_embedded`` and this goes red with
+    # ``embedded_sessions == 1``.
+    assert payload["embedded_sessions"] == 0
+    assert payload["pending_sessions"] == 2
+    assert payload["retrieval_ready"] is False
     assert payload["candidate_prose_messages"] == 3
     assert payload["candidate_prose_messages_exact"] is True
-    assert payload["message_coverage_percent"] == 33.3
-    assert payload["total_estimated_cost_usd"] is None
 
 
 def test_status_text_detail_does_not_claim_zero_cost_when_exact_pending_count_times_out(
@@ -911,10 +904,19 @@ def test_status_text_detail_does_not_claim_zero_cost_when_exact_pending_count_ti
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
     original_scalar = status_payload_mod._scalar_int_with_timeout
 
-    def fake_scalar_int_with_timeout(conn: sqlite3.Connection, sql: str, *, timeout_ms: int) -> int | None:
-        if "LEFT JOIN embeddings.message_embedding_refs" in sql and "LEFT JOIN embeddings.embedding_status" in sql:
+    def fake_scalar_int_with_timeout(
+        conn: sqlite3.Connection,
+        sql: str,
+        *,
+        timeout_ms: int,
+        params: tuple[object, ...] = (),
+    ) -> int | None:
+        # The exact pending-message count is the v6 per-message staleness
+        # predicate: current ref, current message semantics, complete recipe,
+        # and a physical vector.
+        if "r.message_content_hash IS NOT m.content_hash" in sql:
             return None
-        return original_scalar(conn, sql, timeout_ms=timeout_ms)
+        return original_scalar(conn, sql, timeout_ms=timeout_ms, params=params)
 
     monkeypatch.setattr(status_payload_mod, "_scalar_int_with_timeout", fake_scalar_int_with_timeout)
 
@@ -1346,44 +1348,74 @@ def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
     }
 
 
+def test_status_json_reports_metadata_only_row_as_not_ready(tmp_path: Path) -> None:
+    """Embedding metadata alone must never certify a vector.
+
+    The fixture publishes ``codex-session:complete`` through the production
+    write route, so it starts out counted as embedded. This test then deletes
+    *only* the physical vec0 vector, leaving ``message_embeddings_meta``,
+    ``message_embedding_refs`` (with the current ``message_content_hash``),
+    ``embedding_derivation_state`` ('succeeded') and ``embedding_status``
+    exactly as production wrote them.
+
+    Anti-vacuity: drop the
+    ``EXISTS (SELECT 1 FROM message_embeddings ...)`` conjunct from
+    ``_authoritative_archive_embedding_state`` and this test goes red -- the session
+    would be reported embedded and retrieval-ready on the strength of metadata
+    that describes a vector which is no longer there.
+    """
+    db_anchor = tmp_path / "custom.sqlite"
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    embeddings_db = index_db.with_name("embeddings.db")
+
+    before = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    assert before["embedded_sessions"] == 1
+    assert before["embedded_messages"] == 1
+
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        loaded, error = try_load_sqlite_vec(conn)
+        assert loaded, error
+        with conn:
+            conn.execute(
+                """
+                DELETE FROM message_embeddings
+                WHERE vector_derivation_hash = (
+                    SELECT lower(hex(vector_derivation_hash)) FROM message_embedding_refs
+                    WHERE message_id = 'codex-session:complete:m1'
+                )
+                """
+            )
+        # Every metadata row production wrote is still present.
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM message_embedding_refs").fetchone() == (1,)
+        assert conn.execute(
+            "SELECT attempt_state FROM embedding_derivation_state WHERE session_id = 'codex-session:complete'"
+        ).fetchone() == ("succeeded",)
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone() == (0,)
+    finally:
+        conn.close()
+
+    after = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert after["embedded_sessions"] == 0
+    assert after["embedded_messages"] == 0
+    assert after["pending_sessions"] == 2
+    assert after["retrieval_ready"] is False
+    assert after["status"] != "complete"
+
+
 def test_status_json_reports_terminal_failures_before_ready(tmp_path: Path) -> None:
     db_anchor = tmp_path / "index.db"
     _seed_archive_file_set_from_archive_tiers(db_anchor)
     embeddings_db = tmp_path / "embeddings.db"
     with sqlite3.connect(embeddings_db) as conn:
-        # v4: go through the real attempt/failure write path (rather than a
+        # Go through the real attempt/failure write path (rather than a
         # bare embedding_status insert) so embedding_derivation_state also
         # carries the matching 'failed_terminal' row the modern blocked-
-        # session predicate reads. record_embedding_failure requires the
-        # embedding_failures table to exist (it always records the audit
-        # row), so it's created here even though this test's focus is
-        # pending_sessions/failure_count, not the failure ledger itself.
-        conn.executescript(
-            """
-            CREATE TABLE embedding_failures (
-                failure_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                origin TEXT NOT NULL,
-                message_refs_json TEXT NOT NULL DEFAULT '[]',
-                provider TEXT NOT NULL,
-                model TEXT NOT NULL,
-                error_class TEXT NOT NULL,
-                error_message TEXT NOT NULL,
-                retryable INTEGER NOT NULL,
-                lifecycle_state TEXT NOT NULL,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL,
-                resolved_at_ms INTEGER,
-                resolution_action TEXT,
-                resolution_note TEXT,
-                superseded_by TEXT,
-                generation INTEGER NOT NULL DEFAULT 0,
-                derivation_key BLOB,
-                source_hash BLOB,
-                recipe_hash BLOB
-            )
-            """
-        )
+        # session predicate reads. embedding_failures comes from the
+        # production EMBEDDINGS_DDL the fixture applies.
         attempt = begin_embedding_attempt(
             conn,
             session_id="codex-session:pending",
