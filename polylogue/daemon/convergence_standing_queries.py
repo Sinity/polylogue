@@ -25,7 +25,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     list_assertion_claims,
     upsert_findings_as_assertions,
 )
-from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 from polylogue.storage.sqlite.query_objects import (
     get_query,
     get_result_set,
@@ -66,7 +66,7 @@ def make_standing_query_stage(
         if not user_db.exists():
             return set()
         try:
-            with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=5.0)) as conn:
+            with closing(open_readonly_connection(user_db)) as conn:
                 if list_watched_queries(conn) or _has_promoted_expected_findings(conn):
                     return set(session_ids)
                 return set()

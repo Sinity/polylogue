@@ -21,6 +21,7 @@ from polylogue.maintenance.durable_reference_transition import (
     source_session_claims,
 )
 from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.version import POLYLOGUE_VERSION
 
 
@@ -35,7 +36,7 @@ def resolve_archive_location(root: Path) -> tuple[Path, Path]:
 
 
 def _readonly(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    return open_readonly_connection(path)
 
 
 def plan_transition(
@@ -103,6 +104,9 @@ def apply_transition(
 
     try:
         with acquire_durable_archive_ownership(archive_root, owner_id=f"durable-reference-transition:{os.getpid()}"):
+            # Explicit non-read classification: these are the two durable-tier
+            # migration writers. They remain direct because the ownership
+            # context validates the backup manifest before either can mutate.
             with (
                 closing(sqlite3.connect(archive_root / "user.db")) as user,
                 closing(sqlite3.connect(archive_root / "audit.db")) as audit,
