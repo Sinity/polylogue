@@ -60,6 +60,7 @@ from polylogue.sources.live.batch_support import (
     tail_hash_and_last_complete_newline_from_path,
     tail_hash_from_path,
 )
+from polylogue.sources.live.convergence_debt import debt_by_path
 from polylogue.sources.live.cursor import CursorObservationRebase, CursorRecord, CursorStore
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
@@ -101,6 +102,11 @@ _HOOK_SPOOL_DIRECTORY_RETRY_MAX_POLL_S = 5.0 * 60.0
 # one bounded logical-session write, but cannot be bundled with dozens more.
 _CATCH_UP_MAX_BATCH_FILES = 4
 _CATCH_UP_MAX_BATCH_BYTES = 16 * 1024 * 1024
+# Derived convergence is deferred across several committed ingest chunks, but
+# it never becomes an unbounded end-of-backlog pass. Eight source chunks keep
+# the later FTS/insight/embedding scope finite while removing their fixed
+# setup cost from every four-file writer hold.
+_CATCH_UP_CONVERGENCE_MAX_FILES = _CATCH_UP_MAX_BATCH_FILES * 8
 _CATCH_UP_HOT_FILE_AGE_S = 60.0 * 60.0
 # polylogue-11cg9: the file/byte caps above bound a catch-up chunk's *size*
 # but not the *time* a single full-ingest pass can hold the sole archive
@@ -482,6 +488,7 @@ class LiveWatcher:
         self._stop = asyncio.Event()
         self._catch_up_complete = asyncio.Event()
         self._catch_up_active = False
+        self._catch_up_convergence_deferred = False
         self._archived_cursor_conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
         # Set once per reconciliation scope: True when the index tier has no
         # materialized sessions at all despite source.db holding successfully
@@ -820,6 +827,9 @@ class LiveWatcher:
         failed = 0
         halted_mid_run = 0
         stage_timings_s: dict[str, float] = {}
+        deferred_convergence_paths: list[Path] = []
+        deferred_session_ids: list[str] = []
+        whole_archive_anchor: Path | None = None
         logger.info(
             "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d, halted=%d, chunks=%d",
             len(plan.needed),
@@ -894,16 +904,20 @@ class LiveWatcher:
                     chunk_paths: list[Path] = chunk_paths,
                 ) -> None:
                     nonlocal attempted, ingested, failed
-                    # Whole-archive convergence stages run once, on the last
-                    # chunk, so each earlier chunk pays only for its own
-                    # subjects.
+                    nonlocal whole_archive_anchor
+                    # Raw and cursor commits retain their normal bounded
+                    # per-chunk boundary. Derived work accumulates across
+                    # those commits and is flushed below in a separate,
+                    # bounded convergence batch.
                     ingest_kwargs: dict[str, Any] = {
                         "queued_file_count": len(plan.candidates) if chunk_index == 1 else len(chunk_paths),
                         "skipped_file_count": plan.skipped_file_count if chunk_index == 1 else 0,
                     }
-                    if chunk_index != len(chunks):
-                        ingest_kwargs["whole_archive_convergence"] = False
-                    metrics = await self._ingest_files(chunk_paths, **ingest_kwargs)
+                    self._catch_up_convergence_deferred = True
+                    try:
+                        metrics = await self._ingest_files(chunk_paths, **ingest_kwargs)
+                    finally:
+                        self._catch_up_convergence_deferred = False
                     if metrics is not None:
                         _log_ingest_metrics(f"live.watcher: catch-up chunk {chunk_index}/{len(chunks)}", metrics)
                         # Keep the catch-up coordinator compatible with older
@@ -914,6 +928,13 @@ class LiveWatcher:
                         failed += int(getattr(metrics, "failed_file_count", 0) or 0)
                         for stage, elapsed_s in getattr(metrics, "stage_timings_s", {}).items():
                             stage_timings_s[stage] = stage_timings_s.get(stage, 0.0) + elapsed_s
+                        completed_paths = tuple(getattr(metrics, "succeeded_paths", ()) or ())
+                        changed_session_ids = tuple(getattr(metrics, "changed_session_ids", ()) or ())
+                        if changed_session_ids:
+                            deferred_convergence_paths.extend(completed_paths)
+                            deferred_session_ids.extend(changed_session_ids)
+                            if whole_archive_anchor is None and completed_paths:
+                                whole_archive_anchor = completed_paths[0]
                         if (
                             getattr(metrics, "succeeded_file_count", 0) == 0
                             and getattr(metrics, "failed_file_count", 0) == 0
@@ -949,6 +970,15 @@ class LiveWatcher:
                         exc,
                     )
                     self._defer_unaccounted_failed_retries(chunk_paths)
+                if len(deferred_convergence_paths) >= _CATCH_UP_CONVERGENCE_MAX_FILES:
+                    await self._flush_catch_up_convergence(
+                        deferred_convergence_paths,
+                        deferred_session_ids,
+                        stage_timings_s,
+                        whole_archive=False,
+                    )
+                    deferred_convergence_paths.clear()
+                    deferred_session_ids.clear()
             if self._stop.is_set():
                 await self._emit_catch_up_terminal(
                     operation_id,
@@ -962,6 +992,23 @@ class LiveWatcher:
                     halted_mid_run=halted_mid_run,
                 )
                 return
+            if deferred_convergence_paths:
+                await self._flush_catch_up_convergence(
+                    deferred_convergence_paths,
+                    deferred_session_ids,
+                    stage_timings_s,
+                    whole_archive=True,
+                )
+            elif whole_archive_anchor is not None:
+                # A full-size final derived batch may have flushed just before
+                # the last source chunk. Run the archive-wide stages once
+                # without reopening a broad source scope.
+                await self._flush_catch_up_convergence(
+                    [whole_archive_anchor],
+                    (),
+                    stage_timings_s,
+                    whole_archive=True,
+                )
             backlog_end = max(0, len(plan.candidates) - plan.skipped_file_count - ingested)
             await self._emit_catch_up_cycle(
                 operation_id=operation_id,
@@ -1026,6 +1073,40 @@ class LiveWatcher:
             raise
         finally:
             self._catch_up_active = False
+
+    async def _flush_catch_up_convergence(
+        self,
+        paths: Sequence[Path],
+        session_ids: Sequence[str],
+        stage_timings_s: dict[str, float],
+        *,
+        whole_archive: bool,
+    ) -> None:
+        """Converge one bounded set of already-committed catch-up subjects."""
+        unique_paths = tuple(dict.fromkeys(paths))
+        if not unique_paths:
+            return
+        unique_session_ids = tuple(dict.fromkeys(session_ids))
+
+        async def converge() -> None:
+            _completed, _elapsed, timings, debts = await self._batch_processor._run_sync(
+                "watcher.catch_up.convergence",
+                self._batch_processor._converge_paths,
+                unique_paths,
+                whole_archive=whole_archive,
+                session_ids=unique_session_ids,
+            )
+            debt_by_source_path = debt_by_path(debts)
+            for path in unique_paths:
+                self._batch_processor._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
+            for stage, elapsed_s in timings.items():
+                stage_timings_s[stage] = stage_timings_s.get(stage, 0.0) + elapsed_s
+
+        await self._run_coordinated("watcher.catch_up.convergence", converge)
+        # These owners can perform network/CPU work. They must stay outside
+        # the writer admission that made the generic FTS pass and debt writes.
+        await self._converge_embeddings_off_writer(unique_paths)
+        await self._converge_session_profiles_off_writer(unique_session_ids)
 
     def _hook_sources(self) -> tuple[WatchSource, ...]:
         """Return the declared hook topology, preserving configured order.
@@ -1410,7 +1491,7 @@ class LiveWatcher:
                 await requeue(needed, forced_paths)
                 return
             if metrics is not None:
-                changed_session_ids = metrics.changed_session_ids
+                changed_session_ids = tuple(getattr(metrics, "changed_session_ids", ()) or ())
                 _log_ingest_metrics("live.watcher: changed-file batch", metrics)
                 if (
                     getattr(metrics, "succeeded_file_count", 0) == 0
@@ -2094,12 +2175,17 @@ class LiveWatcher:
         async with self._ingest_lock:
 
             async def ingest() -> LiveBatchMetrics:
+                ingest_kwargs: dict[str, Any] = {
+                    "queued_file_count": queued_file_count,
+                    "skipped_file_count": skipped_file_count,
+                    "max_pass_seconds": _LIVE_INGEST_MAX_PASS_SECONDS,
+                    "whole_archive_convergence": whole_archive_convergence,
+                }
+                if self._catch_up_convergence_deferred:
+                    ingest_kwargs["defer_convergence"] = True
                 return await self._batch_processor.ingest_files(
                     paths,
-                    queued_file_count=queued_file_count,
-                    skipped_file_count=skipped_file_count,
-                    max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
-                    whole_archive_convergence=whole_archive_convergence,
+                    **ingest_kwargs,
                 )
 
             if self._write_coordinator is None:
