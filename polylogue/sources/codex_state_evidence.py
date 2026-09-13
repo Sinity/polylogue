@@ -13,6 +13,7 @@ from urllib.parse import quote
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources import codex_state_projection
 from polylogue.sources.parsers import codex_state
+from polylogue.sources.sqlite_snapshot import is_declared_logical_export
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.materials import admit_material, link_material
 
@@ -304,6 +305,8 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
                 continue
             state_path = archive.blob_path_for_hash(blob_hash)
             if state_path is None:
+                continue
+            if not is_declared_logical_export(state_path, source_path):
                 continue
             state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
             if state_kind not in codex_state.IN_SCOPE_KINDS:

@@ -38,6 +38,7 @@ from polylogue.sources.sqlite_export import (
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     hermes_profile_raw_id,
+    is_declared_logical_export,
     retained_content_revision,
     snapshot_sqlite_to_blob,
     sqlite_logical_revision,
@@ -281,9 +282,23 @@ def test_retained_blob_yields_the_same_content_term_as_live_acquisition(tmp_path
     store = _blob_store(tmp_path)
     snapshot = snapshot_sqlite_to_blob(source, store)
 
+    assert is_declared_logical_export(store.blob_path(snapshot.blob_hash), source)
     assert retained_content_revision(store.blob_path(snapshot.blob_hash), snapshot.blob_hash) == (
         snapshot.source_revision
     )
+
+
+def test_a_historical_page_image_cannot_recover_logical_source_identity(tmp_path: Path) -> None:
+    """Anti-vacuity: accept a SQLite page image here and old snapshots can
+    bypass the declared export contract during an import or replay."""
+    source = tmp_path / "state.db"
+    _write_state_db(source, sessions=1)
+    store = _blob_store(tmp_path)
+    page_hash, _size = store.write_from_bytes(source.read_bytes())
+    page_image = store.blob_path(page_hash)
+
+    assert not is_declared_logical_export(page_image, source)
+    assert retained_content_revision(page_image, page_hash) == page_hash
 
 
 def test_the_retained_material_is_the_declared_logical_export(tmp_path: Path) -> None:

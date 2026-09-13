@@ -26,10 +26,11 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
+from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 _THREAD_ID = "8c1d2e3f-4a5b-4c6d-8e7f-901234567890"
@@ -191,3 +192,13 @@ async def test_codex_state_export_replays_into_the_same_projection(workspace_env
     replayed = _derived_rows(archive_root / "index.db", _CODEX_ROWS)
 
     assert replayed == live
+
+
+def test_hermes_page_image_is_refused_by_the_retained_replay_route(tmp_path: Path) -> None:
+    """Anti-vacuity: let a ``SQLite format 3`` blob through `_parse_one` and
+    historical page snapshots remain a second source authority."""
+    state_db = tmp_path / "state.db"
+    _write_hermes_state_db(state_db)
+
+    with pytest.raises(RuntimeError, match="declared logical export"):
+        _parse_one(Provider.HERMES, state_db.read_bytes(), str(state_db), payload_path=state_db)
