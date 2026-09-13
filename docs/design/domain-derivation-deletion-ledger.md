@@ -24,12 +24,12 @@ The table below counts added and deleted physical lines with `git diff --numstat
 
 | Scope | Added | Deleted | Net |
 | --- | ---: | ---: | ---: |
-| Docs and devtools | 36 | 149 | -113 |
-| Other production | 411 | 234 | +177 |
+| Docs and devtools | 80 | 479 | -399 |
+| Other production | 416 | 234 | +182 |
 | Daemon | 659 | 2749 | -2090 |
-| Domain storage | 1766 | 1884 | -118 |
-| Tests | 1757 | 6061 | -4304 |
-| Total, excluding this ledger | 4629 | 11077 | -6448 |
+| Domain storage | 1779 | 1903 | -124 |
+| Tests | 1816 | 6073 | -4257 |
+| Total, excluding this ledger | 4750 | 11438 | -6688 |
 
 The reduction is real across daemon, FTS storage, readiness consumers and tests. It is also incomplete: the surviving generic stage engine prevents a claim that the repository has only one convergence execution model. No credit is taken for its eventual deletion.
 

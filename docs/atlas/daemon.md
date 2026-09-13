@@ -28,4 +28,4 @@ Readiness derives from domain inspection and is reported separately from operati
 
 Fair intake applies a process-local cooldown to repeated retryable failures. A stale cursor refusal remains retryable even when the same batch reports successful files. Terminal refusal isolates only the affected item (`polylogue/daemon/intake.py:182`; `polylogue/operations/intake_adapters.py:1`).
 
-verified: cfcf58476011e7522a47a6df542e9839af8ab7a3 2026-09-13
+verified: 0ba47b3d3cc0835ff328ca59826bf148ee48ae96 2026-09-13
