@@ -3493,14 +3493,25 @@ class TestSearchQueryContracts:
             conn.execute(
                 "UPDATE blocks SET semantic_type = 'subagent' WHERE tool_id = 'task-cli' AND block_type = 'tool_use'"
             )
+            # parent_tool_use_block_id is the join key delegation_facts_source
+            # pairs the dispatch action against. Without it the dispatch and the
+            # edge stay two unjoined halves (unresolved + edge_only) instead of
+            # one resolved delegation, and nothing downstream can match
+            # mapping_state:resolved. Resolve it by query so the case does not
+            # hardcode the block-id identity expression.
+            dispatch_block_id = conn.execute(
+                "SELECT block_id FROM blocks WHERE session_id = ? AND tool_id = 'task-cli' AND block_type = 'tool_use'",
+                (parent_id,),
+            ).fetchone()[0]
             conn.execute(
                 """
                 INSERT INTO session_links (
                     src_session_id, dst_origin, dst_native_id, link_type,
-                    resolved_dst_session_id, inheritance, method, observed_at_ms
-                ) VALUES (?, 'codex-session', ?, 'subagent', ?, 'spawned-fresh', 'test', 1)
+                    resolved_dst_session_id, inheritance, method, observed_at_ms,
+                    parent_tool_use_block_id
+                ) VALUES (?, 'codex-session', ?, 'subagent', ?, 'spawned-fresh', 'test', 1, ?)
                 """,
-                (child_id, "ext-delegation-cli-parent", parent_id),
+                (child_id, "ext-delegation-cli-parent", parent_id, dispatch_block_id),
             )
             delegation_blocks = conn.execute(
                 "SELECT block_type, tool_name, tool_id, semantic_type FROM blocks WHERE session_id = ?",
