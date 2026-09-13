@@ -485,7 +485,7 @@ def test_fts_surface_debt_retries_after_real_sqlite_backpressure(
     blocker = sqlite3.connect(archive_db, timeout=0.01)
     try:
         blocker.execute("BEGIN EXCLUSIVE")
-        real_open = fts_convergence.open_daemon_connection
+        real_open = fts_convergence.__dict__["open_daemon_connection"]
 
         def open_with_short_timeout(db_path: Path, *, archive_root: Path, **kwargs: object) -> sqlite3.Connection:
             del kwargs
