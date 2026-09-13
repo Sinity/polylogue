@@ -47,6 +47,7 @@ from polylogue.services import build_runtime_services
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 from polylogue.surfaces.payloads import decode_search_cursor
+from tests.infra.archive_store_double import ArchiveStoreDouble, install_archive_store_double
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.identity import archive_message_id
 
@@ -422,20 +423,15 @@ def test_async_execute_query_archive_lists_archive(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
+    class FakeArchiveStore(ArchiveStoreDouble):
+        def count_sessions(self, **kwargs: object) -> int:
+            return 1
 
         def list_summaries(
             self,
             *,
             limit: int,
             offset: int,
-            sort: str | None,
-            reverse: bool,
             origins: tuple[str, ...],
             excluded_origins: tuple[str, ...],
             tags: tuple[str, ...],
@@ -464,12 +460,19 @@ def test_async_execute_query_archive_lists_archive(
             since_ms: int | None,
             until_ms: int | None,
             since_session_id: str | None,
-            sample: bool,
+            session_id: str | None,
+            # Defaulted exactly as production defaults them: the read route may
+            # legitimately omit a parameter it is not varying, and this case's
+            # claim is the value each one carries, not that every one is passed.
+            sample: bool = False,
+            sort: str | None = None,
+            reverse: bool = False,
             boolean_predicate: object = None,
             root: bool | None = None,
         ) -> list[ArchiveSessionSummary]:
-            assert limit == 3
+            assert limit == 2
             assert offset == 0
+            assert session_id is None
             assert sample is False
             assert sort is None
             assert reverse is False
@@ -514,10 +517,7 @@ def test_async_execute_query_archive_lists_archive(
                 )
             ]
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(_execute_query_params(env, {"archive": True, "limit": 2, "output_format": "json"}))
 
@@ -562,15 +562,15 @@ def test_async_execute_query_archive_projects_fields(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
+    class FakeArchiveStore(ArchiveStoreDouble):
+        def count_sessions(self, **kwargs: object) -> int:
+            return 1
 
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
-            assert kwargs["limit"] == 2
+            # The requested page size reaches the store exactly: the list read
+            # no longer over-fetches one row to probe for a next page, it asks
+            # count_sessions for the indexed total instead.
+            assert kwargs["limit"] == 1
             return [
                 ArchiveSessionSummary(
                     session_id="codex-session:native-1",
@@ -585,10 +585,7 @@ def test_async_execute_query_archive_projects_fields(
                 )
             ]
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -613,18 +610,15 @@ def test_async_execute_query_archive_routes_pure_structured_terms_to_list(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
             raise AssertionError("pure structured positional queries must not use FTS search")
 
+        def count_sessions(self, **kwargs: object) -> int:
+            return 1
+
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
-            assert kwargs["limit"] == 2
+            assert kwargs["limit"] == 1
             assert kwargs["offset"] == 0
             assert kwargs["origins"] == ("codex-session",)
             assert kwargs["repo_names"] == ("polylogue",)
@@ -642,10 +636,7 @@ def test_async_execute_query_archive_routes_pure_structured_terms_to_list(
                 )
             ]
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -676,13 +667,7 @@ def test_async_execute_query_archive_exact_id_clause_reads_session(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             assert token == "chatgpt-export:72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb"
             return token
@@ -701,10 +686,7 @@ def test_async_execute_query_archive_exact_id_clause_reads_session(
                 messages=(),
             )
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -736,13 +718,7 @@ def test_async_execute_query_archive_bare_native_ref_resolves_before_fts(
     env = _make_env(repo=MagicMock(), config=config)
     native_id = "72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb"
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             assert token == native_id
             return f"chatgpt-export:{native_id}"
@@ -761,10 +737,7 @@ def test_async_execute_query_archive_bare_native_ref_resolves_before_fts(
                 messages=(),
             )
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -795,13 +768,7 @@ def test_async_execute_query_archive_unresolved_bare_ref_falls_back_to_fts(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             assert token == "missing-native-12345"
             raise KeyError(token)
@@ -811,10 +778,7 @@ def test_async_execute_query_archive_unresolved_bare_ref_falls_back_to_fts(
             assert kwargs["session_id"] is None
             return []
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     with pytest.raises(SystemExit) as exc_info:
         asyncio.run(
@@ -1022,13 +986,7 @@ def test_async_execute_query_archive_falls_back_when_daemon_unavailable(
     config.db_path = archive_root / "index.db"
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
             assert kwargs["repo_names"] == ("polylogue",)
             return [
@@ -1046,10 +1004,7 @@ def test_async_execute_query_archive_falls_back_when_daemon_unavailable(
             ]
 
     monkeypatch.setattr("polylogue.cli.archive_query._fetch_daemon_sessions_payload", lambda *_args: None)
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1081,13 +1036,7 @@ def test_async_execute_query_archive_keeps_stats_local(
     config.db_path = archive_root / "index.db"
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def search_session_ids(self, query: str, **kwargs: object) -> tuple[str, ...]:
             assert query == "needle"
             return ("codex-session:native-1",)
@@ -1101,10 +1050,7 @@ def test_async_execute_query_archive_keeps_stats_local(
         "polylogue.cli.archive_query._fetch_daemon_sessions_payload",
         MagicMock(side_effect=AssertionError("stats paths must remain local")),
     )
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1136,22 +1082,13 @@ def test_async_execute_query_archive_sorts_lists(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
             assert kwargs["sort"] == "messages"
             assert kwargs["reverse"] is True
             return []
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1177,12 +1114,9 @@ def test_async_execute_query_archive_delivers_to_output_path(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
+    class FakeArchiveStore(ArchiveStoreDouble):
+        def count_sessions(self, **kwargs: object) -> int:
+            return 1
 
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
             return [
@@ -1199,10 +1133,7 @@ def test_async_execute_query_archive_delivers_to_output_path(
                 )
             ]
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1232,23 +1163,14 @@ def test_async_execute_query_archive_samples_copied_archive(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
             assert kwargs["limit"] == 3
             assert kwargs["offset"] == 0
             assert kwargs["sample"] is True
             return []
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(_execute_query_params(env, {"archive": True, "sample": 3, "output_format": "json"}))
 
@@ -1269,13 +1191,7 @@ def test_async_execute_query_archive_outputs_stats(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def stats(self, **kwargs: object) -> ArchiveStats:
             assert kwargs["origins"] == ("codex-session",)
             assert kwargs["tags"] == ("archive",)
@@ -1288,10 +1204,7 @@ def test_async_execute_query_archive_outputs_stats(
                 db_size_bytes=4096,
             )
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1324,13 +1237,7 @@ def test_async_execute_query_archive_count_uses_query_match_scope(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def count_search_sessions(self, query: str, **kwargs: object) -> int:
             assert query == "needle"
             assert kwargs["origins"] == ("codex-session",)
@@ -1340,10 +1247,7 @@ def test_async_execute_query_archive_count_uses_query_match_scope(
         def count_sessions(self, **_kwargs: object) -> int:
             raise AssertionError("queried analyze --count must not count the unsearched archive")
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1376,13 +1280,7 @@ def test_async_execute_query_archive_analyze_id_keeps_exact_session_scope(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             assert token == "codex-session:one"
             return token
@@ -1391,10 +1289,7 @@ def test_async_execute_query_archive_analyze_id_keeps_exact_session_scope(
             assert kwargs["session_id"] == "codex-session:one"
             return 1
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1426,13 +1321,7 @@ def test_async_execute_query_archive_count_applies_boolean_predicate(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def count_search_sessions(self, query: str, **kwargs: object) -> int:
             raise AssertionError("boolean-only query must not take the FTS-search count path")
 
@@ -1440,10 +1329,7 @@ def test_async_execute_query_archive_count_applies_boolean_predicate(
             assert kwargs.get("boolean_predicate") is not None
             return 5
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1473,13 +1359,7 @@ def test_async_execute_query_archive_search_stats_are_not_page_capped_by_default
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def search_session_ids(self, query: str, **kwargs: object) -> tuple[str, ...]:
             assert query == "needle"
             assert kwargs["limit"] is None
@@ -1489,10 +1369,7 @@ def test_async_execute_query_archive_search_stats_are_not_page_capped_by_default
             assert kwargs["session_ids"] == ("codex-session:native-1", "codex-session:native-2")
             return ArchiveStats(total_sessions=2, total_messages=5)
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1524,13 +1401,7 @@ def test_async_execute_query_archive_outputs_grouped_search_stats(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def search_session_ids(self, query: str, **kwargs: object) -> tuple[str, ...]:
             assert query == "needle"
             assert kwargs["limit"] == 10
@@ -1544,10 +1415,7 @@ def test_async_execute_query_archive_outputs_grouped_search_stats(
             assert kwargs["session_ids"] == ("codex-session:native-1",)
             return {"read": 1}
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1580,13 +1448,7 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def search_summaries(
             self,
             query: str,
@@ -1686,10 +1548,7 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
                 tags=(),
             )
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1745,21 +1604,16 @@ def test_async_execute_query_archive_filters_multiple_providers(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
+    class FakeArchiveStore(ArchiveStoreDouble):
+        def count_sessions(self, **kwargs: object) -> int:
+            assert kwargs["origins"] == ("codex-session", "chatgpt-export")
+            return 0
 
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
             assert kwargs["origins"] == ("codex-session", "chatgpt-export")
             return []
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1789,13 +1643,7 @@ def test_async_execute_query_archive_searches_within_session_id(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             assert token == "native-1"
             return "codex-session:native-1"
@@ -1829,10 +1677,7 @@ def test_async_execute_query_archive_searches_within_session_id(
                 tags=(),
             )
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1863,21 +1708,12 @@ def test_async_execute_query_archive_filters_since_session_id(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
             assert kwargs["since_session_id"] == "codex-session:anchor"
             return []
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -1895,7 +1731,7 @@ def test_async_execute_query_archive_filters_since_session_id(
     assert payload["items"] == []
 
 
-def test_async_execute_query_archive_paginates_lists_with_cursor(
+def test_async_execute_query_archive_paginates_lists_by_offset(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -1921,12 +1757,9 @@ def test_async_execute_query_archive_paginates_lists_with_cursor(
             tags=(),
         )
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
+    class FakeArchiveStore(ArchiveStoreDouble):
+        def count_sessions(self, **kwargs: object) -> int:
+            return 4
 
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
             limit_value = kwargs["limit"]
@@ -1939,31 +1772,31 @@ def test_async_execute_query_archive_paginates_lists_with_cursor(
             rows = [summary("one"), summary("two"), summary("three"), summary("four")]
             return rows[offset : offset + limit]
 
-    fake = FakeArchiveStore()
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: fake),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
+    # A plain list is paginated by offset against the indexed total, not by an
+    # opaque cursor: cursors carry a rank and belong to ranked retrieval (see
+    # test_async_execute_query_archive_uses_vector_provider_for_semantic_search,
+    # which asserts the issued cursor's lane). The requested page size reaches
+    # the store exactly and the continuation is the next offset.
     asyncio.run(_execute_query_params(env, {"archive": True, "limit": 2, "output_format": "json"}))
     first_page = json.loads(capsys.readouterr().out)
-    cursor = first_page["next_cursor"]
 
     assert [item["id"] for item in first_page["items"]] == ["codex-session:one", "codex-session:two"]
-    assert decode_search_cursor(cursor).r == 2
+    assert first_page["next_cursor"] is None
     assert first_page["next_offset"] == 2
 
     asyncio.run(
         _execute_query_params(
             env,
-            {"archive": True, "limit": 2, "cursor": cursor, "output_format": "json"},
+            {"archive": True, "limit": 2, "offset": 2, "output_format": "json"},
         )
     )
     second_page = json.loads(capsys.readouterr().out)
 
-    assert calls == [(3, 0), (3, 2)]
+    assert calls == [(2, 0), (2, 2)]
     assert [item["id"] for item in second_page["items"]] == ["codex-session:three", "codex-session:four"]
-    assert second_page["next_cursor"] is None
+    assert second_page["next_offset"] is None
 
 
 def test_async_execute_query_archive_open_prints_session_url(
@@ -1978,13 +1811,7 @@ def test_async_execute_query_archive_open_prints_session_url(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             assert token == "codex-session:native-1"
             return token
@@ -1992,10 +1819,7 @@ def test_async_execute_query_archive_open_prints_session_url(
         def read_session(self, session_id: str) -> None:
             raise AssertionError(f"open should not hydrate session {session_id}")
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -2026,13 +1850,7 @@ def test_async_execute_query_archive_open_uses_first_list_result(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
             assert kwargs["limit"] == 2
             return [
@@ -2049,10 +1867,7 @@ def test_async_execute_query_archive_open_uses_first_list_result(
                 )
             ]
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     with patch("polylogue.cli.archive_query.webbrowser.open") as mock_open:
         asyncio.run(
@@ -2088,13 +1903,7 @@ def test_async_execute_query_archive_streams_session_messages(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             return token
 
@@ -2143,10 +1952,7 @@ def test_async_execute_query_archive_streams_session_messages(
                 ),
             )
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -2178,21 +1984,16 @@ def test_async_execute_query_archive_accepts_lexical_retrieval_flags(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
+    class FakeArchiveStore(ArchiveStoreDouble):
+        def count_search_sessions(self, query: str, **kwargs: object) -> int:
+            assert query == "needle"
+            return 0
 
         def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
             assert query == "needle"
             return []
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     # Empty search is the no-results contract: status 2 with the (empty) search
     # envelope still emitted on stdout for machine consumers.
@@ -2228,23 +2029,14 @@ def test_async_execute_query_archive_sorts_search_terms(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def search_summaries(self, query: str, **kwargs: object) -> list[ArchiveSessionSearchHit]:
             assert query == "needle"
             assert kwargs["sort"] == "messages"
             assert kwargs["reverse"] is True
             return []
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     # Empty search is the no-results contract: status 2 with the (empty) search
     # envelope still emitted on stdout for machine consumers.
@@ -2286,14 +2078,8 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
             assert limit == 6
             return [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
 
-    class FakeArchiveStore:
+    class FakeArchiveStore(ArchiveStoreDouble):
         index_db_path = archive_root / "index.db"
-
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
 
         def semantic_summaries(
             self,
@@ -2338,10 +2124,7 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
                 tags=(),
             )
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
     monkeypatch.setattr(
         "polylogue.cli.archive_query.create_vector_provider", lambda *args, **kwargs: FakeVectorProvider()
     )
@@ -2390,14 +2173,8 @@ def test_async_execute_query_archive_uses_vector_provider_for_session_seed_simil
             assert limit == 6
             return [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
 
-    class FakeArchiveStore:
+    class FakeArchiveStore(ArchiveStoreDouble):
         index_db_path = archive_root / "index.db"
-
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
 
         def semantic_summaries(
             self,
@@ -2443,10 +2220,7 @@ def test_async_execute_query_archive_uses_vector_provider_for_session_seed_simil
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
             raise AssertionError("near:id: must not fall through to the plain unfiltered list_summaries route")
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
     monkeypatch.setattr(
         "polylogue.cli.archive_query.create_vector_provider", lambda *args, **kwargs: FakeVectorProvider()
     )
@@ -2481,22 +2255,13 @@ def test_async_execute_query_archive_session_seed_without_vector_backend_raises_
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
+    class FakeArchiveStore(ArchiveStoreDouble):
         index_db_path = archive_root / "index.db"
-
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
 
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
             raise AssertionError("near:id: must not fall through to the plain unfiltered list_summaries route")
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
     monkeypatch.setattr("polylogue.cli.archive_query.create_vector_provider", lambda *args, **kwargs: None)
 
     with pytest.raises(click.UsageError, match="near:id: requires configured"):
@@ -2627,14 +2392,8 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
             assert text == "meaningful prompt"
             return [("codex-session:native-1:m1", 0.2)]
 
-    class FakeArchiveStore:
+    class FakeArchiveStore(ArchiveStoreDouble):
         index_db_path = archive_root / "index.db"
-
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
 
         def semantic_summaries(
             self,
@@ -2668,10 +2427,7 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
                 tags=(),
             )
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
     monkeypatch.setattr(
         "polylogue.cli.archive_query.create_vector_provider", lambda *args, **kwargs: FakeVectorProvider()
     )
@@ -2716,14 +2472,8 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
             assert text == "meaningful prompt"
             return [("codex-session:native-1:m1", 0.2)]
 
-    class FakeArchiveStore:
+    class FakeArchiveStore(ArchiveStoreDouble):
         index_db_path = active_root / "index.db"
-
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
 
         def semantic_summaries(
             self,
@@ -2757,16 +2507,12 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
                 tags=(),
             )
 
-    def fake_open_existing(cls: type[object], root: Path) -> FakeArchiveStore:
-        assert root == active_root
-        return FakeArchiveStore()
-
     def fake_create_vector_provider(config_arg: object, *, db_path: Path) -> FakeVectorProvider:
         assert config_arg is config
         observed_vector_db_paths.append(db_path)
         return FakeVectorProvider()
 
-    monkeypatch.setattr("polylogue.cli.archive_query.ArchiveStore.open_existing", classmethod(fake_open_existing))
+    store = install_archive_store_double(monkeypatch, FakeArchiveStore())
     monkeypatch.setattr("polylogue.cli.archive_query.create_vector_provider", fake_create_vector_provider)
 
     asyncio.run(
@@ -2783,6 +2529,7 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["retrieval_lane"] == "semantic"
+    assert store.opened_roots == [active_root]
     assert observed_vector_db_paths == [active_root / "embeddings.db"]
 
 
@@ -2798,23 +2545,14 @@ def test_async_execute_query_archive_adds_tags_to_session(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             return token
 
         def end_read_snapshot(self) -> None:
             return None
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     # The tag write is the daemon's, so this case's claim -- that the resolved
     # session id and the requested tags are the ones carried into the write --
@@ -2862,13 +2600,7 @@ def test_async_execute_query_archive_deletes_session_by_id(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             return token
 
@@ -2876,10 +2608,7 @@ def test_async_execute_query_archive_deletes_session_by_id(
             assert session_ids == ("codex-session:native-1",)
             return 1
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     # Delete has no non-daemon route: `_emit_delete` refuses outright when the
     # daemon does not answer the prepare call. Stub the three-step handshake and
@@ -2891,7 +2620,9 @@ def test_async_execute_query_archive_deletes_session_by_id(
             assert payload["session_ids"] == ["codex-session:native-1"]
             return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["codex-session:native-1"]}
         if operation.endswith(".authorize"):
-            return {"status": "authorized", "authorization_token": "test-authorization"}
+            # The daemon issues one durable authorization reference per preview
+            # reference; ``_delete_authorization_refs`` refuses a count mismatch.
+            return {"status": "authorized", "authorization_refs": ["authz:delete"]}
         return {"status": "deleted", "affected_count": 1, "session_ids": ["codex-session:native-1"]}
 
     with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_daemon_delete):
@@ -2928,23 +2659,14 @@ def test_async_execute_query_archive_sets_session_metadata(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             return token
 
         def end_read_snapshot(self) -> None:
             return None
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     # Asserted on the operation payload for the same reason as the tag case
     # above: the write itself is the daemon's.
@@ -2991,23 +2713,14 @@ def test_async_execute_query_archive_delete_dry_run_does_not_delete(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             return token
 
         def delete_sessions(self, session_ids: tuple[str, ...]) -> int:
             raise AssertionError("dry-run must not delete")
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -3039,7 +2752,7 @@ def test_async_execute_query_archive_rejects_combined_delete_mutations(
     config = MagicMock()
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
-    monkeypatch.setattr("polylogue.cli.archive_query.ArchiveStore.open_existing", MagicMock())
+    install_archive_store_double(monkeypatch, ArchiveStoreDouble())
 
     with pytest.raises(click.UsageError, match="cannot combine delete with --set"):
         asyncio.run(
@@ -3064,13 +2777,7 @@ def test_async_execute_query_archive_reads_session_by_id(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             assert token == "codex-session:native-1"
             return token
@@ -3104,10 +2811,7 @@ def test_async_execute_query_archive_reads_session_by_id(
                 ),
             )
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -3138,13 +2842,7 @@ def test_async_execute_query_archive_reads_session_messages_without_projection(
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
 
-    class FakeArchiveStore:
-        def __enter__(self) -> FakeArchiveStore:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
+    class FakeArchiveStore(ArchiveStoreDouble):
         def resolve_session_id(self, token: str) -> str:
             return token
 
@@ -3215,10 +2913,7 @@ def test_async_execute_query_archive_reads_session_messages_without_projection(
                 ),
             )
 
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
-    )
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
 
     asyncio.run(
         _execute_query_params(
@@ -3262,7 +2957,7 @@ def test_async_execute_query_archive_rejects_unsupported_historical_filters(
     config = MagicMock()
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
-    monkeypatch.setattr("polylogue.cli.archive_query.ArchiveStore.open_existing", MagicMock())
+    install_archive_store_double(monkeypatch, ArchiveStoreDouble())
 
     with pytest.raises(click.UsageError, match="[Hh]ybrid retrieval requires lexical query"):
         asyncio.run(_execute_query_params(env, {"archive": True, "retrieval_lane": "hybrid"}))
@@ -3485,12 +3180,18 @@ class TestSearchQueryContracts:
     def test_debug_timing_keeps_query_output_on_stdout(
         self, search_workspace: SearchWorkspace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Opt-in timing reports real CLI phases without corrupting JSON output.
+        """Opt-in timing reports the real phases of the route taken, on stderr.
 
-        This invokes the production Click root, query compiler, archive open,
-        list execution, and renderer.  Removing any checkpoint around those
-        production dependencies makes the corresponding stderr phase assertion
-        fail while the JSON assertion protects the stdout/stderr contract.
+        This invokes the production Click root, query compiler, list execution
+        and renderer.  Removing any checkpoint around those production
+        dependencies makes the corresponding stderr phase assertion fail, while
+        the JSON assertion protects the stdout/stderr contract.
+
+        ``db-open`` is deliberately absent: it is recorded inside
+        ``archive_read_context`` in ``_execute_archive_query_stdout``, and a
+        list read served by the daemon session page returns before reaching it.
+        Asserting its absence keeps this a claim about which route ran rather
+        than a phase list quietly trimmed until it passed.
         """
         from polylogue.cli import cli
 
@@ -3502,8 +3203,9 @@ class TestSearchQueryContracts:
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["mode"] == "list"
         assert "polylogue timing" in result.stderr
-        for phase in ("cli-callback", "archive-query-import", "config", "compile", "db-open", "execute", "render"):
+        for phase in ("cli-callback", "archive-query-import", "config", "compile", "execute", "render"):
             assert phase in result.stderr
+        assert "db-open" not in result.stderr
 
     def test_structured_only_cli_query_skips_absent_message_fts(self, search_workspace: SearchWorkspace) -> None:
         """A field-only CLI query must keep working when lexical search is unavailable.
@@ -3791,14 +3493,25 @@ class TestSearchQueryContracts:
             conn.execute(
                 "UPDATE blocks SET semantic_type = 'subagent' WHERE tool_id = 'task-cli' AND block_type = 'tool_use'"
             )
+            # parent_tool_use_block_id is the join key delegation_facts_source
+            # pairs the dispatch action against. Without it the dispatch and the
+            # edge stay two unjoined halves (unresolved + edge_only) instead of
+            # one resolved delegation, and nothing downstream can match
+            # mapping_state:resolved. Resolve it by query so the case does not
+            # hardcode the block-id identity expression.
+            dispatch_block_id = conn.execute(
+                "SELECT block_id FROM blocks WHERE session_id = ? AND tool_id = 'task-cli' AND block_type = 'tool_use'",
+                (parent_id,),
+            ).fetchone()[0]
             conn.execute(
                 """
                 INSERT INTO session_links (
                     src_session_id, dst_origin, dst_native_id, link_type,
-                    resolved_dst_session_id, inheritance, method, observed_at_ms
-                ) VALUES (?, 'codex-session', ?, 'subagent', ?, 'spawned-fresh', 'test', 1)
+                    resolved_dst_session_id, inheritance, method, observed_at_ms,
+                    parent_tool_use_block_id
+                ) VALUES (?, 'codex-session', ?, 'subagent', ?, 'spawned-fresh', 'test', 1, ?)
                 """,
-                (child_id, "ext-delegation-cli-parent", parent_id),
+                (child_id, "ext-delegation-cli-parent", parent_id, dispatch_block_id),
             )
             delegation_blocks = conn.execute(
                 "SELECT block_type, tool_name, tool_id, semantic_type FROM blocks WHERE session_id = ?",
@@ -4066,13 +3779,7 @@ def test_daemon_unit_fast_path_defers_session_only_modes_to_local_validation(
         "polylogue.cli.archive_query._fetch_daemon_payload",
         MagicMock(side_effect=AssertionError("session-only unit query must not take the daemon fast path")),
     )
-    store = MagicMock()
-    store.__enter__ = MagicMock(return_value=MagicMock())
-    store.__exit__ = MagicMock(return_value=False)
-    monkeypatch.setattr(
-        "polylogue.cli.archive_query.ArchiveStore.open_existing",
-        MagicMock(return_value=store),
-    )
+    install_archive_store_double(monkeypatch, ArchiveStoreDouble())
 
     with pytest.raises(click.UsageError, match="do not combine"):
         asyncio.run(
