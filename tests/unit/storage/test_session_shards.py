@@ -54,6 +54,7 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
     open_session_shard,
     shard_column_signature,
 )
+from tests.infra.revision_backfill_benchmark import build_large_parent_shared_prefix_sessions
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -296,6 +297,58 @@ def test_shard_falls_back_when_the_session_already_has_rows(tmp_path: Path) -> N
         assert texts == ["the rewritten body"]
     finally:
         conn.close()
+
+
+def test_shared_prefix_prior_rows_demote_shard_and_preserve_finished_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bounded parent/child witness keeps a prior child rewrite inline.
+
+    The child has a sizeable inherited prefix and already has stored rows when
+    its changed tail arrives. A sealed shard is valid transport for a fresh
+    session only, so the writer must decline its prepared rows and use its
+    ordinary inline replacement path. Poisoning the shard copy makes that
+    fallback observable while the completed logical and FTS projections still
+    match the explicit inline control.
+    """
+    *children, parent = build_large_parent_shared_prefix_sessions()
+    child = children[0]
+    rewritten = child.model_copy(
+        update={
+            "messages": [
+                *child.messages,
+                ParsedMessage(
+                    provider_message_id="measurement-fallback-tail",
+                    role=Role.ASSISTANT,
+                    text="measurement fallback tail after prior session rows",
+                    material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+                    position=len(child.messages),
+                ),
+            ]
+        }
+    )
+    control = _connect(tmp_path / "inline-control.db")
+    witness = _connect(tmp_path / "shard-fallback-witness.db")
+    try:
+        _write_inline(control, [parent, child, rewritten])
+        _write_inline(witness, [parent, child])
+
+        def reject_copy(*args: object, **kwargs: object) -> object:
+            raise AssertionError("prior session rows must demote prepared shard transport")
+
+        monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", reject_copy)
+        _write_through_shard(witness, [rewritten], tmp_path / "shared-prefix-shards")
+
+        for table, order_by in (("sessions", "session_id"), ("messages", "message_id"), ("blocks", "block_id")):
+            assert _dump_table(control, table, order_by) == _dump_table(witness, table, order_by), table
+        assert control.execute(
+            "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'measurement'"
+        ).fetchone() == (
+            witness.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'measurement'").fetchone()
+        )
+    finally:
+        control.close()
+        witness.close()
 
 
 def test_stale_shard_content_hash_falls_back_to_fresh_content(tmp_path: Path) -> None:
