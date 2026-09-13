@@ -23,7 +23,6 @@ import polylogue.paths as _paths
 from polylogue.core.errors import DatabaseError
 from polylogue.storage.fts.pl_fold import pl_fold
 from polylogue.storage.runtime import (
-    MessageRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionWorkEventRecord,
@@ -43,7 +42,6 @@ from polylogue.storage.sqlite.queries import (
 from polylogue.storage.sqlite.queries import (
     session_insight_timeline_writes as session_insight_timelines_q,
 )
-from polylogue.storage.sqlite.queries import stats as stats_q
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from polylogue.storage.sqlite.schema import SCHEMA_DDL, ensure_schema_async
 from polylogue.storage.sqlite.write_lease import require_write_lease
@@ -528,86 +526,6 @@ class SQLiteBackend(
     async def close(self) -> None:
         """Close database connections."""
         await _close_backend(self)
-
-    # -- Derived stats (formerly SQLiteDerivedStatsMixin) --------------------
-
-    async def upsert_session_stats(
-        self,
-        session_id: str,
-        source_name: str,
-        messages: list[MessageRecord],
-    ) -> None:
-        """Upsert precomputed per-session aggregate stats."""
-        async with self._get_connection() as conn:
-            if _is_initialized_archive_index(self._db_path):
-                from polylogue.archive.message.roles import Role
-                from polylogue.core.enums import MaterialOrigin
-
-                message_count = len(messages)
-                word_count = sum(message.word_count for message in messages)
-                tool_use_count = sum(1 for message in messages if message.has_tool_use)
-                thinking_count = sum(1 for message in messages if message.has_thinking)
-                paste_count = sum(1 for message in messages if message.has_paste)
-                user_message_count = sum(1 for message in messages if message.role == Role.USER)
-                authored_user_message_count = sum(
-                    1 for message in messages if message.material_origin == MaterialOrigin.HUMAN_AUTHORED
-                )
-                assistant_message_count = sum(1 for message in messages if message.role == Role.ASSISTANT)
-                system_message_count = sum(1 for message in messages if message.role == Role.SYSTEM)
-                tool_message_count = sum(1 for message in messages if message.role == Role.TOOL)
-                user_word_count = sum(message.word_count for message in messages if message.role == Role.USER)
-                authored_user_word_count = sum(
-                    message.word_count
-                    for message in messages
-                    if message.material_origin == MaterialOrigin.HUMAN_AUTHORED
-                )
-                assistant_word_count = sum(message.word_count for message in messages if message.role == Role.ASSISTANT)
-                await conn.execute(
-                    """
-                    UPDATE sessions
-                    SET message_count = ?,
-                        word_count = ?,
-                        tool_use_count = ?,
-                        thinking_count = ?,
-                        paste_count = ?,
-                        user_message_count = ?,
-                        authored_user_message_count = ?,
-                        assistant_message_count = ?,
-                        system_message_count = ?,
-                        tool_message_count = ?,
-                        user_word_count = ?,
-                        authored_user_word_count = ?,
-                        assistant_word_count = ?
-                    WHERE session_id = ? OR native_id = ?
-                    """,
-                    (
-                        message_count,
-                        word_count,
-                        tool_use_count,
-                        thinking_count,
-                        paste_count,
-                        user_message_count,
-                        authored_user_message_count,
-                        assistant_message_count,
-                        system_message_count,
-                        tool_message_count,
-                        user_word_count,
-                        authored_user_word_count,
-                        assistant_word_count,
-                        session_id,
-                        session_id,
-                    ),
-                )
-                if self._transaction_depth == 0:
-                    await conn.commit()
-                return
-            await stats_q.upsert_session_stats(
-                conn,
-                session_id,
-                source_name,
-                messages,
-                self._transaction_depth,
-            )
 
     # -- Derived insights (formerly SQLiteDerivedInsightsMixin) --------------
 
