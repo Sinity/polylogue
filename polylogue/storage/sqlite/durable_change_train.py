@@ -3101,7 +3101,7 @@ def _forward_version_receipt_for_current_tier(
             tier,
             manifests_by_target,
             current_version=current_version,
-            floor=_chain_floor(tier, _fresh_durable_bootstrap_versions(archive_root, manifest_root)),
+            floor=_chain_floor(tier, _durable_chain_floor_versions(archive_root, manifest_root)),
         )
     if not historical:
         return None
@@ -3174,6 +3174,28 @@ def _require_released_train_chain(
         )
     for version in range(chain_floor + 1, current_version + 1):
         _historical_schema_evidence(manifests_by_target[version])
+
+
+def _durable_chain_floor_versions(archive_root: Path, manifest_root: Path) -> dict[ArchiveTier, int]:
+    """Return every version a durable tier reached without a numbered train.
+
+    Two routes put a durable tier above its adoption floor with no train
+    manifest to prove it: a fresh direct bootstrap, and the verified audit-tier
+    adoption of a canonical image into an established archive. Both are the
+    archive's own evidence, so both raise the chain floor; trains are still
+    required for every version above it.
+    """
+    from polylogue.operations.durable_change_train import (
+        audit_adoption_receipt_path,
+        audit_adoption_receipt_version,
+    )
+
+    versions = dict(_fresh_durable_bootstrap_versions(archive_root, manifest_root))
+    if audit_adoption_receipt_path(archive_root.resolve()).is_file():
+        adopted = audit_adoption_receipt_version(archive_root)
+        if adopted is not None:
+            versions[ArchiveTier.AUDIT] = max(versions.get(ArchiveTier.AUDIT, 0), adopted)
+    return versions
 
 
 def _chain_floor(tier: ArchiveTier, bootstrap_versions: dict[ArchiveTier, int]) -> int:
@@ -3487,6 +3509,7 @@ def _reconcile_durable_change_train_startup_locked(
     validated_tiers: set[ArchiveTier] = set()
     manifest_paths = _durable_train_manifest_paths(manifest_root)
     fresh_bootstrap_versions = _fresh_durable_bootstrap_versions(archive_root, manifest_root)
+    chain_floor_versions = _durable_chain_floor_versions(archive_root, manifest_root)
 
     def record_reconciled(path: Path) -> None:
         if path not in reconciled:
@@ -3575,7 +3598,7 @@ def _reconcile_durable_change_train_startup_locked(
             tier,
             manifests_by_tier[tier],
             current_version=current_version,
-            floor=_chain_floor(tier, fresh_bootstrap_versions),
+            floor=_chain_floor(tier, chain_floor_versions),
         )
         validated_tiers.add(tier)
 
@@ -3600,7 +3623,7 @@ def _reconcile_durable_change_train_startup_locked(
                     train.tier,
                     manifests_by_tier[train.tier],
                     current_version=actual.user_version,
-                    floor=_chain_floor(train.tier, fresh_bootstrap_versions),
+                    floor=_chain_floor(train.tier, chain_floor_versions),
                 )
             if actual.user_version > train.target_version:
                 if train.tier not in live_integrity_by_tier:

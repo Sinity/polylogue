@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -3786,3 +3787,298 @@ def test_historical_recovery_rejects_foreign_train_authority_before_preparing(
     assert not (
         moved_root / ".maintenance-state" / "historical-source-continuity-recovery-plans" / f"{plan_sha256}.json"
     ).exists()
+
+
+def _adopted_audit_archive_with_later_train(
+    archive_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    train_count: int = 1,
+) -> tuple[int, tuple[int, ...]]:
+    """Build the adoption-era audit shape: adopted at vN, then migrated to vN+1.
+
+    This is the shape an established archive reaches through the supported
+    route -- ``migrate-tier audit --adopt-established-audit`` publishes a
+    canonical image and its receipt, and a later ``migrate-tier audit``
+    publishes one train for the next version only.  No train manifest exists
+    at or below the adopted version, because no migration ever produced it.
+    """
+    from polylogue.operations.durable_change_train import (
+        acquire_durable_archive_ownership,
+        adopt_missing_audit_tier,
+        execute_durable_change_train,
+    )
+    from polylogue.storage.sqlite import migration_runner
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER, bootstrap
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.migration_runner import (
+        DurableChangeRider,
+        DurableRuntimeConsumer,
+        declare_durable_change_train,
+        durable_change_train_to_payload,
+        durable_migration_claim_for_sql,
+    )
+
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=tmp_path / "adoption-backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    backup_manifest = Path(backup.output_path) / "manifest.json"
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-adoption") as owner:
+        adopted_version, _receipt = adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=backup_manifest,
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    assert adopted_version == ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]
+
+    target_versions = tuple(adopted_version + step for step in range(1, train_count + 1))
+    # Unique per test: the fixture package is imported and cached in sys.modules.
+    package_name = f"fixture_migrations_adopted_audit_{tmp_path.name.replace('-', '_')}"
+    package_root = tmp_path / package_name
+    tier_package = package_root / ArchiveTier.AUDIT.value
+    # Sidecar discovery requires a contiguous slot run, so the fixture package
+    # carries the real audit migrations plus the synthetic slots above them.
+    real_audit_migrations = Path(str(migration_runner.__file__)).parent / "migrations" / ArchiveTier.AUDIT.value
+    shutil.copytree(real_audit_migrations, tier_package)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    statements: list[str] = []
+    for target_version in target_versions:
+        slot = f"{target_version:03d}"
+        sql = (
+            "-- migration-safety: additive-no-backup\n"
+            f"CREATE TABLE adopted_audit_probe_{target_version} (id INTEGER PRIMARY KEY) STRICT;\n"
+        )
+        statements.append(sql)
+        migration_name = f"{slot}_adopted_audit_probe.sql"
+        (tier_package / migration_name).write_text(sql, encoding="utf-8")
+        claim = durable_migration_claim_for_sql(
+            ArchiveTier.AUDIT,
+            migration_name,
+            sql,
+            owner_ref="owner:adopted-audit",
+        )
+        rider = DurableChangeRider(
+            rider_id=f"rider:adopted-audit:{target_version}",
+            owner_ref="owner:adopted-audit",
+            schema_objects=(f"table:adopted_audit_probe_{target_version}",),
+            runtime_consumers=(
+                DurableRuntimeConsumer(
+                    "bootstrap",
+                    "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_database",
+                    "proof:bootstrap",
+                    ("write",),
+                ),
+                DurableRuntimeConsumer(
+                    "daemon-health",
+                    "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                    "proof:daemon-health",
+                    ("read",),
+                ),
+            ),
+            behavior_proof_refs=("proof:bootstrap", "proof:daemon-health"),
+        )
+        declared = declare_durable_change_train(
+            train_id=f"train:audit:adopted-v{target_version}",
+            tier=ArchiveTier.AUDIT,
+            current_version=target_version - 1,
+            target_version=target_version,
+            slot=target_version,
+            owner_ref="owner:adopted-audit",
+            migration=claim,
+            riders=(rider,),
+            declared_at_ms=1,
+        )
+        (tier_package / f"{slot}.train.json").write_text(
+            json.dumps(durable_change_train_to_payload(declared)), encoding="utf-8"
+        )
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(
+        migration_runner, "_migration_package", lambda _tier: f"{package_name}.{ArchiveTier.AUDIT.value}"
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train._migration_package",
+        lambda _tier: f"{package_name}.{ArchiveTier.AUDIT.value}",
+    )
+    for applied_version in target_versions:
+        # Each train carries exactly one slot, so the runtime version advances
+        # one step at a time, as the shipped migration route does.
+        versions = dict(ARCHIVE_VERSION_BY_TIER)
+        versions[ArchiveTier.AUDIT] = applied_version
+        monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+        monkeypatch.setattr(bootstrap, "ARCHIVE_VERSION_BY_TIER", versions)
+        applied_statements = statements[: applied_version - adopted_version]
+        ddl = dict(ARCHIVE_DDL_BY_TIER)
+        ddl[ArchiveTier.AUDIT] = "\n".join((ARCHIVE_DDL_BY_TIER[ArchiveTier.AUDIT], *applied_statements))
+        monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
+        monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
+        with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-migrate") as owner:
+            execution = execute_durable_change_train(
+                archive_root,
+                ArchiveTier.AUDIT,
+                backup_manifest=None,
+                daemon_stopped_evidence_ref="proof:test-daemon-stopped",
+                single_writer_evidence_ref="proof:archive-ownership-lock",
+                release_archive_ownership=owner.release,
+            )
+        assert execution.manifest_path is not None
+
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    train_manifests = sorted(
+        path.name for path in manifest_root.glob("audit-*.json") if re.fullmatch(r"audit-\d{3,}\.json", path.name)
+    )
+    # The exact live shape: trains only above the adopted version, and no
+    # manifest at or below it.
+    assert train_manifests == [f"audit-{version:03d}.json" for version in target_versions]
+    assert (manifest_root / "audit-adoption.json").is_file()
+    with sqlite3.connect(audit_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (target_versions[-1],)
+    return adopted_version, target_versions
+
+
+def test_relocation_accepts_an_audit_tier_adopted_below_its_only_train(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An adopted audit tier carries its own evidence for versions with no train.
+
+    Anti-vacuity: computing ``expected_targets`` from the raw
+    ``DURABLE_MIGRATION_ADOPTION_FLOORS[AUDIT]`` instead of the chain floor
+    demands a train manifest for every version between the floor and the
+    adopted image, which the archive never performed, and this test goes red
+    with "unexpected audit train target".
+    """
+    from polylogue.operations import archive_root_relocation as relocation
+
+    archive_root = workspace_env["archive_root"]
+    adopted_version, target_versions = _adopted_audit_archive_with_later_train(archive_root, tmp_path, monkeypatch)
+    target_version = target_versions[-1]
+    assert adopted_version >= DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.AUDIT] + 1
+
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    bootstrap_marker = manifest_root / ".bootstrap"
+    if bootstrap_marker.exists():
+        bootstrap_marker.unlink()
+    # Only the audit tier is under test; keep the other durable tiers at their
+    # own current version so their chain checks are trivially satisfied.
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.SOURCE, 10_000)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.USER, 10_000)
+
+    snapshots = tuple(
+        relocation._tier_snapshot(
+            archive_root,
+            tier,
+            backup_device=0,
+            backup_inode=0,
+        )
+        for tier in ArchiveTier
+    )
+    audit_snapshot = next(item for item in snapshots if item.tier == ArchiveTier.AUDIT.value)
+    assert audit_snapshot.user_version == target_version
+
+    trains = relocation._durable_trains(archive_root, old_root=archive_root, snapshots=snapshots)
+    audit_trains = [train for train in trains if train.tier == ArchiveTier.AUDIT.value]
+    assert [Path(train.path).name for train in audit_trains] == [f"audit-{target_version:03d}.json"]
+
+
+def test_relocation_still_refuses_a_missing_audit_train_without_adoption_evidence(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing the adoption receipt restores the refusal for the same archive."""
+    from polylogue.operations import archive_root_relocation as relocation
+    from polylogue.operations.durable_change_train import audit_adoption_receipt_path
+
+    archive_root = workspace_env["archive_root"]
+    _adopted_audit_archive_with_later_train(archive_root, tmp_path, monkeypatch)
+
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    bootstrap_marker = manifest_root / ".bootstrap"
+    if bootstrap_marker.exists():
+        bootstrap_marker.unlink()
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.SOURCE, 10_000)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.USER, 10_000)
+    audit_adoption_receipt_path(archive_root).unlink()
+
+    snapshots = tuple(
+        relocation._tier_snapshot(archive_root, tier, backup_device=0, backup_inode=0) for tier in ArchiveTier
+    )
+    with pytest.raises(ArchiveRootRelocationError, match="unexpected audit train target"):
+        relocation._durable_trains(archive_root, old_root=archive_root, snapshots=snapshots)
+
+
+def test_relocation_accepts_durable_trains_below_the_chain_floor(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Historical trains at or below the floor are evidence, not a fault.
+
+    This is the source-tier shape of the same bug: an archive that walked the
+    numbered train from below its adoption floor keeps those manifests, and a
+    set-equality check against the versions above the floor refuses it.
+
+    Anti-vacuity: requiring the manifest set to equal the expected targets
+    exactly makes this red with "unexpected audit train target".
+    """
+    from polylogue.operations import archive_root_relocation as relocation
+
+    archive_root = workspace_env["archive_root"]
+    _adopted, target_versions = _adopted_audit_archive_with_later_train(
+        archive_root, tmp_path, monkeypatch, train_count=2
+    )
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    bootstrap_marker = manifest_root / ".bootstrap"
+    if bootstrap_marker.exists():
+        bootstrap_marker.unlink()
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.SOURCE, 10_000)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.USER, 10_000)
+    # Raise the audit floor above the first train, leaving one released train
+    # manifest below the floor exactly as source-027..030 sit below source v37.
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.AUDIT, target_versions[0])
+
+    snapshots = tuple(
+        relocation._tier_snapshot(archive_root, tier, backup_device=0, backup_inode=0) for tier in ArchiveTier
+    )
+    trains = relocation._durable_trains(archive_root, old_root=archive_root, snapshots=snapshots)
+    assert sorted(Path(train.path).name for train in trains if train.tier == ArchiveTier.AUDIT.value) == [
+        f"audit-{version:03d}.json" for version in target_versions
+    ]
+
+
+def test_relocation_refuses_a_train_above_the_live_durable_version(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A train claiming a version the live tier never reached is still a fault."""
+    from polylogue.operations import archive_root_relocation as relocation
+
+    archive_root = workspace_env["archive_root"]
+    _adopted, target_versions = _adopted_audit_archive_with_later_train(archive_root, tmp_path, monkeypatch)
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    bootstrap_marker = manifest_root / ".bootstrap"
+    if bootstrap_marker.exists():
+        bootstrap_marker.unlink()
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.SOURCE, 10_000)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.USER, 10_000)
+    with sqlite3.connect(archive_root / "audit.db") as connection:
+        connection.execute(f"PRAGMA user_version = {target_versions[-1] - 1}")
+        connection.commit()
+        # Relocation reads durable tiers immutably, which ignores the WAL.
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    snapshots = tuple(
+        relocation._tier_snapshot(archive_root, tier, backup_device=0, backup_inode=0) for tier in ArchiveTier
+    )
+    audit_snapshot = next(item for item in snapshots if item.tier == ArchiveTier.AUDIT.value)
+    assert audit_snapshot.user_version == target_versions[-1] - 1
+    with pytest.raises(ArchiveRootRelocationError, match="unexpected audit train target"):
+        relocation._durable_trains(archive_root, old_root=archive_root, snapshots=snapshots)
