@@ -1154,6 +1154,26 @@ def validate_audit_adoption_receipt(archive_root: Path, *, require_initial_image
     return receipt_path
 
 
+def audit_adoption_receipt_version(archive_root: Path) -> int | None:
+    """Return the audit version an archive reached by adoption, or ``None``.
+
+    An adoption receipt is the archive's evidence that its audit tier arrived
+    at that version as a canonical image rather than by walking the numbered
+    migration train, so no train manifest exists at or below it. Chain checks
+    read it as a floor. The receipt's own integrity is checked while loading
+    it; validating it against the live tier stays with the routes that own
+    that decision, so a floor lookup never repeats their work.
+    """
+    archive_root = archive_root.resolve()
+    receipt = _load_audit_adoption_receipt(archive_root)
+    if receipt is None:
+        return None
+    version = receipt[1].get("audit_user_version")
+    if not isinstance(version, int):
+        raise MigrationError("audit adoption receipt lacks its initial audit schema version")
+    return version
+
+
 def adopt_missing_audit_tier(
     path: Path,
     *,
@@ -1642,4 +1662,5 @@ __all__ = [
     "recover_pending_audit_adoption",
     "restore_adopted_audit_tier",
     "validate_audit_adoption_receipt",
+    "audit_adoption_receipt_version",
 ]

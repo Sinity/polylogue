@@ -39,9 +39,10 @@ from polylogue.storage.archive_identity import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.durable_change_train import (
-    DURABLE_MIGRATION_ADOPTION_FLOORS,
     DurableChangeTrainError,
     DurableChangeTrainState,
+    _chain_floor,
+    _durable_chain_floor_versions,
     _released_train_manifests_by_target,
     _require_released_train_chain,
     _validate_archive_root_relocation_receipts,
@@ -1187,26 +1188,43 @@ def _durable_trains(
             ).authority_identity_digest
         )
     snapshots_by_tier = {item.tier: item for item in snapshots}
+    # An adopted audit tier is only legitimate evidence once its receipt is
+    # validated against the live tier, so relocation validates it here before
+    # any chain floor is read from it.
+    from polylogue.operations.durable_change_train import (
+        audit_adoption_receipt_path,
+        validate_audit_adoption_receipt,
+    )
+
+    if audit_adoption_receipt_path(root).is_file():
+        validate_audit_adoption_receipt(root)
+    chain_floor_versions = _durable_chain_floor_versions(root, manifest_root)
     trains: list[RelocationDurableTrain] = []
     for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
         snapshot = snapshots_by_tier[tier.value]
         manifests = _released_train_manifests_by_target(manifest_root, tier)
-        expected_targets = set(range(DURABLE_MIGRATION_ADOPTION_FLOORS[tier] + 1, snapshot.user_version + 1))
-        if tier is ArchiveTier.AUDIT and not manifests:
-            # Established archives can carry a verified adopted audit image
-            # before source v32 publishes the source-backed continuity head.
-            # It has no train manifest to rebind yet; the adoption receipt and
-            # full-evidence tier check remain the authority for this narrow
-            # transitional state.
-            from polylogue.operations.durable_change_train import validate_audit_adoption_receipt
-
-            if validate_audit_adoption_receipt(root) is not None:
-                continue
-        if set(manifests) != expected_targets:
+        # Use the same floor as every other durable chain check. An archive
+        # that reached a version without a train -- a verified adopted audit
+        # image, which carries its own receipt -- has no manifest at or below
+        # it to find, while every version above the floor still requires one.
+        chain_floor = _chain_floor(tier, chain_floor_versions)
+        expected_targets = set(range(chain_floor + 1, snapshot.user_version + 1))
+        # Every version above the chain floor needs its train, and no train may
+        # claim a version the live tier has not reached. Trains at or below the
+        # floor are the archive's own history -- an archive that walked the
+        # train from below the floor keeps them, and one that reached the floor
+        # by adoption or fresh bootstrap has none -- so neither their presence
+        # nor their absence is a relocation fault.
+        if expected_targets - set(manifests) or {target for target in manifests if target > snapshot.user_version}:
             raise ArchiveRootRelocationError(f"archive-root relocation found an unexpected {tier.value} train target")
         if manifests:
             try:
-                _require_released_train_chain(tier, manifests, current_version=snapshot.user_version)
+                _require_released_train_chain(
+                    tier,
+                    manifests,
+                    current_version=snapshot.user_version,
+                    floor=chain_floor,
+                )
             except DurableChangeTrainError as exc:
                 raise ArchiveRootRelocationError(
                     f"archive-root relocation {tier.value} train chain is not released"
