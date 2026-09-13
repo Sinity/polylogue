@@ -28,6 +28,7 @@ checking is what makes that safe.
 from __future__ import annotations
 
 import ast
+import functools
 import inspect
 import textwrap
 from collections.abc import Callable
@@ -120,6 +121,34 @@ def _production_signature(name: str) -> inspect.Signature:
     return inspect.signature(production)
 
 
+def _bind_to_production(owner: str, name: str, func: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a double method so each call must satisfy the production signature.
+
+    The declaration check below only covers parameters a double names
+    explicitly. A double that takes ``**kwargs`` and reads ``kwargs["origins"]``
+    would otherwise keep passing after production renamed that parameter, since
+    the caller's keyword and the subscript drift together. Binding the incoming
+    call against production's own signature closes that: the call the read path
+    makes must be one the real ArchiveStore could serve.
+    """
+
+    signature = _production_signature(name)
+
+    @functools.wraps(func)
+    def _checked(self: ArchiveStoreDouble, *args: object, **kwargs: object) -> Any:
+        try:
+            signature.bind(self, *args, **kwargs)
+        except TypeError as exc:
+            raise TypeError(
+                f"{owner}.{name} was called with arguments production "
+                f"ArchiveStore.{name}{signature} does not accept ({exc}). The production "
+                "surface moved: update the double and the caller to the current shape."
+            ) from exc
+        return func(self, *args, **kwargs)
+
+    return _checked
+
+
 def _check_method(owner: str, name: str, func: Callable[..., Any]) -> None:
     signature = _production_signature(name)
     parameters = signature.parameters
@@ -187,9 +216,10 @@ class ArchiveStoreDouble:
             if name.startswith("__"):
                 continue
             func = member.__func__ if isinstance(member, (classmethod, staticmethod)) else member
-            if not callable(func):
+            if not callable(func) or isinstance(member, (classmethod, staticmethod)):
                 continue
             _check_method(cls.__qualname__, name, func)
+            setattr(cls, name, _bind_to_production(cls.__qualname__, name, func))
 
 
 def install_archive_store_double(
@@ -209,7 +239,7 @@ def install_archive_store_double(
         raise TypeError("install_archive_store_double requires an ArchiveStoreDouble instance")
     signature = inspect.signature(ArchiveStore.open_existing)
 
-    def _open_existing(_cls: type[ArchiveStore], *args: object, **kwargs: object) -> ArchiveStoreDouble:
+    def _open_existing(_cls: type[ArchiveStore], /, *args: object, **kwargs: object) -> ArchiveStoreDouble:
         bound = signature.bind(*args, **kwargs)
         pinned = bound.arguments.get("index_path")
         store.bind_archive_root(
