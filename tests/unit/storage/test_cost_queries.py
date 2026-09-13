@@ -94,9 +94,16 @@ def test_subscription_credit_cost_output_weight() -> None:
 def test_cost_rollup_unions_normalized_model_session_counts_and_separates_basis_lanes() -> None:
     """polylogue-cfqu0/qvjk5/wdv1x: grouped cohorts must union sessions once.
 
-    Anti-vacuity: summing the raw model/provenance COUNT(DISTINCT) values
-    reports two sessions for the one-session variant pair and leaves the
-    API-equivalent or USD subscription lane at zero/wrong units.
+    The pair ``gpt-5.2`` / ``gpt-5.2-2025-12-11`` genuinely folds into one
+    cohort under ``model_cohort_key`` (dated snapshot of the same model), and
+    session ``s1`` carries usage rows for *both* variants.
+
+    Anti-vacuity: the raw per-model ``COUNT(DISTINCT session_id)`` values are
+    1 + 1 + 1 = 3 for two real sessions, so a rollup that summed them instead
+    of unioning session ids would report 3; and a cohort split by release date
+    would make the union trivially equal to the sum. Both failures are red
+    here. The basis assertions additionally fail if the API-equivalent or USD
+    subscription lane is left at zero or in credit units.
     """
 
     from polylogue.archive.semantic.subscription_pricing import credits_to_usd
@@ -120,9 +127,11 @@ def test_cost_rollup_unions_normalized_model_session_counts_and_separates_basis_
         INSERT INTO sessions VALUES ('s1', 'chatgpt-export', 1, 1, NULL);
         INSERT INTO sessions VALUES ('s2', 'chatgpt-export', 2, 2, NULL);
         INSERT INTO session_model_usage VALUES
-            ('s1', 'gpt-5-5', 100, 10, 0, 0, NULL, 1.0, 100.0);
+            ('s1', 'gpt-5.2', 100, 10, 0, 0, NULL, 1.0, 100.0);
         INSERT INTO session_model_usage VALUES
-            ('s2', 'gpt-5-5-pro', 200, 20, 0, 0, NULL, 2.0, 200.0);
+            ('s1', 'gpt-5.2-2025-12-11', 50, 5, 0, 0, NULL, 0.5, 50.0);
+        INSERT INTO session_model_usage VALUES
+            ('s2', 'gpt-5.2-2025-12-11', 200, 20, 0, 0, NULL, 2.0, 200.0);
         """
     )
     archive = ArchiveStore.__new__(ArchiveStore)
@@ -130,11 +139,12 @@ def test_cost_rollup_unions_normalized_model_session_counts_and_separates_basis_
 
     (rollup,) = archive.list_cost_rollup_insights(origin="chatgpt-export")
 
+    assert rollup.normalized_model == "gpt-5.2"
     assert rollup.session_count == 2
-    assert rollup.per_model_breakdown[0].session_count + rollup.per_model_breakdown[1].session_count == 2
-    assert rollup.basis.api_equivalent_usd == pytest.approx(3.0)
-    assert rollup.basis.catalog_priced_usd == pytest.approx(3.0)
-    assert rollup.basis.subscription_equivalent_usd == pytest.approx(credits_to_usd(300.0))
+    assert sum(entry.session_count for entry in rollup.per_model_breakdown) == 2
+    assert rollup.basis.api_equivalent_usd == pytest.approx(3.5)
+    assert rollup.basis.catalog_priced_usd == pytest.approx(3.5)
+    assert rollup.basis.subscription_equivalent_usd == pytest.approx(credits_to_usd(350.0))
     conn.close()
 
 
