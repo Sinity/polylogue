@@ -1,5 +1,5 @@
 {
-  "rule": "Per-file ceiling on hand-written except sqlite3 handlers in polylogue/. A file may shrink, never grow; a file absent here may carry none. Convert a seam to polylogue.core.evidence / polylogue.storage.tier_access and lower its entry in the same change.",
+  "rule": "Per-file ceiling on hand-written except sqlite3 handlers that return a value in polylogue/. A file may shrink, never grow; a file absent here may carry none. Explicit failure-boundary rethrows are not counted. Convert a seam to polylogue.core.evidence / polylogue.storage.tier_access and lower its entry in the same change.",
   "total": 424,
   "sites": {
     "polylogue/analysis/claude_workflow_materializer.py": 1,

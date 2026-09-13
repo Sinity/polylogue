@@ -29,6 +29,30 @@ def _write_module(path: Path, handlers: int) -> None:
     path.write_text(body, encoding="utf-8")
 
 
+def test_census_ignores_explicit_failure_boundaries(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "reader.py").write_text(
+        "import sqlite3\n"
+        "\n"
+        "def read() -> int:\n"
+        "    try:\n"
+        "        pass\n"
+        "    except sqlite3.Error as exc:\n"
+        "        raise RuntimeError('catalog unavailable') from exc\n"
+        "\n"
+        "    try:\n"
+        "        pass\n"
+        "    except sqlite3.Error:\n"
+        "        return 0\n",
+        encoding="utf-8",
+    )
+
+    counts = census_sqlite_degradation_sites(tmp_path, ("pkg",))
+
+    assert counts == {"pkg/reader.py": 1}
+
+
 def test_census_counts_only_sqlite_handlers(tmp_path: Path) -> None:
     package = tmp_path / "pkg"
     package.mkdir()
