@@ -1,10 +1,9 @@
 """Session topology read model — session lineage graph.
 
 Materializes the durable lineage graph that relates sessions through
-resume/branch/subagent/sidechain forks. Built over the existing archive
-substrate (``sessions.parent_session_id`` + ``branch_type`` +
-``messages.parent_message_id``) rather than a new DDL bundle: the topology is
-derivable from the canonical parent edges already persisted at ingest time.
+resume/branch/subagent/sidechain forks. Its edge authority is the canonical
+``session_links`` relation; denormalized session parent/root fields are never
+used to synthesize public edges.
 
 The graph answers the classes of questions called out in issue #866:
 
@@ -34,22 +33,19 @@ from polylogue.core.types import SessionId
 class TopologyEdgeKind(str, Enum):
     """Edge classification for the session lineage graph.
 
-    Mirrors :class:`BranchType` for the resolved-parent case and adds two
-    extra states that exist only at the topology layer:
-
-    - ``UNRESOLVED_NATIVE`` — a native parent ID was observed on the child
-      through ``session_links`` but no session with that ID is present in the
-      archive. The edge is preserved so late-arriving parents can be reconciled
-      deterministically.
-    - ``UNKNOWN`` — a parent ID resolves to a stored session but the
-      child carries no ``branch_type``. Treated as a structural edge
-      without semantic classification.
+    Mirrors the canonical ``session_links.link_type`` vocabulary. ``UNKNOWN``
+    is only for malformed/legacy rows without a declared classification;
+    resolvedness belongs to ``TopologyEdge.resolution_state``. The retained
+    ``UNRESOLVED_NATIVE`` member is read compatibility for old persisted
+    payloads, never emitted by the canonical mapper.
     """
 
     CONTINUATION = "continuation"
     SIDECHAIN = "sidechain"
     FORK = "fork"
     SUBAGENT = "subagent"
+    BRANCH = "branch"
+    RESUME = "resume"
     UNKNOWN = "unknown"
     UNRESOLVED_NATIVE = "unresolved_native"
 
@@ -107,20 +103,68 @@ class TopologyNode(BaseModel):
 
 
 class TopologyEdge(BaseModel):
-    """One parent → child edge in the topology graph.
+    """One canonical ``session_links`` assertion in a topology graph.
 
-    For unresolved native edges, ``parent_id`` is ``None`` and
-    ``parent_native_id`` carries the provider-native pointer that could not
-    be reconciled to a stored session.
+    This is deliberately a projection of the natural ``session_links`` key,
+    not a reconstruction from ``sessions.parent_session_id``.  ``kind`` is
+    retained as the historical public spelling for ``link_type``; it never
+    encodes resolvedness.  Consumers must use ``composable`` when traversing.
     """
 
     model_config = ConfigDict(frozen=True)
 
     child_id: SessionId
     parent_id: SessionId | None = None
+    dst_origin: str = ""
+    dst_native_id: str | None = None
     parent_native_id: str | None = None
     kind: TopologyEdgeKind
     resolved: bool = True
+    inheritance: str | None = None
+    branch_point_message_id: str | None = None
+    authority_state: str = "accepted"
+    resolution_state: str = "resolved"
+    composable: bool = True
+    composability_reason: str | None = None
+    parent_tool_use_block_id: str | None = None
+    method: str | None = None
+    confidence: float = 1.0
+    observed_at_ms: int | None = None
+    resolved_at_ms: int | None = None
+    evidence: list[object] = Field(default_factory=list)
+
+    @property
+    def link_type(self) -> str:
+        """The canonical link classification, independent of resolution."""
+
+        return self.kind.value
+
+    def public_dict(self) -> dict[str, object]:
+        """The one semantic edge envelope shared by public transports."""
+
+        return {
+            "child_id": str(self.child_id),
+            "parent_id": str(self.parent_id) if self.parent_id is not None else None,
+            "dst_origin": self.dst_origin,
+            "dst_native_id": self.dst_native_id,
+            # Compatibility with pre-session_links clients.
+            "parent_native_id": self.parent_native_id,
+            "kind": self.kind.value,
+            "link_type": self.link_type,
+            "resolved": self.resolved,
+            "resolution_state": self.resolution_state,
+            "inheritance": self.inheritance,
+            "branch_point_message_id": self.branch_point_message_id,
+            "authority_state": self.authority_state,
+            "composable": self.composable,
+            "composability_reason": self.composability_reason,
+            "parent_tool_use_block_id": self.parent_tool_use_block_id,
+            "method": self.method,
+            "confidence": self.confidence,
+            "observed_at_ms": self.observed_at_ms,
+            "resolved_at_ms": self.resolved_at_ms,
+            "evidence": self.evidence,
+        }
 
 
 class SessionTopology(BaseModel):
@@ -151,6 +195,11 @@ class SessionTopology(BaseModel):
     nodes: tuple[TopologyNode, ...] = Field(default_factory=tuple)
     edges: tuple[TopologyEdge, ...] = Field(default_factory=tuple)
     cycle_detected: bool = False
+    conflicting_parent_detected: bool = False
+    generation_id: str = "session-links-v1"
+    nodes_complete: bool = True
+    edges_complete: bool = True
+    continuation: str | None = None
 
     def node_ids(self) -> tuple[SessionId, ...]:
         return tuple(node.session_id for node in self.nodes)
@@ -158,7 +207,9 @@ class SessionTopology(BaseModel):
     def ancestors(self, session_id: str) -> tuple[SessionId, ...]:
         """Return ancestors of ``session_id`` ordered root → parent."""
 
-        parent_lookup = {edge.child_id: edge.parent_id for edge in self.edges if edge.resolved and edge.parent_id}
+        parent_lookup = {
+            edge.child_id: edge.parent_id for edge in self.edges if edge.composable and edge.resolved and edge.parent_id
+        }
         chain: list[SessionId] = []
         seen: set[str] = set()
         current = SessionId(str(session_id))
@@ -176,7 +227,7 @@ class SessionTopology(BaseModel):
 
         children_lookup: dict[str, list[SessionId]] = {}
         for edge in self.edges:
-            if not edge.resolved or edge.parent_id is None:
+            if not edge.composable or not edge.resolved or edge.parent_id is None:
                 continue
             children_lookup.setdefault(str(edge.parent_id), []).append(edge.child_id)
         out: list[SessionId] = []
@@ -198,7 +249,7 @@ class SessionTopology(BaseModel):
 
         parent_of: SessionId | None = None
         for edge in self.edges:
-            if str(edge.child_id) == str(session_id) and edge.resolved:
+            if str(edge.child_id) == str(session_id) and edge.composable and edge.resolved:
                 parent_of = edge.parent_id
                 break
         if parent_of is None:
@@ -206,7 +257,8 @@ class SessionTopology(BaseModel):
         return tuple(
             edge.child_id
             for edge in self.edges
-            if edge.resolved
+            if edge.composable
+            and edge.resolved
             and edge.parent_id is not None
             and str(edge.parent_id) == str(parent_of)
             and str(edge.child_id) != str(session_id)
@@ -216,6 +268,36 @@ class SessionTopology(BaseModel):
         """Return only the unresolved (native-pointer-only) edges."""
 
         return tuple(edge for edge in self.edges if not edge.resolved)
+
+    def public_payload(self, session_id: str | None = None) -> dict[str, object]:
+        """Return the canonical transport-neutral topology envelope."""
+
+        target = session_id or str(self.target_id)
+        return {
+            "target_id": str(self.target_id),
+            "root_id": str(self.root_id),
+            "generation_id": self.generation_id,
+            "nodes_complete": self.nodes_complete,
+            "edges_complete": self.edges_complete,
+            "continuation": self.continuation,
+            "cycle_detected": self.cycle_detected,
+            "conflicting_parent_detected": self.conflicting_parent_detected,
+            "nodes": [
+                {
+                    "session_id": str(node.session_id),
+                    "origin": node.origin,
+                    "title": node.title,
+                    "depth": node.depth,
+                    "is_root": node.is_root,
+                }
+                for node in self.nodes
+            ],
+            "edges": [edge.public_dict() for edge in self.edges],
+            "ancestors": [ref.model_dump(mode="json") for ref in self.ancestor_refs(target)],
+            "descendants": [ref.model_dump(mode="json") for ref in self.descendant_refs(target)],
+            "siblings": [ref.model_dump(mode="json") for ref in self.sibling_refs(target)],
+            "thread": [ref.model_dump(mode="json") for ref in self.thread_refs(target)],
+        }
 
     # ------------------------------------------------------------------
     # Typed projection surface (#1261 / #866 slice D)

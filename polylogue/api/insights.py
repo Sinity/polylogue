@@ -40,13 +40,9 @@ from polylogue.analysis.topology import (
     LogicalSession,
     SessionRef,
     SessionTopology,
-    TopologyEdge,
-    TopologyEdgeKind,
-    TopologyNode,
 )
 from polylogue.archive.query.spec import parse_query_date
 from polylogue.archive.query.transaction import run_archive_read
-from polylogue.archive.session.branch_type import BranchType
 from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.core.types import SessionId
 from polylogue.cost.aggregation import session_costs_to_daily_usd
@@ -146,7 +142,14 @@ if TYPE_CHECKING:
 
 
 class _RepositorySurface(Protocol):
-    async def get_session_topology(self, session_id: str) -> SessionTopology | None: ...
+    async def get_session_topology(
+        self,
+        session_id: str,
+        *,
+        node_offset: int = 0,
+        node_limit: int = 200,
+        edge_limit: int = 500,
+    ) -> SessionTopology | None: ...
 
     async def resolve_id(self, session_id: str, *, strict: bool = False) -> object: ...
 
@@ -191,107 +194,6 @@ def _combine_upper_ms(*candidates: int | None) -> int | None:
     """Tightest (smallest) upper bound across the provided candidates."""
     present = [value for value in candidates if value is not None]
     return min(present) if present else None
-
-
-def _archive_topology_edge_kind(branch_type: str | None) -> TopologyEdgeKind:
-    if branch_type is None:
-        return TopologyEdgeKind.UNKNOWN
-    try:
-        return TopologyEdgeKind.from_branch_type(BranchType(branch_type))
-    except ValueError:
-        return TopologyEdgeKind.UNKNOWN
-
-
-def _archive_session_topology(archive: object, session_id: str) -> SessionTopology | None:
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    archive_store = archive if isinstance(archive, ArchiveStore) else None
-    if archive_store is None:
-        return None
-    try:
-        target_id = archive_store.resolve_session_id(session_id)
-    except KeyError:
-        return None
-    envelopes = archive_store.get_session_tree(target_id)
-    if not envelopes:
-        return None
-    by_id = {envelope.session_id: envelope for envelope in envelopes}
-    root_id = by_id[target_id].root_session_id or envelopes[0].session_id
-    if root_id not in by_id:
-        root_id = envelopes[0].session_id
-
-    children: dict[str, list[str]] = {}
-    edges: list[TopologyEdge] = []
-    for envelope in envelopes:
-        if envelope.parent_session_id and envelope.parent_session_id in by_id:
-            children.setdefault(envelope.parent_session_id, []).append(envelope.session_id)
-            edges.append(
-                TopologyEdge(
-                    child_id=SessionId(envelope.session_id),
-                    parent_id=SessionId(envelope.parent_session_id),
-                    kind=_archive_topology_edge_kind(envelope.branch_type),
-                    resolved=True,
-                )
-            )
-
-    # Surface unresolved parent links (#866/#1258): a parser asserted a
-    # provider-native parent pointer that does not (yet) resolve to a stored
-    # session. These rows live in session_links with resolved_dst_session_id IS NULL;
-    # they must be reported so late repair has something to reconcile.
-    placeholders = ", ".join("?" for _ in by_id)
-    if placeholders:
-        unresolved_rows = archive_store._conn.execute(
-            f"""
-            SELECT src_session_id, dst_native_id, link_type
-            FROM session_links
-            WHERE resolved_dst_session_id IS NULL
-              AND src_session_id IN ({placeholders})
-            ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_native_id, link_type
-            """,
-            tuple(by_id),
-        ).fetchall()
-        for row in unresolved_rows:
-            edges.append(
-                TopologyEdge(
-                    child_id=SessionId(str(row["src_session_id"])),
-                    parent_id=None,
-                    parent_native_id=str(row["dst_native_id"]),
-                    kind=TopologyEdgeKind.UNRESOLVED_NATIVE,
-                    resolved=False,
-                )
-            )
-
-    depths: dict[str, int] = {root_id: 0}
-    queue = [root_id]
-    seen = {root_id}
-    cycle_detected = False
-    while queue:
-        current = queue.pop(0)
-        for child_id in children.get(current, ()):
-            if child_id in seen:
-                cycle_detected = True
-                continue
-            seen.add(child_id)
-            depths[child_id] = depths[current] + 1
-            queue.append(child_id)
-
-    nodes = tuple(
-        TopologyNode(
-            session_id=SessionId(envelope.session_id),
-            origin=envelope.origin,
-            title=envelope.title,
-            depth=depths.get(envelope.session_id, 0),
-            is_root=envelope.session_id == root_id,
-        )
-        for envelope in sorted(envelopes, key=lambda item: (depths.get(item.session_id, 0), item.session_id))
-    )
-    return SessionTopology(
-        target_id=SessionId(target_id),
-        root_id=SessionId(root_id),
-        nodes=nodes,
-        edges=tuple(edges),
-        cycle_detected=cycle_detected,
-    )
 
 
 class PolylogueInsightsMixin:
@@ -1006,20 +908,28 @@ class PolylogueInsightsMixin:
             projection="session-id",
         )
 
-    async def get_session_topology(self, session_id: str) -> SessionTopology | None:
+    async def get_session_topology(
+        self,
+        session_id: str,
+        *,
+        node_offset: int = 0,
+        node_limit: int = 200,
+        edge_limit: int = 500,
+    ) -> SessionTopology | None:
         """Return the typed :class:`SessionTopology` for ``session_id``.
 
         Returns ``None`` when the session is unknown. Cycles and
         unresolved native parent edges are surfaced via the topology
         object itself; see :class:`SessionTopology`.
         """
-        return await run_archive_read(
-            _active_archive_root(self.config),
-            operation="topology.session",
-            arguments={"session_id": session_id},
-            work=lambda archive: _archive_session_topology(archive, session_id),
-            projection="topology",
-            stable_order="root,depth,session_id",
+        resolved = await self.repository.resolve_id(session_id, strict=False)
+        if resolved is None:
+            return None
+        return await self.repository.get_session_topology(
+            str(resolved),
+            node_offset=node_offset,
+            node_limit=node_limit,
+            edge_limit=edge_limit,
         )
 
     async def compact_lineage(

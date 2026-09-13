@@ -56,4 +56,29 @@ def run_read_lineage(env: AppEnv, request: RootModeRequest, invocation: ReadView
     )
 
 
-__all__ = ["LINEAGE_READ_VIEW_OPTION_NAMES", "build_lineage_options", "run_read_lineage"]
+def run_read_topology(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+    """Render the canonical session-links topology envelope for one session."""
+
+    session_id = invocation.session_id
+    assert session_id is not None
+
+    async def _run() -> object | None:
+        from polylogue.api import Polylogue
+
+        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
+            return await api.get_session_topology(
+                session_id,
+                node_limit=cast(int | None, request.params.get("limit")) or 200,
+            )
+
+    topology = run_coroutine_sync(_run())
+    if topology is None:
+        env.ui.error(f"Session not found: {session_id}")
+        return
+    content = json.dumps(topology.public_payload(session_id), indent=2) + "\n"  # type: ignore[attr-defined]
+    deliver_content(
+        env, content, destination=invocation.destination, out_path=invocation.out_path, output_format="json"
+    )
+
+
+__all__ = ["LINEAGE_READ_VIEW_OPTION_NAMES", "build_lineage_options", "run_read_lineage", "run_read_topology"]

@@ -22,9 +22,9 @@ The shape is consumed by the Lineage inspector tab (#1121 AC) and by
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, cast
 
-from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyNode
+from polylogue.analysis.topology import SessionTopology
 
 #: Default ``node_limit`` used when the client does not pass ``?limit=``.
 DEFAULT_NODE_LIMIT: Final[int] = 200
@@ -57,24 +57,17 @@ def coerce_node_limit(raw: str | None) -> int | None:
     return value
 
 
-def _node_dict(node: TopologyNode) -> dict[str, object]:
-    return {
-        "session_id": str(node.session_id),
-        "origin": node.origin,
-        "title": node.title,
-        "depth": node.depth,
-        "is_root": node.is_root,
-    }
+def coerce_node_offset(raw: str | None) -> int | None:
+    """Parse the stable topology continuation's numeric offset."""
 
-
-def _edge_dict(edge: TopologyEdge) -> dict[str, object]:
-    return {
-        "child_id": str(edge.child_id),
-        "parent_id": str(edge.parent_id) if edge.parent_id is not None else None,
-        "parent_native_id": edge.parent_native_id,
-        "kind": edge.kind.value,
-        "resolved": edge.resolved,
-    }
+    if raw is None or raw == "":
+        return 0
+    token = raw.removeprefix("node-offset:")
+    try:
+        value = int(token)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
 
 
 def _readiness(
@@ -119,24 +112,25 @@ def build_topology_envelope(
     """
 
     effective_limit = max(1, min(node_limit, MAX_NODE_LIMIT))
-    full_nodes = list(topology.nodes)
+    canonical = topology.public_payload()
+    full_nodes = list(cast("list[dict[str, object]]", canonical["nodes"]))
     kept_nodes = full_nodes[:effective_limit]
-    kept_ids = {str(node.session_id) for node in kept_nodes}
+    kept_ids = {str(node["session_id"]) for node in kept_nodes}
     truncated_count = len(full_nodes) - len(kept_nodes)
 
     kept_edges: list[dict[str, object]] = []
     unresolved_edge_count = 0
-    for edge in topology.edges:
-        child_key = str(edge.child_id)
+    for edge in cast("list[dict[str, object]]", canonical["edges"]):
+        child_key = str(edge["child_id"])
         if child_key not in kept_ids:
             continue
-        if edge.resolved:
-            if edge.parent_id is None or str(edge.parent_id) not in kept_ids:
+        if edge["resolved"]:
+            if edge["parent_id"] is None or str(edge["parent_id"]) not in kept_ids:
                 # Resolved-but-parent-dropped: skip to avoid dangling lines.
                 continue
         else:
             unresolved_edge_count += 1
-        kept_edges.append(_edge_dict(edge))
+        kept_edges.append(edge)
 
     readiness = _readiness(
         truncated_count=truncated_count,
@@ -146,15 +140,19 @@ def build_topology_envelope(
     )
 
     return {
-        "target_id": str(topology.target_id),
-        "root_id": str(topology.root_id),
-        "nodes": [_node_dict(node) for node in kept_nodes],
+        **{
+            key: canonical[key]
+            for key in ("target_id", "root_id", "generation_id", "cycle_detected", "conflicting_parent_detected")
+        },
+        "nodes": kept_nodes,
         "edges": kept_edges,
         "node_count": len(kept_nodes),
-        "total_node_count": len(full_nodes),
+        "total_node_count": len(full_nodes) if topology.nodes_complete else None,
         "truncated_count": truncated_count,
         "unresolved_edge_count": unresolved_edge_count,
-        "cycle_detected": topology.cycle_detected,
+        "nodes_complete": truncated_count == 0 and topology.nodes_complete,
+        "edges_complete": truncated_count == 0 and topology.edges_complete,
+        "continuation": (f"node-offset:{len(kept_nodes)}" if truncated_count else topology.continuation),
         "readiness": readiness,
         "node_limit": effective_limit,
     }
@@ -233,4 +231,5 @@ __all__ = [
     "build_parent_chain_envelope",
     "build_topology_envelope",
     "coerce_node_limit",
+    "coerce_node_offset",
 ]

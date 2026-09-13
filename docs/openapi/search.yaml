@@ -587,8 +587,8 @@ paths:
       summary: Execute a session read-view
       description: Executes one supported single-session read profile and returns the stable ``SessionReadViewEnvelope``.
         Supported profiles currently include ``messages``, ``raw``, ``context``, ``context-image``, ``neighbors``, ``correlation``,
-        ``effective_context``, ``lineage``. The envelope shape is stable; individual ``payload`` content is the shared DTO
-        for the selected read profile.
+        ``effective_context``, ``lineage``, ``topology``. The envelope shape is stable; individual ``payload`` content is
+        the shared DTO for the selected read profile.
       operationId: readSessionView
       security:
       - machineBearer: []
@@ -615,6 +615,7 @@ paths:
           - correlation
           - effective_context
           - lineage
+          - topology
           default: messages
       - name: format
         in: query
