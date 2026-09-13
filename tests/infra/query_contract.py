@@ -337,6 +337,7 @@ class RefFamily:
 REF_FAMILIES: tuple[RefFamily, ...] = (
     RefFamily("message", "message_id", "archive-id", "message", detail_closure=True),
     RefFamily("message", "session_id", "archive-id", "session", detail_closure=True),
+    RefFamily("message", "parent_message_id", "archive-id", "message", detail_closure=True),
     RefFamily("action", "message_id", "archive-id", "message", detail_closure=True),
     RefFamily("action", "session_id", "archive-id", "session", detail_closure=True),
     RefFamily("action", "tool_use_block_id", "archive-id", "block", detail_closure=True),
