@@ -44,6 +44,28 @@ def _schema_prefix(*, schema: str) -> str:
     return "" if schema == "main" else f"{schema}."
 
 
+def _schema_alias(schema: str) -> str:
+    """Return the attachment name represented by a schema SQL fragment.
+
+    A few legacy callers pass a quoted identifier (``"source"``) while most
+    callers pass the bare attachment name.  Introspection must compare both
+    forms against ``PRAGMA database_list`` before querying an attached
+    ``sqlite_master``; SQLite raises ``no such table`` for a schema that is
+    not attached rather than returning an empty result.
+    """
+
+    if len(schema) >= 2 and schema[0] == schema[-1] == '"':
+        return schema[1:-1].replace('""', '"')
+    return schema
+
+
+def _schema_attached(conn: sqlite3.Connection, schema: str) -> bool:
+    alias = _schema_alias(schema)
+    if alias == "main":
+        return True
+    return any(str(row[1]) == alias for row in conn.execute("PRAGMA database_list").fetchall())
+
+
 def table_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -> bool:
     """Check if a table (or virtual table) exists in the given schema (sync SQLite).
 
@@ -60,6 +82,8 @@ def table_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -
     Returns:
         True if the table exists, False otherwise
     """
+    if not _schema_attached(conn, schema):
+        return False
     cursor = conn.execute(
         f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master WHERE type='table' AND name=? LIMIT 1",
         (name,),
@@ -90,6 +114,12 @@ async def table_exists_async(conn: aiosqlite.Connection, name: str, *, schema: s
     Returns:
         True if the table exists, False otherwise
     """
+    alias = _schema_alias(schema)
+    if alias != "main":
+        cursor = await conn.execute("PRAGMA database_list")
+        aliases = {str(row[1]) for row in await cursor.fetchall()}
+        if alias not in aliases:
+            return False
     cursor = await conn.execute(
         f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master WHERE type='table' AND name=? LIMIT 1",
         (name,),

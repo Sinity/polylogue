@@ -839,6 +839,15 @@ def _archive_embedding_status_payload(
             return None
         embeddings_db = root / "embeddings.db"
         if _pinned_connection is not None:
+            # Operation snapshots attach only tiers that were available at
+            # pin time.  The embeddings tier is optional, so an absent
+            # attachment is an explicit unavailable state rather than a
+            # relation probe against a nonexistent SQLite schema.  An
+            # attached-but-invalid tier still proceeds through the probes
+            # below and retains its diagnostic failure.
+            aliases = {str(row[1]) for row in conn.execute("PRAGMA database_list").fetchall()}
+            if _embeddings_schema not in aliases:
+                return None
             status_table = _attached_table_name(conn, _embeddings_schema, "embedding_status")
             meta_table = _attached_table_name(conn, _embeddings_schema, "message_embeddings_meta")
             failure_table = _attached_table_name(conn, _embeddings_schema, "embedding_failures")
