@@ -334,6 +334,36 @@ def test_raw_discovery_restarts_for_a_new_raw_before_its_cursor(tmp_path: Path) 
     assert discovery.discover_pending_raw_ids(1) == ((earlier, len(earlier_payload)),)
 
 
+def test_raw_discovery_second_idle_pass_stays_one_page_at_large_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: an all-valid census makes the second pass inspect every row."""
+    bootstrap_archive_root(tmp_path)
+    calls: list[tuple[str | None, int]] = []
+
+    class FakeRawObservationDerivation:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def required_page(
+            self, _frame: object, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
+            calls.append((cursor, limit))
+            # A synthetic million-row valid scope is represented by its page
+            # boundary. Any scanner that walks it must call this more than once.
+            return (("valid-page",), "valid-page")
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
+            return dict.fromkeys(keys, "valid")
+
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+
+    assert discovery.discover_pending_raw_ids(32) == ()
+    assert discovery.discover_pending_raw_ids(32) == ()
+    assert calls == [(None, 32), ("valid-page", 32)]
+
+
 @pytest.mark.asyncio
 async def test_intake_coalesces_hints_received_during_discovery() -> None:
     """Clearing a wake after discovery loses the event and waits sixty seconds."""

@@ -52,7 +52,13 @@ from typing import Any
 
 from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.config import Config
+from polylogue.core.enums import Origin, Provider
+from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
+from polylogue.operations.raw_observation_derivation import (
+    make_raw_observation_derivation,
+    raw_observation_frame,
+)
 from polylogue.pipeline.parsed_tree_size import (
     effective_physical_memory_bytes,
     estimate_parsed_tree_bytes,
@@ -60,12 +66,60 @@ from polylogue.pipeline.parsed_tree_size import (
 from polylogue.sources import revision_backfill
 from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.sources.revision_backfill import RawParsePrefetchCache
-from polylogue.storage.raw_convergence import (
-    raw_materialization_pending_census_raw_ids,
-    raw_materialization_readonly_descriptors,
-)
 
 logger = get_logger(__name__)
+
+
+def _bounded_pending_raw_ids(
+    config: Config,
+    *,
+    limit: int,
+    raw_artifact_id: str | None,
+) -> tuple[str, ...]:
+    """Return one canonical raw-observation page that still needs work."""
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    adapter = make_raw_observation_derivation(config.archive_root, max_payload_bytes=64 * 1024 * 1024)
+    frame = raw_observation_frame(
+        config.archive_root,
+        raw_ids=(raw_artifact_id,) if raw_artifact_id is not None else (),
+    )
+    raw_ids, _next_cursor = adapter.required_page(frame, cursor=None, limit=limit)
+    states = adapter.inspect(frame, raw_ids)
+    return tuple(raw_id for raw_id in raw_ids if states.get(raw_id) != "valid")
+
+
+def _readonly_descriptors(
+    archive_root: Path, raw_ids: Sequence[str]
+) -> dict[str, tuple[Provider, str, str, RawRevisionKind, int]]:
+    """Read immutable parse inputs for the selected bounded raw ids."""
+    raw_ids = tuple(raw_ids)
+    if not raw_ids:
+        return {}
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]] = {}
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+        for offset in range(0, len(raw_ids), 500):
+            raw_id_chunk = raw_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in raw_id_chunk)
+            for row in conn.execute(
+                f"""
+                SELECT raw_id, origin, detected_provider, capture_mode,
+                       lower(hex(blob_hash)), source_path, revision_kind, blob_size
+                FROM raw_sessions WHERE raw_id IN ({placeholders})
+                """,
+                raw_id_chunk,
+            ):
+                descriptors[str(row[0])] = (
+                    Provider.from_string(str(row[2]))
+                    if row[2] is not None
+                    else provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[3]),
+                    str(row[4]),
+                    str(row[5]),
+                    RawRevisionKind(str(row[6])),
+                    int(row[7]),
+                )
+    return descriptors
+
 
 # Floor/ceiling for the adaptive whale-memory budget below. The original
 # fixed 64 MiB default starved bulk-scale warm on whale corpora: measured
@@ -588,10 +642,9 @@ class CensusParseStage:
         writer-held path dispatches to a process/thread pool). Nothing here
         writes to source.db, index.db, or takes the daemon's writer lease.
         """
-        candidate_raw_ids = raw_materialization_pending_census_raw_ids(
+        candidate_raw_ids = _bounded_pending_raw_ids(
             config,
             limit=limit,
-            max_payload_bytes=max_payload_bytes,
             raw_artifact_id=raw_artifact_id,
         )
         return self._warm_raw_ids_impl(config, raw_ids=candidate_raw_ids, max_payload_bytes=max_payload_bytes)
@@ -618,7 +671,7 @@ class CensusParseStage:
         if not raw_ids:
             return 0
         archive_root = config.archive_root
-        descriptors = raw_materialization_readonly_descriptors(archive_root, raw_ids)
+        descriptors = _readonly_descriptors(archive_root, raw_ids)
         blob_root_str = str(archive_root / "blob")
         source_db_path_str = str(archive_root / "source.db")
         # polylogue-6lyh1: resolve the same APPEND fallback-identity hint the

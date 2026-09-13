@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 from polylogue.daemon.derivation import (
     Budget,
@@ -81,6 +82,97 @@ def raw_observation_pending_roots(archive_root: Path, paths: Sequence[Path]) -> 
             if cursor is None or all(path in pending for path in chunk):
                 break
     return pending
+
+
+def raw_observation_backlog_snapshot(archive_root: Path, *, limit: int) -> dict[str, object]:
+    """Describe one bounded canonical raw-observation page for status surfaces.
+
+    Status is observational and must not reintroduce a second all-raw
+    materialization census.  The returned rows are therefore a page from the
+    same derivation traversal fair intake owns, with its pending verdicts from
+    the adapter's authoritative inspection.
+    """
+    if limit < 1:
+        raise ValueError("limit must be positive")
+
+    def unavailable(reason: str) -> dict[str, object]:
+        return {
+            "available": False,
+            "reason": reason,
+            "scan": "bounded_raw_observation_page",
+            "candidate_count": 0,
+            "total_blob_bytes": 0,
+            "max_blob_bytes": 0,
+            "top_raw_rows": [],
+            "origin_summary": [],
+            "source_path_summary": [],
+            "page_limit": limit,
+            "page_complete": True,
+        }
+
+    adapter = make_raw_observation_derivation(archive_root, max_payload_bytes=64 * 1024 * 1024)
+    frame = raw_observation_frame(archive_root)
+    try:
+        raw_ids, next_cursor = adapter.required_page(frame, cursor=None, limit=limit)
+        states = adapter.inspect(frame, raw_ids)
+    except FileNotFoundError as exc:
+        return unavailable(str(exc))
+    pending_ids = tuple(raw_id for raw_id in raw_ids if states.get(raw_id) != "valid")
+    if not pending_ids:
+        return {
+            "available": True,
+            "scan": "bounded_raw_observation_page",
+            "candidate_count": 0,
+            "total_blob_bytes": 0,
+            "max_blob_bytes": 0,
+            "top_raw_rows": [],
+            "origin_summary": [],
+            "source_path_summary": [],
+            "page_limit": limit,
+            "page_complete": next_cursor is None,
+        }
+    with adapter._read() as conn:
+        selected = conn.execute(
+            f"SELECT raw_id, origin, source_path, blob_size FROM raw_sessions "
+            f"WHERE raw_id IN ({','.join('?' for _ in pending_ids)})",
+            pending_ids,
+        ).fetchall()
+    rows: list[dict[str, Any]] = sorted(
+        (
+            {
+                "raw_id": str(row["raw_id"]),
+                "origin": str(row["origin"]),
+                "source_path": str(row["source_path"] or ""),
+                "blob_size": int(row["blob_size"] or 0),
+                "oversized": False,
+                "stream_safe": True,
+            }
+            for row in selected
+        ),
+        key=lambda row: (-int(row["blob_size"]), str(row["raw_id"])),
+    )
+    origin_summary: dict[str, dict[str, int | str]] = {}
+    source_path_summary: dict[str, dict[str, int | str]] = {}
+    for row in rows:
+        origin = str(row["origin"])
+        path = str(row["source_path"])
+        for summary, key, name in ((origin_summary, origin, "origin"), (source_path_summary, path, "source_path")):
+            entry = summary.setdefault(key, {name: key, "raw_count": 0, "total_blob_bytes": 0, "max_blob_bytes": 0})
+            entry["raw_count"] = int(entry["raw_count"]) + 1
+            entry["total_blob_bytes"] = int(entry["total_blob_bytes"]) + int(row["blob_size"])
+            entry["max_blob_bytes"] = max(int(entry["max_blob_bytes"]), int(row["blob_size"]))
+    return {
+        "available": True,
+        "scan": "bounded_raw_observation_page",
+        "candidate_count": len(rows),
+        "total_blob_bytes": sum(int(row["blob_size"]) for row in rows),
+        "max_blob_bytes": max((int(row["blob_size"]) for row in rows), default=0),
+        "top_raw_rows": rows,
+        "origin_summary": sorted(origin_summary.values(), key=lambda row: str(row["origin"])),
+        "source_path_summary": sorted(source_path_summary.values(), key=lambda row: str(row["source_path"])),
+        "page_limit": limit,
+        "page_complete": next_cursor is None,
+    }
 
 
 def converge_raw_observations(
