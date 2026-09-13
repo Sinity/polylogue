@@ -2352,9 +2352,13 @@ def test_audit_adoption_receipt_keeps_initial_schema_evidence_after_upgrade(
         )
     initial_schema_digest = json.loads(receipt.read_text(encoding="utf-8"))["audit_schema_inventory_sha256"]
 
+    # "Later" is derived from the live audit DDL, never a literal: the previous
+    # literal silently became a *downgrade* the moment audit gained migration
+    # 003, and the refusal that produced was read as this test's own failure.
+    future_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT] + 1
     with closing(sqlite3.connect(audit_path)) as connection:
         connection.execute("CREATE TABLE future_audit_schema (value TEXT)")
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute(f"PRAGMA user_version = {future_version}")
         connection.commit()
 
     assert validate_audit_adoption_receipt(archive_root) == receipt

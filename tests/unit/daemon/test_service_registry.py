@@ -85,7 +85,7 @@ def test_derived_writes_gate_every_index_writing_service() -> None:
         )
     }
 
-    assert "raw_materialization_convergence" not in blocked
+    assert "raw_observation_convergence" not in blocked
     assert "convergence_check" not in blocked
     assert "status_snapshot_refresh" not in blocked
     # ... while process liveness stays observable precisely then.
@@ -95,7 +95,7 @@ def test_derived_writes_gate_every_index_writing_service() -> None:
 def test_resident_core_profile_starts_no_archive_work() -> None:
     """The fixture profile that focused daemon tests select.
 
-    It must exclude raw materialization and every other archive-writing
+    It must exclude raw observation convergence and every other archive-writing
     service even when every capability is present -- that exclusion is what
     keeps a focused daemon test from doing a real convergence pass.
     """
@@ -104,7 +104,7 @@ def test_resident_core_profile_starts_no_archive_work() -> None:
     }
 
     assert selected == {"lifecycle_heartbeat", "health_check"}
-    assert "raw_materialization_convergence" not in selected
+    assert "raw_observation_convergence" not in selected
 
 
 def test_socket_servers_fail_the_daemon_and_maintenance_loops_do_not() -> None:

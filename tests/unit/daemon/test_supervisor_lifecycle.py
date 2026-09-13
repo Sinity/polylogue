@@ -223,14 +223,27 @@ def test_shutdown_cancels_and_awaits_within_the_declared_deadline() -> None:
 def test_a_child_that_ignores_cancellation_is_named_as_an_orphan() -> None:
     """Removing the deadline turns this into a hang, which is the regression."""
 
+    ignoring = True
+
     async def uncancellable() -> None:
         while True:
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                # Ignoring cancellation is the whole point, but a child that
+                # ignores it *forever* also outlives the test: the loop
+                # shutdown that follows asyncio.run() cancels and awaits every
+                # surviving task, so an unconditionally uncancellable child
+                # hangs there instead of in shutdown(). The release below is
+                # teardown, not the behaviour under test.
+                if not ignoring:
+                    raise
 
     async def scenario() -> None:
+        nonlocal ignoring
         supervisor = _supervisor()
-        supervisor.start("health_check", uncancellable)
+        task = supervisor.start("health_check", uncancellable)
+        assert task is not None
         await asyncio.sleep(0)
 
         report = await supervisor.shutdown()
@@ -240,6 +253,15 @@ def test_a_child_that_ignores_cancellation_is_named_as_an_orphan() -> None:
         assert supervisor.state("health_check") is ServiceState.ORPHANED
         observation = supervisor.board.get_or_unavailable("health")
         assert observation.state is ObservationState.DEGRADED
+
+        # The abandoned child eventually dies. Reaping it must not rewrite the
+        # record: a task we gave up waiting for is not a task that stopped
+        # cleanly, so ORPHANED outranks the STOPPED its cancellation settles.
+        ignoring = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert supervisor.state("health_check") is ServiceState.ORPHANED
 
     asyncio.run(scenario())
 
@@ -424,8 +446,8 @@ def test_profile_selection_comes_from_the_production_registry() -> None:
         production_names = {spec.name for spec in production.selected}
 
         assert focused_names < production_names
-        assert "raw_materialization_convergence" not in focused_names
-        assert focused.start("raw_materialization_convergence", _forever) is None
-        assert focused.state("raw_materialization_convergence") is ServiceState.SKIPPED
+        assert "raw_observation_convergence" not in focused_names
+        assert focused.start("raw_observation_convergence", _forever) is None
+        assert focused.state("raw_observation_convergence") is ServiceState.SKIPPED
 
     asyncio.run(scenario())

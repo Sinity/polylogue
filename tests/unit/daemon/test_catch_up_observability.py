@@ -233,7 +233,19 @@ def test_catch_up_cycle_emits_runtime_observability_evidence(
     assert backlog_end == 0
 
     # ── Per-stage convergence timings: every declared stage must be measured. ──
-    assert set(stage_timings) == {"parse", "fts", "derived"}
+    # Each stage reports its work and, separately, the batch check that decided
+    # whether there was any (convergence.py records "<stage>.check"). Both are
+    # required: a check that silently became the expensive half would otherwise
+    # be invisible, and the probe keys per name and never sums, so the check
+    # rows cannot inflate a stage's own time.
+    assert set(stage_timings) == {
+        "parse",
+        "parse.check",
+        "fts",
+        "fts.check",
+        "derived",
+        "derived.check",
+    }
     assert all(value >= 0.0 for value in stage_timings.values())
     # Converger marked every good input DONE for every stage.
     for path in good_paths:

@@ -10,6 +10,7 @@ that did not ask for one.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -36,15 +37,40 @@ def _autocheckpoint(statements: tuple[str, ...]) -> int:
     return int(declared[0].rsplit("=", 1)[1])
 
 
-def _seed_wal(db: Path, *, rows: int) -> None:
-    conn = sqlite3.connect(db)
-    try:
+@pytest.fixture
+def seed_wal() -> Iterator[Callable[..., sqlite3.Connection]]:
+    """Seed a WAL and leave a connection holding it open.
+
+    SQLite deletes the ``-wal`` file when the *last* connection to a database
+    closes, so a helper that closes its own seeding connection leaves no WAL
+    behind at all. Every escalation assertion in this file would then be
+    reading ``checkpoint_wal``'s absent-WAL size gate
+    (``wal_checkpoint.py``: ``before < warn_bytes`` returns ``mode="none"``)
+    rather than the escalation policy it names -- which is exactly how
+    ``mode == "passive"`` and ``mode == "truncate"`` both came back ``"none"``.
+
+    The connection is returned so a test can decide *who* keeps the WAL
+    alive; the fixture closes whatever is still open at teardown.
+    """
+    held: list[sqlite3.Connection] = []
+
+    def _seed(db: Path, *, rows: int) -> sqlite3.Connection:
+        conn = sqlite3.connect(db)
+        held.append(conn)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA wal_autocheckpoint = 0")
         conn.execute("CREATE TABLE IF NOT EXISTS payload (id INTEGER PRIMARY KEY, body BLOB)")
         conn.executemany("INSERT INTO payload (body) VALUES (?)", [(b"x" * 4096,) for _ in range(rows)])
         conn.commit()
-    finally:
+        # Assert the premise rather than trusting it: a seeding route that
+        # stops producing a WAL must fail here, not quietly turn every
+        # escalation assertion below into a test of the size gate.
+        wal = db.with_name(f"{db.name}-wal")
+        assert wal.exists() and wal.stat().st_size > 0, f"no WAL seeded for {db}"
+        return conn
+
+    yield _seed
+    for conn in held:
         conn.close()
 
 
@@ -65,9 +91,11 @@ def test_owned_process_disables_implicit_autocheckpoint_for_every_writer() -> No
     assert not recurring_checkpoint_owner_armed()
 
 
-def test_owned_autocheckpoint_reaches_the_opened_connection(tmp_path: Path) -> None:
+def test_owned_autocheckpoint_reaches_the_opened_connection(
+    tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
     db = tmp_path / "owned.db"
-    _seed_wal(db, rows=1)
+    seed_wal(db, rows=1)
     with arm_recurring_checkpoint_owner():
         conn = connection_profile.open_daemon_connection(db, validate_schema=False)
         try:
@@ -98,26 +126,28 @@ def test_recurring_escalation_never_reaches_restart_or_truncate() -> None:
         assert modes[0] == "PASSIVE"
 
 
-def test_checkpoint_below_the_warn_threshold_does_not_open_a_connection(tmp_path: Path) -> None:
+def test_checkpoint_below_the_warn_threshold_does_not_open_a_connection(
+    tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
     db = tmp_path / "quiet.db"
-    _seed_wal(db, rows=1)
+    seed_wal(db, rows=1)
     observation = wal_checkpoint.checkpoint_wal(db, reason="unit")
     assert observation.mode == "none"
     assert not observation.ran
     assert observation.wal_bytes_after == observation.wal_bytes_before
 
 
-def test_recurring_checkpoint_stops_at_passive(tmp_path: Path) -> None:
+def test_recurring_checkpoint_stops_at_passive(tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]) -> None:
     db = tmp_path / "index.db"
-    _seed_wal(db, rows=64)
+    seed_wal(db, rows=64)
     observation = wal_checkpoint.checkpoint_wal(db, reason="unit", warn_bytes=1, escalation_bytes=1)
     assert observation.escalation == "recurring"
     assert observation.mode == "passive"
 
 
-def test_exclusive_escalation_reaches_truncate(tmp_path: Path) -> None:
+def test_exclusive_escalation_reaches_truncate(tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]) -> None:
     db = tmp_path / "index.db"
-    _seed_wal(db, rows=64)
+    seed_wal(db, rows=64)
     observation = wal_checkpoint.checkpoint_wal(
         db, reason="unit", escalation="exclusive", warn_bytes=1, escalation_bytes=1
     )
@@ -125,13 +155,21 @@ def test_exclusive_escalation_reaches_truncate(tmp_path: Path) -> None:
     assert observation.wal_bytes_after == 0
 
 
-def test_busy_reader_retains_the_wal_and_reports_evidence(tmp_path: Path) -> None:
+def test_busy_reader_retains_the_wal_and_reports_evidence(
+    tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
     db = tmp_path / "index.db"
-    _seed_wal(db, rows=64)
+    writer = seed_wal(db, rows=64)
     reader = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
         reader.execute("BEGIN")
         reader.execute("SELECT count(*) FROM payload").fetchone()
+        # The reader now holds the snapshot *and* is the only thing keeping the
+        # WAL on disk. Dropping the writer first is what makes this test red if
+        # the busy reader is ever removed: without it the WAL disappears with
+        # the last connection and the observation reports mode="none", not a
+        # blocked checkpoint. A second idle connection would have masked that.
+        writer.close()
         observation = wal_checkpoint.checkpoint_wal(
             db, reason="unit", escalation="exclusive", warn_bytes=1, escalation_bytes=1
         )
@@ -144,9 +182,11 @@ def test_busy_reader_retains_the_wal_and_reports_evidence(tmp_path: Path) -> Non
     assert observation.wal_bytes_after > 0
 
 
-def test_blockers_are_not_scanned_unless_the_route_asks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_blockers_are_not_scanned_unless_the_route_asks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
     db = tmp_path / "index.db"
-    _seed_wal(db, rows=64)
+    seed_wal(db, rows=64)
 
     def refuse(_db: Path) -> tuple[str, ...]:
         raise AssertionError("an interactive route must not walk every process on the host")
@@ -156,17 +196,21 @@ def test_blockers_are_not_scanned_unless_the_route_asks(tmp_path: Path, monkeypa
     assert observation.blocking_processes == ()
 
 
-def test_missing_tiers_are_skipped_rather_than_failing_the_sweep(tmp_path: Path) -> None:
+def test_missing_tiers_are_skipped_rather_than_failing_the_sweep(
+    tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
     (tmp_path / "index.db").touch()
-    _seed_wal(tmp_path / "index.db", rows=1)
+    seed_wal(tmp_path / "index.db", rows=1)
     observations = wal_checkpoint.checkpoint_archive_wals(tmp_path, reason="unit", warn_bytes=1)
     assert len(observations) == 1
 
 
-def test_a_failed_open_reports_no_mode_and_the_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_failed_open_reports_no_mode_and_the_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
     """Nothing ran, so no mode is claimed -- but the failure is still evidence."""
     db = tmp_path / "index.db"
-    _seed_wal(db, rows=64)
+    seed_wal(db, rows=64)
 
     def refuse(*_args: object, **_kwargs: object) -> sqlite3.Connection:
         raise sqlite3.OperationalError("database is locked")
@@ -178,9 +222,11 @@ def test_a_failed_open_reports_no_mode_and_the_error(tmp_path: Path, monkeypatch
     assert observation.error == "database is locked"
 
 
-def test_known_but_unauthorized_checkpoint_mode_is_refused(tmp_path: Path) -> None:
+def test_known_but_unauthorized_checkpoint_mode_is_refused(
+    tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
     db = tmp_path / "index.db"
-    _seed_wal(db, rows=1)
+    seed_wal(db, rows=1)
     conn = sqlite3.connect(db)
     try:
         with pytest.raises(ValueError, match="not permitted at exclusive boundary"):
@@ -189,9 +235,11 @@ def test_known_but_unauthorized_checkpoint_mode_is_refused(tmp_path: Path) -> No
         conn.close()
 
 
-def test_recurring_boundary_refuses_exclusive_checkpoint_modes(tmp_path: Path) -> None:
+def test_recurring_boundary_refuses_exclusive_checkpoint_modes(
+    tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
     db = tmp_path / "index.db"
-    _seed_wal(db, rows=1)
+    seed_wal(db, rows=1)
     conn = sqlite3.connect(db)
     try:
         with pytest.raises(ValueError, match="not permitted at recurring boundary"):
@@ -212,9 +260,11 @@ def test_checkpoint_hold_budget_is_separate_from_publication() -> None:
     assert checkpoint_budget < write_hold_budget_s("derivation.session")
 
 
-def test_observation_reports_its_own_hold_against_the_budget(tmp_path: Path) -> None:
+def test_observation_reports_its_own_hold_against_the_budget(
+    tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
     db = tmp_path / "index.db"
-    _seed_wal(db, rows=64)
+    seed_wal(db, rows=64)
     observation = wal_checkpoint.checkpoint_wal(db, reason="unit", warn_bytes=1, escalation_bytes=1)
     assert observation.elapsed_s >= 0.0
     assert not observation.over_hold_budget
