@@ -45,6 +45,10 @@ from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
 
 
+async def _unused_session_profile_callback(_session_ids: Sequence[str] | None) -> DerivationReport:
+    raise AssertionError("session-profile callback should not run")
+
+
 class _NoIntakeHints:
     def intake_revision(self, source: WatchSource) -> int:
         return 0
@@ -1479,7 +1483,7 @@ def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
 
     calls: list[str] = []
 
-    async def fake_run() -> int:
+    async def fake_run(_callback: object) -> int:
         from polylogue.storage.sqlite.write_lease import current_write_lease
 
         assert current_write_lease() is None
@@ -1493,7 +1497,12 @@ def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
             "_run_drive_source_catchup_safely",
             fake_run,
         )
-        task = asyncio.create_task(daemon_cli._periodic_drive_source_catchup(catch_up_complete=catch_up_complete))
+        task = asyncio.create_task(
+            daemon_cli._periodic_drive_source_catchup(
+                session_profile_callback=_unused_session_profile_callback,
+                catch_up_complete=catch_up_complete,
+            )
+        )
         await asyncio.sleep(0)
         assert calls == []
         catch_up_complete.set()
@@ -2306,13 +2315,18 @@ def test_drive_source_catchup_skips_when_no_drive_sources(tmp_path: Path) -> Non
         patch("polylogue.config.get_config", return_value=config),
         patch("polylogue.services.build_runtime_services") as build_services,
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once())
+        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(_unused_session_profile_callback))
 
     assert changed == 0
     build_services.assert_not_called()
 
 
 def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) -> None:
+    """Drive hands every parsed id to the daemon's canonical derivation owner.
+
+    Anti-vacuity: restoring the legacy bulk-refresh caller reaches the patched
+    function below and fails instead of silently bypassing the composed owner.
+    """
     from polylogue.config import Config, Source
     from polylogue.daemon import cli as daemon_cli
 
@@ -2328,10 +2342,6 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
     class FakeServices:
         def get_repository(self) -> object:
             events.append("repository")
-            return object()
-
-        def get_backend(self) -> object:
-            events.append("backend")
             return object()
 
         async def close(self) -> None:
@@ -2362,35 +2372,89 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
                 ),
             )
 
-    async def fake_refresh(_backend: object, session_ids: list[str]) -> None:
-        events.append(("refresh", session_ids))
+    async def canonical_callback(session_ids: Sequence[str] | None) -> DerivationReport:
+        events.append(("canonical", session_ids))
+        return cast(DerivationReport, object())
 
     with (
         patch("polylogue.config.get_config", return_value=config),
         patch("polylogue.services.build_runtime_services", return_value=FakeServices()) as build_services,
         patch("polylogue.pipeline.services.parsing.ParsingService", FakeParser),
-        patch("polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk", fake_refresh),
+        patch(
+            "polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk",
+            side_effect=AssertionError("Drive catch-up bypassed the composed derivation owner"),
+        ),
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once())
+        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(canonical_callback))
 
     assert changed == 2
     build_services.assert_called_once_with(config=config, db_path=config.db_path)
     assert ("ingest", [drive_source], "all", True, daemon_cli._DRIVE_CATCHUP_MAX_PASS_SECONDS) in events
-    assert ("refresh", ["session-a", "session-b"]) in events
+    assert ("canonical", ("session-a", "session-b")) in events
     assert events[-1] == "close"
+
+
+def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(tmp_path: Path) -> None:
+    """A derived-output failure does not discard completed Drive source work."""
+    from polylogue.config import Config, Source
+    from polylogue.daemon import cli as daemon_cli
+
+    drive_source = Source(name="aistudio", folder="Google AI Studio", path=tmp_path / "drive-cache" / "gemini")
+    config = Config(
+        archive_root=tmp_path,
+        render_root=tmp_path / "render",
+        sources=[drive_source],
+        db_path=tmp_path / "index.db",
+    )
+
+    class FakeServices:
+        def get_repository(self) -> object:
+            return object()
+
+        async def close(self) -> None:
+            return None
+
+    class FakeParser:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        async def ingest_sources(self, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0),
+                parse_result=SimpleNamespace(
+                    processed_ids={"raw-link-only-session"},
+                    counts={"sessions": 0},
+                    time_budget_exceeded=False,
+                ),
+            )
+
+    async def failing_callback(session_ids: Sequence[str] | None) -> DerivationReport:
+        assert session_ids == ("raw-link-only-session",)
+        raise RuntimeError("synthetic aggregate failure")
+
+    with (
+        patch("polylogue.config.get_config", return_value=config),
+        patch("polylogue.services.build_runtime_services", return_value=FakeServices()),
+        patch("polylogue.pipeline.services.parsing.ParsingService", FakeParser),
+        patch.object(daemon_cli.logger, "warning") as warning,
+    ):
+        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(failing_callback))
+
+    assert changed == 1
+    warning.assert_called_once_with("daemon: Drive session-profile convergence failed (non-fatal)", exc_info=True)
 
 
 def test_drive_source_catchup_safe_wrapper_logs_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    async def fail_catchup() -> int:
+    async def fail_catchup(_callback: object) -> int:
         raise RuntimeError("drive unavailable")
 
     with (
         patch.object(daemon_cli, "_run_drive_source_catchup_once", fail_catchup),
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_safely())
+        changed = asyncio.run(daemon_cli._run_drive_source_catchup_safely(_unused_session_profile_callback))
 
     assert changed == 0
     warning.assert_called_once_with("daemon: Drive source catch-up failed", exc_info=True)
@@ -3683,10 +3747,11 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     async def fake_reconcile_blob_publications() -> None:
         events.append("blob-publications")
 
-    async def fake_drive_catchup() -> int:
+    async def fake_drive_catchup(callback: object) -> int:
         from polylogue.storage.sqlite.write_lease import current_write_lease
 
         assert current_write_lease() is None
+        assert callback is api_server.session_profile_callback
         events.append("drive-once")
         drive_called.set()
         return 0
