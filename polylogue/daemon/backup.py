@@ -32,6 +32,7 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.write_lease import write_lease
+from polylogue.daemon.cli import checkpoint_connection, open_isolated_write_connection
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.logging import get_logger
 from polylogue.operations.append_acquisition_replay import codex_legacy_header_size, replay_append_acquisition_payload
@@ -51,8 +52,6 @@ from polylogue.storage.blob_integrity import (
     project_source_blob_liveness,
 )
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
-from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 logger = get_logger(__name__)
 
@@ -1710,20 +1709,22 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             source_generation_id = evidence.get("source_generation_id")
             if source_generation_id is not None and not isinstance(source_generation_id, str):
                 raise RuntimeError("backup blob reference evidence has invalid source generation identity")
+            assertion_path = restored / _SOURCE_DECLARED_ABSENT_FILE
             with closing(
                 _open_backup_readonly_connection(restored / "source.db", immutable=True, timeout_class="offline-bulk")
             ) as source_conn:
                 source_generation_tables_exist = _source_generation_tables_exist(source_conn)
+            if (assertion_path.exists() or assertion_path.is_symlink()) and (
+                source_generation_id is not None or source_generation_tables_exist
+            ):
+                raise RuntimeError("source declared-absent assertion is only valid before source generations exist")
             restored_source_hashes = _source_blob_hashes_from_restored_source(
                 restored / "source.db",
                 source_generation_id=source_generation_id,
             )
             reference_evidence_ok = reference_evidence_ok and restored_source_hashes == source_evidence_hashes
-            assertion_path = restored / _SOURCE_DECLARED_ABSENT_FILE
             declared_absent: set[str] = set()
             if assertion_path.exists() or assertion_path.is_symlink():
-                if source_generation_id is not None or source_generation_tables_exist:
-                    raise RuntimeError("source declared-absent assertion is only valid before source generations exist")
                 declared_absent = _load_source_declared_absent(restored / "source.db", assertion_path)
                 if not declared_absent.issubset(restored_source_hashes):
                     reference_evidence_ok = False
