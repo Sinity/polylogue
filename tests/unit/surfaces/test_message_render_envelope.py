@@ -30,11 +30,13 @@ from polylogue.storage.runtime.archive.records import BlockRecord, MessageRecord
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow
 from polylogue.surfaces.payloads import (
     _MESSAGE_MASK,
+    MESSAGE_TOPOLOGY_MASK,
     MessageRenderEnvelope,
     ReaderActionAvailabilityPayload,
     TargetRefPayload,
     message_render_envelope_from_archive_row,
     message_render_envelope_from_domain,
+    message_topology_from_domain,
 )
 
 
@@ -84,6 +86,25 @@ def test_envelope_field_set_is_exhaustive() -> None:
         "MessageRenderEnvelope drifted from the domain mask and affordance set. "
         "Update the mask only when the canonical Message model grows."
     )
+
+
+def test_topology_projection_declaration_is_canonical() -> None:
+    """Every public topology key is projected from the domain exactly once."""
+    assert MESSAGE_TOPOLOGY_MASK == (
+        ("parent_id", "parent_message_id"),
+        ("branch_index", "variant_index"),
+        ("position", "position"),
+        ("is_active_path", "is_active_path"),
+        ("is_active_leaf", "is_active_leaf"),
+    )
+    message = _build_message(parent_id=None, branch_index=2, position=9, is_active_path=None, is_active_leaf=False)
+    assert message_topology_from_domain(message) == {
+        "parent_message_id": None,
+        "variant_index": 2,
+        "position": 9,
+        "is_active_path": None,
+        "is_active_leaf": False,
+    }
 
 
 def test_domain_roundtrip_populates_every_masked_message_field() -> None:
@@ -196,6 +217,14 @@ def test_from_archive_row_propagates_position_and_active_path_state() -> None:
     assert payload.is_active_path is True
     assert payload.is_active_leaf is True
     assert payload.branch_index == 3
+
+
+def test_from_archive_row_preserves_unknown_active_path() -> None:
+    row = _archive_row(is_active_path=None)
+
+    payload = message_render_envelope_from_archive_row(row, session_id="c1")
+
+    assert payload.is_active_path is None
 
 
 def test_from_archive_row_preserves_identity_source() -> None:

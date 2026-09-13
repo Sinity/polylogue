@@ -720,6 +720,15 @@ class SessionFlagsPayload(SurfacePayloadModel):
     has_paste_evidence: bool = False
 
 
+MESSAGE_TOPOLOGY_MASK: tuple[tuple[str, str], ...] = (
+    ("parent_id", "parent_message_id"),
+    ("branch_index", "variant_index"),
+    ("position", "position"),
+    ("is_active_path", "is_active_path"),
+    ("is_active_leaf", "is_active_leaf"),
+)
+
+
 _MESSAGE_MASK: tuple[tuple[str, str], ...] = (
     ("id", "id"),
     ("identity_source", "identity_source"),
@@ -731,14 +740,9 @@ _MESSAGE_MASK: tuple[tuple[str, str], ...] = (
     ("material_origin", "material_origin"),
     ("parent_id", "parent_id"),
     ("branch_index", "branch_index"),
-    # Public topology vocabulary follows the archive contract.  Keep the
-    # legacy spellings in the same declaration for older readers; both are
-    # derived from the one domain model and therefore cannot drift.
-    ("parent_id", "parent_message_id"),
-    ("branch_index", "variant_index"),
-    ("position", "position"),
-    ("is_active_path", "is_active_path"),
-    ("is_active_leaf", "is_active_leaf"),
+    # Keep legacy spellings for older readers; canonical topology names are
+    # declared once in ``MESSAGE_TOPOLOGY_MASK``.
+    *MESSAGE_TOPOLOGY_MASK,
     ("has_tool_use", "has_tool_use"),
     ("has_thinking", "has_thinking"),
     ("has_paste", "has_paste_evidence"),
@@ -1117,6 +1121,21 @@ def _domain_values(
     return {surface_name: getattr(model, domain_name, None) for domain_name, surface_name in mask}
 
 
+def message_topology_from_domain(message: Message) -> dict[str, object]:
+    """Project the canonical public topology fields from one domain message.
+
+    CLI, MCP, HTTP, and the generated message envelope all use this declaration
+    so a route cannot silently drop or rename one topology field. ``None`` is
+    retained for unknown active-path state; the other fields have domain-owned
+    concrete defaults.
+    """
+    values = _domain_values(message, MESSAGE_TOPOLOGY_MASK)
+    values["variant_index"] = int(cast("int", values["variant_index"]) or 0)
+    values["position"] = int(cast("int", values["position"]) or 0)
+    values["is_active_leaf"] = bool(values["is_active_leaf"])
+    return values
+
+
 def _session_terminal_state(session: Session) -> str:
     """Read terminal state from the canonical derived session profile."""
     from polylogue.archive.session.session_profile import build_session_profile
@@ -1140,11 +1159,7 @@ def message_render_envelope_from_domain(
         material_origin=role_label(getattr(message, "material_origin", "unknown") or "unknown"),
         parent_id=getattr(message, "parent_id", None),
         branch_index=int(getattr(message, "branch_index", 0) or 0),
-        parent_message_id=getattr(message, "parent_id", None),
-        variant_index=int(getattr(message, "branch_index", 0) or 0),
-        position=int(getattr(message, "position", 0) or 0),
-        is_active_path=getattr(message, "is_active_path", None),
-        is_active_leaf=bool(getattr(message, "is_active_leaf", False)),
+        **message_topology_from_domain(message),
         has_tool_use=bool(getattr(message, "has_tool_use", False)),
         has_thinking=bool(getattr(message, "has_thinking", False)),
         input_tokens=int(getattr(message, "input_tokens", 0) or 0),
@@ -4395,6 +4410,8 @@ __all__ = [
     "SessionReadViewEnvelope",
     "SessionSummaryPayload",
     "SessionSummaryEnvelope",
+    "MESSAGE_TOPOLOGY_MASK",
+    "message_topology_from_domain",
     "message_render_envelope_from_archive_row",
     "message_render_envelope_from_message_query_row",
     "message_render_envelope_from_domain",
