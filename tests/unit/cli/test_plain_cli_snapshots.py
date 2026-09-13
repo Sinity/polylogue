@@ -30,6 +30,7 @@ from typing import cast
 import pytest
 from click.testing import CliRunner
 
+from tests.infra.storage_records import materialize_session_insights
 from tests.infra.workload_artifacts import (
     SeededArchiveClone,
     SeededArchiveQueryLease,
@@ -118,29 +119,17 @@ def postmortem_archive(tmp_path_factory: pytest.TempPathFactory) -> Iterator[See
     module's whole setup cost, and every consumer only runs read verbs against
     the result, so it is paid once.
     """
-    import asyncio
-
-    from polylogue.api import Polylogue
-
     artifact = build_seeded_archive(named_corpus_specs("cli-mixed"))
     clone = clone_seeded_archive(artifact, tmp_path_factory.mktemp("postmortem") / "archive")
 
-    async def _rebuild() -> None:
-        plg = Polylogue.open()
-        try:
-            await plg.rebuild_insights()
-        finally:
-            await plg.close()
-
-    home = tmp_path_factory.mktemp("postmortem-home")
     try:
-        with pytest.MonkeyPatch.context() as patcher:
-            patcher.setenv("HOME", str(home))
-            patcher.setenv("XDG_DATA_HOME", str(home / "data"))
-            patcher.setenv("XDG_STATE_HOME", str(home / "state"))
-            patcher.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
-            patcher.setenv("POLYLOGUE_ARCHIVE_ROOT", str(clone.root))
-            asyncio.run(_rebuild())
+        # ``Polylogue.rebuild_insights`` refuses in-process execution
+        # (``InsightMaintenanceRequiresDaemonError``): a rebuild sweep is a
+        # sealed machine owned by ``polylogued run``.  This fixture only needs
+        # the durable ``session_profile`` records, so it calls the shared
+        # production materializer both sanctioned owners reach, against the
+        # clone's own index directly.
+        materialize_session_insights(clone.root / "index.db")
         yield clone
     finally:
         clone.close()

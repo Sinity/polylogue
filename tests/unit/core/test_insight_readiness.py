@@ -13,7 +13,7 @@ from polylogue.analysis.readiness import (
 )
 from polylogue.api import Polylogue
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
-from tests.infra.storage_records import SessionBuilder
+from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
 
 def _entry_by_name(report: InsightReadinessReport, name: str) -> InsightReadinessEntry:
@@ -44,11 +44,16 @@ def _seed_readiness_sessions(db_path: Path) -> None:
 
 
 async def _rebuild(db_path: Path) -> None:
-    archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
-    try:
-        await archive.rebuild_insights()
-    finally:
-        await archive.close()
+    """Materialize session insights through the shared production materializer.
+
+    ``Polylogue.rebuild_insights`` refuses in-process execution with
+    ``InsightMaintenanceRequiresDaemonError``: a rebuild sweep is a sealed,
+    page-bounded machine owned by ``polylogued run``.  These tests assert what
+    the materializer *produces*, not who may authorize a sweep, so they call
+    the same function both sanctioned owners reach.
+    """
+
+    materialize_session_insights(db_path)
 
 
 def _provider_native_id(token: str, origin: str = "claude-code-session") -> str:
