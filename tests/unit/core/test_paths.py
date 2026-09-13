@@ -275,6 +275,7 @@ class TestPathsPublicBoundary:
             "claude_code_path",
             "claude_code_todos_path",
             "codex_path",
+            "codex_memories_path",
             "config_home",
             "config_root",
             "data_home",

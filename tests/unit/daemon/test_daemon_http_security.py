@@ -554,8 +554,6 @@ class TestIngestEndpointInboxBoundary:
                     "artifact_ref": "synthetic-generation",
                     "accepted_at_ms": 1,
                     "part_count": 1,
-                    "stop_reason": None,
-                    "stopped_at_ms": None,
                     "accepted_deadline_unix_ms": 1000,
                 },
             }

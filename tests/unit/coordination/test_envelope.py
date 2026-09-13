@@ -73,6 +73,23 @@ def _seed_coordination_archive(index: Path) -> None:
                 tool_result_is_error INTEGER,
                 search_text TEXT
             );
+            CREATE TABLE session_events (
+                event_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                occurred_at_ms INTEGER,
+                boundary_start_position INTEGER,
+                boundary_end_position INTEGER,
+                boundary_message_id TEXT
+            );
+            CREATE TABLE messages (
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                variant_index INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (session_id, message_id)
+            );
             """
         )
         conn.execute(
@@ -315,6 +332,7 @@ def test_coordination_envelope_uses_beads_when_present(tmp_path: Path, monkeypat
                 }
             ],
         ),
+        detail=True,
     )
 
     assert payload.work_item.source == "beads"

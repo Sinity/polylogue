@@ -19,6 +19,7 @@ never depended on tool registration.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -176,6 +177,14 @@ def test_archive_search_routes_near_session_to_query_executor(monkeypatch: pytes
     monkeypatch.setattr("polylogue.archive.query.archive_execution.archive_search_hits", fake_archive_search_hits)
     archive = MagicMock()
     archive.archive_root = Path("/archive")
+    # Search envelopes now carry the exact reader authority snapshot.  A
+    # lightweight typed identity keeps this unit test focused on routing
+    # without opening a real archive generation.
+    archive.operation_identity = SimpleNamespace(
+        authority_identity_digest="a" * 64,
+        active_generation="index-generation:test",
+    )
+    archive.operation_schema_versions = {"index": 1}
     archive.read_summary.return_value = summary
     spec = MCPSessionQueryRequest(similar_session_id="seed-session", limit=5).build_spec(_clamp_limit)
 

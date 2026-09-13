@@ -148,7 +148,10 @@ def test_every_declared_pytest_pool_operation_is_owned_by_its_slice() -> None:
         if operation.get("pool") in agent_env.PYTEST_POOLS
     }
 
-    assert {"pytest_focused", "verify_affected", "verify_all"} <= declared
+    # ``verify_all`` deliberately runs in the separate pytest-heavy pool; the
+    # ordinary pytest ownership set covers only focused/affected lanes.
+    assert {"pytest_focused", "verify_affected"} <= declared
+    assert declarations["operations"]["verify_all"]["pool"] == "pytest-heavy"
     assert declarations["operations"]["pytest_focused"]["pool"] == agent_env.PYTEST_QUICK_POOL
     for cgroup in PYTEST_CGROUPS:
         assert agent_env.inside_pytest_pool({}, cgroup_reader=reader(cgroup))
