@@ -9,8 +9,6 @@ from pydantic import BaseModel, Field
 
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.logging import get_logger
-from polylogue.operations.fts_derivation import archive_fts_surface
-from polylogue.operations.fts_derivation import fts_triggers_present as _triggers_present
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -59,6 +57,12 @@ def _archive_index_path_for(dbf: Path) -> Path | None:
 
 def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:
     """Read authoritative FTS membership; freshness rows never certify it."""
+    # Imported here, not at module scope: polylogue.operations.fts_derivation
+    # imports polylogue.daemon.derivation, whose package __init__ reaches back
+    # into this module. A module-level import makes importing the operations
+    # module directly an ImportError.
+    from polylogue.operations.fts_derivation import archive_fts_surface
+
     return archive_fts_surface(conn)
 
 
@@ -74,6 +78,8 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
     event_source_exists = _table_exists(conn, "session_work_events")
     event_exists = _table_exists(conn, "session_work_events_fts")
     event_docsize_exists = _table_exists(conn, "session_work_events_fts_docsize")
+    from polylogue.operations.fts_derivation import fts_triggers_present as _triggers_present
+
     event_triggers_present = event_exists and _triggers_present(
         conn, ("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au")
     )
