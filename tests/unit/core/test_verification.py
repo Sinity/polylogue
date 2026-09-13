@@ -26,8 +26,23 @@ from polylogue.schemas.validation.requests import (
     ArtifactObservationQuery,
     SchemaVerificationRequest,
 )
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.connection import open_connection
+
+
+def _empty_archive(tmp_path: Path, *, with_index: bool = True) -> tuple[Path, ArchiveLocation]:
+    """Create a coherent source/index pair and return its selected index location."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+    if with_index:
+        initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
+    return root / "index.db", ArchiveLocation.resolve(root)
+
 
 pytestmark = pytest.mark.uses_real_clock(
     "Verification-report timestamps use real now to assert ordering across artifacts."
@@ -252,100 +267,75 @@ class TestArtifactCoverageReport:
 
 class TestVerifyRawCorpus:
     def test_nonexistent_db_returns_empty(self, tmp_path: Path) -> None:
-        report = verify_raw_corpus(db_path=tmp_path / "nope.db", request=SchemaVerificationRequest())
+        db, location = _empty_archive(tmp_path, with_index=False)
+        report = verify_raw_corpus(db_path=db, archive_location=location, request=SchemaVerificationRequest())
         assert report.total_records == 0
         assert report.providers == {}
 
     def test_empty_db(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "empty.db"
-        with open_connection(db):
-            pass
-        report = verify_raw_corpus(db_path=db, request=SchemaVerificationRequest())
+        db, location = _empty_archive(tmp_path)
+        report = verify_raw_corpus(db_path=db, archive_location=location, request=SchemaVerificationRequest())
         assert report.total_records == 0
         assert report.providers == {}
 
     def test_provider_filter_empty(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "empty.db"
-        with open_connection(db):
-            pass
+        db, location = _empty_archive(tmp_path)
         report = verify_raw_corpus(
             db_path=db,
+            archive_location=location,
             request=SchemaVerificationRequest(providers=["chatgpt"]),
         )
         assert report.total_records == 0
 
     def test_max_samples_preserved_in_report(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "empty.db"
-        with open_connection(db):
-            pass
+        db, location = _empty_archive(tmp_path)
         report = verify_raw_corpus(
             db_path=db,
+            archive_location=location,
             request=SchemaVerificationRequest(max_samples=100),
         )
         assert report.max_samples == 100
 
     def test_record_limit_preserved_in_report(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "empty.db"
-        with open_connection(db):
-            pass
+        db, location = _empty_archive(tmp_path)
         report = verify_raw_corpus(
             db_path=db,
+            archive_location=location,
             request=SchemaVerificationRequest(record_limit=50),
         )
         assert report.record_limit == 50
 
     def test_record_offset_preserved_in_report(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "empty.db"
-        with open_connection(db):
-            pass
+        db, location = _empty_archive(tmp_path)
         report = verify_raw_corpus(
             db_path=db,
+            archive_location=location,
             request=SchemaVerificationRequest(record_offset=25),
         )
         assert report.record_offset == 25
 
     def test_offset_negative_becomes_zero(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "empty.db"
-        with open_connection(db):
-            pass
+        db, location = _empty_archive(tmp_path)
         report = verify_raw_corpus(
             db_path=db,
+            archive_location=location,
             request=SchemaVerificationRequest(record_offset=-10),
         )
         assert report.record_offset == 0
 
     def test_quarantine_malformed_flag_preserved(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "empty.db"
-        with open_connection(db):
-            pass
+        db, location = _empty_archive(tmp_path)
         # Should not raise even with quarantine_malformed=True on empty DB
         report = verify_raw_corpus(
             db_path=db,
+            archive_location=location,
             request=SchemaVerificationRequest(quarantine_malformed=True),
         )
         assert report.total_records == 0
 
     def test_report_structure_matches_schema(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "empty.db"
-        with open_connection(db):
-            pass
-        report = verify_raw_corpus(db_path=db, request=SchemaVerificationRequest())
+        db, location = _empty_archive(tmp_path)
+        report = verify_raw_corpus(db_path=db, archive_location=location, request=SchemaVerificationRequest())
         assert hasattr(report, "providers")
         assert hasattr(report, "max_samples")
         assert hasattr(report, "total_records")
@@ -353,12 +343,8 @@ class TestVerifyRawCorpus:
         assert hasattr(report, "record_offset")
 
     def test_provider_stats_have_required_fields(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.connection import open_connection
-
-        db = tmp_path / "empty.db"
-        with open_connection(db):
-            pass
-        report = verify_raw_corpus(db_path=db, request=SchemaVerificationRequest())
+        db, location = _empty_archive(tmp_path)
+        report = verify_raw_corpus(db_path=db, archive_location=location, request=SchemaVerificationRequest())
 
         # Even with empty DB, any stats should have these fields
         for stat in report.providers.values():

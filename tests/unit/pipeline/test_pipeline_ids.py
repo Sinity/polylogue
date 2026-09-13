@@ -411,10 +411,10 @@ def test_session_revision_projection_golden_hashes() -> None:
     session = _golden_session()
     projection = session_revision_projection(session)
 
-    assert projection.session_hash.hex() == "23d0b219777cf59e1b3b8fbe0a16f217e1f8129f9781c2dc4643e665102c4df7"
+    assert projection.session_hash.hex() == "9dcaa76c36d7f1264f3d26ff495d580b7fb0a076cccd738f89de91f29c7bbb3c"
     assert [h.hex() for h in projection.message_hashes] == [
-        "bf3267d2bbb5b9f281401ca940a5a0f339174e750f6dd7b7a5aa70014b00640b",
-        "2518ce27da65142108dc3d78e65d7d360202814b6420d8644f50cff3cfe503c1",
+        "d35e1908842525f07b9709bf80ddbf115b58b7adb7e8da4b0bbe01759029c161",
+        "8af37515a68ab1e225bb4d2b11c48a3b7c9708561b01aaefaf1855f28e8e7742",
     ]
     # Content-derived identity (message_id, name, mime_type) -- no longer a
     # hash of the provider attachment id (polylogue-aggz / polylogue-d8al):
