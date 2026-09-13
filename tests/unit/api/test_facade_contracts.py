@@ -69,6 +69,7 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.storage.block_anchor import format_block_anchor
+from polylogue.storage.derived.session.runtime import SessionInsightCounts
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -269,6 +270,9 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "get_session_topology",
         "get_siblings",
         "get_thread",
+        # Versioned orchestration evidence, covered end to end in
+        # tests/unit/mcp/test_session_orchestration.py.
+        "get_session_orchestration",
         # Blackboard note methods exposed in tests/unit/mcp/test_mcp_edge_cases.py.
         "list_blackboard_notes",
         "post_blackboard_note",
@@ -390,13 +394,21 @@ async def test_archive_read_capability_is_the_real_facade_route(tmp_path: Path) 
         await archive.close()
 
 
-def _materialize_run_projection(index_db: Path) -> None:
-    """Run the session-insight materializer for richer digest-derived projections."""
+def _materialize_run_projection(index_db: Path) -> SessionInsightCounts:
+    """Run the session-insight materializer for richer digest-derived projections.
+
+    ``Polylogue.rebuild_insights`` refuses in-process execution: an insight
+    sweep is a sealed, page-bounded machine owned by ``polylogued run``.  These
+    contract tests need materialized rows to read, not sweep authority, so they
+    call the same materializer both sanctioned owners reach.  The facade's
+    refusal itself is asserted in
+    ``tests/unit/api/test_operation_executor_routes.py``.
+    """
     from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(index_db) as conn:
-        rebuild_session_insights_sync(conn)
+        return rebuild_session_insights_sync(conn)
 
 
 async def test_facade_capture_candidate_dispatches_executor_and_persists_user_row(
@@ -838,7 +850,7 @@ async def test_health_check_warns_when_session_insight_row_counts_do_not_match(t
     try:
         with ArchiveStore(tmp_path) as store:
             write_index_session(store, session)
-        await archive.rebuild_insights()
+        _materialize_run_projection(tmp_path / "index.db")
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute("UPDATE session_profiles SET work_event_count = work_event_count + 1")
 
@@ -4468,7 +4480,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         normal_stats = await archive.get_session_stats("codex-session:api-v1")
         aggregate_stats = await archive.stats()
         health = await archive.health_check()
-        rebuilt = await archive.rebuild_insights()
+        rebuilt = _materialize_run_projection(tmp_path / "index.db")
         rebuilt_profile = await archive.get_session_profile_insight(session_id)
         rebuilt_status = await archive.get_session_insight_status()
         normal_search = await archive.search("needle")
@@ -5505,7 +5517,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         # the version the materializer stamped. Without a row the read path
         # falls back to the declared constant and the assertion compares that
         # constant to itself, staying green under any materializer drift.
-        await archive.rebuild_insights()
+        _materialize_run_projection(tmp_path / "index.db")
         with sqlite3.connect(tmp_path / "index.db") as conn:
             upsert_session_profile_costs(
                 conn,
@@ -5622,7 +5634,7 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
             session_id = write_index_session(archive_db, session)
         # See the cost test above: the provenance assertion is only a contract
         # check once a materialized row carries the stamped version.
-        await archive.rebuild_insights()
+        _materialize_run_projection(tmp_path / "index.db")
         profile = await archive.get_session_latency_profile_insight(session_id)
         listed = await archive.list_session_latency_profile_insights(
             SessionLatencyProfileInsightQuery(origin=Origin.CODEX_SESSION.value, limit=10)
@@ -5931,7 +5943,11 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
         assert status.missing_profile_row_count == 1
         assert status.work_event_inference_count == 1
         assert status.expected_work_event_inference_count == 1
-        assert status.stale_work_event_inference_count == 0
+        # The profile row above is inserted by hand, so it carries no input
+        # binding. Binding-based inspection (#4849) therefore reports its
+        # inference rows stale, which is the honest reading of a row that
+        # cannot prove which inputs produced it -- not a count of zero.
+        assert status.stale_work_event_inference_count == 1
         assert status.phase_count == 1
         assert status.expected_phase_count == 1
         assert status.thread_count == 2

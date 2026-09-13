@@ -9,7 +9,7 @@ import pytest
 
 from polylogue.analysis.export_bundles import InsightExportBundleError, InsightExportBundleRequest
 from polylogue.api import Polylogue
-from tests.infra.storage_records import SessionBuilder
+from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
 
 def _native(token: str, origin: str) -> str:
@@ -17,11 +17,13 @@ def _native(token: str, origin: str) -> str:
 
 
 async def _rebuild_insights(db_path: Path) -> None:
-    archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
-    try:
-        await archive.rebuild_insights()
-    finally:
-        await archive.close()
+    """Materialize insight rows for the bundle under test.
+
+    The facade refuses in-process sweeps (the sealed owner is ``polylogued
+    run``), so these bundle tests drive the shared materializer the daemon's
+    own publication path calls.
+    """
+    materialize_session_insights(db_path)
 
 
 def _json_file(path: Path) -> dict[str, object]:

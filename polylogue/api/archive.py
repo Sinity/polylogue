@@ -6013,32 +6013,36 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         progress_callback: ProgressCallback | None = None,
     ) -> SessionInsightCounts:
-        """Rebuild durable session-insight read models.
+        """Refuse in-process insight maintenance and name its sealed owner.
 
-        When ``progress_callback`` is supplied, the full-rebuild DELETE phase
-        emits a per-table heartbeat (#1607 parity) so a long rebuild shows
-        forward motion instead of hanging silently.
+        This method is deliberately not an executor route.  Session-insight
+        maintenance is authorized as a sealed, page-bounded machine: the scope
+        is frozen into a manifest, staged as immutable preview pages, sealed
+        into accepted parts, and started one ordinal at a time through
+        ``OperationExecutor.begin_accepted_insight_part``.  The sealed sequence
+        needs durable audit authority, a pinned index generation and recipe
+        binding, and the resident session-profile publication owner — a library
+        process has none of them, and ``polylogued run`` is the required
+        live-write owner for exactly this reason.
+
+        The generic ``prepare -> authorize -> execute_bound`` path this method
+        used to take is refused at two independent points in
+        ``operations/mutation_transaction.py`` (``begin_bound`` and
+        ``execute``), because consuming an unsealed staging page as execution
+        authority would let ``session_ids=None`` become an accepted full sweep
+        after the fact.  Raising a typed, actionable error here replaces an
+        internal ``MutationTransactionError`` leaking to public callers.
+
+        The sanctioned route is the daemon operation
+        ``maintenance.insights.rebuild``
+        (``operations/daemon_insights.py``).  ``session_ids`` and
+        ``progress_callback`` are retained so existing call sites still type
+        check; both are the daemon operation's to honour, not this method's.
         """
-        from polylogue.operations.mutation_actuators import InsightsRebuildActuator, InsightsRebuildArgs
-        from polylogue.storage.derived.session.runtime import SessionInsightCounts
+        from polylogue.core.errors import InsightMaintenanceRequiresDaemonError
 
-        receipt, _plan = self._execute_facade_mutation(
-            InsightsRebuildActuator(),
-            lambda archive: InsightsRebuildArgs(
-                archive=archive,
-                session_ids=None if session_ids is None else tuple(session_ids),
-                progress_callback=progress_callback,
-            ),
-            capability="archive.rebuild_insights",
-        )
-        domain_receipt = receipt.domain_receipt
-        return SessionInsightCounts(
-            profiles=int(cast("int", domain_receipt.get("profiles", 0))),
-            work_events=int(cast("int", domain_receipt.get("work_events", 0))),
-            phases=int(cast("int", domain_receipt.get("phases", 0))),
-            threads=int(cast("int", domain_receipt.get("threads", 0))),
-            tag_rollups=int(cast("int", domain_receipt.get("tag_rollups", 0))),
-        )
+        del session_ids, progress_callback
+        raise InsightMaintenanceRequiresDaemonError
 
     async def resume_brief(
         self,

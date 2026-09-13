@@ -16,7 +16,6 @@ per-chunk commit):
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from pathlib import Path
 
@@ -24,19 +23,11 @@ import pytest
 
 pytestmark = pytest.mark.storage_scale
 
-from polylogue.api import Polylogue
-from tests.infra.storage_records import SessionBuilder
+from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
 
 def _rebuild(db_path: Path, *, progress_callback: object = None) -> None:
-    async def _run() -> None:
-        archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
-        try:
-            await archive.rebuild_insights(progress_callback=progress_callback)  # type: ignore[arg-type]
-        finally:
-            await archive.close()
-
-    asyncio.run(_run())
+    materialize_session_insights(db_path, progress_callback=progress_callback)
 
 
 def _count_profiles(db_path: Path) -> int:

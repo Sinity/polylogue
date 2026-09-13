@@ -12,7 +12,6 @@ re-deriving the comparison logic. See ``polylogue/analysis/provenance.py``.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
@@ -22,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.analysis.provenance import HasProvenance, is_stale
-from tests.infra.storage_records import SessionBuilder, db_setup
+from tests.infra.storage_records import SessionBuilder, db_setup, materialize_session_insights
 
 
 def _open_archive(db_path: Path) -> sqlite3.Connection:
@@ -43,16 +42,7 @@ def provenance_db(workspace_env: Mapping[str, Path]) -> Path:
         role="user", text="please refactor"
     ).add_message(role="assistant", text="ok").add_message(role="user", text="thanks").save()
 
-    from polylogue.api import Polylogue
-
-    async def _rebuild() -> None:
-        archive = Polylogue(archive_root=db_path.parent, db_path=db_path)
-        try:
-            await archive.rebuild_insights()
-        finally:
-            await archive.close()
-
-    asyncio.run(_rebuild())
+    materialize_session_insights(db_path)
     return db_path
 
 

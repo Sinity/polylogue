@@ -1149,7 +1149,16 @@ class TestMaintenanceConfirmGates:
             assert "confirm" in result.get("message", "").lower()
 
     @pytest.mark.asyncio
-    async def test_rebuild_insights_with_confirm_stays_behind_sealed_owner(self, tmp_path: Path) -> None:
+    async def test_rebuild_insights_with_confirm_names_its_sealed_owner(self, tmp_path: Path) -> None:
+        """A confirmed MCP rebuild is refused with the route the caller can take.
+
+        MCP cannot hold sealed insight-sweep authority, so the honest answer is
+        a typed ``daemon_required`` refusal naming ``polylogued run`` and the
+        daemon operation. Anti-vacuity: if the facade ever executes the sweep
+        in process, ``is_error`` goes false; if it leaks the internal
+        transaction guard again, the code reverts to ``internal_error``.
+        """
+
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
@@ -1160,8 +1169,10 @@ class TestMaintenanceConfirmGates:
         with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(maintenance_fn, operation="rebuild_insights", confirm=True))
             assert result.get("is_error") is True
-            assert result["code"] == "internal_error"
-            assert result["detail"] == "MutationTransactionError"
+            assert result["code"] == "daemon_required"
+            message = result.get("message", "")
+            assert "polylogued run" in message
+            assert "maintenance.insights.rebuild" in message
 
 
 class TestQuerySessionsProjection:

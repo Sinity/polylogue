@@ -151,8 +151,40 @@ class EmbeddingRetrievalNotReadyError(DatabaseError):
         self.readiness_status = readiness_status
 
 
+class InsightMaintenanceRequiresDaemonError(PolylogueError):
+    """Session-insight maintenance was asked for outside its sealed owner.
+
+    A rebuild sweep is authorized page by page: the scope is frozen into a
+    manifest, staged as immutable preview pages, sealed into accepted machine
+    parts, and only then started one ordinal at a time
+    (``OperationExecutor.begin_accepted_insight_part``).  That sequence needs
+    durable audit authority, a pinned index generation, and the resident
+    session-profile publication owner — none of which a library process holds.
+    Letting the generic prepare/authorize/execute path run the rebuild instead
+    would turn an unsealed staging page into execution authority, and would let
+    ``session_ids=None`` become an accepted full sweep after the fact.
+
+    The message names the sanctioned route verbatim so CLI, MCP, and HTTP
+    surfaces can forward it: it contains only fixed strings, never user data.
+    """
+
+    code = "daemon_required"
+    http_status_code: int = HTTPStatus.SERVICE_UNAVAILABLE
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(
+            message
+            or (
+                "session-insight maintenance runs only through its sealed accepted-part owner; "
+                "run `polylogued run` and submit the daemon operation 'maintenance.insights.rebuild' "
+                "(a library or MCP process cannot hold that authority)"
+            )
+        )
+
+
 __all__ = [
     "ArchiveTierUnavailableError",
+    "InsightMaintenanceRequiresDaemonError",
     "DatabaseError",
     "EmbeddingRetrievalNotReadyError",
     "PolylogueError",
