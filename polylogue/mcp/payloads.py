@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
 from pydantic import Field, RootModel
 from typing_extensions import TypedDict
@@ -485,21 +485,25 @@ class MCPArchiveMessagePayload(SurfacePayloadModel):
     position: int
     parent_message_id: str | None = None
     variant_index: int
-    is_active_path: bool
+    is_active_path: bool | None = None
     is_active_leaf: bool
     blocks: tuple[MCPArchiveBlockPayload, ...]
 
     @classmethod
     def from_message(cls, message: ArchiveMessageRow) -> MCPArchiveMessagePayload:
+        from polylogue.archive.hydration import archive_message_to_domain
+        from polylogue.surfaces.payloads import message_topology_from_domain
+
+        topology = message_topology_from_domain(archive_message_to_domain(message))
         return cls(
             message_id=message.message_id,
             native_id=message.native_id,
             role=message.role,
-            position=message.position,
-            parent_message_id=message.parent_message_id,
-            variant_index=message.variant_index,
-            is_active_path=message.is_active_path,
-            is_active_leaf=message.is_active_leaf,
+            position=cast("int", topology["position"]),
+            parent_message_id=cast("str | None", topology["parent_message_id"]),
+            variant_index=cast("int", topology["variant_index"]),
+            is_active_path=cast("bool | None", topology["is_active_path"]),
+            is_active_leaf=cast("bool", topology["is_active_leaf"]),
             blocks=tuple(MCPArchiveBlockPayload.from_block(block) for block in message.blocks),
         )
 

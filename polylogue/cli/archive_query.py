@@ -2954,6 +2954,9 @@ def _hit_payload(
 
 
 def _session_payload(envelope: ArchiveSessionEnvelope) -> dict[str, object]:
+    from polylogue.archive.hydration import archive_message_to_domain
+    from polylogue.surfaces.payloads import message_topology_from_domain
+
     return {
         "mode": "session",
         "session_id": envelope.session_id,
@@ -2967,11 +2970,7 @@ def _session_payload(envelope: ArchiveSessionEnvelope) -> dict[str, object]:
                 "message_id": message.message_id,
                 "native_id": message.native_id,
                 "role": message.role,
-                "position": message.position,
-                "parent_message_id": message.parent_message_id,
-                "variant_index": message.variant_index,
-                "is_active_path": message.is_active_path,
-                "is_active_leaf": message.is_active_leaf,
+                **message_topology_from_domain(archive_message_to_domain(message)),
                 "blocks": [
                     {
                         "block_id": block.block_id,
