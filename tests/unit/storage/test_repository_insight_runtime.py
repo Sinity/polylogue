@@ -208,6 +208,9 @@ class _Backend:
     def connection(self) -> _ConnectionContext:
         return _ConnectionContext(self._conn)
 
+    def read_connection(self) -> _ConnectionContext:
+        return _ConnectionContext(self._conn)
+
 
 async def _aiter(items: list[object]) -> AsyncIterator[object]:
     for item in items:
