@@ -547,6 +547,33 @@ def test_a_successful_run_removes_both_temporary_trees(tmp_path: Path) -> None:
     assert _scratch_trees(tmp_path) == []
 
 
+def test_a_successful_run_preserves_hard_linked_fixture_mode(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture.txt"
+    fixture.write_text("retained fixture\n", encoding="utf-8")
+    fixture.chmod(stat.S_IRUSR)
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import os, sys; "
+            "scratch = os.environ['TMPDIR']; "
+            "nested = os.path.join(scratch, 'used', 'nested'); os.makedirs(nested); "
+            "os.link(sys.argv[1], os.path.join(nested, 'fixture.txt')); "
+            "basetemp = sys.argv[-1]; os.makedirs(basetemp); "
+            "os.chmod(nested, 0o500); os.chmod(os.path.dirname(nested), 0o500); "
+            "os.chmod(scratch, 0o500); os.chmod(basetemp, 0o500)"
+        ),
+        str(fixture),
+    ]
+
+    outcome = run_pytest(command, cwd=str(tmp_path), env=_environment(POLYLOGUE_PYTEST_SLOT="held"), root=tmp_path)
+
+    assert outcome.returncode == 0
+    assert _scratch_trees(tmp_path) == []
+    assert fixture.read_text(encoding="utf-8") == "retained fixture\n"
+    assert stat.S_IMODE(fixture.stat().st_mode) == stat.S_IRUSR
+
+
 def test_a_failed_run_keeps_its_temporary_trees_for_reading(tmp_path: Path) -> None:
     command = [
         sys.executable,
