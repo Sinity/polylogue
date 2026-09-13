@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import pickle
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -58,6 +59,7 @@ from polylogue.sources.dispatch import (
     detect_provider_from_raw_bytes_evidence,
     is_jsonl_source_path,
     is_stream_record_provider,
+    merge_parsed_session_chunks,
     parse_payload,
     parse_stream_payload,
     require_positive_conversational_evidence,
@@ -86,7 +88,8 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     apply_source_raw_state_update,
     upsert_raw_artifact,
 )
-from polylogue.storage.sqlite.archive_tiers.write import PreparedRows, prepare_session_rows
+from polylogue.storage.sqlite.archive_tiers.write import PreparedRows, prepare_session_rows, prepare_session_shard
+from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
@@ -1547,6 +1550,7 @@ def _load_frozen_revision_evidence(
     max_payload_bytes: int | None,
     ingest_workers: int,
     prefetch_cache: RawParsePrefetchCache | None,
+    shard_transport: _FrozenReplayShardTransport | None = None,
 ) -> _RevisionCensusState:
     """Parse a phase-2 source snapshot without changing its durable ledger."""
     expanded_raw_ids, _logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
@@ -1615,6 +1619,11 @@ def _load_frozen_revision_evidence(
                 f"{raw_id}: recorded={recorded_logical_keys[raw_id]!r}, parsed={parsed_logical_keys!r}"
             )
         spill.add(raw_id, sessions, payload_bytes=payload_bytes)
+        if shard_transport is not None:
+            # The frozen-source branch has already established parser-receipt
+            # parity above. Build the same sealed worker transport used by
+            # live ingest before any inactive index transaction starts.
+            shard_transport.add_raw(raw_id, sessions)
         state.classified += int(len(sessions) == 1)
         if revision_kind is RawRevisionKind.UNKNOWN:
             for session in sessions:
@@ -2354,6 +2363,47 @@ def _lineage_aware_replay_schedule(
     return ReplaySchedule(order=tuple(order), topology=topology, parent_of=edge)
 
 
+class _FrozenReplayShardTransport:
+    """Own sealed production shards for one frozen inactive-generation replay.
+
+    The transport deliberately delegates row construction and sealing to
+    ``prepare_session_shard``. It owns only the raw/cohort-to-file association
+    needed by revision governance, never an alternate shard format or writer.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self._directory = directory
+        self._paths_by_raw_id: dict[str, Path] = {}
+
+    def add_raw(self, raw_id: str, sessions: Sequence[ParsedSession]) -> None:
+        self._paths_by_raw_id[raw_id] = prepare_session_shard(self._directory, sessions).path
+
+    def path_for_raw(self, raw_id: str) -> Path:
+        try:
+            return self._paths_by_raw_id[raw_id]
+        except KeyError as exc:
+            raise ShardRefusedError(f"frozen replay has no sealed shard for raw {raw_id}") from exc
+
+    def add_composed(self, raw_id: str, session: ParsedSession) -> Path:
+        """Build the production shard for a multi-raw chain's composed write."""
+        path = prepare_session_shard(self._directory, [session]).path
+        self._paths_by_raw_id[raw_id] = path
+        return path
+
+
+def _required_shard_prepared_rows(
+    raw_id: str,
+    session: ParsedSession,
+    bindings: Mapping[str, PreparedRows],
+) -> dict[str, PreparedRows]:
+    """Bind exactly the session the frozen replay is about to full-replace."""
+    session_id = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+    try:
+        return {raw_id: bindings[session_id]}
+    except KeyError as exc:
+        raise ShardRefusedError(f"sealed shard has no rows for replay session {session_id}") from exc
+
+
 def backfill_historical_revision_evidence(
     archive_root: Path,
     *,
@@ -2371,6 +2421,7 @@ def backfill_historical_revision_evidence(
     prefetch_cache: RawParsePrefetchCache | None = None,
     pipeline_decode: bool | None = None,
     deadline_check: Callable[[], None] | None = None,
+    use_session_shards: bool = False,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts.
 
@@ -2450,7 +2501,19 @@ def backfill_historical_revision_evidence(
     :class:`RebuildDeadlineExceededError` to interrupt; ``None`` (every caller
     except the resumable offline rebuild pass) reproduces the exact
     unmodified, uninterruptible replay path.
+
+    ``use_session_shards`` selects the existing live-ingest sealed SQLite
+    shard transport for a full frozen replay into an owned inactive
+    generation. Its shard bindings are required, so a missing, partial, or
+    corrupt shard refuses the replay rather than falling back to inline row
+    binding. Retained-index and batched replays do not own that construction
+    boundary and are refused instead of being silently re-routed.
     """
+    if use_session_shards and owned_inactive_generation is None:
+        raise ValueError("sealed replay shards require an owned inactive generation")
+    if use_session_shards and (replay_commit_batch_size or commit_batch_size or 0) > 1:
+        raise ValueError("sealed replay shards require per-cohort replay commits")
+
     adoption_deferred = 0
     quarantined = 0
     stage_timings: dict[str, float] = {}
@@ -2511,7 +2574,9 @@ def backfill_historical_revision_evidence(
     # GIL build must not engage worker threads here either) -- a GIL build
     # gets ``prepare_pool=None`` and every write falls back to building rows
     # inline, byte-identical to before this change.
-    prepare_pool = ThreadPoolExecutor(max_workers=1) if parallel_threads_effective() else None
+    prepare_pool = (
+        ThreadPoolExecutor(max_workers=1) if parallel_threads_effective() and not use_session_shards else None
+    )
     with (
         archive_context as archive,
         _ParsedSessionSpill(
@@ -2521,6 +2586,11 @@ def backfill_historical_revision_evidence(
         ) as spill,
         prepare_pool if prepare_pool is not None else nullcontext(),
     ):
+        shard_transport = (
+            _FrozenReplayShardTransport(spill.scratch_directory(prefix=".frozen-replay-shards-"))
+            if use_session_shards
+            else None
+        )
         census_started = time.perf_counter()
         if owned_inactive_generation is not None:
             census = _load_frozen_revision_evidence(
@@ -2530,6 +2600,7 @@ def backfill_historical_revision_evidence(
                 max_payload_bytes=max_payload_bytes,
                 ingest_workers=ingest_workers,
                 prefetch_cache=prefetch_cache,
+                shard_transport=shard_transport,
             )
         else:
             census = _census_historical_revision_evidence(
@@ -2730,18 +2801,46 @@ def backfill_historical_revision_evidence(
                     # collected once the pool shuts down.
                     continue
                 try:
-                    archive.apply_raw_revision_replay(
-                        plan,
-                        parsed_by_raw_id,
-                        acquired_at_ms=0,
-                        stage_timings_s=stage_timings,
-                        manage_transaction=not replay_batched,
-                        bulk_fts=bulk_fts,
-                        bulk_build=bulk_build,
-                        fresh_build=fresh_build,
-                        fresh_build_batch=fresh_build_batch,
-                        prepared_by_raw_id=prepared_by_raw_id or None,
-                    )
+                    if shard_transport is None:
+                        archive.apply_raw_revision_replay(
+                            plan,
+                            parsed_by_raw_id,
+                            acquired_at_ms=0,
+                            stage_timings_s=stage_timings,
+                            manage_transaction=not replay_batched,
+                            bulk_fts=bulk_fts,
+                            bulk_build=bulk_build,
+                            fresh_build=fresh_build,
+                            fresh_build_batch=fresh_build_batch,
+                            prepared_by_raw_id=prepared_by_raw_id or None,
+                        )
+                    else:
+                        tip_raw_id = plan.accepted_raw_ids[-1]
+                        composed = merge_parsed_session_chunks(
+                            parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids
+                        )
+                        if len(composed) != 1:
+                            raise ShardRefusedError("one revision chain did not compose to one shard session")
+                        shard_path = (
+                            shard_transport.path_for_raw(tip_raw_id)
+                            if len(plan.accepted_raw_ids) == 1
+                            else shard_transport.add_composed(tip_raw_id, composed[0])
+                        )
+                        with archive.attached_session_shard(shard_path, required=True) as bindings:
+                            prepared = _required_shard_prepared_rows(tip_raw_id, composed[0], bindings)
+                            archive.apply_raw_revision_replay(
+                                plan,
+                                parsed_by_raw_id,
+                                acquired_at_ms=0,
+                                stage_timings_s=stage_timings,
+                                manage_transaction=True,
+                                bulk_fts=bulk_fts,
+                                bulk_build=bulk_build,
+                                fresh_build=fresh_build,
+                                fresh_build_batch=fresh_build_batch,
+                                prepared_aggregate_rows=prepared[tip_raw_id],
+                                prepared_required_raw_ids=frozenset({tip_raw_id}),
+                            )
                 except sqlite3.IntegrityError as exc:
                     raise sqlite3.IntegrityError(
                         f"backfill_historical_revision_evidence: byte-proven replay failed for "
@@ -2852,19 +2951,42 @@ def backfill_historical_revision_evidence(
                     adoption_deferred += len(classification.accepted_raw_ids)
                     continue
                 try:
-                    archive.apply_raw_membership_classification(
-                        logical_key,
-                        classification,
-                        member_sessions,
-                        projections,
-                        acquired_at_ms=0,
-                        stage_timings_s=stage_timings,
-                        manage_transaction=not replay_batched,
-                        bulk_fts=bulk_fts,
-                        bulk_build=bulk_build,
-                        fresh_build=fresh_build,
-                        fresh_build_batch=fresh_build_batch,
-                    )
+                    if shard_transport is None or not classification.accepted_raw_ids:
+                        archive.apply_raw_membership_classification(
+                            logical_key,
+                            classification,
+                            member_sessions,
+                            projections,
+                            acquired_at_ms=0,
+                            stage_timings_s=stage_timings,
+                            manage_transaction=not replay_batched,
+                            bulk_fts=bulk_fts,
+                            bulk_build=bulk_build,
+                            fresh_build=fresh_build,
+                            fresh_build_batch=fresh_build_batch,
+                        )
+                    else:
+                        accepted_raw_id = classification.accepted_raw_ids[-1]
+                        accepted_session = member_sessions[accepted_raw_id]
+                        with archive.attached_session_shard(
+                            shard_transport.path_for_raw(accepted_raw_id), required=True
+                        ) as bindings:
+                            prepared = _required_shard_prepared_rows(accepted_raw_id, accepted_session, bindings)
+                            archive.apply_raw_membership_classification(
+                                logical_key,
+                                classification,
+                                member_sessions,
+                                projections,
+                                acquired_at_ms=0,
+                                stage_timings_s=stage_timings,
+                                manage_transaction=True,
+                                bulk_fts=bulk_fts,
+                                bulk_build=bulk_build,
+                                fresh_build=fresh_build,
+                                fresh_build_batch=fresh_build_batch,
+                                prepared_by_raw_id=prepared,
+                                prepared_required_raw_ids=frozenset({accepted_raw_id}),
+                            )
                 except sqlite3.IntegrityError as exc:
                     raise sqlite3.IntegrityError(
                         f"backfill_historical_revision_evidence: membership replay failed for "
@@ -4027,6 +4149,7 @@ class _ParsedSessionSpill:
         fd, name = tempfile.mkstemp(prefix=".revision-census-", suffix=".sqlite", dir=spill_dir)
         os.close(fd)
         self.path = Path(name)
+        self._scratch_directories: list[Path] = []
         self.conn = sqlite3.connect(self.path)
         # Disposable single-connection cache: durability is meaningless (the
         # fallback is reparsing durable source evidence), so skip the
@@ -4104,6 +4227,14 @@ class _ParsedSessionSpill:
         del exc_type, exc, traceback
         self.conn.close()
         self.path.unlink(missing_ok=True)
+        for directory in self._scratch_directories:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    def scratch_directory(self, *, prefix: str) -> Path:
+        """Allocate scratch beside this target archive and remove it on close."""
+        directory = Path(tempfile.mkdtemp(prefix=prefix, dir=self.path.parent))
+        self._scratch_directories.append(directory)
+        return directory
 
     def add(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
         tree_bytes = estimate_parsed_tree_bytes(sessions)
