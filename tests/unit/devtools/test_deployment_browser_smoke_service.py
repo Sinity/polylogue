@@ -81,10 +81,10 @@ print(json.dumps({
         "pool": "interactive",
         "result": "json",
     }
-    # Focused runs queue on the pytest pool; a candidate's tests are the hosted
-    # PR check and the corpus is the nightly run (no local corpus per lane).
+    # Focused runs use the quick static gate; complete-corpus verification is a
+    # separately declared manual operation rather than part of this mapping.
     assert parsed["publish"] == "pr"
-    assert parsed["verify"] == {"focused": "pytest_focused", "candidate": "hosted:verify", "corpus": "verify_all"}
+    assert parsed["verify"] == {"focused": "verify_quick", "candidate": "hosted:ci/circleci: quick-gate"}
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 

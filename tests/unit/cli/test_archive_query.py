@@ -935,7 +935,7 @@ class TestEmitDeleteMachineModeNoPrompt:
             "polylogue.cli.archive_query._submit_mutation_operation",
             side_effect=[
                 {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1", "s2"]},
-                {"status": "authorized", "authorization_token": "daemon-token"},
+                {"status": "authorized", "authorization_refs": ["daemon-token"]},
                 {"status": "deleted", "affected_count": 2},
             ],
         ) as daemon_delete:
@@ -951,7 +951,7 @@ class TestEmitDeleteMachineModeNoPrompt:
         assert [call.args[2] for call in daemon_delete.call_args_list] == [
             {"session_ids": ["s1", "s2"]},
             {"preview_refs": ["preview:delete"]},
-            {"authorization_tokens": ["daemon-token"]},
+            {"authorization_refs": ["daemon-token"]},
         ]
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "deleted"
@@ -1023,7 +1023,7 @@ class TestEmitDeleteMachineModeNoPrompt:
             "polylogue.cli.archive_query._submit_mutation_operation",
             side_effect=[
                 {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1", "s2"]},
-                {"status": "authorized", "authorization_token": "daemon-token"},
+                {"status": "authorized", "authorization_refs": ["daemon-token"]},
                 OperationFailedError(
                     "delete_partially_applied",
                     "selection_changed_after_authorization",
@@ -1056,7 +1056,9 @@ class TestEmitDeleteMachineModeNoPrompt:
             def __init__(self, _socket_path: Path, **kwargs: object) -> None:
                 initialized.append(kwargs)
 
-            def operation(self, operation: str, payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
+            def operation_to_completion(
+                self, operation: str, payload: dict[str, object], **_kwargs: object
+            ) -> dict[str, object]:
                 issued.append((operation, payload))
                 return {
                     "operation": operation,
@@ -1082,7 +1084,7 @@ class TestEmitDeleteMachineModeNoPrompt:
             config, "mutation.session.delete.preview", {"session_ids": ["s1"]}
         )
 
-        assert initialized == [{"timeout_s": None, "auth_token": None}]
+        assert initialized == [{"auth_token": None}]
         assert issued == [("mutation.session.delete.preview", {"session_ids": ["s1"]})]
         assert payload == {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1"]}
 
@@ -1106,7 +1108,9 @@ class TestEmitDeleteMachineModeNoPrompt:
             def __init__(self, socket_path: Path, **_kwargs: object) -> None:
                 initialized.append(socket_path)
 
-            def operation(self, operation: str, _payload: dict[str, object], **kwargs: object) -> dict[str, object]:
+            def operation_to_completion(
+                self, operation: str, _payload: dict[str, object], **kwargs: object
+            ) -> dict[str, object]:
                 roots.append(cast("str | None", kwargs.get("archive_root")))
                 return {"operation": operation, "outcome": "completed", "result": {"status": "prepared"}}
 
@@ -1127,10 +1131,10 @@ class TestEmitDeleteMachineModeNoPrompt:
         assert archive_query._submit_mutation_operation(config, "mutation.session.delete.preview", {}) == {
             "status": "prepared"
         }
-        assert initialized == [selected_root / "daemon.sock"]
+        assert initialized == [configured_root / "daemon.sock"]
         # The operation carries the selected archive identity, so a daemon
         # serving a different root refuses instead of writing the wrong one.
-        assert roots == [str(selected_root)]
+        assert roots == [str(configured_root)]
 
     def test_interactive_forceless_delete_still_prompts(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Human interactive use (non-plain) must keep the confirmation prompt.
