@@ -2683,6 +2683,25 @@ def _aistudio_drive_spec() -> OriginSpec:
         stream_parser_path=None,
         artifact_rules=(
             OriginArtifactRule(
+                kind="session_document",
+                # Drive exports use a display-name prefix followed by the
+                # provider file id.  This is deliberately narrower than a
+                # generic ``*.json`` rule: it identifies the exact export
+                # shape observed in the stale archive while leaving unknown
+                # JSON payloads uncovered.
+                path_pattern=r"(?:^|/)gemini/[^/]+-[0-9a-f]{32}\.json$",
+                parse_policy="session",
+                parser_path="polylogue/sources/parsers/drive.py",
+                coverage_role="drive_session_export",
+                fidelity_note=(
+                    "AI Studio Drive conversation export named with a display-name prefix and a 32-hex "
+                    "Drive file id; the path declaration identifies the export family when a stale decode "
+                    "observation has no retained blob to re-inspect."
+                ),
+                path_suffixes=(".json",),
+                watch_suffixes=(),
+            ),
+            OriginArtifactRule(
                 kind="metadata_document",
                 # AI Studio writes the applet access log into the same Drive
                 # folder as the conversation exports. Its ``{"applets": [...]}`

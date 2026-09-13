@@ -31,7 +31,7 @@ from pathlib import Path
 from polylogue.archive.artifact_taxonomy.models import ArtifactKind
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginSpec
+from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule, OriginSpec
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
@@ -284,9 +284,10 @@ def _stale_unknown_artifact_constructs(
 
     The source tier is immutable evidence for this gate.  Reinspection never
     writes an observation back; it only proves that a previously bounded
-    inspection now has a declared, content-specific route.  A missing blob,
-    a decode failure, or a fresh ``unknown`` classification is deliberately
-    left as an uncovered original construct.
+    inspection now has a declared, content-specific route.  A decode failure
+    or a fresh ``unknown`` classification is deliberately left as an
+    uncovered original construct.  A missing blob can only be covered by a
+    narrow, explicit path declaration for that source family.
     """
     blob_root = source_db.parent / "blob"
     blob_store = BlobStore(blob_root) if blob_root.is_dir() else None
@@ -317,9 +318,32 @@ def _stale_unknown_artifact_constructs(
             blob_store=blob_store,
         )
         if observation is None or observation.artifact_kind == ArtifactKind.UNKNOWN.value:
-            status = UNCOVERED
-            route = "no artifact declaration"
-            witness = "none"
+            declared_by_path = _artifact_rule_for_path(by_origin, origin, source_path)
+            # A raw-only path declaration is itself positive evidence (for
+            # example the named applet access log).  A session path may cover
+            # an unavailable stale decode only when the persisted observation
+            # already records a decode failure; a fresh unknown with bytes is
+            # intentionally still uncovered because its shape was not proved.
+            path_allowed = declared_by_path is not None and (
+                declared_by_path.parse_policy == "raw-only"
+                or (observation is None and original_support == ArtifactSupportStatus.DECODE_FAILED.value)
+            )
+            if path_allowed:
+                assert declared_by_path is not None
+                rule = declared_by_path
+                route = (
+                    f"stale observation; declared path shape={rule.kind}; "
+                    f"{rule.parser_path or f'parse_policy:{rule.parse_policy}'}"
+                )
+                status = COVERED
+                witness = (
+                    f"source path declaration: {rule.coverage_role}; "
+                    f"persisted support={original_support}; retained blob unavailable"
+                )
+            else:
+                status = UNCOVERED
+                route = "no artifact declaration"
+                witness = "none"
         else:
             declared = _artifact_construct(
                 by_origin,
@@ -355,6 +379,27 @@ def _stale_unknown_artifact_constructs(
             )
         )
     return tuple(constructs)
+
+
+def _artifact_rule_for_path(
+    by_origin: dict[str, OriginSpec], origin: str, source_path: object
+) -> OriginArtifactRule | None:
+    """Return a declaration matching one stale row's source path.
+
+    This intentionally walks only the owning origin's explicit rules.  There
+    is no fallback for ``unknown`` and no provider-wide allow-list: a stale
+    row remains uncovered unless its source coordinate matches a declared
+    artifact family (or its retained bytes yield a positive classification).
+    """
+    if not isinstance(source_path, str):
+        return None
+    spec = by_origin.get(origin)
+    if spec is None:
+        return None
+    for rule in spec.artifact_rules:
+        if rule.matches(source_path):
+            return rule
+    return None
 
 
 def _reinspect_unknown_row(
