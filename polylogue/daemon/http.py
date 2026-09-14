@@ -77,7 +77,8 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
     DaemonWriteThreadBridge,
 )
-from polylogue.logging import get_logger
+from polylogue.logging import DEBUG, ERROR, WARNING, emit, propagate
+from polylogue.logging import span as log_span
 from polylogue.operations.authority import authority_for_config, authority_for_reader
 from polylogue.rendering.semantic_card_placement import (
     SemanticCardPlacement,
@@ -125,7 +126,6 @@ if TYPE_CHECKING:
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
 
-logger = get_logger(__name__)
 
 _ARCHIVE_READER_BUSY_TIMEOUT_S = 0.25
 _COORDINATION_CACHE_TTL_S = 2.0
@@ -534,7 +534,16 @@ def _web_reader_archive_root() -> Path | None:
             with one_shot_diagnostic_read(path, tier=tier) as conn:
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
         except sqlite3.Error as exc:
-            logger.warning("web-reader archive-root version probe failed for %s: %s", path, exc, exc_info=True)
+            emit(
+                "daemon.http.archive_root_probe_failed",
+                level=WARNING,
+                outcome="error",
+                reason="tier_version_probe_failed",
+                tier=tier.value if hasattr(tier, "value") else str(tier),
+                path=path,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return None
         if version != ARCHIVE_VERSION_BY_TIER[tier]:
             return None
@@ -1118,13 +1127,31 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                     extra_headers={"Retry-After": "1"},
                 )
                 return
-            logger.exception("sqlite error in %s", fn.__name__)
+            emit(
+                "daemon.http.route_failed",
+                level=ERROR,
+                outcome="error",
+                reason="sqlite_error",
+                route=fn.__name__,
+                status_code=int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 QueryErrorPayload(error="sqlite_error").model_dump(mode="json"),
             )
         except TimeoutError as exc:
-            logger.warning("archive query timed out in %s: %s", fn.__name__, exc)
+            emit(
+                "daemon.http.route_timeout",
+                level=WARNING,
+                outcome="unmeasured",
+                reason="archive_query_timeout",
+                route=fn.__name__,
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_json(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 QueryErrorPayload(error="archive_query_timeout", detail=str(exc)).model_dump(mode="json"),
@@ -1141,10 +1168,26 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                 HTTPStatus.REQUEST_TIMEOUT,
                 QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
             )
-        except _CLIENT_DISCONNECT_ERRORS:
-            logger.debug("daemon http client disconnected in %s", fn.__name__)
-        except Exception:
-            logger.exception("unhandled error in %s", fn.__name__)
+        except _CLIENT_DISCONNECT_ERRORS as exc:
+            emit(
+                "daemon.http.client_disconnected",
+                level=DEBUG,
+                outcome="skipped",
+                reason="client_disconnected",
+                route=fn.__name__,
+                error_type=type(exc).__name__,
+            )
+        except Exception as exc:
+            emit(
+                "daemon.http.route_failed",
+                level=ERROR,
+                outcome="error",
+                reason="unhandled_error",
+                route=fn.__name__,
+                status_code=int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 QueryErrorPayload(error="internal_error").model_dump(mode="json"),
@@ -1701,29 +1744,55 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         kernel = getattr(self.server, "execution_kernel", None)
         mutating = getattr(self, "_write_gate_depth", 0) > 0
         if isinstance(kernel, BoundedComputeAdapter):
-            from polylogue.daemon.execution import CancellationHandle
+            from polylogue.daemon.execution import AdmissionClass, CancellationHandle
 
             cancellation = CancellationHandle()
-            submitted = kernel.submit(
-                lambda: asyncio.run(self._archive_query_coroutine(handler)),
-                admission_class="control" if mutating else "interactive-read",
-                cancellation=cancellation,
-            )
-            try:
-                if mutating:
-                    # The control class reserves capacity, so this wait is
-                    # bounded by the mutation itself, not by read pressure.
-                    return submitted.future.result()
+            admission_class: AdmissionClass = "control" if mutating else "interactive-read"
+            with log_span(
+                "daemon.http.scheduled_route",
+                # Observability must never be the thing that breaks a route:
+                # narrow in-process handler doubles carry no request line.
+                route=_request_path_for_log(getattr(self, "path", "") or ""),
+                method=getattr(self, "command", "") or "",
+                domain=admission_class,
+            ) as route_span:
+                submitted = kernel.submit(
+                    # The kernel's ThreadPoolExecutor predates every bind, so
+                    # this callable would otherwise run with no correlation
+                    # context and its events could not be joined to this span.
+                    cast(
+                        "Callable[[], object]",
+                        propagate(lambda: asyncio.run(self._archive_query_coroutine(handler))),
+                    ),
+                    admission_class=admission_class,
+                    cancellation=cancellation,
+                )
                 try:
-                    return submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
-                except FutureTimeoutError as exc:
-                    cancellation.cancel()
-                    raise TimeoutError(
-                        f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
-                        "the daemon may be busy with catch-up ingestion/embedding"
-                    ) from exc
-            finally:
-                self._last_queue_delay_ms = int(submitted.queue_delay_s * 1000)
+                    if mutating:
+                        # The control class reserves capacity, so this wait is
+                        # bounded by the mutation itself, not by read pressure.
+                        result = submitted.future.result()
+                        route_span.ok()
+                        return result
+                    try:
+                        result = submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
+                    except FutureTimeoutError as exc:
+                        cancellation.cancel()
+                        # The raised TimeoutError makes the span emit its own
+                        # ``.error`` terminal event; these fields ride along.
+                        route_span.set(
+                            reason="archive_query_timeout",
+                            timeout_ms=round(_ARCHIVE_QUERY_TIMEOUT_S * 1000, 3),
+                        )
+                        raise TimeoutError(
+                            f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
+                            "the daemon may be busy with catch-up ingestion/embedding"
+                        ) from exc
+                    route_span.ok()
+                    return result
+                finally:
+                    self._last_queue_delay_ms = int(submitted.queue_delay_s * 1000)
+                    route_span.set(elapsed_ms=round(submitted.queue_delay_s * 1000, 3))
 
         # Narrow in-process handler doubles construct no kernel. They have no
         # concurrency to schedule, so the work runs on this thread.
@@ -1906,11 +1975,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             path, params = self._parse_path()
             self._dispatch_get(path, params)
         except self._CLIENT_DISCONNECT as exc:
-            logger.debug(
+            emit(
                 "daemon.http.client_disconnected",
+                level=DEBUG,
+                outcome="skipped",
+                reason="client_disconnected",
                 method="GET",
-                path=_request_path_for_log(self.path),
-                error=repr(exc),
+                route=_request_path_for_log(self.path),
+                error_type=type(exc).__name__,
             )
 
     def _reject_credential_query(self) -> bool:
@@ -1951,11 +2023,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             self._do_post_impl()
         except self._CLIENT_DISCONNECT as exc:
-            logger.debug(
+            emit(
                 "daemon.http.client_disconnected",
+                level=DEBUG,
+                outcome="skipped",
+                reason="client_disconnected",
                 method="POST",
-                path=_request_path_for_log(self.path),
-                error=repr(exc),
+                route=_request_path_for_log(self.path),
+                error_type=type(exc).__name__,
             )
 
     def _do_post_impl(self) -> None:
@@ -2015,11 +2090,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             self._do_delete_impl()
         except self._CLIENT_DISCONNECT as exc:
-            logger.debug(
+            emit(
                 "daemon.http.client_disconnected",
+                level=DEBUG,
+                outcome="skipped",
+                reason="client_disconnected",
                 method="DELETE",
-                path=_request_path_for_log(self.path),
-                error=repr(exc),
+                route=_request_path_for_log(self.path),
+                error_type=type(exc).__name__,
             )
 
     def _do_delete_impl(self) -> None:
@@ -2197,7 +2275,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
         except WebUIAssetError as exc:
-            logger.error("webui asset discovery failed: %s", exc)
+            emit(
+                "daemon.webui.assets_unavailable",
+                level=ERROR,
+                outcome="degraded",
+                reason="asset_discovery_failed",
+                route=self.path,
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
             return
 
@@ -2221,7 +2308,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, body)
             return
         except sqlite3.OperationalError as exc:
-            logger.exception("webui archive overview read failed")
+            emit(
+                "daemon.webui.page_read_failed",
+                level=ERROR,
+                outcome="error",
+                reason="archive_busy" if _is_sqlite_busy_error(exc) else "sqlite_error",
+                route="archive_overview",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             status = HTTPStatus.SERVICE_UNAVAILABLE if _is_sqlite_busy_error(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
             notice = (
                 "The archive is temporarily busy; retry the overview shortly."
@@ -2230,8 +2325,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             self._send_webui_html(status, render_archive_overview_page(bundle, None, notice=notice))
             return
-        except Exception:
-            logger.exception("webui archive overview render failed")
+        except Exception as exc:
+            emit(
+                "daemon.webui.page_render_failed",
+                level=ERROR,
+                outcome="error",
+                reason="render_failed",
+                route="archive_overview",
+                status_code=int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_webui_html(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 render_archive_overview_page(bundle, None, notice="The archive overview could not be rendered."),
@@ -2255,7 +2359,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
         except WebUIAssetError as exc:
-            logger.error("webui asset discovery failed: %s", exc)
+            emit(
+                "daemon.webui.assets_unavailable",
+                level=ERROR,
+                outcome="degraded",
+                reason="asset_discovery_failed",
+                route=self.path,
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
             return
 
@@ -2288,7 +2401,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             return
         except sqlite3.OperationalError as exc:
-            logger.exception("webui session list read failed")
+            emit(
+                "daemon.webui.page_read_failed",
+                level=ERROR,
+                outcome="error",
+                reason="archive_busy" if _is_sqlite_busy_error(exc) else "sqlite_error",
+                route="session_list",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             status = HTTPStatus.SERVICE_UNAVAILABLE if _is_sqlite_busy_error(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
             notice = (
                 "The archive is temporarily busy; retry the session list shortly."
@@ -2297,8 +2418,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             self._send_webui_html(status, render_session_list_page(bundle, None, filters, notice=notice))
             return
-        except Exception:
-            logger.exception("webui session list render failed")
+        except Exception as exc:
+            emit(
+                "daemon.webui.page_render_failed",
+                level=ERROR,
+                outcome="error",
+                reason="render_failed",
+                route="session_list",
+                status_code=int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_webui_html(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 render_session_list_page(bundle, None, filters, notice="The session list could not be rendered."),
@@ -2324,7 +2454,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
         except WebUIAssetError as exc:
-            logger.error("webui asset discovery failed: %s", exc)
+            emit(
+                "daemon.webui.assets_unavailable",
+                level=ERROR,
+                outcome="degraded",
+                reason="asset_discovery_failed",
+                route=self.path,
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
             return
 
@@ -2341,7 +2480,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             session = self._do_archive_get_session(archive_root, session_id, limit=SESSION_READ_MESSAGE_LIMIT, offset=0)
         except sqlite3.OperationalError as exc:
-            logger.exception("webui session read failed")
+            emit(
+                "daemon.webui.page_read_failed",
+                level=ERROR,
+                outcome="error",
+                reason="archive_busy" if _is_sqlite_busy_error(exc) else "sqlite_error",
+                route="session_read",
+                session_id=session_id,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             status = HTTPStatus.SERVICE_UNAVAILABLE if _is_sqlite_busy_error(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
             notice = (
                 "The archive is temporarily busy; retry this session shortly."
@@ -2350,8 +2498,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             self._send_webui_html(status, render_session_read_page(bundle, session_id, None, notice=notice))
             return
-        except Exception:
-            logger.exception("webui session read render failed")
+        except Exception as exc:
+            emit(
+                "daemon.webui.page_render_failed",
+                level=ERROR,
+                outcome="error",
+                reason="render_failed",
+                route="session_read",
+                session_id=session_id,
+                status_code=int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_webui_html(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 render_session_read_page(bundle, session_id, None, notice="This session could not be rendered."),
@@ -2392,7 +2550,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
         except WebUIAssetError as exc:
-            logger.error("webui asset discovery failed: %s", exc)
+            emit(
+                "daemon.webui.assets_unavailable",
+                level=ERROR,
+                outcome="degraded",
+                reason="asset_discovery_failed",
+                route=self.path,
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
             return
 
@@ -2419,7 +2586,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             result = self._sync_run(_search)
         except sqlite3.OperationalError as exc:
-            logger.exception("webui search read failed")
+            emit(
+                "daemon.webui.page_read_failed",
+                level=ERROR,
+                outcome="error",
+                reason="archive_busy" if _is_sqlite_busy_error(exc) else "sqlite_error",
+                route="search",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             status = HTTPStatus.SERVICE_UNAVAILABLE if _is_sqlite_busy_error(exc) else HTTPStatus.INTERNAL_SERVER_ERROR
             notice = (
                 "The archive is temporarily busy; retry this search shortly."
@@ -2428,8 +2603,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             self._send_webui_html(status, render_search_page(bundle, None, query, notice=notice))
             return
-        except Exception:
-            logger.exception("webui search render failed")
+        except Exception as exc:
+            emit(
+                "daemon.webui.page_render_failed",
+                level=ERROR,
+                outcome="error",
+                reason="render_failed",
+                route="search",
+                status_code=int(HTTPStatus.INTERNAL_SERVER_ERROR),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_webui_html(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 render_search_page(bundle, None, query, notice="This search could not be completed."),
@@ -2460,11 +2644,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if not isinstance(payload, Mapping):
                 raise RuntimeError("observability projection returned an invalid payload")
         except WebUIAssetError as exc:
-            logger.error("webui asset discovery failed: %s", exc)
+            emit(
+                "daemon.webui.assets_unavailable",
+                level=ERROR,
+                outcome="degraded",
+                reason="asset_discovery_failed",
+                route=self.path,
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
             return
-        except Exception:
-            logger.exception("webui observability render failed")
+        except Exception as exc:
+            emit(
+                "daemon.webui.page_render_failed",
+                level=ERROR,
+                outcome="error",
+                reason="render_failed",
+                route="observability",
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             if bundle is None:
                 self._send_webui_html(
                     HTTPStatus.SERVICE_UNAVAILABLE,
@@ -2504,11 +2706,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if not isinstance(payload, Mapping):
                 raise RuntimeError("cost projection returned an invalid payload")
         except WebUIAssetError as exc:
-            logger.error("webui asset discovery failed: %s", exc)
+            emit(
+                "daemon.webui.assets_unavailable",
+                level=ERROR,
+                outcome="degraded",
+                reason="asset_discovery_failed",
+                route=self.path,
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
             return
-        except Exception:
-            logger.exception("webui cost render failed")
+        except Exception as exc:
+            emit(
+                "daemon.webui.page_render_failed",
+                level=ERROR,
+                outcome="error",
+                reason="render_failed",
+                route="cost",
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             if bundle is None:
                 self._send_webui_html(
                     HTTPStatus.SERVICE_UNAVAILABLE,
@@ -2532,7 +2752,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
             return
         except WebUIAssetError as exc:
-            logger.error("webui asset read failed: %s", exc)
+            emit(
+                "daemon.webui.asset_read_failed",
+                level=ERROR,
+                outcome="error",
+                reason="asset_read_failed",
+                route=name,
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "webui_assets_unavailable", str(exc))
             return
         self._send_webui_asset(asset)
@@ -2786,7 +3015,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 )
         except Exception as exc:
             # Response detail stays generic; the reason goes to the daemon log.
-            logger.warning("health endpoint: check raised %s: %s", type(exc).__name__, exc)
+            emit(
+                "daemon.http.health_check_failed",
+                level=WARNING,
+                outcome="error",
+                route="health",
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self._send_json(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 {"ok": False, "status": "error", "detail": "health check failed"},
@@ -3939,8 +4176,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "SELECT dst_origin || ':' || dst_native_id, link_type, status FROM session_links WHERE src_session_id = ? ORDER BY link_type, dst_origin, dst_native_id LIMIT 20",
                     (session_id,),
                 ).fetchall()
-            except sqlite3.Error:
-                logger.warning("session evidence summary could not read lineage refs for %s", conv_id, exc_info=True)
+            except sqlite3.Error as exc:
+                emit(
+                    "daemon.http.session_evidence_degraded",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="lineage_refs_unreadable",
+                    session_id=conv_id,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
                 lineage_rows = []
 
         async def _cost(poly: Polylogue) -> object:
@@ -4039,7 +4284,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         panel_outcomes: list[OutcomeEnvelope] = []
 
         def _unavailable(kind: str, exc: BaseException) -> OutcomeEnvelope:
-            logger.warning("session insight %r unavailable for %s: %s", kind, conv_id, exc)
+            emit(
+                "daemon.http.session_insight_unavailable",
+                level=WARNING,
+                outcome="degraded",
+                reason="insight_unavailable",
+                kind=kind,
+                session_id=conv_id,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return decide_outcome(matched=0, error=f"insight_unavailable:{kind}")
 
         if "profile" in includes:
@@ -4300,7 +4554,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             result = self._sync_run(_get)
         except (DatabaseError, sqlite3.Error) as exc:
-            logger.warning("provider-usage archive read degraded: %s", exc)
+            emit(
+                "daemon.http.provider_usage_degraded",
+                level=WARNING,
+                outcome="degraded",
+                reason="index_unreadable",
+                route="provider-usage",
+                origin=origin,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             reason = f"Provider usage accounting is unavailable: archive index could not be read ({exc})."
             degraded: dict[str, object] = {
                 "archive_root": str(archive_root),
@@ -5784,7 +6047,14 @@ class _StandaloneWriteRuntime:
         except TimeoutError:
             # The task retains the loop, writer and compute owner until actual
             # publication settles. A bounded close does not release ownership.
-            logger.warning("standalone daemon HTTP runtime still draining during server close")
+            emit(
+                "daemon.http.runtime.drain_incomplete",
+                level=WARNING,
+                outcome="unmeasured",
+                reason="still_draining_at_server_close",
+                phase="shutdown",
+                timeout_ms=5500,
+            )
             return
         self.thread.join(timeout=1.0)
 
@@ -5797,6 +6067,13 @@ class _StandaloneWriteRuntime:
         if before_drain is not None:
             await before_drain()
         while not await self.coordinator.shutdown(timeout=5.0):
-            logger.warning("standalone daemon HTTP writer still draining after server close")
+            emit(
+                "daemon.http.writer.drain_incomplete",
+                level=WARNING,
+                outcome="unmeasured",
+                reason="writer_still_draining_after_server_close",
+                phase="shutdown",
+                timeout_ms=5000,
+            )
         if after_drain is not None:
             after_drain()

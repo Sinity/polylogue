@@ -409,12 +409,17 @@ class TestUnavailableInsightSurface:
         phases = cast(dict[str, object], cast(dict[str, object], failed["kinds"])["phases"])
         assert cast(dict[str, object], phases["outcome"])["state"] in {"ok", "empty"}
 
-    def test_failure_is_logged(self, workspace_env: dict[str, Path], caplog: object) -> None:
-        import logging
+    def test_failure_is_logged(self, workspace_env: dict[str, Path]) -> None:
+        """A panel that could not answer names itself on the event stream.
 
-        import pytest as _pytest
+        Anti-vacuity: dropping the ``daemon.http.session_insight_unavailable``
+        emit from ``_unavailable`` leaves the degraded envelope with no record
+        of *which* kind failed, and this assertion goes red.
+        """
+        from polylogue.logging import capture
 
-        typed = cast(_pytest.LogCaptureFixture, caplog)
-        with typed.at_level(logging.WARNING, logger="polylogue.daemon.http"):
+        with capture() as records:
             self._panels(workspace_env, fail=True)
-        assert any("timeline" in record.getMessage() for record in typed.records)
+        unavailable = [r for r in records if r["event"] == "daemon.http.session_insight_unavailable"]
+        assert [r["kind"] for r in unavailable] == ["timeline"]
+        assert unavailable[0]["outcome"] == "degraded"
