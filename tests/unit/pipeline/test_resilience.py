@@ -234,6 +234,17 @@ def test_jsonl_stream_shape_beats_drive_cache_json_suffix(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "PRODUCT BUG uncovered by vacuity audit: ingest_record reports "
+        "outcome_code='success' with sessions=[] and error=None for a record it "
+        "could not parse, so an unparseable payload is silently swallowed. The "
+        "previous assertion (`result.sessions is not None or result.error is not "
+        "None`) was a tautology -- sessions is a default_factory=list and can "
+        "never be None -- which hid this. Do not relax this test; fix ingest."
+    ),
+)
 def test_parse_unknown_source_name(tmp_path: Path) -> None:
     """Unknown provider name falls back gracefully."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
@@ -244,7 +255,7 @@ def test_parse_unknown_source_name(tmp_path: Path) -> None:
         json.dumps({"id": "conv-1", "title": "Test"}).encode(),
     )
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None or result.error is not None
+    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +273,7 @@ def test_parse_claude_code_jsonl_with_null_fields(tmp_path: Path) -> None:
     )
     record = _make_raw_record("null-fields", "claude-code", content, "/exports/session.jsonl")
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None or result.error is not None
+    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +341,7 @@ def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path: Path) -> None:
     ).encode()
     record = _make_raw_record("malformed-nodes", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None or result.error is not None
+    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +378,7 @@ def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path: Path) -> None:
     ).encode()
     record = _make_raw_record("bundle-one-invalid", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None or result.error is not None
+    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +386,17 @@ def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "PRODUCT BUG uncovered by vacuity audit: ingest_record reports "
+        "outcome_code='success' with sessions=[] and error=None for a record it "
+        "could not parse, so an unparseable payload is silently swallowed. The "
+        "previous assertion (`result.sessions is not None or result.error is not "
+        "None`) was a tautology -- sessions is a default_factory=list and can "
+        "never be None -- which hid this. Do not relax this test; fix ingest."
+    ),
+)
 def test_parse_gemini_missing_text_fields(tmp_path: Path) -> None:
     """Gemini payload with messages missing text fields is handled gracefully."""
     from polylogue.pipeline.services.ingest_worker import ingest_record
@@ -393,7 +415,7 @@ def test_parse_gemini_missing_text_fields(tmp_path: Path) -> None:
     ).encode()
     record = _make_raw_record("gemini-no-text", "gemini", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None or result.error is not None
+    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
 
 
 # =====================================================================

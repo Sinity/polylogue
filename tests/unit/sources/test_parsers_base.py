@@ -544,10 +544,8 @@ def test_parse_code_tool_result_content_preserved() -> None:
     assert tool_results, "Expected tool_result content block"
     tr = tool_results[0]
     assert (
-        tr.text == "file contents here\nline 2"
-        or (tr.tool_input or {}).get("content") == "file contents here\nline 2"
-        or True
-    )  # content stored per-block
+        tr.text == "file contents here\nline 2" or (tr.tool_input or {}).get("content") == "file contents here\nline 2"
+    ), f"tool_result content not preserved: text={tr.text!r} tool_input={tr.tool_input!r}"
 
 
 def test_parse_code_tool_result_error_preserved() -> None:
