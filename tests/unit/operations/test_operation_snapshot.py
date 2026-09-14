@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext
+from polylogue.operations.audit import AuditContinuityPendingError
 from polylogue.operations.authority import authority_for_reader
 from polylogue.operations.operation_context import (
     observe_control_authority,
@@ -106,3 +107,36 @@ def test_operation_snapshot_installs_existing_cancellation_control_on_executing_
             ).fetchone()
     assert context.receipt.interrupted
     assert context.receipt.cleanup_complete
+
+
+def test_unseeded_audit_continuity_degrades_an_operation_read(tmp_path: Path) -> None:
+    """An archive whose continuity halves are not both seeded must degrade, not raise.
+
+    polylogue-gwns3: ``AuditContinuityCoordinator.is_available`` raises the
+    base ``AuditContinuityError`` -- not the ``AuditContinuityPendingError``
+    subclass -- for an archive carrying a continuity-era schema version without
+    the matching control/head table.  Every operation-read degradation handler
+    caught only the subclass, so the bootstrap shape escaped as an unhandled
+    error from a read that is never allowed to repair anything.
+
+    Anti-vacuity: narrow the handler in ``observe_control_authority`` back to
+    ``AuditContinuityPendingError`` and this raises
+    ``AuditContinuityError: current source schema is missing audit continuity
+    control`` instead of returning a named gap.
+    """
+    from polylogue.operations.audit import AuditContinuityError, AuditRepository
+
+    bootstrap_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("PRAGMA user_version").fetchone()[0] >= 32
+        source.execute("DROP TABLE audit_continuity_control")
+
+    # The read path underneath really does raise the non-Pending class.
+    with pytest.raises(AuditContinuityError, match="missing audit continuity control") as raised:
+        with AuditRepository.for_archive_root(tmp_path).settled_machine_read():
+            pass
+    assert not isinstance(raised.value, AuditContinuityPendingError)
+
+    snapshot = observe_control_authority(tmp_path)
+    assert snapshot.degraded_components == ("audit_continuity_unavailable",)
+    assert snapshot.schema_versions == {}

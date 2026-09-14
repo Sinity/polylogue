@@ -40,6 +40,7 @@ from polylogue.operations.mutation_transaction import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceManifest
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
+from polylogue.storage.sqlite.audit_continuity import AuditContinuityError as AuditContinuityError
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityPendingError as AuditContinuityPendingError
 from polylogue.storage.sqlite.audit_leaf import (
     AuditLeafError,
