@@ -22,6 +22,7 @@ from polylogue.core.enums import (
     WebConstructType,
 )
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.logging import WARNING, emit
 from polylogue.sources.providers.chatgpt_session_models import ChatGPTNode
 from polylogue.sources.tool_result_reasons import unknown_reason
 
@@ -932,8 +933,17 @@ def _chatgpt_media_attachment_kind(pointer_field: str, content_type: str | None 
 # preserved as web constructs. The raw markers otherwise leak invisible
 # glyphs into search text and rendered transcripts; the untouched original
 # remains in the source-tier raw payload.
-_CITATION_MARKER_RE = re.compile("\ue200.*?\ue201|[\ue200\ue201\ue202]")
-_CITATION_MARKER_SPAN_RE = re.compile("\ue200(.*?)\ue201")
+# The span body excludes both delimiters rather than using a lazy ``.*?``.
+# A lazy any-character span over an unterminated opener backtracks once per
+# following opener, so assistant text carrying a long run of U+E200 with no
+# U+E201 costs quadratic time -- and ChatGPT message text is attacker-authored
+# from the archive's point of view. Excluding the delimiters makes each start
+# position fail in constant time. On well-formed markers the two agree; on a
+# malformed nested run the excluding form keeps the inner text instead of
+# swallowing it up to a later closer, which is the better reading of a
+# delimiter that never nests.
+_CITATION_MARKER_RE = re.compile("\ue200[^\ue200\ue201]*\ue201|[\ue200\ue201\ue202]")
+_CITATION_MARKER_SPAN_RE = re.compile("\ue200([^\ue200\ue201]*)\ue201")
 
 
 def _strip_citation_markers(text: str) -> str:
@@ -943,20 +953,37 @@ def _strip_citation_markers(text: str) -> str:
 _SANDBOX_FILE_RE = re.compile(r"sandbox:(/mnt/data/[^\s)\]\"'>]+)")
 
 
-def _sandbox_file_paths(text: str) -> list[str]:
+# One assistant message's text yields one synthetic attachment per distinct
+# sandbox link, and that text is attacker-authored: a message body made of
+# unique ``sandbox:/mnt/data/<n>`` links expands into hundreds of thousands of
+# `ParsedAttachment` models (measured ~80x peak RSS over the source text) and
+# as many attachment rows. A genuine Code Interpreter turn produces a handful.
+MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE = 512
+
+
+def _sandbox_file_paths(text: str) -> tuple[list[str], int]:
     """Ordered, deduplicated ``/mnt/data`` paths linked in assistant text.
 
     Trailing prose punctuation is stripped so ``(sandbox:/mnt/data/kit.zip).``
     yields ``/mnt/data/kit.zip``. Directory links keep their trailing slash in
     the returned path.
+
+    Returns the retained paths and the total number of distinct paths the text
+    actually carried. The two differ only past
+    ``MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE``, and the caller reports that
+    difference rather than letting the excess vanish.
     """
 
     seen: dict[str, None] = {}
+    total = 0
     for match in _SANDBOX_FILE_RE.finditer(text):
         path = match.group(1).rstrip(".,;:!?*`")
-        if path != "/mnt/data/":
-            seen.setdefault(path)
-    return list(seen)
+        if path == "/mnt/data/" or path in seen:
+            continue
+        total += 1
+        if len(seen) < MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE:
+            seen[path] = None
+    return list(seen), total
 
 
 def _extract_content_text(content: Mapping[str, object]) -> str:
@@ -1321,7 +1348,22 @@ def extract_messages_from_mapping(
         # produced it. attachment_kind="sandbox_file" keeps every acquisition
         # path away from it (there is nothing local to fetch).
         if role is Role.ASSISTANT and text:
-            for sandbox_path in _sandbox_file_paths(text):
+            sandbox_paths, sandbox_total = _sandbox_file_paths(text)
+            if sandbox_total > len(sandbox_paths):
+                # A counted degradation, not a silent truncation: the exact
+                # number of links the message carried stays in the record even
+                # though only the bounded prefix becomes attachments.
+                emit(
+                    "sources.chatgpt.sandbox_links_bounded",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="sandbox_attachment_cap",
+                    message_provider_id=str(msg_id),
+                    found=sandbox_total,
+                    recorded=len(sandbox_paths),
+                    skipped=sandbox_total - len(sandbox_paths),
+                )
+            for sandbox_path in sandbox_paths:
                 attachments.append(
                     ParsedAttachment(
                         provider_attachment_id=f"sandbox:{msg_id}:{sandbox_path}",

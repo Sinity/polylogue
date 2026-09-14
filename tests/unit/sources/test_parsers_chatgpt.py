@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -3819,3 +3820,88 @@ def test_chatgpt_project_conversation_emits_no_custom_gpt_event() -> None:
 
     assert session.provider_project_ref == "g-p-6801608e3ebc819184f4e318bf49f5ff"
     assert not [event for event in session.session_events if event.event_type == "chatgpt_custom_gpt"]
+
+
+def test_citation_marker_stripping_is_linear_in_unterminated_openers() -> None:
+    """A long run of unmatched citation openers cannot cost quadratic time.
+
+    ChatGPT message text is attacker-authored from the archive's point of view.
+    Anti-vacuity: restoring the lazy ``U+E200 .*? U+E201`` span makes the regex
+    engine retry every start position against every following opener. That form
+    measures ~0.67s at 16k openers and grows as the square, so the 60k openers
+    used here cost on the order of ten seconds and blow the budget below, while
+    the delimiter-excluding form stays in the low milliseconds. The
+    well-formed-marker assertions stop the budget being satisfied by simply
+    deleting the span alternative.
+    """
+    # Well-formed markers are still stripped whole, span and all.
+    assert chatgpt_parser._strip_citation_markers("aturn0search1b") == "ab"
+    assert [match.group(1) for match in chatgpt_parser._CITATION_MARKER_SPAN_RE.finditer("xcite42y")] == ["cite42"]
+
+    hostile = "" * 60_000
+    started = time.perf_counter()
+    stripped = chatgpt_parser._strip_citation_markers(hostile)
+    elapsed = time.perf_counter() - started
+
+    # Each bare opener is a marker in its own right, so all of them are removed.
+    assert stripped == ""
+    assert elapsed < 2.0, f"citation stripping took {elapsed:.2f}s; expected linear time"
+
+
+def test_sandbox_link_attachments_are_bounded_with_an_exact_found_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A message linking a huge number of sandbox files degrades, never silently.
+
+    Anti-vacuity: removing the ``MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE`` bound in
+    ``_sandbox_file_paths`` restores one ``ParsedAttachment`` per distinct link,
+    so the attachment count becomes ``link_count`` instead of the cap and no
+    ``sources.chatgpt.sandbox_links_bounded`` event is emitted -- both the cap
+    assertion and the event assertions go red. Dropping the emit while keeping
+    the cap turns the fix into a silent truncation and fails the event half
+    alone.
+    """
+    captured: list[tuple[str, dict[str, object]]] = []
+
+    def record(event: str, /, **fields: object) -> None:
+        captured.append((event, dict(fields)))
+
+    monkeypatch.setattr("polylogue.sources.parsers.chatgpt.emit", record)
+
+    link_count = chatgpt_parser.MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE * 3
+    text = " ".join(f"[f](sandbox:/mnt/data/f{index}.bin)" for index in range(link_count))
+    mapping = {"node1": make_chatgpt_node("msg1", "assistant", [text])}
+
+    _messages, attachments = extract_messages_from_mapping(mapping)
+
+    sandbox = [a for a in attachments if a.attachment_kind == "sandbox_file"]
+    assert len(sandbox) == chatgpt_parser.MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE
+    # The retained set is the ordered prefix, not an arbitrary sample.
+    assert sandbox[0].source_url == "sandbox:/mnt/data/f0.bin"
+
+    bounded = [fields for event, fields in captured if event == "sources.chatgpt.sandbox_links_bounded"]
+    assert len(bounded) == 1
+    # The count the message actually carried survives the bound exactly.
+    assert bounded[0]["found"] == link_count
+    assert bounded[0]["recorded"] == chatgpt_parser.MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE
+    assert bounded[0]["skipped"] == link_count - chatgpt_parser.MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE
+    assert bounded[0]["outcome"] == "degraded"
+
+
+def test_sandbox_links_under_the_bound_emit_no_degradation() -> None:
+    """The bound is inert for ordinary Code Interpreter turns.
+
+    Anti-vacuity: emitting the degradation unconditionally (for example by
+    comparing against the retained list rather than the true total) makes this
+    assertion red, so the counted-degradation channel cannot become noise on
+    every assistant message that links a file.
+    """
+    captured: list[tuple[str, dict[str, object]]] = []
+    text = "[a](sandbox:/mnt/data/a.zip) and [b](sandbox:/mnt/data/b.zip)"
+    mapping = {"node1": make_chatgpt_node("msg1", "assistant", [text])}
+
+    with patch("polylogue.sources.parsers.chatgpt.emit", lambda event, /, **f: captured.append((event, f))):
+        _messages, attachments = extract_messages_from_mapping(mapping)
+
+    assert len([a for a in attachments if a.attachment_kind == "sandbox_file"]) == 2
+    assert [event for event, _ in captured if event == "sources.chatgpt.sandbox_links_bounded"] == []
