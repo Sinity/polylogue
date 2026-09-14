@@ -84,16 +84,21 @@ class MemberOutcome(StrEnum):
     BLOCKED = "blocked"
 
 
-# The material is in an ordinary spool under these outcomes and only these.
-# A superseded revision is among them: one provider session keeps exactly one
-# spool artifact, and the revision the spool converged on is the material the
-# archive wants. A carrier the spool declines as older is accounted for by the
-# newer artifact holding that identity, not stranded.
+# An ordinary spool provably holds this carrier's material under these
+# outcomes and only these. RESTORED published the carrier's own bytes;
+# RESTORATION_ALREADY_PRESENT is backed by a capture_dedup_content_hash
+# equality in the receiver. RESTORATION_SUPERSEDED is deliberately absent:
+# the spool's supersession verdict is a reject-incoming decision comparing
+# captured_at, session update time and turn count -- never message text,
+# raw_provider_payload or provider_meta -- so it does not prove the resident
+# artifact contains the carrier's revision. Treating it as complete deleted
+# sole-copy carriers whose bytes diverged from the resident artifact. A
+# superseded sole-copy carrier is BLOCKED: an observable refusal, not a
+# silent durable loss.
 _COMPLETED_RESTORATIONS = frozenset(
     {
         RestorationOutcome.RESTORED,
         RestorationOutcome.RESTORATION_ALREADY_PRESENT,
-        RestorationOutcome.RESTORATION_SUPERSEDED,
     }
 )
 # Outcomes that leave the object physically in the namespace.

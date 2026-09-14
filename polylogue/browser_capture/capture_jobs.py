@@ -32,6 +32,23 @@ from polylogue.paths import browser_capture_spool_root
 
 _RETRY_STATES = frozenset({"ready", "retry_wait", "held", "completed", "abandoned"})
 
+# A capture-job event is a control message: a kind, a few refs, and a small
+# structured payload. It is not a capture envelope and never carries
+# conversation content -- that travels the capture route, which owns the spool
+# quota. The registry database lives outside the spool directory the
+# receiver's SPOOL_MAX_BYTES measures, so an uncapped event body grows
+# registry.sqlite3 without any quota noticing. 64 KiB is well below the local
+# attachment precedent (ACTION_ATTACHMENT_MAX_BYTES, 16 MiB, which does carry
+# content) and still far above any real event: the largest payloads are a
+# handful of refs and a reason string.
+CAPTURE_JOB_EVENT_MAX_BYTES = 64 * 1024
+# Every event is client-driven and a job's lifetime is bounded by its
+# conversations. A job past this many events is looping, not progressing.
+# Refusing is an explicit, observable stop: ``gc`` collects only jobs already
+# retention-eligible and completed/abandoned, so a job the client keeps active
+# is never reclaimed and its events would otherwise accumulate forever.
+CAPTURE_JOB_EVENT_MAX_COUNT = 10_000
+
 
 class CaptureJobError(Exception):
     def __init__(self, status: int, code: str, details: dict[str, object] | None = None) -> None:
@@ -485,6 +502,18 @@ class CaptureJobRegistry:
             raise CaptureJobError(400, "invalid_capture_job_event")
         if not isinstance(payload, dict):
             raise CaptureJobError(400, "invalid_capture_job_event")
+        refs_bytes = len(canonical_json(refs).encode("utf-8"))
+        payload_bytes = len(canonical_json(payload).encode("utf-8"))
+        if refs_bytes > CAPTURE_JOB_EVENT_MAX_BYTES or payload_bytes > CAPTURE_JOB_EVENT_MAX_BYTES:
+            raise CaptureJobError(
+                400,
+                "capture_job_event_too_large",
+                {
+                    "max_bytes": CAPTURE_JOB_EVENT_MAX_BYTES,
+                    "refs_bytes": refs_bytes,
+                    "payload_bytes": payload_bytes,
+                },
+            )
         existing = connection.execute(
             "SELECT * FROM capture_job_events WHERE job_id=? AND request_id=?", (job_id, request_id)
         ).fetchone()
@@ -502,6 +531,12 @@ class CaptureJobRegistry:
         event_revision = connection.execute(
             "SELECT COALESCE(MAX(event_revision), -1) + 1 FROM capture_job_events WHERE job_id=?", (job_id,)
         ).fetchone()[0]
+        if event_revision >= CAPTURE_JOB_EVENT_MAX_COUNT:
+            raise CaptureJobError(
+                400,
+                "capture_job_event_limit_exhausted",
+                {"max_events": CAPTURE_JOB_EVENT_MAX_COUNT, "event_count": event_revision},
+            )
         job_revision = expected_revision + 1 if advance_revision else expected_revision
         now = _stamp()
         event_id = str(uuid4())

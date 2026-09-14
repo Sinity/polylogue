@@ -495,11 +495,14 @@ def test_a_sole_copy_is_restored_before_its_carrier_is_deleted(tmp_path: Path) -
     assert rows == [("removed",)]
 
 
-def test_an_older_revision_of_a_spooled_session_is_superseded_not_blocked(tmp_path: Path) -> None:
-    """Anti-vacuity: requiring the destination to hold an equal capture blocks
-    every carrier of a session the extension recaptured — 292 of 300 on the
-    live archive. Reinstating that equality check makes this red, and so does
-    letting the older revision overwrite the later one."""
+def test_a_superseded_sole_copy_carrier_is_blocked_and_its_bytes_survive(tmp_path: Path) -> None:
+    """Anti-vacuity: the spool's supersession verdict compares captured_at,
+    session update time and turn count only — never message text — so it does
+    not prove the resident artifact contains this carrier's revision. Putting
+    RESTORATION_SUPERSEDED back into ``_COMPLETED_RESTORATIONS`` deletes the
+    sole copy and makes this red on both the outcome and the surviving bytes.
+    Letting the older revision overwrite the resident artifact makes it red
+    too."""
     archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
     resident = write_capture_envelope_bytes(_LATER_CAPTURE, spool_path=capture_spool).path
     _, blob_path = _store_aged(blob_root, _EARLIER_CAPTURE)
@@ -508,14 +511,18 @@ def test_an_older_revision_of_a_spooled_session_is_superseded_not_blocked(tmp_pa
 
     receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
 
-    assert receipt.ok, receipt.blockers
+    assert blob_path.exists() and blob_path.read_bytes() == _EARLIER_CAPTURE
+    assert receipt.deleted_count == 0
+    (result,) = receipt.results
+    assert result.outcome is MemberOutcome.BLOCKED
     (restoration,) = receipt.restorations
     assert restoration.outcome is RestorationOutcome.RESTORATION_SUPERSEDED
+    assert not restoration.completed
     assert Path(restoration.spool_path) == resident
     assert resident.read_bytes() == _LATER_CAPTURE
-    (result,) = receipt.results
-    assert result.outcome is MemberOutcome.DELETED
-    assert not blob_path.exists()
+    # A blocked member is a refusal, so the apply is deliberately not ok.
+    assert not receipt.ok
+    assert receipt.blockers == ()
 
 
 def test_a_newer_revision_replaces_the_spooled_capture(tmp_path: Path) -> None:
@@ -580,7 +587,10 @@ def test_a_rehearsal_predicts_the_restoration_counts_its_apply_produces(tmp_path
 
     active = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
 
-    assert rehearsal.ok and active.ok, (rehearsal.blockers, active.blockers)
+    # The superseded carrier is refused rather than deleted, so neither arm is
+    # ok -- but the rehearsal must predict exactly the refusal the apply makes.
+    assert rehearsal.ok == active.ok
+    assert (rehearsal.blockers, active.blockers) == ((), ())
     assert rehearsal.restoration_counts == active.restoration_counts
     assert rehearsal.counts == active.counts
     assert [restoration.outcome for restoration in rehearsal.restorations] == [
