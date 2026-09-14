@@ -19,7 +19,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import normalize_session_timestamps, timestamp_millis
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.pipeline.services.process_pool import (
     PoolKind,
@@ -330,7 +330,26 @@ async def parse_sources_archive(
                 # broad except below, do NOT roll back prior sessions already
                 # staged in this batch).
                 result.excised_skips += 1
+                # The payload was already published (staged and reserved)
+                # before the write refused it. The success path's receipt
+                # consumption never runs, so the orphaned reservation would
+                # keep blob GC away from the excised hash permanently. Release
+                # it and let ordinary GC reclaim the unreferenced bytes.
+                from polylogue.storage.blob_publication import release_refused_publication_receipt
+
+                released = release_refused_publication_receipt(
+                    archive.source_db_path,
+                    raw_data.blob_publication_receipt_id if raw_data is not None else None,
+                    blob_hash_str,
+                )
                 logger.info("Skipping durably excised content: %s", exc)
+                emit(
+                    "pipeline.archive_ingest.excised_publication_released",
+                    level=WARNING,
+                    outcome="degraded",
+                    released=released,
+                    blob_hash=blob_hash_str,
+                )
                 return
             except Exception:
                 # Discard the in-flight uncommitted batch so a failed write

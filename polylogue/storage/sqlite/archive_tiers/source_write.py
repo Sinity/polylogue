@@ -566,11 +566,28 @@ def write_source_blob_refs(
     raw_id: str,
     refs: tuple[ArchiveSourceBlobRef, ...],
 ) -> None:
-    """Attach already-published blobs to one retained raw record."""
+    """Attach already-published blobs to one retained raw record.
+
+    Gated on the durable excision ledger like every other writer in this
+    module (``insert_reconstructed_raw_row``, ``write_source_raw_session``,
+    ``write_source_raw_session_blob_ref``). This was the one blob-reference
+    writer that was not: the Drive attachment convergence stage re-downloads
+    an ``unfetched`` reference, hashes it back to the exact excised hash, and
+    used this function to recreate a live ``blob_refs`` row for content the
+    operator durably excised.
+
+    The refusal is per reference and names the hash, so a caller reports
+    which item it did not attach rather than dropping it silently.
+    """
     if not refs:
         return
     with conn:
         for ref in refs:
+            if is_blob_hash_excised(conn, ref.blob_hash):
+                raise ContentExcisedError(
+                    blob_hash=ref.blob_hash,
+                    source_path=ref.source_path or f"blob_ref:{ref.ref_type}",
+                )
             _insert_blob_ref(
                 conn,
                 ArchiveSourceBlobRef(

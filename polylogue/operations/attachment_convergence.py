@@ -16,9 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, write_source_blob_refs
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceBlobRef,
+    is_blob_hash_excised,
+    write_source_blob_refs,
+)
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
@@ -33,6 +37,10 @@ class AttachmentConvergenceResult:
     acquired: int = 0
     terminal: int = 0
     deferred: int = 0
+    #: Candidates refused because the downloaded bytes hash to content the
+    #: operator durably excised. Counted separately from ``terminal`` so a
+    #: privacy refusal is never read as an ordinary transport failure.
+    excised: int = 0
 
     @property
     def complete(self) -> bool:
@@ -114,6 +122,7 @@ def converge_drive_attachments(
     acquired_refs: list[ArchiveSourceBlobRef] = []
     acquired_rows: list[tuple[str, bytes, int]] = []
     terminal_ids: list[str] = []
+    excised_ids: list[str] = []
     deferred = 0
     # One content-addressed attachment can have refs in several sessions.  A
     # bounded pass must not spend one Drive request per ref; retain only the
@@ -133,6 +142,9 @@ def converge_drive_attachments(
                 outcome, cached_hash, cached_size = cached
                 if outcome == "terminal":
                     terminal_ids.append(attachment_id)
+                    continue
+                if outcome == "excised":
+                    excised_ids.append(attachment_id)
                     continue
                 if outcome == "deferred":
                     deferred += 1
@@ -158,6 +170,25 @@ def converge_drive_attachments(
                 if len(payload) > max_attachment_bytes:
                     fetch_outcomes[provider_file_id] = ("terminal", None, 0)
                     terminal_ids.append(attachment_id)
+                    continue
+                candidate_hash = hashlib.sha256(payload).digest()
+                if is_blob_hash_excised(source_conn, candidate_hash):
+                    # Refuse BEFORE publishing. write_from_bytes would stage
+                    # the payload and queue a receipt that publisher.flush()
+                    # then reserves and moves into the blob store, and a
+                    # reservation makes the hash permanently GC-immune. The
+                    # operator excised exactly these bytes; re-downloading
+                    # them from Drive must not put them back.
+                    fetch_outcomes[provider_file_id] = ("excised", None, 0)
+                    excised_ids.append(attachment_id)
+                    emit(
+                        "operations.attachment_convergence.excised_refused",
+                        level=WARNING,
+                        outcome="degraded",
+                        attachment_id=attachment_id,
+                        blob_hash=candidate_hash.hex(),
+                        reason="durable excision ledger",
+                    )
                     continue
                 blob_hash_hex, byte_count = publisher.write_from_bytes(payload)
             except Exception as exc:
@@ -203,6 +234,16 @@ def converge_drive_attachments(
                         """,
                         (blob_hash, byte_count, attachment_id),
                     )
+        if excised_ids:
+            # Same terminal index state as an unavailable payload -- the
+            # bytes will never be acquired -- but reached by refusal, which
+            # the result counts and the log names.
+            with index_conn:
+                index_conn.executemany(
+                    "UPDATE attachments SET acquisition_status = 'unavailable' "
+                    "WHERE attachment_id = ? AND acquisition_status = 'unfetched'",
+                    ((attachment_id,) for attachment_id in excised_ids),
+                )
         if terminal_ids:
             with index_conn:
                 index_conn.executemany(
@@ -222,6 +263,7 @@ def converge_drive_attachments(
         acquired=len(acquired_rows),
         terminal=len(terminal_ids),
         deferred=deferred,
+        excised=len(excised_ids),
     )
 
 
