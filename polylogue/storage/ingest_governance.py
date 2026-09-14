@@ -322,6 +322,22 @@ def _append_frontier(archive: Any, logical_source_key: str) -> tuple[AppendFront
     )
 
 
+class CohortMembershipRefusalError(Exception):
+    """One selector member cannot be resolved for one logical source key.
+
+    A typed, per-key refusal: the cohort for this ``logical_source_key`` is not
+    preparable, but every other key in the source generation still is. Callers
+    must record it and continue rather than letting it escape and fence the
+    whole generation (polylogue-163ku).
+    """
+
+    def __init__(self, logical_source_key: str, raw_id: str, reason: str) -> None:
+        super().__init__(f"membership {raw_id}:{logical_source_key} refused: {reason}")
+        self.logical_source_key = logical_source_key
+        self.raw_id = raw_id
+        self.reason = reason
+
+
 def prepare_raw_census(
     reader_archive: Any,
     raw_id: str,
@@ -437,10 +453,46 @@ def _session_for_key(
     logical_source_key: str,
     parse_retained_raw: ParseRetainedRaw,
 ) -> ParsedSession:
-    sessions = _normalized_sessions(archive, raw_id, parse_retained_raw(archive, raw_id) or ())
+    """Return the one parsed session a selector member contributes to this key.
+
+    Every failure here is a :class:`CohortMembershipRefusalError` naming the
+    cause that was actually established (polylogue-163ku). The previous untyped
+    ``RuntimeError("... no longer parses uniquely")`` escaped
+    ``prepare_ingest_cohort`` into ``operations/daemon_ingest.py``'s
+    ``except Exception: fence("refused")``, so one selector member that no
+    longer parses -- notably the unconditionally-admitted
+    ``raw_revision_head_raw_id``, which carries no revision_kind filter and so
+    may be an append fragment that was never expected to parse standalone --
+    cost every other logical key in the source generation. It also named a
+    cause ("no longer parses uniquely") that the zero-match case never
+    established.
+    """
+    try:
+        parsed = parse_retained_raw(archive, raw_id) or ()
+    except Exception as exc:
+        # Transient contention is not a parse verdict: let it propagate so the
+        # cohort is re-prepared rather than refused (mirrors prepare_raw_census).
+        if is_transient_sqlite_lock(exc):
+            raise
+        raise CohortMembershipRefusalError(
+            logical_source_key,
+            raw_id,
+            f"selector member did not parse: {str(exc)[:400]}",
+        ) from exc
+    sessions = _normalized_sessions(archive, raw_id, parsed)
     matches = [session for session in sessions if _logical_key(session) == logical_source_key]
-    if len(matches) != 1:
-        raise RuntimeError(f"membership {raw_id}:{logical_source_key} no longer parses uniquely")
+    if not matches:
+        raise CohortMembershipRefusalError(
+            logical_source_key,
+            raw_id,
+            f"selector member parsed {len(sessions)} session(s), none for this logical key",
+        )
+    if len(matches) > 1:
+        raise CohortMembershipRefusalError(
+            logical_source_key,
+            raw_id,
+            f"selector member parsed {len(matches)} sessions for this logical key, not one",
+        )
     return matches[0]
 
 
