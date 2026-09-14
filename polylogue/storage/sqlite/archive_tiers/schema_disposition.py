@@ -8,8 +8,6 @@ complete review.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -429,85 +427,8 @@ def assert_complete_schema_dispositions(rows: Sequence[SchemaDisposition]) -> No
         raise ValueError("incomplete six-tier schema disposition: " + "; ".join(problems))
 
 
-def schema_disposition_report() -> dict[str, object]:
-    """Return a generated review projection without storing live or campaign state."""
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
-
-    rows = schema_dispositions()
-    assert_complete_schema_dispositions(rows)
-    counts: dict[str, int] = {}
-    for row in rows:
-        counts[row.disposition] = counts.get(row.disposition, 0) + 1
-    tier_counts: dict[str, dict[str, int]] = {}
-    schema_fingerprints: dict[str, str] = {}
-    for tier in sorted({row.tier for row in rows}):
-        tier_rows = [row for row in rows if row.tier == tier]
-        tier_counts[tier] = {
-            "objects": len(tier_rows),
-            "tables": sum(row.object_type == "table" for row in tier_rows),
-            "columns": sum(row.object_type == "column" for row in tier_rows),
-            "indexes": sum(row.object_type == "index" for row in tier_rows),
-            "triggers": sum(row.object_type == "trigger" for row in tier_rows),
-            "views": sum(row.object_type == "view" for row in tier_rows),
-        }
-        schema_fingerprints[tier] = hashlib.sha256(
-            json.dumps(
-                [
-                    {
-                        "object_ref": row.object_ref,
-                        "definition_sha256": row.definition_sha256,
-                    }
-                    for row in tier_rows
-                ],
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
-    return {
-        "format": "polylogue-schema-disposition/v1",
-        "complete": True,
-        "object_count": len(rows),
-        "unknown_count": 0,
-        "disposition_counts": dict(sorted(counts.items())),
-        "schema_versions": {
-            tier.value: version
-            for tier, version in sorted(
-                ARCHIVE_VERSION_BY_TIER.items(),
-                key=lambda item: item[0].value,
-            )
-        },
-        "tier_counts": tier_counts,
-        "schema_fingerprints": schema_fingerprints,
-        "objects": [
-            {
-                "object_ref": row.object_ref,
-                "tier": row.tier,
-                "object_type": row.object_type,
-                "table_name": row.table_name,
-                "name": row.name,
-                "disposition": row.disposition,
-                "semantic_owner": row.semantic_owner,
-                "evidence": row.evidence,
-                "tier_durability": row.tier_durability,
-                "reindex_timing": row.reindex_timing,
-                "implementation_bead": row.implementation_bead,
-                "definition_sha256": row.definition_sha256,
-                "generated_kind": row.generated_kind,
-                "virtual": row.virtual,
-                "producer": row.producer,
-                "consumer": row.consumer,
-                "live_row_denominator": row.live_row_denominator,
-                "campaign_action": row.campaign_action,
-                "successor_or_authorization": row.successor_or_authorization,
-            }
-            for row in rows
-        ],
-    }
-
-
 __all__ += [
     "SchemaDisposition",
     "assert_complete_schema_dispositions",
-    "schema_disposition_report",
     "schema_dispositions",
 ]
