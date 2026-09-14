@@ -848,7 +848,9 @@ def test_async_execute_query_archive_uses_daemon_for_supported_session_pages(
     )
 
     payload = json.loads(capsys.readouterr().out)
-    assert seen == {"limit": 2, "offset": 0, "query": "repo:polylogue origin:codex-session"}
+    # The query terms are forwarded as the tuple the spec compiles, not joined
+    # into one string: joining re-tokenises a quoted phrase into separate terms.
+    assert seen == {"limit": 2, "offset": 0, "query": ["repo:polylogue", "origin:codex-session"]}
     assert payload["source"] == "daemon"
     assert payload["mode"] == "list"
     assert payload["items"][0]["id"] == "codex-session:native-1"
@@ -870,7 +872,7 @@ def test_async_execute_query_archive_preserves_daemon_degraded_search_json(
 
     def fake_fetch(config_arg: object, query_params: dict[str, object]) -> dict[str, object]:
         assert config_arg is config
-        assert query_params["query"] == "search needle"
+        assert query_params["query"] == ["search", "needle"]
         return {
             "query": "search needle",
             "retrieval_lane": "dialogue",
@@ -1093,7 +1095,18 @@ def test_async_execute_query_archive_sorts_lists(
     asyncio.run(
         _execute_query_params(
             env,
-            {"archive": True, "sort": "messages", "reverse": True, "output_format": "json"},
+            {
+                "archive": True,
+                "sort": "messages",
+                "reverse": True,
+                "output_format": "json",
+                # Pinned to the local ArchiveStore branch: this test asserts the SQL
+                # kwargs that branch builds.  The declared ``cli.query`` route reaches
+                # the same store through ``_archive_list_summaries_for_spec``; its
+                # equivalence with this branch is proven per flag in
+                # ``tests/unit/cli/test_query_route_differential.py``.
+                "no_daemon": True,
+            },
         )
     )
 
@@ -1580,6 +1593,12 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
                 "since": "2026-01-02T00:00:00Z",
                 "limit": 5,
                 "output_format": "json",
+                # Pinned to the local ArchiveStore branch: this test asserts the exact
+                # SQL kwargs that branch builds, including its ``limit + 1`` pagination
+                # probe.  The declared ``cli.query`` route reaches the same store through
+                # the shared API helpers; per-flag equivalence of the two routes is proven
+                # in ``tests/unit/cli/test_query_route_differential.py``.
+                "no_daemon": True,
             },
         )
     )
@@ -1722,6 +1741,12 @@ def test_async_execute_query_archive_filters_since_session_id(
                 "archive": True,
                 "since_session_id": "codex-session:anchor",
                 "output_format": "json",
+                # Pinned to the local ArchiveStore branch: this test asserts the SQL
+                # kwargs that branch builds.  The declared ``cli.query`` route reaches
+                # the same store through the shared API helpers; per-flag equivalence
+                # of the two routes is proven in
+                # ``tests/unit/cli/test_query_route_differential.py``.
+                "no_daemon": True,
             },
         )
     )
@@ -2050,6 +2075,12 @@ def test_async_execute_query_archive_sorts_search_terms(
                     "sort": "messages",
                     "reverse": True,
                     "output_format": "json",
+                    # Pinned to the local ArchiveStore branch: this test asserts the SQL
+                    # kwargs that branch builds.  The declared ``cli.query`` route reaches
+                    # the same store through the shared API helpers; per-flag equivalence
+                    # of the two routes is proven in
+                    # ``tests/unit/cli/test_query_route_differential.py``.
+                    "no_daemon": True,
                 },
             )
         )

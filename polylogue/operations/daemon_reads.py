@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.config import Config, PolylogueConfig
     from polylogue.core.protocols import VectorProvider
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,16 +207,15 @@ def _query_payload(
     dependencies: DaemonReadDependencies,
 ) -> dict[str, object]:
     from polylogue.api.archive import _archive_count_sessions_for_spec, _archive_list_summaries_for_spec
-    from polylogue.archive.hydration import archive_summary_to_domain
     from polylogue.archive.query.expression import compile_expression_into
     from polylogue.archive.query.spec import (
         DEFAULT_SESSION_LIST_LIMIT,
         SessionQuerySpec,
         clamp_query_limit,
+        resolve_default_root_filter,
         session_count_unit_label,
     )
     from polylogue.surfaces.outcome import decide_outcome
-    from polylogue.surfaces.payloads import session_list_envelope_from_summary
 
     normalized, expression = _lower_cli_query_params(params)
     limit = clamp_query_limit(normalized.get("limit"), default=DEFAULT_SESSION_LIST_LIMIT)
@@ -235,6 +234,12 @@ def _query_payload(
     ):
         return _search_payload(spec, archive=archive, serving_identity=serving_identity, dependencies=dependencies)
 
+    if spec.latest:
+        # ``latest`` is applied by ``query_spec_to_plan`` on the ranked path
+        # only; the list path reaches ``ArchiveStore.list_summaries`` without
+        # it, so honour it here rather than returning a full page for
+        # ``--latest``.
+        limit = 1
     summaries = _archive_list_summaries_for_spec(
         archive, spec, default_limit=DEFAULT_SESSION_LIST_LIMIT, limit=limit, offset=offset
     )
@@ -242,17 +247,58 @@ def _query_payload(
     outcome = decide_outcome(matched=total)
     return {
         "outcome": outcome.to_dict(),
-        "items": [
-            session_list_envelope_from_summary(
-                archive_summary_to_domain(summary), message_count=summary.message_count
-            ).model_dump(mode="json")
-            for summary in summaries
-        ],
+        "items": [_session_list_row(summary) for summary in summaries],
         "total": total,
-        "total_unit": session_count_unit_label(spec.root),
+        # The unit names the filter that actually ran, which is the *resolved*
+        # root filter (``_archive_query_kwargs`` resolves it the same way), not
+        # the unset spec field.
+        "total_unit": session_count_unit_label(
+            resolve_default_root_filter(spec.root, boolean_predicate=spec.boolean_predicate)
+        ),
         "limit": limit,
         "offset": offset,
     }
+
+
+def _session_list_row(summary: ArchiveSessionSummary) -> dict[str, object]:
+    """Render one archive summary as the canonical CLI session-list row.
+
+    Two properties are load-bearing, and the CLI's own direct branch
+    (``archive_query._summary_payload``, which builds the very same
+    ``SessionListRowPayload``) establishes both:
+
+    * ``exclude_none`` -- the compact document.  Emitting explicit nulls here
+      made one query render two different documents by transport.
+    * the archive's own ``...Z`` timestamp spelling.  ``ArchiveStore`` renders
+      its millisecond columns with ``_iso_from_ms`` (``...Z``); the
+      domain round-trip inside ``session_list_envelope_from_summary`` re-renders
+      the same instant through ``datetime.isoformat()`` as ``...+00:00``.  The
+      fix belongs in that shared helper, but ``surfaces/payloads.py`` is IN the
+      derived-schema identity closure, so it is applied here rather than moving
+      the identity for a timestamp spelling.
+    """
+    from polylogue.archive.hydration import archive_summary_to_domain
+    from polylogue.surfaces.payloads import session_list_envelope_from_summary
+    from polylogue.surfaces.query_rows import session_row
+
+    domain = archive_summary_to_domain(summary)
+    row: dict[str, object] = session_list_envelope_from_summary(
+        domain,
+        message_count=summary.message_count,
+        # Without this the row carries no word count at all: the CLI's own
+        # branch renders ``words`` from the summary, and ``exclude_none`` would
+        # otherwise drop the field rather than report it as zero.
+        word_count=summary.word_count,
+    ).model_dump(mode="json", exclude_none=True)
+    for key, stored in (("created_at", summary.created_at), ("updated_at", summary.updated_at)):
+        if stored is not None:
+            row[key] = stored
+    # ``terminal_state`` is a closed vocabulary with an explicit ``unknown``
+    # member; the raw summary field is nullable and the shared row projection
+    # is what resolves the two. Reporting the null instead would make an
+    # unknown outcome indistinguishable from an absent field.
+    row["terminal_state"] = session_row(domain, message_count=summary.message_count).outcome
+    return row
 
 
 def _search_payload(
@@ -344,7 +390,7 @@ def _search_payload(
         server_identity="daemon" if serving_identity == "daemon" else "direct",
         started_at=monotonic(),
     ).model_copy(update={"matched": len(hit_payloads), "analyzed": total})
-    return build_search_envelope(
+    envelope = build_search_envelope(
         hit_payloads,
         total=total,
         limit=display_limit,
@@ -357,6 +403,12 @@ def _search_payload(
         execution=hits.execution,
         authority=authority,
     ).model_dump(mode="json")
+    # Match the direct branch's hit shape exactly: ``archive_query._hit_payload``
+    # dumps the same ``SessionSearchHitPayload`` with ``exclude_none=True``.
+    # The envelope keeps its own explicit nulls -- a vector page's ``total`` is
+    # an honest ``None`` and dropping the key would read as "not reported".
+    envelope["hits"] = [hit.model_dump(mode="json", exclude_none=True) for hit in hit_payloads]
+    return envelope
 
 
 def _query_units_payload(

@@ -400,11 +400,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         stream=stream,
         sample_count=sample_count,
         cursor=cursor,
-        sort=sort,
-        reverse=reverse,
-        similar_text=similar_text,
-        similar_session_id=similar_session_id,
-        retrieval_lane=retrieval_lane,
     ):
         return
     if _try_emit_daemon_unit_page(
@@ -1096,24 +1091,22 @@ def _try_emit_daemon_session_page(
     stream: bool,
     sample_count: int | None,
     cursor: SearchCursor | None,
-    sort: str | None,
-    reverse: bool,
-    similar_text: str | None,
-    similar_session_id: str | None,
-    retrieval_lane: str,
 ) -> bool:
-    """Use the running daemon for ordinary session pages when it is safe.
+    """Serve an ordinary session page through the declared ``cli.query`` read.
 
-    The daemon already owns the web-reader `/api/sessions` contract.  This
-    adapter lets the CLI reuse that route for the common list/search case while
-    retaining local ArchiveStore execution for mutations, streaming, unit rows,
-    stats, vector search, and features the HTTP route does not yet represent.
+    The operation is the canonical execution of a session query: over UDS when
+    a daemon answers, in-process through the same handler when it does not.
+    Local ``ArchiveStore`` execution is retained only for the capabilities the
+    operation does not declare yet — aggregates, attached-unit projection,
+    ``sample``, list-mode cursors, exact-ref/stream transcripts — and for
+    mutations.
     """
     if compiled_spec.session_id is not None or _single_query_token_looks_like_ref(query):
         return False
     if not _daemon_session_page_supported(
         params,
         compiled_spec=compiled_spec,
+        cursor=cursor,
         unit_source=unit_source,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
@@ -1123,17 +1116,11 @@ def _try_emit_daemon_session_page(
         delete_matched=delete_matched,
         stream=stream,
         sample_count=sample_count,
-        cursor=cursor,
-        sort=sort,
-        reverse=reverse,
-        similar_text=similar_text,
-        similar_session_id=similar_session_id,
-        retrieval_lane=retrieval_lane,
     ):
         return False
     if bool(params.get("no_daemon")):
         return False
-    daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
+    daemon_params = _cli_query_operation_params(request, limit=limit, offset=offset)
     payload = _fetch_daemon_sessions_payload(config, daemon_params)
     if payload is None:
         return False
@@ -1269,10 +1256,29 @@ def _single_query_token_looks_like_ref(query: str) -> bool:
     return bool(token and " " not in token and (":" in token or _NATIVE_REF_RE.fullmatch(token)))
 
 
+def _spec_is_ranked(spec: SessionQuerySpec) -> bool:
+    """Whether ``cli.query`` answers this spec through its ranked-search path.
+
+    Mirrors the branch in ``operations/daemon_reads._query_payload``: a spec
+    with lexical terms, a similarity seed or the hybrid lane is answered by
+    ``_search_payload`` (which decodes, identity-checks and continues search
+    cursors); everything else is answered by the list path (which has no
+    cursor support yet).
+    """
+    return bool(
+        spec.query_terms
+        or spec.contains_terms
+        or spec.similar_text
+        or spec.similar_session_id
+        or spec.retrieval_lane == "hybrid"
+    )
+
+
 def _daemon_session_page_supported(
     params: dict[str, object],
     *,
     compiled_spec: SessionQuerySpec,
+    cursor: SearchCursor | None,
     unit_source: QueryUnitSource | None,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]],
@@ -1282,30 +1288,95 @@ def _daemon_session_page_supported(
     delete_matched: bool,
     stream: bool,
     sample_count: int | None,
-    cursor: SearchCursor | None,
-    sort: str | None,
-    reverse: bool,
-    similar_text: str | None,
-    similar_session_id: str | None,
-    retrieval_lane: str,
 ) -> bool:
+    """Whether the declared ``cli.query`` read can answer this request.
+
+    Only genuine capability gaps remain here.  Ranked cursors, sort/reverse,
+    Boolean predicates, ``since_session_id``, ``project``, ``typed_only``,
+    ``message_type`` and ``latest`` are all compiled by
+    ``SessionQuerySpec.from_params`` inside the operation handler from the
+    parameters :func:`_cli_query_operation_params` forwards, so rejecting them
+    here only forked execution into a second implementation of the same read.
+    """
     if unit_source is not None or with_units or with_unit_fields or with_unit_windows:
+        # ``with``-projected attached units have no declared operation; unit
+        # sources have their own (``query.units``) with its own gate.
         return False
-    if any(params.get(key) for key in ("stats_only", "stats_by", "count_only", "conv_id", "latest", "open_result")):
+    if any(params.get(key) for key in ("stats_only", "stats_by", "count_only")):
+        # No aggregate operation is declared yet.
+        return False
+    if params.get("open_result"):
+        # Opening a result is a client-side action on rows, not a read the
+        # operation can perform; the local branch owns the launcher.
         return False
     if stream or tags_to_add or metadata_to_set or delete_matched:
+        # Streaming transcripts and user mutations are not session-page reads.
         return False
-    if sample_count is not None or cursor is not None or sort is not None or reverse:
+    if sample_count is not None:
+        # ``sample`` is dropped by the operation's list path rather than
+        # honoured, so serving it there would silently widen the page.
         return False
-    if similar_text is not None or similar_session_id is not None or retrieval_lane not in {"auto", "dialogue"}:
-        # near:id: session-seeded ranking has no equivalent in the daemon's
-        # split-archive `/api/sessions` fast path (_do_archive_session_list only
-        # handles FTS terms and plain filters), so this must fall through to
-        # local CLI execution, which resolves the vector provider itself.
+    if compiled_spec.similar_text is not None or compiled_spec.similar_session_id is not None:
         return False
-    if compiled_spec.boolean_predicate is not None or compiled_spec.since_session_id is not None:
+    if compiled_spec.retrieval_lane not in {"auto", "dialogue"}:
+        # Vector and hybrid retrieval stay local, and NOT because the operation
+        # cannot run them: ``_search_payload`` resolves a vector provider and
+        # calls ``archive_search_hits``.  The two routes disagree on what
+        # happens when no backend is configured -- the local branch raises
+        # ``click.UsageError`` with two distinct near:id:/near:"text" messages
+        # (``_query_hits``), the operation raises the typed
+        # ``EmbeddingRetrievalNotReadyError`` -- and their ranked/fused hit
+        # order has never been compared on a seeded embeddings corpus.  Deleting
+        # this rejection would silently change the CLI's refusal contract, so it
+        # is held for the step that declares one (polylogue-v1mnm).
         return False
-    return not (compiled_spec.project_refs or compiled_spec.typed_only or compiled_spec.message_type is not None)
+    # Ranked cursors are decoded, identity-checked and continued by
+    # ``_search_payload``.  The operation's *list* path has no cursor machinery
+    # at all, so a list continuation must stay local until one is declared, or
+    # the cursor would be silently ignored.
+    return cursor is None or _spec_is_ranked(compiled_spec)
+
+
+def _cli_query_operation_params(
+    request: RootModeRequest,
+    *,
+    limit: int,
+    offset: int,
+) -> dict[str, object]:
+    """Project a root request onto the ``cli.query`` selection parameters.
+
+    The handler compiles its spec with the same
+    ``SessionQuerySpec.from_params`` the local branch uses, so forwarding the
+    recognised parameter set verbatim — rather than a hand-maintained rename
+    table — is what makes the two routes compile *one* spec.  The previous
+    table renamed ``filter_has_paste``/``filter_has_tool_use``/
+    ``filter_has_thinking`` to keys ``from_params`` does not read, which
+    dropped ``--has-paste``/``--has-tool-use``/``--has-thinking`` silently,
+    and joined the query terms into a single string, re-tokenising phrases.
+    Presentation-only keys are left behind because the spec ignores them and
+    they would otherwise vary the operation's result-cache key.
+
+    ``exclude_text`` is deliberately still withheld.  It is a content
+    post-filter the two routes answer differently -- the operation applies it
+    to a list page and, on a ranked page, to the count but not the hits, while
+    the local branch ignores it everywhere -- so forwarding it would change
+    ``find --exclude-text`` results before anyone has decided which of those
+    three answers is right (polylogue-v1mnm).
+    """
+    # Imported under its private name deliberately: ``archive/query/spec.py``
+    # is IN the derived-schema identity closure, and adding a public alias
+    # there would move the identity (and invalidate a rebuild) for a rename.
+    from polylogue.archive.query.spec import _RECOGNIZED_PARAMS
+
+    query_params: dict[str, object] = {
+        key: value
+        for key, value in request.params.items()
+        if key in _RECOGNIZED_PARAMS and key != "exclude_text" and value is not None and value != () and value != []
+    }
+    query_params["query"] = list(request.query_terms)
+    query_params["limit"] = limit
+    query_params["offset"] = offset
+    return query_params
 
 
 def _daemon_session_query_params(
@@ -1315,6 +1386,12 @@ def _daemon_session_query_params(
     limit: int,
     offset: int,
 ) -> dict[str, object]:
+    """Hand-listed unit-query filters.
+
+    ``query.units`` forwards its filter params as keyword arguments to
+    ``query_unit_request``, so this list stays explicit: an unrecognised key
+    would be a ``TypeError`` rather than an ignored parameter.
+    """
     query_params: dict[str, object] = {"limit": limit, "offset": offset}
     raw_query = " ".join(term for term in request.query_terms if term).strip()
     if raw_query:
@@ -1547,7 +1624,10 @@ def _emit_daemon_search_payload(
         "limit": effective_limit,
         "offset": offset,
         "next_offset": offset + len(hits) if total > offset + len(hits) else None,
-        "next_cursor": None,
+        # The operation mints the ranked continuation cursor itself
+        # (``build_search_envelope`` -> ``build_search_cursor``); dropping it
+        # here made ranked pages non-continuable by transport.
+        "next_cursor": payload.get("next_cursor") if isinstance(payload.get("next_cursor"), str) else None,
         "source": "daemon",
     }
     daemon_outcome = payload.get("outcome")
