@@ -176,13 +176,9 @@ def zip_entry_session_artifact(
         return None
     except ZipBombError:
         # Not a silent reclassification: the path rule stands, and the event
-        # names the member whose content evidence was never examined.
-        logger.warning(
-            "zip artifact probe skipped %s: declared %d bytes exceeds the %d-byte content-probe ceiling",
-            info.filename,
-            info.file_size,
-            ZIP_PROBE_MAX_BYTES,
-        )
+        # names the member whose content evidence was never examined. The
+        # structured event is the whole report -- a parallel prose log would
+        # duplicate it and add a `legacy-prose-logging` match.
         emit(
             "sources.zip.artifact_probe_unbounded",
             level=WARNING,
