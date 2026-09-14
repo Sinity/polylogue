@@ -24,6 +24,7 @@ from polylogue.storage.embeddings.embedding_stats import (
 )
 from polylogue.storage.embeddings.materialization import (
     count_archive_embedding_session_state,
+    count_archive_session_embeddable_messages,
     embed_archive_session_sync,
     embed_session_sync,
     select_pending_archive_session_window,
@@ -1746,3 +1747,58 @@ def test_archive_failure_ledger_survives_origin_lookup_failure(tmp_path: Path, m
     assert origin == "unknown-export"
     assert error_class == "internal_error"
     assert "sqlite-vec" in error_message
+
+
+def test_exact_embeddable_count_measures_concatenated_block_prose() -> None:
+    """The exact per-session count must apply the 20-character floor to the
+    concatenated message prose, exactly as the materializer does.
+
+    The message below holds two 10-character text blocks. The materializer
+    embeds it (10 + 2 separator + 10 = 22 characters); a count that applies
+    the floor to a single ``blocks.text`` row instead sees 10 and drops the
+    message, which removes the session from the pending window.
+
+    Anti-vacuity: restore the unqualified ``HAVING LENGTH(TRIM(COALESCE(text,
+    ''))) >= 20`` alias in ``count_archive_session_embeddable_messages`` and
+    this goes red with ``0``, because SQLite resolves that bare ``text`` to
+    the joined ``blocks.text`` column rather than the projected prose.
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                variant_index INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                material_origin TEXT NOT NULL,
+                word_count INTEGER NOT NULL,
+                content_hash BLOB
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                block_type TEXT NOT NULL,
+                text TEXT
+            );
+            INSERT INTO sessions VALUES ('multi');
+            INSERT INTO messages VALUES
+                ('multi:n:m1', 'multi', 0, 0, 'user', 'message', 'human_authored', 4, zeroblob(32)),
+                ('multi:n:m2', 'multi', 1, 0, 'user', 'message', 'human_authored', 1, zeroblob(32));
+            INSERT INTO blocks VALUES
+                ('b1', 'multi', 'multi:n:m1', 0, 'text', 'aaaaaaaaaa'),
+                ('b2', 'multi', 'multi:n:m1', 1, 'text', 'bbbbbbbbbb'),
+                ('b3', 'multi', 'multi:n:m2', 0, 'text', 'short');
+            """
+        )
+        conn.commit()
+
+        assert count_archive_session_embeddable_messages(conn, "multi") == 1
+    finally:
+        conn.close()

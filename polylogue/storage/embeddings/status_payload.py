@@ -1118,12 +1118,19 @@ def _archive_embedding_status_payload(
                     _payload_int(row[0]): _payload_int(row[1]) for row in dimension_rows if row[0] is not None
                 }
             if (model_rows is None or dimension_rows is None) and (not model_counts or not dimension_counts):
-                model_counts, dimension_counts = _uniform_embedding_metadata_counts(
+                fallback_models, fallback_dimensions = _uniform_embedding_metadata_counts(
                     conn,
                     meta_table,
                     embedded_messages=embedded_messages,
                     timeout_ms=metadata_timeout_ms,
                 )
+                # Only fill the lane that is actually missing: a grouped query
+                # that completed carries exact counts and must survive the
+                # other lane's timeout.
+                if not model_counts:
+                    model_counts = fallback_models
+                if not dimension_counts:
+                    dimension_counts = fallback_dimensions
             bounds_rows = _rows_with_timeout(
                 conn,
                 f"""

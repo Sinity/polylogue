@@ -752,6 +752,56 @@ def test_status_json_detail_uses_uniform_metadata_probe_when_grouping_times_out(
     assert payload["embedding_dimensions"] == {"1024": 1} or payload["embedding_dimensions"] == {1024: 1}
 
 
+def test_status_json_detail_keeps_the_metadata_summary_that_completed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One timed-out metadata lane must not discard the other lane's exact counts.
+
+    The archive holds two models at one uniform dimension, so the uniform
+    single-value probe legitimately proves nothing and returns empty. The
+    per-dimension GROUP BY completes and is exact.
+
+    Anti-vacuity: restore the unconditional
+    ``model_counts, dimension_counts = _uniform_embedding_metadata_counts(...)``
+    assignment and this goes red with ``embedding_dimensions == {}`` for an
+    archive whose dimension histogram was measured exactly.
+    """
+    db_anchor = tmp_path / "custom.sqlite"
+    _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
+    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO message_embeddings_meta (
+                vector_derivation_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash
+            )
+            SELECT randomblob(32), 'voyage-3', dimension, embedded_at_ms, recipe_hash, output_contract_hash
+            FROM message_embeddings_meta
+            LIMIT 1
+            """
+        )
+        conn.commit()
+
+    real_rows_with_timeout = status_payload_mod._rows_with_timeout
+
+    def time_out_only_the_model_summary(
+        conn: sqlite3.Connection,
+        sql: str,
+        *,
+        timeout_ms: int,
+        params: tuple[object, ...] = (),
+    ) -> list[sqlite3.Row | tuple[object, ...]] | None:
+        if "GROUP BY model" in sql:
+            return None
+        return real_rows_with_timeout(conn, sql, timeout_ms=timeout_ms, params=params)
+
+    monkeypatch.setattr(status_payload_mod, "_rows_with_timeout", time_out_only_the_model_summary)
+
+    payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["embedding_models"] == {}
+    assert payload["embedding_dimensions"] in ({"1024": 2}, {1024: 2})
+
+
 def test_status_json_refuses_to_certify_from_a_legacy_status_ledger(tmp_path: Path) -> None:
     """A clean session ledger over a pre-v4 metadata shape certifies nothing.
 
