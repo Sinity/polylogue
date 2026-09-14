@@ -2364,8 +2364,18 @@ async def _run_daemon_services_under_active_writer_lease(
             outcome="refused",
             reason="schema_version_mismatch",
             loops=len(parked_loop_names),
-            error_detail=", ".join(parked_loop_names),
         )
+        # One event per loop, not one joined string: ``error_detail`` truncates
+        # at 300 characters, which silently drops the tail of this list -- and
+        # naming exactly what is frozen is the whole point of this alert.
+        for parked_loop_name in parked_loop_names:
+            emit(
+                "daemon.maintenance_loop.parked",
+                level=ERROR,
+                outcome="refused",
+                reason="schema_version_mismatch",
+                loop=parked_loop_name,
+            )
         try:
             from polylogue.daemon.events import emit_daemon_event
 

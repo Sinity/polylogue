@@ -164,13 +164,17 @@ def test_run_daemon_services_schema_block_logs_parked_loops_and_emits_event() ->
     assert parked_records[0]["outcome"] == "refused"
     assert parked_records[0]["reason"] == "schema_version_mismatch"
     loop_count_arg = parked_records[0]["loops"]
-    loop_names_arg = str(parked_records[0]["error_detail"])
     assert (
         loop_count_arg == len(daemon_cli._SCHEMA_BLOCKED_MAINTENANCE_LOOP_NAMES) + 1
     )  # +1: drive catchup (default on)
+    # Each parked loop is named by its own event rather than a joined string:
+    # ``error_detail`` truncates at 300 characters and would drop the tail.
+    parked_loop_names = [str(r["loop"]) for r in records if r["event"] == "daemon.maintenance_loop.parked"]
+    assert len(parked_loop_names) == loop_count_arg
     for name in daemon_cli._SCHEMA_BLOCKED_MAINTENANCE_LOOP_NAMES:
-        assert name in loop_names_arg
-    assert daemon_cli._SCHEMA_BLOCKED_OPTIONAL_DRIVE_CATCHUP_LOOP_NAME in loop_names_arg
+        assert name in parked_loop_names
+    assert daemon_cli._SCHEMA_BLOCKED_OPTIONAL_DRIVE_CATCHUP_LOOP_NAME in parked_loop_names
+    loop_names_arg = ", ".join(parked_loop_names)
 
     parked_events = [payload for kind, payload in recorded_events if kind == "maintenance_loops_parked"]
     assert len(parked_events) == 1

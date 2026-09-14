@@ -416,11 +416,11 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     ):
         asyncio.run(daemon_cli._retry_convergence_debt_once(db))
 
+    # ``.start`` is DEBUG and sits below the default threshold; the terminal
+    # event is the one an operator reads.
     terminals = [r for r in records if str(r["event"]).startswith("daemon.convergence_debt.pass.")]
-    assert [r["event"] for r in terminals] == [
-        "daemon.convergence_debt.pass.start",
-        "daemon.convergence_debt.pass.degraded",
-    ]
+    assert [r["event"] for r in terminals] == ["daemon.convergence_debt.pass.degraded"]
+    assert terminals[-1]["outcome"] == "degraded"
     assert terminals[-1]["reason"] == "archive_busy"
     assert terminals[-1]["error_type"] == "OperationalError"
 
