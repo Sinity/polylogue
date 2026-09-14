@@ -29,7 +29,10 @@ from typing import Any
 
 from devtools.agent_env import runtime_env
 from devtools.pytest_evidence import evaluate_pytest_evidence
-from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV
+from devtools.pytest_suite_cost_plugin import (
+    RUN_RECEIPT_NAME as SUITE_COST_RUN_RECEIPT_NAME,
+)
+from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, summarize_step_receipts
 from devtools.testmon_provision import TESTMON_DATA_RELPATH
 
 
@@ -435,6 +438,17 @@ class VerifyRun:
             }
         if workload_receipt is not None:
             self._payload["workload_receipt"] = dict(workload_receipt)
+        # The suite's dominant cost -- how many archive tiers this run built and
+        # what it wrote -- is read from the same receipt as its test outcomes,
+        # so a change meant to reduce it is compared without a second tool. The
+        # per-worker detail stays in each step's suite-cost directory.
+        suite_cost = summarize_step_receipts(
+            self.root / str(step["artifact_dir"]) / "suite-cost" / SUITE_COST_RUN_RECEIPT_NAME
+            for step in self._payload["steps"]
+            if step.get("artifact_dir")
+        )
+        if suite_cost is not None:
+            self._payload["suite_cost"] = suite_cost
         self.write()
         return dict(self._payload)
 

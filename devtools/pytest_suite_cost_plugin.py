@@ -17,7 +17,7 @@ import contextlib
 import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Final
 
@@ -35,9 +35,21 @@ RUN_RECEIPT_NAME: Final = "run.json"
 #: block layer, which page-cache-only churn does not inflate.
 _IO_FIELDS: Final = ("rchar", "wchar", "syscr", "syscw", "read_bytes", "write_bytes")
 
+#: Opt-in for the scratch-tree peak. The tier-init tally and ``/proc/self/io``
+#: are O(1) reads and are always recorded; walking the basetemp is not. pytest
+#: keeps a directory per test under it, so the tree grows with the run and a
+#: fixed-cadence walk costs O(tests^2/cadence) -- measured at ~2.5us per entry,
+#: a 20k-test worker would spend minutes measuring itself. The peak is a
+#: diagnostic for a scratch-size investigation, so it is asked for explicitly.
+SUITE_COST_SCRATCH_ENV: Final = "POLYLOGUE_SUITE_COST_SCRATCH"
+
 #: Walking the temp tree is O(files); at this cadence a 20k-test worker pays
 #: it a few dozen times, which is noise against the run.
 _SAMPLE_EVERY: Final = 250
+
+#: Hard stop for one walk, so even an opted-in sample cannot become the run's
+#: dominant cost. A truncated sample is reported as truncated, never as a peak.
+_TREE_ENTRY_BUDGET: Final = 200_000
 
 
 def _read_io() -> dict[str, int]:
@@ -50,10 +62,15 @@ def _read_io() -> dict[str, int]:
     return counters
 
 
-def _tree_bytes(root: Path) -> tuple[int, int]:
-    """Apparent and allocated bytes under ``root``; missing entries are skipped."""
+def _tree_bytes(root: Path, *, budget: int = _TREE_ENTRY_BUDGET) -> tuple[int, int, bool]:
+    """Apparent and allocated bytes under ``root``, plus whether the budget cut it short.
+
+    Missing entries are skipped. The budget bounds one walk: a partial total is
+    returned with ``truncated`` set rather than paying an unbounded walk.
+    """
     apparent = 0
     allocated = 0
+    visited = 0
     stack = [root]
     while stack:
         current = stack.pop()
@@ -63,6 +80,12 @@ def _tree_bytes(root: Path) -> tuple[int, int]:
         except OSError:
             continue
         for entry in entries:
+            # Per entry, not per directory: a pytest basetemp is one directory
+            # holding a subdirectory per test, so a between-directories check
+            # would leave the walk unbounded exactly where it grows.
+            if visited >= budget:
+                return apparent, allocated, True
+            visited += 1
             try:
                 if entry.is_dir(follow_symlinks=False):
                     stack.append(Path(entry.path))
@@ -72,7 +95,7 @@ def _tree_bytes(root: Path) -> tuple[int, int]:
                 continue
             apparent += status.st_size
             allocated += status.st_blocks * 512
-    return apparent, allocated
+    return apparent, allocated, False
 
 
 class SuiteCostRecorder:
@@ -85,8 +108,10 @@ class SuiteCostRecorder:
         basetemp: Path | Callable[[], Path | None] | None,
         *,
         role: str = "worker",
+        sample_scratch: bool = False,
     ) -> None:
         self._directory = directory
+        self._sample_scratch = sample_scratch
         self._worker_id = worker_id
         self._role = role
         self._basetemp_source = basetemp
@@ -95,6 +120,7 @@ class SuiteCostRecorder:
         self._tests = 0
         self._peak_apparent = 0
         self._peak_allocated = 0
+        self._scratch_truncated = False
 
     def _basetemp(self) -> Path | None:
         """Resolve the scratch root late: the temp-path plugin configures after this one."""
@@ -110,16 +136,20 @@ class SuiteCostRecorder:
 
     def note_test(self) -> None:
         self._tests += 1
-        if self._tests % _SAMPLE_EVERY == 0:
+        if self._sample_scratch and self._tests % _SAMPLE_EVERY == 0:
             self.sample_storage()
 
     def sample_storage(self) -> None:
+        """Record the scratch-tree peak; a no-op unless the walk was asked for."""
+        if not self._sample_scratch:
+            return
         basetemp = self._basetemp()
         if basetemp is None:
             return
-        apparent, allocated = _tree_bytes(basetemp)
+        apparent, allocated, truncated = _tree_bytes(basetemp)
         self._peak_apparent = max(self._peak_apparent, apparent)
         self._peak_allocated = max(self._peak_allocated, allocated)
+        self._scratch_truncated = self._scratch_truncated or truncated
 
     def payload(self) -> dict[str, Any]:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_init_counts
@@ -133,8 +163,15 @@ class SuiteCostRecorder:
             "duration_s": round(time.monotonic() - self._started_at, 3),
             "io": io_delta,
             "tier_init": archive_tier_init_counts(),
-            "peak_scratch_apparent_bytes": self._peak_apparent,
-            "peak_scratch_allocated_bytes": self._peak_allocated,
+            **(
+                {
+                    "peak_scratch_apparent_bytes": self._peak_apparent,
+                    "peak_scratch_allocated_bytes": self._peak_allocated,
+                    "peak_scratch_truncated": self._scratch_truncated,
+                }
+                if self._sample_scratch
+                else {}
+            ),
         }
 
     def write(self) -> Path:
@@ -163,7 +200,13 @@ def pytest_configure(config: pytest.Config) -> None:
         factory = getattr(config, "_tmp_path_factory", None)
         return None if factory is None else Path(factory.getbasetemp())
 
-    _RECORDER = SuiteCostRecorder(Path(directory), worker_id, resolve_basetemp, role=role)
+    _RECORDER = SuiteCostRecorder(
+        Path(directory),
+        worker_id,
+        resolve_basetemp,
+        role=role,
+        sample_scratch=os.environ.get(SUITE_COST_SCRATCH_ENV, "").strip() not in ("", "0", "false", "no"),
+    )
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
@@ -200,6 +243,7 @@ def aggregate_suite_cost(directory: Path) -> dict[str, Any]:
         for name, value in dict(worker.get("tier_init", {})).items():
             tier_total[name] = tier_total.get(name, 0) + int(value)
     write_bytes = io_total.get("write_bytes", 0)
+    sampled = [worker for worker in workers if "peak_scratch_apparent_bytes" in worker]
     return {
         "workers": len(workers),
         "tests": tests,
@@ -220,14 +264,71 @@ def aggregate_suite_cost(directory: Path) -> dict[str, Any]:
         "archive_tier_initializations": sum(tier_total.values()),
         # Per-process peaks have no shared sampling clock. A sum would claim a
         # simultaneous suite peak we did not observe, so expose the largest
-        # worker peak and retain every individual measurement below.
-        "peak_scratch_apparent_bytes": max((int(w.get("peak_scratch_apparent_bytes", 0)) for w in workers), default=0),
-        "peak_scratch_allocated_bytes": max(
-            (int(w.get("peak_scratch_allocated_bytes", 0)) for w in workers), default=0
+        # worker peak and retain every individual measurement below. The keys
+        # are absent -- never zero -- when no worker was asked to walk its
+        # scratch tree, so an unsampled run cannot read as a measured zero.
+        **(
+            {
+                "peak_scratch_apparent_bytes": max(int(w.get("peak_scratch_apparent_bytes", 0)) for w in sampled),
+                "peak_scratch_allocated_bytes": max(int(w.get("peak_scratch_allocated_bytes", 0)) for w in sampled),
+                "peak_scratch_truncated": any(bool(w.get("peak_scratch_truncated")) for w in sampled),
+            }
+            if sampled
+            else {}
         ),
         "per_worker": workers,
         "controller": controllers,
     }
+
+
+#: The fields carried into the run receipt beside ``pytest_aggregate``. The
+#: full per-worker detail stays in the step's ``suite-cost/run.json``; the
+#: receipt carries what a before/after comparison is stated in.
+_SUMMARY_FIELDS: Final = (
+    "workers",
+    "tests",
+    "wall_clock_s",
+    "tier_init",
+    "archive_tier_initializations",
+    "write_bytes_per_test",
+)
+
+
+def suite_cost_summary(aggregate: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one :func:`aggregate_suite_cost` result to its receipt fields."""
+    io = dict(aggregate.get("io", {}))
+    summary = {field: aggregate[field] for field in _SUMMARY_FIELDS if field in aggregate}
+    summary["write_bytes"] = int(io.get("write_bytes", 0))
+    summary["read_bytes"] = int(io.get("read_bytes", 0))
+    return summary
+
+
+def summarize_step_receipts(paths: Iterable[Path | str]) -> dict[str, Any] | None:
+    """Combine the pytest steps of one run into a single receipt summary.
+
+    Steps run one after another, so their counters and their wall clock add.
+    This combines *steps*; summing one step's concurrent xdist workers stays
+    with :func:`aggregate_suite_cost`, which is the only owner of that sum.
+    """
+    summaries: list[dict[str, Any]] = []
+    for path in paths:
+        with contextlib.suppress(OSError, ValueError):
+            summaries.append(suite_cost_summary(json.loads(Path(path).read_text())))
+    if not summaries:
+        return None
+    if len(summaries) == 1:
+        return summaries[0]
+    combined: dict[str, Any] = {"steps": len(summaries)}
+    for field in ("workers", "tests", "wall_clock_s", "archive_tier_initializations", "write_bytes", "read_bytes"):
+        combined[field] = sum(summary.get(field, 0) for summary in summaries)
+    tier_init: dict[str, int] = {}
+    for summary in summaries:
+        for name, count in dict(summary.get("tier_init", {})).items():
+            tier_init[name] = tier_init.get(name, 0) + int(count)
+    combined["tier_init"] = dict(sorted(tier_init.items()))
+    tests = combined["tests"]
+    combined["write_bytes_per_test"] = round(combined["write_bytes"] / tests, 1) if tests else 0.0
+    return combined
 
 
 def write_run_receipt(directory: Path | str | None = None) -> Path | None:
@@ -254,7 +355,10 @@ __all__ = [
     "PLUGIN_NAME",
     "RUN_RECEIPT_NAME",
     "SUITE_COST_DIR_ENV",
+    "SUITE_COST_SCRATCH_ENV",
     "SuiteCostRecorder",
     "aggregate_suite_cost",
+    "suite_cost_summary",
+    "summarize_step_receipts",
     "write_run_receipt",
 ]

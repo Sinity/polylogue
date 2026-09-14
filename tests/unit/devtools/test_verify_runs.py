@@ -223,3 +223,32 @@ def test_coverage_pins_are_bounded_by_the_newest_skips(tmp_path: Path) -> None:
     assert full[2]["run_id"] in retained, "the newest skip's coverage is pinned"
     assert full[0]["run_id"] not in retained
     assert full[1]["run_id"] not in retained
+
+
+def test_run_receipt_carries_the_suite_cost_beside_pytest_aggregate(tmp_path: Path) -> None:
+    """The run's archive-construction cost is read from the run receipt itself.
+
+    Anti-vacuity: dropping the ``summarize_step_receipts`` call in ``finish``
+    leaves the counters reachable only by knowing the per-step suite-cost
+    directory by hand, and the ``suite_cost`` assertions below go red.
+    """
+    run = VerifyRun(tier="focused-test", argv=[], git_head="git:test", root=tmp_path, mirror_current=False)
+    artifacts = run.start_step(label="pytest-focused", cmd=["pytest"])
+    suite_cost_dir = artifacts.step_dir / "suite-cost"
+    suite_cost_dir.mkdir(parents=True, exist_ok=True)
+    (suite_cost_dir / "gw0.json").write_text(
+        '{"worker_id": "gw0", "role": "worker", "tests": 4, "duration_s": 2.0, '
+        '"io": {"write_bytes": 8192}, "tier_init": {"index.ddl_reapply": 3, "index.prototype_hit": 9}}\n',
+        encoding="utf-8",
+    )
+    from devtools.pytest_suite_cost_plugin import write_run_receipt
+
+    write_run_receipt(suite_cost_dir)
+    run.finish_step(step_id=artifacts.step_id, result={"duration_s": 2.0, "exit": 0})
+
+    payload = run.finish(exit_code=0, duration_s=2.0, final_git_head="git:test")
+    suite_cost = cast(dict[str, object], payload["suite_cost"])
+    assert suite_cost["tier_init"] == {"index.ddl_reapply": 3, "index.prototype_hit": 9}
+    assert suite_cost["archive_tier_initializations"] == 12
+    assert suite_cost["write_bytes"] == 8192
+    assert suite_cost["tests"] == 4
