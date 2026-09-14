@@ -34,7 +34,7 @@ from polylogue.core.source_halts import halted_sources, source_halt
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.write_hold import WriteHoldBudgetError
-from polylogue.logging import INFO, WARNING, emit, get_logger
+from polylogue.logging import INFO, emit, get_logger
 from polylogue.sources.hooks import (
     HookSpoolSourceSpec,
     drain_hook_event_spool,
@@ -1159,21 +1159,16 @@ class LiveWatcher:
         return True
 
     def _open_whole_archive_pledges(self) -> tuple[WholeArchiveConvergencePledge, ...]:
-        """Return catch-up pledges whose archive-wide flush never completed."""
-        try:
-            return self._cursor.open_whole_archive_convergence_pledges()
-        except sqlite3.OperationalError as exc:
-            if not _is_retryable_lock_error(exc):
-                raise
-            emit(
-                "live.catch_up.pledge.read_deferred",
-                level=WARNING,
-                outcome="degraded",
-                reason="sqlite_lock",
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            return ()
+        """Return catch-up pledges whose archive-wide flush never completed.
+
+        A read failure is deliberately not caught here.  Returning any value --
+        an empty tuple, or a sentinel -- would make "the ledger could not be
+        read" indistinguishable from "nothing is owed" at some caller, which is
+        the exact silent loss this pledge exists to prevent.  Letting the error
+        propagate keeps the pledge row intact, so the cycle is deferred by the
+        catch-up loop's existing lock-race policy and the next cycle redeems it.
+        """
+        return self._cursor.open_whole_archive_convergence_pledges()
 
     async def _release_whole_archive_pledges(self, pledge_ids: Sequence[str]) -> None:
         if not pledge_ids:
