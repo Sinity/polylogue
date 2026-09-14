@@ -256,18 +256,26 @@ class TestMarkVerbCardinality:
         )
 
     @staticmethod
-    def _close_coroutine(coro: object) -> None:
-        close = getattr(coro, "close", None)
-        if callable(close):
-            close()
+    def _recorder(issued: list[tuple[str, dict[str, object]]]) -> object:
+        """Stand in for the daemon: record the declared write, report success.
+
+        ``mark`` no longer writes in-process; each branch lowers to a declared
+        operation through ``_submit_mutation_operation``. Recording the
+        (operation, payload) pairs observes the same law the old facade-method
+        assertions did, at the seam that now carries it.
+        """
+
+        def _served(_config: object, name: str, payload: dict[str, object]) -> dict[str, object]:
+            issued.append((name, dict(payload)))
+            selection = payload.get("session_ids")
+            return {"status": "ok", "affected_count": len(selection) if isinstance(selection, list) else 1}
+
+        return _served
 
     def test_singleton_match_applies_operations(self) -> None:
         _, child = _context_pair()
-        mock_poly = MagicMock()
-        child.obj = SimpleNamespace(polylogue=mock_poly, config=MagicMock())
-
-        add_tag_future: MagicMock = MagicMock()
-        add_tag_future.__await__ = lambda self: iter([None])
+        child.obj = SimpleNamespace(polylogue=MagicMock(), config=MagicMock())
+        issued: list[tuple[str, dict[str, object]]] = []
 
         with (
             patch(
@@ -275,12 +283,16 @@ class TestMarkVerbCardinality:
                 return_value=["session-abc"],
             ),
             patch(
-                "polylogue.api.sync.bridge.run_coroutine_sync",
-                side_effect=self._close_coroutine,
+                "polylogue.cli.archive_query._submit_mutation_operation",
+                side_effect=self._recorder(issued),
             ),
         ):
             # Should not raise.
             self._call_mark(child, tags_to_add=("reviewed",), apply_all=False)
+
+        assert issued == [
+            ("mutation.session.tag", {"session_ids": ["session-abc"], "tags": ["reviewed"]}),
+        ]
 
     def test_multi_match_without_all_raises(self) -> None:
         _, child = _context_pair()
@@ -298,6 +310,7 @@ class TestMarkVerbCardinality:
     def test_multi_match_with_all_passes_cardinality(self) -> None:
         _, child = _context_pair()
         child.obj = SimpleNamespace(polylogue=MagicMock(), config=MagicMock())
+        issued: list[tuple[str, dict[str, object]]] = []
 
         with (
             patch(
@@ -305,16 +318,22 @@ class TestMarkVerbCardinality:
                 return_value=["id1", "id2"],
             ),
             patch(
-                "polylogue.api.sync.bridge.run_coroutine_sync",
-                side_effect=self._close_coroutine,
+                "polylogue.cli.archive_query._submit_mutation_operation",
+                side_effect=self._recorder(issued),
             ),
         ):
             # Should not raise — --all is present.
             self._call_mark(child, tags_to_add=("sprint",), apply_all=True)
 
+        # --all means every matched session reaches the writer, not just one.
+        assert issued == [
+            ("mutation.session.tag", {"session_ids": ["id1", "id2"], "tags": ["sprint"]}),
+        ]
+
     def test_multi_match_with_first_uses_first_only(self) -> None:
         _, child = _context_pair()
         child.obj = SimpleNamespace(polylogue=MagicMock(), config=MagicMock())
+        issued: list[tuple[str, dict[str, object]]] = []
 
         with (
             patch(
@@ -322,12 +341,17 @@ class TestMarkVerbCardinality:
                 return_value=["id1", "id2", "id3"],
             ),
             patch(
-                "polylogue.api.sync.bridge.run_coroutine_sync",
-                side_effect=self._close_coroutine,
+                "polylogue.cli.archive_query._submit_mutation_operation",
+                side_effect=self._recorder(issued),
             ),
         ):
             # Should not raise — --first is present.
             self._call_mark(child, tags_to_add=("sprint",), first_only=True)
+
+        # --first truncates the selection that reaches the writer to the leader.
+        assert issued == [
+            ("mutation.session.tag", {"session_ids": ["id1"], "tags": ["sprint"]}),
+        ]
 
     def test_zero_matches_raises(self) -> None:
         _, child = _context_pair()

@@ -1935,37 +1935,45 @@ def mark_verb(
     # Honour --first: act only on the leading result when multiple matched.
     target_ids = session_ids[:1] if first_only and len(session_ids) > 1 else session_ids
 
-    async def _apply_marks() -> None:
-        poly = env.polylogue
-        for sid in target_ids:
-            for tag in tags_to_add:
-                await poly.add_tag(sid, tag)
-            for tag in tags_to_remove:
-                await poly.remove_tag(sid, tag)
-            if star:
-                await poly.add_mark(sid, "star")
-            if unstar:
-                await poly.remove_mark(sid, "star")
-            if pin:
-                await poly.add_mark(sid, "pin")
-            if unpin:
-                await poly.remove_mark(sid, "pin")
-            if do_archive:
-                await poly.add_mark(sid, "archive")
-            if do_unarchive:
-                await poly.remove_mark(sid, "archive")
-            if note_text is not None:
-                # Stable per-session identity, deliberately excluding note_text: the
-                # help text promises "add or update" a single mutable note per
-                # session (mirroring add_mark's one-row-per-target behavior), so a
-                # second `mark --note` call on the same session must update the
-                # existing annotation in place rather than fork a new content-hash
-                # row every time the text changes (polylogue-tilk).
-                digest = hashlib.sha256(sid.encode("utf-8", errors="surrogatepass")).hexdigest()
-                annotation_id = f"note-{digest}"
-                await poly.save_annotation(annotation_id, sid, note_text)
+    # Every branch below is a durable ``user.db`` write, and the daemon is the
+    # sole writer: each lowers to a declared operation through the kernel
+    # instead of opening a writable store in this process. The facade route it
+    # replaced (``Polylogue.add_tag``/``add_mark``/``save_annotation`` ->
+    # ``_execute_facade_mutation``) was invisible to the mutation-authority
+    # layering rule, because it entered through ``polylogue/api`` rather than
+    # through a substrate import (polylogue-gjwto).
+    from polylogue.cli.archive_query import submit_cli_mutation
 
-    run_coroutine_sync(_apply_marks())
+    add_marks = [name for name, flag in (("star", star), ("pin", pin), ("archive", do_archive)) if flag]
+    remove_marks = [name for name, flag in (("star", unstar), ("pin", unpin), ("archive", do_unarchive)) if flag]
+    selection = list(target_ids)
+
+    if tags_to_add:
+        submit_cli_mutation(env, "mutation.session.tag", {"session_ids": selection, "tags": list(tags_to_add)})
+    if tags_to_remove:
+        submit_cli_mutation(
+            env, "mutation.session.tag", {"session_ids": selection, "remove_tags": list(tags_to_remove)}
+        )
+    if add_marks or remove_marks:
+        submit_cli_mutation(
+            env,
+            "mutation.session.mark",
+            {"session_ids": selection, "add_marks": add_marks, "remove_marks": remove_marks},
+        )
+    if note_text is not None:
+        for sid in target_ids:
+            # Stable per-session identity, deliberately excluding note_text: the
+            # help text promises "add or update" a single mutable note per
+            # session (mirroring add_mark's one-row-per-target behavior), so a
+            # second `mark --note` call on the same session must update the
+            # existing annotation in place rather than fork a new content-hash
+            # row every time the text changes (polylogue-tilk).
+            digest = hashlib.sha256(sid.encode("utf-8", errors="surrogatepass")).hexdigest()
+            submit_cli_mutation(
+                env,
+                "mutation.annotation.save",
+                {"annotation_id": f"note-{digest}", "session_id": sid, "note_text": note_text},
+            )
 
     # Report.
     count = len(target_ids)

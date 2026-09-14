@@ -202,8 +202,27 @@ rules:
     description: >-
       Mutation authority — the daemon is the sole writer, so a CLI adapter
       lowers a write to a declared operation instead of driving the mutation
-      executor in its own process. The baseline is empty: any direct mutation
-      executor import in the CLI is a violation.
+      executor in its own process. The CLI's share of the baseline is empty:
+      any direct mutation executor import in the CLI is a violation.
+    disallow:
+      from:
+        - polylogue/operations/mutation_transaction
+        - polylogue/operations/mutation_actuators
+        - polylogue/operations/delete_authorization
+        - polylogue/operations/session_mutations
+      baseline: docs/plans/layering-cli-mutation-authority-baseline.json
+
+  - target: polylogue/api
+    description: >-
+      Mutation authority, second surface (polylogue-gjwto / decision D1). The
+      CLI rule above only ever matched a *direct* surface-to-executor import,
+      so a CLI write routed through ``polylogue.api.Polylogue`` satisfied its
+      letter while still opening a writable store in the CLI process: the
+      baseline read ``[]`` while ``mark`` and ``compare`` wrote in-process.
+      The Python API is a surface like the others, so the same rule applies to
+      it and its remaining in-process writer is baselined debt rather than an
+      invisible exemption. The ratchet may only shrink: every facade mutation
+      that moves onto a declared operation removes its import here.
     disallow:
       from:
         - polylogue/operations/mutation_transaction

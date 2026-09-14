@@ -516,6 +516,19 @@ def _inline_mutation(
 def mutation_session_tag(
     request: DaemonOperationRequest, context: OperationContext, audit: AuditRepository, snapshot: PinnedOperationRead
 ) -> dict[str, object]:
+    remove_tags = tuple(cast(list[str], request.payload.get("remove_tags") or []))
+    if remove_tags:
+        from polylogue.operations.mutation_actuators import TagRemoveActuator, TagRemoveArgs
+
+        tokens = tuple(cast(list[str], request.payload["session_ids"]))
+
+        def build(archive: ArchiveStore) -> Any:
+            for token in tokens:
+                session_id = _resolve_session_target(archive, context.archive_root, token)
+                for tag in remove_tags:
+                    yield (TagRemoveActuator(), TagRemoveArgs(archive=archive, session_id=session_id, tag=tag))
+
+        return _execute_user_state_mutations(request, context, audit, build)
     return _inline_mutation(request, context, audit, snapshot, metadata=False)
 
 
@@ -523,3 +536,231 @@ def mutation_session_metadata(
     request: DaemonOperationRequest, context: OperationContext, audit: AuditRepository, snapshot: PinnedOperationRead
 ) -> dict[str, object]:
     return _inline_mutation(request, context, audit, snapshot, metadata=True)
+
+
+def _resolve_session_target(archive: ArchiveStore, archive_root: Path, token: str) -> str:
+    """Resolve one session token under the daemon's write authority.
+
+    The index is the fast path and the durable user-tier owners are the
+    fallback, matching the Python facade's ``_resolve_user_state_session_id``
+    exactly -- a mark written through the daemon and the same mark written
+    through the facade must name the same canonical session.
+    """
+    from polylogue.operations.user_state_resolution import resolve_durable_user_state_session_id
+
+    try:
+        resolved = archive.resolve_session_id(token)
+    except (KeyError, ValueError):
+        resolved = None
+    if resolved:
+        return str(resolved)
+    durable = resolve_durable_user_state_session_id(archive_root, token)
+    if durable:
+        return durable
+    raise ValueError(f"session {token!r} not found")
+
+
+def _execute_user_state_mutations(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    build: Any,
+) -> dict[str, object]:
+    """Run a batch of user-tier actuator cycles against one writable handle.
+
+    ``build(archive)`` yields ``(actuator, args)`` pairs. The mark and
+    annotation actuators take an open :class:`ArchiveStore` in their args (the
+    primitive they drive is a ``user.db`` method), so unlike the archive-root
+    actuators in :func:`_execute_named_mutation` they need the writable handle
+    opened here -- the daemon's writer, not a second one in an adapter process.
+    """
+    assert context.runtime is not None
+    executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
+    affected = 0
+    receipts: list[dict[str, object]] = []
+    with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
+        for actuator, args in build(archive):
+            binding = runtime_operation_binding(actuator)
+            preview = executor.prepare_bound_for_archive(
+                binding, args, context.principal, archive_root=context.archive_root
+            )
+            authorization = executor.authorize_bound(
+                binding, preview, context.principal, confirmation_strength="bound_token"
+            )
+            receipt = executor.execute_bound(binding, preview, authorization, args)
+            if receipt.status in {"blocked", "unknown"}:
+                raise ValueError(receipt.detail or f"{actuator.operation} did not apply")
+            affected += receipt.affected_count
+            receipts.append(dict(receipt.domain_receipt))
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if affected else "no-effect",
+        "affected_count": affected,
+        "result": {"receipts": receipts},
+    }
+
+
+def mutation_session_mark(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Add or remove whole-session star/pin/archive marks."""
+    from polylogue.core.user_state_targets import TARGET_SESSION, validate_mark_type
+    from polylogue.operations.mutation_actuators import MarkAddActuator, MarkArgs, MarkRemoveActuator
+
+    payload = request.payload
+    tokens = tuple(cast(list[str], payload["session_ids"]))
+    adds = tuple(validate_mark_type(str(value)) for value in cast(list[str], payload.get("add_marks") or []))
+    removes = tuple(validate_mark_type(str(value)) for value in cast(list[str], payload.get("remove_marks") or []))
+
+    def build(archive: ArchiveStore) -> Any:
+        for token in tokens:
+            session_id = _resolve_session_target(archive, context.archive_root, token)
+            for mark_type in adds:
+                yield (
+                    MarkAddActuator(),
+                    MarkArgs(
+                        archive=archive,
+                        target_type=TARGET_SESSION,
+                        target_id=session_id,
+                        mark_type=mark_type,
+                        owner_session_id=session_id,
+                    ),
+                )
+            for mark_type in removes:
+                yield (
+                    MarkRemoveActuator(),
+                    MarkArgs(
+                        archive=archive,
+                        target_type=TARGET_SESSION,
+                        target_id=session_id,
+                        mark_type=mark_type,
+                        owner_session_id=session_id,
+                    ),
+                )
+
+    return _execute_user_state_mutations(request, context, audit, build)
+
+
+def mutation_annotation_save(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Create or update one session-scoped annotation body."""
+    from polylogue.core.user_state_targets import TARGET_SESSION
+    from polylogue.operations.mutation_actuators import AnnotationSaveActuator, AnnotationSaveArgs
+
+    payload = request.payload
+    annotation_id = str(payload["annotation_id"])
+    note_text = str(payload["note_text"])
+    token = str(payload["session_id"])
+
+    def build(archive: ArchiveStore) -> Any:
+        session_id = _resolve_session_target(archive, context.archive_root, token)
+        yield (
+            AnnotationSaveActuator(),
+            AnnotationSaveArgs(
+                archive=archive,
+                annotation_id=annotation_id,
+                target_type=TARGET_SESSION,
+                target_id=session_id,
+                note_text=note_text,
+                owner_session_id=session_id,
+            ),
+        )
+
+    return _execute_user_state_mutations(request, context, audit, build)
+
+
+def mutation_judgment_record(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Write one comparative judgment, or one assertion-review batch.
+
+    Both families write ``user.db`` assertion rows through the storage layer's
+    own transactional chokepoints, which the Python facade previously called
+    from whatever process happened to hold the surface. Running them here puts
+    them behind the daemon's single writer; the write itself is unchanged.
+    """
+    import sqlite3
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ArchiveAssertionBulkJudgmentItemEnvelope,
+        judge_assertion_candidates,
+        upsert_comparative_judgment_assertion,
+    )
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    payload = request.payload
+    user_db = context.archive_root / "user.db"
+    kind = str(payload["judgment_kind"])
+    if kind == "comparative":
+        initialize_archive_database(user_db, ArchiveTier.USER)
+    elif not user_db.exists():
+        raise ValueError("assertion user tier is not initialized")
+
+    conn = open_connection(user_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        if kind == "comparative":
+            from polylogue.operations.judgment_wire import comparative_judgment_from_wire_form
+
+            body = payload["comparative"]
+            assert isinstance(body, dict)
+            envelope = upsert_comparative_judgment_assertion(
+                conn,
+                comparative_judgment_from_wire_form(body),
+                author_kind=str(payload.get("author_kind") or "user"),
+            )
+            result: dict[str, object] = {
+                "assertion_id": envelope.assertion_id,
+                "status": envelope.status.value,
+            }
+            affected = 1
+        else:
+            from polylogue.surfaces.payloads import AssertionBulkJudgmentPayload
+
+            reviews = cast(list[dict[str, object]], payload["reviews"])
+            batch = judge_assertion_candidates(
+                conn,
+                tuple(
+                    ArchiveAssertionBulkJudgmentItemEnvelope(
+                        candidate_ref=str(item["candidate_ref"]),
+                        decision=str(item["decision"]),
+                        reason=None if item.get("reason") is None else str(item["reason"]),
+                        actor_ref=str(item["actor_ref"]),
+                        inject=bool(item.get("inject", False)),
+                        replacement_body_text=(
+                            None if item.get("replacement_body_text") is None else str(item["replacement_body_text"])
+                        ),
+                        replacement_kind=(
+                            None if item.get("replacement_kind") is None else str(item["replacement_kind"])
+                        ),
+                    )
+                    for item in reviews
+                ),
+            )
+            result = AssertionBulkJudgmentPayload.from_envelope(batch).model_dump(mode="json")
+            affected = batch.applied_count
+        conn.commit()
+    finally:
+        conn.close()
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if affected else "no-effect",
+        "affected_count": affected,
+        "result": result,
+    }

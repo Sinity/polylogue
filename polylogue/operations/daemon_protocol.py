@@ -142,8 +142,25 @@ class DeleteExecuteRequest(_OperationPayload):
 
 
 class SessionTagRequest(_OperationPayload):
+    """Add, or remove, user tags across a matched selection.
+
+    Exactly one direction per request: the add path is the audited chunked
+    batch (``BulkTagActuator``), the remove path is a per-target actuator
+    cycle, and a request that meant both would have to report two different
+    receipt shapes as one. A surface that wants both sends two requests.
+    """
+
     session_ids: list[str] = Field(min_length=1, max_length=10_000)
-    tags: list[str] = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    remove_tags: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def exactly_one_direction(self) -> SessionTagRequest:
+        if bool(self.tags) == bool(self.remove_tags):
+            raise ValueError("supply exactly one of tags or remove_tags")
+        if any(not value.strip() for value in (*self.tags, *self.remove_tags)):
+            raise ValueError("tags must be nonempty")
+        return self
 
 
 class SessionMetadataRequest(_OperationPayload):
@@ -160,6 +177,76 @@ class SessionMetadataRequest(_OperationPayload):
             error = validate_metadata_key(pair[0])
             if error is not None:
                 raise ValueError(error)
+        return self
+
+
+class SessionMarkRequest(_OperationPayload):
+    """Star/pin/archive marks over whole sessions.
+
+    Session-scoped by name and by contract: a message- or block-targeted mark
+    needs the async insight-target resolver that still lives on the Python
+    facade, so this operation deliberately carries session ids only and the
+    handler resolves each one against the index with the durable user-tier
+    alias fallback.
+    """
+
+    session_ids: list[str] = Field(min_length=1, max_length=10_000)
+    add_marks: list[str] = Field(default_factory=list)
+    remove_marks: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def nonempty_disjoint_marks(self) -> SessionMarkRequest:
+        if not self.add_marks and not self.remove_marks:
+            raise ValueError("supply at least one mark to add or remove")
+        if any(not value.strip() for value in (*self.add_marks, *self.remove_marks)):
+            raise ValueError("mark types must be nonempty")
+        if set(self.add_marks) & set(self.remove_marks):
+            raise ValueError("a mark cannot be added and removed in one request")
+        if any(not value for value in self.session_ids):
+            raise ValueError("session identifiers must be nonempty")
+        return self
+
+
+class AnnotationSaveRequest(_OperationPayload):
+    """One create-or-update of a session-scoped annotation body."""
+
+    annotation_id: str = Field(min_length=1, max_length=512)
+    session_id: str = Field(min_length=1)
+    note_text: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def nonblank_text(self) -> AnnotationSaveRequest:
+        if not self.note_text.strip():
+            raise ValueError("note_text must not be blank")
+        if not self.annotation_id.strip():
+            raise ValueError("annotation_id must not be blank")
+        return self
+
+
+class JudgmentRecordRequest(_OperationPayload):
+    """Durable judgment writes: one comparative judgment, or a review batch.
+
+    The two families share an operation because they share an authority and a
+    tier (``user.db`` assertion rows) and differ only in body. ``judgment_kind``
+    is the discriminator; exactly one body field is present.
+    """
+
+    judgment_kind: Literal["comparative", "assertion-review"]
+    comparative: dict[str, object] | None = None
+    author_kind: str = "user"
+    reviews: list[dict[str, object]] | None = Field(default=None, max_length=1_000)
+
+    @model_validator(mode="after")
+    def exact_body_for_kind(self) -> JudgmentRecordRequest:
+        if self.judgment_kind == "comparative":
+            if self.comparative is None or self.reviews is not None:
+                raise ValueError("a comparative judgment carries exactly a comparative body")
+        elif self.reviews is None or self.comparative is not None:
+            raise ValueError("an assertion review carries exactly a reviews batch")
+        elif not self.reviews:
+            raise ValueError("an assertion review batch must not be empty")
+        if not self.author_kind.strip():
+            raise ValueError("author_kind must not be blank")
         return self
 
 
@@ -496,6 +583,16 @@ class DaemonOperationSpec:
         "queue_ms",
         "degraded_components",
     )
+    additional_capabilities: tuple[str, ...] = ()
+    """Capabilities this operation exercises beyond the one it is named by.
+
+    ``capability`` names an operation's primary authority, which is enough while
+    an operation does exactly one thing. ``mutation.session.mark`` carries both
+    halves of one reversible mark edit, so its primary capability
+    (``archive.add_mark``) does not cover the removal its own request model
+    accepts. Declaring the remainder here keeps an operation's full authority on
+    the operation, rather than in a side table the declaration cannot see.
+    """
     request_type: str = ""
     result_type: str = ""
     request_model: type[BaseModel] = _OperationPayload
@@ -534,6 +631,7 @@ class DaemonOperationSpec:
             "authority": self.authority.value,
             "fallback": self.fallback.value,
             "capability": self.capability,
+            "additional_capabilities": list(self.additional_capabilities),
             "deadline_s": self.deadline_s,
             "cancellable": self.cancellable,
             "progress": self.progress,
@@ -783,6 +881,50 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_model=MutationResult,
     ),
     DaemonOperationSpec(
+        "mutation.session.mark",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.add_mark",
+        additional_capabilities=("archive.remove_mark",),
+        deadline_s=120.0,
+        request_contract="mutation.session.mark.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="SessionMarkRequest",
+        result_type="MutationResult",
+        request_model=SessionMarkRequest,
+        result_model=MutationResult,
+        handler="mutation_session_mark",
+    ),
+    DaemonOperationSpec(
+        "mutation.annotation.save",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.save_annotation",
+        deadline_s=120.0,
+        request_contract="mutation.annotation.save.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="AnnotationSaveRequest",
+        result_type="MutationResult",
+        request_model=AnnotationSaveRequest,
+        result_model=MutationResult,
+        handler="mutation_annotation_save",
+    ),
+    DaemonOperationSpec(
+        "mutation.judgment.record",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.record_judgment",
+        deadline_s=120.0,
+        max_body_bytes=8 * 1024 * 1024,
+        request_contract="mutation.judgment.record.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="JudgmentRecordRequest",
+        result_type="MutationResult",
+        request_model=JudgmentRecordRequest,
+        result_model=MutationResult,
+        handler="mutation_judgment_record",
+    ),
+    DaemonOperationSpec(
         "mutation.session.excision",
         DaemonAuthority.LONG_RUNNING,
         DaemonFallback.NEVER,
@@ -880,6 +1022,17 @@ MUTATION_OPERATION_NAMES: frozenset[str] = frozenset(
     spec.name for spec in DAEMON_OPERATION_SPECS if spec.authority is not DaemonAuthority.READ
 )
 """Operations a CLI adapter may never execute in its own process."""
+
+DAEMON_PRINCIPAL_CAPABILITIES: frozenset[str] = frozenset(
+    capability for spec in DAEMON_OPERATION_SPECS for capability in (spec.capability, *spec.additional_capabilities)
+)
+"""Every capability the daemon's own operation handlers may need to exercise.
+
+Derived from the declarations, so an operation that gains an authority gains it
+here by declaring it -- there is no second list to keep in step. A principal
+short one capability does not fail loudly at the call: it is denied at the
+target-authority check, which reads as the mutation simply never applying.
+"""
 
 if len({spec.name for spec in DAEMON_OPERATION_SPECS}) != len(DAEMON_OPERATION_SPECS):
     raise RuntimeError("daemon operation names must be unique")
@@ -1151,6 +1304,7 @@ def archive_identity(
 __all__ = [
     "DAEMON_OPERATION_PROTOCOL",
     "DAEMON_OPERATION_SPECS",
+    "DAEMON_PRINCIPAL_CAPABILITIES",
     "MUTATION_OPERATION_NAMES",
     "MAX_DECLARED_OPERATION_BODY_BYTES",
     "MAX_OPERATION_BODY_BYTES",

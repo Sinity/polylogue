@@ -494,7 +494,12 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "class, role_only confirmation); the first MCP no-spec mutation family (t46.9 phase 2) to gain "
             "an OperationSpec and executor route."
         ),
-        surfaces=("mcp", "api"),
+        surfaces=("cli", "mcp", "api"),
+        # The CLI's `mark` verb lowers these writes to declared daemon
+        # operations, so "cli" is a real principal surface for them
+        # (polylogue-gjwto); without it every mark/annotation write from the
+        # CLI is denied at the preview boundary.
+        allowed_surfaces=("api", "cli", "mcp"),
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
@@ -509,7 +514,12 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "is absent. Routed through OperationExecutor/MarkRemoveActuator (reversible class, role_only "
             "confirmation)."
         ),
-        surfaces=("mcp", "api"),
+        surfaces=("cli", "mcp", "api"),
+        # The CLI's `mark` verb lowers these writes to declared daemon
+        # operations, so "cli" is a real principal surface for them
+        # (polylogue-gjwto); without it every mark/annotation write from the
+        # CLI is denied at the preview boundary.
+        allowed_surfaces=("api", "cli", "mcp"),
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
@@ -524,7 +534,12 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "created-vs-updated is a receipt detail, not an idempotency short-circuit. Routed through "
             "OperationExecutor/AnnotationSaveActuator (reversible class, role_only confirmation)."
         ),
-        surfaces=("mcp", "api"),
+        surfaces=("cli", "mcp", "api"),
+        # The CLI's `mark` verb lowers these writes to declared daemon
+        # operations, so "cli" is a real principal surface for them
+        # (polylogue-gjwto); without it every mark/annotation write from the
+        # CLI is denied at the preview boundary.
+        allowed_surfaces=("api", "cli", "mcp"),
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
@@ -1215,7 +1230,12 @@ def _declare_executor_authority(specs: tuple[OperationSpec, ...]) -> tuple[Opera
         declared.append(
             replace(
                 spec,
-                allowed_surfaces=("api",),
+                # An authored surface boundary is the author's decision and
+                # survives this legacy back-fill; only a spec that declared
+                # none falls back to the API-only default. Overwriting it
+                # unconditionally silently denied every CLI-lowered mark and
+                # annotation write (polylogue-gjwto).
+                allowed_surfaces=spec.allowed_surfaces or ("api",),
                 target_authority=(
                     TargetAuthorityPolicy(
                         key=spec.name.removeprefix("mutate-"),

@@ -7,6 +7,12 @@ edited note -- produced two distinct rows instead of one row being updated in
 place, despite the command's own help text promising "Add or update a note
 annotation". See `.agent/scratch/dogfood-2/investigations/write-path-correctness.md`
 (finding F-028) for the original empirical evidence.
+
+`mark --note` now lowers to the declared ``mutation.annotation.save`` operation
+and the daemon is the sole writer, so these tests run a real daemon stack
+(`cli_daemon_archive`) instead of an in-process writer. That keeps the law
+observable end to end: the annotation identity is decided by the CLI's stable
+per-session ``annotation_id`` and honoured by the daemon-side handler.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.storage_records import SessionBuilder
 
 WorkspacePaths = dict[str, Path]
@@ -36,19 +43,22 @@ def _annotation_rows(user_db: Path) -> list[tuple[str, str, str]]:
     return [(str(r[0]), str(r[1]), str(r[2])) for r in rows]
 
 
-def test_mark_note_twice_with_same_text_is_a_true_no_op(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
+def test_mark_note_twice_with_same_text_is_a_true_no_op(
+    cli_workspace: WorkspacePaths, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = cli_workspace["db_path"]
     builder = SessionBuilder(db_path, "conv-note-repeat").provider("claude-code")
     builder.save()
     session_id = builder.native_session_id()
 
-    for _ in range(2):
-        result = cli_runner.invoke(
-            cli,
-            ["--plain", "find", f"id:{session_id}", "then", "mark", "--note", "key insight"],
-            catch_exceptions=False,
-        )
-        assert result.exit_code == 0, result.output
+    with cli_daemon_archive(cli_workspace["archive_root"], monkeypatch):
+        for _ in range(2):
+            result = cli_runner.invoke(
+                cli,
+                ["--plain", "find", f"id:{session_id}", "then", "mark", "--note", "key insight"],
+                catch_exceptions=False,
+            )
+            assert result.exit_code == 0, result.output
 
     rows = _annotation_rows(cli_workspace["archive_root"] / "user.db")
     assert len(rows) == 1
@@ -56,7 +66,7 @@ def test_mark_note_twice_with_same_text_is_a_true_no_op(cli_workspace: Workspace
 
 
 def test_mark_note_edit_updates_the_same_row_instead_of_forking(
-    cli_workspace: WorkspacePaths, cli_runner: CliRunner
+    cli_workspace: WorkspacePaths, cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The core regression: editing note text must update in place, not insert."""
     db_path = cli_workspace["db_path"]
@@ -64,25 +74,26 @@ def test_mark_note_edit_updates_the_same_row_instead_of_forking(
     builder.save()
     session_id = builder.native_session_id()
 
-    first = cli_runner.invoke(
-        cli,
-        ["--plain", "find", f"id:{session_id}", "then", "mark", "--note", "first draft"],
-        catch_exceptions=False,
-    )
-    assert first.exit_code == 0, first.output
-
     user_db = cli_workspace["archive_root"] / "user.db"
-    rows_after_first = _annotation_rows(user_db)
-    assert len(rows_after_first) == 1
-    assert rows_after_first[0][2] == "first draft"
-    first_assertion_id = rows_after_first[0][0]
+    with cli_daemon_archive(cli_workspace["archive_root"], monkeypatch):
+        first = cli_runner.invoke(
+            cli,
+            ["--plain", "find", f"id:{session_id}", "then", "mark", "--note", "first draft"],
+            catch_exceptions=False,
+        )
+        assert first.exit_code == 0, first.output
 
-    second = cli_runner.invoke(
-        cli,
-        ["--plain", "find", f"id:{session_id}", "then", "mark", "--note", "revised, corrected wording"],
-        catch_exceptions=False,
-    )
-    assert second.exit_code == 0, second.output
+        rows_after_first = _annotation_rows(user_db)
+        assert len(rows_after_first) == 1
+        assert rows_after_first[0][2] == "first draft"
+        first_assertion_id = rows_after_first[0][0]
+
+        second = cli_runner.invoke(
+            cli,
+            ["--plain", "find", f"id:{session_id}", "then", "mark", "--note", "revised, corrected wording"],
+            catch_exceptions=False,
+        )
+        assert second.exit_code == 0, second.output
 
     rows_after_second = _annotation_rows(user_db)
     # Anti-vacuity: a naive content-hash-default fix (or no fix at all) makes

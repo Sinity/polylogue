@@ -92,6 +92,21 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering=f"{_ARCHIVE_QUERY}:_emit_user_mutations",
         renderers=(f"{_ARCHIVE_QUERY}:_emit_user_mutations",),
     ),
+    "mutation.session.mark": CliOperationBinding(
+        lowering="polylogue.cli.query_verbs:mark_verb",
+        renderers=("polylogue.cli.query_verbs:mark_verb",),
+    ),
+    "mutation.annotation.save": CliOperationBinding(
+        lowering="polylogue.cli.query_verbs:mark_verb",
+        renderers=("polylogue.cli.query_verbs:mark_verb",),
+    ),
+    "mutation.judgment.record": CliOperationBinding(
+        lowering="polylogue.cli.commands.compare:compare_command",
+        renderers=(
+            "polylogue.cli.commands.compare:compare_command",
+            "polylogue.cli.commands.judge:_judge",
+        ),
+    ),
     "mutation.session.delete.preview": CliOperationBinding(
         lowering=f"{_ARCHIVE_QUERY}:_emit_delete",
         renderers=(f"{_ARCHIVE_QUERY}:_emit_delete",),

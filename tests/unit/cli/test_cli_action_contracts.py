@@ -46,6 +46,23 @@ def _command_for_contract(entry: CliActionContract, commands: dict[tuple[str, ..
     return commands[entry.path]
 
 
+def _mutation_recorder(issued: list[tuple[str, dict[str, object]]]) -> object:
+    """Record declared CLI writes and report daemon success.
+
+    Mutating verbs lower to declared operations rather than writing in process,
+    so a contract test that needs the write to succeed supplies the daemon's
+    answer at ``_submit_mutation_operation`` and reads the law off the recorded
+    (operation, payload) pairs.
+    """
+
+    def _served(_config: object, name: str, payload: dict[str, object]) -> dict[str, object]:
+        issued.append((name, dict(payload)))
+        selection = payload.get("session_ids")
+        return {"status": "ok", "affected_count": len(selection) if isinstance(selection, list) else 1}
+
+    return _served
+
+
 def _assert_contract_declares_guard(path: tuple[str, ...], guard: str) -> None:
     contract = ACTION_CONTRACT_BY_PATH[path]
     assert guard in contract.guards, f"{path!r} no longer declares guard {guard!r}"
@@ -388,21 +405,19 @@ def test_mark_contract_guard_allows_first_for_multi_match(workspace_env: dict[st
     """The mark guard permits the explicitly first-only multi-match path."""
     _assert_contract_declares_guard(("mark",), "single_match_unless_all_or_first")
 
-    def _close_coroutine(coro: object) -> None:
-        close = getattr(coro, "close", None)
-        if callable(close):
-            close()
+    issued: list[tuple[str, dict[str, object]]] = []
 
     runner = CliRunner()
     with (
         patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1", "session-2"]),
-        patch("polylogue.api.sync.bridge.run_coroutine_sync", side_effect=_close_coroutine) as run_coroutine_sync,
+        patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_mutation_recorder(issued)),
     ):
         result = runner.invoke(cli, ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--first"])
 
     assert result.exit_code == 0, result.output
     assert "Marked 1 session" in result.output
-    run_coroutine_sync.assert_called_once()
+    # One declared write, carrying only the leading match.
+    assert issued == [("mutation.session.tag", {"session_ids": ["session-1"], "tags": ["reviewed"]})]
 
 
 def test_mark_contract_json_payload_matches_mutation_schema(workspace_env: dict[str, Path]) -> None:
@@ -414,15 +429,12 @@ def test_mark_contract_json_payload_matches_mutation_schema(workspace_env: dict[
     assert mark.machine_envelope == "mutation"
     schema = _load_cli_output_schema("mutation-result")
 
-    def _close_coroutine(coro: object) -> None:
-        close = getattr(coro, "close", None)
-        if callable(close):
-            close()
+    issued: list[tuple[str, dict[str, object]]] = []
 
     runner = CliRunner()
     with (
         patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=["session-1"]),
-        patch("polylogue.api.sync.bridge.run_coroutine_sync", side_effect=_close_coroutine),
+        patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_mutation_recorder(issued)),
     ):
         result = runner.invoke(
             cli,

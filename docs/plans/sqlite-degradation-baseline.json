@@ -45,7 +45,7 @@
     {
       "file": "polylogue/api/archive.py",
       "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
-      "count": 2
+      "count": 1
     },
     {
       "file": "polylogue/api/archive.py",
@@ -614,6 +614,10 @@
     {
       "file": "polylogue/operations/daemon_workload_probe.py",
       "digest": "edf794940781f40b1bc67d5c62db862c152ae6d0"
+    },
+    {
+      "file": "polylogue/operations/user_state_resolution.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
     },
     {
       "file": "polylogue/pipeline/services/indexing.py",
