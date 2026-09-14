@@ -149,10 +149,11 @@ from data that can be rebuilt.
 
 | File | Contents | Durability |
 |---|---|---|
-| `source.db` | acquired source artifacts and runtime hook events | durable |
+| `source.db` | acquired source artifacts and runtime hook events | irreplaceable — back up |
 | `index.db` | normalized sessions, messages, blocks, actions, lineage, FTS, analytics | rebuildable |
-| `embeddings.db` | optional semantic-search vectors | rebuildable |
-| `user.db` | notes, tags, corrections, candidates, and judgments | durable |
+| `embeddings.db` | optional semantic-search vectors | expensive to rebuild — back up |
+| `user.db` | notes, tags, corrections, candidates, and judgments | irreplaceable — back up |
+| `audit.db` | previews, authorizations, attempts, continuity (append-only) | irreplaceable — back up |
 | `ops.db` | daemon cursors, convergence state, and telemetry | disposable |
 
 Large payloads are stored in a SHA-256 content-addressed blob store under the
