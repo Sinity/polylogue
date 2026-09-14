@@ -341,36 +341,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench slo", "devtools bench slo --json", "devtools bench slo --skip-benchmarks --json"),
     ),
     CommandSpec(
-        "bench daemon-operation",
-        "benchmarking",
-        "Run the installed CLI and direct typed-UDS daemon operation profile.",
-        "devtools.daemon_performance_profile",
-        use_when=(
-            "Measure the daemon architecture on the production route: installed CLI status, typed UDS find/read, "
-            "completion, concurrent reads, cancellation, and declared background workload denominators. "
-            "The profile records runtime, queue, CPU/RSS, SQLite, writer-hold, first-byte/full-render, "
-            "rows/bytes, and cancellation evidence where the production route exposes it."
-        ),
-        examples=("devtools bench daemon-operation",),
-    ),
-    CommandSpec(
         "bench memory",
         "benchmarking",
         "Measure query-memory envelopes on generated fixtures.",
         "devtools.query_memory_budget",
         use_when="Assert memory budgets around a concrete query or archive-facing command.",
         examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
-    ),
-    CommandSpec(
-        "bench query-envelope",
-        "benchmarking",
-        "Measure repeated incident-scale query RSS, PSS, swap, and temp envelopes.",
-        "devtools.query_execution_envelope",
-        json_flag=False,
-        use_when="Run the opt-in live archive proof for repeated aggregate query_units calls and emit a receipt.",
-        examples=(
-            "devtools bench query-envelope --archive-root /path/to/archive --receipt .cache/query-envelope.json",
-        ),
     ),
     CommandSpec(
         "archive lineage-validation",
