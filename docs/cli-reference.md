@@ -546,7 +546,8 @@ Commands:
   debt                           List archive work that needs operator
                                  attention.
   diagnostics                    Run archive and session diagnostics.
-  doctor                         Run archive health checks and repairs.
+  doctor                         Report archive, runtime, daemon, blob, and
+                                 schema health.
   embed                          Enable, preflight, and backfill the embedding
                                  pipeline.
   excise                         Excise a session: durable cross-tier removal

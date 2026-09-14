@@ -280,3 +280,59 @@ class TestDiagnosticPayload:
             "detail": "Y",
             "next_action": "Z",
         }
+
+
+def test_every_diagnostic_next_action_names_a_real_polylogue_command() -> None:
+    """A diagnostic's recommended shell command must actually be runnable.
+
+    The locked-database diagnostic told operators to `polylogue ops doctor
+    --repair` long after `--repair` was deleted from the doctor command: the
+    generic repair product survived as operator advice that fails on paste.
+
+    Anti-vacuity: restoring `--repair` (or any other absent option) to a
+    `next_action=` literal in status_diagnostics.py makes this red, because
+    every `polylogue ...` action is resolved through the production Click app
+    and its options are compared to the resolved command's real parameters.
+    Verified by reverting the fix.
+    """
+    import ast
+    import shlex
+    from pathlib import Path
+
+    import click
+
+    from polylogue.cli.click_app import cli
+
+    source = Path("polylogue/cli/commands/status_diagnostics.py").read_text(encoding="utf-8")
+    actions: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.keyword) and node.arg == "next_action" and isinstance(node.value, ast.Constant):
+            value = node.value.value
+            if isinstance(value, str) and value.strip():
+                actions.append(value)
+    assert actions, "expected literal next_action recommendations to inspect"
+
+    problems: list[str] = []
+    for action in actions:
+        for clause in action.split("&&"):
+            tokens = shlex.split(clause.strip())
+            if not tokens or tokens[0] != "polylogue":
+                continue
+            command: click.Command = cli
+            ctx = click.Context(cli)
+            rest = tokens[1:]
+            while rest and not rest[0].startswith("-") and isinstance(command, click.Group):
+                child = command.get_command(ctx, rest[0])
+                if child is None:
+                    problems.append(f"{action!r}: no such command {rest[0]!r}")
+                    break
+                ctx = click.Context(child, parent=ctx)
+                command = child
+                rest.pop(0)
+            else:
+                declared = {opt for param in command.get_params(ctx) for opt in param.opts if opt.startswith("--")}
+                for token in rest:
+                    if token.startswith("--") and token.split("=", 1)[0] not in declared:
+                        problems.append(f"{action!r}: {token} is not an option of {command.name!r}")
+
+    assert not problems, problems
