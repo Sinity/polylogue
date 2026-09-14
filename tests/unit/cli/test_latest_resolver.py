@@ -5,15 +5,30 @@ explicit conv_id wins, then ``--latest`` / any narrowing filter, then
 ``None``. The single-session surfaces (``read --view messages``/``raw``/
 ``neighbors``, ``export``, ``analyze turns``) all route through
 this helper, so a single test here pins the contract for all of them.
+
+The resolution itself is the declared ``cli.query`` operation asked for one
+row. It used to open a ``Polylogue`` facade in the CLI process and list
+summaries against the local archive, so ``--latest`` answered from a second
+executor no daemon ever saw; the seam these tests control is therefore the
+operation's rows, not a patched ``list_summaries``.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from collections.abc import Sequence
 
 import pytest
 
 from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
+
+
+def _stub_ids(monkeypatch: pytest.MonkeyPatch, ids: Sequence[str], captured_limits: list[int] | None = None) -> None:
+    def _query_session_ids(config: object, request: object, *, limit: int, **_kwargs: object) -> list[str]:
+        if captured_limits is not None:
+            captured_limits.append(limit)
+        return list(ids)
+
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_ids", _query_session_ids)
 
 
 def test_explicit_conv_id_wins_over_filters() -> None:
@@ -27,28 +42,14 @@ def test_no_filters_returns_none() -> None:
     assert resolve_session_id_from_root_params({}) is None
 
 
-def test_latest_runs_spec_with_limit_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``--latest`` runs the spec with limit=1 and returns the top match."""
-    captured_limits: list[int | None] = []
+def test_latest_runs_the_operation_with_limit_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--latest`` asks the declared read for one row and returns the top match.
 
-    async def fake_list_summaries(self: object, repo: object) -> list[SimpleNamespace]:
-        captured_limits.append(getattr(self, "limit", None))
-        return [SimpleNamespace(id="claude-code:latest-conv")]
-
-    monkeypatch.setattr(
-        "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
-        fake_list_summaries,
-    )
-
-    class _API:
-        config = SimpleNamespace()
-
-        async def __aenter__(self) -> _API:
-            return self
-
-        async def __aexit__(self, *exc: object) -> None: ...
-
-    monkeypatch.setattr("polylogue.api.Polylogue.open", lambda **_: _API())
+    Anti-vacuity: drop the ``limit=1`` and the captured-limit assertion is red;
+    resolve locally again and the patched operation is never consulted.
+    """
+    captured_limits: list[int] = []
+    _stub_ids(monkeypatch, ["claude-code:latest-conv"], captured_limits)
 
     result = resolve_session_id_from_root_params({"latest": True})
 
@@ -58,47 +59,13 @@ def test_latest_runs_spec_with_limit_one(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_filter_alone_resolves_when_match_exists(monkeypatch: pytest.MonkeyPatch) -> None:
     """A narrowing filter (provider, since, etc.) also triggers resolution."""
-
-    async def fake_list_summaries(self: object, repo: object) -> list[SimpleNamespace]:
-        return [SimpleNamespace(id="codex:filtered")]
-
-    monkeypatch.setattr(
-        "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
-        fake_list_summaries,
-    )
-
-    class _API:
-        config = SimpleNamespace()
-
-        async def __aenter__(self) -> _API:
-            return self
-
-        async def __aexit__(self, *exc: object) -> None: ...
-
-    monkeypatch.setattr("polylogue.api.Polylogue.open", lambda **_: _API())
+    _stub_ids(monkeypatch, ["codex:filtered"])
 
     assert resolve_session_id_from_root_params({"origin": "codex-session"}) == "codex:filtered"
 
 
 def test_latest_returns_none_when_archive_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """``--latest`` against an empty archive returns None, not an error."""
-
-    async def fake_list_summaries(self: object, repo: object) -> list[SimpleNamespace]:
-        return []
-
-    monkeypatch.setattr(
-        "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
-        fake_list_summaries,
-    )
-
-    class _API:
-        config = SimpleNamespace()
-
-        async def __aenter__(self) -> _API:
-            return self
-
-        async def __aexit__(self, *exc: object) -> None: ...
-
-    monkeypatch.setattr("polylogue.api.Polylogue.open", lambda **_: _API())
+    _stub_ids(monkeypatch, [])
 
     assert resolve_session_id_from_root_params({"latest": True}) is None

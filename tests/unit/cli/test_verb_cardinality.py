@@ -23,6 +23,7 @@ import pytest
 
 from polylogue.cli import query_verbs
 from polylogue.cli.root_request import RootModeRequest
+from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality
 
 # ---------------------------------------------------------------------------
@@ -142,13 +143,17 @@ class TestReadVerbCardinality:
         )
 
     def _read_resolution(self, session_ids: list[str]) -> AbstractContextManager[MagicMock]:
-        def _close_and_return(coro: object) -> list[str]:
-            close = getattr(coro, "close", None)
-            if callable(close):
-                close()
-            return session_ids
+        """Stand in for the ``cli.query`` rows the read verb resolves against.
 
-        return patch("polylogue.cli.query_verbs.run_coroutine_sync", side_effect=_close_and_return)
+        Resolution is now one declared operation through the kernel, so the
+        seam a cardinality test controls is the selector rows that operation
+        reports, not a coroutine runner.
+        """
+        rows = [
+            SelectSessionRow(session_id=session_id, origin="claude-code-session", title=session_id, date=None)
+            for session_id in session_ids
+        ]
+        return patch("polylogue.cli.session_rows.query_session_rows", return_value=rows)
 
     def test_single_session_view_multi_match_without_first_or_all_raises(self) -> None:
         _, child = _context_pair(query_terms=("needle",))
@@ -163,12 +168,12 @@ class TestReadVerbCardinality:
         child.obj = SimpleNamespace(config=MagicMock())
 
         with (
-            patch("polylogue.cli.query_verbs.run_coroutine_sync") as run_sync,
+            patch("polylogue.cli.session_rows.query_session_rows") as query_rows,
             patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
         ):
             self._call_read(child, view="temporal")
 
-        run_sync.assert_not_called()
+        query_rows.assert_not_called()
         invocation = run_read_view.call_args.args[2]
         assert invocation.view == "temporal"
         assert invocation.session_id is None
@@ -578,36 +583,28 @@ class TestSampleRejectedForMutatingVerbs:
         request = RootModeRequest.from_params({"sample": 5})
         assert request.query_spec().sample == 5
 
-        with patch("polylogue.api.sync.bridge.run_coroutine_sync") as mock_run:
+        with patch("polylogue.cli.session_rows.query_complete_session_ids") as mock_resolve:
             with pytest.raises(click.UsageError, match="--sample"):
                 resolve_session_ids_for_verb(cast(object, MagicMock()), request)  # type: ignore[arg-type]
 
-        # The guard fires before any DB resolution.
-        mock_run.assert_not_called()
+        # The guard fires before any read.
+        mock_resolve.assert_not_called()
 
     def test_resolver_allows_absent_sample(self) -> None:
-        """Without --sample the resolver proceeds to the async DB path."""
+        """Without --sample the resolver proceeds to the declared read."""
         from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
 
         request = RootModeRequest.from_params({})
         assert request.query_spec().sample is None
 
-        with (
-            # _async_resolve_ids is stubbed so no coroutine is created and the
-            # MagicMock env is never dereferenced for real DB work.
-            patch(
-                "polylogue.cli.verb_cardinality._async_resolve_ids",
-                new=lambda env, request: object(),
-            ),
-            patch(
-                "polylogue.api.sync.bridge.run_coroutine_sync",
-                return_value=["id1"],
-            ) as mock_run,
-        ):
+        with patch(
+            "polylogue.cli.session_rows.query_complete_session_ids",
+            return_value=["id1"],
+        ) as mock_resolve:
             result = resolve_session_ids_for_verb(cast(object, MagicMock()), request)  # type: ignore[arg-type]
 
         assert result == ["id1"]
-        mock_run.assert_called_once()
+        mock_resolve.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

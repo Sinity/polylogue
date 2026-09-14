@@ -37,8 +37,6 @@ from polylogue.logging import configure_logging
 from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
-    from polylogue.cli.select import SelectSessionRow
-    from polylogue.config import Config
     from polylogue.ui import UI
 
 
@@ -248,10 +246,10 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     bare-invocation screen once it decides to render one.
     """
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.cli.onboarding import render_guided_path
+    from polylogue.cli.operation_kernel import OperationKernelError
     from polylogue.cli.root_request import RootModeRequest
-    from polylogue.cli.select import select_session_rows
+    from polylogue.cli.session_rows import query_session_rows
     from polylogue.cli.shared.helpers import load_effective_config
 
     config = load_effective_config(env)
@@ -259,14 +257,17 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
         click.echo(render_guided_path())
         return True
 
-    rows = None if bool(ctx.params.get("no_daemon")) else _bare_tty_daemon_rows(config)
-    source = "daemon" if rows is not None else "direct"
-    if rows is None:
-        try:
-            rows = run_coroutine_sync(select_session_rows(env, RootModeRequest.from_params({}), limit=5))
-        except Exception:
-            click.echo(ctx.get_help())
-            return True
+    # One declared read, dispatched like every other: the kernel picks the
+    # daemon or direct execution and the result's own authority says which
+    # answered, so this screen no longer builds a second DaemonClient or
+    # imports the index schema constant to talk to one.
+    daemon_disabled = bool(ctx.params.get("no_daemon"))
+    try:
+        rows = query_session_rows(config, RootModeRequest.from_params({}), limit=5, daemon_disabled=daemon_disabled)
+    except OperationKernelError:
+        click.echo(ctx.get_help())
+        return True
+    source = "direct" if daemon_disabled else "daemon"
 
     click.echo(f"Archive: ready ({source})")
     click.echo("Recent sessions:")
@@ -279,64 +280,20 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     return True
 
 
-def _bare_tty_daemon_rows(config: Config) -> list[SelectSessionRow] | None:
-    """Fetch the minimal recent-session page from a config-matched daemon."""
-
-    from polylogue.cli.operation_kernel import OperationKernel, OperationKernelError, OperationRequest
-    from polylogue.cli.select import SelectSessionRow
-    from polylogue.daemon.api_auth import resolve_api_auth_token
-    from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.daemon_client import DaemonClient
-
-    client = DaemonClient(
-        daemon_socket_path(config.archive_root),
-        auth_token=lambda: resolve_api_auth_token(
-            getattr(config, "api_auth_token", None),
-            allow_no_auth=getattr(config, "api_allow_no_auth", False),
-        ),
-    )
-    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-    from polylogue.version import POLYLOGUE_VERSION
-
-    try:
-        result = OperationKernel(
-            lambda request: client.operation(
-                request.operation,
-                dict(request.payload),
-                archive_root=str(config.archive_root),
-                index_schema_version=INDEX_SCHEMA_VERSION,
-                daemon_version=POLYLOGUE_VERSION,
-            )
-        ).execute(OperationRequest("cli.query", {"params": {"query": (), "limit": 5}}))
-    except OperationKernelError:
-        return None
-    payload = result.value if isinstance(result.value, dict) else None
-    items = payload.get("items") if payload is not None else None
-    if not isinstance(items, list):
-        return None
-    rows: list[SelectSessionRow] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        session_id = item.get("id")
-        origin = item.get("origin")
-        title = item.get("title")
-        if isinstance(session_id, str) and isinstance(origin, str) and isinstance(title, str):
-            date = item.get("date")
-            rows.append(SelectSessionRow(session_id, origin, title, date if isinstance(date, str) else None))
-    return rows
-
-
 def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
-    """Show fast status when daemon is reachable, otherwise archive summary."""
-    if not verbose:
-        try:
-            from polylogue.cli.commands.status import show_fast_status
+    """Show the fast status page, or the verbose archive summary on request.
 
-            show_fast_status(env)
-            return
-        except Exception:
-            pass
+    The fast page is the ``status`` operation through the kernel and reports
+    its own degraded and error states, so a blanket ``except Exception`` here
+    could only hide them -- it used to swallow every failure and silently fall
+    through to the local summary, which reads ``storage.embeddings`` directly
+    and so presented a broken status as a healthy archive.
+    """
+    if not verbose:
+        from polylogue.cli.commands.status import show_fast_status
+
+        show_fast_status(env)
+        return
     from polylogue.cli.shared.helpers import print_summary
 
     print_summary(env, verbose=verbose)

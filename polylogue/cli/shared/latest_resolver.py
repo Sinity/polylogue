@@ -10,15 +10,17 @@ The query-verb tree's ``_resolve_target_session_id`` in
 this with a ``RootModeRequest``. Top-level commands (``export``,
 ``neighbors``, ``analyze turns``) call the param-dict variant
 directly because they don't run under the query group's typed request.
+
+The resolution itself is the declared ``cli.query`` operation through the
+kernel. It used to open a writable-capable ``Polylogue`` facade in the CLI
+process for what is a one-row read, which meant ``--latest`` answered from a
+second executor that no daemon ever saw.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import replace
 from typing import cast
-
-from polylogue.api.sync.bridge import run_coroutine_sync
 
 
 def resolve_session_id_from_root_params(root_params: Mapping[str, object]) -> str | None:
@@ -36,6 +38,9 @@ def resolve_session_id_from_root_params(root_params: Mapping[str, object]) -> st
        the caller should surface its existing "missing id" error.
     """
     from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.cli.root_request import RootModeRequest
+    from polylogue.cli.session_rows import query_session_ids
+    from polylogue.config import Config, get_config
 
     explicit = cast("str | None", root_params.get("conv_id"))
     if explicit:
@@ -45,17 +50,10 @@ def resolve_session_id_from_root_params(root_params: Mapping[str, object]) -> st
     if not spec.latest and not spec.has_filters():
         return None
 
-    one_match_spec = replace(spec, limit=1)
-
-    async def _resolve() -> str | None:
-        from polylogue.api import Polylogue
-        from polylogue.config import Config
-
-        async with Polylogue.open(config=cast("Config | None", root_params.get("_config"))) as api:
-            summaries = await one_match_spec.list_summaries(api.config)
-        return str(summaries[0].id) if summaries else None
-
-    return run_coroutine_sync(_resolve())
+    pinned = root_params.get("_config")
+    config = pinned if isinstance(pinned, Config) else get_config()
+    session_ids = query_session_ids(config, RootModeRequest.from_params(dict(root_params)), limit=1)
+    return session_ids[0] if session_ids else None
 
 
 __all__ = ["resolve_session_id_from_root_params"]

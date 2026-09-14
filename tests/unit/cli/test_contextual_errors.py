@@ -24,7 +24,6 @@ from types import SimpleNamespace
 import pytest
 from click.testing import CliRunner, Result
 
-from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.cli import select as select_module
 from polylogue.cli.click_app import cli
 from polylogue.cli.contextual_errors import (
@@ -35,15 +34,13 @@ from polylogue.cli.contextual_errors import (
     ambiguous_selection_actions,
     display_ref,
 )
-from polylogue.cli.select import resolve_ambiguous_selection
+from polylogue.cli.select import SelectSessionRow, resolve_ambiguous_selection
 from polylogue.cli.verb_cardinality import (
     AmbiguousCardinalityError,
     CardinalityError,
     EmptyCardinalityError,
     check_cardinality,
 )
-from polylogue.core.enums import Origin
-from polylogue.core.types import SessionId
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.storage_records import SessionBuilder
 
@@ -116,12 +113,20 @@ def _env(*, plain: bool) -> object:
     return SimpleNamespace(ui=SimpleNamespace(plain=plain))
 
 
-def _summaries(*ids: str) -> list[SessionSummary]:
-    return [SessionSummary(id=SessionId(ref), origin=Origin.CLAUDE_AI_EXPORT, title=f"Session {ref}") for ref in ids]
+def _rows(*ids: str) -> list[SelectSessionRow]:
+    """Selector rows as ``rows_loader`` now supplies them.
+
+    The loader used to hand back domain summaries for the chooser to project;
+    selection reads its rows from the ``cli.query`` operation, so the already
+    projected row is what reaches the chooser.
+    """
+    return [
+        SelectSessionRow(session_id=ref, origin="claude-ai-export", title=f"Session {ref}", date=None) for ref in ids
+    ]
 
 
 def _loader(*ids: str) -> object:
-    return lambda: _summaries(*ids)
+    return lambda: _rows(*ids)
 
 
 def test_a_non_interactive_caller_never_reaches_the_chooser(monkeypatch: pytest.MonkeyPatch) -> None:

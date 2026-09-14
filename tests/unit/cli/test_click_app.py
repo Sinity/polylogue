@@ -1168,16 +1168,39 @@ class TestShowStats:
             _show_stats(env, verbose=True)
         mock_print.assert_called_once_with(env, verbose=True)
 
-    def test_calls_print_summary_not_verbose(self) -> None:
+    def test_non_verbose_shows_the_fast_status_page(self) -> None:
+        from polylogue.cli.click_app import _show_stats
+
+        env = MagicMock()
+        with (
+            patch("polylogue.cli.commands.status.show_fast_status") as fast_status,
+            patch("polylogue.cli.shared.helpers.print_summary") as mock_print,
+        ):
+            _show_stats(env, verbose=False)
+        fast_status.assert_called_once_with(env)
+        mock_print.assert_not_called()
+
+    def test_a_failing_status_page_is_reported_not_swallowed(self) -> None:
+        """A broken status must not render as a healthy archive summary.
+
+        ``_show_stats`` used to wrap the fast page in a blanket
+        ``except Exception`` and fall through to the local ``print_summary``,
+        which reads the embeddings tier directly -- so a status operation that
+        refused, timed out or found a skewed schema produced a summary screen
+        with no sign anything was wrong.
+
+        Anti-vacuity: restore the blanket ``except`` and this goes red.
+        """
         from polylogue.cli.click_app import _show_stats
 
         env = MagicMock()
         with (
             patch("polylogue.cli.commands.status.show_fast_status", side_effect=RuntimeError("daemon offline")),
             patch("polylogue.cli.shared.helpers.print_summary") as mock_print,
+            pytest.raises(RuntimeError, match="daemon offline"),
         ):
             _show_stats(env, verbose=False)
-        mock_print.assert_called_once_with(env, verbose=False)
+        mock_print.assert_not_called()
 
 
 class TestCliMetadata:

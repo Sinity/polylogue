@@ -6,22 +6,19 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, NoReturn
 
 import click
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument, dumps
-from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.query_rows import session_row
 
 if TYPE_CHECKING:
     from polylogue.archive.query.spec import QuerySpecError
     from polylogue.archive.session.domain_models import Session, SessionSummary
-    from polylogue.config import Config
 
 
 SelectPrintField = Literal["id", "title", "origin", "json"]
@@ -181,55 +178,13 @@ def choose_select_row(env: AppEnv, rows: list[SelectSessionRow]) -> SelectSessio
     return next((row for row in rows if row.label == selected), None)
 
 
-async def _select_session_rows_from_store(
-    config: Config,
-    request: RootModeRequest,
-    *,
-    limit: int,
-) -> list[SelectSessionRow]:
-    spec = replace(request.query_spec(), limit=limit)
-    # polylogue-yla8.1 split-root contract: config.db_path always names a
-    # concrete index.db (explicit override or resolved active generation).
-    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-    vector_provider = None
-    if _spec_needs_vector_provider(spec):
-        from polylogue.cli.query import _create_query_vector_provider
-
-        vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
-    filter_chain = spec.build_filter(config, vector_provider=vector_provider)
-
-    if filter_chain.can_use_summaries():
-        results: list[Session | SessionSummary] = list(await filter_chain.list_summaries())
-    else:
-        results = list(await filter_chain.list())
-    return [select_row_from_result(result) for result in results]
-
-
-def _spec_needs_vector_provider(spec: object) -> bool:
-    """Return whether a select query needs eager vector-provider setup."""
-    return bool(
-        getattr(spec, "similar_text", None)
-        or getattr(spec, "similar_session_id", None)
-        or getattr(spec, "retrieval_lane", "auto") == "hybrid"
-    )
-
-
-async def select_session_rows(env: AppEnv, request: RootModeRequest, *, limit: int) -> list[SelectSessionRow]:
-    """Return selector rows from the same query/filter path as query verbs."""
-    return await _select_session_rows_from_store(
-        env.config,
-        request,
-        limit=limit,
-    )
-
-
 def resolve_ambiguous_selection(
     env: AppEnv,
     candidates: Sequence[str],
     *,
     operation: str,
     multi_match_hint: str | None = None,
-    rows_loader: Callable[[], Sequence[Session | SessionSummary]] | None = None,
+    rows_loader: Callable[[], Sequence[SelectSessionRow]] | None = None,
 ) -> str:
     """Resolve several matched refs to one, or refuse deterministically.
 
@@ -251,8 +206,7 @@ def resolve_ambiguous_selection(
     if len(refs) == 1:
         return refs[0]
     if refs and interactive_selection_available(env):
-        loaded = rows_loader() if rows_loader is not None else ()
-        rows = [select_row_from_result(result) for result in loaded] or [
+        rows = list(rows_loader() if rows_loader is not None else ()) or [
             SelectSessionRow(session_id=ref, origin="unknown", title=ref, date=None) for ref in refs
         ]
         chosen = choose_select_row(env, rows)
@@ -282,15 +236,18 @@ def _raise_select_query_error(exc: QuerySpecError) -> NoReturn:
     raise SystemExit(1) from exc
 
 
-async def async_run_select(
+def run_select(
     env: AppEnv,
     request: RootModeRequest,
     *,
     limit: int,
     print_field: SelectPrintField,
 ) -> None:
+    """Select one session from the rows the ``cli.query`` operation reports."""
+    from polylogue.cli.session_rows import query_session_rows
+
     try:
-        rows = await select_session_rows(env, request, limit=limit)
+        rows = query_session_rows(env.config, request, limit=limit)
     except Exception as exc:
         from polylogue.archive.query.spec import QuerySpecError
 
@@ -307,26 +264,14 @@ async def async_run_select(
     click.echo(render_select_row(selected, print_field))
 
 
-def run_select(
-    env: AppEnv,
-    request: RootModeRequest,
-    *,
-    limit: int,
-    print_field: SelectPrintField,
-) -> None:
-    run_coroutine_sync(async_run_select(env, request, limit=limit, print_field=print_field))
-
-
 __all__ = [
     "SelectSessionRow",
     "SelectPrintField",
-    "async_run_select",
     "choose_select_row",
     "interactive_selection_available",
     "resolve_ambiguous_selection",
     "render_select_row",
     "render_select_rows",
     "run_select",
-    "select_session_rows",
     "select_row_from_result",
 ]

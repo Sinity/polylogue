@@ -349,15 +349,13 @@ def test_read_contract_guard_allows_first_for_multi_match(workspace_env: dict[st
     """The read guard advertises first-only selection for ranked result sets."""
     _assert_contract_declares_guard(("read",), "single_match_unless_all_or_first")
 
-    def _close_and_return(coro: object) -> list[str]:
-        close = getattr(coro, "close", None)
-        if callable(close):
-            close()
-        return ["session-1"]
+    from polylogue.cli.select import SelectSessionRow
+
+    rows = [SelectSessionRow(session_id="session-1", origin="claude-code-session", title="Session", date=None)]
 
     runner = CliRunner()
     with (
-        patch("polylogue.cli.query_verbs.run_coroutine_sync", side_effect=_close_and_return),
+        patch("polylogue.cli.session_rows.query_session_rows", return_value=rows),
         patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
     ):
         result = runner.invoke(cli, ["find", "needle", "then", "read", "--first"])

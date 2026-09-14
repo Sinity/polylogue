@@ -18,6 +18,7 @@ from click.shell_completion import CompletionItem
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import SelectPrintField
+    from polylogue.config import Config
     from polylogue.surfaces.payloads import FacetsResponse
     from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
@@ -2562,9 +2563,7 @@ def _is_direct_session_ref(ref: str | None) -> bool:
 def _resolve_target_session_id(request: RootModeRequest) -> str | None:
     """Verb-tree adapter for the shared latest-resolver helper (#1626, #1642)."""
     if request.query_terms:
-        from dataclasses import replace
-
-        from polylogue.config import Config
+        from polylogue.cli.session_rows import query_session_ids
 
         explicit = request.params.get("conv_id")
         if isinstance(explicit, str) and explicit:
@@ -2574,20 +2573,26 @@ def _resolve_target_session_id(request: RootModeRequest) -> str | None:
             return cast("str", spec.session_id)
         if not spec.latest and not spec.has_filters():
             return None
-        one_match_spec = replace(spec, limit=1)
-
-        async def _resolve() -> str | None:
-            from polylogue.api import Polylogue
-
-            async with Polylogue.open(config=cast("Config | None", request.params.get("_config"))) as api:
-                summaries = await one_match_spec.list_summaries(api.config)
-            return str(summaries[0].id) if summaries else None
-
-        return run_coroutine_sync(_resolve())
+        session_ids = query_session_ids(_request_config(request), request, limit=1)
+        return session_ids[0] if session_ids else None
 
     from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
 
     return resolve_session_id_from_root_params(dict(request.params))
+
+
+def _request_config(request: RootModeRequest) -> Config:
+    """The configuration a resolution runs against.
+
+    ``_config`` is the pinned configuration the root callback threaded through
+    the request; without it the resolution answers against whatever archive is
+    active, which is not necessarily the one the operator named with ``--db``.
+    """
+    from polylogue.config import Config as ConfigType
+    from polylogue.config import get_config
+
+    pinned = request.params.get("_config")
+    return pinned if isinstance(pinned, ConfigType) else get_config()
 
 
 def _resolve_query_action_session_id(
@@ -2599,9 +2604,8 @@ def _resolve_query_action_session_id(
 ) -> str | None:
     """Resolve one query-action session with explicit ranked-result cardinality."""
     if request.query_terms:
-        from dataclasses import replace
-
         from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
+        from polylogue.cli.session_rows import query_session_rows
         from polylogue.cli.verb_cardinality import check_cardinality
 
         explicit = request.params.get("conv_id")
@@ -2614,13 +2618,8 @@ def _resolve_query_action_session_id(
             return None
 
         resolve_limit = 1 if first_only else AMBIGUITY_CANDIDATE_LIMIT + 1
-        bounded_spec = replace(spec, limit=resolve_limit)
-
-        async def _resolve() -> list[str]:
-            summaries = await bounded_spec.list_summaries(env.config)
-            return [str(summary.id) for summary in summaries]
-
-        session_ids = run_coroutine_sync(_resolve())
+        rows = query_session_rows(env.config, request, limit=resolve_limit)
+        session_ids = [row.session_id for row in rows]
         multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
         if len(session_ids) > 1 and not first_only:
             from polylogue.cli.select import resolve_ambiguous_selection
@@ -2630,7 +2629,9 @@ def _resolve_query_action_session_id(
                 session_ids,
                 operation=operation,
                 multi_match_hint=multi_match_hint,
-                rows_loader=lambda: run_coroutine_sync(bounded_spec.list_summaries(env.config)),
+                # The rows the chooser labels are the rows the ids came from, so
+                # the second read the facade route needed is gone.
+                rows_loader=lambda: rows,
             )
         check_cardinality(
             len(session_ids),
@@ -2659,7 +2660,7 @@ def _resolve_query_action_session_ids(
     :func:`_resolve_query_action_session_id`.
     """
     if request.query_terms:
-        from dataclasses import replace
+        from polylogue.cli.session_rows import query_session_ids
 
         explicit = request.params.get("conv_id")
         if isinstance(explicit, str) and explicit:
@@ -2669,13 +2670,7 @@ def _resolve_query_action_session_ids(
             return [cast("str", spec.session_id)]
         if not spec.latest and not spec.has_filters():
             return []
-        bounded_spec = replace(spec, limit=1 if first_only else limit)
-
-        async def _resolve() -> list[str]:
-            summaries = await bounded_spec.list_summaries(env.config)
-            return [str(summary.id) for summary in summaries]
-
-        return run_coroutine_sync(_resolve())
+        return query_session_ids(env.config, request, limit=1 if first_only else limit)
 
     single = _resolve_target_session_id(request)
     return [single] if single else []

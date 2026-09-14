@@ -1023,13 +1023,14 @@ def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    def _close_and_return(coro: object) -> list[str]:
-        close = getattr(coro, "close", None)
-        if callable(close):
-            close()
-        return ["session-1", "session-2"]
+    from polylogue.cli.select import SelectSessionRow
 
-    with patch("polylogue.cli.query_verbs.run_coroutine_sync", side_effect=_close_and_return):
+    rows = [
+        SelectSessionRow(session_id=session_id, origin="claude-code-session", title=session_id, date=None)
+        for session_id in ("session-1", "session-2")
+    ]
+
+    with patch("polylogue.cli.session_rows.query_session_rows", return_value=rows):
         with pytest.raises(click.UsageError, match="Narrow the query to one session"):
             wrapped(child, **_continue_verb_kwargs())
 
@@ -1628,29 +1629,23 @@ def test_resolve_target_session_id_returns_none_without_filters_or_latest() -> N
 
 
 def test_resolve_target_session_id_resolves_latest(monkeypatch: pytest.MonkeyPatch) -> None:
-    """#1626: ``--latest`` must resolve to the most recent conv without an explicit id."""
+    """#1626: ``--latest`` must resolve to the most recent conv without an explicit id.
+
+    The resolution is the declared ``cli.query`` operation asked for one row --
+    it used to open a ``Polylogue`` facade in the CLI process for the same
+    single-row read, so ``--latest`` answered from an executor no daemon saw.
+
+    Anti-vacuity: drop the ``limit=1`` and the captured-limit assertion goes red.
+    """
     request = RootModeRequest.from_params({"latest": True})
 
-    captured_limits: list[int | None] = []
+    captured_limits: list[object] = []
 
-    async def fake_list_summaries(self: object, repo: object) -> list[SimpleNamespace]:
-        captured_limits.append(getattr(self, "limit", None))
-        return [SimpleNamespace(id="claude-code:latest-conv-id")]
+    def fake_query_session_ids(config: object, req: object, *, limit: int, **_kwargs: object) -> list[str]:
+        captured_limits.append(limit)
+        return ["claude-code:latest-conv-id"]
 
-    monkeypatch.setattr(
-        "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
-        fake_list_summaries,
-    )
-
-    class _API:
-        config = SimpleNamespace()
-
-        async def __aenter__(self) -> _API:
-            return self
-
-        async def __aexit__(self, *exc: object) -> None: ...
-
-    monkeypatch.setattr("polylogue.api.Polylogue.open", lambda **_: _API())
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_ids", fake_query_session_ids)
 
     result = query_verbs._resolve_target_session_id(request)
 
