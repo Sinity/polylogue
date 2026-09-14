@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import threading
 from contextlib import closing
 from pathlib import Path
 
@@ -327,3 +328,48 @@ def test_a_failing_over_budget_hold_still_releases_the_lease() -> None:
             raise BoomError
 
     assert current_write_lease() is None
+
+
+def test_an_unbound_thread_that_inherits_the_lease_is_still_refused() -> None:
+    """A spawned thread must not write on a lease it merely inherited.
+
+    This interpreter is a free-threading (no-GIL) CPython build, and on it a
+    new ``threading.Thread`` starts from a *copy* of the creating thread's
+    context rather than an empty one. So a thread spawned while the daemon
+    holds the write lease observes that lease in ``_ACTIVE`` -- the
+    ContextVar does not isolate it. What actually keeps the single-writer
+    boundary is the bound-thread check: the inherited lease names the owner's
+    thread id, and an unbound thread is refused.
+
+    Determinism: no sleeps. The worker is joined before the assertion, so the
+    result is observed after the thread has certainly finished, and the lease
+    is held for the whole join. Nothing races.
+
+    Anti-vacuity: deleting the ``bound_thread_ids`` check in
+    ``require_write_lease`` turns this green-to-red -- the inherited lease
+    would authorize an arbitrary thread to open a durable write connection
+    while the daemon believes it is the sole writer. It is red today only by
+    that check, not by contextvar isolation.
+    """
+    observed: dict[str, object] = {}
+
+    def worker() -> None:
+        observed["inherited_lease"] = current_write_lease()
+        try:
+            require_write_lease("worker durable write")
+        except UnleasedWriteError as exc:
+            observed["outcome"] = f"refused: {exc}"
+        else:
+            observed["outcome"] = "allowed"
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+        thread = threading.Thread(target=worker, name="inheriting-worker")
+        thread.start()
+        thread.join()
+
+    # The inheritance itself is real: the guard, not isolation, is the defense.
+    assert observed["inherited_lease"] is lease
+    assert str(observed["outcome"]).startswith("refused: ")
+    assert "unauthorized thread" in str(observed["outcome"])
+    # The worker must not have smuggled itself into the owner's bound set.
+    assert lease.bound_thread_ids == {lease.owner_thread_id}
