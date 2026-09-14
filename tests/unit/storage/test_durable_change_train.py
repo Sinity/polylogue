@@ -2956,17 +2956,112 @@ def test_bootstrap_marker_survives_index_generation_replacement(tmp_path: Path) 
     initialize_active_archive_root(tmp_path)
 
 
-def test_fresh_bootstrap_receipt_rejects_archive_identity_mismatch(tmp_path: Path) -> None:
+def test_fresh_bootstrap_archive_opens_after_its_root_is_moved(tmp_path: Path) -> None:
+    """The fresh-start ruling's rollback route -- move the files back -- must open.
+
+    ``os.rename`` within one filesystem changes the archive root path and
+    nothing else: every tier keeps its device and inode. An archive created by
+    current code must still open afterwards, because that move is the whole
+    safety net behind the rebuild campaign (polylogue-ifb4l).
+
+    Anti-vacuity: restoring the committed marker's ``durable_identity_digest``
+    (sha256 over the configured root path plus the source/user
+    ``dev:<st_dev>:ino:<st_ino>`` pair) and comparing it in
+    ``_fresh_durable_bootstrap_versions`` makes this raise
+    ``fresh durable bootstrap marker durable identity mismatch``.
+    """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    initialize_active_archive_root(tmp_path)
-    marker = tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    payload = json.loads(marker.read_text(encoding="utf-8"))
-    payload["durable_identity_digest"] = "0" * 64
-    marker.write_text(json.dumps(payload), encoding="utf-8")
+    origin = tmp_path / "origin"
+    initialize_active_archive_root(origin)
+    marker_payload = json.loads(
+        (origin / ".maintenance-state" / "durable-change-trains" / ".bootstrap").read_text(encoding="utf-8")
+    )
+    assert "durable_identity_digest" not in marker_payload
 
-    with pytest.raises(DurableChangeTrainError, match="durable identity mismatch"):
-        reconcile_durable_change_train_startup(tmp_path)
+    moved = tmp_path / "moved"
+    os.rename(origin, moved)
+
+    initialize_active_archive_root(moved)
+    assert reconcile_durable_change_train_startup(moved) == ()
+
+
+def test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe(tmp_path: Path) -> None:
+    """One archive's bootstrap authority cannot be transplanted into another.
+
+    This is the property the removed path/inode seal was protecting: the marker
+    raises the durable train chain floor, so an archive that acquired a foreign
+    marker would stop needing released train evidence for every version between
+    the adoption floor and the recorded bootstrap version. The replacement proof
+    is the recipient's own durable content -- its live tier must still be the
+    canonical schema the marker describes, or a released train on that archive
+    must have proved it was.
+
+    Anti-vacuity: deleting the ``_assert_fresh_durable_bootstrap_is_own`` call
+    from ``_fresh_durable_bootstrap_versions`` makes the recipient open and
+    silently inherit the donor's chain floor.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    donor = tmp_path / "donor"
+    recipient = tmp_path / "recipient"
+    initialize_active_archive_root(donor)
+    initialize_active_archive_root(recipient)
+
+    relative = Path(".maintenance-state") / "durable-change-trains" / ".bootstrap"
+    (recipient / relative).unlink()
+    with closing(sqlite3.connect(recipient / "source.db")) as connection:
+        connection.execute("CREATE INDEX idx_transplanted_marker_probe ON raw_sessions(raw_id)")
+        connection.commit()
+    shutil.copyfile(donor / relative, recipient / relative)
+    with closing(sqlite3.connect(recipient / "source.db")) as connection:
+        live = migration_runner.capture_durable_schema_inventory(connection)
+    assert (
+        live.sha256
+        != durable_change_train_module._canonical_schema_inventory(
+            ArchiveTier.SOURCE, ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+        ).sha256
+    )
+
+    with pytest.raises(DurableChangeTrainError, match="not this archive's own source bootstrap evidence"):
+        reconcile_durable_change_train_startup(recipient)
+
+
+def test_fresh_bootstrap_marker_is_retired_once_it_grants_nothing(tmp_path: Path) -> None:
+    """The marker is removed as soon as it stops carrying authority.
+
+    A fresh archive's marker records versions above every adoption floor, so it
+    is the archive's only evidence for them and must stay. Once the recorded
+    versions are covered without it -- here, versions at the adoption floors
+    themselves -- keeping it would gate the archive on bootstrap evidence for
+    the rest of its life for nothing, so startup deletes it.
+
+    Anti-vacuity: the first half goes red if retirement stops consulting the
+    chain requirement and deletes unconditionally; the second half goes red if
+    the "grants nothing" branch is removed. Both verified by reverting.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.durable_change_train import (
+        _retire_corroborated_fresh_durable_bootstrap_marker,
+    )
+
+    initialize_active_archive_root(tmp_path)
+    manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    marker = manifest_root / ".bootstrap"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    recorded = {
+        ArchiveTier[name.upper()]: version for name, version in cast(dict[str, int], payload["versions"]).items()
+    }
+    assert any(version > DURABLE_MIGRATION_ADOPTION_FLOORS[tier] for tier, version in recorded.items())
+
+    assert _retire_corroborated_fresh_durable_bootstrap_marker(manifest_root, recorded) is False
+    assert marker.is_file()
+    assert reconcile_durable_change_train_startup(tmp_path) == ()
+    assert marker.is_file()
+
+    floors = {tier: DURABLE_MIGRATION_ADOPTION_FLOORS[tier] for tier in recorded}
+    assert _retire_corroborated_fresh_durable_bootstrap_marker(manifest_root, floors) is True
+    assert not marker.exists()
 
 
 def test_fresh_bootstrap_receipt_rejects_recorded_version_tampering(tmp_path: Path) -> None:
