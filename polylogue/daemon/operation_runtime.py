@@ -125,7 +125,7 @@ class DaemonOperationRuntime:
         with self._condition:
             return self._closing and not self._exchanges
 
-    def publication_guard(self) -> AbstractContextManager[None]:
+    def publication_guard(self) -> AbstractContextManager[object]:
         return self._bridge.hold("operation.pin-read")
 
     def run_write(self, name: str, work: Callable[[], _T]) -> _T:

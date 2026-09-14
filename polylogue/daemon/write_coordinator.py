@@ -24,7 +24,13 @@ from pathlib import Path
 from typing import Literal, ParamSpec, TypeVar
 
 from polylogue.core.write_hold import enter_write_hold, exit_write_hold
-from polylogue.core.write_lease import bind_write_lease_thread, current_write_lease, write_lease
+from polylogue.core.write_lease import (
+    WriteLeaseDelegation,
+    bind_write_lease_thread,
+    current_write_lease,
+    delegate_write_lease,
+    write_lease,
+)
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
@@ -675,13 +681,25 @@ class DaemonWriteThreadBridge:
         self._timeout = timeout
 
     @contextmanager
-    def hold(self, actor: str) -> Iterator[None]:
+    def hold(self, actor: str) -> Iterator[WriteLeaseDelegation]:
+        """Hold the loop-owned write gate and yield the caller's authorization.
+
+        The lease itself is entered in a coroutine on the owner loop, so the
+        calling thread's ambient context never sees it and no widening of the
+        ambient rules could make it: the body runs on a third thread inside a
+        freshly created event loop. The yielded delegation is the explicit
+        authorization that unit of work presents through
+        :func:`~polylogue.core.write_lease.adopt_write_lease`; holding the gate
+        without presenting it still cannot open a write connection.
+        """
         entered = threading.Event()
         settled = threading.Event()
         release = asyncio.Event()
+        granted: list[WriteLeaseDelegation] = []
 
         async def hold_lease() -> None:
             async def wait_for_release() -> None:
+                granted.append(delegate_write_lease())
                 entered.set()
                 settled.set()
                 await release.wait()
@@ -702,7 +720,7 @@ class DaemonWriteThreadBridge:
             future.result(timeout=self._timeout)
             raise RuntimeError(f"daemon write gate ended before acquisition actor={actor}")
         try:
-            yield
+            yield granted[0]
         finally:
             self._loop.call_soon_threadsafe(release.set)
             try:

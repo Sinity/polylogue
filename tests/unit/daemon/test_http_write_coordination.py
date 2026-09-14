@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -950,3 +951,165 @@ def test_coordinated_mutation_uses_control_admission_without_the_read_timeout() 
         assert snapshot.used_units == 0
     finally:
         kernel.shutdown(wait=True)
+
+
+def _loop_owned_bridge() -> tuple[object, object, Callable[[], None]]:
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+    holder: list[DaemonWriteCoordinator] = []
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        holder.append(DaemonWriteCoordinator())
+        ready.set()
+        loop.run_forever()
+
+    thread = threading.Thread(target=run_loop, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=5.0)
+
+    def stop() -> None:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5.0)
+
+    return holder[0], DaemonWriteThreadBridge(holder[0], loop, timeout=5.0), stop
+
+
+def _gated_handler(bridge: object) -> DaemonAPIHandler:
+    from polylogue.daemon.execution import BoundedComputeAdapter
+
+    handler = object.__new__(DaemonAPIHandler)
+
+    async def run_direct(operation: Callable[[object], Awaitable[object]]) -> object:
+        return await operation(None)
+
+    object.__setattr__(handler, "_run_archive_query", run_direct)
+    object.__setattr__(
+        handler,
+        "server",
+        SimpleNamespace(
+            execution_kernel=BoundedComputeAdapter(max_workers=2, queue_units=4),
+            write_bridge=bridge,
+        ),
+    )
+    return handler
+
+
+def test_gated_route_body_is_authorized_to_write_under_process_wide_enforcement() -> None:
+    """The gate admits the durable user.db write it exists to admit.
+
+    polylogue-h5l6i: ``hold()`` entered the lease in a coroutine on the owner
+    loop while the route body ran on a kernel worker in a freshly created event
+    loop, so every gated POST/DELETE under ``/api/user/*`` raised
+    ``UnleasedWriteError`` and answered HTTP 500.
+
+    Anti-vacuity: drop the ``adopt_write_lease`` wrapper from
+    ``_archive_query_coroutine`` and this returns ``"unleased"``.
+    """
+    from polylogue.storage.sqlite.write_lease import (
+        arm_write_lease_enforcement,
+        require_write_lease,
+    )
+
+    coordinator, bridge, stop = _loop_owned_bridge()
+    del coordinator
+    handler = _gated_handler(bridge)
+
+    async def mutation(_polylogue: object) -> str:
+        try:
+            require_write_lease("write user.db annotation")
+        except Exception as exc:  # the refusal is the observation under test
+            return f"unleased:{type(exc).__name__}"
+        return "leased"
+
+    try:
+        with arm_write_lease_enforcement(process_wide=True):
+            with handler._write_gate("http.user.annotations.post"):
+                assert handler._sync_run(mutation) == "leased"
+    finally:
+        handler.server.execution_kernel.shutdown(wait=True)
+        stop()
+
+
+def test_a_thread_outside_the_admitted_body_still_cannot_write() -> None:
+    """The load-bearing negative: holding the gate is not blanket authorization.
+
+    While one request is admitted and its body is authorized, a thread that was
+    never handed the gate's grant must still be refused -- otherwise the fix
+    for polylogue-h5l6i would have traded a false refusal for a real second
+    writer.
+
+    Anti-vacuity: make ``_write_gate`` authorize ambiently instead (call
+    ``bind_write_lease_thread()`` on every thread, or arm a bypass) and the
+    rogue probe below returns ``"leased"``. The lease ContextVar *is* inherited
+    by new threads on this build, so nothing but the explicit hand-off keeps
+    it out.
+    """
+    from polylogue.storage.sqlite.write_lease import (
+        UnleasedWriteError,
+        arm_write_lease_enforcement,
+        require_write_lease,
+    )
+
+    coordinator, bridge, stop = _loop_owned_bridge()
+    del coordinator
+    handler = _gated_handler(bridge)
+    rogue_result: list[str] = []
+    rogue_done = threading.Event()
+
+    async def mutation(_polylogue: object) -> str:
+        def rogue() -> None:
+            try:
+                require_write_lease("write user.db from an unadmitted thread")
+            except UnleasedWriteError:
+                rogue_result.append("refused")
+            else:
+                rogue_result.append("leased")
+            rogue_done.set()
+
+        thread = threading.Thread(target=rogue)
+        thread.start()
+        thread.join(timeout=5.0)
+        require_write_lease("write user.db annotation")
+        return "leased"
+
+    try:
+        with arm_write_lease_enforcement(process_wide=True):
+            with handler._write_gate("http.user.annotations.post"):
+                assert handler._sync_run(mutation) == "leased"
+    finally:
+        handler.server.execution_kernel.shutdown(wait=True)
+        stop()
+
+    assert rogue_done.is_set()
+    assert rogue_result == ["refused"]
+
+
+def test_inline_gated_write_presents_the_grant_on_the_request_thread() -> None:
+    """A route that writes inline is its own execution unit and must present it.
+
+    ``_handle_mcp_call_log`` opens its ops.db connection on the request thread
+    rather than through ``_sync_run``; it was refused by the same defect.
+
+    Anti-vacuity: remove the ``_write_authorization()`` block around that
+    write and this probe raises ``UnleasedWriteError``.
+    """
+    from polylogue.storage.sqlite.write_lease import (
+        arm_write_lease_enforcement,
+        require_write_lease,
+    )
+
+    coordinator, bridge, stop = _loop_owned_bridge()
+    del coordinator
+    handler = _gated_handler(bridge)
+
+    try:
+        with arm_write_lease_enforcement(process_wide=True):
+            with handler._write_gate("http.telemetry.mcp-call"):
+                with handler._write_authorization():
+                    assert require_write_lease("write ops.db") is not None
+    finally:
+        handler.server.execution_kernel.shutdown(wait=True)
+        stop()

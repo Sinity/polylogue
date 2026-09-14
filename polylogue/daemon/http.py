@@ -12,7 +12,7 @@ import select
 import socket
 import sqlite3
 import threading
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from dataclasses import replace as dataclasses_replace
@@ -1654,6 +1654,42 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         async with Polylogue() as polylogue:
             return await handler(polylogue)
 
+    @contextlib.contextmanager
+    def _write_authorization(self) -> Iterator[None]:
+        """Adopt the gate's grant for a write issued on this request thread.
+
+        Most gated routes hand their body to :meth:`_sync_run`, which adopts
+        the grant on the worker that actually runs it. A route that opens a
+        write connection inline is its own execution unit and presents the
+        grant here.
+        """
+        delegation = getattr(self, "_write_delegation", None)
+        if delegation is None:
+            yield
+            return
+        from polylogue.core.write_lease import WriteLeaseDelegation, adopt_write_lease
+
+        with adopt_write_lease(cast(WriteLeaseDelegation, delegation)):
+            yield
+
+    async def _run_leased_archive_query(self, handler: Callable, delegation: object) -> object:  # type: ignore[type-arg]
+        """Run one mutating route body under the write gate's explicit grant.
+
+        Adoption happens *inside* the freshly created loop's task, because that
+        task is the execution unit the delegation authorizes; adopting outside
+        it would bind the wrong task identity and be refused again.
+        """
+        from polylogue.core.write_lease import WriteLeaseDelegation, adopt_write_lease
+
+        with adopt_write_lease(cast(WriteLeaseDelegation, delegation)):
+            return await self._run_archive_query(handler)
+
+    def _archive_query_coroutine(self, handler: Callable) -> Coroutine[object, object, object]:  # type: ignore[type-arg]
+        delegation = getattr(self, "_write_delegation", None)
+        if delegation is None:
+            return cast("Coroutine[object, object, object]", self._run_archive_query(handler))
+        return self._run_leased_archive_query(handler, delegation)
+
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
         """Run one route body through the daemon's single bounded scheduler.
 
@@ -1669,7 +1705,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
             cancellation = CancellationHandle()
             submitted = kernel.submit(
-                lambda: asyncio.run(self._run_archive_query(handler)),
+                lambda: asyncio.run(self._archive_query_coroutine(handler)),
                 admission_class="control" if mutating else "interactive-read",
                 cancellation=cancellation,
             )
@@ -1691,7 +1727,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         # Narrow in-process handler doubles construct no kernel. They have no
         # concurrency to schedule, so the work runs on this thread.
-        return asyncio.run(self._run_archive_query(handler))
+        return asyncio.run(self._archive_query_coroutine(handler))
 
     @contextlib.contextmanager
     def _write_gate(self, actor: str) -> Iterator[None]:
@@ -1703,12 +1739,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             yield
             return
         depth = getattr(self, "_write_gate_depth", 0)
-        with cast(DaemonWriteThreadBridge, bridge).hold(actor):
+        previous = getattr(self, "_write_delegation", None)
+        with cast(DaemonWriteThreadBridge, bridge).hold(actor) as delegation:
             self._write_gate_depth = depth + 1
+            # The gate admits this request; the delegation is what authorizes
+            # its body, which runs on a kernel worker in its own event loop.
+            self._write_delegation = delegation
             try:
                 yield
             finally:
                 self._write_gate_depth = depth
+                self._write_delegation = previous
 
     def do_OPTIONS(self) -> None:
         self._send_error(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
@@ -5414,36 +5455,37 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
         ops_db = archive_root() / "ops.db"
-        if not ops_db.exists():
-            initialize_archive_database(ops_db, ArchiveTier.OPS)
-        with open_daemon_connection(ops_db) as conn:
-            table_count = int(
-                conn.execute(
-                    """
-                    SELECT COUNT(*) FROM sqlite_master
-                    WHERE type = 'table'
-                      AND name IN ('mcp_call_log', 'mcp_call_session_refs')
-                    """
-                ).fetchone()[0]
-            )
-        if table_count != 2:
-            initialize_archive_database(ops_db, ArchiveTier.OPS)
-        try:
+        with self._write_authorization():
+            if not ops_db.exists():
+                initialize_archive_database(ops_db, ArchiveTier.OPS)
             with open_daemon_connection(ops_db) as conn:
-                record_mcp_call(
-                    conn,
-                    call_id=call_id,
-                    tool_name=tool_name,
-                    session_id=session_id,
-                    session_ids=session_ids,
-                    started_at_ms=started_at_ms,
-                    finished_at_ms=finished_at_ms,
-                    success=success,
-                    error_detail=error_detail,
+                table_count = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) FROM sqlite_master
+                        WHERE type = 'table'
+                          AND name IN ('mcp_call_log', 'mcp_call_session_refs')
+                        """
+                    ).fetchone()[0]
                 )
-        except ValueError:
-            self._send_error(HTTPStatus.CONFLICT, "call_id_conflict")
-            return
+            if table_count != 2:
+                initialize_archive_database(ops_db, ArchiveTier.OPS)
+            try:
+                with open_daemon_connection(ops_db) as conn:
+                    record_mcp_call(
+                        conn,
+                        call_id=call_id,
+                        tool_name=tool_name,
+                        session_id=session_id,
+                        session_ids=session_ids,
+                        started_at_ms=started_at_ms,
+                        finished_at_ms=finished_at_ms,
+                        success=success,
+                        error_detail=error_detail,
+                    )
+            except ValueError:
+                self._send_error(HTTPStatus.CONFLICT, "call_id_conflict")
+                return
         self._send_json(HTTPStatus.OK, {"ok": True, "call_id": call_id})
 
     @daemon_safe_handler
