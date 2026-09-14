@@ -136,7 +136,14 @@ _ACTIVITY_MESSAGE_KIND = "tool_activity"
 _ACTIVITY_MARKERS: tuple[tuple[str, str, str | None], ...] = (
     ("viewed_file", r"\*Viewed \[[^\]\n]*\]\((?P<v>[^)\n]*)\)[ \t]*\*", "path"),
     ("listed_directory", r"\*Listed directory \[[^\]\n]*\]\((?P<v>[^)\n]*)\)[ \t]*\*", "path"),
-    ("accepted_command", r"\*User accepted the command `(?P<v>.*?)`[ \t]*\*", "command"),
+    # ``[^`]*`` rather than ``.*?``: the command is rendered verbatim between a
+    # single pair of backticks, so the argument cannot contain one. The lazy
+    # wildcard matched the same strings but, combined with ``DOTALL`` and a
+    # per-line start, rescanned the whole remaining body from every line that
+    # opened a marker and never closed it -- quadratic time on an import whose
+    # bytes an export controls. The character class fails at the first
+    # backtick-or-end instead.
+    ("accepted_command", r"\*User accepted the command `(?P<v>[^`]*)`[ \t]*\*", "command"),
     ("searched_web", r"\*Searched web for (?P<v>[^\n]*?)[ \t]*\*", "query"),
     ("read_url_content", r"\*Read URL content from (?P<v>[^\n]*?)[ \t]*\*", "url"),
     ("read_resource", r"\*Read resource from (?P<v>[^\n]*?)[ \t]*\*", "resource"),

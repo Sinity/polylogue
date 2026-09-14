@@ -24,7 +24,7 @@ from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.timestamps import parse_timestamp_pair
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.sources.tool_result_reasons import unknown_reason
 
@@ -3144,7 +3144,11 @@ def _codex_tool_output_text(output: object) -> str | None:
             return str(sanitized)
         try:
             parsed = json.loads(output)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
+            # Nesting deeper than the interpreter's recursion limit is not a
+            # decodable JSON envelope for this parser's purposes. It is the
+            # same non-JSON verdict as a syntax error: the string is kept
+            # verbatim, and the durable raw still holds the original bytes.
             return output
         sanitized_parsed = _sanitize_codex_large_inline_payloads(parsed)
         if sanitized_parsed != parsed:
@@ -3154,13 +3158,31 @@ def _codex_tool_output_text(output: object) -> str | None:
     return json.dumps(sanitized, sort_keys=True) if sanitized else None
 
 
-def _sanitize_codex_large_inline_payloads(value: object) -> object:
+#: Container nesting this sanitizer will descend through. Tool output is
+#: attacker-controlled: ``json.loads`` decodes far deeper than this recursive
+#: Python walk can follow, so without a declared depth an alternating
+#: ``[{[{...`` output raised ``RecursionError`` out of the parser and refused
+#: the entire rollout. No real Codex tool output nests near this.
+_CODEX_SANITIZER_MAX_DEPTH = 200
+
+
+def _sanitize_codex_large_inline_payloads(value: object, depth: int = 0) -> object:
     if isinstance(value, str):
         return _sanitize_codex_data_url(value)
+    if depth >= _CODEX_SANITIZER_MAX_DEPTH:
+        # Below the declared depth the subtree is returned unchanged: it is
+        # kept in full, not truncated. Only the data-URL rewrite is skipped,
+        # and that is reported rather than inferred from the output.
+        emit(
+            "sources.codex.tool_output_sanitizer_depth_exceeded",
+            level=WARNING,
+            max_depth=_CODEX_SANITIZER_MAX_DEPTH,
+        )
+        return value
     if isinstance(value, list):
-        return [_sanitize_codex_large_inline_payloads(item) for item in value]
+        return [_sanitize_codex_large_inline_payloads(item, depth + 1) for item in value]
     if isinstance(value, dict):
-        return {str(key): _sanitize_codex_large_inline_payloads(item) for key, item in value.items()}
+        return {str(key): _sanitize_codex_large_inline_payloads(item, depth + 1) for key, item in value.items()}
     return value
 
 
