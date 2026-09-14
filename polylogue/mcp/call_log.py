@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from polylogue.core.durable_fs import atomic_replace, sync_directory
-from polylogue.logging import get_logger
+from polylogue.logging import DEBUG, WARNING, emit, get_logger
 
 if TYPE_CHECKING:
     from polylogue.config import PolylogueConfig
@@ -28,6 +28,30 @@ _OUTBOX_VERSION = 1
 _SCAN_INTERVAL_S = 0.25
 _DRAIN_BATCH_SIZE = 64
 _MAX_RETRY_DELAY_S = 30.0
+
+# Mirrors of the daemon's own validation in
+# ``polylogue.daemon.http._handle_mcp_call_log``: a record that violates any of
+# these is rejected with 400 forever, so the client must refuse to spool it
+# rather than mint a poison record.
+_MAX_PAYLOAD_BYTES = 16_384
+_MAX_SESSION_IDS = 256
+_MAX_SESSION_ID_CHARS = 2048
+_MAX_ERROR_DETAIL_CHARS = 512
+
+# Aggregate admission control for the durable outbox.  Telemetry is not archive
+# evidence, so shedding a *new* record under pressure is proportionate -- but
+# only when the drop is counted and visible (``McpCallOutboxStatus.records_dropped``
+# plus a warning log).
+_MAX_PENDING_RECORDS = 4096
+_MAX_PENDING_BYTES = 32 * 1024 * 1024
+
+
+class McpCallLogRecordRejectedError(Exception):
+    """A telemetry record was refused local durable admission."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +87,7 @@ class McpCallOutboxStatus:
     wake_queue_depth: int
     wakeups_dropped: int
     delivery_failures: int
+    records_dropped: int = 0
 
 
 def _outbox_root(config: PolylogueConfig) -> Path:
@@ -77,8 +102,40 @@ def _fsync_directory(path: Path) -> None:
     sync_directory(path)
 
 
+def _validate_event(event: McpCallLogEvent) -> None:
+    """Refuse a record the daemon would permanently 400."""
+    if len(event.session_ids) > _MAX_SESSION_IDS:
+        raise McpCallLogRecordRejectedError(f"session_ids exceeds {_MAX_SESSION_IDS}")
+    if event.session_id is not None and len(event.session_id) > _MAX_SESSION_ID_CHARS:
+        raise McpCallLogRecordRejectedError(f"session_id exceeds {_MAX_SESSION_ID_CHARS} chars")
+    if any(len(value) > _MAX_SESSION_ID_CHARS for value in event.session_ids):
+        raise McpCallLogRecordRejectedError(f"session_ids entry exceeds {_MAX_SESSION_ID_CHARS} chars")
+    if event.error_detail is not None and len(event.error_detail) > _MAX_ERROR_DETAIL_CHARS:
+        raise McpCallLogRecordRejectedError(f"error_detail exceeds {_MAX_ERROR_DETAIL_CHARS} chars")
+
+
+def _outbox_pressure(root: Path) -> tuple[int, int]:
+    """Current (record count, byte total) of one pending directory."""
+    count = 0
+    total = 0
+    if root.is_dir():
+        for path in root.glob("*.json"):
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+            count += 1
+    return count, total
+
+
 def _persist_delivery(config: PolylogueConfig, event: McpCallLogEvent) -> Path:
-    """Atomically establish the local durable-delivery boundary."""
+    """Atomically establish the local durable-delivery boundary.
+
+    Raises :class:`McpCallLogRecordRejectedError` instead of spooling a record the
+    daemon would permanently reject, or one that would push the outbox past
+    its declared aggregate admission limits.
+    """
+    _validate_event(event)
     root = _outbox_root(config)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
@@ -90,7 +147,20 @@ def _persist_delivery(config: PolylogueConfig, event: McpCallLogEvent) -> Path:
         "version": _OUTBOX_VERSION,
         "event": asdict(event),
     }
-    atomic_replace(target, json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    # The daemon's limit applies to the posted event body, not the spool
+    # envelope; measure exactly what ``_post_call_log`` will send.
+    wire_bytes = len(json.dumps(asdict(event), separators=(",", ":")).encode("utf-8"))
+    if wire_bytes > _MAX_PAYLOAD_BYTES:
+        raise McpCallLogRecordRejectedError(f"payload {wire_bytes} bytes exceeds {_MAX_PAYLOAD_BYTES}")
+    pending_count, pending_bytes = _outbox_pressure(root)
+    if pending_count >= _MAX_PENDING_RECORDS:
+        raise McpCallLogRecordRejectedError(
+            f"outbox holds {pending_count} pending records (limit {_MAX_PENDING_RECORDS})"
+        )
+    if pending_bytes + len(body) > _MAX_PENDING_BYTES:
+        raise McpCallLogRecordRejectedError(f"outbox would exceed {_MAX_PENDING_BYTES} pending bytes")
+    atomic_replace(target, body)
     return target
 
 
@@ -123,7 +193,7 @@ def _read_spooled_delivery(path: Path, config: PolylogueConfig) -> _Delivery:
 
 
 class _McpCallLogDispatcher:
-    """Wake-hint queue over an unbounded durable filesystem outbox."""
+    """Wake-hint queue over a size- and count-bounded durable filesystem outbox."""
 
     def __init__(self) -> None:
         self._queue: queue.Queue[Path] = queue.Queue(maxsize=_QUEUE_CAPACITY)
@@ -134,10 +204,25 @@ class _McpCallLogDispatcher:
         self._state_lock = threading.Lock()
         self._wakeups_dropped = 0
         self._delivery_failures = 0
+        self._records_dropped = 0
         self._retry_state: dict[Path, tuple[float, float]] = {}
 
     def submit(self, config: PolylogueConfig, event: McpCallLogEvent) -> None:
-        path = _persist_delivery(config, event)
+        try:
+            path = _persist_delivery(config, event)
+        except McpCallLogRecordRejectedError as exc:
+            with self._state_lock:
+                self._records_dropped += 1
+            emit(
+                "mcp.call_log.record_dropped",
+                WARNING,
+                outcome="degraded",
+                reason=exc.reason,
+                call_id=event.call_id,
+                tool_name=event.tool_name,
+                records_dropped=self._records_dropped,
+            )
+            return
         with self._state_lock:
             self._roots[path.parent] = config
         self._ensure_started()
@@ -194,6 +279,7 @@ class _McpCallLogDispatcher:
                 wake_queue_depth=self._queue.qsize(),
                 wakeups_dropped=self._wakeups_dropped,
                 delivery_failures=self._delivery_failures,
+                records_dropped=self._records_dropped,
             )
 
     def shutdown(self, timeout: float = 2.0) -> None:
@@ -228,6 +314,7 @@ class _McpCallLogDispatcher:
             self._retry_state.clear()
             self._wakeups_dropped = 0
             self._delivery_failures = 0
+            self._records_dropped = 0
         while True:
             try:
                 self._queue.get_nowait()
@@ -303,8 +390,11 @@ class _McpCallLogDispatcher:
             try:
                 _post_call_log(delivery)
             except HTTPError as exc:
-                if exc.code == 409:
-                    self._quarantine_conflict(path)
+                if _is_permanent_rejection(exc.code):
+                    # A permanent 4xx (conflict, or a record this daemon will
+                    # never accept) must not block every later record in the
+                    # root: quarantine it and keep draining.
+                    self._quarantine_permanent(path, exc.code)
                     continue
                 with self._state_lock:
                     self._delivery_failures += 1
@@ -335,7 +425,7 @@ class _McpCallLogDispatcher:
                 self._retry_state.pop(root, None)
             path.unlink(missing_ok=True)
 
-    def _quarantine_conflict(self, path: Path) -> None:
+    def _quarantine_permanent(self, path: Path, code: int) -> None:
         quarantine = path.parent.parent / "quarantine"
         quarantine.mkdir(mode=0o700, parents=True, exist_ok=True)
         _fsync_directory(quarantine.parent)
@@ -345,13 +435,31 @@ class _McpCallLogDispatcher:
         except FileNotFoundError:
             if target.exists():
                 return
-            logger.debug("MCP call-log conflict was settled by another worker: %s", path)
+            emit(
+                "mcp.call_log.record_settled_elsewhere",
+                DEBUG,
+                outcome="ok",
+                reason="settled_by_another_worker",
+                path=str(path),
+            )
             return
         _fsync_directory(path.parent)
         _fsync_directory(quarantine)
         with self._state_lock:
             self._delivery_failures += 1
-        logger.warning("Quarantined conflicting MCP call-log record at %s", target)
+        emit(
+            "mcp.call_log.record_quarantined",
+            WARNING,
+            outcome="degraded",
+            reason="permanent_rejection",
+            status_code=code,
+            path=str(target),
+        )
+
+
+def _is_permanent_rejection(code: int) -> bool:
+    """True for a 4xx the daemon will never accept on retry (429 is transient)."""
+    return 400 <= code < 500 and code != 429
 
 
 def _post_call_log(delivery: _Delivery) -> None:

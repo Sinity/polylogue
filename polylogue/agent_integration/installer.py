@@ -407,12 +407,15 @@ def _mcp_entry(options: InstallOptions) -> dict[str, JSONValue]:
         environment["POLYLOGUE_ARCHIVE_ROOT"] = str(options.archive_root.expanduser().resolve())
     if options.config_path is not None:
         environment["POLYLOGUE_CONFIG"] = str(options.config_path.expanduser().resolve())
-    if options.capabilities.write:
-        environment["POLYLOGUE_MCP_WRITE_ENABLED"] = "1"
-    if options.capabilities.judge:
-        environment["POLYLOGUE_MCP_JUDGE_ENABLED"] = "1"
-    if options.capabilities.maintenance:
-        environment["POLYLOGUE_MCP_MAINTENANCE_ENABLED"] = "1"
+    # Always emit an explicit value, including "0" for a disabled capability:
+    # an absent env var lets a lower config layer (including a discovered
+    # ``polylogue.toml`` in whatever directory the client happens to launch
+    # from) supply the capability instead.  Defence in depth -- config.py
+    # rejects capability keys from a discovered user layer -- but the
+    # generated entry should still be unambiguous about the boundary.
+    environment["POLYLOGUE_MCP_WRITE_ENABLED"] = "1" if options.capabilities.write else "0"
+    environment["POLYLOGUE_MCP_JUDGE_ENABLED"] = "1" if options.capabilities.judge else "0"
+    environment["POLYLOGUE_MCP_MAINTENANCE_ENABLED"] = "1" if options.capabilities.maintenance else "0"
     return {
         "command": options.server_command,
         "args": [],

@@ -21,6 +21,7 @@ from polylogue.config import PolylogueConfig, load_polylogue_config
 from polylogue.mcp import call_log
 from polylogue.mcp.call_log import (
     McpCallLogEvent,
+    McpCallLogRecordRejectedError,
     _Delivery,
     _McpCallLogDispatcher,
     _outbox_root,
@@ -238,6 +239,7 @@ def test_readiness_surface_exposes_outbox_pressure(
                 "wake_queue_depth",
                 "wakeups_dropped",
                 "delivery_failures",
+                "records_dropped",
             } == set(delivery)
             assert flush_mcp_call_log(timeout=5.0)
         finally:
@@ -472,7 +474,7 @@ def test_two_dispatchers_can_quarantine_the_same_conflict(
     def quarantine(dispatcher: _McpCallLogDispatcher) -> None:
         try:
             barrier.wait(timeout=2.0)
-            dispatcher._quarantine_conflict(path)
+            dispatcher._quarantine_permanent(path, 409)
         except BaseException as exc:
             failures.append(exc)
 
@@ -538,3 +540,120 @@ def test_global_dispatcher_is_quiesced_before_every_test() -> None:
     """
     assert call_log._DISPATCHER._thread is None
     assert call_log._DISPATCHER._roots == {}
+
+
+def test_oversized_record_is_refused_admission_and_counted(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A record the daemon would permanently 400 never reaches the durable outbox.
+
+    ``server_cutover`` forwards the raw ``session_id`` tool argument, so a
+    ~100 KB ``read(ref=...)`` argument used to mint a poison spool file that the
+    daemon rejects forever.  Local admission mirrors the daemon's own limits
+    (``polylogue.daemon.http._handle_mcp_call_log``), and the refusal is counted
+    in ``McpCallOutboxStatus.records_dropped`` rather than dropped silently.
+
+    Anti-vacuity: remove the ``_validate_event``/payload-size checks from
+    ``_persist_delivery`` and the oversized record is spooled again --
+    ``pending_count`` becomes 1 and ``records_dropped`` stays 0.
+    """
+    del workspace_env
+    config = load_polylogue_config()
+    dispatcher = _McpCallLogDispatcher()
+    huge = _event("oversized-call", session_id="x" * 100_000)
+
+    with pytest.raises(McpCallLogRecordRejectedError):
+        _persist_delivery(config, huge)
+
+    dispatcher.submit(config, huge)
+    status = dispatcher.status(config)
+    assert status.pending_count == 0
+    assert status.records_dropped == 1
+
+    dispatcher.submit(config, _event("ordinary-call"))
+    assert dispatcher.status(config).pending_count == 1
+
+
+def test_aggregate_pending_pressure_sheds_new_records_visibly(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The durable outbox is bounded by declared count and byte limits.
+
+    Anti-vacuity: delete the ``_MAX_PENDING_RECORDS``/``_MAX_PENDING_BYTES``
+    admission checks in ``_persist_delivery`` and the outbox grows past the
+    limit -- ``pending_count`` reaches 3 and ``records_dropped`` stays 0.
+    """
+    del workspace_env
+    monkeypatch.setattr(call_log, "_MAX_PENDING_RECORDS", 2)
+    config = load_polylogue_config()
+    dispatcher = _McpCallLogDispatcher()
+    monkeypatch.setattr(dispatcher, "_ensure_started", lambda: None)
+
+    for index in range(3):
+        dispatcher.submit(config, _event(f"pressure-shed-{index}"))
+
+    status = dispatcher.status(config)
+    assert status.pending_count == 2
+    assert status.records_dropped == 1
+
+
+def test_permanent_4xx_is_quarantined_and_later_records_still_deliver(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 400 must not abandon every later record in the same outbox root.
+
+    Anti-vacuity: narrow ``_is_permanent_rejection`` back to ``code == 409``
+    and the 400 record takes the backoff/``break`` path -- ``z-after-400`` is
+    never delivered, ``pending_count`` stays 2 and ``quarantined_count`` is 0.
+    """
+    real_post = call_log._post_call_log
+
+    def fake_post(delivery: _Delivery) -> None:
+        if delivery.event.call_id == "a-poison":
+            raise HTTPError(delivery.daemon_url, 400, "invalid_request", None, None)  # type: ignore[arg-type]
+        real_post(delivery)
+
+    with _running_daemon() as daemon_url:
+        monkeypatch.setenv("POLYLOGUE_DAEMON_URL", daemon_url)
+        config = load_polylogue_config()
+        poison = _persist_delivery(config, _event("a-poison"))
+        later = _persist_delivery(config, _event("z-after-400"))
+        assert poison.exists() and later.exists()
+        monkeypatch.setattr(call_log, "_post_call_log", fake_post)
+        dispatcher = _McpCallLogDispatcher()
+        try:
+            dispatcher.register(config)
+            assert dispatcher.flush(config, timeout=5.0)
+            status = dispatcher.status(config)
+            assert status.pending_count == 0
+            assert status.quarantined_count == 1
+        finally:
+            dispatcher.shutdown()
+
+    assert [entry.call_id for entry in _read_calls(workspace_env["archive_root"])] == ["z-after-400"]
+
+
+def test_too_many_session_ids_is_refused_even_within_the_byte_budget(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The daemon's ``len(session_ids) > 256`` rule is mirrored locally.
+
+    This record is well under the 16 KB payload budget, so only the per-field
+    validation can catch it -- the daemon would otherwise 400 it forever.
+
+    Anti-vacuity: delete the ``_validate_event(event)`` call from
+    ``_persist_delivery`` and this fails, because the record is spooled
+    (``pending_count`` 1, ``records_dropped`` 0).
+    """
+    del workspace_env
+    config = load_polylogue_config()
+    dispatcher = _McpCallLogDispatcher()
+    event = replace(_event("too-many-ids"), session_ids=tuple(f"s:{i}" for i in range(300)))
+
+    with pytest.raises(McpCallLogRecordRejectedError):
+        _persist_delivery(config, event)
+
+    dispatcher.submit(config, event)
+    status = dispatcher.status(config)
+    assert status.pending_count == 0
+    assert status.records_dropped == 1
