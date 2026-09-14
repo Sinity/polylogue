@@ -29,6 +29,31 @@ from pydantic import BaseModel, ConfigDict, Field
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.types import SessionId
 
+#: Named structural gaps a topology answer can carry.
+#
+# These are domain facts the graph engine already holds; they exist as a
+# declared vocabulary so the operation boundary can decide one terminal
+# outcome from them instead of every surface re-inferring "is this page
+# complete?" from the payload shape. A topology behind any of these is
+# ``degraded``, never ``empty``: zero rows may be the gap, not the archive.
+TOPOLOGY_GAP_MISSING_SESSION: str = "missing_session"
+TOPOLOGY_GAP_CYCLE: str = "cycle_detected"
+TOPOLOGY_GAP_CONFLICTING_PARENT: str = "conflicting_parent"
+TOPOLOGY_GAP_UNRESOLVED_PARENT: str = "unresolved_parent"
+TOPOLOGY_GAP_EXCLUDED_EDGE: str = "excluded_edge"
+TOPOLOGY_GAP_TRUNCATED: str = "topology_truncated"
+
+#: Declared precedence: integrity gaps outrank completeness gaps, so the
+#: primary reason names the worst thing that happened to this answer.
+TOPOLOGY_GAP_ORDER: tuple[str, ...] = (
+    TOPOLOGY_GAP_MISSING_SESSION,
+    TOPOLOGY_GAP_CYCLE,
+    TOPOLOGY_GAP_CONFLICTING_PARENT,
+    TOPOLOGY_GAP_UNRESOLVED_PARENT,
+    TOPOLOGY_GAP_EXCLUDED_EDGE,
+    TOPOLOGY_GAP_TRUNCATED,
+)
+
 
 class TopologyEdgeKind(str, Enum):
     """Edge classification for the session lineage graph.
@@ -269,6 +294,42 @@ class SessionTopology(BaseModel):
 
         return tuple(edge for edge in self.edges if not edge.resolved)
 
+    def degraded_gaps(self) -> tuple[str, ...]:
+        """Name every structural gap that shaped this topology answer.
+
+        The graph engine is the only thing that knows whether a page was
+        bounded, whether an edge was excluded from composition, or whether
+        the ancestry walk hit a cycle. Returning those facts here lets the
+        operation boundary decide one outcome; it deliberately does not
+        decide the outcome itself, because ``analysis`` is substrate and
+        the terminal-outcome vocabulary belongs to the surface contract.
+
+        Ordered by :data:`TOPOLOGY_GAP_ORDER` so the primary reason is
+        stable for a given structural state.
+        """
+
+        gaps: set[str] = set()
+        node_ids = {str(node.session_id) for node in self.nodes}
+        for edge in self.edges:
+            if not edge.resolved:
+                gaps.add(TOPOLOGY_GAP_UNRESOLVED_PARENT)
+            if not edge.composable:
+                gaps.add(TOPOLOGY_GAP_EXCLUDED_EDGE)
+            if edge.composable and edge.resolved:
+                # A composable edge that names a session the page never
+                # returned is a real hole in the answer, not a bounded page.
+                if str(edge.child_id) not in node_ids:
+                    gaps.add(TOPOLOGY_GAP_MISSING_SESSION)
+                if edge.parent_id is not None and str(edge.parent_id) not in node_ids:
+                    gaps.add(TOPOLOGY_GAP_MISSING_SESSION)
+        if self.cycle_detected:
+            gaps.add(TOPOLOGY_GAP_CYCLE)
+        if self.conflicting_parent_detected:
+            gaps.add(TOPOLOGY_GAP_CONFLICTING_PARENT)
+        if not self.nodes_complete or not self.edges_complete:
+            gaps.add(TOPOLOGY_GAP_TRUNCATED)
+        return tuple(reason for reason in TOPOLOGY_GAP_ORDER if reason in gaps)
+
     def public_payload(self, session_id: str | None = None) -> dict[str, object]:
         """Return the canonical transport-neutral topology envelope."""
 
@@ -372,6 +433,13 @@ class LogicalSession(BaseModel):
 
 
 __all__ = [
+    "TOPOLOGY_GAP_CONFLICTING_PARENT",
+    "TOPOLOGY_GAP_CYCLE",
+    "TOPOLOGY_GAP_EXCLUDED_EDGE",
+    "TOPOLOGY_GAP_MISSING_SESSION",
+    "TOPOLOGY_GAP_ORDER",
+    "TOPOLOGY_GAP_TRUNCATED",
+    "TOPOLOGY_GAP_UNRESOLVED_PARENT",
     "SessionRef",
     "LogicalSession",
     "SessionTopology",

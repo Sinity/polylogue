@@ -6,7 +6,7 @@ import json
 from typing import cast
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.read_view_registry import LINEAGE_READ_VIEW_OPTION_NAMES
+from polylogue.cli.read_view_registry import LINEAGE_READ_VIEW_OPTION_NAMES, TOPOLOGY_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
     ReadViewInvocation,
     ReadViewLineageOptions,
@@ -56,11 +56,24 @@ def run_read_lineage(env: AppEnv, request: RootModeRequest, invocation: ReadView
     )
 
 
+def build_topology_options(values: ReadViewOptionValues) -> ReadViewLineageOptions:
+    """Bind the topology paging window from already-declared query params."""
+
+    return ReadViewLineageOptions(
+        node_offset=cast(int, values.get("node_offset", 0) or 0),
+        node_limit=cast(int | None, values.get("node_limit")),
+        edge_limit=cast(int | None, values.get("edge_limit")),
+    )
+
+
 def run_read_topology(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Render the canonical session-links topology envelope for one session."""
 
     session_id = invocation.session_id
     assert session_id is not None
+    options = cast(ReadViewLineageOptions, invocation.options or ReadViewLineageOptions())
+    node_limit = options.node_limit or cast(int | None, request.params.get("limit")) or 200
+    edge_limit = options.edge_limit or 500
 
     async def _run() -> object | None:
         from polylogue.api import Polylogue
@@ -68,17 +81,31 @@ def run_read_topology(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
             return await api.get_session_topology(
                 session_id,
-                node_limit=cast(int | None, request.params.get("limit")) or 200,
+                node_offset=options.node_offset,
+                node_limit=node_limit,
+                edge_limit=edge_limit,
             )
 
     topology = run_coroutine_sync(_run())
     if topology is None:
         env.ui.error(f"Session not found: {session_id}")
         return
-    content = json.dumps(topology.public_payload(session_id), indent=2) + "\n"  # type: ignore[attr-defined]
+    # The operation boundary owns the envelope and its outcome; the CLI only
+    # serializes it, so `polylogue read topology` is byte-identical to the
+    # MCP payload and to the canonical keys of the HTTP envelope.
+    from polylogue.operations.topology_envelope import topology_public_envelope
+
+    content = json.dumps(topology_public_envelope(topology, session_id=session_id), indent=2) + "\n"  # type: ignore[arg-type]
     deliver_content(
         env, content, destination=invocation.destination, out_path=invocation.out_path, output_format="json"
     )
 
 
-__all__ = ["LINEAGE_READ_VIEW_OPTION_NAMES", "build_lineage_options", "run_read_lineage", "run_read_topology"]
+__all__ = [
+    "LINEAGE_READ_VIEW_OPTION_NAMES",
+    "TOPOLOGY_READ_VIEW_OPTION_NAMES",
+    "build_lineage_options",
+    "build_topology_options",
+    "run_read_lineage",
+    "run_read_topology",
+]

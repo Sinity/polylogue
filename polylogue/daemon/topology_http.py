@@ -10,11 +10,12 @@ The envelope is bounded by construction:
 - ``node_limit`` caps the number of nodes copied into the payload. The
   default mirrors the reader's BFS list length; the hard cap protects the
   daemon from operator-requested unbounded subtrees.
-- Edges referencing dropped nodes are filtered so the UI never plots a
-  dangling endpoint.
+- Edges are dropped only when an endpoint is not in the bounded node
+  set, so the UI never plots a dangling endpoint. An excluded or
+  unresolved edge between two kept nodes stays visible as evidence.
 - ``readiness`` summarises the lineage state as one of
-  ``ok`` / ``partial`` / ``empty`` so the reader can show a chip without
-  duplicating the truncation/cycle/unresolved logic.
+  ``ok`` / ``partial`` / ``empty`` for the reader's chip. It is not a
+  terminal outcome: the canonical ``outcome`` field is authoritative.
 
 The shape is consumed by the Lineage inspector tab (#1121 AC) and by
 ``tests/unit/daemon/test_topology_endpoint.py``.
@@ -25,6 +26,7 @@ from __future__ import annotations
 from typing import Final, cast
 
 from polylogue.analysis.topology import SessionTopology
+from polylogue.operations.topology_envelope import bound_topology_envelope, topology_public_envelope
 
 #: Default ``node_limit`` used when the client does not pass ``?limit=``.
 DEFAULT_NODE_LIMIT: Final[int] = 200
@@ -98,44 +100,31 @@ def build_topology_envelope(
     *,
     node_limit: int = DEFAULT_NODE_LIMIT,
 ) -> dict[str, object]:
-    """Project a :class:`SessionTopology` into the public reader envelope.
+    """Frame the canonical topology envelope for the HTTP reader.
 
-    The envelope is shaped for direct JSON serialization:
+    The envelope is the one produced by
+    :func:`polylogue.operations.topology_envelope.topology_public_envelope`
+    -- same nodes, same complete edge projection, same ancestor/descendant/
+    sibling/thread lists, same terminal ``outcome`` -- bounded to
+    ``node_limit`` by the shared bounding helper. HTTP adds only reader
+    affordances (``node_count``, ``total_node_count``, ``truncated_count``,
+    ``unresolved_edge_count``, ``readiness``, ``node_limit``); it does not
+    drop canonical keys and does not re-decide the outcome.
 
-    - ``nodes`` and ``edges`` are bounded by ``node_limit``;
-    - ``truncated_count`` records the number of nodes dropped (or a lower
-      bound of one when the source page is itself incomplete);
-    - ``unresolved_edge_count`` and ``cycle_detected`` are surfaced so
-      the reader's readiness chip can attribute partial state;
-    - edges that point at a dropped node are filtered out — the UI
-      never plots a dangling endpoint — but the truncation count tells
-      the operator the graph is incomplete.
+    ``readiness`` is retained as the reader's chip vocabulary only. It is
+    not a second terminal-outcome vocabulary: ``outcome`` is authoritative
+    and is what the transport status maps from.
     """
 
     effective_limit = max(1, min(node_limit, MAX_NODE_LIMIT))
-    canonical = topology.public_payload()
+    canonical = topology_public_envelope(topology)
     full_nodes = list(cast("list[dict[str, object]]", canonical["nodes"]))
-    kept_nodes = full_nodes[:effective_limit]
-    kept_ids = {str(node["session_id"]) for node in kept_nodes}
-    # A topology read may already be one bounded page.  In that case the
-    # source cannot know the full dropped count, but it can prove that at
-    # least one node remains beyond this envelope.  Preserve that signal so
-    # the reader does not present an incomplete page as a complete graph.
-    truncated_count = max(len(full_nodes) - len(kept_nodes), int(not topology.nodes_complete))
+    bounded = bound_topology_envelope(canonical, node_limit=effective_limit)
 
-    kept_edges: list[dict[str, object]] = []
-    unresolved_edge_count = 0
-    for edge in cast("list[dict[str, object]]", canonical["edges"]):
-        child_key = str(edge["child_id"])
-        if child_key not in kept_ids:
-            continue
-        if edge["resolved"]:
-            if edge["parent_id"] is None or str(edge["parent_id"]) not in kept_ids:
-                # Resolved-but-parent-dropped: skip to avoid dangling lines.
-                continue
-        else:
-            unresolved_edge_count += 1
-        kept_edges.append(edge)
+    kept_nodes = cast("list[dict[str, object]]", bounded["nodes"])
+    kept_edges = cast("list[dict[str, object]]", bounded["edges"])
+    truncated_count = max(len(full_nodes) - len(kept_nodes), int(not topology.nodes_complete))
+    unresolved_edge_count = sum(1 for edge in kept_edges if not edge["resolved"])
 
     readiness = _readiness(
         truncated_count=truncated_count,
@@ -145,25 +134,11 @@ def build_topology_envelope(
     )
 
     return {
-        **{
-            key: canonical[key]
-            for key in ("target_id", "root_id", "generation_id", "cycle_detected", "conflicting_parent_detected")
-        },
-        "nodes": kept_nodes,
-        "edges": kept_edges,
+        **bounded,
         "node_count": len(kept_nodes),
         "total_node_count": len(full_nodes) if topology.nodes_complete else None,
         "truncated_count": truncated_count,
         "unresolved_edge_count": unresolved_edge_count,
-        "nodes_complete": truncated_count == 0 and topology.nodes_complete,
-        "edges_complete": truncated_count == 0 and topology.edges_complete,
-        # A source-page continuation already includes the requested offset;
-        # only synthesize one when this envelope did the truncation itself.
-        "continuation": (
-            topology.continuation
-            if topology.continuation is not None
-            else (f"node-offset:{len(kept_nodes)}" if truncated_count else None)
-        ),
         "readiness": readiness,
         "node_limit": effective_limit,
     }
