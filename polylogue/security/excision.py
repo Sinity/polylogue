@@ -65,6 +65,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -75,6 +76,7 @@ from polylogue.security.excision_policy import (
     ExcisionPolicySnapshot,
     build_excision_policy_snapshot,
 )
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     is_blob_hash_excised,
@@ -87,6 +89,11 @@ from polylogue.storage.sqlite.connection_profile import (
     open_profiled_connection,
 )
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+#: Bound on the revision-closure fixpoint. Each pass can only grow the set,
+#: and real revision chains are short; the bound keeps a corrupted
+#: predecessor cycle from looping instead of returning what it resolved.
+_REVISION_CLOSURE_PASSES = 16
 
 # Excision opens and commits one tier at a time so a mid-apply failure leaves
 # at most one tier mutated, never a half-written cross-tier transaction. Both
@@ -125,6 +132,13 @@ class ExcisionTarget:
     raw_targets: tuple[ExcisionRawTarget, ...] = ()
     message_ids: tuple[str, ...] = ()
     block_ids: tuple[str, ...] = ()
+    #: Durable hook-event ids for this session that this excision does NOT
+    #: remove. Hook payloads are session-addressable by
+    #: (origin, session_native_id) but carry no raw_sessions row, so they are
+    #: outside every raw target below. Named here so the plan and receipt
+    #: report them as a counted residual instead of letting the operation
+    #: claim an excision it did not perform (polylogue-bhhsa).
+    retained_hook_event_ids: tuple[str, ...] = ()
 
     @property
     def found(self) -> bool:
@@ -171,18 +185,36 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
         finally:
             conn.close()
 
+    # sessions.raw_id names only the most recently applied revision. Every
+    # superseded baseline and append fragment is retained live by default
+    # (see storage/raw_retention.py), each with its own blob_refs rows and a
+    # content hash the head's excised_content marker does not cover -- an
+    # append revision is a byte-prefix of its successor but hashes
+    # differently. Corroborate the head with the index's own revision
+    # bookkeeping before crossing into the durable tier.
+    if index_db.exists() and session_exists:
+        conn = _connect_ro(index_db)
+        try:
+            raw_ids.extend(_index_revision_raw_ids(conn, session_id))
+        finally:
+            conn.close()
+
     raw_targets: tuple[ExcisionRawTarget, ...] = ()
-    if source_db.exists() and raw_ids:
+    retained_hook_event_ids: tuple[str, ...] = ()
+    if source_db.exists():
         conn = _connect_ro(source_db)
         try:
-            placeholders = ",".join("?" for _ in raw_ids)
-            rows = conn.execute(
-                f"SELECT raw_id, blob_hash, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
-                raw_ids,
-            ).fetchall()
-            raw_targets = tuple(
-                ExcisionRawTarget(raw_id=str(r[0]), blob_hash=bytes(r[1]), source_path=str(r[2])) for r in rows
-            )
+            if raw_ids:
+                resolved = _durable_revision_closure(conn, raw_ids)
+                placeholders = ",".join("?" for _ in resolved)
+                rows = conn.execute(
+                    f"SELECT raw_id, blob_hash, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                    resolved,
+                ).fetchall()
+                raw_targets = tuple(
+                    ExcisionRawTarget(raw_id=str(r[0]), blob_hash=bytes(r[1]), source_path=str(r[2])) for r in rows
+                )
+            retained_hook_event_ids = _session_hook_event_ids(conn, session_id)
         finally:
             conn.close()
 
@@ -192,6 +224,121 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
         raw_targets=raw_targets,
         message_ids=message_ids,
         block_ids=block_ids,
+        retained_hook_event_ids=retained_hook_event_ids,
+    )
+
+
+def _index_revision_raw_ids(conn: sqlite3.Connection, session_id: str) -> list[str]:
+    """Raw ids the index's revision bookkeeping attributes to this session.
+
+    The index is rebuildable, so this is corroborating evidence only: it
+    widens the seed set that :func:`_durable_revision_closure` then expands
+    against the durable tier, and never narrows it. A tier that predates
+    these relations simply contributes nothing -- missing is checked, not
+    caught, so a real query failure still surfaces.
+    """
+    found: list[str] = []
+    if _table_exists(conn, "raw_revision_applications"):
+        for row in conn.execute(
+            "SELECT raw_id, accepted_raw_id, baseline_raw_id, predecessor_raw_id "
+            "FROM raw_revision_applications WHERE session_id = ?",
+            (session_id,),
+        ).fetchall():
+            found.extend(str(value) for value in row if value)
+    if _table_exists(conn, "raw_revision_heads"):
+        for row in conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE session_id = ?",
+            (session_id,),
+        ).fetchall():
+            if row[0]:
+                found.append(str(row[0]))
+    return found
+
+
+def _durable_revision_closure(conn: sqlite3.Connection, seeds: Sequence[str]) -> tuple[str, ...]:
+    """Expand seed raw ids to every revision of the same logical source.
+
+    ``sessions.raw_id`` names only the most recently applied revision. Every
+    superseded baseline and append fragment stays live until an explicit
+    retention run compacts it, each with its own ``blob_refs`` rows and a
+    content hash the head's ``excised_content`` marker does not cover -- an
+    append revision is a byte-prefix of its successor but hashes
+    differently, so excising only the head leaves the earlier bytes both
+    readable and re-ingestible.
+
+    Two durable relations, unioned to a fixpoint because
+    ``predecessor_raw_id``/``baseline_raw_id`` are plain TEXT with no foreign
+    key and therefore no cascade:
+
+    1. ``logical_source_key`` on ``raw_session_memberships`` and
+       ``raw_sessions`` -- the grouping of revisions of one logical source
+    2. the ``predecessor_raw_id`` / ``baseline_raw_id`` links themselves
+    """
+    resolved: set[str] = {str(seed) for seed in seeds if seed}
+    if not resolved:
+        return ()
+    has_memberships = _table_exists(conn, "raw_session_memberships")
+    for _pass in range(_REVISION_CLOSURE_PASSES):
+        frontier = tuple(resolved)
+        placeholders = ",".join("?" for _ in frontier)
+        keys: set[str] = set()
+        if has_memberships:
+            keys.update(
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT DISTINCT logical_source_key FROM raw_session_memberships WHERE raw_id IN ({placeholders})",
+                    frontier,
+                ).fetchall()
+                if row[0]
+            )
+        keys.update(
+            str(row[0])
+            for row in conn.execute(
+                f"SELECT DISTINCT logical_source_key FROM raw_sessions "
+                f"WHERE raw_id IN ({placeholders}) AND logical_source_key IS NOT NULL",
+                frontier,
+            ).fetchall()
+            if row[0]
+        )
+        grown = set(resolved)
+        if keys:
+            key_placeholders = ",".join("?" for _ in keys)
+            key_values = tuple(keys)
+            sources = [f"SELECT raw_id FROM raw_sessions WHERE logical_source_key IN ({key_placeholders})"]
+            if has_memberships:
+                sources.append(
+                    f"SELECT raw_id FROM raw_session_memberships WHERE logical_source_key IN ({key_placeholders})"
+                )
+            for sql in sources:
+                grown.update(str(row[0]) for row in conn.execute(sql, key_values).fetchall() if row[0])
+        for row in conn.execute(
+            f"SELECT predecessor_raw_id, baseline_raw_id FROM raw_sessions WHERE raw_id IN ({placeholders})",
+            frontier,
+        ).fetchall():
+            grown.update(str(value) for value in row if value)
+        if grown == resolved:
+            break
+        resolved = grown
+    return tuple(sorted(resolved))
+
+
+def _session_hook_event_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
+    """Hook events addressed to this session, which excision does not remove.
+
+    Hook payloads are durable and session-addressable by
+    ``(origin, session_native_id)`` but deliberately carry no
+    ``raw_sessions``/``sessions`` row, so no raw target reaches them. They are
+    reported, not deleted: see the residual note on ``ExcisionTarget``.
+    """
+    origin, _, native_id = session_id.partition(":")
+    if not origin or not native_id or not _table_exists(conn, "raw_hook_events"):
+        return ()
+    return tuple(
+        str(row[0])
+        for row in conn.execute(
+            "SELECT hook_event_id FROM raw_hook_events WHERE origin = ? AND session_native_id = ?",
+            (origin, native_id),
+        ).fetchall()
     )
 
 
@@ -288,6 +435,10 @@ class ExcisionPlan:
     user_assertions: int = 0
     already_excised_blob_hashes: tuple[str, ...] = ()
     lineage_dependent_session_ids: tuple[str, ...] = ()
+    #: Durable hook-event rows for this session that an apply will NOT
+    #: remove. Named so the preview is honest about what survives rather
+    #: than presenting a count of what it happens to reach as the whole job.
+    retained_hook_events: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -302,6 +453,7 @@ class ExcisionPlan:
             "user_assertions": self.user_assertions,
             "already_excised_blob_hashes": list(self.already_excised_blob_hashes),
             "lineage_dependent_session_ids": list(self.lineage_dependent_session_ids),
+            "retained_hook_events": list(self.retained_hook_events),
         }
 
 
@@ -378,6 +530,7 @@ def plan_session_excision(archive_root: Path, session_id: str) -> ExcisionPlan:
         user_assertions=user_assertions,
         already_excised_blob_hashes=tuple(already_excised),
         lineage_dependent_session_ids=find_lineage_dependents(archive_root, session_id),
+        retained_hook_events=target.retained_hook_event_ids,
     )
 
 
@@ -398,6 +551,17 @@ class ExcisionReceipt:
     # excised alongside session_id, whose per-tier counts are already
     # folded into `counts`/`removed_blob_hashes` above.
     cascaded_session_ids: tuple[str, ...] = ()
+    #: Durable hook-event rows addressed to the excised session that this
+    #: excision did not remove. A privacy operation must not report
+    #: unqualified success while session-addressable payloads -- tool inputs
+    #: and outputs, file contents, anything pasted -- stay readable in
+    #: source.db with their blobs still rooting GC (polylogue-bhhsa).
+    retained_hook_events: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        """Whether every resolved family was actually removed."""
+        return not self.retained_hook_events
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -410,6 +574,8 @@ class ExcisionReceipt:
             "removed_blob_hashes": list(self.removed_blob_hashes),
             "counts": dict(self.counts),
             "cascaded_session_ids": list(self.cascaded_session_ids),
+            "retained_hook_events": list(self.retained_hook_events),
+            "complete": self.complete,
         }
 
 
@@ -641,6 +807,7 @@ def _apply_single_session_excision(
                 tuple(str(item) for item in stored_hashes) if isinstance(stored_hashes, (list, tuple)) else ()
             ),
             counts=dict(stored_counts) if isinstance(stored_counts, dict) else {},
+            retained_hook_events=target.retained_hook_event_ids,
         )
 
     return ExcisionReceipt(
@@ -652,6 +819,7 @@ def _apply_single_session_excision(
         receipt_assertion_id=receipt_id,
         removed_blob_hashes=tuple(removed_hashes),
         counts=counts,
+        retained_hook_events=target.retained_hook_event_ids,
     )
 
 
@@ -720,6 +888,11 @@ def apply_session_excision(
         removed_blob_hashes=tuple(merged_removed_hashes),
         counts=merged_counts,
         cascaded_session_ids=actually_cascaded,
+        retained_hook_events=tuple(
+            dict.fromkeys(
+                [*primary.retained_hook_events, *(e for r in cascaded_receipts for e in r.retained_hook_events)]
+            )
+        ),
     )
 
 

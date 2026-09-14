@@ -237,6 +237,14 @@ def excise_command(
                     if plan.lineage_dependent_session_ids
                     else []
                 ),
+                *(
+                    [
+                        f"  WARNING {len(plan.retained_hook_events)} hook event(s) for this session are "
+                        "NOT excised and stay readable in source.db with their blobs rooting GC"
+                    ]
+                    if plan.retained_hook_events
+                    else []
+                ),
             ],
         )
         return
@@ -319,6 +327,17 @@ def excise_command(
     )
     if cascaded_session_ids:
         detail_message += f"; also excised lineage-dependent session(s): {', '.join(cascaded_session_ids)}"
+    retained_hook_events: tuple[str, ...] = tuple(
+        str(item) for item in cast("list[object]", domain_receipt.get("retained_hook_events", ()))
+    )
+    if retained_hook_events:
+        # An excision that leaves session-addressable payloads behind is a
+        # partial result. Say so on the success line rather than letting the
+        # per-tier counts read as the whole job.
+        detail_message += (
+            f"; INCOMPLETE: {len(retained_hook_events)} hook event(s) for this session were NOT excised "
+            "and remain readable in source.db"
+        )
     _emit(
         env,
         status="ok",
