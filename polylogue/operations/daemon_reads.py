@@ -12,12 +12,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from time import monotonic
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.operations.authority import authority_for_reader
 from polylogue.operations.query_lowering import cli_query_spec, lower_cli_query_params
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.archive.query.facets import FacetBuckets
     from polylogue.archive.query.search_contract import LaneFailure
     from polylogue.archive.query.spec import SessionQuerySpec
@@ -95,6 +96,10 @@ class DaemonReadDependencies:
         return self.vector_binding.provider_for_snapshot(self.vector_connection)
 
 
+_SESSION_READ_WINDOW = 200
+_SESSION_READ_PROJECTION = "session-read-v1"
+
+
 def execute_read_operation(
     name: str,
     payload: dict[str, object],
@@ -131,6 +136,12 @@ def execute_read_operation(
     if name == "cli.query":
         params = _params(payload)
         result = _query_payload(params, archive=archive, serving_identity=serving_identity, dependencies=dependencies)
+    elif name == "query.aggregate":
+        result = _aggregate_payload(payload, archive=archive)
+    elif name == "session.read":
+        result = _session_read_payload(payload, archive=archive)
+    elif name == "session.reference":
+        result = _session_reference_payload(payload, archive=archive)
     elif name == "query.units":
         params = _params(payload)
         result = _query_units_payload(params, archive=archive, serving_identity=serving_identity)
@@ -225,15 +236,26 @@ def _query_payload(
     base = SessionQuerySpec.from_params({**normalized, "limit": limit, "offset": offset})
     spec = compile_expression_into(expression, base) if expression else base
 
-    if (
+    searching = bool(
         spec.query_terms
         or spec.contains_terms
         or spec.similar_text
         or spec.similar_session_id
         or spec.retrieval_lane == "hybrid"
-    ):
+    )
+    if spec.sample is not None:
+        # ``--sample`` randomizes the ordering of a listed page; ranked
+        # retrieval already owns its order, so the two never combine.
+        if spec.sample <= 0:
+            raise ValueError("sample must be positive")
+        if searching:
+            raise ValueError("sample does not combine with search terms")
+        if spec.cursor:
+            raise ValueError("sample does not combine with a cursor")
+        limit = spec.sample
+        offset = 0
+    if searching:
         return _search_payload(spec, archive=archive, serving_identity=serving_identity, dependencies=dependencies)
-
     if spec.latest:
         # ``latest`` is applied by ``query_spec_to_plan`` on the ranked path
         # only; the list path reaches ``ArchiveStore.list_summaries`` without
@@ -245,8 +267,12 @@ def _query_payload(
     )
     total = _archive_count_sessions_for_spec(archive, spec)
     outcome = decide_outcome(matched=total)
+    attached = _attached_units_payload(
+        [summary.session_id for summary in summaries], spec=spec, params=params, archive=archive
+    )
     return {
         "outcome": outcome.to_dict(),
+        **({"attached_units": attached} if attached is not None else {}),
         "items": [_session_list_row(summary) for summary in summaries],
         "total": total,
         # The unit names the filter that actually ran, which is the *resolved*
@@ -547,6 +573,359 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
         "scoped": buckets(scoped),
         "global": buckets(global_buckets),
         "idf": {} if _truthy(params.get("no_idf")) else compute_idf(global_buckets),
+    }
+
+
+def _attached_units_payload(
+    session_ids: list[str],
+    *,
+    spec: SessionQuerySpec,
+    params: Mapping[str, object],
+    archive: ArchiveStore,
+) -> dict[str, object] | None:
+    """Project ``with <unit>`` rows for the sessions on this page.
+
+    The rows come from the shared attached-unit executor; this seam only
+    decodes the wire form of the projection and densifies the sparse result so
+    every requested unit names every session on the page.
+    """
+
+    units = _string_tuple(params.get("with_units")) or spec.with_units
+    if not units:
+        return None
+    fields = _unit_fields(params.get("with_unit_fields")) or spec.with_unit_fields
+    windows = _unit_windows(params.get("with_unit_windows")) or spec.with_unit_windows
+    if not session_ids:
+        return {unit: {} for unit in units}
+
+    from polylogue.archive.query.attached_units import fetch_attached_units
+
+    attached = fetch_attached_units(
+        archive,
+        session_ids,
+        units,
+        unit_fields=dict(fields) or None,
+        unit_windows=dict(windows) or None,
+    )
+    return {
+        unit: {session_id: list(attached.get(unit, {}).get(session_id, ())) for session_id in session_ids}
+        for unit in units
+    }
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if value is None or isinstance(value, (str, bytes)):
+        return (str(value),) if isinstance(value, str) and value else ()
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item) for item in value)
+    raise ValueError("expected a list of strings")
+
+
+def _unit_fields(value: object) -> dict[str, tuple[str, ...]]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("with_unit_fields must be an object")
+    return {str(unit): _string_tuple(fields) for unit, fields in value.items()}
+
+
+def _unit_windows(value: object) -> dict[str, WithUnitWindow]:
+    """Rebuild ``WithUnitWindow`` values from their declared wire payload."""
+
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("with_unit_windows must be an object")
+    from polylogue.archive.query.expression import WithUnitWindow as _WithUnitWindow
+
+    decoded: dict[str, WithUnitWindow] = {}
+    for unit, raw in value.items():
+        if not isinstance(raw, Mapping):
+            raise ValueError("each with_unit_window must be an object")
+        predicates = raw.get("predicates") or {}
+        if not isinstance(predicates, Mapping):
+            raise ValueError("with_unit_window predicates must be an object")
+        window = raw.get("window")
+        bracket: tuple[Literal["first", "last"], int] | None = None
+        if window is not None:
+            if not isinstance(window, Mapping) or window.get("kind") not in {"first", "last"}:
+                raise ValueError("with_unit_window window must name first or last")
+            bracket = (cast("Literal['first', 'last']", window["kind"]), int(cast("int", window["n"])))
+        decoded[str(unit)] = _WithUnitWindow(
+            predicates=tuple((str(key), str(item)) for key, item in predicates.items()),
+            window=bracket,
+        )
+    return decoded
+
+
+def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
+    """Compute one aggregate over the same selection vocabulary as ``cli.query``.
+
+    Every number comes from the archive's own aggregate executors; this seam
+    only chooses which one the declared mode names.
+    """
+
+    from dataclasses import asdict
+
+    from polylogue.archive.query.filter_kwargs import spec_session_filter_kwargs, stats_filter_kwargs
+    from polylogue.surfaces.outcome import decide_outcome
+
+    mode = str(payload.get("mode") or "")
+    if mode not in {"count", "stats", "stats_by"}:
+        raise ValueError(f"aggregate mode is not declared: {mode!r}")
+    raw_params = payload.get("params", {})
+    if not isinstance(raw_params, Mapping):
+        raise ValueError("aggregate params must be an object")
+    spec = _cli_query_spec({str(key): value for key, value in raw_params.items()})
+    if spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid":
+        raise ValueError("aggregates are computed over lexical and structural selection only")
+
+    filter_kwargs = spec_session_filter_kwargs(spec)
+    query = " ".join((*spec.query_terms, *spec.contains_terms)).strip()
+    scope_id = spec.session_id
+
+    if mode == "count":
+        count = (
+            archive.count_search_sessions(query, session_id=scope_id, **cast("Any", filter_kwargs))
+            if query
+            else archive.count_sessions(session_id=scope_id, **cast("Any", filter_kwargs))
+        )
+        return {"outcome": decide_outcome(matched=count).to_dict(), "mode": "count", "count": count}
+
+    session_ids = _matched_session_ids(
+        archive, query=query, session_id=scope_id, limit=spec.limit, filters=filter_kwargs
+    )
+    empty_selection = bool(query) and not session_ids
+    aggregate_kwargs = cast("Any", stats_filter_kwargs(filter_kwargs))
+
+    if mode == "stats_by":
+        group_by = str(payload.get("group_by") or "")
+        if not group_by:
+            raise ValueError("stats_by requires a group_by field")
+        grouped: dict[str, int] = (
+            {} if empty_selection else dict(archive.stats_by(group_by, **aggregate_kwargs, session_ids=session_ids))
+        )
+        return {
+            "outcome": decide_outcome(matched=sum(grouped.values())).to_dict(),
+            "mode": "stats_by",
+            "group_by": group_by,
+            "groups": grouped,
+        }
+
+    from polylogue.archive.stats import ArchiveStats
+
+    stats = (
+        ArchiveStats(total_sessions=0, total_messages=0)
+        if empty_selection
+        else archive.stats(**aggregate_kwargs, session_ids=session_ids)
+    )
+    return {
+        "outcome": decide_outcome(matched=stats.total_sessions).to_dict(),
+        "mode": "stats",
+        "stats": asdict(stats),
+    }
+
+
+def _matched_session_ids(
+    archive: ArchiveStore,
+    *,
+    query: str,
+    session_id: str | None,
+    limit: int | None,
+    filters: Mapping[str, object],
+) -> tuple[str, ...]:
+    """Scope an aggregate to the sessions a text selection actually matched."""
+
+    if session_id is not None:
+        try:
+            return (archive.resolve_session_id(session_id),)
+        except KeyError:
+            return ()
+    if not query:
+        return ()
+    return tuple(archive.search_session_ids(query, limit=limit, **cast("Any", filters)))
+
+
+_BLOCK_KIND_CONTENT_EXCLUSIONS: dict[str, str] = {
+    "tool_use": "include_tool_calls",
+    "function_call": "include_tool_calls",
+    "tool_result": "include_tool_outputs",
+    "function_call_output": "include_tool_outputs",
+    "thinking": "include_reasoning",
+    "reasoning": "include_reasoning",
+}
+
+
+def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
+    """Read one bounded transcript window for an exact session reference.
+
+    A whole transcript can exceed the declared 8 MiB result bound, so this
+    operation is windowed by construction: the reader composes only
+    ``[offset, offset + limit)`` at the storage layer and hands back a
+    snapshot-bound continuation for the next window.
+    """
+
+    from dataclasses import replace as dataclass_replace
+
+    from polylogue.archive.hydration import archive_envelope_to_session
+    from polylogue.archive.query.transaction import (
+        QueryContinuation,
+        QueryContinuationInvalidError,
+        QueryTransactionRequest,
+        archive_snapshot_epoch,
+        validate_continuation_epoch,
+    )
+    from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+    from polylogue.surfaces.outcome import decide_outcome
+    from polylogue.surfaces.payloads import session_detail_envelope_from_domain
+    from polylogue.surfaces.projection_spec import ProjectionSpec
+
+    ref = str(payload.get("ref") or "").strip()
+    if not ref:
+        raise ValueError("session.read requires a session reference")
+    raw_projection = payload.get("projection")
+    if raw_projection is not None and not isinstance(raw_projection, Mapping):
+        raise ValueError("projection must be an object")
+    projection = ProjectionSpec.model_validate(dict(raw_projection)) if raw_projection else None
+
+    limit = _non_negative_int(payload.get("limit"), default=_SESSION_READ_WINDOW) or _SESSION_READ_WINDOW
+    offset = _non_negative_int(payload.get("offset"), default=0)
+    if projection is not None:
+        limit = projection.body_limit or limit
+        offset = projection.body_offset if projection.body_offset is not None else offset
+
+    arguments: dict[str, object] = {
+        "ref": ref,
+        "projection": dict(raw_projection) if raw_projection else {},
+    }
+    continuation_token = payload.get("continuation")
+    if continuation_token:
+        decoded = QueryContinuation.decode(str(continuation_token))
+        transaction = decoded.request
+        if (
+            transaction.operation != "session.read"
+            or transaction.projection != _SESSION_READ_PROJECTION
+            or decoded.result_ref != transaction.result_ref
+            or dict(transaction.arguments) != arguments
+        ):
+            raise QueryContinuationInvalidError("continuation belongs to another session read")
+        limit, offset = transaction.page_size, transaction.offset
+        framed = transaction.with_archive_epoch(validate_continuation_epoch(transaction, archive=archive))
+    else:
+        framed = QueryTransactionRequest(
+            operation="session.read",
+            arguments=arguments,
+            page_size=limit,
+            offset=offset,
+            projection=_SESSION_READ_PROJECTION,
+            stable_order="position",
+        ).with_archive_epoch(archive_snapshot_epoch(archive))
+
+    try:
+        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
+    except KeyError as exc:
+        raise ValueError(f"session not found: {ref}") from exc
+    summary = archive.read_summary(session_id)
+    envelope = archive.read_session_page(session_id, limit=limit, offset=offset)
+    session = archive_envelope_to_session(envelope, display_label=summary.display_label)
+
+    content_projection: ContentProjectionSpec | None = None
+    if projection is not None and projection.exclude_block_kinds:
+        content_projection = ContentProjectionSpec()
+        for kind in projection.exclude_block_kinds:
+            attribute = _BLOCK_KIND_CONTENT_EXCLUSIONS.get(kind)
+            if attribute is not None:
+                content_projection = dataclass_replace(content_projection, **{attribute: False})
+
+    detail = session_detail_envelope_from_domain(session, content_projection=content_projection)
+    total = summary.message_count
+    returned = len(envelope.messages)
+    next_offset = offset + returned if offset + returned < total else None
+    result: dict[str, object] = {
+        "outcome": decide_outcome(matched=returned).to_dict(),
+        "session": detail.model_dump(mode="json"),
+        "session_id": session_id,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "next_offset": next_offset,
+        "continuation": (
+            QueryContinuation(framed.next(offset=next_offset), framed.result_ref).encode()
+            if next_offset is not None
+            else None
+        ),
+        "complete": next_offset is None,
+    }
+    _require_deliverable_window(result, limit=limit)
+    return result
+
+
+def _require_deliverable_window(result: Mapping[str, object], *, limit: int) -> None:
+    """Refuse a window the transport cannot carry, naming the way out.
+
+    Silently truncating would make ``complete``/``next_offset`` lie about what
+    the caller received.
+    """
+
+    import json
+
+    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
+
+    size = len(json.dumps(result, separators=(",", ":"), default=str).encode())
+    if size > MAX_OPERATION_RESULT_BYTES:
+        raise ValueError(
+            f"session.read window of {limit} messages is {size} bytes, above the "
+            f"{MAX_OPERATION_RESULT_BYTES}-byte operation result bound; retry with a smaller limit"
+        )
+
+
+def _session_reference_payload(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
+    """Resolve one bare ``from <ref>`` operand against durable reference state.
+
+    Reference definitions live in the durable user tier and their evaluation
+    plan in the pinned index, so both paths come from the pinned reader rather
+    than from configuration.
+    """
+
+    from contextlib import closing
+
+    from polylogue.api.archive import open_readonly_connection
+    from polylogue.archive.query.evaluator import DurableRefResolver
+    from polylogue.archive.query.expression import parse_reference_query_pipeline, resolve_ref_operand
+    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
+    from polylogue.surfaces.outcome import decide_outcome
+
+    expression = str(payload.get("expression") or "").strip()
+    if not expression:
+        raise ValueError("session.reference requires a reference expression")
+    pipeline = parse_reference_query_pipeline(expression)
+    if pipeline is None:
+        raise ValueError(f"expression is not a reference operand: {expression!r}")
+    if pipeline.stages:
+        raise ValueError("reference pipeline stages are not supported; only the bare `from <ref>` operand is supported")
+    if not archive.user_db_path.exists():
+        raise ValueError("archive is not initialized")
+
+    evaluator = ArchiveCanonicalPlanEvaluator(archive.index_db_path)
+    try:
+        with closing(
+            open_readonly_connection(archive.user_db_path, timeout_class="interactive-read", validate_schema=False)
+        ) as connection:
+            resolved = resolve_ref_operand(pipeline.operand, DurableRefResolver(connection, evaluator))
+    except KeyError as exc:
+        raise ValueError(f"reference not found: {pipeline.operand.reference.format()}") from exc
+
+    raw_limit = payload.get("limit")
+    limit = None if raw_limit is None else _non_negative_int(raw_limit, default=0)
+    members = list(resolved.member_refs if limit is None else resolved.member_refs[:limit])
+    return {
+        "outcome": decide_outcome(matched=len(resolved.member_refs)).to_dict(),
+        "source": pipeline.operand.reference.format(),
+        "grain": str(getattr(resolved.grain, "value", resolved.grain)),
+        "lineage": [ref.format() for ref in resolved.lineage],
+        "member_count": len(resolved.member_refs),
+        "members": members,
+        "truncated": len(members) < len(resolved.member_refs),
     }
 
 

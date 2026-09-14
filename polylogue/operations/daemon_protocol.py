@@ -18,6 +18,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from polylogue.core.enums import OperationStatus
 from polylogue.operations.machine_receipts import IngestHistoricalReceipt
+from polylogue.operations.read_contracts import (
+    QueryAggregateRequest,
+    QueryAggregateResult,
+    SessionReadRequest,
+    SessionReadResult,
+    SessionReferenceRequest,
+    SessionReferenceResult,
+)
 
 DAEMON_OPERATION_PROTOCOL = "polylogue.daemon-operation/v1"
 MAX_OPERATION_BODY_BYTES = 64 * 1024
@@ -231,6 +239,21 @@ class QueryResult(_OperationResult):
         if not isinstance(value, dict):
             raise ValueError("query result must be an object")
         payload = dict(value)
+        # The ``with <units>`` projection is a sibling of the canonical list
+        # envelope, not a field of it: the envelope forbids extras and lives
+        # inside the derived-schema closure, which a CLI projection must not
+        # move.  Validate its shape here and hand the envelope the rest.
+        attached = payload.pop("attached_units", None)
+        if attached is not None and not (
+            isinstance(attached, dict)
+            and all(
+                isinstance(unit, str)
+                and isinstance(by_session, dict)
+                and all(isinstance(rows, list) for rows in by_session.values())
+                for unit, by_session in attached.items()
+            )
+        ):
+            raise ValueError("attached units must map each unit to per-session row lists")
         if "items" in payload:
             unit = payload.pop("total_unit", None)
             if not isinstance(unit, str) or not unit:
@@ -589,6 +612,39 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="QueryUnitsResult",
         request_model=QueryUnitsRequest,
         result_model=QueryUnitsResult,
+    ),
+    DaemonOperationSpec(
+        "query.aggregate",
+        DaemonAuthority.READ,
+        DaemonFallback.DIRECT_READ,
+        # Aggregates scan the selection rather than one page of it.
+        deadline_s=10.0,
+        result_contract="query.aggregate.result/v1",
+        request_type="QueryAggregateRequest",
+        result_type="QueryAggregateResult",
+        request_model=QueryAggregateRequest,
+        result_model=QueryAggregateResult,
+    ),
+    DaemonOperationSpec(
+        "session.read",
+        DaemonAuthority.READ,
+        DaemonFallback.DIRECT_READ,
+        result_contract="session.read.result/v1",
+        request_type="SessionReadRequest",
+        result_type="SessionReadResult",
+        request_model=SessionReadRequest,
+        result_model=SessionReadResult,
+    ),
+    DaemonOperationSpec(
+        "session.reference",
+        DaemonAuthority.READ,
+        DaemonFallback.DIRECT_READ,
+        deadline_s=5.0,
+        result_contract="session.reference.result/v1",
+        request_type="SessionReferenceRequest",
+        result_type="SessionReferenceResult",
+        request_model=SessionReferenceRequest,
+        result_model=SessionReferenceResult,
     ),
     DaemonOperationSpec(
         "status",
