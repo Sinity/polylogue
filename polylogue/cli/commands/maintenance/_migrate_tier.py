@@ -32,6 +32,7 @@ from polylogue.operations.durable_change_train import (
     adopt_missing_audit_tier,
     execute_durable_change_train,
     initialize_missing_durable_tier,
+    rebind_audit_adoption_archive_identity,
     restore_adopted_audit_tier,
 )
 from polylogue.paths import archive_root
@@ -136,6 +137,14 @@ def _require_stopped_daemon(root: Path) -> str:
     is_flag=True,
     help="Atomically restore adopted audit.db from a scratch-verified full_evidence backup and append continuity.",
 )
+@click.option(
+    "--rebind-adopted-audit-identity",
+    is_flag=True,
+    help=(
+        "Re-seal an adoption receipt stranded by a durable tier rewrite applied before this build carried the "
+        "seal forward; requires a stopped daemon and sole archive ownership."
+    ),
+)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 def migrate_tier_command(
     tier: str,
@@ -143,6 +152,7 @@ def migrate_tier_command(
     initialize_missing: bool,
     adopt_established_audit: bool,
     restore_adopted_audit: bool,
+    rebind_adopted_audit_identity: bool,
     output_format: str,
 ) -> None:
     """Apply additive migrations for one durable archive tier.
@@ -161,10 +171,13 @@ def migrate_tier_command(
     adoption_receipt: Path | None = None
     restore_receipt: Path | None = None
     try:
-        if sum((initialize_missing, adopt_established_audit, restore_adopted_audit)) > 1:
+        if sum((initialize_missing, adopt_established_audit, restore_adopted_audit, rebind_adopted_audit_identity)) > 1:
             raise MigrationError(
-                "choose only one of --initialize-missing, --adopt-established-audit, or --restore-adopted-audit"
+                "choose only one of --initialize-missing, --adopt-established-audit, --restore-adopted-audit, "
+                "or --rebind-adopted-audit-identity"
             )
+        if rebind_adopted_audit_identity and archive_tier is not ArchiveTier.AUDIT:
+            raise MigrationError("--rebind-adopted-audit-identity is only valid for the audit tier")
         if (adopt_established_audit or restore_adopted_audit) and archive_tier is not ArchiveTier.AUDIT:
             option = "--adopt-established-audit" if adopt_established_audit else "--restore-adopted-audit"
             raise MigrationError(f"{option} is only valid for the audit tier")
@@ -190,6 +203,13 @@ def migrate_tier_command(
                     backup_manifest=backup_manifest,
                     directory_fd=archive_owner.directory_fd,
                     stopped_daemon_check=lambda: _require_stopped_daemon(path.parent),
+                )
+                execution = None
+            elif rebind_adopted_audit_identity:
+                adoption_receipt = rebind_audit_adoption_archive_identity(
+                    path.parent,
+                    stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
+                    single_writer_evidence_ref="proof:archive-ownership-lock",
                 )
                 execution = None
             elif initialize_missing:

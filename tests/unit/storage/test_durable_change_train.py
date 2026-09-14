@@ -3910,3 +3910,178 @@ def test_rechecks_manifest_semantics_after_a_valid_checksum(tmp_path: Path) -> N
 
     with pytest.raises(DurableChangeTrainError, match="fresh-DDL parity is not an exact match"):
         load_durable_change_train_manifest(path)
+
+
+def _adopt_audit_into_a_real_archive(archive_root: Path, *, owner_id: str) -> Path:
+    """Adopt a missing audit tier through the real operator route."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(archive_root)
+    (archive_root / "audit.db").unlink()
+    backup = backup_archive(
+        output_dir=archive_root.parent / f"backup-{owner_id.replace(':', '-')}",
+        profile="full_evidence",
+        verify=True,
+    )
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id=owner_id) as owner:
+        _version, receipt = adopt_missing_audit_tier(
+            archive_root / "audit.db",
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    return receipt
+
+
+def _rewrite_durable_tier_file(path: Path) -> None:
+    """Republish one durable tier the way a durable migration does.
+
+    ``os.replace`` of a rebuilt file is what changes the tier's inode, which is
+    the archive-identity change that stranded the live adoption receipt.
+    """
+    rebuilt = path.with_name(f"{path.name}.rebuilt")
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("VACUUM INTO ?", (str(rebuilt),))
+    before = path.stat().st_ino
+    os.replace(rebuilt, path)
+    assert path.stat().st_ino != before
+
+
+def test_audit_adoption_is_resealed_across_a_durable_tier_rewrite(workspace_env: dict[str, Path]) -> None:
+    """A released durable rewrite of source.db does not strand the adoption seal.
+
+    Anti-vacuity: dropping the rebind chain from ``_load_audit_adoption_receipt``
+    makes this fail with ``audit adoption receipt source/user authority
+    mismatch``, which is the live archive's observed refusal.
+    """
+    from polylogue.operations.durable_change_train import (
+        _rebind_audit_adoption_after_durable_rewrite,
+        audit_adoption_sealed_authority_digest,
+    )
+    from polylogue.storage.sqlite.durable_change_train import _durable_chain_floor_versions
+
+    archive_root = workspace_env["archive_root"]
+    _adopt_audit_into_a_real_archive(archive_root, owner_id="test:audit-reseal")
+    assert validate_audit_adoption_receipt(archive_root) == audit_adoption_receipt_path(archive_root)
+
+    sealed = audit_adoption_sealed_authority_digest(archive_root)
+    assert sealed is not None
+    _rewrite_durable_tier_file(archive_root / "source.db")
+
+    with pytest.raises(MigrationError, match="audit adoption receipt source/user authority mismatch"):
+        validate_audit_adoption_receipt(archive_root)
+
+    record = _rebind_audit_adoption_after_durable_rewrite(
+        archive_root,
+        sealed_digest=sealed,
+        proof_ref="proof:durable-change-train:source",
+    )
+    assert record is not None and record.is_file()
+    assert validate_audit_adoption_receipt(archive_root) == audit_adoption_receipt_path(archive_root)
+    # Relocation reads the adopted chain floor only after that gate passes.
+    # It refuses fresh-bootstrap train authority outright, so the marker is
+    # absent on every archive that reaches the floor read (as in the relocation
+    # suite's own adopted-archive fixtures).
+    (archive_root / ".maintenance-state" / "durable-change-trains" / ".bootstrap").unlink()
+    assert (
+        _durable_chain_floor_versions(archive_root, archive_root / ".maintenance-state" / "durable-change-trains")[
+            ArchiveTier.AUDIT
+        ]
+        == ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]
+    )
+    # The chain is idempotent: a second rebind at an unchanged identity is a no-op.
+    resealed = audit_adoption_sealed_authority_digest(archive_root)
+    assert resealed is not None
+    assert (
+        _rebind_audit_adoption_after_durable_rewrite(
+            archive_root,
+            sealed_digest=resealed,
+            proof_ref="proof:durable-change-train:source",
+        )
+        is None
+    )
+
+
+def test_durable_change_train_execution_carries_the_adoption_seal(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production migration route re-seals adoption across its own rewrite.
+
+    Anti-vacuity: removing the re-seal from ``execute_durable_change_train``
+    leaves the receipt stranded and this raises the authority mismatch.
+    """
+    import polylogue.operations.durable_change_train as operations_durable_change_train
+
+    archive_root = workspace_env["archive_root"]
+    _adopt_audit_into_a_real_archive(archive_root, owner_id="test:audit-train-seal")
+
+    def rewrite_instead_of_migrating(root: Path, _tier: ArchiveTier, **_kwargs: object) -> object:
+        _rewrite_durable_tier_file(root / "source.db")
+        return SimpleNamespace(train=None, migration_result=None)
+
+    monkeypatch.setattr(
+        operations_durable_change_train,
+        "_execute_durable_change_train",
+        rewrite_instead_of_migrating,
+    )
+    operations_durable_change_train.execute_durable_change_train(
+        archive_root,
+        ArchiveTier.SOURCE,
+        backup_manifest=None,
+        daemon_stopped_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        release_archive_ownership=lambda: None,
+    )
+
+    assert validate_audit_adoption_receipt(archive_root) == audit_adoption_receipt_path(archive_root)
+
+
+def test_audit_adoption_refuses_a_receipt_from_a_different_archive(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    """A foreign adopted audit image and its re-sealed chain are still refused.
+
+    This is the protection the rebind chain must not erase: transplanting the
+    whole adoption ledger names the *donor* archive's durable identity, and no
+    automatic route on the recipient can continue that seal.
+    """
+    from polylogue.operations.durable_change_train import (
+        _rebind_audit_adoption_after_durable_rewrite,
+        audit_adoption_sealed_authority_digest,
+    )
+
+    donor_root = workspace_env["archive_root"]
+    _adopt_audit_into_a_real_archive(donor_root, owner_id="test:audit-donor")
+    sealed = audit_adoption_sealed_authority_digest(donor_root)
+    assert sealed is not None
+    _rewrite_durable_tier_file(donor_root / "source.db")
+    assert (
+        _rebind_audit_adoption_after_durable_rewrite(
+            donor_root, sealed_digest=sealed, proof_ref="proof:durable-change-train:source"
+        )
+        is not None
+    )
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    recipient_root = tmp_path / "recipient"
+    recipient_root.mkdir()
+    initialize_active_archive_root(recipient_root)
+    donor_ledger = donor_root / ".maintenance-state" / "durable-change-trains"
+    recipient_ledger = recipient_root / ".maintenance-state" / "durable-change-trains"
+    shutil.copy2(donor_root / "audit.db", recipient_root / "audit.db")
+    for name in os.listdir(donor_ledger):
+        if name.startswith("audit-"):
+            shutil.copy2(donor_ledger / name, recipient_ledger / name)
+
+    with pytest.raises(MigrationError, match="audit adoption receipt source/user authority mismatch"):
+        validate_audit_adoption_receipt(recipient_root)
+    # The self-proving route cannot launder it either: the recipient never held
+    # the donor's seal, so it can never observe it before its own rewrite.
+    assert audit_adoption_sealed_authority_digest(recipient_root) is None
+    with pytest.raises(MigrationError, match="does not continue the sealed source/user authority"):
+        _rebind_audit_adoption_after_durable_rewrite(
+            recipient_root, sealed_digest=sealed, proof_ref="proof:durable-change-train:source"
+        )
