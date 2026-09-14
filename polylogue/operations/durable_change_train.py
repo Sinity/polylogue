@@ -49,6 +49,9 @@ _AUDIT_ADOPTION_RECEIPT_FORMAT = "polylogue.audit-tier-adoption.v1"
 _AUDIT_ADOPTION_RECEIPT_NAME = "audit-adoption.json"
 _AUDIT_ADOPTION_CONTINUITY_FORMAT = "polylogue.audit-tier-continuity.v1"
 _AUDIT_ADOPTION_CONTINUITY_NAME = "audit-continuity.json"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_AUDIT_ADOPTION_REBIND_FORMAT = "polylogue.audit-tier-adoption-rebind.v1"
+_AUDIT_ADOPTION_REBIND_NAME = re.compile(r"^audit-adoption-rebind\.(?P<generation>[1-9][0-9]*)\.json$")
 _AUDIT_ADOPTION_RESTORE_FORMAT = "polylogue.audit-tier-restore.v1"
 _AUDIT_ADOPTION_RESTORE_NAME = re.compile(
     r"^audit-restore\.(?P<generation>[1-9][0-9]*)\.(?P<operation>[0-9a-f]{32})\.(?P<state>prepared|committed)\.json$"
@@ -511,12 +514,13 @@ def _open_audit_adoption_receipt_directory(
         relative = path.relative_to(archive_root)
     except ValueError:
         relative = Path()
-    is_restore_record = (
-        len(relative.parts) == 3
-        and relative.parts[:2] == (".maintenance-state", "durable-change-trains")
-        and _AUDIT_ADOPTION_RESTORE_NAME.fullmatch(relative.name) is not None
+    is_ledger_record = len(relative.parts) == 3 and relative.parts[:2] == (
+        ".maintenance-state",
+        "durable-change-trains",
     )
-    if path not in expected_paths and not is_restore_record:
+    is_restore_record = is_ledger_record and _AUDIT_ADOPTION_RESTORE_NAME.fullmatch(relative.name) is not None
+    is_rebind_record = is_ledger_record and _AUDIT_ADOPTION_REBIND_NAME.fullmatch(relative.name) is not None
+    if path not in expected_paths and not is_restore_record and not is_rebind_record:
         raise MigrationError(f"audit adoption receipt path is outside its fixed archive location: {path}")
     try:
         current_fd = (
@@ -665,7 +669,99 @@ def _audit_adoption_image_binding(payload: dict[str, object]) -> tuple[str, int,
     return expected_image_sha256, expected_image_size, application_id
 
 
-def _load_audit_adoption_receipt(archive_root: Path) -> tuple[Path, dict[str, object]] | None:
+def _audit_adoption_rebind_path(archive_root: Path, generation: int) -> Path:
+    """Return the fixed ledger location of one adoption identity rebind."""
+    return _audit_adoption_continuity_path(archive_root).with_name(f"audit-adoption-rebind.{generation}.json")
+
+
+def _audit_adoption_rebind_records(archive_root: Path) -> dict[int, dict[str, object]]:
+    """Read the immutable adoption identity rebind chain from its fixed path."""
+    marker_path = _audit_adoption_continuity_path(archive_root)
+    try:
+        directory_fd = _open_audit_adoption_receipt_directory(marker_path, archive_root=archive_root, create=False)
+    except FileNotFoundError:
+        return {}
+    records: dict[int, dict[str, object]] = {}
+    try:
+        for name in os.listdir(directory_fd):
+            match = _AUDIT_ADOPTION_REBIND_NAME.fullmatch(name)
+            if match is None:
+                continue
+            path = marker_path.with_name(name)
+            fd: int | None = None
+            try:
+                fd = os.open(
+                    name, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd
+                )
+                metadata = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                    or stat.S_IMODE(metadata.st_mode) & 0o022
+                ):
+                    raise MigrationError(f"invalid audit adoption rebind ownership or mode: {path}")
+                with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                    fd = None
+                    payload = json.load(stream)
+            except (OSError, json.JSONDecodeError) as exc:
+                raise MigrationError(f"invalid audit adoption rebind record: {path}") from exc
+            finally:
+                if fd is not None:
+                    os.close(fd)
+            if not isinstance(payload, dict) or payload.get("format") != _AUDIT_ADOPTION_REBIND_FORMAT:
+                raise MigrationError(f"audit adoption rebind record format mismatch: {path}")
+            checksum = payload.get("rebind_sha256")
+            unsigned = dict(payload)
+            unsigned.pop("rebind_sha256", None)
+            if not isinstance(checksum, str) or checksum != _canonical_json_sha256(unsigned):
+                raise MigrationError(f"audit adoption rebind record checksum mismatch: {path}")
+            generation = int(match["generation"])
+            if payload.get("generation") != generation:
+                raise MigrationError(f"audit adoption rebind record generation mismatch: {path}")
+            records[generation] = payload
+    finally:
+        os.close(directory_fd)
+    return records
+
+
+def _audit_adoption_authority_chain(archive_root: Path, receipt_payload: dict[str, object]) -> tuple[str, int]:
+    """Return the current bound source/user authority digest and its generation.
+
+    Adoption is sealed against the archive's durable ``source``/``user``
+    identity, which a released durable migration legitimately rewrites.  The
+    receipt itself stays immutable; each such transition publishes one
+    immutable rebind record chained to the receipt and to the previous
+    digest, so the chain head -- not the original seal -- is the digest a live
+    archive must still match.  A receipt (with or without its chain) carried
+    into a different archive still names the durable identity of the archive
+    that produced it, so the transplant refusal is unchanged.
+    """
+    receipt_sha256 = receipt_payload.get("receipt_sha256")
+    head = receipt_payload.get("source_user_authority_digest")
+    if not isinstance(receipt_sha256, str) or not isinstance(head, str):
+        raise MigrationError("audit adoption receipt lacks its sealed source/user authority")
+    records = _audit_adoption_rebind_records(archive_root)
+    generation = 0
+    for expected_generation in range(1, len(records) + 1):
+        record = records.get(expected_generation)
+        if record is None:
+            raise MigrationError("audit adoption rebind generations are not contiguous")
+        rebound = record.get("source_user_authority_digest")
+        if (
+            record.get("receipt_sha256") != receipt_sha256
+            or record.get("previous_authority_digest") != head
+            or not isinstance(rebound, str)
+            or _SHA256_RE.fullmatch(rebound) is None
+        ):
+            raise MigrationError("audit adoption rebind chain does not match the adopted archive")
+        head = rebound
+        generation = expected_generation
+    return head, generation
+
+
+def _load_audit_adoption_receipt(
+    archive_root: Path, *, require_current_authority: bool = True
+) -> tuple[Path, dict[str, object]] | None:
     receipt_path = audit_adoption_receipt_path(archive_root)
     try:
         receipt_directory_fd = _open_audit_adoption_receipt_directory(
@@ -707,8 +803,10 @@ def _load_audit_adoption_receipt(archive_root: Path) -> tuple[Path, dict[str, ob
     unsigned.pop("receipt_sha256", None)
     if not isinstance(digest, str) or digest != _canonical_json_sha256(unsigned):
         raise MigrationError(f"audit adoption receipt checksum mismatch: {receipt_path}")
-    if payload.get("source_user_authority_digest") != _audit_adoption_authority_digest(archive_root):
-        raise MigrationError("audit adoption receipt source/user authority mismatch")
+    if require_current_authority:
+        bound_digest, _generation = _audit_adoption_authority_chain(archive_root, payload)
+        if bound_digest != _audit_adoption_authority_digest(archive_root):
+            raise MigrationError("audit adoption receipt source/user authority mismatch")
     _audit_adoption_image_binding(payload)
     return receipt_path, payload
 
@@ -1545,7 +1643,7 @@ def restore_adopted_audit_tier(
         if stopped_daemon_check() != stopped_evidence:
             raise MigrationError("daemon stopped proof changed during adopted-audit restore")
         revalidate_exact_backup()
-        if _audit_adoption_authority_digest(archive_root) != adoption.get("source_user_authority_digest"):
+        if _audit_adoption_authority_digest(archive_root) != _audit_adoption_authority_chain(archive_root, adoption)[0]:
             raise MigrationError("source/user authority changed during adopted-audit restore")
         _remove_owned_audit_sidecars(directory_fd=directory_fd)
         if not published:
@@ -1634,7 +1732,19 @@ def execute_durable_change_train(
     release_archive_ownership: Callable[[], None],
 ) -> DurableChangeTrainExecution:
     """Run one durable migration through the storage authority contract."""
-    return _execute_durable_change_train(
+    from polylogue.storage.sqlite.durable_change_train import (
+        fresh_durable_bootstrap_sealed_identity,
+        reseal_fresh_durable_bootstrap_marker,
+    )
+
+    # A durable migration rewrites the tier file, so the archive's durable
+    # identity legitimately changes.  Observe every seal bound to that identity
+    # while the archive still carries it: only this archive can, and carrying
+    # them across the rewrite is what keeps an ordinary released migration from
+    # stranding its own adoption receipt or bootstrap marker.
+    sealed_digest = audit_adoption_sealed_authority_digest(archive_root)
+    sealed_bootstrap = fresh_durable_bootstrap_sealed_identity(archive_root)
+    execution = _execute_durable_change_train(
         archive_root,
         tier,
         backup_manifest=backup_manifest,
@@ -1643,6 +1753,151 @@ def execute_durable_change_train(
         runtime_consumer_results=runtime_consumer_results,
         release_archive_ownership=release_archive_ownership,
     )
+    if sealed_digest is not None:
+        _rebind_audit_adoption_after_durable_rewrite(
+            archive_root,
+            sealed_digest=sealed_digest,
+            proof_ref=f"proof:durable-change-train:{tier.value}",
+        )
+    if sealed_bootstrap is not None:
+        reseal_fresh_durable_bootstrap_marker(archive_root, sealed_digest=sealed_bootstrap)
+    return execution
+
+
+def _publish_audit_adoption_rebind(
+    archive_root: Path,
+    *,
+    expected_previous_digest: str | None,
+    rebind_kind: str,
+    evidence: dict[str, object],
+) -> Path | None:
+    """Re-seal a verified adoption against the archive's current durable identity.
+
+    The receipt is immutable, so a rebind is published as the next immutable
+    record in a chain rooted at ``receipt_sha256``.  Publication authenticates
+    the live audit tier against the same binding the receipt carries, so a
+    rebind can only re-seal an adoption whose adopted image is still the one
+    the receipt authorized.
+    """
+    archive_root = archive_root.resolve()
+    loaded = _load_audit_adoption_receipt(archive_root, require_current_authority=False)
+    if loaded is None:
+        return None
+    _receipt_path, payload = loaded
+    head, generation = _audit_adoption_authority_chain(archive_root, payload)
+    current = _audit_adoption_authority_digest(archive_root)
+    if expected_previous_digest is not None and head != expected_previous_digest:
+        raise MigrationError("audit adoption rebind does not continue the sealed source/user authority")
+    if head == current:
+        return None
+    audit_path = archive_root / "audit.db"
+    expected_image_sha256, expected_image_size, expected_application_id = _audit_adoption_image_binding(payload)
+    expected_initial_version = payload.get("audit_user_version")
+    if not isinstance(expected_initial_version, int):
+        raise MigrationError("audit adoption receipt lacks its initial audit version")
+    continuity = _latest_audit_adoption_continuity(archive_root)
+    if continuity is None:
+        # No continuity was ever recorded, so the adopted image must still be
+        # the exact canonical image the receipt published.
+        _validate_initial_audit_image(
+            audit_path,
+            expected_image_sha256=expected_image_sha256,
+            expected_image_size=expected_image_size,
+            expected_application_id=expected_application_id,
+            expected_initial_version=expected_initial_version,
+        )
+    else:
+        expected_identity = (continuity.get("audit_device"), continuity.get("audit_inode"))
+        if (
+            continuity.get("receipt_sha256") != payload.get("receipt_sha256")
+            or not all(isinstance(value, int) for value in expected_identity)
+            or _audit_file_identity(audit_path) != expected_identity
+        ):
+            raise MigrationError("audit adoption rebind does not match the live audit tier")
+        version, application_id, quick_check = _audit_live_metadata(audit_path)
+        if version < expected_initial_version or application_id != expected_application_id or quick_check != ("ok",):
+            raise MigrationError("audit adoption rebind does not match the live audit tier")
+    record: dict[str, object] = {
+        "format": _AUDIT_ADOPTION_REBIND_FORMAT,
+        "generation": generation + 1,
+        "receipt_sha256": payload["receipt_sha256"],
+        "previous_authority_digest": head,
+        "source_user_authority_digest": current,
+        "rebind_kind": rebind_kind,
+        "rebind_created_at_ms": int(time.time() * 1000),
+        **evidence,
+    }
+    path = _audit_adoption_rebind_path(archive_root, generation + 1)
+    _write_immutable_audit_adoption_receipt(
+        path,
+        record,
+        archive_root=archive_root,
+        checksum_key="rebind_sha256",
+    )
+    return path
+
+
+def rebind_audit_adoption_archive_identity(
+    archive_root: Path,
+    *,
+    stopped_daemon_evidence_ref: str,
+    single_writer_evidence_ref: str,
+) -> Path | None:
+    """Re-seal an adoption stranded by a durable tier rewrite already applied.
+
+    ``_rebind_audit_adoption_after_durable_rewrite`` keeps an adoption sealed
+    across every rewrite this build performs, because it observes the sealed
+    identity while the archive still carries it.  A receipt stranded before
+    that route existed has no such observation left to make -- the identity it
+    was sealed against was destroyed by the rewrite -- so this route is
+    operator-attested under the evidence adoption itself requires: a stopped
+    daemon and sole-writer ownership of this archive.  It is never reached
+    automatically, and it re-seals only an adoption whose audit tier still
+    authenticates against its immutable receipt.
+    """
+    if not stopped_daemon_evidence_ref or not single_writer_evidence_ref:
+        raise MigrationError("audit adoption rebind requires stopped-daemon and single-writer evidence")
+    return _publish_audit_adoption_rebind(
+        archive_root,
+        expected_previous_digest=None,
+        rebind_kind="attested",
+        evidence={
+            "stopped_daemon_evidence_ref": stopped_daemon_evidence_ref,
+            "single_writer_evidence_ref": single_writer_evidence_ref,
+        },
+    )
+
+
+def _rebind_audit_adoption_after_durable_rewrite(
+    archive_root: Path,
+    *,
+    sealed_digest: str,
+    proof_ref: str,
+) -> Path | None:
+    """Carry a sealed adoption across one durable rewrite of source/user.
+
+    ``sealed_digest`` must have been observed *before* the rewrite, while the
+    archive still matched the adoption seal.  Only the archive the receipt was
+    issued for can produce that observation, so this route needs no operator
+    attestation.
+    """
+    return _publish_audit_adoption_rebind(
+        archive_root,
+        expected_previous_digest=sealed_digest,
+        rebind_kind="durable-rewrite",
+        evidence={"durable_rewrite_proof_ref": proof_ref},
+    )
+
+
+def audit_adoption_sealed_authority_digest(archive_root: Path) -> str | None:
+    """Return the adoption seal a durable rewrite must carry forward, if any."""
+    loaded = _load_audit_adoption_receipt(archive_root, require_current_authority=False)
+    if loaded is None:
+        return None
+    head, _generation = _audit_adoption_authority_chain(archive_root, loaded[1])
+    if head != _audit_adoption_authority_digest(archive_root):
+        return None
+    return head
 
 
 def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:
@@ -1659,6 +1914,8 @@ __all__ = [
     "execute_durable_change_train",
     "initialize_missing_durable_tier",
     "reconcile_durable_change_trains_on_startup",
+    "audit_adoption_sealed_authority_digest",
+    "rebind_audit_adoption_archive_identity",
     "recover_pending_audit_adoption",
     "restore_adopted_audit_tier",
     "validate_audit_adoption_receipt",

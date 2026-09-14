@@ -620,6 +620,71 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
     return versions
 
 
+def _load_fresh_durable_bootstrap_marker(archive_root: Path) -> tuple[Path, dict[str, object]] | None:
+    """Read the direct-bootstrap marker and authenticate its own digest."""
+    marker_root = archive_root.resolve() / ".maintenance-state" / "durable-change-trains"
+    marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
+    if not marker_path.is_file():
+        return None
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DurableChangeTrainError(f"invalid fresh durable bootstrap marker: {marker_path}") from exc
+    if not isinstance(payload, dict) or payload.get("format") != _FRESH_DURABLE_BOOTSTRAP_FORMAT:
+        raise DurableChangeTrainError(f"fresh durable bootstrap marker format mismatch: {marker_path}")
+    marker_digest = payload.get("marker_digest")
+    unsigned = dict(payload)
+    unsigned.pop("marker_digest", None)
+    if not isinstance(marker_digest, str) or marker_digest != _bootstrap_marker_digest(unsigned):
+        raise DurableChangeTrainError("fresh durable bootstrap marker digest mismatch")
+    return marker_path, payload
+
+
+def fresh_durable_bootstrap_sealed_identity(archive_root: Path) -> str | None:
+    """Return the bootstrap seal a durable rewrite must carry forward, if any."""
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
+    loaded = _load_fresh_durable_bootstrap_marker(archive_root)
+    if loaded is None:
+        return None
+    sealed = loaded[1].get("durable_identity_digest")
+    if not isinstance(sealed, str) or sealed != _durable_identity_digest(
+        ArchiveIdentity.resolve(archive_root.resolve())
+    ):
+        return None
+    return sealed
+
+
+def reseal_fresh_durable_bootstrap_marker(archive_root: Path, *, sealed_digest: str) -> None:
+    """Carry a direct-bootstrap marker across one durable rewrite of its tiers.
+
+    The marker seals the archive's durable inode identity, which a released
+    durable migration legitimately rewrites.  ``sealed_digest`` must have been
+    observed before the rewrite, while the archive still matched the seal, so
+    only the archive the marker belongs to can re-seal it.  The recorded
+    bootstrap versions -- the marker's actual authority -- are unchanged.
+    """
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
+    archive_root = archive_root.resolve()
+    loaded = _load_fresh_durable_bootstrap_marker(archive_root)
+    if loaded is None:
+        return
+    marker_path, payload = loaded
+    if payload.get("durable_identity_digest") != sealed_digest:
+        raise DurableChangeTrainError("fresh durable bootstrap marker does not continue its sealed identity")
+    current = _durable_identity_digest(ArchiveIdentity.resolve(archive_root))
+    if current == sealed_digest:
+        return
+    resealed: dict[str, object] = {
+        "format": payload["format"],
+        "durable_identity_digest": current,
+        "versions": payload["versions"],
+    }
+    resealed["marker_digest"] = _bootstrap_marker_digest(resealed)
+    _write_bootstrap_receipt(marker_path, resealed)
+
+
 def _durable_identity_digest(identity: object) -> str:
     """Digest the durable source/user/audit identity for bootstrap receipts."""
     from polylogue.storage.archive_identity import ArchiveIdentity
