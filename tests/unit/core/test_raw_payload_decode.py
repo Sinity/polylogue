@@ -10,6 +10,8 @@ from polylogue.archive.raw_payload.decode import (
     build_raw_payload_envelope,
     sample_jsonl_payload,
 )
+from polylogue.sources.sqlite_export import write_logical_export
+from polylogue.sources.sqlite_snapshot import member_export_scope
 
 
 def _as_dict(sample: JSONValue) -> dict[str, JSONValue]:
@@ -248,8 +250,19 @@ def test_build_raw_payload_envelope_refuses_unrecognized_sqlite_bytes(tmp_path: 
 
 
 def test_build_raw_payload_envelope_still_recognizes_genuine_hermes_state_db(tmp_path: Path) -> None:
-    """Regression guard: this bead tightens detection, it does not retire the
-    existing, content-verified Hermes state.db session parser."""
+    """Tightened detection does not retire the content-verified Hermes state parser.
+
+    PR #5040 added the ``is_declared_logical_export`` gate, so the admitted
+    material is the declared member's canonical *logical export* rather than a
+    SQLite page image. This builds it on the production acquisition route
+    (``write_logical_export`` + ``member_export_scope``), the same shape PR
+    #5064 moved the storage-side tests onto.
+
+    Anti-vacuity: drop the member header (pass ``scope=None`` to
+    ``write_logical_export``) and the bytes stop binding to ``state.db``, so
+    the marker route is skipped and the artifact comes back
+    ``BINARY_DATABASE``/``parse_as_session is False``.
+    """
     path = tmp_path / "state.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
@@ -267,10 +280,15 @@ def test_build_raw_payload_envelope_still_recognizes_genuine_hermes_state_db(tmp
         )
         conn.commit()
 
+    export = tmp_path / "retained.export"
+    with export.open("wb") as handle:
+        write_logical_export(path, handle, scope=member_export_scope(path), immutable=True)
+
     envelope = build_raw_payload_envelope(
-        path,
+        export,
         source_path=str(path),
         fallback_provider="hermes",
+        sqlite_immutable=True,
     )
 
     assert envelope.artifact.kind is ArtifactKind.SESSION_DOCUMENT

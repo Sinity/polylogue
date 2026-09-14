@@ -1200,12 +1200,38 @@ def test_hermes_snapshot_parse_route_keeps_live_wal_sidecars_out_of_namespace(tm
     assert store.verify_all().passed is True
 
 
-def test_hermes_state_db_raw_payload_envelope_uses_marker(tmp_path: Path) -> None:
+def _write_hermes_state_export(tmp_path: Path) -> tuple[Path, Path]:
+    """Retain a Hermes ``state.db`` the way acquisition does, as its logical export.
+
+    PR #5040 gated ``build_raw_payload_envelope`` on
+    ``is_declared_logical_export``: a SQLite page image is no longer admitted
+    as session content, because replay already refuses one and admitting it
+    would mint a second source authority. ``write_logical_export`` +
+    ``member_export_scope`` is the production writer pair, the same shape PR
+    #5064 moved the storage-side tests onto.
+    """
+    from polylogue.sources.sqlite_export import write_logical_export
+    from polylogue.sources.sqlite_snapshot import member_export_scope
+
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)
+    export_path = tmp_path / "retained.export"
+    with export_path.open("wb") as handle:
+        write_logical_export(db_path, handle, scope=member_export_scope(db_path), immutable=True)
+    return db_path, export_path
+
+
+def test_hermes_state_db_raw_payload_envelope_uses_marker(tmp_path: Path) -> None:
+    """The retained export routes to the Hermes marker under the declared member.
+
+    Anti-vacuity: drop the member header (``scope=None``) and the export stops
+    binding to ``state.db``, so the gate refuses it and the provider falls back
+    to the binary-artifact route instead of ``Provider.HERMES``.
+    """
+    db_path, export_path = _write_hermes_state_export(tmp_path)
 
     envelope = build_raw_payload_envelope(
-        db_path,
+        export_path,
         source_path=db_path,
         fallback_provider="inbox",
         sqlite_immutable=False,
@@ -1213,17 +1239,22 @@ def test_hermes_state_db_raw_payload_envelope_uses_marker(tmp_path: Path) -> Non
 
     assert envelope.provider is Provider.HERMES
     assert envelope.artifact.parse_as_session is True
-    assert envelope.payload == hermes_state.marker_payload(db_path, profile_root=db_path.parent, immutable=False)
+    assert envelope.payload == hermes_state.marker_payload(export_path, profile_root=db_path.parent, immutable=False)
     assert "sqlite_immutable" not in envelope.payload
 
 
 def test_hermes_state_db_raw_payload_envelope_default_keeps_live_marker_semantics(tmp_path: Path) -> None:
-    db_path = tmp_path / "state.db"
-    _write_hermes_state_db(db_path)
+    """The default ``sqlite_immutable`` stays False, so the marker carries no flag.
 
-    envelope = build_raw_payload_envelope(db_path, source_path=db_path, fallback_provider="inbox")
+    Anti-vacuity: flip the ``sqlite_immutable`` default in
+    ``build_raw_payload_envelope`` to True and the marker gains an
+    ``sqlite_immutable`` key, turning both assertions red.
+    """
+    db_path, export_path = _write_hermes_state_export(tmp_path)
 
-    assert envelope.payload == hermes_state.marker_payload(db_path, profile_root=db_path.parent, immutable=False)
+    envelope = build_raw_payload_envelope(export_path, source_path=db_path, fallback_provider="inbox")
+
+    assert envelope.payload == hermes_state.marker_payload(export_path, profile_root=db_path.parent, immutable=False)
     assert "sqlite_immutable" not in envelope.payload
 
 
