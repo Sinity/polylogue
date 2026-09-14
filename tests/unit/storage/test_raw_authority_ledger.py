@@ -42,6 +42,7 @@ from polylogue.storage.raw_authority import (
     read_raw_authority_detail,
     record_raw_authority_census,
     record_raw_replay_outcome,
+    reject_invalid_raw_replay_application,
     reject_stale_raw_replay_plan,
     resolve_raw_authority_blocker,
     unresolved_raw_replay_blockers,
@@ -477,6 +478,92 @@ def test_auto_resolve_stale_plan_blockers_unblocks_materialization_unattended(tm
     assert unresolved_raw_replay_blockers(tmp_path) == 0
 
     # Idempotent: nothing left to clear on a second call.
+    assert auto_resolve_stale_plan_blockers(tmp_path) == 0
+
+
+def test_auto_resolve_stale_plan_blockers_never_clears_failed_application_blockers(tmp_path: Path) -> None:
+    """polylogue-l8tdh: reject_invalid_raw_replay_application writes a
+    fail-closed blocker whose own remediation text says "resolve the durable
+    raw-authority blocker before automatic convergence resumes" -- and
+    automatic convergence is what calls auto_resolve_stale_plan_blockers. It
+    is a non-frontier blocker, so the old "plan is not a frontier plan"
+    selection cleared it on the next periodic pass and let convergence
+    proceed over an application that failed its exact durable postconditions.
+
+    Anti-vacuity: reverting the selection to the negated predicate (dropping
+    the blocker_origin conjunct) makes the failed-application blocker
+    disappear here -- resolved_count becomes 2 and the surviving-blocker
+    assertion is red. The stale-plan half of the same archive proves the fix
+    narrows the predicate rather than disabling the feature.
+    """
+    bootstrap_archive_root(tmp_path)
+    stale_raw_id = _write_codex_raw(tmp_path, native_id="l8-stale", source_path="l8-stale.jsonl", acquired_at_ms=1)
+    failed_raw_id = _write_codex_raw(tmp_path, native_id="l8-failed", source_path="l8-failed.jsonl", acquired_at_ms=2)
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[stale_raw_id, failed_raw_id])
+    stale_plan = build_raw_replay_plans(tmp_path, ((stale_raw_id,),))[0]
+    failed_plan = build_raw_replay_plans(tmp_path, ((failed_raw_id,),))[0]
+    census = record_raw_authority_census(
+        tmp_path,
+        (stale_plan, failed_plan),
+        selected_plan_ids={stale_plan.plan_id, failed_plan.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "l8tdh"},
+        residual={},
+    )
+
+    # One genuine stale plan: its census-time preconditions moved underneath it.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET source_path = 'moved-after-plan-l8.jsonl' WHERE raw_id = ?", (stale_raw_id,)
+        )
+        conn.commit()
+    valid, observed = validate_raw_replay_plan(tmp_path, stale_plan)
+    assert valid is False
+    reject_stale_raw_replay_plan(tmp_path, census.census_id, stale_plan, observed)
+
+    # One writer that returned without the exact durable postconditions.
+    failed_outcome = reject_invalid_raw_replay_application(
+        tmp_path,
+        census.census_id,
+        failed_plan,
+        json_document({"schema": "polylogue.raw-replay-application-receipt.v1", "applied": False}),
+        ("index revision rows were not durable after apply",),
+    )
+    assert (
+        failed_outcome.next_action == "resolve the durable raw-authority blocker before automatic convergence resumes"
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        failed_blocker_id = conn.execute(
+            "SELECT blocker_id FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+            (failed_plan.plan_id,),
+        ).fetchone()[0]
+
+    assert unresolved_raw_replay_blockers(tmp_path) == 2
+
+    resolved_count = auto_resolve_stale_plan_blockers(tmp_path)
+
+    assert resolved_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        # The fail-closed blocker survives, unresolved, for a deliberate resolution.
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_authority_blockers WHERE blocker_id = ? AND resolved_at_ms IS NULL",
+                (failed_blocker_id,),
+            ).fetchone()[0]
+            == 1
+        )
+        # The genuine stale-plan blocker was still cleared: the fix narrows the
+        # predicate, it does not disable automatic stale-plan clearing.
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+                (stale_plan.plan_id,),
+            ).fetchone()[0]
+            == 0
+        )
+    assert unresolved_raw_replay_blockers(tmp_path) == 1
+    # Still unresolved on every subsequent convergence pass, not just the first.
     assert auto_resolve_stale_plan_blockers(tmp_path) == 0
 
 

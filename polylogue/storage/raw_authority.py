@@ -1967,6 +1967,46 @@ def recover_interrupted_raw_authority_censuses(
 
 _FRONTIER_WITNESS_SCHEMA = "polylogue.raw-authority-frontier-plan.v1"
 
+#: Key under ``raw_authority_blockers.observed_json`` carrying the writer's own
+#: declaration of why the blocker exists.  Every blocker writer records one of
+#: :data:`BLOCKER_ORIGINS`; readers that must treat blocker classes differently
+#: (today: :func:`auto_resolve_stale_plan_blockers`) select on this value
+#: positively rather than inferring a class from the absence of some other
+#: property.  polylogue-l8tdh: the auto-resolver previously selected "every
+#: blocker whose plan is not a frontier plan", which was a correct description
+#: of stale-plan blockers only until a second non-frontier blocker writer
+#: (:func:`reject_invalid_raw_replay_application`) appeared -- at which point
+#: the loop silently began clearing the fail-closed blocker whose own
+#: remediation text says automatic convergence must not resume until it is
+#: resolved.  A new blocker class must now name itself here, and is not
+#: auto-cleared unless it is explicitly declared auto-clearable.
+BLOCKER_ORIGIN_KEY = "blocker_origin"
+
+#: Census-time preconditions moved under the plan (a pure TOCTOU race).
+BLOCKER_ORIGIN_STALE_PLAN = "stale_plan_preconditions"
+#: A writer returned without the exact durable application postconditions.
+BLOCKER_ORIGIN_INVALID_APPLICATION = "invalid_replay_application"
+#: An unmet frontier authority obligation published by the reconciler.
+BLOCKER_ORIGIN_FRONTIER_OBLIGATION = "frontier_obligation"
+
+BLOCKER_ORIGINS = (
+    BLOCKER_ORIGIN_STALE_PLAN,
+    BLOCKER_ORIGIN_INVALID_APPLICATION,
+    BLOCKER_ORIGIN_FRONTIER_OBLIGATION,
+)
+
+#: The only blocker origin automatic convergence may clear without an operator.
+#: See :func:`auto_resolve_stale_plan_blockers` for the argument that this one
+#: carries no judgment content; that argument holds for this origin alone.
+AUTO_CLEARABLE_BLOCKER_ORIGINS = (BLOCKER_ORIGIN_STALE_PLAN,)
+
+
+def _with_blocker_origin(observed: JSONDocument | Mapping[str, object], origin: str) -> JSONDocument:
+    """Stamp a blocker's observed payload with its writer-declared origin."""
+    if origin not in BLOCKER_ORIGINS:
+        raise ValueError(f"unknown raw-authority blocker origin: {origin}")
+    return json_document({**dict(observed), BLOCKER_ORIGIN_KEY: origin})
+
 
 def _blocker_kind(*, witness_schema: str, has_judgment_assertion: bool) -> str:
     """Classify a blocker exactly as :func:`resolve_raw_authority_blocker` enforces it.
@@ -2247,7 +2287,32 @@ AUTO_STALE_PLAN_RESOLUTION = (
 
 
 def auto_resolve_stale_plan_blockers(archive_root: Path) -> int:
-    """Clear every unresolved ``stale_plan`` blocker automatically.
+    """Clear every unresolved stale-plan blocker automatically.
+
+    Selection is by the writer-declared :data:`BLOCKER_ORIGIN_KEY` recorded in
+    each blocker's ``observed_json``, restricted to
+    :data:`AUTO_CLEARABLE_BLOCKER_ORIGINS`. polylogue-l8tdh: it used to be by
+    negation -- every blocker whose plan is not a frontier plan -- which
+    described stale-plan blockers accurately only while they were the sole
+    non-frontier blocker writer. :func:`reject_invalid_raw_replay_application`
+    is a second one, and its blocker states in its own remediation text that
+    "automatic convergence" must not resume until it is resolved; under the
+    negated predicate this loop resolved it on the next periodic pass and
+    convergence proceeded over an application that had failed its exact
+    durable postconditions. A blocker that does not declare an auto-clearable
+    origin -- including any blocker written before this classification, and
+    any class added later that forgets to declare itself -- now survives for
+    an operator, which is the safe direction for this predicate to be wrong
+    in.
+
+    The old frontier-plan exclusion is retained as a second conjunct, not as
+    the discriminator: :func:`reject_stale_raw_replay_plan` is reachable for a
+    plan carrying a frontier authority witness (a frontier plan selected into
+    an interrupted census, recovered by
+    :func:`recover_interrupted_raw_authority_censuses`), and such a blocker
+    can carry a ``judgment_assertion_id`` that
+    :func:`resolve_raw_authority_blocker` gates on. Both conjuncts must hold,
+    so this loop is strictly narrower than either predicate alone.
 
     polylogue-d7im: ``resolve_raw_authority_blocker``'s non-frontier
     (``stale_plan``) branch does not consult its ``resolution`` argument for
@@ -2258,8 +2323,8 @@ def auto_resolve_stale_plan_blockers(archive_root: Path) -> int:
     judgment content a human/agent could supply that changes this outcome:
     unlike a ``frontier_judgment`` blocker (which requires an accepted
     assertion + disposition -- unaffected, this function only ever touches
-    the non-frontier kind), a stale plan is a pure TOCTOU race between a
-    census and its apply, already recomputed unattended in the equivalent
+    blockers declaring the stale-plan origin), a stale plan is a pure TOCTOU
+    race between a census and its apply, already recomputed unattended in the equivalent
     crash-recovery path (:func:`recover_interrupted_raw_authority_censuses`).
 
     This closes the actual harm a stale-plan blocker causes today:
@@ -2293,17 +2358,20 @@ def auto_resolve_stale_plan_blockers(archive_root: Path) -> int:
         ).fetchone()
         if exists is None:
             return 0
+        placeholders = ", ".join("?" for _ in AUTO_CLEARABLE_BLOCKER_ORIGINS)
         blocker_ids = tuple(
             str(row[0])
             for row in conn.execute(
-                """
+                f"""
                 SELECT b.blocker_id
                 FROM raw_authority_blockers AS b
                 JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
                 WHERE b.resolved_at_ms IS NULL
+                  AND json_extract(b.observed_json, '$.{BLOCKER_ORIGIN_KEY}') IN ({placeholders})
                   AND COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') !=
-                      'polylogue.raw-authority-frontier-plan.v1'
-                """
+                      '{_FRONTIER_WITNESS_SCHEMA}'
+                """,
+                AUTO_CLEARABLE_BLOCKER_ORIGINS,
             ).fetchall()
         )
     resolved_count = 0
@@ -2327,6 +2395,7 @@ def reject_stale_raw_replay_plan(
     """Persist the fail-closed blocker before returning observational output."""
     now = int(time.time() * 1000)
     blocker_id = f"raw-authority-blocker:{_digest([census_id, plan.plan_id, observed])}"
+    recorded_observed = _with_blocker_origin(observed, BLOCKER_ORIGIN_STALE_PLAN)
     outcome = RawReplayPlanOutcome(
         plan.plan_id,
         plan.input_raw_ids,
@@ -2351,7 +2420,7 @@ def reject_stale_raw_replay_plan(
                 census_id,
                 outcome.reason,
                 _canonical_json(plan.to_dict()),
-                _canonical_json(observed),
+                _canonical_json(recorded_observed),
                 now,
             ),
         )
@@ -2395,6 +2464,9 @@ def reject_invalid_raw_replay_application(
     now = int(time.time() * 1000)
     observed = json_document({"application_receipt": receipt, "problems": list(problems)})
     blocker_id = f"raw-authority-blocker:{_digest([census_id, plan.plan_id, observed])}"
+    # Declared origin is stamped after the id digest so an existing blocker's
+    # identity is unchanged by this classification.
+    recorded_observed = _with_blocker_origin(observed, BLOCKER_ORIGIN_INVALID_APPLICATION)
     outcome = RawReplayPlanOutcome(
         plan.plan_id,
         plan.input_raw_ids,
@@ -2419,7 +2491,7 @@ def reject_invalid_raw_replay_application(
                 census_id,
                 outcome.reason,
                 _canonical_json(plan.to_dict()),
-                _canonical_json(observed),
+                _canonical_json(recorded_observed),
                 now,
             ),
         )
@@ -2532,7 +2604,13 @@ def prune_orphaned_index_revision_seeds(
 
 
 __all__ = [
+    "AUTO_CLEARABLE_BLOCKER_ORIGINS",
     "AUTO_STALE_PLAN_RESOLUTION",
+    "BLOCKER_ORIGINS",
+    "BLOCKER_ORIGIN_FRONTIER_OBLIGATION",
+    "BLOCKER_ORIGIN_INVALID_APPLICATION",
+    "BLOCKER_ORIGIN_KEY",
+    "BLOCKER_ORIGIN_STALE_PLAN",
     "RAW_AUTHORITY_CENSUS_QUERY_PREFIX",
     "RAW_AUTHORITY_DETAIL_CHUNK_CHARS",
     "RAW_AUTHORITY_DETAIL_QUERY_PREFIX",
