@@ -579,7 +579,11 @@ def _raw_materialization_readiness_from_pinned_index(
                COUNT(gaps.raw_id) AS total,
                COALESCE(SUM(CASE WHEN gaps.parse_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS parse_failed,
                COALESCE(SUM(CASE WHEN gaps.parsed_at_ms IS NOT NULL AND gaps.parse_error IS NULL THEN 1 ELSE 0 END), 0) AS parsed_without_index_session
-        FROM materialization CROSS JOIN gaps
+        -- LEFT JOIN, not CROSS JOIN: a fully converged archive has no gap
+        -- rows, and a cross join with an empty side leaves every
+        -- non-aggregated materialization column NULL, which the callers below
+        -- coerce to 0 -- reporting a converged archive as an empty one.
+        FROM materialization LEFT JOIN gaps ON 1 = 1
         """
     ).fetchone()
     family_rows = conn.execute(
@@ -759,9 +763,14 @@ def raw_materialization_readiness_snapshot(
                     COALESCE(SUM(CASE WHEN parse_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS parse_failed,
                     COALESCE(SUM(CASE WHEN parsed_at_ms IS NOT NULL AND parse_error IS NULL THEN 1 ELSE 0 END), 0)
                         AS parsed_without_index_session
-                FROM gaps
-                CROSS JOIN materialization
+                -- The one-row totals drive the join, and the gap rows hang off
+                -- them. Driving from ``gaps`` instead leaves every
+                -- non-aggregated total NULL once the archive has converged and
+                -- ``gaps`` is empty, so a fully materialized archive reported
+                -- zero raw artifacts and zero sessions.
+                FROM materialization
                 CROSS JOIN session_count
+                LEFT JOIN gaps ON 1 = 1
                 """
             ).fetchone()
             family_rows = conn.execute(

@@ -2384,3 +2384,72 @@ def test_root_filter_partitions_top_level_and_subagent_sessions(tmp_path: Path) 
     assert root_stats.total_sessions == 1
     assert child_stats.total_sessions == 1
     assert root_stats_by_origin == {"claude-code-session": 1}
+
+
+def test_tool_episode_context_is_bounded_to_three_neighbouring_messages(tmp_path: Path) -> None:
+    """Episode context must concatenate at most three neighbours per side.
+
+    The context columns are bare aggregates. A trailing ``LIMIT 3`` on a
+    ``GROUP_CONCAT`` with no ``GROUP BY`` bounds the aggregate's own single
+    output row, not the rows fed into it, so the aggregate consumed every
+    preceding and following message in the session -- a session-sized read
+    per episode, driven by imported content.
+
+    Anti-vacuity: move the ``LIMIT 3`` back outside the derived tables in
+    ``list_tool_episode_insights`` and this goes red, because all four
+    surrounding messages per side land in the context tuples.
+    """
+    before = [
+        ParsedMessage(
+            provider_message_id=f"before-{index}",
+            role=Role.USER,
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"before {index}")],
+        )
+        for index in range(4)
+    ]
+    episode = ParsedMessage(
+        provider_message_id="episode",
+        role=Role.ASSISTANT,
+        blocks=[
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                tool_name="Bash",
+                tool_id="tool-context",
+                tool_input={"command": "echo hi"},
+            ),
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id="tool-context",
+                text="hi",
+                is_error=False,
+                exit_code=0,
+            ),
+        ],
+    )
+    after = [
+        ParsedMessage(
+            provider_message_id=f"after-{index}",
+            role=Role.USER,
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"after {index}")],
+        )
+        for index in range(4)
+    ]
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-episode-context",
+        updated_at="2026-01-02T00:00:00Z",
+        messages=[*before, episode, *after],
+    )
+
+    with ArchiveStore(tmp_path / "archive") as archive:
+        write_index_session(archive, session)
+        episodes = archive.list_tool_episode_insights()
+
+    assert len(episodes) == 1
+    assert len(episodes[0].context_before) == 3
+    assert len(episodes[0].context_after) == 3
+    # Nearest-first selection, rendered in reading order.
+    assert "before 3" in episodes[0].context_before[-1]
+    assert "before 0" not in "".join(episodes[0].context_before)
+    assert "after 0" in episodes[0].context_after[0]
+    assert "after 3" not in "".join(episodes[0].context_after)

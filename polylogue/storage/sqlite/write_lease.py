@@ -339,6 +339,11 @@ def write_lease(
                 lease.max_hold_seconds,
             )
         _ACTIVE.reset(token)
+        # Release revokes, whether or not the hold succeeded: the delegation
+        # contract is that a stashed delegation authorizes nothing once its
+        # lease is gone, and a failing hold releases the lease just the same.
+        for delegation in lease.delegations:
+            delegation.revoke()
         raise
     else:
         _ACTIVE.reset(token)
