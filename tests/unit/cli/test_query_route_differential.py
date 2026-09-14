@@ -336,3 +336,92 @@ def test_exclude_text_is_withheld_from_the_operation_because_the_routes_disagree
     assert operation_payload["source"] == "daemon"
     assert _ids(operation_payload) == _ids(local_payload)
     assert operation_payload["total"] == local_payload["total"]
+
+
+def test_exclude_text_post_filter_hydrates_in_bounded_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A negative-text page hydrates a bounded prefix, not the whole candidate set.
+
+    ``exclude_text`` has no SQL reduction, so every candidate must be hydrated
+    to be tested.  The route must hydrate in chunks, drop each chunk, and stop
+    once the requested page is full -- a page of 2 must not read 1000 sessions.
+
+    Anti-vacuity: restore the single-pass hydration in
+    ``_archive_list_summaries_with_post_filters`` (one list comprehension over
+    every candidate before filtering) and ``read_session`` is called once per
+    candidate, so the bound assertion goes red.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.api import archive as archive_api
+
+    total = 1000
+    summaries = [SimpleNamespace(session_id=f"codex-session:s{i:04d}", display_label=None) for i in range(total)]
+    reads: list[str] = []
+
+    class _Archive:
+        def count_sessions(self, **kwargs: object) -> int:
+            return total
+
+        def list_summaries(self, **kwargs: object) -> list[SimpleNamespace]:
+            limit = kwargs.get("limit")
+            return summaries[: int(limit)] if isinstance(limit, int) else list(summaries)
+
+        def read_session(self, session_id: str) -> SimpleNamespace:
+            reads.append(session_id)
+            return SimpleNamespace(session_id=session_id)
+
+    spec = SimpleNamespace(
+        to_plan=lambda: SimpleNamespace(
+            _apply_full_filters=lambda sessions, sql_pushed: list(sessions),
+        )
+    )
+
+    def _to_session(envelope: SimpleNamespace, *, display_label: object = None) -> SimpleNamespace:
+        return SimpleNamespace(id=envelope.session_id)
+
+    monkeypatch.setattr(archive_api, "archive_envelope_to_session", _to_session)
+    page = archive_api._archive_list_summaries_with_post_filters(
+        _Archive(),
+        spec,  # type: ignore[arg-type]
+        query_text=None,
+        query_kwargs={"limit": 2},
+        limit=2,
+        offset=0,
+    )
+
+    assert [summary.session_id for summary in page] == ["codex-session:s0000", "codex-session:s0001"]
+    assert len(reads) <= archive_api.POST_FILTER_HYDRATION_CHUNK, (
+        f"hydrated {len(reads)} sessions for a 2-row page; the post-filter is unbounded"
+    )
+    assert len(reads) < total
+
+
+def test_exclude_text_post_filter_refuses_an_over_cap_scope() -> None:
+    """Over the declared cap the route refuses; it never returns a short page.
+
+    Anti-vacuity: delete the ``POST_FILTER_HYDRATION_CAP`` check in
+    ``_post_filter_candidates`` and no refusal is raised, so ``pytest.raises``
+    fails.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.api import archive as archive_api
+
+    class _HugeArchive:
+        def count_sessions(self, **kwargs: object) -> int:
+            return archive_api.POST_FILTER_HYDRATION_CAP + 1
+
+        def list_summaries(self, **kwargs: object) -> list[SimpleNamespace]:
+            raise AssertionError("candidates must not be fetched above the cap")
+
+    spec = SimpleNamespace(to_plan=lambda: SimpleNamespace(_apply_full_filters=lambda sessions, sql_pushed: sessions))
+    with pytest.raises(archive_api.PostFilterScopeTooLargeError) as excinfo:
+        archive_api._archive_list_summaries_with_post_filters(
+            _HugeArchive(),
+            spec,  # type: ignore[arg-type]
+            query_text=None,
+            query_kwargs={},
+            limit=1,
+            offset=0,
+        )
+    assert excinfo.value.gap_reason.startswith("post_filter_scope_too_large:")

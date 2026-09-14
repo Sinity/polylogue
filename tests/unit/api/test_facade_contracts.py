@@ -6525,3 +6525,51 @@ async def test_facade_candidate_queue_includes_agent_authored_terminal_notes(
         assert queued[0].kind is AssertionKind.NOTE
     finally:
         await archive.close()
+
+
+async def test_resolve_ref_actions_quote_archive_derived_refs(tmp_path: Path) -> None:
+    """Printed copy-pasteable commands cannot carry a ref's shell metacharacters.
+
+    A provider-native conversation id is untrusted import data: the ChatGPT
+    parser takes it verbatim from export JSON and it survives into
+    ``session_id``.  The recommended command must therefore quote the complete
+    argument, so an id like ``innocent; touch /tmp/pwned #`` stays one token.
+
+    Anti-vacuity: restore the f-string interpolation in ``_resolution_action``'s
+    call sites (``f"polylogue find id:{session_id} then read"``) and the command
+    splits into a ``;``-separated token stream, so the single-token assertion
+    goes red.
+    """
+    import shlex
+
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            session_id = write_index_session(
+                archive_db,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="innocent; touch /tmp/pwned #",
+                    title="Injection fixture",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="hello",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
+                        )
+                    ],
+                ),
+            )
+
+        payload = await archive.resolve_ref(f"session:{session_id}")
+        assert payload.resolved is True
+        commands = [action.command for action in payload.actions if action.command]
+        assert commands, "resolution offered no command to check"
+        for command in commands:
+            tokens = shlex.split(command)
+            assert ";" not in tokens and "touch" not in tokens, command
+            assert any(session_id in token for token in tokens), command
+            assert shlex.join(tokens) == command, command
+    finally:
+        await archive.close()

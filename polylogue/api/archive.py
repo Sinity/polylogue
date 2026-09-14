@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from contextlib import closing, contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
+from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
@@ -96,6 +97,7 @@ from polylogue.surfaces.chronicle import (
     build_chronicle_projection_payload,
     build_chronicle_session_payload,
 )
+from polylogue.surfaces.operator_commands import is_shell_quote_canonical, quote_ref_argument
 from polylogue.surfaces.temporal_evidence import (
     TemporalEvidenceEvent,
     TemporalEvidenceWindow,
@@ -387,9 +389,45 @@ def _archive_action_terms(field: str, values: Sequence[str]) -> tuple[str, ...]:
     return normalize_action_terms(field, tuple(values))
 
 
+def _shell_safe_command(command: str) -> str:
+    """Return ``command`` only if it is already shell-quote canonical.
+
+    Printed guidance is copy-pasteable: an operator runs it verbatim, so an
+    unquoted archive-derived ref carries provider-controlled syntax into the
+    operator's shell. Building a command with :func:`_find_ref_command`
+    satisfies this by construction, so a new call site that forgets to quote
+    raises here instead of printing an injection.
+
+    A literal placeholder such as ``<QUERY>`` is not canonical either (``<`` is
+    a redirect): quote it, exactly as a real ref would be.
+    """
+
+    if not is_shell_quote_canonical(command):
+        raise ValueError(
+            "resolution command is not shell-quote canonical (quote archive-derived "
+            f"refs with polylogue.surfaces.operator_commands.quote_ref_argument): {command!r}"
+        )
+    return command
+
+
+def _find_ref_command(ref: str, *, id_prefixed: bool = True, tail: str = "") -> str:
+    """Build a copy-pasteable find/read command with the ref quoted as one token.
+
+    The complete argument -- ``id:`` prefix included -- is quoted together, and
+    control characters are escaped to a visible form first, so no part of an
+    archive-derived ref reaches the operator's shell or terminal as syntax.
+    """
+
+    argument = quote_ref_argument(str(ref), id_prefixed=id_prefixed)
+    suffix = f" {tail}" if tail else ""
+    return _shell_safe_command("polylogue find " + argument + " then read" + suffix)
+
+
 def _resolution_action(label: str, command: str | None = None, href: str | None = None) -> Any:
     from polylogue.surfaces.payloads import RefResolutionActionPayload
 
+    if command is not None:
+        command = _shell_safe_command(command)
     return RefResolutionActionPayload(label=label, command=command, href=href)
 
 
@@ -788,6 +826,125 @@ def _archive_list_summaries_for_spec(
     return cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
 
 
+#: Declared ceiling on how many candidate sessions one content-dependent
+#: post-filter pass (``exclude_text``/``-text:``) may hydrate. Beyond it the
+#: operation refuses with a named gap rather than silently returning a
+#: shortened page: a cap that quietly truncates would make "no matches" and
+#: "too many candidates to check" indistinguishable.
+POST_FILTER_HYDRATION_CAP = 20_000
+
+#: Candidate sessions hydrated per post-filter chunk. Each chunk's ``Session``
+#: objects are dropped before the next chunk is built, so peak memory is one
+#: chunk rather than the whole candidate set.
+POST_FILTER_HYDRATION_CHUNK = 200
+
+
+class PostFilterScopeTooLargeError(PolylogueError):
+    """Typed refusal: a content-dependent filter scope exceeds the hydration cap.
+
+    ``exclude_text`` has no SQL reduction, so every candidate session must be
+    hydrated into a domain object to be tested. Without a cap a non-matching
+    term over a live archive hydrates the whole corpus at once; the SQLite
+    execution deadline interrupts statements, not Python-side materialization.
+    """
+
+    code = "post_filter_scope_too_large"
+    http_status_code: int = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+
+    def __init__(self, *, candidate_count: int, cap: int) -> None:
+        self.candidate_count = candidate_count
+        self.cap = cap
+        super().__init__(
+            f"content-dependent text exclusion would hydrate {candidate_count} candidate sessions, "
+            f"above the declared cap of {cap}; narrow the scope (origin:, after:, repo:, a positive "
+            "text term) and retry"
+        )
+
+    @property
+    def gap_reason(self) -> str:
+        """The named gap surfaces carry when they degrade instead of erroring."""
+
+        return f"{self.code}:{self.candidate_count}>{self.cap}"
+
+
+def _post_filter_candidates(
+    archive: Any,
+    *,
+    query_text: str | None,
+    query_kwargs: dict[str, object],
+) -> list[ArchiveSessionSummary]:
+    """Fetch the SQL candidate set for a post-filtered spec, capped and counted.
+
+    The cap is checked against the archive's own count before any candidate row
+    is fetched where the store supports it, and again against the fetched set,
+    so a store without a counting surface is still bounded.
+    """
+
+    query_kwargs = dict(query_kwargs)
+    query_kwargs.pop("limit", None)
+    query_kwargs["offset"] = 0
+    count_kwargs = {
+        key: value for key, value in query_kwargs.items() if key not in {"offset", "sort", "reverse", "sample"}
+    }
+    total: int | None
+    try:
+        if query_text is not None:
+            total = int(archive.count_search_sessions(query_text, **count_kwargs))
+        else:
+            total = int(archive.count_sessions(**count_kwargs))
+    except (AttributeError, TypeError):
+        total = None
+    if total is not None and total > POST_FILTER_HYDRATION_CAP:
+        raise PostFilterScopeTooLargeError(candidate_count=total, cap=POST_FILTER_HYDRATION_CAP)
+    # One row beyond the cap is fetched so an over-cap set stays detectable
+    # even when the store offers no count.
+    query_kwargs["limit"] = POST_FILTER_HYDRATION_CAP + 1
+    if query_text is not None:
+        query_kwargs.pop("sample", None)
+        candidates = [
+            archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)
+        ]
+    else:
+        candidates = cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
+    if len(candidates) > POST_FILTER_HYDRATION_CAP:
+        raise PostFilterScopeTooLargeError(candidate_count=len(candidates), cap=POST_FILTER_HYDRATION_CAP)
+    return candidates
+
+
+def _iter_post_filtered_summaries(
+    archive: Any,
+    spec: SessionQuerySpec,
+    candidates: Sequence[ArchiveSessionSummary],
+    *,
+    needed: int | None,
+) -> Iterator[ArchiveSessionSummary]:
+    """Yield post-filter survivors, hydrating one bounded chunk at a time.
+
+    Follows the sibling executor's bounded post-filter fetch
+    (``archive_execution._fetch_limit``/``post_filter_fetch``): hydrate a batch,
+    keep its survivors, drop the batch, and stop as soon as the requested page
+    is full.
+    """
+
+    plan = spec.to_plan()
+    produced = 0
+    for start in range(0, len(candidates), POST_FILTER_HYDRATION_CHUNK):
+        chunk = candidates[start : start + POST_FILTER_HYDRATION_CHUNK]
+        sessions = [
+            archive_envelope_to_session(archive.read_session(summary.session_id), display_label=summary.display_label)
+            for summary in chunk
+        ]
+        matched_ids = {str(session.id) for session in plan._apply_full_filters(sessions, sql_pushed=True)}
+        del sessions
+        for summary in chunk:
+            if summary.session_id not in matched_ids:
+                continue
+            yield summary
+            produced += 1
+            if needed is not None and produced >= needed:
+                return
+
+
 def _archive_list_summaries_with_post_filters(
     archive: Any,
     spec: SessionQuerySpec,
@@ -798,27 +955,10 @@ def _archive_list_summaries_with_post_filters(
     offset: int | None,
 ) -> list[ArchiveSessionSummary]:
     """Apply content-dependent spec filters after the SQL candidate query."""
-    query_kwargs = dict(query_kwargs)
-    query_kwargs.pop("limit", None)
-    query_kwargs["offset"] = 0
-    query_kwargs["limit"] = 1_000_000
-    if query_text is not None:
-        query_kwargs.pop("sample", None)
-        candidates = [
-            archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)
-        ]
-    else:
-        candidates = cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
-
-    sessions = [
-        archive_envelope_to_session(archive.read_session(summary.session_id), display_label=summary.display_label)
-        for summary in candidates
-    ]
-    matched = spec.to_plan()._apply_full_filters(sessions, sql_pushed=True)
-    matched_ids = {str(session.id) for session in matched}
-    filtered = [summary for summary in candidates if summary.session_id in matched_ids]
+    candidates = _post_filter_candidates(archive, query_text=query_text, query_kwargs=query_kwargs)
     start = offset if offset is not None else 0
     end = None if limit is None else start + limit
+    filtered = list(_iter_post_filtered_summaries(archive, spec, candidates, needed=end))
     return filtered[start:end]
 
 
@@ -839,15 +979,14 @@ def _archive_search_hits_for_spec(
 
 def _archive_count_sessions_for_spec(archive: Any, spec: SessionQuerySpec) -> int:
     if spec.exclude_text_terms:
-        return len(
-            _archive_list_summaries_for_spec(
-                archive,
-                spec,
-                default_limit=1_000_000,
-                limit=None,
-                offset=0,
-            )
+        # Consume the same chunked iterator: counting must not hydrate the
+        # candidate set in one pass, nor hold every survivor's session object.
+        candidates = _post_filter_candidates(
+            archive,
+            query_text=_archive_text_query(spec),
+            query_kwargs=_archive_query_kwargs(spec, default_limit=1_000_000),
         )
+        return sum(1 for _ in _iter_post_filtered_summaries(archive, spec, candidates, needed=None))
     query_kwargs = _archive_query_kwargs(spec, default_limit=None)
     for key in ("limit", "offset", "sort", "reverse", "sample"):
         query_kwargs.pop(key, None)
@@ -4562,7 +4701,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             summary=f"{summary_payload.message_count} messages",
             object_refs=(f"session:{session_id}",),
             evidence_refs=() if evidence_ref is None else (evidence_ref.format(),),
-            actions=(_resolution_action("read", f"polylogue find id:{session_id} then read --format json"),),
+            actions=(_resolution_action("read", _find_ref_command(session_id, tail="--format json")),),
         )
 
     def _resolve_message_object_ref(
@@ -4616,7 +4755,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             summary=(message.text or "")[:240],
             object_refs=(f"session:{session_id}", f"message:{message_id}"),
             evidence_refs=() if evidence_ref is None else (evidence_ref.format(),),
-            actions=(_resolution_action("read session", f"polylogue find id:{session_id} then read --view messages"),),
+            actions=(_resolution_action("read session", _find_ref_command(session_id, tail="--view messages")),),
         )
 
     def _resolve_block_object_ref(
@@ -4691,7 +4830,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             object_refs=(f"session:{payload.session_id}", f"message:{payload.message_id}", f"block:{payload.block_id}"),
             evidence_refs=() if evidence_ref is None else (evidence_ref.format(),),
             actions=(
-                _resolution_action("read message", f"polylogue find id:{payload.session_id} then read --view messages"),
+                _resolution_action("read message", _find_ref_command(payload.session_id, tail="--view messages")),
             ),
         )
 
@@ -4731,7 +4870,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             summary=payload.body_text,
             object_refs=(normalized_ref, payload.target_ref),
             evidence_refs=payload.evidence_refs,
-            actions=(_resolution_action("list assertion target", f"polylogue find {payload.target_ref} then read"),),
+            actions=(
+                _resolution_action("list assertion target", _find_ref_command(payload.target_ref, id_prefixed=False)),
+            ),
         )
 
     def _resolve_finding_object_ref(
@@ -4818,7 +4959,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             object_refs=object_refs,
             evidence_refs=tuple(item.ref for item in provenance.evidence),
             caveats=caveats,
-            actions=(_resolution_action("list target evidence", f"polylogue find {provenance.target_ref} then read"),),
+            actions=(
+                _resolution_action("list target evidence", _find_ref_command(provenance.target_ref, id_prefixed=False)),
+            ),
         )
 
     @staticmethod
@@ -4914,7 +5057,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             public_normalized_ref = None
         actions: tuple[RefResolutionActionPayload, ...] = ()
         if not payload.target_ref.truncated:
-            actions = (_resolution_action("read annotation target", f"polylogue find {batch.target_ref} then read"),)
+            actions = (
+                _resolution_action("read annotation target", _find_ref_command(batch.target_ref, id_prefixed=False)),
+            )
         return PublicRefResolutionPayload(
             ref=public_ref,
             normalized_ref=public_normalized_ref,
@@ -5002,9 +5147,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             object_refs=tuple(object_refs),
             evidence_refs=payload.evidence_refs,
             caveats=caveats,
-            actions=(
-                _resolution_action("read parent session", f"polylogue find id:{attempt.parent_session_id} then read"),
-            ),
+            actions=(_resolution_action("read parent session", _find_ref_command(attempt.parent_session_id)),),
         )
 
     def _resolve_delegation_ancestry_object_ref(
@@ -5039,7 +5182,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             summary=f"{len(payload.nodes)} node(s), root-to-node",
             object_refs=object_refs,
             evidence_refs=(),
-            actions=(_resolution_action("read queried session", f"polylogue find id:{session_id} then read"),),
+            actions=(_resolution_action("read queried session", _find_ref_command(session_id)),),
         )
 
     def _resolve_delegation_subtree_object_ref(
@@ -5074,7 +5217,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             summary=f"{payload.max_depth} level(s) deep",
             object_refs=object_refs,
             evidence_refs=(),
-            actions=(_resolution_action("read root session", f"polylogue find id:{session_id} then read"),),
+            actions=(_resolution_action("read root session", _find_ref_command(session_id)),),
         )
 
     def _resolve_runtime_object_ref(
@@ -5960,16 +6103,27 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         scoped_to_query = spec is not None and spec.has_filters()
         started_at = time.perf_counter()
-        global_buckets, scoped_buckets = await run_archive_read(
+
+        def _facet_work(archive: Any) -> tuple[Any, Any, str | None]:
+            # A scope too large to post-filter is a named gap, not a silently
+            # shortened bucket set: the caller must be able to tell "no rows"
+            # from "the exclusion could not be evaluated over this scope".
+            global_b = _archive_facet_buckets(archive, None, include_deferred=include_deferred)
+            if not scoped_to_query:
+                return global_b, global_b, None
+            try:
+                scoped_b = _archive_facet_buckets(archive, spec, include_deferred=include_deferred)
+            except PostFilterScopeTooLargeError as exc:
+                from polylogue.archive.query.facets import FacetBuckets
+
+                return global_b, FacetBuckets(), exc.gap_reason
+            return global_b, scoped_b, None
+
+        global_buckets, scoped_buckets, post_filter_gap = await run_archive_read(
             _active_archive_root(self.config),
             operation="archive.facets",
             arguments={"spec": spec, "include_deferred": include_deferred},
-            work=lambda archive: (
-                _archive_facet_buckets(archive, None, include_deferred=include_deferred),
-                _archive_facet_buckets(archive, spec, include_deferred=include_deferred)
-                if scoped_to_query
-                else _archive_facet_buckets(archive, None, include_deferred=include_deferred),
-            ),
+            work=_facet_work,
             projection="facets",
             workload_class="scan",
         )
@@ -5985,6 +6139,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         facet_gaps: list[str] = []
         if availability.state != "ready":
             facet_gaps.append(f"facets_{availability.state}")
+        if post_filter_gap is not None:
+            facet_gaps.append(post_filter_gap)
         return FacetsResponse.model_validate(
             {
                 "outcome": decide_outcome(matched=active.total_sessions, degraded=facet_gaps),

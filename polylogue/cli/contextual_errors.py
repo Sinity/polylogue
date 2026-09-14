@@ -12,33 +12,18 @@ names at least one thing to do.
 
 from __future__ import annotations
 
-import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import ClassVar
 
 import click
 
+from polylogue.surfaces.operator_commands import display_ref, quote_ref_argument
+
 #: How many refs an ambiguity refusal lists, and the probe depth that feeds it.
 #: Bounded because the refusal is read by a human or parsed by one consumer,
 #: not because the selection is bounded.
 AMBIGUITY_CANDIDATE_LIMIT = 10
-
-
-def display_ref(ref: str) -> str:
-    """Render an archive-derived ref with control characters made visible.
-
-    A session ref carries the provider's own native id verbatim
-    (``session_id = origin || ':' || native_id``), and no import path
-    restricts what bytes a provider may put there. An id carrying ESC or CR
-    can repaint or rewrite the surrounding terminal line, so a refusal
-    listing candidates would be spoofable by the very export it is refusing
-    to disambiguate. Escaping is visible rather than silent: the operator
-    sees ``\\x1b`` and knows the ref is not the plain text it resembles.
-    """
-    return "".join(
-        character if character.isprintable() or character == " " else f"\\x{ord(character):02x}" for character in ref
-    )
 
 
 def ref_command_argument(ref: str) -> str:
@@ -50,12 +35,11 @@ def ref_command_argument(ref: str) -> str:
     renders as ``polylogue find id:innocent; touch /tmp/pwned # then delete``
     and runs the injected command as the archive owner on paste.
 
-    Control characters are escaped before quoting, so a ref that cannot be
-    displayed honestly also cannot be pasted as if it were intact -- the
-    command shown is then explicitly not the literal ref, which is the
-    correct signal, not a silently mangled one.
+    Shares :mod:`polylogue.surfaces.operator_commands` with the API surface so
+    the CLI's and the API's rendering of an untrusted ref cannot drift apart.
     """
-    return shlex.quote(f"id:{display_ref(ref)}")
+
+    return quote_ref_argument(ref)
 
 
 @dataclass(frozen=True, slots=True)
