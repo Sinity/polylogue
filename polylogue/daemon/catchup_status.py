@@ -15,10 +15,8 @@ from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-logger = get_logger(__name__)
 
 
 class CatchupStageEvent(BaseModel):
@@ -239,7 +237,15 @@ def _halted_sources(ops_db: Path) -> list[HaltedSourceStatus]:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("halted-source query failed for %s: %s", ops_db, exc, exc_info=True)
+        emit(
+            "daemon.catchup.halted_source_query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="halted_sources_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return []
     latest_by_source: dict[str, HaltedSourceStatus] = {}
     for row in rows:
@@ -294,7 +300,15 @@ def _recent_stage_events(dbf: Path, *, ops_db: Path | None = None) -> list[Catch
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("catchup live stage-event query failed for %s: %s", dbf, exc, exc_info=True)
+        emit(
+            "daemon.catchup.stage_event_query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="live_stage_events_unreadable",
+            path=dbf,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return []
     return [_catchup_stage_event_from_row(row) for row in rows]
 
@@ -321,7 +335,15 @@ def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("catchup archive stage-event query failed for %s: %s", ops_db, exc, exc_info=True)
+        emit(
+            "daemon.catchup.stage_event_query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="archive_stage_events_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return []
     return [_archive_catchup_stage_event_from_row(row) for row in rows]
 

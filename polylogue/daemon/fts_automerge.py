@@ -23,9 +23,7 @@ import sqlite3
 from contextlib import suppress
 from pathlib import Path
 
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
+from polylogue.logging import DEBUG, WARNING, emit
 
 
 def _fts_surfaces(conn: sqlite3.Connection) -> tuple[str, ...]:
@@ -67,7 +65,7 @@ def configure_fts_automerge_sync(conn: sqlite3.Connection) -> list[str]:
             configured.append(surface)
     if configured:
         conn.commit()
-        logger.info("daemon: FTS5 automerge=0 set for %s", ", ".join(configured))
+        emit("daemon.fts.automerge_configured", outcome="ok", rows=len(configured))
     return configured
 
 
@@ -98,11 +96,33 @@ def run_periodic_fts_merge_sync(db: Path) -> None:
                 merged.append(surface)
         if merged:
             conn.commit()
-            logger.debug("daemon: FTS5 periodic merge (%d units) for %s", _PERIODIC_MERGE_WORK_UNITS, ", ".join(merged))
-    except sqlite3.OperationalError:
-        logger.debug("daemon: FTS5 periodic merge skipped — database busy")
-    except Exception:
-        logger.warning("daemon: FTS5 periodic merge failed", exc_info=True)
+            emit(
+                "daemon.fts.periodic_merge",
+                level=DEBUG,
+                outcome="ok",
+                rows=len(merged),
+                limit=_PERIODIC_MERGE_WORK_UNITS,
+                path=db,
+            )
+    except sqlite3.OperationalError as exc:
+        emit(
+            "daemon.fts.periodic_merge_skipped",
+            level=DEBUG,
+            outcome="skipped",
+            reason="database_busy",
+            path=db,
+            error_detail=str(exc),
+        )
+    except Exception as exc:
+        emit(
+            "daemon.fts.periodic_merge_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="merge_failed",
+            path=db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
     finally:
         if conn is not None:
             with suppress(Exception):

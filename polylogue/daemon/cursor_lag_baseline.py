@@ -46,7 +46,7 @@ from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.stats import percentile
 from polylogue.core.write_lease import write_lease
 from polylogue.daemon.cursor_lag_status import CursorLagItem, CursorLagSummary
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 from polylogue.sources.live._lag_sample_ddl import _LAG_SAMPLE_DDL, _LAG_SAMPLE_INDEX_DDL
 from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
@@ -54,8 +54,6 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-logger = get_logger(__name__)
 
 
 def ensure_lag_sample_table(conn: sqlite3.Connection) -> None:
@@ -333,7 +331,16 @@ def _load_archive_family_baseline(
         # which is directionally safe (the anomaly check already refuses to
         # alert off an unconfident baseline) but identical to "not enough
         # samples yet" without this log line.
-        logger.warning("cursor-lag family baseline query failed for %s (%s): %s", ops_db, family, exc, exc_info=True)
+        emit(
+            "daemon.cursor_lag.baseline_query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="family_baseline_unreadable",
+            path=ops_db,
+            family=family,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
     lags = sorted(float(row[0]) / 1000.0 for row in rows)
     count = len(lags)
