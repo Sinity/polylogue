@@ -101,6 +101,16 @@ class IntakeAdapter(Protocol):
         """Release the item's queue entry. Atomic and idempotent."""
 
 
+DEFAULT_INTAKE_BYTE_BUDGET = 64 * 1024 * 1024
+"""Payload bytes a single dispatcher pass may charge across all classes.
+
+Every adapter denominates ``IntakeItem.estimated_cost`` in payload bytes and
+reconciles against ``source_payload_read_bytes``, so the cycle budget shares
+that unit. Declared once here; ``DaemonIntakeService`` reads it rather than
+keeping a second copy.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class IntakeClassSpec:
     """One scheduled class of intake work."""
@@ -224,7 +234,7 @@ class FairIntakeDispatcher:
         """Item identities this process has set aside in *class_name*."""
         return frozenset(self._runtime[class_name].isolated)
 
-    async def run_once(self, *, budget: int = 64) -> IntakePass:
+    async def run_once(self, *, budget: int = DEFAULT_INTAKE_BYTE_BUDGET) -> IntakePass:
         """Run one bounded pass and return what each class achieved."""
         started = self._clock()
         schedulable = self.schedulable_classes()
@@ -263,7 +273,13 @@ class FairIntakeDispatcher:
         if runtime.deficit <= 0:
             return IntakeClassReport(name=spec.name)
 
-        limit = min(spec.page_size, runtime.deficit)
+        # ``page_size`` bounds the discovery call in rows; ``deficit`` is
+        # denominated in payload bytes, so it cannot bound a row count. The
+        # admission loop below is what spends the deficit.
+        # ``page_size`` bounds the discovery call in rows; ``deficit`` is
+        # denominated in payload bytes, so it cannot bound a row count. The
+        # admission loop below is what spends the deficit.
+        limit = spec.page_size
         try:
             page: list[IntakeItem] = list(await _maybe_await(spec.adapter.discover(limit=limit)))
         except Exception as exc:

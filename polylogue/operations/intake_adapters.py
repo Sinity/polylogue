@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, TypeVar, cast
 
 from polylogue.daemon.intake import (
+    DEFAULT_INTAKE_BYTE_BUDGET,
     AdmissionOutcome,
     AdmissionResult,
     FairIntakeDispatcher,
@@ -525,20 +526,16 @@ class DaemonIntakeService:
         self,
         dispatcher: FairIntakeDispatcher,
         *,
-        budget: int = 64 * 1024 * 1024,
+        budget: int = DEFAULT_INTAKE_BYTE_BUDGET,
         idle_delay_s: float = 5.0,
         wakeup: asyncio.Event | None = None,
     ) -> None:
         self.dispatcher = dispatcher
-        # Byte-denominated, because that is what these adapters charge:
-        # ``FileIntakeAdapter`` and the hook/raw adapters all report
-        # ``estimated_cost`` in payload bytes and reconcile against
-        # ``source_payload_read_bytes``. A count-scale budget (the previous 64)
-        # left a class's per-pass share three to four orders of magnitude below
-        # one ordinary session file, so a single admission drove the deficit
-        # deeply negative and the class did no work at all for hundreds of
-        # passes. ``IntakeClassSpec.page_size`` still bounds each discovery
-        # call, so this bounds bytes per pass, not items.
+        # A count-scale budget (the previous literal 64) left a class's
+        # per-pass share three to four orders of magnitude below one ordinary
+        # session file, so a single admission drove the deficit deeply
+        # negative and the class did no work for hundreds of passes.
+        # ``DEFAULT_INTAKE_BYTE_BUDGET`` declares the unit.
         self.budget = max(1, budget)
         self.idle_delay_s = max(0.05, idle_delay_s)
         self._wakeup = wakeup if wakeup is not None else asyncio.Event()

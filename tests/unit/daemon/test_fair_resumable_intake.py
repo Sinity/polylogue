@@ -704,3 +704,50 @@ def test_duplicate_class_names_are_refused() -> None:
                 IntakeClassSpec(name="hooks", adapter=adapter),
             ]
         )
+
+
+class ByteCostAdapter(FakeAdapter):
+    """A spool whose items carry real payload sizes, as production adapters do."""
+
+    def __init__(self, class_name: str, pending: Sequence[str], *, item_bytes: int) -> None:
+        super().__init__(class_name, pending)
+        self._item_bytes = item_bytes
+
+    async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        self.discover_calls.append(limit)
+        return [
+            IntakeItem(item_id=name, class_name=self.class_name, estimated_cost=self._item_bytes)
+            for name in self.pending[:limit]
+        ]
+
+
+@pytest.mark.asyncio
+async def test_default_cycle_budget_admits_ordinary_sized_payloads() -> None:
+    """The default budget is denominated in the bytes adapters actually charge.
+
+    Red if ``run_once`` reverts to a count-scale default: a 2 MiB session file
+    then exceeds one whole pass, so exactly one item is admitted and the class
+    spends tens of thousands of passes climbing out of a negative deficit.
+    """
+    adapter = ByteCostAdapter("files", [f"f{index}" for index in range(32)], item_bytes=2 * 1024 * 1024)
+    dispatcher = FairIntakeDispatcher((IntakeClassSpec(name="files", adapter=adapter),))
+
+    result = await dispatcher.run_once()
+
+    assert [report.admitted for report in result.classes] == [32]
+
+
+@pytest.mark.asyncio
+async def test_discovery_page_is_bounded_by_rows_not_by_the_byte_deficit() -> None:
+    """Discovery asks for ``page_size`` rows however few bytes remain.
+
+    Red if ``limit`` is derived from ``runtime.deficit`` again: the deficit is
+    payload bytes, so a partly spent one silently shrinks the row page — and a
+    deficit of, say, three bytes would request three files.
+    """
+    adapter = ByteCostAdapter("files", [f"f{index}" for index in range(8)], item_bytes=4)
+    dispatcher = FairIntakeDispatcher((IntakeClassSpec(name="files", adapter=adapter, page_size=8),))
+
+    await dispatcher.run_once(budget=6)
+
+    assert adapter.discover_calls == [8]
