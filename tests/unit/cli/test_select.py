@@ -7,21 +7,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from polylogue.archive.query.spec import QuerySpecError
 from polylogue.archive.session.domain_models import SessionSummary
+from polylogue.cli.operation_kernel import OperationRequest
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.select import (
     SelectSessionRow,
     _parse_fzf_output,
-    _spec_needs_vector_provider,
-    async_run_select,
     choose_select_row,
     render_select_row,
     render_select_rows,
+    run_select,
     select_row_from_result,
 )
 from polylogue.cli.shared.types import AppEnv
@@ -218,55 +218,54 @@ def test_parse_fzf_output_returns_selected_id() -> None:
     assert _parse_fzf_output("\n") is None
 
 
-@pytest.mark.asyncio
-async def test_select_session_rows_compiles_query_terms_before_filtering(tmp_path: Path) -> None:
-    from polylogue.archive.query.spec import SessionQuerySpec
-    from polylogue.cli.select import select_session_rows
+def test_select_reads_rows_from_one_declared_query_operation(tmp_path: Path) -> None:
+    """Selection asks the declared read, and takes rows from either page shape.
 
-    captured: dict[str, SessionQuerySpec] = {}
+    ``select`` used to build a ``SessionQuerySpec`` and run its own filter chain
+    against the local archive. It now dispatches ``cli.query`` -- the same read
+    ``find`` runs, so a daemon answers a selection exactly as it answers a query
+    -- forwarding the operator's terms and the row limit, and projects the
+    operation's rows into selector rows. A ranked selection reports ``hits``
+    whose session is nested, so both shapes are read.
 
-    class _Filter:
-        def can_use_summaries(self) -> bool:
-            return True
+    Anti-vacuity: read only ``items`` and the ranked case yields no rows; stop
+    forwarding ``limit`` and the payload assertion goes red.
+    """
+    from polylogue.cli.session_rows import query_session_rows
 
-        async def list_summaries(self) -> list[SessionSummary]:
-            return []
-
-    def _build_filter(
-        self: SessionQuerySpec,
-        config: Config,
-        *,
-        vector_provider: object | None = None,
-    ) -> _Filter:
-        del config, vector_provider
-        captured["spec"] = self
-        return _Filter()
-
-    env = cast(
-        AppEnv,
-        SimpleNamespace(
-            config=Config(
-                archive_root=tmp_path,
-                db_path=tmp_path / "index.db",
-                render_root=tmp_path / "render",
-                sources=[],
-            )
-        ),
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
     )
     request = RootModeRequest.from_params({"query": ("id:abc",)})
+    captured: dict[str, object] = {}
+    page: dict[str, object] = {}
 
-    with (
-        patch("polylogue.cli.query._create_query_vector_provider", return_value=None) as vector_provider,
-        patch.object(SessionQuerySpec, "build_filter", _build_filter),
-    ):
-        assert await select_session_rows(env, request, limit=3) == []
+    def _dispatch(_config: Config, operation_request: OperationRequest, **_kwargs: object) -> object:
+        captured["operation"] = operation_request.operation
+        captured["payload"] = operation_request.payload
+        return SimpleNamespace(value=dict(page), authority={}, envelope=None)
 
-    vector_provider.assert_not_called()
+    row = {"id": "conv-7", "origin": "claude-code-session", "title": "Seven", "message_count": 3}
 
-    spec = captured["spec"]
-    assert spec.session_id == "abc"
-    assert spec.query_terms == ()
-    assert spec.limit == 3
+    with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
+        page.clear()
+        page.update({"items": [row], "total": 1})
+        listed = query_session_rows(config, request, limit=3)
+
+        page.clear()
+        page.update({"hits": [{"session": row, "match": {"rank": 1}}], "total": 1})
+        ranked = query_session_rows(config, request, limit=3)
+
+    assert captured["operation"] == "cli.query"
+    params = cast("dict[str, object]", cast("dict[str, object]", captured["payload"])["params"])
+    assert params["query"] == ["id:abc"]
+    assert params["limit"] == 3
+    assert [r.session_id for r in listed] == ["conv-7"]
+    assert [r.session_id for r in ranked] == ["conv-7"]
+    assert listed[0].title == "Seven"
 
 
 def test_noninteractive_select_does_not_initialize_ui() -> None:
@@ -282,67 +281,112 @@ def test_noninteractive_select_does_not_initialize_ui() -> None:
         assert choose_select_row(cast(AppEnv, _Env()), [_row(1), _row(2)]) is None
 
 
-@pytest.mark.parametrize(
-    ("retrieval_lane", "similar_text", "similar_session_id", "expected"),
-    [
-        ("auto", None, None, False),
-        ("dialogue", None, None, False),
-        ("hybrid", None, None, True),
-        ("auto", "semantic prompt", None, True),
-        ("auto", None, "session-ref", True),
-    ],
-)
-def test_spec_needs_vector_provider_only_for_semantic_shapes(
-    retrieval_lane: str,
-    similar_text: str | None,
-    similar_session_id: str | None,
-    expected: bool,
-) -> None:
-    spec = SimpleNamespace(
-        retrieval_lane=retrieval_lane,
-        similar_text=similar_text,
-        similar_session_id=similar_session_id,
-    )
-
-    assert _spec_needs_vector_provider(spec) is expected
-
-
-@pytest.mark.asyncio
-async def test_async_run_select_prints_candidates_when_selection_is_ambiguous(
+def test_run_select_prints_candidates_when_selection_is_ambiguous(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    env = cast(AppEnv, SimpleNamespace(ui=MagicMock()))
+    env = cast(AppEnv, SimpleNamespace(ui=MagicMock(), config=MagicMock()))
     request = RootModeRequest.from_params({})
 
     with (
-        patch("polylogue.cli.select.select_session_rows", AsyncMock(return_value=[_row(1), _row(2)])),
+        patch("polylogue.cli.session_rows.query_session_rows", return_value=[_row(1), _row(2)]),
         patch("polylogue.cli.select.choose_select_row", return_value=None),
     ):
-        await async_run_select(env, request, limit=10, print_field="id")
+        run_select(env, request, limit=10, print_field="id")
     captured = capsys.readouterr()
     assert captured.out == "conv-1\nconv-2\n"
     assert captured.err == ""
 
-    with patch("polylogue.cli.select.select_session_rows", AsyncMock(return_value=[])):
+    with patch("polylogue.cli.session_rows.query_session_rows", return_value=[]):
         with pytest.raises(SystemExit) as exc_info:
-            await async_run_select(env, request, limit=10, print_field="id")
+            run_select(env, request, limit=10, print_field="id")
     assert exc_info.value.code == 2
     assert "No sessions matched." in capsys.readouterr().err
 
 
-@pytest.mark.asyncio
-async def test_async_run_select_formats_query_errors(capsys: pytest.CaptureFixture[str]) -> None:
-    env = cast(AppEnv, SimpleNamespace(ui=MagicMock()))
+def test_run_select_formats_query_errors(capsys: pytest.CaptureFixture[str]) -> None:
+    env = cast(AppEnv, SimpleNamespace(ui=MagicMock(), config=MagicMock()))
     request = RootModeRequest.from_params({})
 
     with patch(
-        "polylogue.cli.select.select_session_rows",
-        AsyncMock(side_effect=QuerySpecError("since", "bogus")),
+        "polylogue.cli.session_rows.query_session_rows",
+        side_effect=QuerySpecError("since", "bogus"),
     ):
         with pytest.raises(SystemExit) as exc_info:
-            await async_run_select(env, request, limit=10, print_field="id")
+            run_select(env, request, limit=10, print_field="id")
 
     assert exc_info.value.code == 1
     err = capsys.readouterr().err
     assert "Cannot parse date: 'bogus'" in err
     assert "Hint: use ISO format" in err
+
+
+def test_selection_of_an_absent_session_is_empty_not_a_failure(tmp_path: Path) -> None:
+    """``id:`` naming a session the archive lacks selects nothing, and says so.
+
+    The read handler refuses an unknown session scope, because for a *read* of
+    that session a refusal is the honest answer. A selection is a different
+    question: zero rows. Without this translation ``find id:absent then select``
+    exited 1 with no output instead of the documented "No sessions matched."
+    and exit 2, and ``delete --dry-run`` lost its empty preview.
+
+    Anti-vacuity: re-raise the refusal and both documented invocations go red
+    in ``scripts/golden_find_bytes.py``.
+    """
+    from polylogue.cli.operation_kernel import OperationFailedError
+    from polylogue.cli.session_rows import query_session_rows
+
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+    request = RootModeRequest.from_params({"query": ("id:absent",)})
+
+    with patch(
+        "polylogue.cli.operation_kernel.dispatch",
+        side_effect=OperationFailedError("invalid_request", "session not found: absent"),
+    ):
+        assert query_session_rows(config, request, limit=5) == []
+
+    with patch(
+        "polylogue.cli.operation_kernel.dispatch",
+        side_effect=OperationFailedError("invalid_request", "index is unreadable"),
+    ):
+        with pytest.raises(OperationFailedError):
+            query_session_rows(config, request, limit=5)
+
+
+def test_complete_selection_walks_every_page(tmp_path: Path) -> None:
+    """A mutating verb's matched set is the whole selection, not one page.
+
+    The operation bounds one response and clamps an over-large limit without
+    saying so, so completeness is this loop over ``next_offset``. A one-page
+    answer is what let ``delete --yes --all`` skip every match past the first
+    page (#1873).
+
+    Anti-vacuity: return after the first page and the assertion loses ``b``.
+    """
+    from polylogue.cli.session_rows import query_complete_session_ids
+
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+    pages = [
+        {"items": [{"id": "a"}], "total": 2, "next_offset": 1},
+        {"items": [{"id": "b"}], "total": 2, "next_offset": None},
+    ]
+    seen: list[int] = []
+
+    def _dispatch(_config: Config, operation_request: OperationRequest, **_kwargs: object) -> object:
+        offset = cast("dict[str, object]", operation_request.payload["params"])["offset"]
+        seen.append(cast("int", offset))
+        return SimpleNamespace(value=pages[len(seen) - 1], authority={}, envelope=None)
+
+    with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
+        assert query_complete_session_ids(config, RootModeRequest.from_params({})) == ["a", "b"]
+
+    assert seen == [0, 1]

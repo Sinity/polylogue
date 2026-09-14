@@ -201,11 +201,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/click_app.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.index"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/commands/auth.py",
     "import": "polylogue.sources.drive.auth"
   },
@@ -496,11 +491,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/select.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/shared/check_models.py",
     "import": "polylogue.storage.artifacts.views"
   },
@@ -558,11 +548,6 @@
     "target": "polylogue/cli",
     "file": "polylogue/cli/shell_completion_values.py",
     "import": "polylogue.storage.sqlite.archive_tiers.archive"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/verb_cardinality.py",
-    "import": "polylogue.storage.archive_identity"
   },
   {
     "target": "polylogue/daemon",
