@@ -1578,6 +1578,12 @@ def migrate_archive_tier(
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
         if current_version == target_version:
             conn.rollback()
+            # This early return bypasses the except/else blocks below, which
+            # are the only other places the caller's foreign-key state is
+            # restored. Without this the connection stays FK-OFF for the rest
+            # of its life after losing a migration race.
+            if foreign_keys_were_on:
+                conn.execute("PRAGMA foreign_keys = ON")
             return MigrationResult(
                 tier=tier,
                 from_version=current_version,

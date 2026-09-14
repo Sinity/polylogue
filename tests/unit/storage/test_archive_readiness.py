@@ -1355,3 +1355,61 @@ def test_pinned_materialization_readiness_defaults_to_the_bounded_contract(tmp_p
 
     signature = inspect.signature(raw_materialization_readiness_from_pinned_index)
     assert signature.parameters["classify_gaps"].default is False
+
+
+def test_converged_archive_reports_its_real_materialization_counts(tmp_path: Path) -> None:
+    """A fully materialized archive is not an empty one.
+
+    The counters query drove its join from the *gap* rows. A converged archive
+    has none, and a join with an empty side leaves every non-aggregated total
+    NULL, which the ``int(row[...] or 0)`` coercions turned into zero -- so an
+    archive holding one raw artifact and one session reported
+    ``raw_artifact_count == 0`` and ``archive_session_count == 0``, the
+    unmeasured-state-as-a-positive-result shape.
+
+    Anti-vacuity: restore ``FROM gaps CROSS JOIN materialization CROSS JOIN
+    session_count`` and every assertion below goes red with ``0``.
+    """
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    initialize_active_archive_root(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="converged-counts",
+        updated_at="2026-01-02T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="converged prose")],
+            )
+        ],
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"converged-counts"}}\n',
+            source_path="codex/converged-counts.jsonl",
+            acquired_at_ms=1,
+            post_parse=True,
+        )
+        session_id = write_index_session(archive, session)
+
+    # Bind the index session to its raw artifact: the index tier is
+    # rebuildable, and this is the join the counters read.
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("UPDATE sessions SET raw_id = ? WHERE session_id = ?", (raw_id, session_id))
+        conn.commit()
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=False)
+
+    assert snapshot["available"] is True
+    assert snapshot["raw_artifact_count"] == 1
+    assert snapshot["materialized_raw_artifact_count"] == 1
+    assert snapshot["archive_session_count"] == 1
+    assert snapshot["join_gap_count"] == 0
+    assert snapshot["total"] == 0

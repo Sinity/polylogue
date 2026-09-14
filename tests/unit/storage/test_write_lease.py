@@ -490,3 +490,27 @@ def test_delegation_cannot_be_minted_without_holding_the_lease() -> None:
     with arm_write_lease_enforcement():
         with pytest.raises(UnleasedWriteError):
             delegate_write_lease()
+
+
+def test_delegation_is_revoked_when_its_lease_fails() -> None:
+    """A failing hold releases the lease, so it must revoke the same grants.
+
+    The delegation contract is that a stashed delegation authorizes nothing
+    once its lease is gone. A hold that raises releases the lease exactly as a
+    successful one does.
+
+    Anti-vacuity: delete the revoke loop from the ``except BaseException``
+    branch in ``write_lease`` and this adoption succeeds outside any
+    admission, with ``delegation.live`` still True.
+    """
+    with arm_write_lease_enforcement():
+        delegation = None
+        with pytest.raises(RuntimeError, match="hold failed"):
+            with write_lease("owner"):
+                delegation = delegate_write_lease()
+                raise RuntimeError("hold failed")
+        assert delegation is not None
+        assert not delegation.live
+        with pytest.raises(UnleasedWriteError, match="revoked"):
+            with adopt_write_lease(delegation):
+                pass

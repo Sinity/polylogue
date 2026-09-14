@@ -2659,3 +2659,60 @@ def test_source_tier_v39_migration_040_preserves_raw_acquisition_rows(
             "VALUES ('v40-generation', 'v40-unchecked', 'fixture:1', 'fixture', 'fixture-origin', "
             "'admitted', 'success', 'fixture', 1, 1)"
         )
+
+
+def test_losing_a_migration_race_restores_the_callers_foreign_keys(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A no-op migration must hand the connection back as it found it.
+
+    ``migrate_archive_tier`` turns ``foreign_keys`` OFF for the rebuild and
+    restores it in its ``except``/``else`` blocks. The post-lock
+    ``current_version == target_version`` branch returns before either of
+    those, so a connection that lost the race stayed FK-OFF for the rest of
+    its life -- silently unenforced referential integrity on every later write
+    through it.
+
+    The race is real, not simulated: the hook runs a genuine
+    ``migrate_archive_tier`` to completion on a second connection after the
+    first call's lock-free precheck and before its authoritative post-lock
+    re-read.
+
+    Anti-vacuity: delete the ``PRAGMA foreign_keys = ON`` restore from that
+    early-return branch and the final assertion goes red with ``False``.
+    """
+    db_path = workspace_env["archive_root"] / "user.db"
+    _create_user_v3(db_path)
+    manifest = _verified_backup_manifest(tmp_path / "backup-race", profile="user_overlays")
+
+    real_validate = migration_runner.validate_migration_backup_manifest
+    raced = False
+
+    def validate_then_race(*args: object, **kwargs: object) -> object:
+        nonlocal raced
+        receipt = real_validate(*args, **kwargs)  # type: ignore[arg-type]
+        if not raced:
+            raced = True
+            winner = sqlite3.connect(db_path)
+            try:
+                winner_result = migrate_archive_tier(winner, ArchiveTier.USER, backup_manifest=manifest)
+                assert winner_result.to_version == USER_SCHEMA_VERSION
+            finally:
+                winner.close()
+        return receipt
+
+    monkeypatch.setattr(migration_runner, "validate_migration_backup_manifest", validate_then_race)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        result = migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+
+        assert raced is True
+        assert result.applied_versions == ()
+        assert result.to_version == USER_SCHEMA_VERSION
+        assert bool(conn.execute("PRAGMA foreign_keys").fetchone()[0]) is True
+    finally:
+        conn.close()

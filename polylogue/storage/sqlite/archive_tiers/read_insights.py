@@ -108,32 +108,32 @@ class ArchiveReadInsights:
             f"""
             {_ACTION_FOLLOWUP_RELATION_SQL}
             SELECT a.*, s.origin, tu.tool_input, m.position, m.variant_index,
-                   (SELECT GROUP_CONCAT(
-                              COALESCE(pm.role || ': ', '') || COALESCE(
+                   -- The LIMIT must bind the rows fed INTO GROUP_CONCAT. A bare
+                   -- aggregate with a trailing LIMIT bounds only its own single
+                   -- output row, so the aggregate would consume every preceding
+                   -- or following message in the session.
+                   (SELECT GROUP_CONCAT(context_line, char(10)) FROM (
+                       SELECT COALESCE(pm.role || ': ', '') || COALESCE(
                                   (SELECT GROUP_CONCAT(pb.text, char(10))
                                    FROM blocks pb
                                    WHERE pb.message_id = pm.message_id
                                      AND pb.block_type = 'text'),
                                   ''
-                              ),
-                              char(10)
-                          )
+                              ) AS context_line
                       FROM messages pm WHERE pm.session_id=m.session_id AND
                        (pm.position<m.position OR (pm.position=m.position AND pm.variant_index<m.variant_index))
-                     ORDER BY pm.position DESC, pm.variant_index DESC LIMIT 3) context_before,
-                   (SELECT GROUP_CONCAT(
-                              COALESCE(nm.role || ': ', '') || COALESCE(
+                     ORDER BY pm.position DESC, pm.variant_index DESC LIMIT 3)) context_before,
+                   (SELECT GROUP_CONCAT(context_line, char(10)) FROM (
+                       SELECT COALESCE(nm.role || ': ', '') || COALESCE(
                                   (SELECT GROUP_CONCAT(nb.text, char(10))
                                    FROM blocks nb
                                    WHERE nb.message_id = nm.message_id
                                      AND nb.block_type = 'text'),
                                   ''
-                              ),
-                              char(10)
-                          )
+                              ) AS context_line
                       FROM messages nm WHERE nm.session_id=m.session_id AND
                        (nm.position>m.position OR (nm.position=m.position AND nm.variant_index>m.variant_index))
-                     ORDER BY nm.position, nm.variant_index LIMIT 3) context_after,
+                     ORDER BY nm.position, nm.variant_index LIMIT 3)) context_after,
                    (SELECT (
                               SELECT GROUP_CONCAT(nb.text, char(10))
                               FROM blocks nb
