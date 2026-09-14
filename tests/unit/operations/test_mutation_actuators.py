@@ -537,17 +537,56 @@ class TestIdentityResetActuator:
         with sqlite3.connect(archive_root / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
-    def test_nonexistent_session_plans_zero_targets(self, tmp_path: Path) -> None:
+    def test_a_session_absent_from_the_index_is_still_tombstoned(self, tmp_path: Path) -> None:
+        """A missing index row must not cancel the durable tombstone.
+
+        This previously asserted the opposite (``plan.target_refs == ()``):
+        ``prepare`` re-filtered the caller's already-resolved ids against
+        ``index.db``. A session that disappeared between CLI resolution and
+        PREPARE therefore produced an empty plan, ``apply`` returned
+        ``already_satisfied`` without writing any suppression, and the CLI
+        still reported ``ok`` -- so the next ingest or index rebuild made the
+        content the operator deleted visible again. The durable user.db
+        suppression does not depend on the rebuildable row existing, and a
+        suppression for an id that never existed is inert, so the asymmetry
+        resolves toward writing it.
+
+        Anti-vacuity: restoring the existence filter in
+        ``IdentityResetActuator.prepare`` makes ``target_refs`` empty and the
+        suppression count zero. Leaving the index untouched does not make it
+        green either -- the surviving session's row is asserted below.
+        """
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
         _seed_archive_session(archive_root, native_id="real-one")
+        vanished = "codex-session:vanished"
 
         actuator = IdentityResetActuator()
-        plan = actuator.prepare(
-            IdentityResetArgs(archive_root=archive_root, session_ids=("codex-session:typo",), reason="x")
-        )
+        executor = OperationExecutor()
+        args = IdentityResetArgs(archive_root=archive_root, session_ids=(vanished,), reason="x")
+        plan = actuator.prepare(args)
+        assert plan.target_refs == (f"session:{vanished}",)
 
-        assert plan.target_refs == ()
+        authorization = executor.authorize(
+            actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+        )
+        receipt = executor.execute(actuator, plan, authorization, args)
+
+        assert receipt.status == "applied"
+        assert receipt.affected_count == 1
+        # The receipt names what had no rebuildable row, so a zero deleted-row
+        # count can never be read as "nothing was tombstoned".
+        domain_receipt = receipt.domain_receipt or {}
+        assert domain_receipt["deleted_archive_rows"] == 0
+        assert domain_receipt["tombstoned_without_index_row"] == [vanished]
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM assertions WHERE kind = 'suppression' AND target_ref = ?",
+                    (f"session:{vanished}",),
+                ).fetchone()[0]
+                == 1
+            )
         with sqlite3.connect(archive_root / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 

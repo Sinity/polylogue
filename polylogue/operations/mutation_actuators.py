@@ -342,14 +342,27 @@ class IdentityResetActuator(_FailClosedRecovery):
     required_confirmation: ConfirmationStrength = "confirm_flag"
 
     def prepare(self, args: IdentityResetArgs) -> MutationPlan:
-        existing = tuple(dict.fromkeys(_resolve_existing_session_ids(args.archive_root, args.session_ids)))
+        # Every caller-resolved id is a tombstone target, whether or not it
+        # still has a row in the rebuildable index. The durable user.db
+        # suppression is what makes the deletion survive, and a session that
+        # vanished from index.db between resolution and PREPARE is exactly
+        # the case where dropping it writes no suppression and lets the next
+        # ingest or rebuild make the content visible again. ``present`` is
+        # carried only so the receipt can say how many rebuildable rows the
+        # apply expects to delete.
+        requested = tuple(dict.fromkeys(args.session_ids))
+        present = tuple(dict.fromkeys(_resolve_existing_session_ids(args.archive_root, requested)))
         return build_plan(
             operation=self.operation,
             destructive_class="reset",
-            target_refs=tuple(make_target_ref("session", sid) for sid in existing),
+            target_refs=tuple(make_target_ref("session", sid) for sid in requested),
             affected_tiers=("index", "user"),
             reversible=True,
-            context={"session_ids": list(existing), "reason": args.reason},
+            context={
+                "session_ids": list(requested),
+                "present_in_index": list(present),
+                "reason": args.reason,
+            },
         )
 
     def apply(self, plan: MutationPlan, args: IdentityResetArgs) -> MutationReceipt:
@@ -407,7 +420,18 @@ class IdentityResetActuator(_FailClosedRecovery):
             detail=None,
             receipt_ref=None,
             applied_at=plan.prepared_at,
-            domain_receipt={"suppressed_count": suppressed, "deleted_archive_rows": deleted},
+            domain_receipt={
+                "suppressed_count": suppressed,
+                "deleted_archive_rows": deleted,
+                # A target with no rebuildable row still gets its durable
+                # tombstone; name those instead of letting the row count
+                # imply the suppression silently did not happen.
+                "tombstoned_without_index_row": [
+                    sid
+                    for sid in session_ids
+                    if sid not in set(cast("list[str]", plan.context.get("present_in_index") or ()))
+                ],
+            },
         )
 
 
