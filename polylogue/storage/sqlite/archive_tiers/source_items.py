@@ -171,12 +171,14 @@ class FrozenSourceManifest:
         return cls(value["source_generation_id"], value["enumeration_fingerprint"], tuple(inputs))
 
 
-def prepare_frozen_source_manifest(
-    conn: sqlite3.Connection, manifest: FrozenSourceManifest, *, prepared_at_ms: int
-) -> None:
-    """Join source-WAL prepare; no independent commit or raw admission."""
-    from polylogue.storage.blob_publication import consume_blob_publication_receipt
+def validate_frozen_source_manifest(conn: sqlite3.Connection, manifest: FrozenSourceManifest) -> None:
+    """Prove every frozen input still holds its publication reservation.
 
+    Read-only on purpose.  The source-WAL prepare transaction must be able to
+    roll back to nothing, so the prepare phase only *checks* the manifest; the
+    durable publication happens in :func:`publish_frozen_source_manifest`
+    during promotion, once the audit commit that accepts it is durable.
+    """
     if not conn.in_transaction:
         raise ValueError("frozen manifest requires the source-WAL prepare transaction")
     for item in manifest.inputs:
@@ -188,6 +190,16 @@ def prepare_frozen_source_manifest(
             is None
         ):
             raise ValueError("frozen input publication reservation is missing or mismatched")
+
+
+def publish_frozen_source_manifest(
+    conn: sqlite3.Connection, manifest: FrozenSourceManifest, *, prepared_at_ms: int
+) -> None:
+    """Join the source-WAL promotion; no independent commit or raw admission."""
+    from polylogue.storage.blob_publication import consume_blob_publication_receipt
+
+    if not conn.in_transaction:
+        raise ValueError("frozen manifest requires the source-WAL promotion transaction")
     publish_source_generation(
         conn,
         source_generation_id=manifest.source_generation_id,
@@ -578,7 +590,8 @@ __all__ = [
     "FrozenSourceManifest",
     "complete_source_item_enumeration",
     "publish_source_generation",
-    "prepare_frozen_source_manifest",
+    "validate_frozen_source_manifest",
+    "publish_frozen_source_manifest",
     "record_source_item_raw_member",
     "seal_source_generation",
     "source_generation_census",
