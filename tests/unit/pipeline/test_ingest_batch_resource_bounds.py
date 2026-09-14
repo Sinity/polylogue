@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+from multiprocessing.process import BaseProcess
 from types import SimpleNamespace
 
 import pytest
@@ -209,3 +210,70 @@ def test_drain_ready_session_entries_drops_written_payload(
 
     assert writes == [3]
     assert cdata.parsed_session.messages == []
+
+
+def _block_until_killed(*_args: object, **_kwargs: object) -> IngestRecordResult:
+    """A worker body that outlives the progress deadline, as a stall does."""
+    import time as _time
+
+    _time.sleep(600)
+    return IngestRecordResult(raw_id="unreachable")
+
+
+def test_stalled_ingest_pool_terminates_its_running_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled pass reclaims its worker processes instead of orphaning them.
+
+    ``Future.cancel()`` cannot stop a task already executing in a
+    ``ProcessPoolExecutor``, and neither can ``shutdown(cancel_futures=True)``.
+    Before the fix every stalled pass left its workers running, and repeated
+    passes accumulated them for the life of the daemon.
+
+    Anti-vacuity: the assertion is on real OS process liveness, not on a
+    recorded call. Remove the ``terminate_process_pool`` call from the stall
+    branch and the worker pids are still alive when the generator is
+    exhausted, so ``still_alive`` is non-empty and the test goes red. The
+    refusal assertions keep the fix from being "kill the pool and report
+    success" -- the stalled items must still surface as retryable refusals.
+    """
+    from concurrent.futures import ProcessPoolExecutor
+
+    from polylogue.pipeline.services.process_pool import process_pool_context
+
+    monkeypatch.setattr(ingest_batch_core, "_INGEST_RESULT_PROGRESS_DEADLINE_S", 1.0)
+
+    worker_processes: list[BaseProcess] = []
+
+    class BlockingExecutor(ProcessPoolExecutor):
+        """A real pool whose submitted work never finishes."""
+
+        def submit(self, fn: object, *args: object, **kwargs: object) -> Future[IngestRecordResult]:  # type: ignore[override]
+            del fn, args, kwargs
+            future = super().submit(_block_until_killed)
+            # Capture the workers now: a terminated pool clears ``_processes``
+            # on shutdown, so reading it afterwards would prove nothing.
+            worker_processes.extend((getattr(self, "_processes", None) or {}).values())
+            return future
+
+    def fake_process_pool_executor(*, max_workers: int) -> BlockingExecutor:
+        return BlockingExecutor(max_workers=max_workers, mp_context=process_pool_context())
+
+    monkeypatch.setattr(ingest_batch_core, "process_pool_executor", fake_process_pool_executor)
+
+    results = list(
+        _iter_ingest_results_sync(
+            [_large_raw_record()],
+            request=_worker_request(),
+            worker_count=1,
+            force_process_pool=True,
+        )
+    )
+
+    assert [result.raw_id for result in results] == ["raw-large"]
+    assert results[0].retryable is True
+    assert "progress deadline exceeded" in (results[0].error or "")
+
+    assert worker_processes, "the pool must have started at least one real worker"
+    still_alive = [process.pid for process in worker_processes if process.is_alive()]
+    assert still_alive == []

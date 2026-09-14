@@ -1529,11 +1529,20 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
         hashes_valid = True
         for blob_path in restored_blob_paths:
             blob_hash = blob_path.parent.name + blob_path.name
-            payload = blob_path.read_bytes()
-            restored_hashes[blob_hash] = len(payload)
-            payload_hash = hashlib.sha256(payload).hexdigest()
+            # Blob content comes from provider exports and attachments, which
+            # the import pipeline admits at sizes far above what belongs in
+            # memory at once. Size and digest are both computable
+            # incrementally, so stream rather than materializing the blob.
+            payload_size = 0
+            digest = hashlib.sha256()
+            with blob_path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    payload_size += len(chunk)
+                    digest.update(chunk)
+            restored_hashes[blob_hash] = payload_size
+            payload_hash = digest.hexdigest()
             hashes_valid = hashes_valid and payload_hash == blob_hash
-            verified_blob_file_hashes[str(blob_path.relative_to(restored))] = (len(payload), payload_hash)
+            verified_blob_file_hashes[str(blob_path.relative_to(restored))] = (payload_size, payload_hash)
         blobs_ok = (
             restored_blob_count == blob_count
             and len(inventory_blobs) == blob_count

@@ -2017,3 +2017,53 @@ def test_backup_evidence_opens_any_durable_tier_below_the_expected_version(
             stamp.execute(f"PRAGMA user_version = {refused}")
         with pytest.raises(SchemaSkew):
             backup_mod._open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk")
+
+
+def test_backup_verifies_a_multi_chunk_blob_without_materializing_it(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A blob larger than one read chunk verifies by streaming size and digest.
+
+    Anti-vacuity: the payload must exceed the 1 MiB chunk, and the assertions
+    are on the reported size and digest rather than merely on ``ok``. A fix
+    that hashes only the first chunk, or that records ``len(chunk)`` instead
+    of the running total, yields a wrong digest/size and turns
+    ``blob_inventory_exact`` and the size assertion red. The corruption case
+    below proves the digest is still compared rather than trivially accepted.
+    """
+    archive_root = workspace_env["archive_root"]
+    blob_root = archive_root / "blob"
+    publisher = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
+    # Deterministic, larger than the 1 MiB streaming chunk so the read loop
+    # must run more than once.
+    payload = (b"multi-chunk backup evidence " * 64) * 1024
+    assert len(payload) > 1024 * 1024
+    blob_hash, _ = publisher.write_from_bytes(payload)
+    publisher.flush()
+
+    result = backup_archive(output_dir=tmp_path / "backups", verify=True)
+
+    assert result.ok
+    assert result.verified
+    assert result.verification["blob_inventory_exact"] is True
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    inventory = json.loads((backup_root / "blob-inventory.json").read_text(encoding="utf-8"))
+    assert inventory == [
+        {
+            "blob_hash": blob_hash,
+            "protection": ["reserved"],
+            "size_bytes": len(payload),
+        }
+    ]
+
+    # The streamed digest is still an equality check, not a formality: flip one
+    # byte beyond the first chunk and verification must refuse.
+    copied = backup_root / "blob" / blob_hash[:2] / blob_hash[2:]
+    corrupted = bytearray(payload)
+    corrupted[1024 * 1024 + 7] ^= 0xFF
+    copied.write_bytes(bytes(corrupted))
+    verification = backup_mod._verify_archive_file_set_backup(backup_root)
+    assert verification["ok"] is False
+    assert verification["blob_inventory_exact"] is False

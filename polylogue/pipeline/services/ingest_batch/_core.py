@@ -17,7 +17,7 @@ import sqlite3
 import time
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from contextlib import AsyncExitStack, closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -54,6 +54,7 @@ from polylogue.pipeline.services.ingest_worker import (
 from polylogue.pipeline.services.process_pool import (
     process_pool_executor,
     select_ingest_worker_count,
+    terminate_process_pool,
 )
 from polylogue.sinex.material_adapter import (
     PublicationBackpressureError,
@@ -1698,6 +1699,14 @@ def _iter_ingest_results_chunk(
                                 diagnostic=stall_disposition.diagnostic,
                             )
                         futures.clear()
+                        # ``Future.cancel()`` cannot stop a task that is already
+                        # executing in a worker process, and neither can
+                        # ``shutdown(cancel_futures=True)``. Without an explicit
+                        # terminate, every stalled pass left its running workers
+                        # alive holding CPU and memory, and repeated passes
+                        # accumulated them for the life of the daemon.
+                        if isinstance(executor, ProcessPoolExecutor):
+                            terminate_process_pool(executor)
                         if progress is not None:
                             # Refused work is no longer owned by this
                             # coordinator. Leaving these ids in the progress

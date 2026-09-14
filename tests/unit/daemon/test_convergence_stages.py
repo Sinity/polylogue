@@ -159,3 +159,41 @@ def test_sinex_stage_uses_configured_source_tier_not_active_index_parent(
     make_default_convergence_stages(tmp_path / "external-generation" / "index.db")
 
     assert captured["source_db_path"] == configured_root / "source.db"
+
+
+def test_claude_workflow_stage_event_replaces_its_snapshot_rather_than_appending(tmp_path: Path) -> None:
+    """Each pass overwrites the current snapshot instead of growing ops.db.
+
+    Every reader selects only the newest row for this stage and
+    ``daemon_stage_events`` carries no retention, so a fresh UUID per pass grew
+    the disposable tier without bound for rows nothing would ever read.
+
+    Anti-vacuity: drop the ``event_id`` argument and the writer mints a UUID
+    per call, so the row count reads 2 and the count assertion goes red. The
+    payload assertion is what keeps the fix honest in the other direction --
+    an ``event_id`` that collided but failed to update would keep the count at
+    1 while serving the first pass's stale gap list forever.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    first = SimpleNamespace(
+        run_count=1, call_count=1, attempt_count=1, linked_session_count=1, unresolved_call_count=1, gaps=("gap-a",)
+    )
+    second = SimpleNamespace(
+        run_count=2, call_count=2, attempt_count=2, linked_session_count=2, unresolved_call_count=0, gaps=()
+    )
+
+    stages._record_claude_workflow_stage_event(tmp_path, first)
+    stages._record_claude_workflow_stage_event(tmp_path, second)
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = conn.execute(
+            "SELECT status, payload_json FROM daemon_stage_events WHERE stage = ?",
+            ("claude_workflow",),
+        ).fetchall()
+
+    assert len(rows) == 1
+    status, payload_json = rows[0]
+    assert status == "clean"
+    assert '"run_count": 2' in payload_json or '"run_count":2' in payload_json
+    assert "gap-a" not in payload_json

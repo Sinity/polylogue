@@ -176,6 +176,12 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
                 status=status,
                 observed_at_ms=int(time.time() * 1000),
                 payload=payload,
+                # A stable id makes this the current snapshot rather than an
+                # append: every reader selects only the newest row for this
+                # stage, and ``daemon_stage_events`` has no retention, so
+                # letting the writer mint a fresh UUID each pass grew ops.db
+                # without bound for a row nothing ever read again.
+                event_id=f"{CLAUDE_WORKFLOW_STAGE_NAME}:current",
             )
     except Exception as exc:
         emit(
