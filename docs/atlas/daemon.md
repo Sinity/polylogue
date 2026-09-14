@@ -48,5 +48,3 @@ The generic stage engine remains for optional Sinex publication, raw-authority c
 Readiness derives from domain inspection and is reported separately from operation health. FTS does not consult a freshness ledger, and debt cannot certify insight readiness (`polylogue/daemon/fts_status.py:162-168`; `polylogue/readiness/claim_guard.py:1-26`; `polylogue/storage/sqlite/archive_tiers/archive.py:1`).
 
 Fair intake applies a process-local cooldown to repeated retryable failures. A stale cursor refusal remains retryable even when the same batch reports successful files. Terminal refusal isolates only the affected item (`polylogue/daemon/intake.py:301-375`; `polylogue/operations/intake_adapters.py:236-243`).
-
-verified: ab81d4e5cc063dbb185e9cfb5ea352fa83d4f189 2026-09-14

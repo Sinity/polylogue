@@ -184,10 +184,11 @@ GATES: tuple[Gate, ...] = (
     ),
     Gate(
         "atlas",
-        "Check atlas citation anchors and verification-commit freshness.",
+        "Check that every atlas citation resolves to an existing file and line range.",
         "module",
         ("devtools.verify_atlas",),
         label="gate atlas",
+        in_quick=True,
     ),
     Gate(
         "schema-audit",
@@ -209,6 +210,7 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_population_coverage",),
         label="gate population-coverage",
+        in_quick=True,
     ),
     Gate(
         "agent-integration",
