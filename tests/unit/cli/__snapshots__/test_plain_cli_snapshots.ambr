@@ -226,7 +226,9 @@
     "db_size_bytes": <SIZE_BYTES>,
     "embedded_messages": 0,
     "embedded_sessions": 0,
+    "embedding_coverage_measurable": true,
     "embedding_coverage_percent": 0.0,
+    "embedding_coverage_unmeasurable_reason": null,
     "embedding_dimensions": {},
     "embedding_models": {},
     "embedding_newest_at": null,
@@ -540,6 +542,12 @@
     "next_offset": null,
     "offset": 0,
     "origin": null,
+    "outcome": {
+      "detail": {},
+      "reason": null,
+      "state": "ok"
+    },
+    "source": "direct",
     "total": 2,
     "total_unit": "top-level sessions"
   }
@@ -558,13 +566,11 @@
     "active_archive_root_matches_configured": true,
     "db_exists": true,
     "active_db_path": "<PATH>",
-    "config_exists": false,
-    "config_path": "<PATH>",
+    "config_exists": true,
+    "config_path": null,
+    "next_action": "runtime diagnostics not observed from pinned archive",
     "sessions": 2,
     "messages": 10,
-    "raw_records": 2,
-    "unidentified_artifacts": 0,
-    "next_action": "polylogue init",
     "component_readiness": {
       "raw_materialization": {
         "component": "raw_materialization",
@@ -589,9 +595,9 @@
           "lost_source_evidence_count": 0,
           "parser_census_incomplete_count": 0,
           "parser_census_incomplete_blob_bytes": 0,
-          "raw_artifact_count": 0,
-          "materialized_raw_artifact_count": 0,
-          "archive_session_count": 0,
+          "raw_artifact_count": 2,
+          "materialized_raw_artifact_count": 2,
+          "archive_session_count": 2,
           "join_gap_count": 0
         },
         "caveats": [],
@@ -635,6 +641,57 @@
           "cursor_ahead_comparison_count": 0,
           "cursor_authority_gap_count": 0,
           "cursor_authority_deferred_count": 0
+        },
+        "caveats": [],
+        "repair_hint": null,
+        "evidence_refs": []
+      },
+      "search": {
+        "component": "search",
+        "scope": "lexical",
+        "state": "ready",
+        "summary": "ready",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "message_indexed_count": 12,
+          "message_indexable_count": 12,
+          "missing_rows": 0,
+          "excess_rows": 0,
+          "identity_mismatch_rows": 0
+        },
+        "caveats": [],
+        "repair_hint": null,
+        "evidence_refs": []
+      },
+      "session_profiles": {
+        "component": "session_profiles",
+        "scope": "insights",
+        "state": "missing",
+        "summary": "session profiles not derived",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "sessions_with_profiles": 0,
+          "total_sessions": 2,
+          "missing_profiles": 2,
+          "stale_profiles": 0,
+          "orphan_profiles": 0
+        },
+        "caveats": [],
+        "repair_hint": "polylogued run",
+        "evidence_refs": []
+      },
+      "session_summary": {
+        "component": "session_summary",
+        "scope": "archive",
+        "state": "ready",
+        "summary": "ready",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "total_sessions": 2,
+          "stale_sessions": 0
         },
         "caveats": [],
         "repair_hint": null,
@@ -1018,24 +1075,28 @@
       "openable": {
         "claim": "openable",
         "value": true,
+        "determinate": true,
         "reason": "all archive tiers present with matching schema version",
         "signal": "archive_storage.archive_schema_ready (per-tier PRAGMA user_version match)"
       },
       "converged": {
         "claim": "converged",
-        "value": true,
-        "reason": "ready",
-        "signal": "raw_materialization_readiness (debt zero or fully classified)"
+        "value": false,
+        "determinate": true,
+        "reason": "session profiles not derived",
+        "signal": "derived_domain_readiness.session_profiles"
       },
       "search_ready": {
         "claim": "search_ready",
-        "value": false,
-        "reason": "unknown",
+        "value": true,
+        "determinate": true,
+        "reason": "ready",
         "signal": "component_readiness.search (FTS freshness)"
       },
       "perf_measurable": {
         "claim": "perf_measurable",
         "value": true,
+        "determinate": true,
         "reason": "no concurrent archive write/rebuild detected",
         "signal": "live_ingest_attempts.running_count"
       }
@@ -1044,40 +1105,47 @@
       "source": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": <SIZE_BYTES>,
+        "size_bytes": null,
         "expected_user_version": <SCHEMA_VERSION>,
         "user_version": <SCHEMA_VERSION>,
         "version_status": "ok",
+        "identity_status": null,
         "table_counts": {
           "raw_sessions": 2,
-          "blob_refs": 2,
-          "blob_publication_reservations": 0,
           "raw_artifacts": 0,
-          "raw_hook_events": 0
+          "raw_membership_census": 0,
+          "raw_session_memberships": 0
         },
         "table_count_precision": {
           "raw_sessions": "exact",
-          "blob_refs": "exact",
-          "blob_publication_reservations": "exact",
           "raw_artifacts": "exact",
-          "raw_hook_events": "exact"
+          "raw_membership_census": "exact",
+          "raw_session_memberships": "exact"
+        },
+        "file_metadata": {
+          "state": "not_observed",
+          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
         }
       },
       "index": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": <SIZE_BYTES>,
+        "size_bytes": null,
         "expected_user_version": <SCHEMA_VERSION>,
         "user_version": <SCHEMA_VERSION>,
         "version_status": "ok",
+        "identity_status": {
+          "status": "ok",
+          "expected": "<HASH>",
+          "actual": "<HASH>"
+        },
         "table_counts": {
           "sessions": 2,
           "messages": 10,
           "blocks": 12,
           "actions": 0,
+          "messages_fts": 12,
           "session_profiles": 0,
-          "session_work_events": 0,
-          "session_phases": 0,
           "threads": 2,
           "thread_sessions": 2
         },
@@ -1086,83 +1154,118 @@
           "messages": "exact",
           "blocks": "exact",
           "actions": "exact",
+          "messages_fts": "exact",
           "session_profiles": "exact",
-          "session_work_events": "exact",
-          "session_phases": "exact",
           "threads": "exact",
           "thread_sessions": "exact"
+        },
+        "file_metadata": {
+          "state": "not_observed",
+          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
         }
       },
       "embeddings": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": <SIZE_BYTES>,
+        "size_bytes": null,
         "expected_user_version": <SCHEMA_VERSION>,
         "user_version": <SCHEMA_VERSION>,
         "version_status": "ok",
+        "identity_status": null,
         "table_counts": {
-          "message_embedding_refs": 0,
+          "embedding_status": 0,
           "message_embeddings_meta": 0,
-          "embedding_status": 0
+          "embedding_failures": 0
         },
         "table_count_precision": {
-          "message_embedding_refs": "exact",
+          "embedding_status": "exact",
           "message_embeddings_meta": "exact",
-          "embedding_status": "exact"
+          "embedding_failures": "exact"
+        },
+        "file_metadata": {
+          "state": "not_observed",
+          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
         }
       },
       "user": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": <SIZE_BYTES>,
+        "size_bytes": null,
         "expected_user_version": <SCHEMA_VERSION>,
         "user_version": <SCHEMA_VERSION>,
         "version_status": "ok",
+        "identity_status": null,
         "table_counts": {
           "assertions": 0,
-          "annotation_schemas": 6,
-          "annotation_batches": 0,
-          "user_settings": 0,
-          "context_deliveries": 0
+          "annotation_schemas": 6
         },
         "table_count_precision": {
           "assertions": "exact",
-          "annotation_schemas": "exact",
-          "annotation_batches": "exact",
-          "user_settings": "exact",
-          "context_deliveries": "exact"
+          "annotation_schemas": "exact"
+        },
+        "file_metadata": {
+          "state": "not_observed",
+          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
         }
       },
       "ops": {
         "path": "<PATH>",
         "exists": true,
-        "size_bytes": <SIZE_BYTES>,
+        "size_bytes": null,
         "expected_user_version": <SCHEMA_VERSION>,
         "user_version": <SCHEMA_VERSION>,
         "version_status": "ok",
+        "identity_status": {
+          "status": "ok",
+          "expected": "<HASH>",
+          "actual": "<HASH>"
+        },
         "table_counts": {
           "ingest_cursor": 0,
           "ingest_attempts": 0,
           "convergence_debt": 0,
-          "cursor_lag_samples": 0,
-          "daemon_stage_events": 0,
-          "daemon_events": 0,
+          "schema_drift_samples": 0,
           "embedding_catchup_runs": 0
         },
         "table_count_precision": {
           "ingest_cursor": "exact",
           "ingest_attempts": "exact",
           "convergence_debt": "exact",
-          "cursor_lag_samples": "exact",
-          "daemon_stage_events": "exact",
-          "daemon_events": "exact",
+          "schema_drift_samples": "exact",
           "embedding_catchup_runs": "exact"
+        },
+        "file_metadata": {
+          "state": "not_observed",
+          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
+        }
+      },
+      "audit": {
+        "path": "<PATH>",
+        "exists": true,
+        "size_bytes": null,
+        "expected_user_version": <SCHEMA_VERSION>,
+        "user_version": <SCHEMA_VERSION>,
+        "version_status": "ok",
+        "identity_status": null,
+        "table_counts": {
+          "operation_previews": 0,
+          "operation_authorizations": 0,
+          "operation_attempts": 0
+        },
+        "table_count_precision": {
+          "operation_previews": "exact",
+          "operation_authorizations": "exact",
+          "operation_attempts": "exact"
+        },
+        "file_metadata": {
+          "state": "not_observed",
+          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
         }
       }
     },
     "sqlite_maintenance": {
-      "archive_root": "<PATH>",
-      "total_wal_bytes": 0,
+      "archive_root": null,
+      "total_wal_bytes": null,
       "tiers_with_planner_stats": [
         "source",
         "index",
@@ -1172,59 +1275,74 @@
       ],
       "tiers": {
         "source": {
-          "path": "<PATH>",
           "exists": true,
-          "wal_bytes": 0,
+          "wal_bytes": null,
           "sqlite_stat1_rows": 14,
-          "planner_stats_present": true
+          "planner_stats_present": true,
+          "wal_metadata": {
+            "state": "not_observed",
+            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
+          }
         },
         "index": {
-          "path": "<PATH>",
           "exists": true,
-          "wal_bytes": 0,
+          "wal_bytes": null,
           "sqlite_stat1_rows": 47,
-          "planner_stats_present": true
+          "planner_stats_present": true,
+          "wal_metadata": {
+            "state": "not_observed",
+            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
+          }
         },
         "embeddings": {
-          "path": "<PATH>",
           "exists": true,
-          "wal_bytes": 0,
+          "wal_bytes": null,
           "sqlite_stat1_rows": 1,
-          "planner_stats_present": true
+          "planner_stats_present": true,
+          "wal_metadata": {
+            "state": "not_observed",
+            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
+          }
         },
         "user": {
-          "path": "<PATH>",
           "exists": true,
-          "wal_bytes": 0,
+          "wal_bytes": null,
           "sqlite_stat1_rows": 1,
-          "planner_stats_present": true
+          "planner_stats_present": true,
+          "wal_metadata": {
+            "state": "not_observed",
+            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
+          }
         },
         "ops": {
-          "path": "<PATH>",
           "exists": true,
-          "wal_bytes": 0,
+          "wal_bytes": null,
           "sqlite_stat1_rows": 2,
-          "planner_stats_present": true
+          "planner_stats_present": true,
+          "wal_metadata": {
+            "state": "not_observed",
+            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
+          }
+        },
+        "audit": {
+          "exists": true,
+          "wal_bytes": null,
+          "sqlite_stat1_rows": 0,
+          "planner_stats_present": false,
+          "wal_metadata": {
+            "state": "not_observed",
+            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
+          }
         }
       }
     },
     "storage": {
+      "db_size_bytes": <SIZE_BYTES>,
       "active_db_path": "<PATH>"
     },
     "sinex_publication": {
-      "mode": "off",
-      "total": 0,
-      "pending": 0,
-      "publishing": 0,
-      "confirmed": 0,
-      "durable_debt": 0,
-      "rejected": 0,
-      "retry_due": 0,
-      "blocking": 0,
-      "active_lag": 0,
-      "oldest_active_age_ms": null,
-      "last_receipt_state": null,
-      "last_error_code": null
+      "state": "not_observed",
+      "reason": "sinex runtime mode not supplied"
     },
     "ingest": {
       "available": true,
@@ -1250,53 +1368,17 @@
       "lifetime_attempts": {}
     },
     "assertion_candidate_queue": {
-      "mode": "assertion-candidate-queue-health",
-      "state": "empty-unverified",
-      "observed_at_ms": <HASH>,
-      "pending_count": 0,
-      "status_counts": {},
-      "kind_counts": {},
-      "source_counts": {},
-      "oldest_pending_at_ms": null,
-      "newest_pending_at_ms": null,
-      "oldest_pending_age_ms": null,
-      "stale_pending_count": 0,
-      "retention_outcome": "none",
-      "producer_stage": "standing-queries",
-      "producer_status": null,
-      "producer_observed_at_ms": null,
-      "producer_age_ms": null,
-      "scheduler_state": "unknown",
-      "scheduler_heartbeat_at_ms": null,
-      "scheduler_heartbeat_age_ms": null,
-      "judgment_scheduler_receipt_status": "unknown",
-      "judgment_scheduler_receipt_at_ms": null,
-      "judgment_scheduler_receipt_age_ms": null,
-      "judgment_scheduler_receipt_reason": null,
-      "judgment_scheduler_receipt_retryable": null,
-      "judgment_scheduler_receipt_retry_route": null,
-      "judgment_scheduler_receipt_batch_limit": null,
-      "judgment_scheduler_receipt_considered": null,
-      "judgment_scheduler_receipt_accepted": null,
-      "judgment_scheduler_receipt_rejected": null,
-      "judgment_scheduler_receipt_escalated": null,
-      "judgment_scheduler_receipt_idempotent": null,
-      "judgment_scheduler_receipt_failed": null,
-      "judgment_scheduler_receipt_persistence_degraded": null,
-      "judgment_scheduler_receipt_persistence_recovered": null,
-      "producer_debt_count": 0,
-      "caveats": [
-        "no successful standing-queries producer event is observable",
-        "a fresh scheduler heartbeat is not observable"
-      ]
+      "state": "not_observed",
+      "reason": "judgment scheduler runtime/config not supplied",
+      "pending_count": null
     },
     "raw_materialization_readiness": {
       "available": true,
       "classification": "not_run",
       "precision": "raw_id_join_gap",
-      "raw_artifact_count": 0,
-      "materialized_raw_artifact_count": 0,
-      "archive_session_count": 0,
+      "raw_artifact_count": 2,
+      "materialized_raw_artifact_count": 2,
+      "archive_session_count": 2,
       "join_gap_count": 0,
       "total": 0,
       "critical": 0,
@@ -1398,33 +1480,38 @@
     },
     "raw_replay_backlog": {
       "available": true,
-      "execution_blocked": false,
-      "execution_block_reason": null,
-      "blocked_candidate_count": 0,
-      "durable_authority_debt_count": 0,
-      "authority_quarantined_count": 0,
-      "byte_authority_fragment_count": 0,
-      "byte_authority_quarantined_count": 0,
-      "byte_authority_pending_count": 0,
-      "adoption_deferred_count": 0,
-      "candidate_count": 0,
-      "missing_blob_count": 0,
-      "missing_blob_source_available_count": 0,
-      "missing_blob_source_missing_count": 0,
-      "already_parsed_count": 0,
-      "total_blob_bytes": 0,
-      "max_blob_bytes": 0,
-      "execute_blob_limit_bytes": 1073741824,
-      "expanded_candidate_count": 0,
-      "expanded_total_blob_bytes": 0,
-      "expanded_aggregate_blocked": false,
-      "authority_component_count": 0,
-      "blocked_authority_component_count": 0,
-      "executable_authority_component_count": 0,
-      "oversized_count": 0,
-      "oversized_stream_safe_count": 0,
-      "top_raw_rows": [],
-      "origin_summary": []
+      "scan": "bounded_raw_observation_page",
+      "candidate_count": 2,
+      "total_blob_bytes": 13457,
+      "max_blob_bytes": 7563,
+      "top_raw_rows": [
+        {
+          "raw_id": "<HASH>",
+          "origin": "chatgpt-export",
+          "source_path": "<PATH>",
+          "blob_size": 7563,
+          "oversized": false,
+          "stream_safe": true
+        },
+        {
+          "raw_id": "<HASH>",
+          "origin": "chatgpt-export",
+          "source_path": "<PATH>",
+          "blob_size": 5894,
+          "oversized": false,
+          "stream_safe": true
+        }
+      ],
+      "origin_summary": [
+        {
+          "origin": "chatgpt-export",
+          "raw_count": 2,
+          "total_blob_bytes": 13457,
+          "max_blob_bytes": 7563
+        }
+      ],
+      "page_limit": 5,
+      "page_complete": true
     },
     "raw_failures": {
       "parse": 0,
@@ -1439,10 +1526,8 @@
       "sample_count": 0
     },
     "diagnostic": {
-      "kind": "no_sources",
-      "headline": "No configured chat sources.",
-      "detail": "No `<PATH>` found. Run `polylogue init` to detect chat sources and write a starter config.",
-      "next_action": "polylogue init"
+      "kind": "not_observed",
+      "reason": "CLI first-run diagnostics excluded from pinned status"
     }
   }
   

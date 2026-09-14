@@ -673,11 +673,31 @@ def _session_profile_component(index_conn: sqlite3.Connection) -> Any:
         and status.orphan_profile_row_count == 0
         and status.profile_row_count == status.total_sessions
     )
+    # A domain that has never derived a single row is MISSING, not STALE:
+    # nothing was computed, so nothing can have gone out of date. The
+    # distinction is load-bearing because ``_status_ok`` tolerates a
+    # never-converged derived family through ``required_missing`` while
+    # treating ``stale`` as unconditionally not-ok -- so collapsing both into
+    # STALE made a pristine archive report ``ok: false`` for the one derived
+    # family that had not run, while ``embeddings`` (missing) and
+    # ``transforms`` (unknown) on the same archive were correctly tolerated.
+    # ``component_from_derived_model`` above already draws this line; this is
+    # the same rule for the profile domain.
+    never_derived = status.profile_row_count == 0 and status.total_sessions > 0
+    if ready:
+        state = CapabilityReadinessState.READY
+        summary = "ready"
+    elif never_derived:
+        state = CapabilityReadinessState.MISSING
+        summary = "session profiles not derived"
+    else:
+        state = CapabilityReadinessState.STALE
+        summary = "session profiles incomplete"
     return ComponentReadiness(
         component="session_profiles",
         scope="insights",
-        state=CapabilityReadinessState.READY if ready else CapabilityReadinessState.STALE,
-        summary="ready" if ready else "session profiles incomplete",
+        state=state,
+        summary=summary,
         counts={
             "sessions_with_profiles": status.profile_row_count,
             "total_sessions": status.total_sessions,
