@@ -10,7 +10,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic, time
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.daemon.execution import BoundedComputeAdapter, CancellationHandle, DaemonBackpressureError
@@ -137,7 +137,7 @@ class DaemonOperationRuntime:
         # The kernel's pool outlives every bind, so its threads carry no
         # correlation context of their own (verified: a bare submit sees an
         # empty context where a propagate()d one does not).
-        submitted = self._kernel.submit(cast("Callable[[], _T]", propagate(work)), admission_class="control")
+        submitted = self._kernel.submit(propagate(work), admission_class="control")
         pending = asyncio.wrap_future(submitted.future)
         try:
             return await asyncio.shield(pending)
@@ -486,7 +486,7 @@ class DaemonOperationRuntime:
                         exchange.future = asyncio.run_coroutine_threadsafe(staged(request, context), self._owner_loop)
                     else:
                         scheduled = self._kernel.submit(
-                            cast("Callable[[], DaemonOperationEnvelope]", propagate(work)),
+                            propagate(work),
                             admission_class="interactive-read" if spec.authority is DaemonAuthority.READ else "control",
                             # A control exchange keeps its durable authority after
                             # acceptance, but before that boundary a disconnect or
