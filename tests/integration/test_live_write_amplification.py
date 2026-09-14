@@ -218,6 +218,45 @@ class TestFtsAutomergeConfiguration:
         finally:
             conn.close()
 
+    def test_configure_covers_every_declared_fts5_surface(self, tmp_path: Path) -> None:
+        """Tuning is derived from the schema, so no declared surface is missed.
+
+        Anti-vacuity: this goes red if any FTS5 virtual table declared by the
+        tier DDL is left untuned -- which is exactly what a hand-maintained
+        surface list produced (``blocks_command_trigram`` was omitted and so
+        kept FTS5's default automerge on the live-ingest writer). Declaring a
+        new FTS5 surface must now move the tuned set with no edit here.
+        """
+        from polylogue.daemon.fts_automerge import configure_fts_automerge_sync
+        from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync
+        from polylogue.storage.sqlite.schema import SCHEMA_DDL
+
+        db_path = tmp_path / "declared.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(SCHEMA_DDL)
+            ensure_fts_index_sync(conn)
+            conn.commit()
+
+            declared = {
+                str(name)
+                for (name,) in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE '%USING fts5%' COLLATE NOCASE"
+                ).fetchall()
+            }
+            assert declared, "fixture declared no FTS5 surfaces -- test would be vacuous"
+            # The specific surface the hand-maintained list had already dropped.
+            assert "blocks_command_trigram" in declared
+
+            configured = configure_fts_automerge_sync(conn)
+            assert declared <= set(configured), f"untuned FTS5 surfaces: {declared - set(configured)}"
+
+            for surface in declared:
+                row = conn.execute(f"SELECT v FROM {surface}_config WHERE k = 'automerge'").fetchone()
+                assert row is not None and str(row[0]) == "0", f"{surface} automerge not 0: {row}"
+        finally:
+            conn.close()
+
     def test_configure_skips_absent_surfaces(self, tmp_path: Path) -> None:
         """Surfaces not in the schema are silently skipped without raising."""
         from polylogue.daemon.fts_automerge import configure_fts_automerge_sync
