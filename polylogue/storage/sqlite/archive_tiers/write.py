@@ -1464,6 +1464,21 @@ def write_parsed_session_to_archive(
                 # rebuild didn't recreate.
                 t0 = time.perf_counter()
                 _restore_captured_projection_rows(conn, projection_carry_forward)
+                # The exemption above assumed every carried-forward attachment
+                # would get its attachment_refs row back. The restore is
+                # slot-gated, and the two identities disagree about what a slot
+                # is: _attachment_position derives it from provider_attachment_id
+                # alone, while _attachment_id also folds path, name, MIME type
+                # and size. A second acquisition that keeps the provider id but
+                # changes the metadata therefore takes the slot under a new
+                # attachment_id, and the old row is never restored -- and was
+                # excluded from the sweep, so it kept ref_count=1 with no refs.
+                # Blob GC treats an attachments row bearing the hash as a live
+                # reference, so the old bytes were pinned forever. Now that the
+                # restore has run, the exempted ids are settled: the ones that
+                # really were restored recount to their live refs, and the ones
+                # the slot moved away from recount to zero and are swept.
+                refresh_and_sweep_attachment_rows(conn, carried_forward_attachment_ids)
                 add_timing("index.restore_projections", t0)
             t0 = time.perf_counter()
             _write_parent_links(
