@@ -117,6 +117,11 @@ class CatchUpCycleTerminalOutcome(StrEnum):
     #: not because it ran out of work. Distinct from STOPPED, which is an
     #: ordinary shutdown.
     HALTED = "halted"
+    #: The cycle completed, but part of its scope could not be read, so the
+    #: backlog numbers below it are a floor rather than a count. Distinct from
+    #: SUCCESS precisely because zero remaining work behind an unreadable
+    #: subtree is not a converged source.
+    DEGRADED = "degraded"
 
 
 @dataclass(frozen=True)
@@ -446,6 +451,7 @@ def emit_catch_up_cycle(
     repair: Mapping[str, object] | None,
     halted_file_count: int = 0,
     halted_sources: Sequence[str] = (),
+    unreadable_paths: Sequence[str] = (),
     terminal_outcome: CatchUpCycleTerminalOutcome | str | None = None,
 ) -> None:
     """Emit one catch-up convergence cycle envelope.
@@ -489,6 +495,11 @@ def emit_catch_up_cycle(
         # source that cannot make progress are different facts.
         "halted_file_count": halted_file_count,
         "halted_sources": list(halted_sources),
+        # A path the scan could not read. Reported apart from every other
+        # count because it is the one fact that makes the counts a floor:
+        # the files beneath it were never discovered at all.
+        "unreadable_path_count": len(unreadable_paths),
+        "unreadable_paths": list(unreadable_paths),
         "terminal_outcome": (resolved_terminal_outcome.value if resolved_terminal_outcome is not None else None),
     }
     emit_daemon_event("catch_up_cycle", operation_id=operation_id, payload=payload)

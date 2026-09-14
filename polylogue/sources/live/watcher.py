@@ -34,7 +34,7 @@ from polylogue.core.source_halts import halted_sources, source_halt
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.write_hold import WriteHoldBudgetError
-from polylogue.logging import INFO, emit, get_logger
+from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.sources.hooks import (
     HookSpoolSourceSpec,
     drain_hook_event_spool,
@@ -77,6 +77,7 @@ from polylogue.sources.sqlite_snapshot import (
     sqlite_member_revision,
     sqlite_source_revision,
 )
+from polylogue.sources.walk_faults import WalkFault, WalkFaultRecorder
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 
 logger = get_logger(__name__)
@@ -402,6 +403,11 @@ class CatchUpPlan:
     #: collapsing them hides a stopped source inside ordinary skip counts.
     halted_file_count: int = 0
     halted_sources: tuple[str, ...] = ()
+    #: Paths the catch-up scan could not read. Carried on the plan so the
+    #: terminal event reports a counted degradation naming each path: a walk
+    #: that skipped a subtree is not a walk that found it empty, and a
+    #: from-scratch rebuild has no prior row count to reveal the difference.
+    unreadable: tuple[WalkFault, ...] = ()
 
 
 def _is_retryable_lock_error(exc: sqlite3.OperationalError) -> bool:
@@ -760,8 +766,25 @@ class LiveWatcher:
     # ------------------------------------------------------------------
 
     async def _catch_up(self, roots: list[Path]) -> None:
-        candidates = self._scan_catch_up_candidates(roots)
+        faults = WalkFaultRecorder()
+        candidates = self._scan_catch_up_candidates(roots, faults)
+        unreadable = faults.collected()
+        if unreadable:
+            emit(
+                "source.catch_up.scan_unreadable",
+                level=WARNING,
+                outcome="degraded",
+                errors=len(unreadable),
+                path=str(unreadable[0].path),
+                error_detail="; ".join(str(fault) for fault in unreadable),
+            )
         if not candidates:
+            if unreadable:
+                # Zero candidates behind an unreadable path is a degraded
+                # scope, never an empty one. Emitting here is what keeps the
+                # "nothing to do" exit distinguishable from "nothing could
+                # be read".
+                await self._emit_unreadable_scan_terminal(unreadable, discovered=0)
             # A quiescent archive still redeems an interrupted cycle's pledge:
             # the owed archive-wide stages are not conditional on new bytes.
             await self._redeem_whole_archive_pledges(())
@@ -783,10 +806,18 @@ class LiveWatcher:
             if self._stop.is_set():
                 break
             if group:
-                await self._catch_up_candidates(group)
+                await self._catch_up_candidates(group, unreadable=unreadable)
+                # One plan owns the scan's faults; the second group must not
+                # report them again as if they were fresh evidence.
+                unreadable = ()
         await self._drain_hook_spools()
 
-    async def _catch_up_candidates(self, candidates: tuple[CandidateSourceFile, ...]) -> None:
+    async def _catch_up_candidates(
+        self,
+        candidates: tuple[CandidateSourceFile, ...],
+        *,
+        unreadable: tuple[WalkFault, ...] = (),
+    ) -> None:
         """Plan and ingest one priority class of catch-up candidates."""
         plan_holder: list[CatchUpPlan] = []
 
@@ -801,16 +832,23 @@ class LiveWatcher:
             admitted_set = set(admitted)
             planned = tuple(candidate for candidate in candidates if candidate.path in admitted_set)
             logger.info("live.watcher: catch-up scan over %d file(s)", len(planned))
-            plan_holder.append(self._plan_catch_up(planned))
+            plan_holder.append(self._plan_catch_up(planned, unreadable=unreadable))
 
         try:
             await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
         except CursorAuthorityBlockedError as exc:
             logger.warning("live.watcher: catch-up planning refused by cursor authority: %s", exc)
+            if unreadable:
+                await self._emit_unreadable_scan_terminal(unreadable, discovered=len(candidates))
             return
         plan = plan_holder[0]
         await self._publish_source_halts()
         if not plan.needed:
+            if plan.unreadable:
+                # Every discovered file is cursored, but part of the scope was
+                # never discovered at all. Reporting this exit as ordinary
+                # convergence is the defect.
+                await self._emit_unreadable_scan_terminal(plan.unreadable, discovered=len(plan.candidates))
             # Every file is cursored, so this start has no ingest to do. That
             # is exactly the state an interrupted cycle leaves behind, and the
             # pledge is the only evidence that its archive-wide stages never
@@ -1060,7 +1098,10 @@ class LiveWatcher:
                 skipped=plan.skipped_file_count,
                 ingested=ingested,
                 quarantine_count=0,
-                errors_by_kind={"ingest_failed": failed} if failed else {},
+                errors_by_kind=(
+                    ({"ingest_failed": failed} if failed else {})
+                    | ({"unreadable_source_path": len(plan.unreadable)} if plan.unreadable else {})
+                ),
                 cursor_before=None,
                 cursor_after=None,
                 duration_ms=(time.perf_counter() - cycle_started) * 1000.0,
@@ -1261,6 +1302,31 @@ class LiveWatcher:
                     role=cast(Any, source.role or "primary-writable"),
                 )
                 total_acknowledged += result.acknowledged
+                if result.unreadable_paths:
+                    # A spool directory that could not be listed hides an
+                    # unknown number of envelopes, so ``remaining`` is a floor
+                    # rather than a measurement. Publish it as durable evidence
+                    # rather than leaving it to a log line.
+                    emit(
+                        "source.hook_spool.unreadable",
+                        level=WARNING,
+                        outcome="degraded",
+                        source_id=source.source_id or source.name,
+                        errors=len(result.unreadable_paths),
+                        path=result.unreadable_paths[0],
+                        error_detail="; ".join(result.unreadable_paths),
+                    )
+                    if self._event_emitter is not None:
+                        await self._run_writer_sync(
+                            "watcher.hook_spool.unreadable.event",
+                            self._event_emitter,
+                            "hook_spool_unreadable",
+                            {
+                                "source_id": source.source_id or source.name,
+                                "unreadable_path_count": len(result.unreadable_paths),
+                                "unreadable_paths": list(result.unreadable_paths),
+                            },
+                        )
                 if result.failed:
                     logger.warning(
                         "live.watcher: hook spool source=%s left %d event(s) pending",
@@ -1274,16 +1340,36 @@ class LiveWatcher:
         """Compatibility entry point; the scheduler now drains all roots."""
         await self._drain_hook_spools()
 
-    def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
+    def _scan_catch_up_candidates(
+        self,
+        roots: list[Path],
+        faults: WalkFaultRecorder | None = None,
+    ) -> tuple[CandidateSourceFile, ...]:
+        """Statted candidates under *roots*, recording every unreadable path.
+
+        ``faults`` collects the paths this scan could not read -- a missing
+        source root, a directory ``os.walk`` could not descend, an entry that
+        could not be statted. Without the ``onerror`` hook, ``os.walk``
+        silently omits an unreadable subtree, so the caller saw a short
+        candidate list identical to a genuinely smaller tree.
+        """
+        recorder = faults if faults is not None else WalkFaultRecorder()
         root_set = {root.resolve() for root in roots}
         candidates: list[CandidateSourceFile] = []
         for source in self._sources:
-            if not source.exists() or source.root.resolve() not in root_set:
+            if source.root.resolve() not in root_set:
                 continue
             if source in self._hook_sources():
                 continue
+            if not source.exists():
+                # A configured root that is absent is evidence, not silence:
+                # an unmounted export drive otherwise reported backlog 0.
+                recorder.record(source.root, f"source root is unavailable for source {source.name!r}")
+                continue
             walk = _SourceTreeWalk(source)
-            for directory, dirnames, filenames in os.walk(source.root, followlinks=True):
+            for directory, dirnames, filenames in os.walk(
+                source.root, followlinks=True, onerror=recorder.on_walk_error
+            ):
                 dirnames[:] = walk.descendable(Path(directory), dirnames)
                 for filename in filenames:
                     path = Path(directory) / filename
@@ -1313,6 +1399,9 @@ class LiveWatcher:
                         stat = path.stat()
                     except FileNotFoundError:
                         continue
+                    except OSError as exc:
+                        recorder.record(path, f"source file could not be statted: {exc}")
+                        continue
                     if not stat_module.S_ISREG(stat.st_mode):
                         continue
                     candidates.append(
@@ -1325,9 +1414,14 @@ class LiveWatcher:
                     )
         return tuple(_interleave_by_source(candidates))
 
-    def _plan_catch_up(self, candidates: tuple[CandidateSourceFile, ...]) -> CatchUpPlan:
+    def _plan_catch_up(
+        self,
+        candidates: tuple[CandidateSourceFile, ...],
+        *,
+        unreadable: tuple[WalkFault, ...] = (),
+    ) -> CatchUpPlan:
         if not candidates:
-            return CatchUpPlan(candidates=(), needed=(), skipped_file_count=0, needed_bytes=0)
+            return CatchUpPlan(candidates=(), needed=(), skipped_file_count=0, needed_bytes=0, unreadable=unreadable)
         cursor_records = self._cursor.get_records(candidate.path for candidate in candidates)
         needed: list[Path] = []
         rebases: list[CursorObservationRebase] = []
@@ -1372,6 +1466,7 @@ class LiveWatcher:
             needed_bytes=needed_bytes,
             halted_file_count=halted,
             halted_sources=tuple(sorted(halted_names)),
+            unreadable=unreadable,
         )
 
     @staticmethod
@@ -2326,6 +2421,39 @@ class LiveWatcher:
             # missed work from output inspection in its periodic no-hint pass.
             logger.warning("live.watcher: lease-free session profile convergence did not complete", exc_info=True)
 
+    async def _emit_unreadable_scan_terminal(
+        self,
+        unreadable: tuple[WalkFault, ...],
+        *,
+        discovered: int,
+    ) -> None:
+        """Report a scan whose scope was partly unreadable as degraded.
+
+        Used on the exits that end a cycle without running the ordinary
+        terminal emit -- no candidates at all, planning refused, or nothing
+        needing work. Those exits previously produced no record whatsoever,
+        which is how an unmounted root read as a converged source.
+        """
+        await self._emit_catch_up_cycle(
+            operation_id=f"watcher-catch-up-scan:{uuid.uuid4()}",
+            phase="terminal",
+            backlog_start=discovered,
+            backlog_end=0,
+            discovered=discovered,
+            attempted=0,
+            skipped=0,
+            ingested=0,
+            quarantine_count=0,
+            errors_by_kind={"unreadable_source_path": len(unreadable)},
+            cursor_before=None,
+            cursor_after=None,
+            duration_ms=0.0,
+            stage_timings_s={},
+            repair=None,
+            unreadable_paths=tuple(str(fault.path) for fault in unreadable),
+            terminal_outcome="degraded",
+        )
+
     async def _emit_catch_up_terminal(
         self,
         operation_id: str,
@@ -2360,7 +2488,11 @@ class LiveWatcher:
             repair={"required": failed, "performed": 0, "remaining": resolved_backlog_end},
             halted_file_count=plan.halted_file_count + halted_mid_run,
             halted_sources=tuple(sorted(set(plan.halted_sources) | set(halted_sources()))),
-            terminal_outcome=outcome,
+            unreadable_paths=tuple(str(fault.path) for fault in plan.unreadable),
+            # A cycle that ingested everything it discovered is still degraded
+            # when part of its scope was never discovered. ``success`` is only
+            # honest over a scope that was fully readable.
+            terminal_outcome=("degraded" if plan.unreadable and outcome == "success" else outcome),
         )
 
     async def _publish_source_halts(self) -> None:

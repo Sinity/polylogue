@@ -16,6 +16,7 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import _AppendPlan, encode_cursor_hash_authority
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.walk_faults import WalkFaultRecorder
 from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement
 from tests.infra.frozen_clock import FrozenClock
 
@@ -1435,3 +1436,91 @@ async def test_interrupted_catch_up_still_owes_its_whole_archive_stages(
     monkeypatch.setattr(third, "_flush_catch_up_convergence", third_flush)
     await third._catch_up([root])
     assert third_flushes == []
+
+
+def _deny_scandir(monkeypatch: pytest.MonkeyPatch, blocked: Path) -> None:
+    """Make exactly one directory unreadable to ``os.walk``.
+
+    ``os.walk`` reaches the filesystem through ``os.scandir``, so denying that
+    one call reproduces a real permission fault (and exercises ``os.walk``'s own
+    ``onerror`` contract) without depending on the test process being
+    unprivileged -- under root a ``chmod 000`` directory proves nothing.
+    """
+    real = os.scandir
+
+    def scandir(directory: Any = ".", *args: Any, **kwargs: Any) -> Any:
+        if Path(directory) == blocked:
+            raise PermissionError(13, "Permission denied", str(blocked))
+        return real(directory, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+
+def test_catch_up_scan_counts_an_unreadable_subtree_instead_of_dropping_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable directory is named evidence, not a shorter candidate list.
+
+    Anti-vacuity: drop the ``onerror=recorder.on_walk_error`` argument from the
+    scan's ``os.walk`` call and ``faults`` is empty while ``locked/hidden.jsonl``
+    silently disappears from the walk -- the assertion on ``faults`` fails.
+    """
+    root = tmp_path / "src"
+    (root / "locked").mkdir(parents=True)
+    kept = root / "kept.jsonl"
+    kept.write_text('{"role":"user","content":"kept"}\n')
+    (root / "locked" / "hidden.jsonl").write_text('{"role":"user","content":"hidden"}\n')
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    watcher = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="test", root=root),),
+        cursor=CursorStore(tmp_path / "cursor.sqlite"),
+    )
+
+    _deny_scandir(monkeypatch, root / "locked")
+    faults = WalkFaultRecorder()
+    candidates = watcher._scan_catch_up_candidates([root], faults)
+    plan = watcher._plan_catch_up(candidates, unreadable=faults.collected())
+
+    assert [candidate.path for candidate in candidates] == [kept]
+    assert [str(fault.path) for fault in faults] == [str(root / "locked")]
+    assert plan.unreadable == faults.collected()
+
+
+def test_catch_up_over_an_unreadable_root_emits_a_degraded_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero candidates behind an unreadable path is degraded, never silence.
+
+    Anti-vacuity: restore the bare ``if not candidates: ... return`` exit and no
+    catch-up event is emitted at all, so ``terminal`` is empty. This is the
+    exact rebuild hazard: an unreadable or unmounted root otherwise reports a
+    converged source with backlog 0.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "locked").mkdir()
+    (root / "locked" / "hidden.jsonl").write_text('{"role":"user","content":"hidden"}\n')
+    events: list[dict[str, Any]] = []
+
+    def emit(**kwargs: Any) -> None:
+        events.append(kwargs)
+
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    watcher = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="test", root=root),),
+        cursor=CursorStore(tmp_path / "cursor.sqlite"),
+        catch_up_event_emitter=emit,
+    )
+
+    _deny_scandir(monkeypatch, root / "locked")
+    asyncio.run(watcher._catch_up([root]))
+
+    terminal = [event for event in events if event.get("phase") == "terminal"]
+    assert len(terminal) == 1
+    assert terminal[0]["terminal_outcome"] == "degraded"
+    assert terminal[0]["errors_by_kind"] == {"unreadable_source_path": 1}
+    assert terminal[0]["unreadable_paths"] == (str(root / "locked"),)
