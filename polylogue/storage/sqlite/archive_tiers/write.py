@@ -5352,6 +5352,7 @@ def _resolve_session_graph(
     composed_cache: dict[str, list[tuple[str, str]]] = {}
     t0 = time.perf_counter()
     resolved_child_ids: list[str] = []
+    reextract_invalidated_ids: set[str] = set()
     for row in inbound_rows:
         child_id, link_type, dst_native_id = str(row[0]), str(row[1]), str(row[2])
         # polylogue-4ts.10: session_id is about to become child_id's parent --
@@ -5410,7 +5411,7 @@ def _resolve_session_graph(
         # stored whole (the inherited prefix could not be aligned yet). Now that
         # the parent exists, normalize the child the same way the parent-known
         # write path does — drop the inherited prefix rows and record the edge.
-        _reextract_prefix_tail_db(
+        reextract_invalidated_ids |= _reextract_prefix_tail_db(
             conn,
             child_id,
             session_id,
@@ -5426,7 +5427,19 @@ def _resolve_session_graph(
     _refill_inbound_asserted_branch_points(conn, session_id)
     record_substage("inbound_asserted_branch_points", t0)
 
-    impacted_session_ids = {session_id, *resolved_child_ids, *(invalidated_session_ids or set())}
+    # polylogue-7xrv5: ``reextract_invalidated_ids`` carries the sessions whose
+    # branch points were invalidated by the re-extraction above. They are the
+    # *source* of the stale edge, so neither ``session_id`` nor
+    # ``resolved_child_ids`` names them, and ``invalidated_session_ids`` is
+    # populated only by identity-claim invalidation. Without them the in-write
+    # repair skips exactly the generation it exists to fix and the archive's
+    # composed content becomes ingest-order dependent.
+    impacted_session_ids = {
+        session_id,
+        *resolved_child_ids,
+        *reextract_invalidated_ids,
+        *(invalidated_session_ids or set()),
+    }
     t0 = time.perf_counter()
     _repair_stale_prefix_branch_points_db(conn, impacted_session_ids, cache=cache, composed_cache=composed_cache)
     record_substage("repair_stale_branch_points", t0)
@@ -7480,11 +7493,19 @@ def _reextract_prefix_tail_db(
     add_timing: Callable[[str, float], None] | None = None,
     bulk_fts: bool = False,
     bulk_build: bool = False,
-) -> None:
+) -> set[str]:
     """Normalize a child that was stored whole because its parent was ingested
     later (#2467). Aligns the child's already-stored messages against the parent's
     composed transcript, deletes the inherited-prefix rows, and records the edge.
     Only runs while the lineage edge is still un-extracted (``inheritance`` NULL).
+
+    Returns the set of *other* sessions whose prefix-sharing edges named one of
+    the deleted inherited-prefix rows as their branch point (polylogue-7xrv5).
+    In a three-generation lineage ``P -> B -> A`` visited as ``A, B, P``, A's
+    edge to B binds to a B-owned message while B is still stored whole; this
+    call deletes exactly those rows, so A's branch point dangles and A composes
+    to its own tail. The caller must add these ids to the repair scope --
+    neither ``session_id`` nor ``resolved_child_ids`` contains A.
     """
 
     def record_substage(name: str, started_at: float) -> None:
@@ -7505,7 +7526,7 @@ def _reextract_prefix_tail_db(
     ).fetchone()
     record_substage("edge_lookup", t0)
     if edge is None:
-        return
+        return set()
     dst_origin, dst_native_id, link_type = edge
     # A Drive ``branchParent.promptId`` is a source-asserted session edge, not
     # evidence that the child replays the parent's message prefix.  The child
@@ -7531,7 +7552,7 @@ def _reextract_prefix_tail_db(
     ).fetchone()
     if unresolved_drive_branch is not None:
         record_substage("deferred_source_branch_unresolved", time.perf_counter())
-        return
+        return set()
     t0 = time.perf_counter()
     parent_composed = _composed_db_signatures(
         conn,
@@ -7619,7 +7640,7 @@ def _reextract_prefix_tail_db(
             (BranchType.SIDECHAIN.value, child_session_id),
         )
         record_substage("acompact_reclassify", t0)
-        return
+        return set()
 
     t0 = time.perf_counter()
     k = 0
@@ -7632,8 +7653,29 @@ def _reextract_prefix_tail_db(
         t0 = time.perf_counter()
         _set_edge(None, "spawned-fresh", next_link_type=resolved_link_type)
         record_substage("edge_update", t0)
-        return
+        return set()
     prefix_message_ids = [child_composed[i][0] for i in range(k)]
+    # polylogue-7xrv5: capture the third generation before its branch points are
+    # deleted. Any prefix-sharing edge naming one of these soon-to-be-deleted
+    # rows belongs to a grandchild that resolved against this child while the
+    # child was still stored whole; its branch point dangles the moment the rows
+    # go, and only the returned ids put it inside the repair scope.
+    t0 = time.perf_counter()
+    inbound_prefix_bp_placeholders = ",".join("?" for _ in prefix_message_ids)
+    invalidated_branch_point_sources = {
+        str(row[0])
+        for row in conn.execute(
+            f"""
+            SELECT DISTINCT src_session_id
+            FROM session_links
+            WHERE inheritance = 'prefix-sharing'
+              AND branch_point_message_id IN ({inbound_prefix_bp_placeholders})
+              AND src_session_id <> ?
+            """,
+            (*prefix_message_ids, child_session_id),
+        ).fetchall()
+    }
+    record_substage("inbound_branch_point_scan", t0)
     t0 = time.perf_counter()
     _remap_session_event_prefix_refs(
         conn,
@@ -7699,6 +7741,7 @@ def _reextract_prefix_tail_db(
     conn.execute("DELETE FROM session_work_events WHERE session_id = ?", (child_session_id,))
     conn.execute("DELETE FROM session_phases WHERE session_id = ?", (child_session_id,))
     record_substage("count_refresh", t0)
+    return invalidated_branch_point_sources
 
 
 def _suffix_after_session_id(message_id: str, session_id: str) -> str | None:
@@ -7749,6 +7792,46 @@ def _replacement_for_stale_prefix_branch_point(
     return predecessor[1]
 
 
+def dangling_prefix_branch_point_sql(alias: str = "l") -> str:
+    """Return the predicate selecting composing prefix-sharing edges whose
+    branch point names a message row that no longer exists.
+
+    A dangling branch point makes the composed reader bail to the child's own
+    tail, so every such edge is a session that reads short. Shared by the
+    in-write/archive-wide repair and by the readiness census
+    (``polylogue.operations.daemon_workload_probe``) so the measured condition
+    and the repaired condition cannot drift apart (polylogue-7xrv5).
+    """
+    return f"""
+        {alias}.inheritance = 'prefix-sharing'
+          AND {alias}.resolved_dst_session_id IS NOT NULL
+          AND {alias}.branch_point_message_id IS NOT NULL
+          AND {topology_status_composes_sql(f"{alias}.status")}
+          AND NOT EXISTS (
+              SELECT 1 FROM messages m
+              WHERE m.message_id = {alias}.branch_point_message_id
+          )
+    """
+
+
+def count_dangling_prefix_branch_points(conn: sqlite3.Connection) -> tuple[int, int]:
+    """Count archive-wide dangling prefix-sharing branch points.
+
+    Returns ``(edge_count, session_count)`` -- the number of stale edges and the
+    number of distinct sessions that therefore compose to their own tail only.
+    """
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*), COUNT(DISTINCT l.src_session_id)
+        FROM session_links l
+        WHERE {dangling_prefix_branch_point_sql()}
+        """
+    ).fetchone()
+    if row is None:
+        return (0, 0)
+    return (int(row[0]), int(row[1]))
+
+
 def _repair_stale_prefix_branch_points_db(
     conn: sqlite3.Connection,
     session_ids: set[str] | tuple[str, ...] | list[str] | None = None,
@@ -7785,15 +7868,8 @@ def _repair_stale_prefix_branch_points_db(
         f"""
         SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id
         FROM session_links l
-        WHERE l.inheritance = 'prefix-sharing'
-          AND l.resolved_dst_session_id IS NOT NULL
-          AND l.branch_point_message_id IS NOT NULL
-          AND {topology_status_composes_sql("l.status")}
+        WHERE {dangling_prefix_branch_point_sql()}
           {scope_clause}
-          AND NOT EXISTS (
-              SELECT 1 FROM messages m
-              WHERE m.message_id = l.branch_point_message_id
-          )
         ORDER BY l.src_session_id
         {limit_clause}
         """,

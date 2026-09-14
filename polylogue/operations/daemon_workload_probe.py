@@ -32,6 +32,7 @@ from polylogue.storage.blob_integrity import scan_blob_reference_debt
 from polylogue.storage.introspection import relation_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import count_dangling_prefix_branch_points
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.tier_access import TierRefusal, acquire_tier_reader
 
@@ -41,7 +42,7 @@ _TIER_UNAVAILABLE_ERRORS = (sqlite3.Error, SchemaSkewError)
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 21
+REPORT_VERSION = 22
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -1965,6 +1966,12 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
     - ``resolved_count`` — links whose parent has been ingested
     - ``quarantined_count`` — links rejected because they would create a
       cycle in ``sessions.parent_session_id``
+    - ``dangling_branch_point_count`` / ``dangling_branch_point_session_count``
+      — composing prefix-sharing edges whose ``branch_point_message_id`` names
+      a message row that no longer exists, and the distinct sessions that
+      therefore compose to their own tail only (polylogue-7xrv5). Non-zero
+      after a rebuild means that many sessions read short until
+      ``repair_stale_prefix_branch_points`` runs.
     - ``oldest_quarantined_at`` — oldest ``resolved_at_ms`` timestamp on a
       quarantined link (the field is repurposed as the
       "decision-recorded-at" timestamp for non-resolved terminal states)
@@ -1981,6 +1988,8 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
             "resolved_count": 0,
             "quarantined_count": 0,
             "authority_contradicted_count": 0,
+            "dangling_branch_point_count": 0,
+            "dangling_branch_point_session_count": 0,
             "oldest_quarantined_at": None,
         }
     rows = conn.execute(
@@ -1999,6 +2008,10 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
     oldest_row = conn.execute(
         "SELECT MIN(resolved_at_ms) FROM session_links WHERE status = ?", (TopologyEdgeStatus.QUARANTINED.value,)
     ).fetchone()
+    if _table_exists(conn, "messages"):
+        dangling_edges, dangling_sessions = count_dangling_prefix_branch_points(conn)
+    else:
+        dangling_edges, dangling_sessions = 0, 0
     return {
         "table_present": True,
         "unresolved_count": int(status_counts.get("unresolved", 0)),
@@ -2012,6 +2025,13 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
         # contradiction is reported as its own quantity rather than inflating
         # a cycle-health metric.
         "authority_contradicted_count": int(status_counts.get(TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value, 0)),
+        # polylogue-7xrv5: a dangling branch point is not a status value -- the
+        # edge still composes, it just points at a message row that was deleted
+        # when the immediate parent was itself normalized to tail-only storage.
+        # Without this census a freshly rebuilt archive reports a clean
+        # topology while N sessions silently read only their own tail.
+        "dangling_branch_point_count": dangling_edges,
+        "dangling_branch_point_session_count": dangling_sessions,
         "oldest_quarantined_at": oldest_row[0] if oldest_row else None,
     }
 

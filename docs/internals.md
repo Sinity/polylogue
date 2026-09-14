@@ -1239,6 +1239,14 @@ The report has a stable top-level shape carrying its `report_version`,
   `export.zip:conversations.json` remain source re-acquisition work because the
   referenced blob may be an extracted record inside the member, not the member
   file itself.
+- `topology_quarantine_state` — `session_links` census: unresolved/resolved
+  counts, cycle-quarantined and authority-contradicted counts, and
+  `dangling_branch_point_count` /
+  `dangling_branch_point_session_count` — composing prefix-sharing edges whose
+  `branch_point_message_id` names a message row that no longer exists, plus the
+  distinct sessions that therefore compose to their own tail only. A non-zero
+  dangling count after a rebuild means that many sessions read short until
+  `repair_stale_prefix_branch_points` runs (daemon startup lineage readiness).
 - `gc_state` — high-water `gc_generations` row, `last_completed_at`,
   total generation count.
 - `fts_trigger_state` — the three expected FTS sync triggers
