@@ -16,7 +16,7 @@ import random
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -40,6 +40,7 @@ from polylogue.operations.intake_adapters import (
     discover_pending_raw_ids,
 )
 from polylogue.sources.live.watcher import WatchSource
+from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -860,3 +861,94 @@ async def test_discovery_page_is_bounded_by_rows_not_by_the_byte_deficit() -> No
     await dispatcher.run_once(budget=6)
 
     assert adapter.discover_calls == [8]
+
+
+def _scandir_denying(blocked: Path) -> Callable[[Path], Any]:
+    """``os.scandir`` that refuses exactly one directory.
+
+    A tidy filesystem cannot prove anything here: the defect only appears when
+    a directory the walk must descend cannot be read.
+    """
+
+    real = os.scandir
+
+    def scandir(directory: Path) -> Any:
+        if Path(directory) == blocked:
+            raise PermissionError(13, "Permission denied", str(blocked))
+        return real(directory)
+
+    return scandir
+
+
+def test_bounded_source_paths_refuses_an_unreadable_subtree(tmp_path: Path) -> None:
+    """An unreadable subtree is a named refusal, never a shorter page.
+
+    Anti-vacuity: restore ``except OSError: return children`` in
+    ``_ordered_children`` and this returns ``[readable/kept.json]`` -- a result
+    the caller cannot tell apart from "locked/ was empty" -- so the
+    ``pytest.raises`` fails.
+    """
+    readable = tmp_path / "readable"
+    readable.mkdir()
+    kept = readable / "kept.json"
+    kept.write_text("kept")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "hidden.json").write_text("hidden")
+    source = WatchSource(name="test", root=tmp_path, suffixes=(".json",))
+
+    with pytest.raises(WalkRefusedError) as excinfo:
+        _bounded_source_paths(
+            source,
+            (source,),
+            limit=8,
+            after=None,
+            scandir=_scandir_denying(locked),
+        )
+
+    assert str(locked) in str(excinfo.value)
+    assert [fault.path for fault in excinfo.value.faults] == [locked]
+
+
+def test_bounded_source_paths_refuses_a_missing_source_root(tmp_path: Path) -> None:
+    """A root that is not there is unavailable, not fully ingested.
+
+    Anti-vacuity: restore ``not source.root.is_dir() -> []`` and the call
+    returns an empty page, which the dispatcher reports as a healthy source
+    with zero backlog.
+    """
+    missing = tmp_path / "unmounted"
+    source = WatchSource(name="test", root=missing, suffixes=(".json",))
+
+    with pytest.raises(WalkRefusedError) as excinfo:
+        _bounded_source_paths(source, (source,), limit=8, after=None)
+
+    assert str(missing) in str(excinfo.value)
+
+
+def test_discovery_refusal_is_counted_on_the_class_report() -> None:
+    """The refusal reaches a surface the caller reads, not just a log.
+
+    Anti-vacuity: a dispatcher that dropped the exception would leave
+    ``report.reason`` ``None`` and the class indistinguishable from an idle
+    one.
+    """
+
+    class RefusingAdapter(FakeAdapter):
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+            raise WalkRefusedError(
+                "intake discovery could not read a source directory",
+                [WalkFault(Path("/srv/locked"), "scandir failed")],
+            )
+
+    adapter = RefusingAdapter("configured_local", ())
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="configured_local", adapter=cast(Any, adapter))],
+    )
+
+    result = asyncio.run(dispatcher.run_once())
+
+    report = result.require_report("configured_local")
+    assert report.discovered == 0
+    assert report.reason is not None
+    assert "/srv/locked" in report.reason

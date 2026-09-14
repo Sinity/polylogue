@@ -34,6 +34,7 @@ from polylogue.sources.hooks import (
 )
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 
 _T = TypeVar("_T")
 
@@ -94,8 +95,17 @@ def _ordered_children(
     children: list[tuple[str, Path, bool]] = []
     try:
         entries = scandir(directory)
-    except OSError:
-        return children
+    except OSError as exc:
+        # Refuse rather than return an empty sibling list. Returning ``[]``
+        # here removed every file beneath ``directory`` from the walk while
+        # the caller saw a result indistinguishable from "that subtree is
+        # empty"; the daemon's dispatcher already turns a raising ``discover``
+        # into a counted ``daemon.intake.discovery_failed`` event plus a class
+        # report reason, and retries the class on the next pass.
+        raise WalkRefusedError(
+            "intake discovery could not read a source directory",
+            [WalkFault(directory, f"scandir failed: {exc}")],
+        ) from exc
     with entries:
         for entry in entries:
             path = Path(entry.path)
@@ -114,8 +124,15 @@ def _ordered_children(
                     continue
                 if not entry.is_file(follow_symlinks=False):
                     continue
-            except OSError:
+            except FileNotFoundError:
+                # Ordinary producer churn: the entry vanished between the
+                # listing and the type probe. Nothing was hidden.
                 continue
+            except OSError as exc:
+                raise WalkRefusedError(
+                    "intake discovery could not inspect a source entry",
+                    [WalkFault(path, f"stat failed: {exc}")],
+                ) from exc
             children.append((_walk_entry_key(path, is_dir=False), path, False))
     children.sort(key=lambda child: child[0], reverse=True)
     return children
@@ -141,8 +158,17 @@ def _bounded_source_paths(
     the previous one stopped on, mid-directory or not.
     """
 
-    if limit <= 0 or not source.root.is_dir():
+    if limit <= 0:
         return []
+    if not source.root.is_dir():
+        # A missing or unmounted root is a refusal, not an empty backlog.
+        # ``operations/raw_sessions/sessions.py`` already raises for exactly
+        # this condition; returning ``[]`` reported a fully ingested source
+        # when the export drive was simply not mounted.
+        raise WalkRefusedError(
+            "intake discovery could not read a source root",
+            [WalkFault(source.root, "source root is unavailable")],
+        )
     found: list[Path] = []
     stack: list[list[tuple[str, Path, bool]]] = [_ordered_children(source, source.root, after, scandir)]
     while stack and len(found) < limit:
@@ -159,8 +185,13 @@ def _bounded_source_paths(
         try:
             if deepest_source_for_path(path, all_sources) is not source or not source.accepts(path):
                 continue
-        except OSError:
+        except FileNotFoundError:
             continue
+        except OSError as exc:
+            raise WalkRefusedError(
+                "intake discovery could not resolve a source file's owner",
+                [WalkFault(path, f"ownership resolution failed: {exc}")],
+            ) from exc
         found.append(path)
     return found
 

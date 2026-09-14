@@ -22,6 +22,7 @@ from watchfiles import Change
 from polylogue.sources.hook_producer import main as hook_producer_main
 from polylogue.sources.hooks import (
     HookSpoolRecordError,
+    _iter_pending_event_paths,
     acknowledged_hook_spool_dir,
     drain_hook_event_spool,
     enqueue_hook_event,
@@ -34,6 +35,7 @@ from polylogue.sources.hooks import (
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, PER_TURN_END
+from polylogue.sources.walk_faults import WalkFaultRecorder, WalkRefusedError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
@@ -1138,3 +1140,66 @@ def test_a_journal_record_in_pending_is_never_acknowledged(tmp_path: Path) -> No
     assert not (acknowledged_hook_spool_dir(spool_root)).exists()
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT count(*) FROM raw_hook_events").fetchone()[0] == 0
+
+
+def _deny_scandir_for(monkeypatch: pytest.MonkeyPatch, blocked: Path) -> None:
+    """Refuse exactly one directory listing, as a permission fault would."""
+    real = os.scandir
+
+    def scandir(directory: Any = ".", *args: Any, **kwargs: Any) -> Any:
+        if Path(directory) == blocked:
+            raise PermissionError(13, "Permission denied", str(blocked))
+        return real(directory, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+
+def test_pending_collection_refuses_an_unreadable_shard_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a fault recorder, an unreadable shard is a refusal.
+
+    Anti-vacuity: restore ``except OSError: continue`` in the shard loop and
+    this returns ``[readable envelope]`` -- a short list a caller reads as the
+    whole spool -- so ``pytest.raises`` fails.
+    """
+    pending = pending_hook_spool_dir(tmp_path)
+    readable = pending / "2026-09-13"
+    readable.mkdir(parents=True)
+    (readable / "a.json").write_text("{}")
+    blocked = pending / "2026-09-14"
+    blocked.mkdir()
+    (blocked / "b.json").write_text("{}")
+
+    _deny_scandir_for(monkeypatch, blocked)
+
+    with pytest.raises(WalkRefusedError) as excinfo:
+        _iter_pending_event_paths(pending)
+
+    assert str(blocked) in str(excinfo.value)
+
+
+def test_pending_collection_counts_an_unreadable_shard_for_the_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a recorder, the readable shards still drain and the fault travels.
+
+    Anti-vacuity: drop ``unreadable_paths`` from the collection and the caller
+    sees ``remaining=0`` with no indication that a shard was never counted.
+    """
+    pending = pending_hook_spool_dir(tmp_path)
+    readable = pending / "2026-09-13"
+    readable.mkdir(parents=True)
+    kept = readable / "a.json"
+    kept.write_text("{}")
+    blocked = pending / "2026-09-14"
+    blocked.mkdir()
+    (blocked / "b.json").write_text("{}")
+
+    _deny_scandir_for(monkeypatch, blocked)
+
+    faults = WalkFaultRecorder()
+    collected = _iter_pending_event_paths(pending, faults=faults)
+
+    assert collected == [kept]
+    assert faults.paths() == (str(blocked),)

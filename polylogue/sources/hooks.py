@@ -55,7 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.hook_producer import (
     PENDING_DIRNAME as _PENDING_DIRNAME,
 )
@@ -70,6 +70,7 @@ from polylogue.sources.hook_producer import (
 from polylogue.sources.hook_producer import (
     validated_record as _validated_record,
 )
+from polylogue.sources.walk_faults import WalkFault, WalkFaultRecorder, WalkRefusedError
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -193,6 +194,11 @@ class HookSpoolDrainResult:
     acknowledged: int
     failed: int
     remaining: int = 0
+    #: Spool directories this drain could not list. Reported apart from
+    #: ``failed`` (which counts envelopes that were seen and not committed):
+    #: an unreadable shard's envelopes were never counted at all, so
+    #: ``remaining`` is a floor rather than a measurement while it is set.
+    unreadable_paths: tuple[str, ...] = ()
 
 
 def pending_hook_spool_dir(root: Path | None = None) -> Path:
@@ -226,7 +232,9 @@ def hook_spool_root() -> Path:
 _DAY_SHARD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _iter_pending_event_paths(pending: Path, *, limit: int | None = None) -> list[Path]:
+def _iter_pending_event_paths(
+    pending: Path, *, limit: int | None = None, faults: WalkFaultRecorder | None = None
+) -> list[Path]:
     """Collect up to ``limit`` pending envelope paths without enumerating the
     entire backlog.
 
@@ -237,6 +245,12 @@ def _iter_pending_event_paths(pending: Path, *, limit: int | None = None) -> lis
     backlog no longer costs an ``O(n log n)`` full listing+sort on every
     bounded drain call, only ``O(limit)`` plus one cheap directory listing per
     shard actually visited.
+
+    A directory that cannot be read is never dropped. Pass ``faults`` to
+    collect it as counted evidence the caller reports (the drain does this, so
+    one unreadable shard cannot stop the readable ones from draining); omit it
+    and collection refuses with :class:`WalkRefusedError`, so no caller receives a
+    short list that reads as an empty spool.
     """
 
     collected: list[Path] = []
@@ -244,9 +258,15 @@ def _iter_pending_event_paths(pending: Path, *, limit: int | None = None) -> lis
     def want_more() -> bool:
         return limit is None or len(collected) < limit
 
+    def fault(path: Path, detail: str) -> None:
+        if faults is None:
+            raise WalkRefusedError("hook spool collection could not read a directory", [WalkFault(path, detail)])
+        faults.record(path, detail)
+
     try:
         entries = sorted(pending.iterdir())
-    except OSError:
+    except OSError as exc:
+        fault(pending, f"pending spool directory could not be listed: {exc}")
         return collected
     shard_dirs = [entry for entry in entries if entry.is_dir() and _DAY_SHARD_RE.match(entry.name)]
     legacy_files = [entry for entry in entries if entry.is_file() and entry.suffix == ".json"]
@@ -264,7 +284,8 @@ def _iter_pending_event_paths(pending: Path, *, limit: int | None = None) -> lis
                         break
                     if dirent.is_file() and dirent.name.endswith(".json"):
                         collected.append(Path(dirent.path))
-        except OSError:
+        except OSError as exc:
+            fault(shard, f"pending shard could not be listed: {exc}")
             continue
     return collected
 
@@ -281,7 +302,22 @@ def hook_spool_pending_depth(root: Path | None = None, *, cap: int = 5000) -> in
     """
 
     pending = pending_hook_spool_dir(root)
-    return len(_iter_pending_event_paths(pending, limit=cap))
+    faults = WalkFaultRecorder()
+    depth = len(_iter_pending_event_paths(pending, limit=cap, faults=faults))
+    if faults:
+        # A spool directory that cannot be listed hides an unknown number of
+        # envelopes. Reporting the readable remainder would let an unreadable
+        # spool look like a drained one, so it reads as "alert now" instead.
+        emit(
+            "source.hook_spool.depth_unreadable",
+            level=WARNING,
+            outcome="degraded",
+            errors=len(faults),
+            path=faults.paths()[0],
+            error_detail="; ".join(str(fault) for fault in faults),
+        )
+        return cap
+    return depth
 
 
 def hook_spool_has_pending_events(root: Path | None = None) -> bool:
@@ -297,8 +333,14 @@ def hook_spool_has_pending_events(root: Path | None = None) -> bool:
     pending = pending_hook_spool_dir(root)
     try:
         entries = sorted(pending.iterdir())
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        # Unknown is not empty. Answering ``False`` here let an unreadable
+        # spool mean "nothing pending"; answering ``True`` routes the caller
+        # into the drain, which reports the unreadable directory by name.
+        emit("source.hook_spool.probe_unreadable", level=WARNING, outcome="degraded", path=str(pending))
+        return True
     for entry in entries:
         if entry.is_file() and entry.suffix == ".json":
             return True
@@ -310,7 +352,8 @@ def hook_spool_has_pending_events(root: Path | None = None) -> bool:
                 if any(dirent.is_file() and dirent.name.endswith(".json") for dirent in it):
                     return True
         except OSError:
-            continue
+            emit("source.hook_spool.probe_unreadable", level=WARNING, outcome="degraded", path=str(entry))
+            return True
     return False
 
 
@@ -372,11 +415,26 @@ def drain_hook_event_spool(
     # Collect one extra path beyond the limit (when bounded) purely to learn
     # whether more remain after this batch, without paying for a full count.
     probe_limit = None if limit is None else limit + 1
-    paths = _iter_pending_event_paths(pending, limit=probe_limit)
+    # Counted degradation, not refusal: a drain that refused wholesale would
+    # let one unreadable day-shard stop every readable shard from draining.
+    # The unreadable shards travel back on the result instead.
+    faults = WalkFaultRecorder()
+    paths = _iter_pending_event_paths(pending, limit=probe_limit, faults=faults)
+    unreadable_paths = faults.paths()
+    if unreadable_paths:
+        emit(
+            "source.hook_spool.drain_unreadable",
+            level=WARNING,
+            outcome="degraded",
+            source_id=source_id,
+            errors=len(unreadable_paths),
+            path=unreadable_paths[0],
+            error_detail="; ".join(str(fault) for fault in faults),
+        )
     more_remain_beyond_batch = limit is not None and len(paths) > limit
     selected = paths if limit is None else paths[:limit]
     if not selected:
-        return HookSpoolDrainResult(acknowledged=0, failed=0)
+        return HookSpoolDrainResult(acknowledged=0, failed=0, unreadable_paths=unreadable_paths)
     acknowledged = 0
     failed = 0
     try:
@@ -398,6 +456,7 @@ def drain_hook_event_spool(
             acknowledged=0,
             failed=len(selected),
             remaining=len(selected) + (1 if more_remain_beyond_batch else 0),
+            unreadable_paths=unreadable_paths,
         )
     touched_shards: set[Path] = set()
     with store as archive:
@@ -421,6 +480,7 @@ def drain_hook_event_spool(
         acknowledged=acknowledged,
         failed=failed,
         remaining=(len(selected) - acknowledged) + (1 if more_remain_beyond_batch else 0),
+        unreadable_paths=unreadable_paths,
     )
 
 
