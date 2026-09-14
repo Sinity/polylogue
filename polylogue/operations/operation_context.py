@@ -147,7 +147,7 @@ def observe_control_authority(root: Path) -> OperationControlRead:
 def open_operation_read(
     root: Path,
     *,
-    publication_guard: Callable[[], AbstractContextManager[None]] | None = None,
+    publication_guard: Callable[[], AbstractContextManager[object]] | None = None,
     read_timeout: float = 2.0,
     vector_model: str | None = None,
     execution_context: QueryExecutionContext | None = None,

@@ -31,8 +31,10 @@ from polylogue.storage.sqlite.connection_profile import (
 from polylogue.storage.sqlite.write_lease import (
     UnleasedWriteError,
     WriteHoldExceededError,
+    adopt_write_lease,
     arm_write_lease_enforcement,
     current_write_lease,
+    delegate_write_lease,
     require_write_lease,
     write_lease,
     write_lease_enforced,
@@ -373,3 +375,118 @@ def test_an_unbound_thread_that_inherits_the_lease_is_still_refused() -> None:
     assert "unauthorized thread" in str(observed["outcome"])
     # The worker must not have smuggled itself into the owner's bound set.
     assert lease.bound_thread_ids == {lease.owner_thread_id}
+
+
+def test_delegation_authorizes_a_foreign_thread_and_loop_but_nothing_else() -> None:
+    """Ownership travels as a value, so a hand-off survives thread + loop changes.
+
+    Anti-vacuity: drop the ``adopt_write_lease`` block from ``worker`` and the
+    adopted probe raises ``UnleasedWriteError`` -- the ambient lease does not
+    reach a worker thread running its own event loop, which is exactly the
+    daemon HTTP write gate's shape (polylogue-h5l6i).
+    """
+    seen: list[str] = []
+
+    with arm_write_lease_enforcement():
+        with write_lease("owner"):
+            delegation = delegate_write_lease()
+
+            def worker() -> None:
+                async def body() -> None:
+                    with adopt_write_lease(delegation):
+                        lease = require_write_lease("user.db write")
+                        seen.append("adopted" if lease is not None else "unleased")
+
+                asyncio.run(body())
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+
+    assert seen == ["adopted"]
+
+
+def test_a_thread_without_the_delegation_is_still_refused_inside_the_hold() -> None:
+    """The load-bearing negative: admission is not ambient authorization.
+
+    Anti-vacuity: authorize the rogue thread ambiently -- call
+    ``bind_write_lease_thread()`` inside ``rogue`` -- and the assertion below
+    fails, because the lease's ContextVar *is* inherited by threads on this
+    build. Only the explicit hand-off keeps it out.
+    """
+    refused: list[BaseException | None] = []
+
+    with arm_write_lease_enforcement():
+        with write_lease("owner"):
+            delegate_write_lease()
+
+            def rogue() -> None:
+                try:
+                    require_write_lease("user.db write")
+                except UnleasedWriteError as exc:
+                    refused.append(exc)
+                else:
+                    refused.append(None)
+
+            thread = threading.Thread(target=rogue)
+            thread.start()
+            thread.join()
+
+    assert len(refused) == 1
+    assert isinstance(refused[0], UnleasedWriteError)
+
+
+def test_delegation_admits_one_writer_at_a_time() -> None:
+    """One admission cannot fan out into concurrent writers.
+
+    Anti-vacuity: remove the ``_adopted_by`` guard in ``adopt_write_lease``
+    and the second adoption succeeds while the first still holds it.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+
+    with arm_write_lease_enforcement():
+        with write_lease("owner"):
+            delegation = delegate_write_lease()
+
+            def first() -> None:
+                with adopt_write_lease(delegation):
+                    entered.set()
+                    release.wait(timeout=5.0)
+
+            thread = threading.Thread(target=first)
+            thread.start()
+            assert entered.wait(timeout=5.0)
+            try:
+                with pytest.raises(UnleasedWriteError, match="already executing"):
+                    with adopt_write_lease(delegation):
+                        pass
+            finally:
+                release.set()
+                thread.join()
+
+
+def test_delegation_is_revoked_when_its_lease_is_released() -> None:
+    """A stashed grant authorizes nothing once the admission is over.
+
+    Anti-vacuity: delete the revoke loop in ``write_lease``'s finally block and
+    this adoption succeeds outside any admission.
+    """
+    with arm_write_lease_enforcement():
+        with write_lease("owner"):
+            delegation = delegate_write_lease()
+        assert not delegation.live
+        with pytest.raises(UnleasedWriteError, match="revoked"):
+            with adopt_write_lease(delegation):
+                pass
+
+
+def test_delegation_cannot_be_minted_without_holding_the_lease() -> None:
+    """Delegation is a hand-off, never an escalation.
+
+    Anti-vacuity: mint a ``WriteLeaseDelegation`` directly instead of routing
+    through ``require_write_lease`` and an unleased caller gains authority.
+    """
+    with arm_write_lease_enforcement():
+        with pytest.raises(UnleasedWriteError):
+            delegate_write_lease()
