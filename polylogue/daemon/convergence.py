@@ -35,9 +35,7 @@ from polylogue.daemon.derivation import (
     ReplacementLike,
     converge,
 )
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
+from polylogue.logging import ERROR, emit, span
 
 MAX_SELECTED_BINDING_RETRIES = 1
 
@@ -919,8 +917,19 @@ class DaemonConverger:
                 continue
             try:
                 result[stage_name] = dict(stage.status())
-            except Exception:
-                logger.warning("converger: status probe failed stage=%s", stage_name, exc_info=True)
+            except Exception as exc:
+                # An unavailable probe is reported as unavailable, never as a
+                # healthy default: a status surface must not render a failed
+                # probe as "ready".
+                emit(
+                    "daemon.stage.status_probe.failed",
+                    level=ERROR,
+                    stage=stage_name,
+                    outcome="unmeasured",
+                    reason="status_probe_raised",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
                 result[stage_name] = {"state": "unavailable"}
         return result
 
@@ -947,12 +956,16 @@ class DaemonConverger:
             return state.stages.get(stage_name) is not StageState.DONE
         try:
             return bool(stage.barrier_check(path))
-        except Exception:
-            logger.warning(
-                "converger: barrier check failed for %s stage=%s",
-                path,
-                stage_name,
-                exc_info=True,
+        except Exception as exc:
+            emit(
+                "daemon.barrier.failed",
+                level=ERROR,
+                stage=stage_name,
+                path=path,
+                outcome="error",
+                reason="barrier_check_raised",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
             )
             self._mark_barrier_failure(state, stage_name=stage_name)
             return True
@@ -969,8 +982,17 @@ class DaemonConverger:
             return {path for path in paths if self._path_barrier_blocked(stage_name, stage, path)}
         try:
             blocked = set(stage.barrier_check_many(paths))
-        except Exception:
-            logger.warning("converger: batch barrier check failed stage=%s", stage_name, exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.barrier.failed",
+                level=ERROR,
+                stage=stage_name,
+                outcome="error",
+                reason="batch_barrier_check_raised",
+                files=len(paths),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             for path in paths:
                 self._mark_barrier_failure(self._file_states[path], stage_name=stage_name)
             return set(paths)
@@ -992,8 +1014,17 @@ class DaemonConverger:
             }
         try:
             blocked = set(stage.barrier_check_sessions(session_ids))
-        except Exception:
-            logger.warning("converger: session barrier check failed stage=%s", stage_name, exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.barrier.failed",
+                level=ERROR,
+                stage=stage_name,
+                outcome="error",
+                reason="session_barrier_check_raised",
+                sessions=len(session_ids),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             for session_id in session_ids:
                 self._mark_barrier_failure(self._session_states[session_id], stage_name=stage_name)
             return set(session_ids)
@@ -1001,6 +1032,28 @@ class DaemonConverger:
 
     def converge_file(self, path: Path) -> FileState:
         """Converge one file while honoring durable stage barriers."""
+        with span("daemon.converge.file", path=path) as pass_span:
+            state = self._converge_file_stages(path)
+            if state.error_count:
+                pass_span.degraded(
+                    "stage_errors",
+                    errors=state.error_count,
+                    files=1,
+                )
+            elif state.converged:
+                pass_span.ok(files=1)
+            else:
+                # Not converged and not failed: stages remain pending behind a
+                # barrier. Reported as its own outcome so a stalled pass is
+                # never scrolled past as a success.
+                pass_span.degraded(
+                    "stages_pending",
+                    pending=len(state.pending_stages),
+                    files=1,
+                )
+            return state
+
+    def _converge_file_stages(self, path: Path) -> FileState:
         if path not in self._file_states:
             self._file_states[path] = FileState(path=path)
         state = self._file_states[path]
@@ -1016,12 +1069,15 @@ class DaemonConverger:
             if current is not StageState.DONE:
                 try:
                     needs_work = stage.check(path)
-                except Exception:
-                    logger.warning(
-                        "converger: check failed for %s stage=%s",
-                        path,
-                        stage_name,
-                        exc_info=True,
+                except Exception as exc:
+                    emit(
+                        "daemon.stage.check_failed",
+                        level=ERROR,
+                        stage=stage_name,
+                        path=path,
+                        outcome="error",
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
                     )
                     state.stages[stage_name] = StageState.FAILED
                     state.error_count += 1
@@ -1034,11 +1090,14 @@ class DaemonConverger:
                         try:
                             execute_result = stage.execute(path)
                         except Exception as exc:
-                            logger.warning(
-                                "converger: execute failed for %s stage=%s: %s",
-                                path,
-                                stage_name,
-                                exc,
+                            emit(
+                                "daemon.stage.execute_failed",
+                                level=ERROR,
+                                stage=stage_name,
+                                path=path,
+                                outcome="error",
+                                error_type=type(exc).__name__,
+                                error_detail=str(exc),
                             )
                             state.stages[stage_name] = StageState.FAILED
                             state.error_count += 1
@@ -1057,6 +1116,15 @@ class DaemonConverger:
                                 stage=stage,
                                 success=success,
                                 scope="stage",
+                            )
+                            emit(
+                                "daemon.stage.executed",
+                                stage=stage_name,
+                                path=path,
+                                # ``success`` is the stage's own claim; it is
+                                # recorded as the outcome rather than assumed.
+                                outcome="ok" if success else "error",
+                                duration_ms=round(elapsed * 1000, 3),
                             )
 
             if self._path_barrier_blocked(stage_name, stage, path):
@@ -1127,12 +1195,15 @@ class DaemonConverger:
                     t_check = time.perf_counter()
                     try:
                         needs_work = stage.check(path)
-                    except Exception:
-                        logger.warning(
-                            "converger: check failed for %s stage=%s",
-                            path,
-                            stage_name,
-                            exc_info=True,
+                    except Exception as exc:
+                        emit(
+                            "daemon.stage.check_failed",
+                            level=ERROR,
+                            stage=stage_name,
+                            path=path,
+                            outcome="error",
+                            error_type=type(exc).__name__,
+                            error_detail=str(exc),
                         )
                         state.stages[stage_name] = StageState.FAILED
                         state.error_count += 1
@@ -1149,11 +1220,14 @@ class DaemonConverger:
                     try:
                         execute_result = stage.execute(path)
                     except Exception as exc:
-                        logger.warning(
-                            "converger: execute failed for %s stage=%s: %s",
-                            path,
-                            stage_name,
-                            exc,
+                        emit(
+                            "daemon.stage.execute_failed",
+                            level=ERROR,
+                            stage=stage_name,
+                            path=path,
+                            outcome="error",
+                            error_type=type(exc).__name__,
+                            error_detail=str(exc),
                         )
                         state.stages[stage_name] = StageState.FAILED
                         state.error_count += 1
@@ -1180,7 +1254,13 @@ class DaemonConverger:
                 try:
                     batch_needs_work = set(stage.check_many(active_paths)).intersection(active_paths)
                 except Exception:
-                    logger.warning("converger: batch check failed stage=%s", stage_name, exc_info=True)
+                    emit(
+                        "daemon.stage.check_failed",
+                        level=ERROR,
+                        stage=stage_name,
+                        outcome="error",
+                        reason="batch_check_raised",
+                    )
                     for path in active_paths:
                         state = self._file_states[path]
                         state.stages[stage_name] = StageState.FAILED
@@ -1204,7 +1284,15 @@ class DaemonConverger:
                         try:
                             execute_result = stage.execute_many(ordered_needs_work)
                         except Exception as exc:
-                            logger.warning("converger: batch execute failed stage=%s: %s", stage_name, exc)
+                            emit(
+                                "daemon.stage.execute_failed",
+                                level=ERROR,
+                                stage=stage_name,
+                                outcome="error",
+                                reason="batch_execute_raised",
+                                error_type=type(exc).__name__,
+                                error_detail=str(exc),
+                            )
                             for path in batch_needs_work:
                                 state = self._file_states[path]
                                 state.stages[stage_name] = StageState.FAILED
@@ -1219,11 +1307,15 @@ class DaemonConverger:
                                     remaining_needs_work = set(stage.check_many(ordered_needs_work)).intersection(
                                         batch_needs_work
                                     )
-                                except Exception:
-                                    logger.warning(
-                                        "converger: batch recheck failed stage=%s",
-                                        stage_name,
-                                        exc_info=True,
+                                except Exception as exc:
+                                    emit(
+                                        "daemon.stage.recheck_failed",
+                                        level=ERROR,
+                                        stage=stage_name,
+                                        outcome="unmeasured",
+                                        reason="batch_recheck_raised",
+                                        error_type=type(exc).__name__,
+                                        error_detail=str(exc),
                                     )
                             _record_stage_times(
                                 batch_stage_times,
@@ -1287,7 +1379,13 @@ class DaemonConverger:
                 try:
                     batch_needs_work = set(stage.check_sessions(active_ids)).intersection(active_ids)
                 except Exception:
-                    logger.warning("converger: session batch check failed stage=%s", stage_name, exc_info=True)
+                    emit(
+                        "daemon.stage.check_failed",
+                        level=ERROR,
+                        stage=stage_name,
+                        outcome="error",
+                        reason="session_batch_check_raised",
+                    )
                     for session_id in active_ids:
                         state = self._session_states[session_id]
                         state.stages[stage_name] = StageState.FAILED
@@ -1305,10 +1403,15 @@ class DaemonConverger:
                         try:
                             execute_result = stage.execute_sessions(tuple(batch_needs_work))
                         except Exception as exc:
-                            logger.warning(
-                                "converger: session batch execute failed stage=%s: %s",
-                                stage_name,
-                                exc,
+                            emit(
+                                "daemon.stage.execute_failed",
+                                level=ERROR,
+                                stage=stage_name,
+                                outcome="error",
+                                reason="session_batch_execute_raised",
+                                sessions=len(batch_needs_work),
+                                error_type=type(exc).__name__,
+                                error_detail=str(exc),
                             )
                             for session_id in batch_needs_work:
                                 state = self._session_states[session_id]
@@ -1324,11 +1427,15 @@ class DaemonConverger:
                                     remaining_needs_work = set(
                                         stage.check_sessions(tuple(batch_needs_work))
                                     ).intersection(batch_needs_work)
-                                except Exception:
-                                    logger.warning(
-                                        "converger: session batch recheck failed stage=%s",
-                                        stage_name,
-                                        exc_info=True,
+                                except Exception as exc:
+                                    emit(
+                                        "daemon.stage.recheck_failed",
+                                        level=ERROR,
+                                        stage=stage_name,
+                                        outcome="unmeasured",
+                                        reason="session_batch_recheck_raised",
+                                        error_type=type(exc).__name__,
+                                        error_detail=str(exc),
                                     )
                             _record_stage_times(
                                 batch_stage_times,

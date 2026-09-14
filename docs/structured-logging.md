@@ -1,0 +1,237 @@
+# Structured logging
+
+Polylogue emits **events**, not sentences. An event is a record with a stable
+dotted name and allowlisted scalar fields; the human-readable line an operator
+reads is a *rendering* of that record, never its storage form.
+
+The design target is one specific reader: someone scrolling a completed
+fresh-start rebuild log — a long unattended convergence over the whole archive
+— asking *"did this actually ingest everything, and if not, where did it stop
+and why?"*. Every decision below follows from that question.
+
+## Why the previous arrangement could not answer it
+
+`polylogue/logging.py` already wrapped structlog, and ~140 modules already
+imported `get_logger`. But `configure_logging()` is only called on the
+`--verbose` / `--json-logs` paths. Everywhere else `get_logger` returns
+`_StdlibBoundLogger`, whose `bind()` is a no-op and whose `_stdlib_log_kwargs`
+discards every keyword except `exc_info`/`stack_info`/`stacklevel`/`extra`.
+
+So the structured fields those call sites passed were silently thrown away in
+the common case, and the sink was a bare `StreamHandler(sys.stderr)` with no
+formatter — no timestamp, no level, no logger name. The call sites had also
+drifted to interpolated prose:
+
+```python
+logger.warning("converger: execute failed for %s stage=%s: %s", path, stage_name, exc)
+```
+
+That line cannot be filtered, counted, or correlated. It is also indistinguishable,
+to a reader, from a line that meant nothing.
+
+## The shape
+
+```python
+from polylogue.logging import emit, span, bind
+
+with bind(run_id=run_id, component="daemon"):     # correlation scope
+    with span("daemon.converge.file", path=path) as pass_span:
+        emit("daemon.stage.executed", stage=name, outcome="ok", duration_ms=ms)
+        pass_span.ok(files=1)
+```
+
+Three primitives, each one line at the call site:
+
+| Primitive | Purpose |
+| --- | --- |
+| `emit(event, level=INFO, **fields)` | one point-in-time event |
+| `span(name, **fields)` | a unit of work: `.start` plus exactly one terminal event with `duration_ms` |
+| `bind(**fields)` | attach correlation fields to everything emitted inside the block |
+
+### Correlation
+
+`bind` and `span` write to a `contextvars.ContextVar`. That choice is what makes
+one unit of work followable across the daemon's concurrency:
+
+- **`await` boundaries** — contextvars are per-task; propagation is automatic.
+- **`asyncio.to_thread`** — copies the context; automatic. The daemon uses this
+  heavily.
+- **The writer lease** — `write_coordinator._run_in_daemon_thread` already calls
+  `contextvars.copy_context()` before the thread hop, so correlation crosses the
+  lease for free.
+- **New `threading.Thread`** — on Python 3.14 (this repo's interpreter) a new
+  thread inherits its creator's context. Automatic.
+- **Pooled threads** — *not* automatic. A `ThreadPoolExecutor` thread created
+  before the bind carries no context. This is the one real trap, and it is
+  exactly the shape of `daemon/execution.py`'s long-lived pool. Wrap those
+  callables with `propagate(fn)`.
+
+`span` also issues `trace_id` / `span_id` / `parent_span_id`, so nested work
+forms a tree within one `run_id`.
+
+### Honesty
+
+The campaign's recurring defect is a refusal or an unmeasured state rendered as
+success. Three mechanisms push back:
+
+- A span's terminal event is emitted from `__exit__`, which runs **before** any
+  enclosing `except`. An exception swallowed by a broad handler upstream is
+  still recorded.
+- A span that exits without declaring an outcome emits `<name>.unmeasured` at
+  WARNING. Silence is never promoted to success.
+- `outcome` is a closed vocabulary — `ok`, `empty`, `degraded`, `error`,
+  `refused`, `unmeasured`, `skipped` — deliberately mirroring the surface
+  outcome vocabulary in `surfaces/outcome.py`, so "a probe timed out" and "a
+  probe returned nothing" cannot collapse into the same reading.
+
+Reserved keys (`ts`, `level`, `event`) are assigned after caller fields, so a
+call site cannot rename its own event or restate its own level.
+
+### Cost
+
+`emit` compares one integer before doing anything else, so a suppressed event
+costs the caller's kwargs dict and nothing more. Nothing is serialized unless a
+sink consumes it; rendering happens in the sink, once, only for records that
+survive the threshold. There is no tree walk, no handler chain, and no
+per-emit formatting of fields that no one reads. (The suite-cost plugin's
+O(tests²) walk is the cautionary tale this rule exists to avoid.)
+
+Guard genuinely expensive field computation with `is_enabled(level)`.
+
+## The PII boundary
+
+Tracked content, commits and CI logs are public; session transcripts must never
+reach them. The boundary is therefore an **allowlist in code**, not reviewer
+discipline: `polylogue/logging_fields.py` registers every emittable field name,
+and `emit`/`bind`/`Span.set` drop anything unregistered — recording the drop as
+its own `log.field_rejected` event, so a leak attempt is visible rather than
+silent.
+
+Consequences:
+
+- `emit("x", text=transcript)` cannot leak. `text` is unregistered, so the value
+  never reaches a record. `FORBIDDEN_FIELDS` additionally names the obvious
+  content words so the rejection says `reason=content_field` rather than
+  `unregistered_field`.
+- Non-scalar values are reduced to `<TypeName>` rather than `repr`'d, so an
+  object cannot smuggle content through its representation.
+- `bind` validates too — content bound once would otherwise ride along on every
+  downstream event, the worst possible leak shape.
+- Exactly **one** free-text field exists, `error_detail`. It is truncated to 300
+  characters and it is the only field a redacting renderer must strip
+  (`POLYLOGUE_LOG_REDACT=1`, or `render_console(record, redact=True)`). A test
+  asserts the quarantine set stays at one entry, so this property cannot drift.
+
+Filesystem paths *are* allowed — the rebuild reader needs "where did it stop" —
+but are marked `LOCAL_ONLY_FIELDS` for any future export path.
+
+## Configuration
+
+`configure_events()` installs the default sink and threshold.
+
+| Variable | Values | Default |
+| --- | --- | --- |
+| `POLYLOGUE_LOG_FORMAT` | `json`, `console` | `console` |
+| `POLYLOGUE_LOG_LEVEL` | `trace`…`error` | `info` |
+| `POLYLOGUE_LOG_FILE` | path; appends | stderr |
+| `POLYLOGUE_LOG_REDACT` | `1`/`true` | off |
+
+`json` is the storage form (one object per line, sorted keys — diffable and
+`jq`-able). `console` is the operator view. For an unattended rebuild, run with
+`POLYLOGUE_LOG_FORMAT=json POLYLOGUE_LOG_FILE=<path>` and render afterwards.
+
+Additional sinks: `add_sink` / `remove_sink`, and `capture()` for tests.
+
+### Relationship to `devtools` receipts
+
+They answer different questions and must not be merged. A `devtools` receipt
+(`.cache/verify/runs/...`) is *evidence about a verification run* — which
+selection ran, what its outcome was, keyed on declared inputs. The event log is
+*the production runtime's own record of what it did to the archive*. A receipt
+is written once per run by the harness; events are written continuously by the
+daemon. The log is not a receipt store, and `devtools` should not grow a second
+copy of runtime state — where the two need to meet, a receipt can cite a
+`run_id` and the log answers the rest.
+
+## What the daemon emits
+
+One convergence pass over two files, the second stage failing, rendered in
+console view (real output, `component`/`run_id` bound once at daemon start):
+
+```text
+INFO  daemon.run.start component=daemon pid=1234 run_id=rebuild01
+DEBUG daemon.converge.file.start path=claude-code/a.jsonl run_id=rebuild01 span_id=94e3…
+INFO  daemon.stage.executed duration_ms=0.0 outcome=ok path=claude-code/a.jsonl stage=acquire span_id=94e3…
+ERROR daemon.stage.execute_failed error_detail=unparseable payload: zero sessions
+      error_type=RuntimeError outcome=error path=claude-code/a.jsonl stage=parse span_id=94e3…
+INFO  daemon.stage.executed duration_ms=0.0 outcome=ok path=claude-code/a.jsonl stage=index span_id=94e3…
+WARN  daemon.converge.file.degraded duration_ms=0.115 errors=1 files=1 outcome=degraded
+      path=claude-code/a.jsonl reason=stage_errors span_id=94e3…
+INFO  daemon.run.stop files=2 run_id=rebuild01
+```
+
+The reader can now answer the rebuild question directly:
+
+```sh
+jq -r 'select(.outcome=="error" or .outcome=="unmeasured") | "\(.stage) \(.path) \(.reason // .error_type)"' rebuild.jsonl
+jq -r 'select(.event=="daemon.converge.file.ok") | .path' rebuild.jsonl | wc -l
+```
+
+Note what the excerpt makes visible that prose hid: `index` reported `ok` on a
+file whose `parse` had already failed. That is a real observation about stage
+ordering, and it is the kind of thing the old log could not have surfaced.
+
+## Converting the rest
+
+The remaining work is grind, not judgement.
+
+**Find the legacy form:**
+
+```sh
+grep -rn "logging.getLogger" --include="*.py" polylogue        # 19 modules
+grep -rn "logger\.\(debug\|info\|warning\|error\|exception\)(" --include="*.py" polylogue
+```
+
+**Convert one site:**
+
+1. Replace the module's `logger = logging.getLogger(__name__)` /
+   `get_logger(__name__)` with `from polylogue.logging import emit, span`.
+2. Turn the prose into a dotted event name: subject first, then what happened —
+   `daemon.stage.execute_failed`, not `"converger: execute failed for %s"`.
+3. Move every interpolated value into a keyword. If the field is not registered,
+   add it to `logging_fields.py` — that addition is the review point.
+4. `except Exception:` → `except Exception as exc:` and pass
+   `error_type=type(exc).__name__, error_detail=str(exc)`.
+5. Where the code has a natural unit of work with a duration or an outcome, use
+   `span` instead of paired `emit` calls, and declare the outcome explicitly.
+6. Delete the module-level `logger`.
+
+`convergence.py` is the worked example: 14 legacy sites, zero remaining.
+
+**Nothing goes dark during the migration.** `configure_events()` installs a
+`logging.Handler` that bridges surviving stdlib records into the event stream as
+`stdlib.record`, with the prose in `error_detail`. An event carrying prose is
+precisely an event that has not been converted yet — which is also how you
+measure remaining work on a live run.
+
+### The gate (landed, as a ratchet)
+
+The legacy form is now a `devtools gate patterns` rule rather than a new gate:
+`devtools/patterns/legacy-stdlib-logger.yml` matches `logging.getLogger($$$)`,
+registered `enforcing` against
+`devtools/patterns/baselines/legacy-stdlib-logger.txt`.
+
+That registry already provides exactly the semantics this needs — a
+grandfathered baseline that may shrink and never grow, with stale entries
+reported as prunable debt — so adding a parallel gate would have duplicated it.
+
+**It could not land at zero baseline**, so it did not pretend to: the recorded
+baseline is **22 matches**. A new occurrence anywhere in the tree fails the
+gate today (verified by introducing one and observing `status: failed`), while
+converting a module shrinks the baseline. The end state is a baseline
+containing only `polylogue/logging.py`, which legitimately owns the one
+sanctioned `logging.getLogger` call — the stdlib bridge's own backing logger.
+
+Note the rule deliberately matches only the *acquisition* of a legacy logger,
+not each `logger.warning(...)` call. Acquisition is the reviewable choke point;
+once a module has no legacy logger, its call sites cannot survive.
