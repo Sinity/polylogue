@@ -147,3 +147,78 @@ def test_two_daemons_for_different_archives_never_collide_on_socket_path(
             status_b = stack_b.client.operation("status", {}, archive_root=str(archive_root_b))
             assert status_a is not None and status_a["archive"]["root"] == str(archive_root_a)
             assert status_b is not None and status_b["archive"]["root"] == str(archive_root_b)
+
+
+@pytest.fixture
+def short_socket_dir() -> Iterator[Path]:
+    """A socket directory inside the 108-byte ``sun_path`` limit.
+
+    ``tmp_path`` under the managed harness already exceeds it, and the bind
+    would fail with ``AF_UNIX path too long`` before reaching what is tested.
+    """
+    directory = Path(tempfile.mkdtemp(prefix="plg-uds-stale-", dir="/tmp"))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_stale_socket_from_an_unclean_exit_does_not_block_the_next_bind(short_socket_dir: Path) -> None:
+    """A crashed daemon's leftover socket must not wedge the next start.
+
+    ``server_close`` unlinks only on a clean shutdown, so a ``kill -9``, OOM
+    kill or host crash leaves the socket file behind. Binding over it raises
+    ``OSError: [Errno 98] Address already in use`` and the daemon refuses to
+    start until an operator removes the file by hand.
+
+    Anti-vacuity: drop the ``_unlink_stale_socket`` call from
+    ``DaemonAPIUnixHTTPServer.__init__`` and this goes red with EADDRINUSE.
+    """
+    import socket
+
+    from polylogue.daemon.uds import _unlink_stale_socket
+
+    socket_path = short_socket_dir / "daemon.sock"
+    leftover = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        leftover.bind(str(socket_path))  # bound but never listening: the crashed shape
+    finally:
+        leftover.close()
+    assert socket_path.is_socket()
+
+    _unlink_stale_socket(socket_path)
+
+    assert not socket_path.exists()
+    rebound = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        rebound.bind(str(socket_path))
+    finally:
+        rebound.close()
+
+
+def test_a_live_peer_socket_is_never_unlinked(short_socket_dir: Path) -> None:
+    """The stale probe must not resurrect polylogue-kadx3's socket stealing.
+
+    Archive scoping means a socket that still answers belongs to a daemon
+    serving *this* archive. Unlinking it would let a second daemon take the
+    path over and silently strand the first. The conflict must surface as a
+    bind failure instead.
+
+    Anti-vacuity: make ``_unlink_stale_socket`` unlink unconditionally and this
+    goes red.
+    """
+    import socket
+
+    from polylogue.daemon.uds import _unlink_stale_socket
+
+    socket_path = short_socket_dir / "daemon.sock"
+    live = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        live.bind(str(socket_path))
+        live.listen(1)
+
+        _unlink_stale_socket(socket_path)
+
+        assert socket_path.is_socket(), "a socket with a live listener must survive"
+    finally:
+        live.close()

@@ -9,6 +9,7 @@ import socket
 import socketserver
 import struct
 import threading
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from time import monotonic
@@ -197,6 +198,33 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
         self._send(status, envelope)
 
 
+def _unlink_stale_socket(socket_path: Path) -> None:
+    """Remove a socket file left behind by an unclean exit, never a live one.
+
+    ``server_close`` unlinks on a clean shutdown, so anything still present at
+    bind time is either a crashed daemon's leftover or a running peer. Binding
+    over a leftover fails with ``EADDRINUSE`` and the daemon cannot start until
+    an operator removes the file by hand, so the leftover must go. The path is
+    archive-scoped (see :mod:`polylogue.daemon.socket_path`), so a peer that
+    still answers owns this archive: leave its socket alone and let ``bind``
+    report the conflict rather than silently stealing it.
+    """
+    if not socket_path.is_socket():
+        return
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.25)
+        probe.connect(str(socket_path))
+    except (ConnectionRefusedError, FileNotFoundError):
+        with suppress(FileNotFoundError):
+            socket_path.unlink()
+    except OSError:
+        # Indeterminate (timeout, permission): treat as live and refuse to unlink.
+        return
+    finally:
+        probe.close()
+
+
 class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
     request_queue_size = 24
@@ -224,6 +252,7 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
             owner_loop=write_bridge.owner_loop,
         )
         socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _unlink_stale_socket(socket_path)
         super().__init__(str(socket_path), MachineOperationHandler)
         socket_path.chmod(0o600)
         metadata = socket_path.stat()
