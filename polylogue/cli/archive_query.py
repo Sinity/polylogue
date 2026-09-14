@@ -1535,10 +1535,33 @@ def _mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
             "do not retry offline, inspect daemon audit state before retrying"
         )
     if isinstance(exc, OperationUnavailableError):
-        return click.ClickException(f"daemon is unavailable; it must execute {operation}")
+        # The daemon is the standard, not an optional addon: there is no local
+        # fallback to offer, so the refusal names the one action that makes the
+        # command work instead of leaving the operator to guess.
+        return click.ClickException(
+            f"daemon is unavailable; it must execute {operation}. Start one with `polylogued run` "
+            "(and drop --no-daemon / POLYLOGUE_NO_DAEMON if either is set)."
+        )
     if isinstance(exc, OperationFailedError):
         return click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}")
     return click.ClickException(f"{operation} failed: {exc}")
+
+
+def submit_cli_mutation(env: AppEnv, operation: str, payload: dict[str, object]) -> dict[str, object]:
+    """Run one declared write for a CLI verb, or refuse in the route's voice.
+
+    The single entry point every non-query CLI mutation uses, so that "the CLI
+    never holds write authority" is one fact about one function rather than a
+    property re-established per command. A caller that wants a receipt reads
+    the returned result; one that only needs the write to have happened ignores
+    it and lets the typed refusal propagate.
+    """
+    from polylogue.cli.operation_kernel import OperationKernelError
+
+    try:
+        return _submit_mutation_operation(load_effective_config(env), operation, payload)
+    except OperationKernelError as exc:
+        raise _mutation_refusal(exc, operation) from exc
 
 
 def _delete_refusal(exc: Exception, stage: str) -> click.ClickException:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
 
@@ -21,6 +21,25 @@ from polylogue.surfaces.payloads import (
     AssertionJudgmentPayload,
     AssertionJudgmentResultPayload,
 )
+
+
+def _judgment_recorder(issued: list[tuple[str, dict[str, object]]], payload: AssertionBulkJudgmentPayload) -> object:
+    """Answer the declared ``mutation.judgment.record`` write for the CLI.
+
+    Acceptance lowers to a daemon operation instead of the Python facade, so
+    the refs and inject flag that reached the writer are read off the recorded
+    operation payload.
+    """
+
+    def _served(_config: object, name: str, sent: dict[str, object]) -> dict[str, object]:
+        issued.append((name, dict(sent)))
+        return {
+            "status": "ok",
+            "affected_count": payload.applied_count,
+            "result": payload.model_dump(mode="json"),
+        }
+
+    return _served
 
 
 def _claim(status: AssertionStatus = AssertionStatus.CANDIDATE) -> AssertionClaimPayload:
@@ -170,21 +189,29 @@ def test_candidates_accept_emits_bulk_judgment_payload() -> None:
         idempotent_count=0,
         failed_count=0,
     )
-    env = SimpleNamespace(polylogue=SimpleNamespace(judge_assertion_candidates=AsyncMock(return_value=payload)))
+    env = SimpleNamespace(polylogue=SimpleNamespace(), config=MagicMock())
+    issued: list[tuple[str, dict[str, object]]] = []
 
-    result = CliRunner().invoke(
-        judge_command,
-        ["--accept", "assertion:candidate-cli-1", "--reason", "confirmed", "--format", "json"],
-        obj=env,
-        catch_exceptions=False,
-    )
+    with patch(
+        "polylogue.cli.archive_query._submit_mutation_operation",
+        side_effect=_judgment_recorder(issued, payload),
+    ):
+        result = CliRunner().invoke(
+            judge_command,
+            ["--accept", "assertion:candidate-cli-1", "--reason", "confirmed", "--format", "json"],
+            obj=env,
+            catch_exceptions=False,
+        )
 
     assert result.exit_code == 0
     rendered = json.loads(result.output)
     assert rendered["items"][0]["result"]["judgment"]["decision"] == "accept"
-    call = env.polylogue.judge_assertion_candidates.await_args.kwargs
-    assert call["items"][0].candidate_ref == "assertion:candidate-cli-1"
-    assert call["items"][0].inject is False
+    assert [name for name, _sent in issued] == ["mutation.judgment.record"]
+    reviews = issued[0][1]["reviews"]
+    assert isinstance(reviews, list)
+    assert reviews[0]["candidate_ref"] == "assertion:candidate-cli-1"
+    assert reviews[0]["reason"] == "confirmed"
+    assert reviews[0]["inject"] is False
 
 
 def test_mark_candidates_public_group_is_retired() -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -19,6 +19,39 @@ from polylogue.surfaces.payloads import (
     AssertionJudgmentPayload,
     AssertionJudgmentResultPayload,
 )
+
+
+def _judgment_recorder(issued: list[tuple[str, dict[str, object]]], payload: AssertionBulkJudgmentPayload) -> object:
+    """Stand in for the daemon's ``mutation.judgment.record`` handler.
+
+    `judge` no longer calls the Python facade: a review batch lowers to a
+    declared operation, and the command rebuilds its payload from the recorded
+    result. The refs, decision and inject flag that used to be read off the
+    facade call are now read off the recorded operation payload's ``reviews``.
+    """
+
+    def _served(_config: object, name: str, sent: dict[str, object]) -> dict[str, object]:
+        issued.append((name, dict(sent)))
+        return {
+            "status": "ok",
+            "affected_count": payload.applied_count,
+            "result": payload.model_dump(mode="json"),
+        }
+
+    return _served
+
+
+def _reviews(issued: list[tuple[str, dict[str, object]]]) -> list[dict[str, object]]:
+    assert [name for name, _sent in issued] == ["mutation.judgment.record"]
+    sent = issued[0][1]
+    assert sent["judgment_kind"] == "assertion-review"
+    reviews = sent["reviews"]
+    assert isinstance(reviews, list)
+    return reviews
+
+
+def _env() -> AppEnv:
+    return cast(AppEnv, SimpleNamespace(polylogue=SimpleNamespace(), config=MagicMock()))
 
 
 def _candidate() -> AssertionClaimPayload:
@@ -87,19 +120,21 @@ def test_judge_injection_requires_explicit_flag() -> None:
     """Acceptance defaults to non-injecting unless the operator opts in."""
 
     payload = AssertionBulkJudgmentPayload(items=(), applied_count=0, idempotent_count=0, failed_count=0)
-    polylogue = SimpleNamespace(judge_assertion_candidates=AsyncMock(return_value=payload))
-    env = cast(AppEnv, SimpleNamespace(polylogue=polylogue))
+    issued: list[tuple[str, dict[str, object]]] = []
 
-    invocation = CliRunner().invoke(
-        judge_command,
-        ["--accept", "assertion:candidate-judge-1", "--format", "json"],
-        obj=env,
-        catch_exceptions=False,
-    )
+    with patch(
+        "polylogue.cli.archive_query._submit_mutation_operation",
+        side_effect=_judgment_recorder(issued, payload),
+    ):
+        invocation = CliRunner().invoke(
+            judge_command,
+            ["--accept", "assertion:candidate-judge-1", "--format", "json"],
+            obj=_env(),
+            catch_exceptions=False,
+        )
 
     assert invocation.exit_code == 0
-    item = polylogue.judge_assertion_candidates.await_args.kwargs["items"][0]
-    assert item.inject is False
+    assert _reviews(issued)[0]["inject"] is False
 
 
 def test_judge_noninteractive_accept_uses_bulk_lifecycle_payload() -> None:
@@ -127,27 +162,30 @@ def test_judge_noninteractive_accept_uses_bulk_lifecycle_payload() -> None:
         idempotent_count=0,
         failed_count=0,
     )
-    polylogue = SimpleNamespace(judge_assertion_candidates=AsyncMock(return_value=payload))
-    env = cast(AppEnv, SimpleNamespace(polylogue=polylogue))
+    issued: list[tuple[str, dict[str, object]]] = []
 
-    invocation = CliRunner().invoke(
-        judge_command,
-        ["--accept", "assertion:candidate-judge-1", "--inject", "--format", "json"],
-        obj=env,
-        catch_exceptions=False,
-    )
+    with patch(
+        "polylogue.cli.archive_query._submit_mutation_operation",
+        side_effect=_judgment_recorder(issued, payload),
+    ):
+        invocation = CliRunner().invoke(
+            judge_command,
+            ["--accept", "assertion:candidate-judge-1", "--inject", "--format", "json"],
+            obj=_env(),
+            catch_exceptions=False,
+        )
 
     assert invocation.exit_code == 0
     assert json.loads(invocation.output)["applied_count"] == 1
-    item = polylogue.judge_assertion_candidates.await_args.kwargs["items"][0]
-    assert item.candidate_ref == "assertion:candidate-judge-1"
-    assert item.inject is True
+    review = _reviews(issued)[0]
+    assert review["candidate_ref"] == "assertion:candidate-judge-1"
+    assert review["inject"] is True
 
 
 def test_judge_edit_preserves_the_candidate_lifecycle_kind() -> None:
     payload = AssertionBulkJudgmentPayload(items=(), applied_count=0, idempotent_count=0, failed_count=0)
-    polylogue = SimpleNamespace(judge_assertion_candidates=AsyncMock(return_value=payload))
-    env = cast(AppEnv, SimpleNamespace(polylogue=polylogue))
+    issued: list[tuple[str, dict[str, object]]] = []
+    env = _env()
     selected = JudgeCandidateRow(
         assertion_id="candidate-transform-1",
         kind=AssertionKind.TRANSFORM_CANDIDATE.value,
@@ -156,12 +194,16 @@ def test_judge_edit_preserves_the_candidate_lifecycle_kind() -> None:
         evidence_refs=(),
     )
 
-    _edit_and_accept(env, selected=selected, edited_body="Edited decision wording.", inject=True)
+    with patch(
+        "polylogue.cli.archive_query._submit_mutation_operation",
+        side_effect=_judgment_recorder(issued, payload),
+    ):
+        _edit_and_accept(env, selected=selected, edited_body="Edited decision wording.", inject=True)
 
-    item = polylogue.judge_assertion_candidates.await_args.kwargs["items"][0]
-    assert item.decision == "supersede"
-    assert item.replacement_body_text == "Edited decision wording."
-    assert item.replacement_kind is None
+    review = _reviews(issued)[0]
+    assert review["decision"] == "supersede"
+    assert review["replacement_body_text"] == "Edited decision wording."
+    assert review["replacement_kind"] is None
 
 
 def test_judge_accept_all_of_kind_applies_the_real_queue_filters() -> None:
@@ -182,23 +224,24 @@ def test_judge_accept_all_of_kind_applies_the_real_queue_filters() -> None:
         limit=1,
         candidate_statuses=(AssertionStatus.CANDIDATE,),
     )
-    polylogue = SimpleNamespace(
-        list_assertion_candidate_reviews=AsyncMock(return_value=review_payload),
-        judge_assertion_candidates=AsyncMock(return_value=payload),
-    )
-    env = SimpleNamespace(polylogue=polylogue)
+    polylogue = SimpleNamespace(list_assertion_candidate_reviews=AsyncMock(return_value=review_payload))
+    env = SimpleNamespace(polylogue=polylogue, config=MagicMock())
+    issued: list[tuple[str, dict[str, object]]] = []
 
-    invocation = CliRunner().invoke(
-        judge_command,
-        ["--accept-all-of-kind", "--kind", "finding", "--since", "1970-01-01", "--format", "json"],
-        obj=env,
-        catch_exceptions=False,
-    )
+    with patch(
+        "polylogue.cli.archive_query._submit_mutation_operation",
+        side_effect=_judgment_recorder(issued, payload),
+    ):
+        invocation = CliRunner().invoke(
+            judge_command,
+            ["--accept-all-of-kind", "--kind", "finding", "--since", "1970-01-01", "--format", "json"],
+            obj=env,
+            catch_exceptions=False,
+        )
 
     assert invocation.exit_code == 0
     assert json.loads(invocation.output)["applied_count"] == 0
-    items = polylogue.judge_assertion_candidates.await_args.kwargs["items"]
-    assert [item.candidate_ref for item in items] == ["assertion:candidate-judge-1"]
+    assert [review["candidate_ref"] for review in _reviews(issued)] == ["assertion:candidate-judge-1"]
     polylogue.list_assertion_candidate_reviews.assert_awaited_once_with(
         target_ref=None,
         kinds=(AssertionKind.FINDING,),

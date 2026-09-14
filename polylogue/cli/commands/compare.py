@@ -169,7 +169,26 @@ def compare_command(
         rationale=rationale,
         rationale_visible=rationale_visible,
     )
-    envelope = run_coroutine_sync(env.polylogue.record_comparative_judgment(judgment, author_kind="user"))
+    # Durable ``user.db`` assertion row: the daemon owns it. The facade route
+    # this replaced wrote it from whatever process held the surface, which the
+    # mutation-authority layering rule could not see (polylogue-gjwto).
+    from polylogue.cli.archive_query import submit_cli_mutation
+    from polylogue.operations.judgment_wire import comparative_judgment_wire_form
+
+    recorded = submit_cli_mutation(
+        env,
+        "mutation.judgment.record",
+        {
+            "judgment_kind": "comparative",
+            "comparative": comparative_judgment_wire_form(judgment),
+            "author_kind": "user",
+        },
+    )
+    written = recorded.get("result")
+    if not isinstance(written, dict):
+        raise click.ClickException("daemon accepted the judgment but returned no assertion reference")
+    assertion_id = str(written["assertion_id"])
+    assertion_status = str(written["status"])
     revealed_receipt = reveal(receipt, revealed_at_ms=int(time.time() * 1000), verdict_recorded=True)
 
     if output_format == "json":
@@ -177,8 +196,8 @@ def compare_command(
             json.dumps(
                 {
                     "judgment_id": judgment.judgment_id,
-                    "assertion_id": envelope.assertion_id,
-                    "status": envelope.status.value,
+                    "assertion_id": assertion_id,
+                    "status": assertion_status,
                     "verdict": verdict_enum.value,
                     "revealed": {"left": left_record, "right": right_record},
                     "receipt": asdict(revealed_receipt),
@@ -187,7 +206,7 @@ def compare_command(
             )
         )
         return
-    click.echo(f"Recorded {judgment.judgment_id} ({verdict_enum.value}) as assertion {envelope.assertion_id}.")
+    click.echo(f"Recorded {judgment.judgment_id} ({verdict_enum.value}) as assertion {assertion_id}.")
     click.echo(f"  revealed left:  {left_record}")
     click.echo(f"  revealed right: {right_record}")
 

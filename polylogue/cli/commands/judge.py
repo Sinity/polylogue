@@ -14,7 +14,6 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import AssertionKind, AssertionStatus
-from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
 from polylogue.surfaces.payloads import (
     AssertionBulkJudgmentPayload,
     AssertionCandidateQueueHealthPayload,
@@ -176,22 +175,37 @@ def _judge(
     replacement_body_text: str | None = None,
     replacement_kind: str | None = None,
 ) -> AssertionBulkJudgmentPayload:
-    return run_coroutine_sync(
-        env.polylogue.judge_assertion_candidates(
-            items=tuple(
-                ArchiveAssertionBulkJudgmentItemEnvelope(
-                    candidate_ref=ref,
-                    decision=decision,
-                    reason=reason,
-                    actor_ref=actor_ref,
-                    inject=inject,
-                    replacement_body_text=replacement_body_text,
-                    replacement_kind=replacement_kind,
-                )
+    """Apply a review batch through the daemon's write authority.
+
+    A review supersedes durable ``user.db`` assertion rows. It used to run in
+    whichever process held the Python facade, which the mutation-authority
+    layering rule could not see because the call entered through
+    ``polylogue/api`` (polylogue-gjwto); it is now the declared
+    ``mutation.judgment.record`` operation, and with no daemon the command
+    refuses instead of becoming a second writer.
+    """
+    from polylogue.cli.archive_query import submit_cli_mutation
+
+    recorded = submit_cli_mutation(
+        env,
+        "mutation.judgment.record",
+        {
+            "judgment_kind": "assertion-review",
+            "reviews": [
+                {
+                    "candidate_ref": ref,
+                    "decision": decision,
+                    "reason": reason,
+                    "actor_ref": actor_ref,
+                    "inject": inject,
+                    "replacement_body_text": replacement_body_text,
+                    "replacement_kind": replacement_kind,
+                }
                 for ref in refs
-            )
-        )
+            ],
+        },
     )
+    return AssertionBulkJudgmentPayload.model_validate(recorded["result"])
 
 
 def _edit_and_accept(

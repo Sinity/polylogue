@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from polylogue.daemon.socket_path import daemon_socket_path, ensure_private_socket_dir
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
-    DAEMON_OPERATION_SPECS,
+    DAEMON_PRINCIPAL_CAPABILITIES,
     MAX_DECLARED_OPERATION_BODY_BYTES,
     MAX_OPERATION_RESULT_BYTES,
     DaemonOperationRequest,
@@ -62,7 +62,7 @@ def _peer_principal(connection: socket.socket, token: str | None) -> MutationPri
         role = "daemon-unix-peer"
     return MutationPrincipal(
         actor_ref=actor,
-        capabilities=frozenset(spec.capability for spec in DAEMON_OPERATION_SPECS),
+        capabilities=DAEMON_PRINCIPAL_CAPABILITIES,
         surface="cli",
         role_label=role,
     )

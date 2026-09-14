@@ -5571,13 +5571,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_daemon_operation(self._execute_daemon_operation(request))
 
     def _execute_daemon_operation(self, request: DaemonOperationRequest) -> dict[str, object]:
-        from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS
+        from polylogue.operations.daemon_protocol import DAEMON_PRINCIPAL_CAPABILITIES
         from polylogue.operations.mutation_transaction import MutationPrincipal
 
         base = self._cli_mutation_principal("read")
         principal = MutationPrincipal(
             actor_ref=base.actor_ref,
-            capabilities=frozenset(spec.capability for spec in DAEMON_OPERATION_SPECS),
+            capabilities=DAEMON_PRINCIPAL_CAPABILITIES,
             surface=base.surface,
             role_label=base.role_label,
         )
