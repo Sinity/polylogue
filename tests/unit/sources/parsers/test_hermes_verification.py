@@ -129,10 +129,30 @@ def test_looks_like_verification_evidence_db_path_matches_real_schema(tmp_path: 
     assert not hermes_verification.looks_like_verification_evidence_db_path(other)
 
 
+def _declared_export_of(source_path: Path, blob_root: Path) -> Path:
+    """Return the retained declared logical export of *source_path*.
+
+    Acquisition retains a declared mutable member as its canonical logical
+    export, never as a page image, and ``require_declared_export`` re-checks
+    that pairing when a marker is parsed (#5040/#5022). A marker built over a
+    live database is one production never mints.
+    """
+    from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+    from polylogue.storage.blob_store import BlobStore
+
+    store = BlobStore(blob_root)
+    snapshot = snapshot_sqlite_to_blob(source_path, store)
+    return store.blob_path(snapshot.blob_hash)
+
+
 def test_dispatch_detects_and_parses_verification_marker_through_the_real_pipeline(tmp_path: Path) -> None:
+    """Anti-vacuity: name any database other than the declared export of
+    ``source_path`` in the marker and this parse raises ``ValueError`` instead
+    of returning the two verification sessions asserted below."""
     path = tmp_path / "verification_evidence.db"
     _write_verification_evidence_db(path)
-    payload = hermes_verification.marker_payload(path)
+    export = _declared_export_of(path, tmp_path / "blob")
+    payload = hermes_verification.marker_payload(export, profile_root=path.parent)
 
     assert hermes_verification.looks_like_verification_evidence_db_payload(payload)
     assert detect_provider(payload) is not None
@@ -140,11 +160,14 @@ def test_dispatch_detects_and_parses_verification_marker_through_the_real_pipeli
     from polylogue.core.enums import Provider
 
     assert detect_provider(payload) is Provider.HERMES
-    sessions = parse_payload(Provider.HERMES, payload, "fallback-id")
-    assert {session.provider_session_id for session in sessions} == {
+    sessions = parse_payload(Provider.HERMES, payload, "fallback-id", source_path=str(path))
+    # Dispatch wires the install's profile root, so identity is qualified by
+    # the profile key -- the split that keeps two installs' sessions distinct.
+    assert {session.provider_session_id.split("@", 1)[0] for session in sessions} == {
         "verification:verify-session-redacted-1",
         "verification:verify-session-redacted-2",
     }
+    assert all("@profile-" in session.provider_session_id for session in sessions)
 
 
 def test_parse_groups_events_and_state_by_session_id_and_preserves_command_evidence(tmp_path: Path) -> None:
@@ -397,8 +420,12 @@ def test_dispatch_wires_profile_root_from_source_path_for_verification_marker(tm
 
     from polylogue.core.enums import Provider
 
-    payload_a = hermes_verification.marker_payload(path_a)
-    payload_b = hermes_verification.marker_payload(path_b)
+    payload_a = hermes_verification.marker_payload(
+        _declared_export_of(path_a, tmp_path / "blob-a"), profile_root=install_a
+    )
+    payload_b = hermes_verification.marker_payload(
+        _declared_export_of(path_b, tmp_path / "blob-b"), profile_root=install_b
+    )
 
     sessions_a = parse_payload(Provider.HERMES, payload_a, "fallback-id", source_path=str(path_a))
     sessions_b = parse_payload(Provider.HERMES, payload_b, "fallback-id", source_path=str(path_b))
