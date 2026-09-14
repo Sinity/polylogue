@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.core.enums import Origin, Provider
 from polylogue.operations.daemon_protocol import (
     OperationResultContractError,
     daemon_operation_spec,
@@ -19,6 +20,8 @@ from polylogue.operations.daemon_protocol import (
 )
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.storage_records import SessionBuilder
 
@@ -33,6 +36,36 @@ def _seed(root: Path, *, count: int = 3, messages: int = 4) -> tuple[str, ...]:
         builder.save()
         session_ids.append(builder.native_session_id())
     return tuple(session_ids)
+
+
+def _seed_hook_events(root: Path, *, origin: Origin, session_native_id: str, event_types: tuple[str, ...]) -> None:
+    """Attach hook events to a seeded session by its own origin/native identity.
+
+    Hook rows key on ``(origin, session_native_id)`` and carry no ``raw_id``
+    link, so they must be written against the session's identity rather than
+    any acquisition record.
+    """
+
+    with ArchiveStore(root) as archive:
+        for index, event_type in enumerate(event_types):
+            archive.write_hook_event(
+                provider=Provider.CODEX,
+                payload=b'{"event":"' + event_type.encode() + b'"}',
+                source_path=f"/hooks/{index}.json",
+                acquired_at_ms=1000 + index,
+                hook_event=ArchiveHookEvent(
+                    hook_event_id=f"hook:{session_native_id}:{index}",
+                    origin=origin,
+                    source_path=f"/hooks/{index}.json",
+                    event_type=event_type,
+                    payload={"event": event_type},
+                    observed_at_ms=1000 + index,
+                    native_id=f"native-{index}",
+                    session_native_id=session_native_id,
+                ),
+                carrier_source_id="primary",
+                carrier_relative_path=f"{index}.json",
+            )
 
 
 def _run(root: Path, name: str, payload: dict[str, object]) -> dict[str, object]:
@@ -197,6 +230,106 @@ class TestResultContracts:
                     "offset": 0,
                     "next_offset": 2,
                     "continuation": "q2.token",
+                    "complete": True,
+                },
+            )
+
+
+class TestSessionReadEvidenceKinds:
+    """``session.read`` also serves per-session evidence relations (design D3).
+
+    These relations have no query-grammar unit of their own, so routing them
+    through ``session.read`` is what lets their read views stop opening an
+    archive.
+    """
+
+    def test_hooks_kind_returns_the_pinned_hook_read_model_whole(self, tmp_path: Path) -> None:
+        """Mutation: answer the hooks kind from the transcript branch and the
+        result carries a message window with no hook evidence at all."""
+
+        sessions = _seed(tmp_path, count=1, messages=2)
+        _seed_hook_events(
+            tmp_path,
+            origin=Origin.CODEX_SESSION,
+            session_native_id="ext-declared-read-0",
+            event_types=("PreToolUse", "PostToolUse", "PostToolUse"),
+        )
+        result = _run(tmp_path, "session.read", {"ref": sessions[0], "kind": "hooks"})
+
+        assert result["kind"] == "hooks"
+        assert result["complete"] is True
+        assert result["next_offset"] is None
+        assert result["continuation"] is None
+        evidence = cast("dict[str, Any]", result["evidence"])
+        assert evidence["total"] == 3
+        assert evidence["by_event_type"] == {"PostToolUse": 2, "PreToolUse": 1}
+        # An evidence read is not a message page.
+        assert cast("dict[str, Any]", result["session"])["messages"] == []
+
+    def test_a_session_with_no_hooks_is_an_empty_outcome_not_a_refusal(self, tmp_path: Path) -> None:
+        """Mutation: raise on an absent hook spool and a session that simply
+        recorded no hooks becomes indistinguishable from a missing session."""
+
+        sessions = _seed(tmp_path, count=1, messages=2)
+        result = _run(tmp_path, "session.read", {"ref": sessions[0], "kind": "hooks"})
+        assert cast("dict[str, Any]", result["evidence"])["total"] == 0
+        assert cast("dict[str, Any]", result["outcome"])["state"] == "empty"
+
+    def test_a_missing_session_is_refused_rather_than_answered_empty(self, tmp_path: Path) -> None:
+        """Mutation: return an empty evidence body for an unknown reference and
+        a typo reads as a session that recorded no hooks."""
+
+        _seed(tmp_path, count=1, messages=1)
+        with pytest.raises(ValueError):
+            _run(tmp_path, "session.read", {"ref": "codex-session:absent", "kind": "hooks"})
+
+    def test_an_unserved_kind_is_refused_by_name(self, tmp_path: Path) -> None:
+        """Mutation: fall through to the transcript branch for an unknown kind
+        and a caller silently receives a transcript it did not ask for."""
+
+        sessions = _seed(tmp_path, count=1, messages=1)
+        with pytest.raises(ValueError):
+            _run(tmp_path, "session.read", {"ref": sessions[0], "kind": "events"})
+
+    def test_a_transcript_result_cannot_carry_an_evidence_body(self) -> None:
+        """Mutation: relax the result model and a transcript window can smuggle
+        an evidence body no renderer would ever show."""
+
+        with pytest.raises(OperationResultContractError):
+            validate_operation_result(
+                "session.read",
+                {
+                    "outcome": {"state": "ok"},
+                    "session": {},
+                    "session_id": "codex-session:x",
+                    "kind": "transcript",
+                    "evidence": {"total": 0},
+                    "total": 0,
+                    "limit": 1,
+                    "offset": 0,
+                    "next_offset": None,
+                    "continuation": None,
+                    "complete": True,
+                },
+            )
+
+    def test_an_evidence_result_must_carry_its_body(self) -> None:
+        """Mutation: relax the result model and an evidence read can report
+        success while returning nothing."""
+
+        with pytest.raises(OperationResultContractError):
+            validate_operation_result(
+                "session.read",
+                {
+                    "outcome": {"state": "ok"},
+                    "session": {},
+                    "session_id": "codex-session:x",
+                    "kind": "hooks",
+                    "total": 0,
+                    "limit": 1,
+                    "offset": 0,
+                    "next_offset": None,
+                    "continuation": None,
                     "complete": True,
                 },
             )

@@ -3,14 +3,16 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 
-from polylogue.cli.messages import run_hooks, run_messages, run_raw, run_session_events
-from polylogue.cli.read_views.messages import _write_messages_file
+from polylogue.cli.messages import run_messages, run_raw, run_session_events
+from polylogue.cli.read_views.base import ReadViewInvocation
+from polylogue.cli.read_views.messages import _write_messages_file, run_read_hooks
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -530,39 +532,108 @@ def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path, capsys: pytest.
     _ui_error(empty_env).assert_called_once_with("No raw artifacts found for session: missing")
 
 
-def test_run_hooks_emits_json_yaml_and_missing_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    api = _FakeApi(
-        hook_summary_result={
-            "session_id": "conv-hooks",
-            "total": 3,
-            "by_event_type": {"PostToolUse": 2, "PreToolUse": 1},
-            "first_observed_at": "2026-07-10T10:00:00Z",
-            "last_observed_at": "2026-07-10T10:00:02Z",
-        }
+def _hooks_invocation(*, output_format: str = "json", destination: str = "terminal") -> ReadViewInvocation:
+    return ReadViewInvocation(
+        view="hooks",
+        session_id="conv-hooks",
+        output_format=output_format,
+        destination=destination,
+        out_path=None,
     )
-    env = _env()
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_hooks(env, _request(tmp_path), session_id="conv-hooks")
+
+def _hooks_result(evidence: dict[str, object]) -> SimpleNamespace:
+    return SimpleNamespace(
+        value={
+            "outcome": {"state": "ok"},
+            "session": {"session_id": "conv-hooks", "messages": []},
+            "session_id": "conv-hooks",
+            "kind": "hooks",
+            "evidence": evidence,
+            "total": cast(int, evidence.get("total", 0)),
+            "limit": 1,
+            "offset": 0,
+            "next_offset": None,
+            "continuation": None,
+            "complete": True,
+        },
+        envelope=None,
+        authority={"mode": "direct"},
+    )
+
+
+_HOOK_EVIDENCE: dict[str, object] = {
+    "session_id": "conv-hooks",
+    "total": 3,
+    "by_event_type": {"PostToolUse": 2, "PreToolUse": 1},
+    "first_observed_at": "2026-07-10T10:00:00Z",
+    "last_observed_at": "2026-07-10T10:00:02Z",
+}
+
+
+def test_read_hooks_renders_the_evidence_body_from_session_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The hooks view lowers onto ``session.read`` and renders what it returns.
+
+    Anti-vacuity: reopening an archive in the view, or rendering the whole
+    operation result instead of its evidence body, turns this red -- as does
+    lowering without ``kind="hooks"``, which would return a transcript.
+    """
+
+    env = _env()
+    with patch("polylogue.cli.operation_kernel.dispatch") as dispatch:
+        dispatch.return_value = _hooks_result(_HOOK_EVIDENCE)
+        run_read_hooks(env, _request(tmp_path), _hooks_invocation())
+
+    request = dispatch.call_args.args[1]
+    assert request.operation == "session.read"
+    assert request.payload == {"ref": "conv-hooks", "kind": "hooks"}
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["total"] == 3
-    assert payload["by_event_type"] == {"PostToolUse": 2, "PreToolUse": 1}
-    assert payload["first_observed_at"] == "2026-07-10T10:00:00Z"
-    assert payload["last_observed_at"] == "2026-07-10T10:00:02Z"
-    assert api.hook_summary_kwargs == {"session_id": "conv-hooks"}
+    assert payload == _HOOK_EVIDENCE
     _ui_print(env).assert_not_called()
 
+
+def test_read_hooks_renders_yaml_when_asked(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Anti-vacuity: render JSON regardless of format and this stops matching."""
+
     yaml_env = _env()
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_hooks(yaml_env, _request(tmp_path), session_id="conv-hooks", output_format="yaml")
+    with patch("polylogue.cli.operation_kernel.dispatch") as dispatch:
+        dispatch.return_value = _hooks_result(_HOOK_EVIDENCE)
+        run_read_hooks(yaml_env, _request(tmp_path), _hooks_invocation(output_format="yaml"))
     assert "PostToolUse" in capsys.readouterr().out
     _ui_print(yaml_env).assert_not_called()
 
-    missing_env = _env()
-    with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(hook_summary_result=None)):
-        run_hooks(missing_env, _request(tmp_path), session_id="missing")
-    _ui_error(missing_env).assert_called_once_with("Session not found: missing")
+
+def test_read_hooks_refuses_rather_than_rendering_an_empty_summary(tmp_path: Path) -> None:
+    """A refused read exits non-zero instead of reading as "no hook events".
+
+    Anti-vacuity: swallow the refusal and print an empty body, or let the
+    exception escape untyped, and this turns red.
+    """
+
+    from polylogue.cli.operation_kernel import OperationFailedError
+
+    env = _env()
+    with patch("polylogue.cli.operation_kernel.dispatch") as dispatch:
+        dispatch.side_effect = OperationFailedError("invalid_request", "session not found: missing")
+        with pytest.raises(click.UsageError, match="session not found: missing"):
+            run_read_hooks(env, _request(tmp_path), _hooks_invocation())
+
+
+def test_read_hooks_names_the_daemon_refusal_without_a_traceback(tmp_path: Path) -> None:
+    """Anti-vacuity: class an unavailable daemon as a usage mistake, or let it
+    escape as a traceback, and this turns red."""
+
+    from polylogue.cli.operation_kernel import OperationUnavailableError
+
+    env = _env()
+    with patch("polylogue.cli.operation_kernel.dispatch") as dispatch:
+        dispatch.side_effect = OperationUnavailableError("daemon is unavailable for operation: session.read")
+        with pytest.raises(click.ClickException, match="daemon is unavailable") as caught:
+            run_read_hooks(env, _request(tmp_path), _hooks_invocation())
+    assert not isinstance(caught.value, click.UsageError)
 
 
 def test_run_session_events_emits_json_and_missing_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

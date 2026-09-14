@@ -74,27 +74,53 @@ class QueryAggregateResult(_ReadResult):
         return self
 
 
-class SessionReadRequest(_ReadRequest):
-    """One bounded transcript window for an exact session reference.
+#: What a ``session.read`` window is read *of*.
+#:
+#: ``transcript`` is the message window every read view was built on.  The
+#: other kinds are per-session evidence relations that ride the same exact
+#: reference but are not messages and have no query-grammar unit of their own
+#: (design D3, ``cli/read_view_registry.py``): reading them through
+#: ``session.read`` is what keeps a read view from opening an archive itself.
+SessionReadKind = Literal["transcript", "hooks"]
 
-    ``limit`` is a hard window, not a hint: a full transcript can exceed the
-    8 MiB bound on a single operation result, so the caller loops windows and
-    the handler refuses a window it cannot deliver whole.
+#: Evidence kinds are bounded per-session read models, answered whole.  A kind
+#: that later needs paging graduates to the windowed contract rather than
+#: quietly truncating, which is why the result validator refuses a partial
+#: evidence body instead of allowing one.
+_WHOLE_EVIDENCE_KINDS: frozenset[str] = frozenset({"hooks"})
+
+
+class SessionReadRequest(_ReadRequest):
+    """One bounded read for an exact session reference.
+
+    For ``kind="transcript"``, ``limit`` is a hard window, not a hint: a full
+    transcript can exceed the 8 MiB bound on a single operation result, so the
+    caller loops windows and the handler refuses a window it cannot deliver
+    whole.  Evidence kinds are bounded by construction and ignore the window.
     """
 
     ref: str = Field(min_length=1)
+    kind: SessionReadKind = "transcript"
     limit: int = Field(default=200, ge=1, le=2000)
     offset: int = Field(default=0, ge=0)
     projection: dict[str, object] | None = None
     continuation: str | None = None
 
+    @model_validator(mode="after")
+    def only_a_transcript_window_continues(self) -> SessionReadRequest:
+        if self.kind != "transcript" and self.continuation is not None:
+            raise ValueError(f"{self.kind} is answered whole and issues no continuation")
+        return self
+
 
 class SessionReadResult(_ReadResult):
-    """One message window plus the snapshot-bound token for the next one."""
+    """One window plus the snapshot-bound token for the next one, if any."""
 
     outcome: dict[str, object]
     session: dict[str, object]
     session_id: str = Field(min_length=1)
+    kind: SessionReadKind = "transcript"
+    evidence: dict[str, object] | None = None
     total: int = Field(ge=0)
     limit: int = Field(ge=1)
     offset: int = Field(ge=0)
@@ -108,6 +134,18 @@ class SessionReadResult(_ReadResult):
             raise ValueError("a next window and its continuation are issued together")
         if self.complete != (self.next_offset is None):
             raise ValueError("completeness must agree with the presence of a next window")
+        return self
+
+    @model_validator(mode="after")
+    def the_body_matches_the_kind_that_was_read(self) -> SessionReadResult:
+        if self.kind == "transcript":
+            if self.evidence is not None:
+                raise ValueError("a transcript window carries no evidence body")
+            return self
+        if self.evidence is None:
+            raise ValueError(f"{self.kind} result is missing its evidence body")
+        if self.kind in _WHOLE_EVIDENCE_KINDS and not self.complete:
+            raise ValueError(f"{self.kind} is answered whole and cannot report a partial body")
         return self
 
 
@@ -140,6 +178,7 @@ __all__ = [
     "AggregateMode",
     "QueryAggregateRequest",
     "QueryAggregateResult",
+    "SessionReadKind",
     "SessionReadRequest",
     "SessionReadResult",
     "SessionReferenceRequest",

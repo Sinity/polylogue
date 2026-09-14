@@ -960,6 +960,9 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     ref = str(payload.get("ref") or "").strip()
     if not ref:
         raise ValueError("session.read requires a session reference")
+    kind = str(payload.get("kind") or "transcript")
+    if kind != "transcript":
+        return _session_evidence_payload(ref, kind=kind, archive=archive)
     raw_projection = payload.get("projection")
     if raw_projection is not None and not isinstance(raw_projection, Mapping):
         raise ValueError("projection must be an object")
@@ -1024,6 +1027,69 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         "complete": next_offset is None,
     }
     _require_deliverable_window(result, limit=limit)
+    return result
+
+
+#: Bounded per-session evidence read models, keyed by the ``session.read``
+#: kind that names them.  Each reads one relation the query grammar declares no
+#: unit for (design D3), through the pinned reader rather than the API facade.
+_SESSION_EVIDENCE_READERS: dict[str, str] = {
+    "hooks": "hook_event_summary_for_session",
+}
+
+
+def _session_evidence_payload(ref: str, *, kind: str, archive: ArchiveStore) -> dict[str, object]:
+    """Read one bounded per-session evidence relation for an exact reference.
+
+    These relations are aggregates, not transcripts: they are answered whole,
+    so the result reports ``complete`` with no continuation and the window
+    coordinates describe the evidence rows rather than a message page.
+    """
+
+    from polylogue.surfaces.outcome import decide_outcome
+
+    reader_name = _SESSION_EVIDENCE_READERS.get(kind)
+    if reader_name is None:
+        raise ValueError(f"session.read does not serve kind {kind!r}")
+    try:
+        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
+    except KeyError as exc:
+        raise ValueError(f"session not found: {ref}") from exc
+
+    evidence = getattr(archive, reader_name)(session_id)
+    if evidence is None:
+        raise ValueError(f"session not found: {ref}")
+    evidence = dict(evidence)
+
+    summary = archive.read_summary(session_id)
+    total = _non_negative_int(evidence.get("total"), default=0)
+    result: dict[str, object] = {
+        "outcome": decide_outcome(matched=total).to_dict(),
+        "session": {
+            "session_id": summary.session_id,
+            "native_id": summary.native_id,
+            "origin": summary.origin,
+            "title": summary.title,
+            "created_at": summary.created_at,
+            "updated_at": summary.updated_at,
+            # An evidence read is not a message window; saying so with an empty
+            # list keeps the identity projection's shape without implying that
+            # a transcript page of zero messages was returned.
+            "messages": [],
+        },
+        "session_id": session_id,
+        "kind": kind,
+        "evidence": evidence,
+        "total": total,
+        # The body is whole, so its window is itself.  ``limit`` is declared
+        # ``ge=1``, and a zero-row aggregate is still one delivered answer.
+        "limit": max(total, 1),
+        "offset": 0,
+        "next_offset": None,
+        "continuation": None,
+        "complete": True,
+    }
+    _require_deliverable_window(result, limit=total)
     return result
 
 
