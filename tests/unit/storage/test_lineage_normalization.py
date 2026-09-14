@@ -35,6 +35,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     _MAX_LINEAGE_DEPTH,
     _provider_usage_cumulative_baseline,
+    count_dangling_prefix_branch_points,
     read_archive_session_envelope,
     repair_stale_prefix_branch_points,
     write_parsed_session_to_archive,
@@ -2478,4 +2479,130 @@ def test_shallow_chain_reports_complete(tmp_path: Path) -> None:
     envelope = read_archive_session_envelope(conn, child_id)
     assert envelope.lineage_complete is True
     assert envelope.lineage_truncation_reason is None
+    conn.close()
+
+
+def _three_generation_sessions() -> tuple[ParsedSession, ParsedSession, ParsedSession]:
+    """Grandparent P, parent B (P's prefix + one tail turn), child A (P's first
+    two turns + its own tail). Mirrors the executed reproduction on
+    polylogue-7xrv5."""
+    grandparent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="gp",
+        title="grandparent",
+        messages=[
+            _msg("m0", Role.USER, "m0", 0),
+            _msg("m1", Role.ASSISTANT, "m1", 1),
+            _msg("m2", Role.USER, "m2", 2),
+            _msg("m3", Role.ASSISTANT, "m3", 3),
+        ],
+    )
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        parent_session_provider_id="gp",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("m0", Role.USER, "m0", 0),
+            _msg("m1", Role.ASSISTANT, "m1", 1),
+            _msg("m2", Role.USER, "m2", 2),
+            _msg("m3", Role.ASSISTANT, "m3", 3),
+            _msg("m4", Role.USER, "m4", 4),
+        ],
+    )
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("m0", Role.USER, "m0", 0),
+            _msg("m1", Role.ASSISTANT, "m1", 1),
+            _msg("x2", Role.USER, "x2", 2),
+        ],
+    )
+    return grandparent, parent, child
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ("grandparent", "parent", "child"),
+        ("grandparent", "child", "parent"),
+        ("child", "parent", "grandparent"),
+        ("parent", "child", "grandparent"),
+        ("child", "grandparent", "parent"),
+        ("parent", "grandparent", "child"),
+    ],
+)
+def test_three_generation_lineage_composes_identically_in_every_visit_order(
+    tmp_path: Path, order: tuple[str, str, str]
+) -> None:
+    """polylogue-7xrv5: a rebuild visits sources in lexicographic key order, so
+    the grandparent can land after both descendants. Re-extracting the parent
+    deletes exactly the rows the child's branch point names; unless the child is
+    added to the in-write repair scope its edge dangles and it composes to its
+    own tail only.
+
+    Anti-vacuity: reverting the ``reextract_invalidated_ids`` contribution to
+    ``impacted_session_ids`` in ``_resolve_session_graph`` makes every
+    grandparent-last ordering read ``['x2']``.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    grandparent, parent, child = _three_generation_sessions()
+    by_name = {"grandparent": grandparent, "parent": parent, "child": child}
+
+    written: dict[str, str] = {}
+    for name in order:
+        written[name] = write_parsed_session_to_archive(conn, by_name[name])
+    conn.commit()
+
+    assert [message.blocks[0].text for message in read_archive_session_envelope(conn, written["child"]).messages] == [
+        "m0",
+        "m1",
+        "x2",
+    ]
+    assert [message.blocks[0].text for message in read_archive_session_envelope(conn, written["parent"]).messages] == [
+        "m0",
+        "m1",
+        "m2",
+        "m3",
+        "m4",
+    ]
+    assert count_dangling_prefix_branch_points(conn) == (0, 0)
+    conn.close()
+
+
+def test_dangling_branch_point_census_counts_edges_and_sessions(tmp_path: Path) -> None:
+    """polylogue-7xrv5: the archive-wide census is what makes a truncating
+    archive measurable after a rebuild, before the next daemon start runs the
+    repair.
+
+    Anti-vacuity: a census that ignored the branch point's existence (or scoped
+    itself to one session) would report ``(0, 0)`` for the corrupted state
+    below.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    grandparent, parent, child = _three_generation_sessions()
+    write_parsed_session_to_archive(conn, grandparent)
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child_id = write_parsed_session_to_archive(conn, child)
+    conn.commit()
+    assert count_dangling_prefix_branch_points(conn) == (0, 0)
+
+    conn.execute(
+        "UPDATE session_links SET branch_point_message_id = ? WHERE src_session_id = ?",
+        (f"{parent_id}:n:m1", child_id),
+    )
+    conn.commit()
+    assert count_dangling_prefix_branch_points(conn) == (1, 1)
+    assert [message.blocks[0].text for message in read_archive_session_envelope(conn, child_id).messages] == ["x2"]
+
+    assert repair_stale_prefix_branch_points(conn) == 1
+    conn.commit()
+    assert count_dangling_prefix_branch_points(conn) == (0, 0)
     conn.close()
