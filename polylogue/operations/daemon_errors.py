@@ -18,6 +18,7 @@ __all__ = [
     "DaemonOperationRejected",
     "DaemonOperationRejectedError",
     "DaemonResponseError",
+    "DaemonSocketOwnershipError",
 ]
 
 
@@ -53,6 +54,10 @@ class DaemonMutationIndeterminateError(RuntimeError):
 
 class DaemonOperationProtocolError(RuntimeError):
     """A daemon operation response was not a v1 typed envelope."""
+
+
+class DaemonSocketOwnershipError(RuntimeError):
+    """The process answering the daemon socket is not this user's daemon."""
 
 
 class DaemonOperationRejectedError(RuntimeError):

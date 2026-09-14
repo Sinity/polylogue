@@ -15,7 +15,7 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING
 
-from polylogue.daemon.socket_path import daemon_socket_path
+from polylogue.daemon.socket_path import daemon_socket_path, ensure_private_socket_dir
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
     DAEMON_OPERATION_SPECS,
@@ -251,7 +251,7 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
             execution_kernel=execution_kernel,
             owner_loop=write_bridge.owner_loop,
         )
-        socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ensure_private_socket_dir(socket_path.parent)
         _unlink_stale_socket(socket_path)
         super().__init__(str(socket_path), MachineOperationHandler)
         socket_path.chmod(0o600)
