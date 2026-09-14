@@ -375,6 +375,8 @@ def test_an_unbound_thread_that_inherits_the_lease_is_still_refused() -> None:
     assert "unauthorized thread" in str(observed["outcome"])
     # The worker must not have smuggled itself into the owner's bound set.
     assert lease.bound_thread_ids == {lease.owner_thread_id}
+
+
 def test_delegation_authorizes_a_foreign_thread_and_loop_but_nothing_else() -> None:
     """Ownership travels as a value, so a hand-off survives thread + loop changes.
 
