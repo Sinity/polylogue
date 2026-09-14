@@ -59,6 +59,22 @@ def _write_hermes_v16(path: Path, *, wal_mode: bool = False) -> None:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
+def _write_logical_export(database: Path, destination: Path) -> Path:
+    """Retain *database* the way acquisition does: as its declared logical export.
+
+    ``sources/sqlite_export.write_logical_export`` is the production writer;
+    ``member_export_scope`` derives the member header from the database's
+    declared filename, so the export carries the binding
+    ``is_declared_logical_export`` checks on the way back in.
+    """
+    from polylogue.sources.sqlite_export import write_logical_export
+    from polylogue.sources.sqlite_snapshot import member_export_scope
+
+    with destination.open("wb") as handle:
+        write_logical_export(database, handle, scope=member_export_scope(database), immutable=True)
+    return destination
+
+
 def _write_generic_sqlite_lookalike(path: Path) -> None:
     with sqlite3.connect(path) as conn:
         conn.executescript(
@@ -102,19 +118,27 @@ def _record(
     )
 
 
-def test_retained_v16_snapshot_is_contract_backed_parseable(
+def test_retained_logical_export_is_contract_backed_parseable(
     blob_store: BlobStore,
     tmp_path: Path,
 ) -> None:
-    snapshot = tmp_path / "retained.sqlite3"
-    _write_hermes_v16(snapshot)
+    """The retained canonical export of a declared member parses as a session.
+
+    Anti-vacuity: drop the member header from the export (pass ``scope=None``
+    to ``write_logical_export``) and ``is_declared_logical_export`` stops
+    binding the bytes to ``state.db``, so the marker route is skipped and this
+    comes back ``RECOGNIZED_UNPARSED``.
+    """
+    database = tmp_path / "state.db"
+    _write_hermes_v16(database)
+    export = _write_logical_export(database, tmp_path / "state.db.export")
 
     observation = inspect_raw_artifact(
         _record(
             blob_store,
-            snapshot,
+            export,
             raw_id="hermes:profile-a:revision-1",
-            source_path="/original/profile/arbitrary-session-name.sqlite3",
+            source_path="/original/profile/state.db",
         )
     )
 
@@ -127,12 +151,92 @@ def test_retained_v16_snapshot_is_contract_backed_parseable(
     assert observation.decode_error is None
 
 
-def test_retained_wal_snapshot_marker_reopen_keeps_blob_namespace_pristine(
+def test_retained_structurally_compatible_v17_export_is_parseable(
     blob_store: BlobStore,
     tmp_path: Path,
 ) -> None:
-    """Inspection reopens the marker path for schema support, so both opens must be immutable."""
-    snapshot = tmp_path / "retained-wal.sqlite3"
+    """A later, structurally compatible state schema resolves to its own package.
+
+    Anti-vacuity: delete the ``state-db-v17`` package declaration and the
+    resolved version falls back (or resolution fails), turning this red.
+    """
+    database = tmp_path / "state.db"
+    _write_hermes_v16(database)
+    with sqlite3.connect(database) as conn:
+        conn.execute("UPDATE schema_version SET version = 17")
+        conn.execute("ALTER TABLE sessions ADD COLUMN git_branch TEXT")
+        conn.execute("ALTER TABLE sessions ADD COLUMN git_repo_root TEXT")
+    export = _write_logical_export(database, tmp_path / "state.db.export")
+
+    observation = inspect_raw_artifact(
+        _record(
+            blob_store,
+            export,
+            raw_id="hermes:profile-a:revision-17",
+            source_path="/original/profile/state.db",
+        )
+    )
+
+    assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
+    assert observation.resolved_package_version == "state-db-v17"
+    assert observation.resolved_element_kind == "state_db"
+    assert observation.decode_error is None
+
+
+def test_retained_page_image_is_refused_as_session_content(
+    blob_store: BlobStore,
+    tmp_path: Path,
+) -> None:
+    """A SQLite page image is not the acquisition product for a declared member.
+
+    #5040 (``polylogue-gjfsx``): ingest used to parse page images that the
+    replay route (``sources.revision_backfill._parse_one``) refuses, so a
+    reindex would mint a second source authority for content the archive
+    already holds under its logical revision. ``decode.py``'s
+    ``is_declared_logical_export`` gate is what keeps the two routes agreeing.
+
+    Anti-vacuity: remove that gate from ``_hermes_sqlite_marker_payload`` and
+    this page image is claimed as ``session_document`` again.
+    """
+    snapshot = tmp_path / "state.db"
+    _write_hermes_v16(snapshot)
+
+    observation = inspect_raw_artifact(
+        _record(
+            blob_store,
+            snapshot,
+            raw_id="hermes:profile-a:page-image",
+            source_path="/original/profile/state.db",
+        )
+    )
+
+    assert observation.support_status is ArtifactSupportStatus.RECOGNIZED_UNPARSED
+    assert observation.artifact_kind == "binary_database"
+    assert observation.parse_as_session is False
+    assert observation.resolved_package_version is None
+    assert observation.classification_reason != "Hermes state.db SQLite archive marker"
+
+
+def test_retained_wal_page_image_inspection_keeps_blob_namespace_pristine(
+    blob_store: BlobStore,
+    tmp_path: Path,
+) -> None:
+    """Inspection reads a retained WAL-mode page image without writing beside it.
+
+    Refusal still opens the blob (signature probe and export-header read), and
+    the blob store is content-addressed: a single SQLite open without
+    ``immutable=1`` mints ``<hash>-wal``/``<hash>-shm`` entries that
+    ``verify_all`` then reports as unknown material.
+
+    Anti-vacuity, verified by reverting rather than asserted: drop the
+    ``is_declared_logical_export`` gate in ``decode.py`` *and* pass
+    ``sqlite_immutable=False`` from ``_inspect_payload_envelope`` -- together,
+    the pre-#5040 / pre-#3814 behaviour -- and this goes red with ``<hash>-wal``
+    and ``<hash>-shm`` beside the blob. Either revert alone leaves it green,
+    which is the point: the immutable open is what holds when the page-image
+    refusal is someday relaxed.
+    """
+    snapshot = tmp_path / "state.db"
     _write_hermes_v16(snapshot, wal_mode=True)
     record = _record(
         blob_store,
@@ -141,9 +245,8 @@ def test_retained_wal_snapshot_marker_reopen_keeps_blob_namespace_pristine(
         source_path="/original/profile/state.db",
     )
 
-    observation = inspect_raw_artifact(record)
+    inspect_raw_artifact(record)
 
-    assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
     assert record.blob_hash is not None
     expected_path = f"{record.blob_hash[:2]}/{record.blob_hash[2:]}"
     namespace = tuple(blob_store.iter_namespace())
@@ -153,32 +256,6 @@ def test_retained_wal_snapshot_marker_reopen_keeps_blob_namespace_pristine(
     assert not tuple(blob_store.root.rglob("*-shm"))
     verification = blob_store.verify_all()
     assert verification.passed, verification.failures
-
-
-def test_retained_structurally_compatible_v17_snapshot_is_parseable(
-    blob_store: BlobStore,
-    tmp_path: Path,
-) -> None:
-    snapshot = tmp_path / "retained-v17.sqlite3"
-    _write_hermes_v16(snapshot)
-    with sqlite3.connect(snapshot) as conn:
-        conn.execute("UPDATE schema_version SET version = 17")
-        conn.execute("ALTER TABLE sessions ADD COLUMN git_branch TEXT")
-        conn.execute("ALTER TABLE sessions ADD COLUMN git_repo_root TEXT")
-
-    observation = inspect_raw_artifact(
-        _record(
-            blob_store,
-            snapshot,
-            raw_id="hermes:profile-a:revision-17",
-            source_path="/original/profile/state-v17.sqlite3",
-        )
-    )
-
-    assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
-    assert observation.resolved_package_version == "state-db-v17"
-    assert observation.resolved_element_kind == "state_db"
-    assert observation.decode_error is None
 
 
 def test_corrupt_retained_snapshot_is_decode_failed(blob_store: BlobStore, tmp_path: Path) -> None:
