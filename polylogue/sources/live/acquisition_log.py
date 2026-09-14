@@ -32,9 +32,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 
-logger = get_logger(__name__)
+# These two records ARE the acquisition audit trail, so they go through
+# ``emit`` rather than a module-level ``get_logger`` binding. The daemon
+# imports ``LiveWatcher`` -- and therefore this module -- before
+# ``daemon_command`` runs ``configure_logging()``. A logger bound at import
+# time stays the stdlib adapter for the process's whole life, and that adapter
+# forwards only standard logging keywords: ``path``, ``size``, ``mtime``,
+# ``source_name``, ``origin``, ``evidence``, ``stage_timings_ms`` and
+# ``reason`` -- every field these records exist to carry -- were dropped.
+
 
 #: The operator deliberately keeps a ``.git`` directory under some watched
 #: roots (e.g. ``~/.claude/projects``) for their own versioning safety. It
@@ -92,7 +100,7 @@ def log_file_acquisition_decision(
     timings = (
         stage_timings.as_dict() if isinstance(stage_timings, AcquisitionStageTimings) else dict(stage_timings or {})
     )
-    logger.info(
+    emit(
         "file_acquisition_decision",
         path=str(path),
         size=size,
@@ -120,8 +128,9 @@ def log_unclaimed_file(
     ``"matched an origin but failed validation"``, ``"suffix not in watched
     set for source <name>"``), not just "unclaimed".
     """
-    logger.warning(
+    emit(
         "file_acquisition_unclaimed",
+        level=WARNING,
         path=str(path),
         size=size,
         mtime=mtime,

@@ -36,7 +36,15 @@ def tool_result_outcome(raw_content: object) -> tuple[bool | None, int | None, s
     payload = _envelope_mapping(raw_content)
     raw_exit_code = payload.get("exit_code")
     exit_code = raw_exit_code if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool) else None
-    if payload.get("error") is not None:
+    raw_error = payload.get("error")
+    if raw_error is not None:
+        if isinstance(raw_error, bool) or not raw_error:
+            # ``error`` carries a failure *message*. A bare boolean, an empty
+            # string or a zero is a verdict this mapping does not read --
+            # reporting ``{"error": false}`` as a known error inverts what a
+            # crafted state database actually asserts. Handled the same way as
+            # an off-type ``exit_code``/``success`` two branches below.
+            return None, None, unknown_reason(is_error=None, outcome_field_present=True)
         return True, exit_code, None
     if "success" in payload:
         raw_success = payload["success"]

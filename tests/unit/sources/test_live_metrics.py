@@ -136,3 +136,40 @@ def test_split_offered_bytes_counts_each_path_once() -> None:
     )
 
     assert (ingested, failed, refused) == (512, 0, {})
+
+
+def test_live_batch_metrics_payload_reports_excluded_files() -> None:
+    """A refused file is a counted outcome of the batch, not an absence.
+
+    Anti-vacuity: drop either key from ``to_payload`` and this goes red --
+    which is the state every ``ingestion_batch`` event consumer, the daemon's
+    ``last_ingestion_batch`` payload and the CLI ratio were in, so a
+    time-budget refusal read as if nothing had been offered.
+    """
+    metrics = LiveBatchMetrics(
+        queued_file_count=4,
+        needed_file_count=4,
+        skipped_file_count=0,
+        succeeded_file_count=1,
+        failed_file_count=0,
+        source_group_count=1,
+        input_bytes=100,
+        source_payload_read_bytes=100,
+        cursor_fingerprint_read_bytes=0,
+        ingest_worker_count_max=1,
+        append_file_count=0,
+        full_file_count=1,
+        archive_bytes_before=0,
+        archive_bytes_after=10,
+        archive_write_bytes_delta=10,
+        parse_time_s=0.1,
+        convergence_time_s=0.2,
+        total_time_s=0.3,
+        excluded_file_count=3,
+        excluded_reasons={"refused_unattempted_time_budget": 3},
+    )
+
+    payload = metrics.to_payload()
+
+    assert payload["excluded_file_count"] == 3
+    assert payload["excluded_reasons"] == {"refused_unattempted_time_budget": 3}

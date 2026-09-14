@@ -457,7 +457,14 @@ def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, A
                 "phase": row[5],
                 "queued_file_count": _payload_int(payload, "queued_file_count", default=len(source_paths)),
                 "needed_file_count": _payload_int(payload, "needed_file_count", default=len(source_paths)),
-                "succeeded_file_count": int(row[7] or 0),
+                # ``parsed_raw_count`` (row[6]) is the succeeded FILE count
+                # (``cursor.py`` writes ``succeeded_file_count`` into it);
+                # ``materialized_count`` (row[7]) counts distinct touched
+                # SESSIONS. Reading row[7] here rendered a session count as a
+                # file ratio, which reads as over- or under-ingestion that
+                # never happened.
+                "succeeded_file_count": int(row[6] or 0),
+                "materialized_session_count": int(row[7] or 0),
                 "failed_file_count": 1 if row[4] == "failed" else 0,
                 "input_bytes": input_bytes,
                 "source_payload_read_bytes": source_payload_read_bytes,
