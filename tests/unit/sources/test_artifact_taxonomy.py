@@ -827,3 +827,109 @@ def test_hermes_atof_event_stream_still_detects_as_a_session() -> None:
     assert artifact.kind is ArtifactKind.SESSION_RECORD_STREAM
     assert artifact.parse_as_session is True
     assert artifact.schema_eligible is True
+
+
+def test_checkpoint_prefix_does_not_hide_a_real_claude_code_session() -> None:
+    """A real session whose first 32 records are checkpoints is still a session.
+
+    ``_file_history_snapshot_override`` used to decide on
+    ``islice(payload, 32)`` and treat that prefix as conclusive. Because a
+    positive result OVERRIDES the path rule's positive session verdict, a
+    genuine ``projects/<proj>/<uuid>.jsonl`` that happens to open with 32
+    checkpoint records was reclassified as a non-session and never parsed --
+    silent archive data loss with no gap recorded.
+
+    Anti-vacuity: restore ``islice(payload, 32)`` in the override and the 33rd
+    record is never examined, so this stream classifies as
+    FILE_HISTORY_SNAPSHOT with ``parse_as_session=False`` and both assertions
+    go red. The prefix must be at least 32 records long, or the old code would
+    have seen the conversational tail anyway and the test would prove nothing.
+    """
+    checkpoint_prefix: list[JSONValue] = [
+        {
+            "type": "file-history-snapshot",
+            "messageId": f"snapshot-{index}",
+            "sessionId": "late-turn-session",
+            "snapshot": {"messageId": f"snapshot-{index}", "trackedFileBackups": {}},
+        }
+        for index in range(32)
+    ]
+    late_turn_stream: list[JSONValue] = [
+        *checkpoint_prefix,
+        {
+            "type": "user",
+            "sessionId": "late-turn-session",
+            "uuid": "u1",
+            "message": {"role": "user", "content": "the turn that arrives after the checkpoints"},
+        },
+    ]
+    source_path = "/tmp/.claude/projects/proj/late-turn-session.jsonl"
+
+    artifact = classify_artifact(late_turn_stream, provider="claude-code", source_path=source_path)
+
+    assert artifact.kind is not ArtifactKind.FILE_HISTORY_SNAPSHOT
+    assert artifact.parse_as_session is True
+
+
+def test_checkpoint_only_stream_is_still_refused_at_any_length() -> None:
+    """The override still fires for a stream that really is all checkpoints.
+
+    Guards the opposite direction of the fix above: widening the scan from a
+    prefix to the whole payload must not turn the genuine sidecar case into a
+    session. Anti-vacuity: make the predicate return False unconditionally and
+    this goes red while the test above still passes.
+    """
+    history_only_stream: list[JSONValue] = [
+        {
+            "type": "file-history-snapshot",
+            "messageId": f"snapshot-{index}",
+            "sessionId": "history-only-session",
+            "snapshot": {"messageId": f"snapshot-{index}", "trackedFileBackups": {}},
+        }
+        for index in range(40)
+    ]
+    source_path = "/tmp/.claude/projects/proj/history-only-session.jsonl"
+
+    artifact = classify_artifact(history_only_stream, provider="claude-code", source_path=source_path)
+
+    assert artifact.kind is ArtifactKind.FILE_HISTORY_SNAPSHOT
+    assert artifact.parse_as_session is False
+
+
+def test_codex_session_meta_recovery_does_not_claim_a_mixed_stream() -> None:
+    """The bare-header recovery rule requires every record to be a bare header.
+
+    The rule decided on ``islice(payload, 32)``, so a file whose first 32
+    records are bare ``{"type": "session_meta"}`` and whose tail is anything
+    else satisfied it and was admitted as a parseable session.
+
+    Anti-vacuity: restore the prefix form and the 33rd record is never
+    examined, so this classifies as SESSION_RECORD_STREAM with
+    ``parse_as_session=True`` and the assertion goes red. The prefix must be at
+    least 32 records for the old code to have been fooled.
+    """
+    bare_headers: list[JSONValue] = [{"type": "session_meta"} for _ in range(32)]
+    mixed_stream: list[JSONValue] = [
+        *bare_headers,
+        {"type": "turn_context", "cwd": "/tmp", "model": "o3"},
+    ]
+
+    artifact = classify_artifact(mixed_stream, provider="codex", source_path="/tmp/.codex/sessions/rollout.jsonl")
+
+    assert artifact.parse_as_session is False
+
+
+def test_codex_bare_session_meta_stream_is_still_recovered() -> None:
+    """The narrow recovery shape the rule exists for still works.
+
+    Guards the opposite direction: tightening the rule to the whole payload
+    must not stop it recognising a rollout truncated to repeated bare headers.
+    Anti-vacuity: make ``_is_bare_codex_session_meta_stream`` return False
+    unconditionally and this goes red while the mixed-stream test still passes.
+    """
+    header_only_stream: list[JSONValue] = [{"type": "session_meta"} for _ in range(40)]
+
+    artifact = classify_artifact(header_only_stream, provider="codex", source_path="/tmp/.codex/sessions/rollout.jsonl")
+
+    assert artifact.kind is ArtifactKind.SESSION_RECORD_STREAM
+    assert artifact.parse_as_session is True
