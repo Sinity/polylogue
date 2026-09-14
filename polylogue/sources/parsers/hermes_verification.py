@@ -88,7 +88,12 @@ from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessio
 from .hermes_identity import profile_key as _profile_key
 from .hermes_identity import qualified_session_id as _qualified_session_id
 from .hermes_identity import split_qualified_session_id as _split_qualified_session_id
-from .hermes_state import HermesFidelityCapability, HermesFidelityStatus, HermesImportFidelity
+from .hermes_state import (
+    HermesFidelityCapability,
+    HermesFidelityStatus,
+    HermesImportFidelity,
+    require_declared_export,
+)
 
 HERMES_VERIFICATION_DB_MARKER = "hermes_verification_evidence_db"
 _DEFAULT_SESSION_ID = "default"
@@ -228,6 +233,7 @@ def parse_verification_evidence_db_payload(
     fallback_id: str,
     *,
     profile_root: Path | None = None,
+    source_path: str | None = None,
 ) -> list[ParsedSession]:
     """Parse a ``verification_db_path`` marker payload.
 
@@ -241,6 +247,9 @@ def parse_verification_evidence_db_payload(
     path_value = payload.get("verification_db_path")
     if not isinstance(path_value, str) or not path_value:
         raise ValueError("Hermes verification_evidence.db marker is missing verification_db_path")
+    # Same confused-deputy guard as the state.db marker: an imported JSON
+    # document must not steer this open at an arbitrary local database.
+    require_declared_export(Path(path_value), source_path, field="verification_db_path")
     if profile_root is None:
         profile_value = payload.get("profile_root")
         profile_root = Path(profile_value) if isinstance(profile_value, str) and profile_value else None

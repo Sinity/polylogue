@@ -14,9 +14,12 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import BlockType, TitleSource
+from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
-from polylogue.sources.parsers.hermes_state import parse_state_db
+from polylogue.sources.parsers.hermes_state import parse_state_db, parse_state_db_payload
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import search_archive_blocks, write_parsed_session_to_archive
@@ -414,3 +417,46 @@ def test_codex_message_items_prose_is_findable_by_search(tmp_path: Path) -> None
         conn.close()
 
     assert block_texts == [_CODEX_ONLY_PROSE]
+
+
+# MARKER PATH CONFINEMENT
+
+
+def test_state_db_marker_refuses_a_database_it_does_not_declare(tmp_path: Path) -> None:
+    """An imported JSON document cannot steer this parser at another database.
+
+    The Hermes state.db marker is an ordinary JSON object recognised by shape,
+    so any imported document can carry it and name a local path. Anti-vacuity:
+    removing the ``require_declared_export`` call from
+    ``parse_state_db_payload`` makes this call succeed and return the victim
+    database's session -- the exact confused-deputy read -- so the ``ValueError``
+    asserted here disappears and the test goes red.
+    """
+    victim = tmp_path / "victim" / "state.db"
+    _write_state_db(victim, tool_contents=[json.dumps({"output": "secret", "exit_code": 0})])
+    # Sanity: the victim database really is parseable, so the refusal below is
+    # the guard firing and not an unrelated failure to read the file.
+    assert parse_state_db(victim)
+
+    payload: JSONDocument = {
+        "polylogue_artifact": "hermes_state_db",
+        "state_db_path": str(victim),
+    }
+
+    with pytest.raises(ValueError, match="declared logical export"):
+        parse_state_db_payload(payload, "fallback", source_path=str(tmp_path / "innocent_export.json"))
+
+
+def test_state_db_marker_without_a_source_path_is_refused(tmp_path: Path) -> None:
+    """A marker with no owning source cannot be trusted to name a database.
+
+    Anti-vacuity: defaulting the guard to "allow when ``source_path`` is None"
+    would leave every caller that does not thread the source path open to the
+    same steered read. This pins the fail-closed default.
+    """
+    victim = tmp_path / "victim" / "state.db"
+    _write_state_db(victim, tool_contents=[json.dumps({"output": "secret", "exit_code": 0})])
+    payload: JSONDocument = {"polylogue_artifact": "hermes_state_db", "state_db_path": str(victim)}
+
+    with pytest.raises(ValueError, match="declared logical export"):
+        parse_state_db_payload(payload, "fallback")
