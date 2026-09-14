@@ -8,9 +8,10 @@ Historically the daemon's UDS path was derived from ``XDG_RUNTIME_DIR`` alone
 (``$XDG_RUNTIME_DIR/polylogue/daemon.sock``), with no archive-root component.
 Every ``polylogued`` instance on a machine shares one ``XDG_RUNTIME_DIR``, so
 two daemons pointed at different archives collided on the exact same socket
-path: :class:`polylogue.daemon.uds.DaemonAPIUnixHTTPServer` unconditionally
-unlinks whatever is at the target path before binding, so the second daemon
-to start silently steals the first one's socket file. A CLI invocation then
+path: :class:`polylogue.daemon.uds.DaemonAPIUnixHTTPServer` removes a stale socket
+before binding, so the second daemon to start silently stole the first one's
+socket file. (It now probes first and unlinks only an unanswered socket, but
+that alone would not have separated two archives.) A CLI invocation then
 reaches whichever daemon most recently bound the shared path, regardless of
 ``POLYLOGUE_ARCHIVE_ROOT``/``--archive-root`` (polylogue-kadx3). Keying the
 path off the resolved archive root closes this: two archives never produce

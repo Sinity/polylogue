@@ -33,6 +33,13 @@ from collections.abc import Mapping, Sequence
 import aiosqlite
 
 __all__ = [
+    "SESSION_ATTACHMENT_EXCLUDED_COLUMNS",
+    "SESSION_ATTACHMENT_REF_EXCLUDED_COLUMNS",
+    "SESSION_EVENT_EXCLUDED_COLUMNS",
+    "SESSION_PROVIDER_USAGE_EVENT_EXCLUDED_COLUMNS",
+    "SESSION_ATTACHMENT_PROJECTION_COLUMNS",
+    "SESSION_EVENT_PROJECTION_COLUMNS",
+    "SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS",
     "SESSION_INPUT_EXCLUDED_COLUMNS",
     "SESSION_INPUT_PROJECTION_COLUMNS",
     "SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS",
@@ -115,11 +122,16 @@ SESSION_INPUT_PROJECTION_COLUMNS: tuple[str, ...] = (
 # ``load_sync_batch`` hydrates these attachment values directly.  They live in
 # two relations, so neither the message hash nor the session row can certify a
 # prepared profile after one changes.
+#: Declared per relation so the partition of each can be checked against the
+#: live schema; the SQL above projects their concatenation.
 SESSION_ATTACHMENT_PROJECTION_COLUMNS: tuple[str, ...] = (
     "attachment_id",
     "display_name",
     "media_type",
     "byte_count",
+)
+
+SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS: tuple[str, ...] = (
     "source_url",
     "caption",
     "upload_origin",
@@ -147,6 +159,8 @@ SESSION_EVENT_PROJECTION_COLUMNS: tuple[str, ...] = (
 # fixed-id usage correction change the profile's dominant model while
 # inspection still reports the old partition VALID.
 SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS: tuple[str, ...] = (
+    "source_message_id",
+    "occurred_at_ms",
     "position",
     "provider_event_type",
     "model_name",
@@ -163,6 +177,36 @@ SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS: tuple[str, ...] = (
     "total_reasoning_output_tokens",
     "total_tokens",
 )
+
+#: The same partition for the three non-message input relations the binding
+#: also projects. Each entry says why the column is not a value the profile
+#: reads; the partition is checked against the live schema by
+#: ``tests/unit/storage/test_session_partition_convergence.py``.
+SESSION_ATTACHMENT_EXCLUDED_COLUMNS: Mapping[str, str] = {
+    "blob_hash": "address of the stored bytes; sync_attachment_batch hydrates declared metadata, never payload",
+    "acquisition_status": "physical-readability evidence delegated to ArchiveAttachmentRow.availability (polylogue-hb9o6)",
+    "ref_count": "maintained reference counter, not a value any hydrated attachment carries",
+}
+
+SESSION_ATTACHMENT_REF_EXCLUDED_COLUMNS: Mapping[str, str] = {
+    "ref_id": "generated from message_id and position, both already bound",
+    "attachment_id": "join key whose attachments row is projected above",
+    "session_id": "the partition key: the projection selects on it and orders by it",
+    "position": "ordering coordinate the projection already orders by",
+    "direction": "not read by sync_attachment_batch",
+    "producer_ref": "not read by sync_attachment_batch",
+}
+
+SESSION_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {
+    "event_id": "generated from session_id and position, both already bound",
+    "session_id": "the partition key: the projection selects on it and orders by it",
+    "summary": "not read by sync_session_events_batch",
+}
+
+SESSION_PROVIDER_USAGE_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {
+    "usage_event_id": "generated from session_id and position, both already bound",
+    "session_id": "the partition key: the projection selects on it and orders by it",
+}
 
 #: Every ``sessions`` column the projection deliberately leaves out, with the
 #: reason it is not an input value. Completeness is the property this module

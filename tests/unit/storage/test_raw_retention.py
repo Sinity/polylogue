@@ -26,6 +26,7 @@ from polylogue.storage.raw_retention import (
     raw_frontier_blocked_source_paths,
     raw_frontier_integrity_projection,
     raw_frontier_integrity_snapshot,
+    raw_frontier_integrity_snapshot_from_connections,
     raw_frontier_integrity_summary,
     reissue_stale_supersession_receipts,
     superseded_raw_snapshot_candidates,
@@ -3461,3 +3462,43 @@ def test_cleanup_returns_typed_unavailable_result_for_in_memory_database_paths(
     assert result.errors == ("source or index tier is unavailable",)
     assert blob_store.exists(blob_hash)
     conn.close()
+
+
+def test_frontier_from_connections_reports_unknown_when_the_index_reader_fails(tmp_path: Path) -> None:
+    """The pinned-connection proof shares the path proof's failure contract.
+
+    ``_active_index_raw_authority_from_connection`` reads the same three index
+    relations as its path twin but, unlike it, was landed without the
+    ``sqlite3.Error`` -> ``RawRetentionSafetyError`` conversion. The caller
+    catches only ``RawRetentionSafetyError``, so a bare driver error escaped and
+    a degraded-but-readable archive raised out of the status operation instead
+    of reporting ``unknown``.
+
+    Anti-vacuity: delete the ``except (OSError, sqlite3.Error)`` clause in
+    ``_active_index_raw_authority_from_connection`` and this goes red with
+    ``sqlite3.OperationalError: no such table: raw_revision_heads``.
+    """
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    # A readable index tier whose retention authority is not: the shape a
+    # partially converged or damaged index presents to a pinned reader.
+    with closing(sqlite3.connect(index_db)) as prepare:
+        prepare.execute("DROP TABLE raw_revision_heads")
+        prepare.commit()
+
+    with (
+        closing(sqlite3.connect(source_db)) as source_conn,
+        closing(sqlite3.connect(index_db)) as index_conn,
+        closing(sqlite3.connect(ops_db)) as ops_conn,
+    ):
+        snapshot = raw_frontier_integrity_snapshot_from_connections(
+            source_conn, index_conn=index_conn, ops_conn=ops_conn, ops_db_path=ops_db
+        )
+
+    assert snapshot.overall_status == "unknown"
+    assert snapshot.broken_head_status == "unknown"
+    assert "unreadable" in snapshot.broken_head_reason

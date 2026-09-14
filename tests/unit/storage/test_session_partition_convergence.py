@@ -917,8 +917,16 @@ def test_the_partition_input_columns_are_projected_or_declared_excluded(archive_
     Red the moment a column is added to either relation without a decision.
     """
     from polylogue.storage.derived.session.input_binding import (
+        SESSION_ATTACHMENT_EXCLUDED_COLUMNS,
+        SESSION_ATTACHMENT_PROJECTION_COLUMNS,
+        SESSION_ATTACHMENT_REF_EXCLUDED_COLUMNS,
+        SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS,
+        SESSION_EVENT_EXCLUDED_COLUMNS,
+        SESSION_EVENT_PROJECTION_COLUMNS,
         SESSION_INPUT_EXCLUDED_COLUMNS,
         SESSION_INPUT_PROJECTION_COLUMNS,
+        SESSION_PROVIDER_USAGE_EVENT_EXCLUDED_COLUMNS,
+        SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS,
         SESSION_ROW_EXCLUDED_COLUMNS,
         SESSION_ROW_PROJECTION_COLUMNS,
     )
@@ -926,9 +934,20 @@ def test_the_partition_input_columns_are_projected_or_declared_excluded(archive_
     index_db = _index_db(archive_root)
     _seed(index_db, "classified", messages=[("user", "one")])
 
+    # Every relation ``session_input_bindings`` projects, not only the first
+    # two: an unguarded relation is exactly how the attachment, event and
+    # provider-usage projections were added without a classification decision.
     cases = (
         ("sessions", SESSION_ROW_PROJECTION_COLUMNS, SESSION_ROW_EXCLUDED_COLUMNS),
         ("messages", SESSION_INPUT_PROJECTION_COLUMNS, SESSION_INPUT_EXCLUDED_COLUMNS),
+        ("attachments", SESSION_ATTACHMENT_PROJECTION_COLUMNS, SESSION_ATTACHMENT_EXCLUDED_COLUMNS),
+        ("attachment_refs", SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS, SESSION_ATTACHMENT_REF_EXCLUDED_COLUMNS),
+        ("session_events", SESSION_EVENT_PROJECTION_COLUMNS, SESSION_EVENT_EXCLUDED_COLUMNS),
+        (
+            "session_provider_usage_events",
+            SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS,
+            SESSION_PROVIDER_USAGE_EVENT_EXCLUDED_COLUMNS,
+        ),
     )
     with closing(_read_connection(index_db)) as conn:
         for relation, projected, excluded in cases:

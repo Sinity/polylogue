@@ -495,13 +495,47 @@ def raw_materialization_readiness_from_pinned_index(
     *,
     archive_root: Path,
     source_schema: str = "source_tier",
-    classify_gaps: bool = True,
+    classify_gaps: bool = False,
+) -> dict[str, object]:
+    """Project raw/index materialization from an already-pinned reader.
+
+    Shares the path twin's failure contract: a degraded-but-readable tier
+    (SQLITE_BUSY on the pinned reader, a malformed page, a column the pinned
+    snapshot predates) resolves to ``{"available": False, "error": ...}``
+    rather than raising. ``_raw_materialization_status`` calls this
+    unconditionally, so a raise there fails the whole status operation.
+    """
+
+    try:
+        return _raw_materialization_readiness_from_pinned_index(
+            index_conn,
+            archive_root=archive_root,
+            source_schema=source_schema,
+            classify_gaps=classify_gaps,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        return {"available": False, "error": str(exc)}
+
+
+def _raw_materialization_readiness_from_pinned_index(
+    index_conn: sqlite3.Connection,
+    *,
+    archive_root: Path,
+    source_schema: str = "source_tier",
+    classify_gaps: bool = False,
 ) -> dict[str, object]:
     """Project raw/index materialization from an already-pinned reader.
 
     ``index_conn`` must already have ``source_schema`` attached and snapshot
     forced by its caller.  The existing gap classifier is reused verbatim;
     this adapter changes only connection ownership, never policy.
+
+    The default is the bounded periodic-status contract, matching what
+    :func:`archive_readiness_status` passes to the path twin. Exact
+    classification opens a blob and reads JSONL per unmaterialized raw, so
+    defaulting it on made every status poll walk the whole raw corpus while
+    ``sessions`` is still empty or partial -- that is, throughout a rebuild.
+    Diagnostic callers ask for it explicitly.
     """
 
     if source_schema not in {"source", "source_tier"}:
@@ -1928,6 +1962,27 @@ def archive_readiness_status(root: Path) -> dict[str, Any]:
 
 
 def archive_readiness_status_from_connections(
+    index_conn: sqlite3.Connection,
+    source_conn: sqlite3.Connection | None,
+    *,
+    raw_materialization_readiness: Mapping[str, object] | None,
+) -> dict[str, Any]:
+    """Build archive readiness from an operation's pinned tier readers.
+
+    Shares the path twin's failure contract: a degraded-but-readable tier
+    resolves to ``{"checked": False, "reason": ...}`` rather than raising, so
+    a status poll reports the degradation instead of failing.
+    """
+
+    try:
+        return _archive_readiness_status_from_connections(
+            index_conn, source_conn, raw_materialization_readiness=raw_materialization_readiness
+        )
+    except (OSError, sqlite3.Error) as exc:
+        return {"checked": False, "reason": str(exc), "surfaces": {}}
+
+
+def _archive_readiness_status_from_connections(
     index_conn: sqlite3.Connection,
     source_conn: sqlite3.Connection | None,
     *,

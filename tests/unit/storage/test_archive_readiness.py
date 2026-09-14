@@ -1272,3 +1272,86 @@ def test_claude_workflow_materialization_status_reads_latest_stage_event(tmp_pat
     assert status["gap_count"] == 2
     assert status["gaps"] == ["missing agent metadata for transcript agent-a", "unresolved call x"]
     assert status["observed_at_ms"] == 1_700_000_000_000
+
+
+def _pinned_index_over(tmp_path: Path) -> sqlite3.Connection:
+    """An index reader with the source tier attached, as an operation pins it."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    conn = sqlite3.connect(tmp_path / "index.db")
+    conn.execute("ATTACH DATABASE ? AS source_tier", (str(tmp_path / "source.db"),))
+    return conn
+
+
+def test_pinned_materialization_readiness_degrades_like_its_path_twin(tmp_path: Path) -> None:
+    """A degraded pinned tier must report unavailable, not raise.
+
+    ``raw_materialization_readiness_snapshot`` wraps its reads and returns
+    ``{"available": False, "error": ...}``. Its pinned twin, added alongside it,
+    had no handler, so a busy reader or a column the snapshot predates raised
+    out of ``_raw_materialization_status`` -- which runs unconditionally on
+    every status poll.
+
+    Anti-vacuity: remove the ``except (OSError, sqlite3.Error)`` clause from
+    ``raw_materialization_readiness_from_pinned_index`` and this goes red with
+    ``sqlite3.OperationalError: no such column: s.raw_id``.
+    """
+    from polylogue.storage.archive_readiness import raw_materialization_readiness_from_pinned_index
+
+    conn = _pinned_index_over(tmp_path)
+    try:
+        # Drop a column the projection selects: readable tier, unreadable query.
+        conn.execute("DROP INDEX IF EXISTS idx_sessions_raw_id")
+        conn.execute("ALTER TABLE sessions DROP COLUMN raw_id")
+        conn.commit()
+        result = raw_materialization_readiness_from_pinned_index(conn, archive_root=tmp_path)
+    finally:
+        conn.close()
+
+    assert result["available"] is False
+    assert "raw_id" in str(result["error"])
+
+
+def test_pinned_readiness_status_degrades_like_its_path_twin(tmp_path: Path) -> None:
+    """The same missing failure contract on the readiness-status twin.
+
+    ``archive_readiness_status`` returns ``{"checked": False, "reason": ...}``
+    on ``sqlite3.Error``; the pinned variant raised instead.
+
+    Anti-vacuity: remove the ``except (OSError, sqlite3.Error)`` clause from
+    ``archive_readiness_status_from_connections`` and this goes red.
+    """
+    from polylogue.storage.archive_readiness import archive_readiness_status_from_connections
+
+    conn = _pinned_index_over(tmp_path)
+    try:
+        conn.execute("DROP VIEW IF EXISTS threads")
+        conn.execute("ALTER TABLE sessions DROP COLUMN message_count")
+        conn.commit()
+        result = archive_readiness_status_from_connections(conn, None, raw_materialization_readiness=None)
+    finally:
+        conn.close()
+
+    assert result["checked"] is False
+    assert "message_count" in str(result["reason"])
+
+
+def test_pinned_materialization_readiness_defaults_to_the_bounded_contract(tmp_path: Path) -> None:
+    """Exact gap classification is a diagnostic read, not a status poll.
+
+    The path twin's caller passes ``classify_gaps=False`` because exact
+    classification opens a blob and reads JSONL per unmaterialized raw. The
+    pinned twin defaulted it to True and its only caller omits the kwarg, so
+    every status poll walked the whole unmaterialized corpus -- which, during a
+    from-scratch rebuild, is nearly every raw.
+
+    Anti-vacuity: flip the default back to True and this goes red.
+    """
+    import inspect
+
+    from polylogue.storage.archive_readiness import raw_materialization_readiness_from_pinned_index
+
+    signature = inspect.signature(raw_materialization_readiness_from_pinned_index)
+    assert signature.parameters["classify_gaps"].default is False
