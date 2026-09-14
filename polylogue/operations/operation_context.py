@@ -182,25 +182,6 @@ def open_operation_read(
     with ExitStack() as cleanup:
         with publication_guard() if publication_guard is not None else nullcontext():
             location = ArchiveLocation.resolve(root)
-            # ``ArchiveStore.open_existing`` never bootstraps a missing tier on
-            # a read-only open -- it lets sqlite3 refuse. That refusal escapes
-            # as a bare ``OperationalError: unable to open database file``,
-            # which public surfaces then render as "unexpected error". Every
-            # caller of this seam reaches it on a fresh or relocated root (the
-            # CLI query fast path does so through the daemon client's
-            # in-process read fallback), so classify the absent tier here and
-            # refuse with the typed error the surfaces already know how to
-            # render.
-            index_path = location.active_index_path
-            if not index_path.exists():
-                from polylogue.core.errors import ArchiveTierUnavailableError
-
-                raise ArchiveTierUnavailableError(
-                    tier="index",
-                    path=str(index_path),
-                    reason="archive index database not found",
-                    guidance="Ingest a source into this archive root, or point POLYLOGUE_ARCHIVE_ROOT at an existing archive.",
-                )
             identity = ArchiveIdentity.resolve_location(location)
             opened = ArchiveStore.open_existing(
                 root,
