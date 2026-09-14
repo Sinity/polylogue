@@ -1012,3 +1012,123 @@ def test_event_page_holds_the_newest_events_and_pages_backwards(tmp_path: Path) 
         assert [event["kind"] for event in oldest["events"]] == ["created"]
         assert oldest["has_more"] is False
         assert oldest["next_before_revision"] is None
+
+
+def _event_body(job_id: str, adopted: dict[str, Any], *, request_id: str, payload: dict[str, object]) -> dict[str, Any]:
+    return {
+        "provider": "chatgpt",
+        "account_scope": SCOPE,
+        "request_id": request_id,
+        "expected_revision": adopted["job"]["revision"],
+        "lease_id": adopted["lease"]["lease_id"],
+        "generation": adopted["lease"]["generation"],
+        "proof": adopted["lease"]["proof"],
+        "kind": "first-seen",
+        "refs": {"conversation_ref": "conversation:1"},
+        "payload": payload,
+    }
+
+
+def test_an_oversized_event_payload_is_refused_and_stores_nothing(tmp_path: Path) -> None:
+    """Anti-vacuity: an event is a control message, and the registry database
+    sits outside the spool directory the receiver's quota measures, so an
+    uncapped payload grows registry.sqlite3 without bound. Removing the
+    CAPTURE_JOB_EVENT_MAX_BYTES check in ``_append_event`` makes this red --
+    the request returns 200 and the row lands. A cap that accepted the body
+    and only truncated it would still fail the refusal-code assertion."""
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        oversize = "x" * (capture_jobs_module.CAPTURE_JOB_EVENT_MAX_BYTES + 1)
+        status, refused = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/events",
+            _event_body(job["job_id"], adopted, request_id="too-large", payload={"blob": oversize}),
+        )
+        assert status == 400
+        assert refused["error"]["code"] == "capture_job_event_too_large"
+        assert refused["error"]["details"]["max_bytes"] == capture_jobs_module.CAPTURE_JOB_EVENT_MAX_BYTES
+
+        with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+            (stored,) = connection.execute(
+                "SELECT COUNT(*) FROM capture_job_events WHERE job_id=? AND kind='first-seen'",
+                (job["job_id"],),
+            ).fetchone()
+        assert stored == 0
+
+        # The job is untouched: a refusal is not a state change.
+        status, accepted = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/events",
+            _event_body(job["job_id"], adopted, request_id="small", payload={"source": "profile-a"}),
+        )
+        assert status == 200
+        assert accepted["event"]["event_revision"] == 1
+
+
+def test_a_job_cannot_accumulate_unbounded_events(tmp_path: Path) -> None:
+    """Anti-vacuity: ``gc`` collects only retention-eligible completed or
+    abandoned jobs, so a job the client keeps active is never reclaimed and
+    its events would grow forever. Removing the CAPTURE_JOB_EVENT_MAX_COUNT
+    check makes this red -- the post past the cap returns 200. The cap is
+    lowered here only so the test stays cheap; the production constant drives
+    the same code path."""
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        # `created` already occupies event_revision 0, so a cap of 2 admits
+        # exactly one more event before refusing.
+        original = capture_jobs_module.CAPTURE_JOB_EVENT_MAX_COUNT
+        capture_jobs_module.CAPTURE_JOB_EVENT_MAX_COUNT = 2
+        try:
+            status, first = request(
+                host,
+                port,
+                "POST",
+                f"/v1/capture-jobs/{job['job_id']}/events",
+                _event_body(job["job_id"], adopted, request_id="within-cap", payload={"n": 1}),
+            )
+            assert status == 200 and first["event"]["event_revision"] == 1
+
+            body = _event_body(job["job_id"], adopted, request_id="past-cap", payload={"n": 2})
+            body["expected_revision"] = first["job"]["revision"]
+            status, refused = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", body)
+        finally:
+            capture_jobs_module.CAPTURE_JOB_EVENT_MAX_COUNT = original
+        assert status == 400
+        assert refused["error"]["code"] == "capture_job_event_limit_exhausted"
+        assert refused["error"]["details"]["max_events"] == 2
+
+        with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+            (stored,) = connection.execute(
+                "SELECT COUNT(*) FROM capture_job_events WHERE job_id=?", (job["job_id"],)
+            ).fetchone()
+        assert stored == 2
+
+
+def test_capture_job_routes_do_not_inherit_the_capture_envelope_body_cap(tmp_path: Path) -> None:
+    """Anti-vacuity: the 128 MiB cap is sized for capture envelopes carrying
+    conversation content; control messages must not inherit it, or the
+    receiver reads and json.loads-es up to 128 MiB per request before any
+    registry validation runs. Restoring the shared cap in ``_capture_job_body``
+    makes this red: the oversized control message is parsed instead of refused
+    on size."""
+    from polylogue.browser_capture.server import MAX_BROWSER_CAPTURE_BODY_BYTES, MAX_CAPTURE_JOB_BODY_BYTES
+
+    assert MAX_CAPTURE_JOB_BODY_BYTES < MAX_BROWSER_CAPTURE_BODY_BYTES
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        body = _event_body(
+            job["job_id"],
+            adopted,
+            request_id="oversize-body",
+            payload={"blob": "x" * (MAX_CAPTURE_JOB_BODY_BYTES + 1024)},
+        )
+        status, refused = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", body)
+        assert status == 400
+        assert refused["error"] == "invalid_body_size"

@@ -89,6 +89,13 @@ CAPTURE_HEALTH_EVENT_KIND = "browser_capture_health"
 logger = get_logger(__name__)
 
 MAX_BROWSER_CAPTURE_BODY_BYTES = 128 * 1024 * 1024
+# Capture-job requests are control messages -- job descriptors, leases, event
+# envelopes, checkpoints -- never capture content, so they must not inherit the
+# 128 MiB cap sized for capture envelopes. 1 MiB leaves ample headroom over the
+# registry's own per-event cap (CAPTURE_JOB_EVENT_MAX_BYTES, 64 KiB) plus the
+# surrounding request fields, and bounds the bytes the receiver reads and
+# json.loads-es before any registry validation runs.
+MAX_CAPTURE_JOB_BODY_BYTES = 1024 * 1024
 _SAFE_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
 
 
@@ -535,14 +542,14 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._observe_request("POST", self._do_post)
 
-    def _read_json_body(self) -> object | None:
+    def _read_json_body(self, *, max_bytes: int = MAX_BROWSER_CAPTURE_BODY_BYTES) -> object | None:
         """Read and parse a JSON request body, sending an error and returning None on failure."""
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return None
-        if length <= 0 or length > MAX_BROWSER_CAPTURE_BODY_BYTES:
+        if length <= 0 or length > max_bytes:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_body_size")
             return None
         raw = self.rfile.read(length)
@@ -720,7 +727,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
 
     def _capture_job_body(self) -> dict[str, object] | None:
-        payload = self._read_json_body()
+        payload = self._read_json_body(max_bytes=MAX_CAPTURE_JOB_BODY_BYTES)
         if not isinstance(payload, dict):
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_job")
             return None
