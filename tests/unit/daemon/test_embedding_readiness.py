@@ -19,8 +19,7 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
+import polylogue.logging as plog
 from polylogue.config import PolylogueConfig
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from tests.infra.embedding_config import embedding_config
@@ -466,7 +465,6 @@ def test_readiness_failure_branch_counts_error_message_rows(tmp_path: Path) -> N
 
 def test_readiness_query_failure_logs_instead_of_looking_like_a_clean_archive(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A transient query failure returns the same shape as "nothing to embed
     yet", so the failure must be logged loudly — otherwise it is invisible
@@ -484,7 +482,7 @@ def test_readiness_query_failure_logs_instead_of_looking_like_a_clean_archive(
     with (
         patch("polylogue.config.load_polylogue_config", return_value=cfg),
         patch("polylogue.daemon.embedding_readiness.embedding_status_payload", side_effect=_boom),
-        caplog.at_level("WARNING"),
+        plog.capture() as records,
     ):
         info = embedding_readiness_info(db)
 
@@ -493,5 +491,10 @@ def test_readiness_query_failure_logs_instead_of_looking_like_a_clean_archive(
     # distinguishable.
     assert info["embedding_status"] == "empty"
     assert info["embedding_retrieval_ready"] is False
-    assert "embedding readiness query failed" in caplog.text
-    assert "database is locked" in caplog.text
+    # Anti-vacuity: delete the emit() in embedding_readiness and this is red.
+    failures = [r for r in records if r["event"] == "daemon.embed.readiness_query_failed"]
+    assert len(failures) == 1
+    assert failures[0]["outcome"] == "degraded"
+    assert failures[0]["level"] == "warning"
+    assert failures[0]["error_type"] == "OperationalError"
+    assert "database is locked" in str(failures[0]["error_detail"])

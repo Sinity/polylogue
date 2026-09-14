@@ -3,10 +3,12 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 import polylogue.daemon.convergence_stages as stages
+import polylogue.logging as plog
 from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.daemon.convergence_stages import (
@@ -50,7 +52,7 @@ def test_default_convergence_stages_leave_derived_domains_to_typed_owners(tmp_pa
 
 
 def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_readiness(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -94,7 +96,7 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
     assert stage.execute_many is not None
     assert stage.false_means_pending is True
     path = tmp_path / "source.jsonl"
-    with caplog.at_level("INFO"):
+    with plog.capture() as records:
         assert stage.check(path) is True
         assert stage.execute_many((path,)) is False
         assert stage.check(path) is True
@@ -107,7 +109,20 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
         }
     assert len(cached_cohorts) == stages._DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS + 2
     assert "codex:append" in cached_cohorts
-    assert "raw_authority_verdict_cache: warmed cohorts=" in caplog.text
+    # The first execute_many left cohorts pending, the second did not. Prose
+    # reported both at INFO; the span outcome now separates them.
+    terminals = [
+        r
+        for r in records
+        if str(r["event"]).startswith("daemon.stage.execute.")
+        and not str(r["event"]).endswith(".start")
+        and r.get("stage") == "raw_authority_verdict_cache"
+    ]
+    assert [r["outcome"] for r in terminals] == ["degraded", "ok"]
+    assert terminals[0]["reason"] == "cohorts_still_pending"
+    assert int(cast(int, terminals[0]["pending"])) > 0
+    assert terminals[1]["pending"] == 0
+    assert all(int(cast(int, r["cohorts"])) > 0 for r in terminals)
 
     import polylogue.storage.raw_authority_verdict_cache as cache_module
 

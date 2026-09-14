@@ -800,20 +800,22 @@ def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed()
     final ``loop.call_soon_threadsafe`` raises ``RuntimeError`` because the
     loop is closed. Previously this was silently swallowed, leaving the
     original awaiting future unresolved with zero forensic trace. The fix
-    logs a warning instead of swallowing it silently; run in a subprocess
-    because it requires actually closing a real event loop out from under a
-    still-running background thread.
+    emits ``daemon.writer.result_abandoned`` instead of swallowing it
+    silently; run in a subprocess because it requires actually closing a real
+    event loop out from under a still-running background thread.
     """
     script = textwrap.dedent(
         """
         import asyncio
-        import logging
         import sys
         import threading
 
         from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+        from polylogue.logging import configure_events
 
-        logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+        # Render events to stderr so the parent can assert on the real sink
+        # path, not on an in-process capture the production route bypasses.
+        configure_events(fmt="console", level="warning", stream=sys.stderr)
 
         finish = threading.Event()
 
@@ -854,7 +856,10 @@ def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed()
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "event loop already closed" in completed.stderr, completed.stderr
+    # Anti-vacuity: remove the emit() in _run_in_daemon_thread and this is red.
+    assert "daemon.writer.result_abandoned" in completed.stderr, completed.stderr
+    assert "reason=event_loop_closed" in completed.stderr, completed.stderr
+    assert "error_type=RuntimeError" in completed.stderr, completed.stderr
 
 
 def test_thread_bridge_serializes_sync_request_bodies_without_overlap() -> None:
