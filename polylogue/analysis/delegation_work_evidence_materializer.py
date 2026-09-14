@@ -15,14 +15,54 @@ from polylogue.storage.sqlite.managed_connection import sqlite_connection
 DELEGATION_WORK_EVIDENCE_GRAPH_ID = "delegation:archive"
 
 
+#: Row ceiling for the delegation snapshot. Matches the bound
+#: :func:`materialize_delegation_work_evidence_archive` already enforces on
+#: ``query_delegations``; enforcing it in the snapshot means the *freshness
+#: probe* is bounded too, not only the materialize path.
+MAX_DELEGATION_SNAPSHOT_ROWS = 100_000
+
+#: Byte ceiling for the digested payload. A hostile export can keep the row
+#: count small while making ``instruction_payload``/``artifact_text``
+#: arbitrarily large, so a row count alone is not a bound.
+MAX_DELEGATION_SNAPSHOT_BYTES = 64 * 1024 * 1024
+
+_SNAPSHOT_ROW_SEPARATOR = b"\x1e"
+
+
 def delegation_work_evidence_snapshot(archive_root: Path) -> ObjectRef:
-    """Return a content-derived snapshot for the current delegation view."""
+    """Return a content-derived snapshot for the current delegation view.
+
+    Digested incrementally: the cursor is iterated row by row and each row is
+    folded into one SHA-256, so peak memory is one row rather than the whole
+    view plus a full JSON copy of it. Both ceilings raise the same typed
+    refusal :func:`materialize_delegation_work_evidence_archive` uses, so an
+    attacker-sized delegation population is refused on the freshness probe
+    instead of growing the daemon's RSS on every convergence pass.
+    """
 
     index_db = Path(archive_root) / "index.db"
+    digest = hashlib.sha256()
+    row_count = 0
+    byte_count = 0
     with sqlite_connection(index_db) as conn:
-        rows = conn.execute("SELECT * FROM delegations ORDER BY parent_session_id, child_session_id").fetchall()
-    payload = json.dumps(rows, separators=(",", ":"), default=str).encode()
-    return ObjectRef(kind="context-snapshot", object_id=f"delegations:{hashlib.sha256(payload).hexdigest()[:24]}")
+        # ``SELECT *`` deliberately: the digest must stay as sensitive as the
+        # whole view, and a hand-kept column list would silently stop tracking
+        # a column added to the view later -- freshness would go blind exactly
+        # where a new field carries new evidence. The view's own definition
+        # fixes the column order, so the digest is stable across runs, and a
+        # genuine view change correctly forces one re-materialization.
+        cursor = conn.execute("SELECT * FROM delegations ORDER BY parent_session_id, child_session_id")
+        for row in cursor:
+            row_count += 1
+            if row_count > MAX_DELEGATION_SNAPSHOT_ROWS:
+                raise ValueError("delegation work-evidence materialization exceeded its bounded population")
+            payload = json.dumps(list(row), separators=(",", ":"), default=str).encode()
+            byte_count += len(payload)
+            if byte_count > MAX_DELEGATION_SNAPSHOT_BYTES:
+                raise ValueError("delegation work-evidence materialization exceeded its bounded population")
+            digest.update(payload)
+            digest.update(_SNAPSHOT_ROW_SEPARATOR)
+    return ObjectRef(kind="context-snapshot", object_id=f"delegations:{digest.hexdigest()[:24]}")
 
 
 def materialize_delegation_work_evidence_archive(archive_root: Path) -> int:
@@ -134,6 +174,8 @@ def _replace_graph(index_db: Path, graph: object) -> None:
 
 __all__ = [
     "DELEGATION_WORK_EVIDENCE_GRAPH_ID",
+    "MAX_DELEGATION_SNAPSHOT_BYTES",
+    "MAX_DELEGATION_SNAPSHOT_ROWS",
     "delegation_work_evidence_materialization_needed",
     "delegation_work_evidence_snapshot",
     "materialize_delegation_work_evidence_archive",

@@ -474,7 +474,13 @@ def detect_session_commits(
     if not commits:
         return []
 
-    commit_bodies = _git_log_commit_bodies(repo_path, window_start, window_end)
+    # Commit bodies feed exactly one consumer: ``trailer_tokens`` below, read
+    # only by the ``trailer_tokens & own_trailer_tokens`` short-circuit and by
+    # ``foreign_trailer``, which itself requires ``bool(own_trailer_tokens)``.
+    # With no trailer tokens of our own there is nothing to compare against, so
+    # reading every commit message in the window into memory buys nothing --
+    # and commit objects in a cloned repo are third-party content.
+    commit_bodies = _git_log_commit_bodies(repo_path, window_start, window_end) if own_trailer_tokens else {}
 
     edges: list[SessionCommitEdge] = []
     for commit_data in commits:

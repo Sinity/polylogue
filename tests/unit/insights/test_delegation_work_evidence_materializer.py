@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.analysis import delegation_work_evidence_materializer as materializer
 from polylogue.analysis.delegation_work_evidence_materializer import (
     DELEGATION_WORK_EVIDENCE_GRAPH_ID,
     delegation_work_evidence_materialization_needed,
+    delegation_work_evidence_snapshot,
     materialize_delegation_work_evidence_archive,
 )
 from polylogue.daemon.convergence_stages import make_delegation_work_evidence_stage
@@ -188,3 +190,61 @@ def test_convergence_stage_reports_probe_and_materialization_failures_as_pending
     assert [(record["stage"], record["outcome"], record["reason"], record["error_type"]) for record in terminal] == [
         ("delegation_work_evidence", "degraded", "materialization_failed", "OperationalError")
     ]
+
+
+def test_delegation_snapshot_refuses_row_ceiling_on_the_freshness_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The freshness probe is bounded, not just the materialize path.
+
+    Anti-vacuity: restoring the unbounded
+    ``SELECT * FROM delegations ... .fetchall()`` snapshot makes
+    ``delegation_work_evidence_materialization_needed`` return a bool for an
+    over-ceiling population instead of raising, and this test goes red.
+    """
+    _seed_delegation(tmp_path)
+    monkeypatch.setattr(materializer, "MAX_DELEGATION_SNAPSHOT_ROWS", 0)
+
+    with pytest.raises(ValueError, match="bounded population"):
+        delegation_work_evidence_materialization_needed(tmp_path)
+
+    # The materialize path inherits the same bound, because it digests first.
+    with pytest.raises(ValueError, match="bounded population"):
+        materialize_delegation_work_evidence_archive(tmp_path)
+
+
+def test_delegation_snapshot_refuses_byte_ceiling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Few rows carrying attacker-sized text are refused too.
+
+    Anti-vacuity: a row-count-only bound (or the original unbounded snapshot)
+    accepts a small row set with multi-MB payloads, and this test goes red.
+    """
+    _seed_delegation(tmp_path)
+    monkeypatch.setattr(materializer, "MAX_DELEGATION_SNAPSHOT_BYTES", 1)
+
+    with pytest.raises(ValueError, match="bounded population"):
+        delegation_work_evidence_materialization_needed(tmp_path)
+
+
+def test_delegation_snapshot_digest_is_stable_and_content_sensitive(tmp_path: Path) -> None:
+    """The incremental digest must not cause spurious re-materialization.
+
+    Anti-vacuity: a digest that varies between two reads of unchanged rows
+    (nondeterministic column order, unordered iteration, or a per-call salt)
+    makes the equality assertion red; a digest that ignores materialized
+    content makes the inequality assertion red.
+    """
+    _seed_delegation(tmp_path)
+    first = delegation_work_evidence_snapshot(tmp_path)
+    second = delegation_work_evidence_snapshot(tmp_path)
+    assert first.format() == second.format()
+
+    assert materialize_delegation_work_evidence_archive(tmp_path) >= 1
+    assert delegation_work_evidence_materialization_needed(tmp_path) is False
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("DELETE FROM session_links")
+        conn.execute("DELETE FROM blocks WHERE tool_id = 'task-1'")
+        conn.commit()
+    assert delegation_work_evidence_snapshot(tmp_path).format() != first.format()
+    assert delegation_work_evidence_materialization_needed(tmp_path) is True

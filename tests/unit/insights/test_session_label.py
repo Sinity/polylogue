@@ -9,9 +9,14 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+import polylogue.analysis.session_label as session_label_module
 from polylogue.analysis.session_label import (
+    DistinctFileCount,
     SessionLabelInputs,
     compute_session_structural_label,
+    distinct_repo_relative_file_count_for_session,
     dominant_repo_relative_path_for_session,
     session_structural_label_for_session,
 )
@@ -269,3 +274,71 @@ def test_session_structural_label_for_session_end_to_end(tmp_path: Path) -> None
         provider_title="Refactor the core module",
     )
     assert titled_label == "Refactor the core module"
+
+
+def test_distinct_file_count_uses_a_sql_aggregate_when_no_root_is_stripped(tmp_path: Path) -> None:
+    """No checkout root -> COUNT(DISTINCT) in SQL, no per-row Python set.
+
+    Anti-vacuity: restoring the ``SELECT tool_path ... .fetchall()`` form makes
+    the traced-SQL assertions red, because the read would pull every
+    ``action_pairs`` row into the process instead of aggregating in SQLite.
+    """
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-noroot",
+        messages=[
+            _read_message(0, "touch files"),
+            _edit_call(1, "/elsewhere/a.py"),
+            _edit_call(2, "/elsewhere/b.py"),
+            _edit_call(3, "/elsewhere/a.py"),
+        ],
+    )
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    traced: list[str] = []
+    conn.set_trace_callback(lambda sql: traced.append(" ".join(sql.split())))
+    try:
+        result = distinct_repo_relative_file_count_for_session(conn, session_id)
+    finally:
+        conn.set_trace_callback(None)
+
+    assert result == DistinctFileCount(count=2, capped=False)
+    assert any("COUNT(DISTINCT tool_path)" in sql for sql in traced)
+    assert not any(sql.startswith("SELECT tool_path FROM action_pairs") for sql in traced)
+
+
+def test_distinct_file_count_caps_and_reports_the_cap_when_a_root_is_stripped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stripped root must bound the Python set and *say* it capped.
+
+    Anti-vacuity: an unbounded set over every row returns the true count with
+    ``capped=False``, so ``capped is True`` goes red; a bound that silently
+    returned a short exact number would make the ``"2+ files"`` assertion red.
+    """
+    conn = _connect(tmp_path / "index.db")
+    repo_root = tmp_path / "caprepo"
+    (repo_root / ".git").mkdir(parents=True)
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-cap",
+        working_directories=[str(repo_root)],
+        messages=[
+            _read_message(0, "touch files"),
+            _edit_call(1, str(repo_root / "a.py")),
+            _edit_call(2, str(repo_root / "b.py")),
+            _edit_call(3, str(repo_root / "c.py")),
+        ],
+    )
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    monkeypatch.setattr(session_label_module, "MAX_DISTINCT_FILE_COUNT", 2)
+
+    result = distinct_repo_relative_file_count_for_session(conn, session_id)
+    assert result.capped is True
+    assert result.count == 2
+
+    label = session_structural_label_for_session(conn, session_id, message_count=4, provider_title=None)
+    assert "2+ files" in label
