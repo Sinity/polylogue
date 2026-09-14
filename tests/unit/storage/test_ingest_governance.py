@@ -411,3 +411,81 @@ def test_precomputed_attachment_is_preserved_without_compute_publication(tmp_pat
     with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
         assert publish_ingest_cohort(writer, prepared).published
         assert writer._conn.execute("SELECT lower(hex(blob_hash)) FROM attachments").fetchone()[0] == hash_hex
+
+
+def test_raising_production_parser_records_a_failed_census_instead_of_escaping(tmp_path: Path) -> None:
+    """One unparseable retained raw is a FAILED census, not a refused generation.
+
+    Anti-vacuity: the FAILED arm of prepare_raw_census models parse failure as
+    ``parsed is None``, but the sole production callable is typed
+    ``-> list[ParsedSession]`` and raises. Remove the census-boundary catch and
+    this test raises instead of returning, which is what fenced the whole source
+    generation at operations/daemon_ingest.py. Every other test in this file
+    uses a ``_parse_from`` double that can only return, so none reaches here.
+    """
+    bootstrap_archive_root(tmp_path)
+
+    def raising_parse(_archive: ArchiveStore, _raw_id: str) -> list[ParsedSession]:
+        raise ValueError("synthetic unparseable retained payload")
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"census-failure"}}\n',
+            source_path="census-failure.jsonl",
+            acquired_at_ms=1,
+        )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
+        prepared = prepare_raw_census(
+            reader,
+            raw_id,
+            parser_fingerprint="prepared-test-parser",
+            parse_retained_raw=raising_parse,
+            censused_at_ms=2,
+        )
+
+    assert prepared.status.value == "failed"
+    assert prepared.sessions is None
+    assert "synthetic unparseable retained payload" in prepared.detail
+
+    # The recorded disposition is publishable, so the generation continues.
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        publication = publish_raw_census(archive, prepared)
+    assert publication.published is True
+
+
+def test_transient_sqlite_contention_is_not_recorded_as_a_parse_failure(tmp_path: Path) -> None:
+    """Contention must stay retryable rather than quarantining the raw.
+
+    Anti-vacuity: catching bare ``Exception`` at the census boundary turns a
+    SQLITE_BUSY during retained-material reads into a permanent FAILED census;
+    this test then returns a census instead of propagating.
+    """
+    import sqlite3
+
+    bootstrap_archive_root(tmp_path)
+
+    def busy_parse(_archive: ArchiveStore, _raw_id: str) -> list[ParsedSession]:
+        exc = sqlite3.OperationalError("database is locked")
+        exc.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        exc.sqlite_errorname = "SQLITE_BUSY"
+        raise exc
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"census-busy"}}\n',
+            source_path="census-busy.jsonl",
+            acquired_at_ms=1,
+        )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
+        with pytest.raises(sqlite3.OperationalError):
+            prepare_raw_census(
+                reader,
+                raw_id,
+                parser_fingerprint="prepared-test-parser",
+                parse_retained_raw=busy_parse,
+                censused_at_ms=2,
+            )

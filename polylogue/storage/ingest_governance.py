@@ -29,6 +29,7 @@ from polylogue.archive.session_revision_membership import (
 )
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -332,7 +333,29 @@ def prepare_raw_census(
 ) -> PreparedRawCensus:
     """Parse one retained raw away from the writer and bind its exact input."""
     descriptor = _raw_binding(reader_archive, raw_id)
-    parsed = parse_retained_raw(reader_archive, raw_id)
+    try:
+        parsed = parse_retained_raw(reader_archive, raw_id)
+    except Exception as exc:
+        # The production callable (``parse_retained_raw_sessions``) is typed
+        # ``-> list[ParsedSession]`` and raises rather than returning None, so
+        # without this the FAILED disposition below was unreachable and one
+        # unparseable input refused its entire source generation
+        # (operations/daemon_ingest.py fences on any escaped exception).
+        # Transient contention is not a parse verdict: let it propagate so the
+        # raw is retried instead of being quarantined permanently.
+        if is_transient_sqlite_lock(exc):
+            raise
+        return PreparedRawCensus(
+            raw_id,
+            parser_fingerprint,
+            descriptor,
+            None,
+            (),
+            (),
+            RawCensusStatus.FAILED,
+            censused_at_ms,
+            detail or str(exc)[:500],
+        )
     if parsed is None:
         return PreparedRawCensus(
             raw_id, parser_fingerprint, descriptor, None, (), (), RawCensusStatus.FAILED, censused_at_ms, detail
@@ -362,7 +385,10 @@ def publish_raw_census(writer_archive: Any, prepared: PreparedRawCensus) -> Cens
         parser_fingerprint=prepared.parser_fingerprint,
         censused_at_ms=prepared.censused_at_ms,
         detail=prepared.detail,
-        projections=prepared.projections,
+        # A FAILED/None census has no sessions for projections to align with;
+        # passing the empty tuple instead of None trips the writer's alignment
+        # check, which is why the FAILED arm could never be published.
+        projections=None if prepared.sessions is None else prepared.projections,
     )
     return CensusPublication(True, False)
 
