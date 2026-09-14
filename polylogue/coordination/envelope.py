@@ -48,6 +48,7 @@ from polylogue.logging import get_logger
 from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.derived.topology import TopologyNodeInput, compose_session_topology
 from polylogue.storage.sqlite.run_projection_relations import (
     context_snapshot_relation_sql,
     observed_event_relation_sql,
@@ -629,6 +630,13 @@ def _compact_coordination_payload(
                     for node in tree.nodes[:3]
                 ),
                 "edges": tree.edges[:3],
+                # The compact projection is itself a bound. Carry the trim
+                # into the completeness fields instead of handing back a
+                # partial tree that still claims to be whole.
+                "nodes_complete": tree.nodes_complete and len(tree.nodes) <= 3,
+                "edges_complete": tree.edges_complete and len(tree.edges) <= 3,
+                "truncated_node_count": tree.truncated_node_count + max(0, len(tree.nodes) - 3),
+                "truncated_edge_count": tree.truncated_edge_count + max(0, len(tree.edges) - 3),
                 "provenance": _compact_provenance(tree.provenance),
             }
         )
@@ -2094,6 +2102,20 @@ def _session_tree_payload(
     *,
     limit: int,
 ) -> CoordinationSessionTreePayload | None:
+    """Project the coordination session tree from canonical ``session_links``.
+
+    polylogue-27ezu: this route previously built its own graph -- edges
+    synthesized from ``sessions.parent_session_id`` + ``branch_type``, a
+    private edge mapper that flattened an unresolved link's real type to
+    ``"unresolved_native"``, a hard-coded ``cycle_detected=False``, and a
+    silent ``edges[:limit]`` truncation that still reported as a whole tree.
+    It now discovers candidate nodes through the parent/root accelerator
+    columns and hands the canonical link rows to
+    :func:`compose_session_topology`, the one graph classification engine.
+    Every edge, its type, composability and provenance comes from
+    ``session_links``; the bound is reported rather than hidden.
+    """
+    node_bound = max(1, limit)
     target = conn.execute(
         """
         SELECT session_id, COALESCE(root_session_id, session_id) AS root_session_id
@@ -2104,11 +2126,12 @@ def _session_tree_payload(
     ).fetchone()
     if target is None:
         return None
-    root_id = str(target["root_session_id"])
+    root_hint = str(target["root_session_id"])
+    # Node discovery only. `parent_session_id` / `root_session_id` are
+    # write-side lookup accelerators; they never supply an edge below.
     rows = conn.execute(
         """
-        SELECT session_id, origin, title, parent_session_id, branch_type,
-               CASE WHEN session_id = ? THEN 1 ELSE 0 END AS is_target
+        SELECT session_id, native_id, origin, title
         FROM sessions
         WHERE session_id = ?
            OR root_session_id = ?
@@ -2118,88 +2141,94 @@ def _session_tree_payload(
             sort_key_ms DESC
         LIMIT ?
         """,
-        (target_session_id, target_session_id, root_id, root_id, root_id, target_session_id, max(1, limit)),
+        # The target sorts first so a tight bound can never trim the very
+        # session the tree was requested for out of the discovery set.
+        (target_session_id, root_hint, root_hint, target_session_id, root_hint, node_bound + 1),
     ).fetchall()
     if not rows:
         return None
-    depth_by_id = _depths_from_rows(rows, root_id)
-    row_ids = tuple(str(row["session_id"]) for row in rows)
-    nodes = tuple(
-        CoordinationSessionTreeNodePayload(
+    discovery_truncated = len(rows) > node_bound
+    rows = rows[:node_bound]
+    node_inputs = [
+        TopologyNodeInput(
             session_id=str(row["session_id"]),
-            source_name=_str_or_none(row["origin"]),
+            origin=str(row["origin"]),
             title=(_short_to(str(row["title"]), 500) if row["title"] is not None else None),
-            depth=depth_by_id.get(str(row["session_id"]), 0),
-            is_target=bool(row["is_target"]),
         )
         for row in rows
-    )
-    row_id_set = set(row_ids)
-    edges: list[CoordinationSessionTreeEdgePayload] = []
-    for row in rows:
-        parent_id = _str_or_none(row["parent_session_id"])
-        if parent_id and parent_id in row_id_set:
-            edges.append(
-                CoordinationSessionTreeEdgePayload(
-                    child_id=str(row["session_id"]),
-                    parent_id=parent_id,
-                    kind=_str_or_none(row["branch_type"]) or "unknown",
-                    resolved=True,
-                )
-            )
-    if row_ids:
-        placeholders = ",".join("?" for _ in row_ids)
-        unresolved = conn.execute(
+    ]
+    row_ids = tuple(node.session_id for node in node_inputs)
+    placeholders = ",".join("?" for _ in row_ids)
+    link_bound = max(node_bound, len(row_ids)) * 4
+    links = [
+        dict(link_row)
+        for link_row in conn.execute(
             f"""
-            SELECT src_session_id, dst_native_id, link_type
+            SELECT *
             FROM session_links
-            WHERE resolved_dst_session_id IS NULL
-              AND src_session_id IN ({placeholders})
-            ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_native_id, link_type
+            WHERE src_session_id IN ({placeholders})
+               OR resolved_dst_session_id IN ({placeholders})
+            ORDER BY src_session_id, dst_origin, dst_native_id, link_type
             LIMIT ?
             """,
-            (*row_ids, max(1, limit)),
+            (*row_ids, *row_ids, link_bound + 1),
         ).fetchall()
-        for row in unresolved:
-            edges.append(
-                CoordinationSessionTreeEdgePayload(
-                    child_id=str(row["src_session_id"]),
-                    parent_native_id=_str_or_none(row["dst_native_id"]),
-                    kind=_str_or_none(row["link_type"]) or "unresolved_native",
-                    resolved=False,
-                )
-            )
+    ]
+    links_truncated = len(links) > link_bound
+    links = links[:link_bound]
+
+    composed = compose_session_topology(target_session_id, node_inputs, links)
+    if composed is None:
+        return None
+
+    page_nodes = composed.nodes[:node_bound]
+    page_ids = {str(node.session_id) for node in page_nodes}
+    in_page_edges = tuple(edge for edge in composed.edges if str(edge.child_id) in page_ids)
+    page_edges = in_page_edges[:node_bound]
+    truncated_nodes = len(composed.nodes) - len(page_nodes)
+    truncated_edges = len(in_page_edges) - len(page_edges)
     return CoordinationSessionTreePayload(
         target_session_id=target_session_id,
-        root_session_id=root_id,
-        nodes=nodes,
-        edges=tuple(edges[: max(1, limit)]),
-        cycle_detected=False,
+        root_session_id=str(composed.root_id),
+        nodes=tuple(
+            CoordinationSessionTreeNodePayload(
+                session_id=str(node.session_id),
+                source_name=node.origin,
+                title=node.title,
+                depth=node.depth,
+                is_target=str(node.session_id) == target_session_id,
+            )
+            for node in page_nodes
+        ),
+        edges=tuple(
+            CoordinationSessionTreeEdgePayload(
+                child_id=str(edge.child_id),
+                parent_id=str(edge.parent_id) if edge.parent_id is not None else None,
+                parent_native_id=edge.parent_native_id,
+                kind=edge.kind.value,
+                resolved=edge.resolved,
+                composable=edge.composable,
+                composability_reason=edge.composability_reason,
+            )
+            for edge in page_edges
+        ),
+        cycle_detected=composed.cycle_detected,
+        conflicting_parent_detected=composed.conflicting_parent_detected,
+        nodes_complete=not discovery_truncated and truncated_nodes == 0,
+        edges_complete=not links_truncated and truncated_edges == 0,
+        # Discovery truncates before composition, so the exact dropped count
+        # is unknowable there; report the floor rather than a bare 0 beside
+        # nodes_complete=False.
+        truncated_node_count=max(truncated_nodes, 1 if discovery_truncated else 0, 0),
+        truncated_edge_count=max(0, truncated_edges),
+        generation_id=composed.generation_id,
         provenance=_prov(
             "archive-session-topology",
-            path="index.db:sessions,session_links",
+            path="index.db:session_links",
             confidence=0.8,
-            note="bounded topology projection; full graph may contain additional descendants",
+            note="canonical session_links projection; completeness is reported on the payload",
         ),
     )
-
-
-def _depths_from_rows(rows: Sequence[sqlite3.Row], root_id: str) -> dict[str, int]:
-    parent_by_id = {str(row["session_id"]): _str_or_none(row["parent_session_id"]) for row in rows}
-    depths: dict[str, int] = {}
-    for session_id in parent_by_id:
-        depth = 0
-        current = session_id
-        seen: set[str] = set()
-        while current != root_id and parent_by_id.get(current) and current not in seen:
-            seen.add(current)
-            parent = parent_by_id[current]
-            if parent is None:
-                break
-            depth += 1
-            current = parent
-        depths[session_id] = depth
-    return depths
 
 
 def _archive_activity_payloads(

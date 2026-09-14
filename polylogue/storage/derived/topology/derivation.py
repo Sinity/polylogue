@@ -10,12 +10,36 @@ from __future__ import annotations
 import json
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyEdgeKind, TopologyNode
 from polylogue.archive.topology.edge import status_excludes_composition
 from polylogue.core.types import SessionId
 from polylogue.storage.runtime import SessionRecord
+
+
+@dataclass(frozen=True)
+class TopologyNodeInput:
+    """The only session-node facts the graph engine reads.
+
+    ``compose_session_topology`` never needed a whole :class:`SessionRecord`; narrowing the
+    input to these three fields is what lets a caller holding raw ``sessions``
+    rows (the coordination context envelope) reach the one canonical engine
+    instead of growing a second graph construction.
+    """
+
+    session_id: str
+    origin: str
+    title: str | None = None
+
+
+def node_input_from_record(record: SessionRecord) -> TopologyNodeInput:
+    return TopologyNodeInput(
+        session_id=str(record.session_id),
+        origin=record.origin.value,
+        title=record.title,
+    )
 
 
 class _SessionQuerySource(Protocol):
@@ -109,12 +133,18 @@ def _cycle_indexes(edges: Sequence[TopologyEdge]) -> set[int]:
     return cycles
 
 
-def _compose(
+def compose_session_topology(
     target_id: str,
-    records: Sequence[SessionRecord],
+    nodes: Sequence[TopologyNodeInput],
     links: Sequence[Mapping[str, object]],
 ) -> SessionTopology | None:
-    records_by_id = {str(record.session_id): record for record in records}
+    """Classify one topology graph from canonical ``session_links`` rows.
+
+    This is the single graph classification engine.  Every public topology
+    route -- async paged reads, the sync adapter, and the coordination context
+    envelope -- composes through here; no caller may classify an edge itself.
+    """
+    records_by_id = {str(record.session_id): record for record in nodes}
     if target_id not in records_by_id:
         return None
     unique_links: dict[tuple[str, str, str, str], Mapping[str, object]] = {}
@@ -129,6 +159,17 @@ def _compose(
         )
         unique_links[key] = link
     edges = [_draft_edge(link) for _, link in sorted(unique_links.items())]
+
+    # A resolved edge can point at a session outside this bounded scope (a
+    # tight page, or an ancestor the walk stopped short of). Traversing it
+    # would compose a node we hold no record for. Name the gap on the edge
+    # instead of crashing or silently dropping it.
+    edges = [
+        _exclude(edge, "parent-out-of-scope")
+        if edge.composable and edge.parent_id is not None and str(edge.parent_id) not in records_by_id
+        else edge
+        for edge in edges
+    ]
 
     parent_sets: dict[str, set[str]] = defaultdict(set)
     for edge in edges:
@@ -173,7 +214,7 @@ def _compose(
         nodes=tuple(
             TopologyNode(
                 session_id=SessionId(node_id),
-                origin=records_by_id[node_id].origin.value,
+                origin=records_by_id[node_id].origin,
                 title=records_by_id[node_id].title,
                 depth=depths[node_id],
                 is_root=node_id == root,
@@ -267,10 +308,12 @@ async def derive_session_topology_async(
                     records[child_id] = child
                     queue.append(child_id)
 
-    composed = _compose(str(target.session_id), list(records.values()), links)
+    composed = compose_session_topology(
+        str(target.session_id), [node_input_from_record(record) for record in records.values()], links
+    )
     if composed is None:
         return None
-    # `_compose` supplies the one graph classification; paging only trims its
+    # `compose_session_topology` is the one graph classification; paging only trims its
     # already classified stable BFS output and never remaps an edge.
     all_nodes = composed.nodes
     page_nodes = all_nodes[node_offset : node_offset + node_limit]
@@ -332,7 +375,15 @@ def derive_session_topology_sync(
                     if parent is not None:
                         records[parent_id] = parent
                         pending_ids.append(parent_id)
-    return _compose(str(target.session_id), list(records.values()), links)
+    return compose_session_topology(
+        str(target.session_id), [node_input_from_record(record) for record in records.values()], links
+    )
 
 
-__all__ = ["derive_session_topology_async", "derive_session_topology_sync"]
+__all__ = [
+    "TopologyNodeInput",
+    "compose_session_topology",
+    "derive_session_topology_async",
+    "derive_session_topology_sync",
+    "node_input_from_record",
+]

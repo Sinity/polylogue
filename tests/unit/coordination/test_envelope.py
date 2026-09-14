@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from time import sleep
 
@@ -18,6 +18,7 @@ from polylogue.coordination.envelope import (
     _session_ref,
     build_coordination_envelope,
 )
+from polylogue.coordination.payloads import AgentCoordinationPayload
 
 
 def _seed_coordination_archive(index: Path) -> None:
@@ -53,10 +54,19 @@ def _seed_coordination_archive(index: Path) -> None:
             );
             CREATE TABLE session_links (
                 src_session_id TEXT,
+                dst_origin TEXT,
                 dst_native_id TEXT,
                 resolved_dst_session_id TEXT,
                 link_type TEXT,
-                observed_at_ms INTEGER
+                status TEXT,
+                inheritance TEXT,
+                branch_point_message_id TEXT,
+                parent_tool_use_block_id TEXT,
+                method TEXT,
+                confidence REAL,
+                evidence_json TEXT,
+                observed_at_ms INTEGER,
+                resolved_at_ms INTEGER
             );
             CREATE TABLE blocks (
                 block_id TEXT PRIMARY KEY,
@@ -108,11 +118,24 @@ def _seed_coordination_archive(index: Path) -> None:
                  1780308120000, 1780308120000, 30)
             """
         )
+        # polylogue-27ezu: the coordination session tree is projected from
+        # these canonical rows alone. `sessions.parent_session_id` is a node
+        # discovery accelerator and can no longer synthesize an edge, so the
+        # two real parent relationships must exist here as link rows -- which
+        # is exactly what `write_parsed_session_to_archive` mints in
+        # production. Dropping either resolved row below must drop its edge.
         conn.execute(
             """
             INSERT INTO session_links
-                (src_session_id, dst_native_id, resolved_dst_session_id, link_type, observed_at_ms)
-            VALUES ('codex-session:thread-1', 'native-missing-parent', NULL, 'fork', 20)
+                (src_session_id, dst_origin, dst_native_id, resolved_dst_session_id, link_type,
+                 status, inheritance, method, confidence, evidence_json, observed_at_ms, resolved_at_ms)
+            VALUES
+                ('codex-session:thread-1', 'codex-session', 'root', 'codex-session:root', 'continuation',
+                 'accepted', 'prefix-sharing', 'parser-asserted-parent', 0.99, '[]', 10, 10),
+                ('codex-session:child-42', 'codex-session', 'thread-1', 'codex-session:thread-1', 'subagent',
+                 'accepted', 'spawned-fresh', 'parser-asserted-parent', 0.99, '[]', 30, 30),
+                ('codex-session:thread-1', 'codex-session', 'native-missing-parent', NULL, 'fork',
+                 NULL, NULL, NULL, NULL, NULL, 20, NULL)
             """
         )
         conn.execute(
@@ -438,9 +461,33 @@ def test_coordination_envelope_composes_archive_evidence(
     # where the subagent run was synthesized under thread-1's own session_id).
     assert len(tree.nodes) == 3
     # 2 resolved edges (thread-1->root, child-42->thread-1) + 1 unresolved
-    # fork edge from session_links.
+    # fork edge -- all three projected from canonical session_links rows.
     assert len(tree.edges) == 3
-    assert any(edge.parent_native_id == "native-missing-parent" for edge in tree.edges)
+    by_child = {(edge.child_id, edge.kind): edge for edge in tree.edges}
+    # polylogue-27ezu: resolvedness and link type are orthogonal. The
+    # unresolved edge keeps its declared type instead of being flattened to a
+    # generic "unresolved_native" kind, and is reported non-composable with a
+    # named reason rather than silently traversed.
+    unresolved = by_child[("codex-session:thread-1", "fork")]
+    assert unresolved.resolved is False
+    assert unresolved.parent_native_id == "native-missing-parent"
+    assert unresolved.composable is False
+    assert unresolved.composability_reason == "unresolved-parent"
+    continuation = by_child[("codex-session:thread-1", "continuation")]
+    assert continuation.parent_id == "codex-session:root"
+    assert continuation.resolved is True
+    assert continuation.composable is True
+    subagent = by_child[("codex-session:child-42", "subagent")]
+    assert subagent.parent_id == "codex-session:thread-1"
+    assert subagent.composable is True
+    # The bound is reported, not hidden: this projection fits, so it says so.
+    assert tree.nodes_complete is True
+    assert tree.edges_complete is True
+    assert tree.truncated_node_count == 0
+    assert tree.truncated_edge_count == 0
+    assert tree.cycle_detected is False
+    assert tree.conflicting_parent_detected is False
+    assert tree.generation_id == "session-links-v1"
     assert tree.provenance.source == "archive-session-topology"
     # polylogue-dab/itvd: activity is scoped to the exact target session
     # (thread-1) only -- its own main run, session_started event, and
@@ -468,6 +515,72 @@ def test_coordination_envelope_composes_archive_evidence(
     assert len(payload.context_flow_refs) == 1
     assert payload.context_flow_refs[0].segment_refs == ("session:codex-session:thread-1",)
     assert payload.context_flow_refs[0].provenance.source == "archive-context-flow"
+
+
+def _coordination_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, limit: int = 4
+) -> tuple[Path, Callable[[], AgentCoordinationPayload]]:
+    root = tmp_path / "repo"
+    root.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    index = archive / "index.db"
+    _seed_coordination_archive(index)
+    monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
+    return index, lambda: build_coordination_envelope(
+        cwd=root, runner=FakeRunner(root, beads_rows=None), limit=limit, detail=True
+    )
+
+
+def test_coordination_tree_edges_come_only_from_session_links(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-27ezu: `sessions.parent_session_id` must not synthesize an edge.
+
+    Anti-vacuity: this test is red if the projection reads the parent/root
+    accelerator columns for edges. Deleting the two resolved `session_links`
+    rows leaves `parent_session_id` fully intact, so a route that synthesizes
+    from it still reports the resolved continuation/subagent edges and roots
+    the tree at `codex-session:root` -- which is the pre-fix behaviour.
+    """
+    index, build = _coordination_tree(tmp_path, monkeypatch)
+    conn = sqlite3.connect(index)
+    try:
+        conn.execute("DELETE FROM session_links WHERE resolved_dst_session_id IS NOT NULL")
+        conn.commit()
+    finally:
+        conn.close()
+
+    tree = build().session_trees[0]
+
+    # The archive now asserts no canonical parent edge for the target, so the
+    # only edge left is the unresolved fork and the target is its own root.
+    assert tree.root_session_id == "codex-session:thread-1"
+    assert [(edge.child_id, edge.kind, edge.resolved) for edge in tree.edges] == [
+        ("codex-session:thread-1", "fork", False)
+    ]
+
+
+def test_coordination_tree_reports_its_own_truncation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded topology projection must never report as complete.
+
+    Anti-vacuity: red if the payload drops the completeness fields or keeps
+    the previous silent `edges[:limit]` trim, which returned a partial tree
+    indistinguishable from a whole one.
+    """
+    _index, build = _coordination_tree(tmp_path, monkeypatch, limit=1)
+
+    tree = build().session_trees[0]
+
+    assert len(tree.nodes) == 1
+    assert tree.nodes_complete is False
+    assert tree.truncated_node_count > 0
 
 
 def test_coordination_envelope_degrades_without_archive_tables(
