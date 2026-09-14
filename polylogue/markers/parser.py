@@ -1,4 +1,16 @@
-"""Streaming-safe marker grammar."""
+r"""Streaming-safe marker grammar.
+
+The sigil is ``::`` for line markers (``::kind(args): body``) and
+``[[kind: body]]`` for inline markers.  Three constraints keep the sigil from
+claiming ordinary prose, and each is load-bearing rather than stylistic:
+
+- a line marker must be line-anchored, because a live read-only corpus scan
+  found ``::kind:`` occurring mid-prose inside captured tool data, which rules
+  out treating an unanchored prefix as structure;
+- fenced Markdown blocks are skipped, so quoted or illustrative text is never
+  parsed as a marker;
+- prose that legitimately begins with ``::`` escapes it as ``\::``.
+"""
 
 from __future__ import annotations
 
