@@ -103,9 +103,18 @@ def test_archive_override_unifies_blob_write_read_maintenance_report_and_reset(
     paths_result = cli_runner.invoke(paths_command, ["--format", "json"], catch_exceptions=False)
     assert json.loads(paths_result.output)["blob_store_root"] == str(expected_blob_root)
 
+    # `ops reset` no longer deletes in-process: #4955 ("Delete CLI direct-writer
+    # bypasses and prove daemon sole write authority") moved the deletion behind
+    # `maintenance.reset`, so with no daemon the verb refuses. What this test
+    # owns is the archive-root override, and the override still has to reach the
+    # read-only preview the CLI renders before lowering the intent -- that
+    # preview must name the overridden blob root, not a default one.
     reset_result = cli_runner.invoke(cli, ["--plain", "ops", "reset", "--blob", "--yes"])
-    assert reset_result.exit_code == 0
-    assert not expected_blob_root.exists()
+    assert reset_result.exit_code == 1, reset_result.output
+    assert "daemon is unavailable; it must execute maintenance.reset" in reset_result.output
+    assert f"blob store: {expected_blob_root}" in reset_result.output
+    # The refusal is a refusal: nothing was deleted behind it.
+    assert expected_blob_root.exists()
 
 
 def test_paths_json_reports_raw_materialization_debt_as_not_ready(
