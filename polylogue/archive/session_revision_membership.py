@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
@@ -235,11 +236,18 @@ def _event_axis_relation(
     unmatched_b = identities_b - identities_a
     paired_a: set[bytes] = set()
     paired_b: set[bytes] = set()
-    available: dict[bytes, list[bytes]] = {}
+    # ``deque`` rather than ``list``: every anchor-free event of one kind
+    # collects under a single key, and ``list.pop(0)`` shifts the whole
+    # remainder on each pairing, making an n-event cohort cost O(n^2) pointer
+    # moves. A hostile ChatGPT export can put tens of thousands of
+    # ``generation_lifecycle`` events under one key inside the ordinary raw
+    # byte limit and stall an import worker. ``deque.popleft()`` is O(1) and
+    # consumes the same sorted order, so pairing is byte-identical.
+    available: dict[bytes, deque[bytes]] = {}
     for identity in sorted(unmatched_b):
         key = anchor_free_b.get(identity)
         if key is not None:
-            available.setdefault(key, []).append(identity)
+            available.setdefault(key, deque()).append(identity)
     for identity in sorted(unmatched_a):
         key = anchor_free_a.get(identity)
         if key is None:
@@ -248,7 +256,7 @@ def _event_axis_relation(
         if not candidates:
             continue
         paired_a.add(identity)
-        paired_b.add(candidates.pop(0))
+        paired_b.add(candidates.popleft())
 
     if not paired_a and not paired_b:
         return _axis_relation(identities_a, a.event_contents, identities_b, b.event_contents)
