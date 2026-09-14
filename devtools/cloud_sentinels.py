@@ -25,13 +25,12 @@ CLOUD_SENTINELS: Final[dict[str, str]] = {
     "POLYLOGUE_ARCHIVE_ROOT": "/tmp/polylogue-archive",
     "POLYLOGUE_FORCE_PLAIN": "1",
     "HYPOTHESIS_PROFILE": "ci",
-    "POLYLOGUE_PYTEST_WORKERS": "2",
     "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/tmp/polylogue-pytest",
 }
 
 
 #: Sentinels whose values are also ordinary workstation requests.
-INDISTINGUISHABLE_SENTINELS: Final[frozenset[str]] = frozenset({"POLYLOGUE_FORCE_PLAIN", "POLYLOGUE_PYTEST_WORKERS"})
+INDISTINGUISHABLE_SENTINELS: Final[frozenset[str]] = frozenset({"POLYLOGUE_FORCE_PLAIN"})
 
 
 def running_in_cloud_sandbox() -> bool:
