@@ -786,7 +786,10 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
     if spec.reverse:
         kwargs["reverse"] = True
     if spec.sample is not None:
-        kwargs["sample"] = spec.sample
+        # ``spec.sample`` is the requested page size; ``list_summaries(sample=...)``
+        # is the boolean "order randomly" switch, and the size travels as
+        # ``limit``. Passing the count through worked only because it is truthy.
+        kwargs["sample"] = True
     return kwargs
 
 

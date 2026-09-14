@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Any, cast
+from typing import Any
 
 
 class OperationBindingError(LookupError):
@@ -50,30 +50,31 @@ class CliOperationBinding:
 
 
 _ARCHIVE_QUERY = "polylogue.cli.archive_query"
+_LOWERING = "polylogue.cli.lowering"
 
 CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
     "cli.query": CliOperationBinding(
-        lowering=f"{_ARCHIVE_QUERY}:_daemon_session_query_params",
+        lowering=f"{_LOWERING}:lower_cli_query",
         renderers=(
             f"{_ARCHIVE_QUERY}:_emit_daemon_list_payload",
             f"{_ARCHIVE_QUERY}:_emit_daemon_search_payload",
         ),
     ),
     "query.units": CliOperationBinding(
-        lowering=f"{_ARCHIVE_QUERY}:_daemon_session_query_params",
+        lowering=f"{_LOWERING}:lower_query_units",
         renderers=(f"{_ARCHIVE_QUERY}:_emit_rows",),
     ),
     "query.aggregate": CliOperationBinding(
-        lowering=f"{__name__}:lower_query_aggregate",
-        renderers=(f"{__name__}:render_query_aggregate",),
+        lowering=f"{_LOWERING}:lower_query_aggregate",
+        renderers=(f"{_ARCHIVE_QUERY}:_emit_aggregate_result",),
     ),
     "session.read": CliOperationBinding(
-        lowering=f"{__name__}:lower_session_read",
-        renderers=(f"{__name__}:render_session_read",),
+        lowering=f"{_LOWERING}:lower_session_read",
+        renderers=(f"{_ARCHIVE_QUERY}:_emit_session_result", f"{_ARCHIVE_QUERY}:_emit_stream"),
     ),
     "session.reference": CliOperationBinding(
-        lowering=f"{__name__}:lower_session_reference",
-        renderers=(f"{__name__}:render_session_reference",),
+        lowering=f"{_LOWERING}:lower_session_reference",
+        renderers=(f"{_ARCHIVE_QUERY}:_emit_reference_query",),
     ),
     "status": CliOperationBinding(
         lowering="polylogue.cli.commands.status:_status_operation_result",
@@ -179,122 +180,6 @@ def unclassified_operations() -> tuple[str, ...]:
     return tuple(spec.name for spec in DAEMON_OPERATION_SPECS if spec.name not in classified)
 
 
-# ---------------------------------------------------------------------------
-# Lowerings and renderers for the read operations declared at S2.
-#
-# The CLI verbs still run their local executors; S3 repoints them here.  These
-# exist now so the declarations above are backed by real client-side code
-# rather than by an intention.
-# ---------------------------------------------------------------------------
-
-
-def lower_query_aggregate(params: Mapping[str, object]) -> dict[str, object]:
-    """Build a ``query.aggregate`` request from root query params.
-
-    The aggregate mode is read from the same ``stats_only``/``stats_by``/
-    ``count_only`` flags the root query already carries, so one parse of argv
-    serves both the selection and the aggregate choice.
-    """
-
-    selection = {
-        key: value
-        for key, value in params.items()
-        if key not in {"stats_only", "stats_by", "count_only"} and value is not None
-    }
-    group_by = params.get("stats_by")
-    if group_by:
-        return {"mode": "stats_by", "group_by": str(group_by), "params": selection}
-    if params.get("stats_only"):
-        return {"mode": "stats", "params": selection}
-    if params.get("count_only"):
-        return {"mode": "count", "params": selection}
-    raise OperationBindingError("no aggregate mode is selected")
-
-
-def render_query_aggregate(result: Mapping[str, object]) -> list[str]:
-    """Render one aggregate result as plain lines, one measurement per line."""
-
-    mode = str(result.get("mode") or "")
-    if mode == "count":
-        return [f"{result.get('count', 0)}"]
-    if mode == "stats_by":
-        groups = result.get("groups")
-        rows = groups.items() if isinstance(groups, Mapping) else ()
-        return [f"{key}\t{value}" for key, value in sorted(rows, key=lambda row: (-int(row[1]), str(row[0])))]
-    stats = result.get("stats")
-    if not isinstance(stats, Mapping):
-        raise OperationBindingError("stats result is missing its body")
-    return [f"sessions\t{stats.get('total_sessions', 0)}", f"messages\t{stats.get('total_messages', 0)}"]
-
-
-def lower_session_read(
-    ref: str,
-    *,
-    limit: int | None = None,
-    offset: int = 0,
-    projection: Mapping[str, object] | None = None,
-    continuation: str | None = None,
-) -> dict[str, object]:
-    """Build one bounded ``session.read`` window request.
-
-    A continuation supersedes the window coordinates it was minted from, so
-    passing both is a caller error rather than a silently ignored argument.
-    """
-
-    if continuation is not None and (limit is not None or offset):
-        raise OperationBindingError("a continuation already carries its window coordinates")
-    payload: dict[str, object] = {"ref": ref}
-    if limit is not None:
-        payload["limit"] = limit
-    if offset:
-        payload["offset"] = offset
-    if projection:
-        payload["projection"] = dict(projection)
-    if continuation is not None:
-        payload["continuation"] = continuation
-    return payload
-
-
-def render_session_read(result: Mapping[str, object]) -> list[str]:
-    """Render one transcript window, naming the window's own bounds.
-
-    The window is stated because the operation result is bounded: a reader that
-    cannot tell a whole transcript from its first page will report a truncated
-    read as a complete one.
-    """
-
-    session = result.get("session")
-    messages = session.get("messages") if isinstance(session, Mapping) else None
-    rows = messages if isinstance(messages, list) else []
-    lines = [
-        f"{index}\t{row.get('role', '')}\t{row.get('text', '')}"
-        for index, row in enumerate(rows, start=int(cast("int", result.get("offset") or 0)))
-        if isinstance(row, Mapping)
-    ]
-    if not result.get("complete"):
-        lines.append(f"... {result.get('next_offset')}/{result.get('total')} messages remain in the next window")
-    return lines
-
-
-def lower_session_reference(expression: str, *, limit: int | None = None) -> dict[str, object]:
-    """Build a ``session.reference`` request for a bare ``from <ref>`` root."""
-
-    payload: dict[str, object] = {"expression": expression}
-    if limit is not None:
-        payload["limit"] = limit
-    return payload
-
-
-def render_session_reference(result: Mapping[str, object]) -> list[str]:
-    """Render resolved member refs, naming a truncated resolution as such."""
-
-    members = result.get("members")
-    lines = [str(member) for member in members] if isinstance(members, list) else []
-    if result.get("truncated"):
-        lines.append(f"... {result.get('member_count')} members in total")
-    return lines
-
-
 __all__ = [
     "CLI_EXTERNAL_OPERATIONS",
     "CLI_OPERATION_BINDINGS",
@@ -302,12 +187,6 @@ __all__ = [
     "CliOperationBinding",
     "OperationBindingError",
     "binding_for",
-    "lower_query_aggregate",
-    "lower_session_read",
-    "lower_session_reference",
-    "render_query_aggregate",
-    "render_session_read",
-    "render_session_reference",
     "resolve_reference",
     "unclassified_operations",
 ]

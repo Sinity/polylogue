@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from polylogue.operations.daemon_errors import (
     DaemonMutationIndeterminateError,
@@ -186,6 +186,156 @@ class OperationKernel:
         raise OperationUnavailableError(f"daemon is unavailable for operation: {request.operation}")
 
 
+def _direct_execution_context(config: Any, *, archive_root: Any = None, read_control: Any = None) -> Any:
+    """Build the local read authority — only once a direct read is certain.
+
+    ``DaemonReadDependencies`` resolves a vector binding, which opens the
+    embeddings tier's configuration and can touch the filesystem.  A warm
+    daemon answers without ever needing it, so constructing this eagerly made
+    every served-over-UDS query pay for an executor it did not use.
+    """
+    from time import time
+
+    from polylogue.operations.daemon_reads import DaemonReadDependencies, vector_binding_from_config
+    from polylogue.operations.operation_context import OperationContext
+
+    context = OperationContext.direct_read(
+        archive_root if archive_root is not None else config.archive_root,
+        read_dependencies=DaemonReadDependencies(
+            vector_binding=vector_binding_from_config(config),
+            status_now_ms=int(time() * 1000),
+            status_config=config,
+        ),
+    )
+    if read_control is not None:
+        from dataclasses import replace as _replace
+
+        context = _replace(context, read_control=read_control)
+    return context
+
+
+def _execute_directly(
+    config: Any,
+    operation: str,
+    payload: dict[str, object],
+    *,
+    archive_root: Any = None,
+    read_control: Any = None,
+) -> Mapping[str, Any]:
+    """Run one declared read in-process and return its envelope.
+
+    A handler's typed *refusal of the request* — "semantic retrieval is
+    unavailable", "sample does not combine with search terms" — is a result of
+    the operation, not a transport fault, so it is framed as the declared error
+    envelope here.  Letting it propagate as a bare exception would escape the
+    kernel's error map and reach the operator as a traceback with no exit code.
+
+    Deliberately narrow.  Faults that describe the *archive* rather than the
+    request — a missing tier, a schema skew, a raw ``sqlite3`` error — keep
+    propagating, because callers distinguish them: ``ops status`` reads a
+    missing index as "no archive yet, daemon not running" and would otherwise
+    report the far less useful "daemon unreachable".
+    """
+    import uuid
+
+    from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+    from polylogue.operations.daemon_execution import execute_operation
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+
+    request = DaemonOperationRequest.from_dict(
+        {
+            "protocol": DAEMON_OPERATION_PROTOCOL,
+            "operation": operation,
+            "payload": payload,
+            "request_id": uuid.uuid4().hex,
+            "archive_root": str(archive_root if archive_root is not None else config.archive_root),
+        }
+    )
+    context = _direct_execution_context(config, archive_root=archive_root, read_control=read_control)
+    try:
+        return cast("Mapping[str, Any]", execute_operation(request, context).to_dict())
+    except EmbeddingRetrievalNotReadyError as exc:
+        return {
+            "operation": operation,
+            "outcome": "failed",
+            "error": {"code": getattr(exc, "code", None) or "embedding_retrieval_not_ready", "detail": str(exc)},
+        }
+    except ValueError as exc:
+        # Declared read handlers state a refused request as ``ValueError``.
+        return {"operation": operation, "outcome": "failed", "error": {"code": "invalid_request", "detail": str(exc)}}
+
+
+def dispatch(
+    config: Any,
+    request: OperationRequest,
+    *,
+    daemon_disabled: bool = False,
+    archive_root: Any = None,
+    deadline_ms: int | None = None,
+    read_control: Any = None,
+) -> OperationResult:
+    """Execute one declared read over the daemon, or directly when it is absent.
+
+    The transport choice is the only thing decided here: the same declared
+    handler answers either way, so a CLI route never branches on whether a
+    daemon is running.
+
+    The file set read is resolved from the configuration, not assumed to be
+    ``config.archive_root``: a ``--db`` pin at a non-active generation names the
+    file set that index belongs to, and reading the active generation instead
+    would silently answer from different rows than the operator pinned.
+    ``archive_root`` overrides that resolution for a caller that already knows
+    the root.  ``deadline_ms`` overrides the operation's declared deadline for the socket
+    call and ``read_control`` carries the caller's cancellation/deadline state
+    into a direct read; all three are passed through rather than reinterpreted.
+    """
+    spec = request.spec
+    operation = request.operation
+    payload = dict(request.payload)
+    from polylogue.operations.operation_context import operation_archive_root
+
+    root = archive_root if archive_root is not None else operation_archive_root(config)
+
+    if daemon_disabled:
+        if not spec.direct_allowed:
+            raise OperationUnavailableError(f"daemon is unavailable for operation: {operation}")
+        envelope = _execute_directly(config, operation, payload, archive_root=root, read_control=read_control)
+        return OperationKernel(lambda _request: envelope).execute(request)
+
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+
+    client = DaemonClient(
+        daemon_socket_path(root),
+        timeout_s=(deadline_ms / 1000 if deadline_ms is not None else spec.deadline_s),
+        auth_token=lambda: resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
+    )
+
+    def _ask_daemon(call_request: OperationRequest) -> Mapping[str, Any] | None:
+        return client.operation(call_request.operation, dict(call_request.payload), archive_root=str(root))
+
+    try:
+        return OperationKernel(_ask_daemon).execute(request)
+    except OperationUnavailableError:
+        # No socket answered.  Fall through to the local reader.
+        if not spec.direct_allowed:
+            raise
+
+    # Deliberately executed OUTSIDE the kernel.  The kernel's catch-all maps any
+    # exception from its call into ``daemon_transport_error``, which is the right
+    # reading of a failure while talking to a daemon and the wrong reading of one
+    # raised by the local reader: callers distinguish "no archive here" from
+    # "could not reach the daemon", and ``ops status`` renders those as two
+    # different diagnoses. Only now is a direct read certain, so only now is its
+    # context built.
+    envelope = _execute_directly(config, operation, payload, archive_root=root, read_control=read_control)
+    return OperationKernel(lambda _request: envelope).execute(request)
+
+
 def configured_read_operation(
     config: Any,
     operation: str,
@@ -193,51 +343,12 @@ def configured_read_operation(
     *,
     daemon_disabled: bool = False,
 ) -> OperationResult:
-    """Adapt explicit CLI configuration to the canonical read executor."""
-    import uuid
-    from time import time
-
-    from polylogue.daemon.api_auth import resolve_api_auth_token
-    from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.daemon_client import DaemonClient
-    from polylogue.operations.daemon_execution import execute_operation
-    from polylogue.operations.daemon_protocol import DaemonOperationRequest
-    from polylogue.operations.daemon_reads import DaemonReadDependencies, vector_binding_from_config
-    from polylogue.operations.operation_context import OperationContext
-
-    context = OperationContext.direct_read(
-        config.archive_root,
-        read_dependencies=DaemonReadDependencies(
-            vector_binding=vector_binding_from_config(config),
-            status_now_ms=int(time() * 1000),
-            status_config=config,
-        ),
+    """Name-based adapter for read callers that have not adopted Seam A yet."""
+    return dispatch(
+        config,
+        OperationRequest(operation, payload),
+        daemon_disabled=daemon_disabled,
     )
-    if daemon_disabled:
-        request = DaemonOperationRequest.from_dict(
-            {
-                "protocol": DAEMON_OPERATION_PROTOCOL,
-                "operation": operation,
-                "payload": payload,
-                "request_id": uuid.uuid4().hex,
-                "archive_root": str(config.archive_root),
-            }
-        )
-        envelope = execute_operation(request, context).to_dict()
-    else:
-        spec = daemon_operation_spec(operation)
-        if spec is None:
-            raise OperationKernelError(f"operation is not declared: {operation}")
-        client = DaemonClient(
-            daemon_socket_path(config.archive_root),
-            timeout_s=spec.deadline_s,
-            auth_token=lambda: resolve_api_auth_token(
-                getattr(config, "api_auth_token", None),
-                allow_no_auth=getattr(config, "api_allow_no_auth", False),
-            ),
-        )
-        envelope = client.operation_with_read_fallback(operation, payload, context=context)
-    return OperationKernel(lambda _request: envelope).execute(OperationRequest(operation, payload))
 
 
 def configured_mutation_operation(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
@@ -275,13 +386,15 @@ def configured_mutation_operation(config: Any, operation: str, payload: dict[str
 
 __all__ = [
     "OperationCancelledError",
+    "OperationEnvelopeError",
     "OperationFailedError",
     "OperationIndeterminateError",
-    "OperationEnvelopeError",
     "OperationKernel",
     "OperationKernelError",
     "OperationRequest",
     "OperationResult",
     "OperationUnavailableError",
     "configured_mutation_operation",
+    "configured_read_operation",
+    "dispatch",
 ]

@@ -8,11 +8,12 @@ served the request over UDS and the CLI never touched ``ArchiveStore``, the
 - ``polylogue/cli/query.py`` importing ``polylogue.core.async_bridge`` (a
   dependency-free coroutine driver) instead of ``polylogue.api.sync.bridge``,
   which is a submodule of the heavy ``polylogue.api`` package.
-- ``polylogue/cli/archive_query.py`` deferring its local-execution-only
-  imports (``ArchiveStore``, ``polylogue.surfaces.payloads``,
+- ``polylogue/cli/archive_query.py`` and
+  ``polylogue/cli/operation_kernel.py`` deferring every local-execution-only
+  import (``ArchiveStore``, ``polylogue.surfaces.payloads``,
   ``polylogue.storage.search_providers``, ``polylogue.archive.stats``, the
-  attached-units/unit-results helpers) to the specific functions that call
-  them, instead of the module's own top level.
+  declared read handlers and the direct-read operation context) to the
+  specific functions that call them, instead of the module's own top level.
 - ``polylogue/cli/shared/types.py``'s ``AppEnv.config``/``.runtime``
   properties returning the already-resolved ``ResolvedRuntimeConfig``
   directly instead of forcing ``AppEnv.services`` (which imports the full
@@ -65,15 +66,22 @@ _PAYLOAD = {
         }
     ],
     "total": 1,
-    "_daemon_elapsed_ms": 1,
 }
 
 
-def _fake_fetch(config, params, disabled=False):
-    return dict(_PAYLOAD)
+# Stand in for a daemon that served the request, at the adapter's own read
+# seam. Everything this test claims -- Seam A lowering, the query verb, AppEnv,
+# and every renderer that touches the served payload -- runs for real above it.
+#
+# The transport itself is deliberately NOT exercised: dispatch imports
+# ``polylogue.daemon.api_auth``, which today transitively imports the whole
+# ``polylogue.api`` stack. That is a real leak, tracked separately; it is below
+# this seam and was never inside this test's scope.
+def _served_read(config, request, *, daemon_disabled):
+    return dict(_PAYLOAD), aq._ServedBy("daemon", 1)
 
 
-aq._fetch_daemon_sessions_payload = _fake_fetch
+aq._dispatch_read = _served_read
 
 import io
 from contextlib import redirect_stdout
@@ -109,6 +117,10 @@ def test_daemon_served_query_does_not_import_heavy_local_execution_stack(
     """A daemon-served ``find`` must never import ``polylogue.api``/ArchiveStore/payloads."""
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
+    # The adapter checks that the index tier exists before dispatching, and it
+    # must do so without opening it: an empty file is enough for a served
+    # request, and opening it would itself import the forbidden storage stack.
+    (archive_root / "index.db").touch()
     monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
     env = dict(**{"POLYLOGUE_ARCHIVE_ROOT": str(archive_root), "POLYLOGUE_FORCE_PLAIN": "1"})
     code = _PROBE.replace("__FORBIDDEN__", repr(_FORBIDDEN_ON_DAEMON_HIT))

@@ -681,9 +681,10 @@ def _archive_filter_kwargs_from_spec(
     ``root`` (polylogue-j8u2) resolves the default result unit to top-level
     sessions when the request left it unset -- see
     :func:`~polylogue.archive.query.spec.resolve_default_root_filter`. This
-    keeps the daemon-proxied session-list route in parity with the direct CLI
-    query executor (``polylogue/cli/archive_query.py``), which is the same
-    resolution this daemon path must match exactly (golden-parity coverage:
+    keeps the daemon-proxied session-list route in parity with the declared
+    ``cli.query`` read (``polylogue/operations/daemon_reads.py``), which is now
+    the CLI's only session-query executor and applies the same resolution this
+    daemon path must match exactly (golden-parity coverage:
     ``tests/unit/cli/test_daemon_golden_parity.py::
     test_find_list_json_parity_between_direct_and_daemon``).
     """

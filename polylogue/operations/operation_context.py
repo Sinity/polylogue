@@ -12,7 +12,7 @@ from polylogue.archive.query.execution_control import InterruptibleSQLiteRead, Q
 from polylogue.archive.query.search_contract import LaneFailure
 from polylogue.core.errors import DatabaseError
 from polylogue.operations.mutation_transaction import MutationPrincipal
-from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation, archive_file_set_root
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
@@ -37,6 +37,27 @@ class ConcurrentArchivePublicationError(DatabaseError):
     """
 
     code = "concurrent_archive_publication"
+
+
+def operation_archive_root(config: object) -> Path:
+    """Resolve the file set an operation must read for this configuration.
+
+    ``config.db_path`` always names a concrete ``index.db`` — an explicit
+    ``--db`` override or the resolved active generation (polylogue-yla8.1).
+    When that index belongs to a different file set than ``config.archive_root``
+    names, the pinned index is the operator's instruction: reading the active
+    generation instead would answer from different rows than the one they
+    named, while reporting success.
+
+    Lives here rather than in a surface adapter so no surface needs its own
+    import of the storage identity module to ask the question.
+    """
+
+    archive_root = Path(str(getattr(config, "archive_root", "") or ""))
+    db_path = getattr(config, "db_path", None)
+    if db_path is None:
+        return archive_root
+    return archive_file_set_root(archive_root=archive_root, db_path=Path(str(db_path)))
 
 
 @dataclass(frozen=True, slots=True)

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config, PolylogueConfig
     from polylogue.core.protocols import VectorProvider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +236,7 @@ def _query_payload(
     # contract intentionally ignores those while compiling selection intent.
     base = SessionQuerySpec.from_params({**normalized, "limit": limit, "offset": offset})
     spec = compile_expression_into(expression, base) if expression else base
+    spec = _resolved_scope_spec(spec, archive=archive)
 
     searching = bool(
         spec.query_terms
@@ -267,13 +269,13 @@ def _query_payload(
     )
     total = _archive_count_sessions_for_spec(archive, spec)
     outcome = decide_outcome(matched=total)
-    attached = _attached_units_payload(
-        [summary.session_id for summary in summaries], spec=spec, params=params, archive=archive
-    )
+    session_ids = [summary.session_id for summary in summaries]
+    attached = _attached_units_payload(session_ids, spec=spec, params=params, archive=archive)
+    lineage_edges = _lineage_edges_payload(session_ids, spec=spec, archive=archive)
     return {
         "outcome": outcome.to_dict(),
         **({"attached_units": attached} if attached is not None else {}),
-        "items": [_session_list_row(summary) for summary in summaries],
+        "items": [{**_session_list_row(summary), **lineage_edges.get(summary.session_id, {})} for summary in summaries],
         "total": total,
         # The unit names the filter that actually ran, which is the *resolved*
         # root filter (``_archive_query_kwargs`` resolves it the same way), not
@@ -284,6 +286,28 @@ def _query_payload(
         "limit": limit,
         "offset": offset,
     }
+
+
+def _resolved_scope_spec(spec: SessionQuerySpec, *, archive: ArchiveStore) -> SessionQuerySpec:
+    """Resolve an explicit session scope to a full session id before filtering.
+
+    ``--id`` accepts any reference spelling the archive can resolve — a native
+    id, a prefix, a full ``origin:native`` id.  The SQL filters compare against
+    the full ``session_id``, so an unresolved spelling silently scopes the page
+    to nothing and reports an empty result instead of the session the operator
+    named.  Resolution failure is stated, never rendered as "no rows".
+    """
+
+    from dataclasses import replace as dataclass_replace
+
+    scope = spec.session_id
+    if not scope:
+        return spec
+    try:
+        resolved = archive.resolve_session_id(scope)
+    except KeyError as exc:
+        raise ValueError(f"session not found: {scope}") from exc
+    return spec if resolved == scope else dataclass_replace(spec, session_id=resolved)
 
 
 def _session_list_row(summary: ArchiveSessionSummary) -> dict[str, object]:
@@ -434,6 +458,16 @@ def _search_payload(
     # The envelope keeps its own explicit nulls -- a vector page's ``total`` is
     # an honest ``None`` and dropping the key would read as "not reported".
     envelope["hits"] = [hit.model_dump(mode="json", exclude_none=True) for hit in hit_payloads]
+    # The ranked envelope does not name what it counted.  Without this a
+    # ``--no-root`` search reports subagent/branch rows under the "top-level
+    # sessions" label, because the renderer has nothing to read but a default.
+    # Resolve the unit exactly as the list path does, from the *resolved* root
+    # filter rather than the unset spec field.
+    from polylogue.archive.query.spec import resolve_default_root_filter, session_count_unit_label
+
+    envelope["total_unit"] = session_count_unit_label(
+        resolve_default_root_filter(fetch_spec.root, boolean_predicate=fetch_spec.boolean_predicate)
+    )
     return envelope
 
 
@@ -576,6 +610,66 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     }
 
 
+def _lineage_seed_from_predicate(predicate: object) -> str | None:
+    """Return the ``lineage:id:`` seed session id carried by ``predicate``, if any.
+
+    ``lineage:id:<ref>`` compiles to :class:`QueryLineagePredicate` (possibly
+    ANDed with other clauses), which the SQL layer already uses to filter
+    session rows to one shared-root lineage family. This walks the same
+    boolean-predicate tree to detect that shape so the list route can
+    materialize the declared recursive-graph projection columns for it (#z9gh.3).
+
+    Only descends into ``and`` nodes. A ``lineage:id:X or repo:foo`` result
+    set is NOT purely lineage X's family -- rows matched only via the ``or``
+    branch would get X's parent_refs/child_refs/continuation stamped on them,
+    which is wrong, not just imprecise. An ``or`` node (or a ``not`` wrapping
+    the predicate, which isn't a ``QueryBoolPredicate``/``QueryLineagePredicate``
+    at all) correctly yields no seed here.
+    """
+    from polylogue.archive.query.predicate import QueryBoolPredicate, QueryLineagePredicate
+
+    if predicate is None:
+        return None
+    if isinstance(predicate, QueryLineagePredicate):
+        return predicate.seed_session_id
+    if isinstance(predicate, QueryBoolPredicate) and predicate.op == "and":
+        for child in predicate.children:
+            seed = _lineage_seed_from_predicate(child)
+            if seed is not None:
+                return seed
+    return None
+
+
+def _lineage_edges_payload(
+    session_ids: list[str],
+    *,
+    spec: SessionQuerySpec,
+    archive: ArchiveStore,
+) -> dict[str, dict[str, object]]:
+    """Materialise the recursive-graph columns of a ``lineage:id:``-seeded page.
+
+    The seeded page is already one shared-root family, so the direct edges of
+    the rows on it are the whole projection: one bounded lookup over the page
+    rather than a second unbounded graph walk (#z9gh.3).
+    """
+
+    seed = _lineage_seed_from_predicate(spec.boolean_predicate)
+    if seed is None or not session_ids:
+        return {}
+    edges = archive.session_lineage_edges(session_ids)
+    projected: dict[str, dict[str, object]] = {}
+    for session_id in session_ids:
+        edge = edges.get(session_id)
+        if edge is None:
+            continue
+        parent_id, child_ids = edge
+        projected[session_id] = {
+            "parent_refs": [parent_id] if parent_id else [],
+            "child_refs": list(child_ids),
+        }
+    return projected
+
+
 def _attached_units_payload(
     session_ids: list[str],
     *,
@@ -679,6 +773,7 @@ def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) 
     spec = _cli_query_spec({str(key): value for key, value in raw_params.items()})
     if spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid":
         raise ValueError("aggregates are computed over lexical and structural selection only")
+    spec = _resolved_scope_spec(spec, archive=archive)
 
     filter_kwargs = spec_session_filter_kwargs(spec)
     query = " ".join((*spec.query_terms, *spec.contains_terms)).strip()
@@ -746,14 +841,62 @@ def _matched_session_ids(
     return tuple(archive.search_session_ids(query, limit=limit, **cast("Any", filters)))
 
 
-_BLOCK_KIND_CONTENT_EXCLUSIONS: dict[str, str] = {
-    "tool_use": "include_tool_calls",
-    "function_call": "include_tool_calls",
-    "tool_result": "include_tool_outputs",
-    "function_call_output": "include_tool_outputs",
-    "thinking": "include_reasoning",
-    "reasoning": "include_reasoning",
-}
+def _session_identity_projection(
+    envelope: ArchiveSessionEnvelope,
+    *,
+    excluded_blocks: frozenset[str],
+) -> dict[str, object]:
+    """Project one transcript window in the archive's own identity vocabulary.
+
+    Deliberately *not* the browser reader's session-detail envelope.  That
+    envelope is a display projection: it renames ``words``, adds reader anchors
+    and actions, and replaces the raw ``origin`` token with its display label.
+    An operation result is data for whichever surface asked, so a consumer that
+    needs the archive's identities — message ids, block ids, raw origin, the
+    canonical topology fields — must not have to reverse a label back into a
+    token (which the Origin mapping does not permit anyway).
+
+    ``excluded_blocks`` drops whole blocks by their declared ``block_type``,
+    which is what a projection's ``exclude_block_kinds`` names; message rows
+    are retained so the window's own coordinates stay honest.
+    """
+
+    from polylogue.archive.hydration import archive_message_to_domain
+    from polylogue.surfaces.payloads import message_topology_from_domain
+
+    return {
+        "session_id": envelope.session_id,
+        "native_id": envelope.native_id,
+        "origin": envelope.origin,
+        "title": envelope.title,
+        "active_leaf_message_id": envelope.active_leaf_message_id,
+        "created_at": envelope.created_at,
+        "updated_at": envelope.updated_at,
+        "messages": [
+            {
+                "message_id": message.message_id,
+                "native_id": message.native_id,
+                "role": message.role,
+                "word_count": message.word_count,
+                "has_tool_use": message.has_tool_use,
+                **message_topology_from_domain(archive_message_to_domain(message)),
+                "blocks": [
+                    {
+                        "block_id": block.block_id,
+                        "message_id": block.message_id,
+                        "block_type": block.block_type,
+                        "text": block.text,
+                        "tool_name": block.tool_name,
+                        "tool_id": block.tool_id,
+                        "semantic_type": block.semantic_type,
+                    }
+                    for block in message.blocks
+                    if block.block_type not in excluded_blocks
+                ],
+            }
+            for message in envelope.messages
+        ],
+    }
 
 
 def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
@@ -765,9 +908,6 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     snapshot-bound continuation for the next window.
     """
 
-    from dataclasses import replace as dataclass_replace
-
-    from polylogue.archive.hydration import archive_envelope_to_session
     from polylogue.archive.query.transaction import (
         QueryContinuation,
         QueryContinuationInvalidError,
@@ -775,9 +915,7 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         archive_snapshot_epoch,
         validate_continuation_epoch,
     )
-    from polylogue.archive.semantic.content_projection import ContentProjectionSpec
     from polylogue.surfaces.outcome import decide_outcome
-    from polylogue.surfaces.payloads import session_detail_envelope_from_domain
     from polylogue.surfaces.projection_spec import ProjectionSpec
 
     ref = str(payload.get("ref") or "").strip()
@@ -827,23 +965,13 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         raise ValueError(f"session not found: {ref}") from exc
     summary = archive.read_summary(session_id)
     envelope = archive.read_session_page(session_id, limit=limit, offset=offset)
-    session = archive_envelope_to_session(envelope, display_label=summary.display_label)
-
-    content_projection: ContentProjectionSpec | None = None
-    if projection is not None and projection.exclude_block_kinds:
-        content_projection = ContentProjectionSpec()
-        for kind in projection.exclude_block_kinds:
-            attribute = _BLOCK_KIND_CONTENT_EXCLUSIONS.get(kind)
-            if attribute is not None:
-                content_projection = dataclass_replace(content_projection, **{attribute: False})
-
-    detail = session_detail_envelope_from_domain(session, content_projection=content_projection)
+    excluded_blocks = frozenset(projection.exclude_block_kinds) if projection is not None else frozenset()
     total = summary.message_count
     returned = len(envelope.messages)
     next_offset = offset + returned if offset + returned < total else None
     result: dict[str, object] = {
         "outcome": decide_outcome(matched=returned).to_dict(),
-        "session": detail.model_dump(mode="json"),
+        "session": _session_identity_projection(envelope, excluded_blocks=excluded_blocks),
         "session_id": session_id,
         "total": total,
         "limit": limit,

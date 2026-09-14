@@ -1,8 +1,11 @@
 """One shared CLI archive-store double, bound to the production surface.
 
-``tests/unit/cli/test_query_exec_laws.py`` exercises how the CLI query planner
-lowers query parameters into ``ArchiveStore`` calls.  That law is about the
-lowering, not about storage, so the store itself is stubbed.  Thirty-eight
+``tests/unit/cli/test_query_exec_laws.py`` exercises how a root query is
+lowered into ``ArchiveStore`` calls.  That law is about the lowering, not about
+storage, so the store itself is stubbed.  Since the CLI's local query executor
+was retired, the lowering runs inside the declared read handlers
+(``polylogue/operations/daemon_reads.py``) and the store is opened by
+``operation_context.open_operation_read``, which is where the double installs.  Thirty-eight
 independent hand-written stubs previously drifted from the production class
 until they proved only that they matched themselves: every stub method took
 ``**kwargs``, so a renamed production parameter was absorbed silently; each
@@ -30,6 +33,7 @@ from __future__ import annotations
 import ast
 import functools
 import inspect
+import sqlite3
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
@@ -41,7 +45,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 __all__ = ["ArchiveStoreDouble", "install_archive_store_double"]
 
-_OPEN_EXISTING_TARGET = "polylogue.cli.archive_query.ArchiveStore.open_existing"
+_OPEN_EXISTING_TARGET = "polylogue.operations.operation_context.ArchiveStore.open_existing"
 
 # Attributes ``open_operation_read`` and the read path set or read on an opened
 # store. Production owns the names; the double only mirrors them.
@@ -52,6 +56,10 @@ _OPERATION_READ_ATTRIBUTES = (
     "operation_degraded_components",
 )
 _ACTIVE_INDEX_ATTRIBUTE = "index_db_path"
+
+#: A window wider than any double's transcript, so the derived summary counts
+#: every message the double is willing to serve.
+_DOUBLE_PAGE_CEILING = 10_000
 
 
 def _production_class_body() -> ast.Module:
@@ -169,6 +177,27 @@ def _check_method(owner: str, name: str, func: Callable[..., Any]) -> None:
         )
 
 
+def _query_unit_frame_connection() -> sqlite3.Connection:
+    """A minimal ``_conn`` carrying the query-unit frame epoch surface.
+
+    ``archive_snapshot_epoch`` reads the index and user tiers' schema versions
+    and frame epochs off the opened store's connection to bind a windowed
+    read's continuation to one snapshot. A double with no connection at all
+    made every ``session.read`` window fail as unframeable, which is a missing
+    double rather than a real refusal -- and the refusal it raises is the one
+    production reserves for derived-tier schema drift.
+    """
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute("ATTACH DATABASE ':memory:' AS user_tier")
+    for schema in ("main", "user_tier"):
+        connection.execute(
+            f"CREATE TABLE {schema}.query_unit_frame_state (singleton INTEGER PRIMARY KEY, epoch INTEGER)"
+        )
+        connection.execute(f"INSERT INTO {schema}.query_unit_frame_state VALUES (1, 1)")
+    return connection
+
+
 class ArchiveStoreDouble:
     """Base class for the CLI query-execution store doubles.
 
@@ -182,6 +211,7 @@ class ArchiveStoreDouble:
 
     def __init__(self) -> None:
         self.opened_roots: list[Path] = []
+        self._conn = _query_unit_frame_connection()
         self.operation_identity: Any = None
         self.operation_vector_connection: Any = None
         self.operation_schema_versions: Any = None
@@ -203,6 +233,50 @@ class ArchiveStoreDouble:
             setattr(self, attribute, archive_root / filename)
         active_index = index_path if index_path is not None else resolve_active_index_path(archive_root)
         setattr(self, _ACTIVE_INDEX_ATTRIBUTE, active_index)
+
+    def count_sessions(self, **kwargs: object) -> int:
+        """Report an empty archive unless the double says otherwise.
+
+        The declared read handler asks the store for a page *and* its total;
+        the CLI's retired local branch asked only for the page.  The count is
+        not derived from the double's own page: ``count_sessions`` is called
+        with the page-shaping keywords stripped, so deriving it would re-enter
+        a ``list_summaries`` double that asserts on exactly those keywords.  A
+        double that returns rows must therefore say how many the store holds,
+        which is the honest thing for it to state anyway -- an ``empty``
+        outcome over a non-empty page is a real defect this keeps visible.
+        """
+        return 0
+
+    def count_search_sessions(self, query: str, **kwargs: object) -> int:
+        """Report no ranked matches unless the double says otherwise."""
+        return 0
+
+    def begin_read_snapshot(self) -> None:
+        return None
+
+    def read_summary(self, session_id: str) -> Any:
+        """Summarise whatever page this double serves for ``session_id``.
+
+        ``session.read`` reads the summary for the window's ``total`` and
+        stops when the window covers it.  Deriving that from the double's own
+        page is what makes a single-window double render as a *complete*
+        transcript instead of looping forever on a continuation.
+        """
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
+
+        page = self.read_session_page(session_id, limit=_DOUBLE_PAGE_CEILING, offset=0)  # type: ignore[attr-defined]
+        return ArchiveSessionSummary(
+            session_id=session_id,
+            native_id=page.native_id,
+            origin=page.origin,
+            title=page.title,
+            created_at=page.created_at,
+            updated_at=page.updated_at,
+            message_count=len(page.messages),
+            word_count=0,
+            tags=(),
+        )
 
     def __enter__(self) -> ArchiveStoreDouble:
         return self
