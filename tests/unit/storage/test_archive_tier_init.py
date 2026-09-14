@@ -463,3 +463,36 @@ def _drift_samples_sql(conn: sqlite3.Connection) -> str:
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'schema_drift_samples'"
     ).fetchone()
     return str(row[0]) if row and row[0] else ""
+
+
+def test_reopening_a_current_tier_does_not_reapply_its_whole_ddl(tmp_path: Path) -> None:
+    """An already-stamped tier converges instead of re-executing its schema.
+
+    Anti-vacuity: routing ``open_initialized_tier_connection`` back through
+    ``initialize_archive_tier`` unconditionally puts ``<tier>.ddl_reapply`` back
+    into the tally for every tier but ops, reddening the first assertion. The
+    second assertion is what keeps the shortcut honest: the tiers must still
+    read as current afterwards, so a version check is not what was skipped.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        archive_tier_init_counts,
+        archive_tier_spec,
+        initialize_active_archive_root,
+        open_initialized_tier_connection,
+        reset_archive_tier_init_counts,
+    )
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    reset_archive_tier_init_counts()
+
+    for tier in ArchiveTier:
+        connection = open_initialized_tier_connection(root / archive_tier_spec(tier).filename, tier)
+        try:
+            stored = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            connection.close()
+        assert stored == archive_tier_spec(tier).version
+
+    reapplied = {name: count for name, count in archive_tier_init_counts().items() if name.endswith(".ddl_reapply")}
+    assert reapplied == {}
