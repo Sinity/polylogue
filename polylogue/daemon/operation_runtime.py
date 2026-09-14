@@ -17,7 +17,7 @@ from polylogue.daemon.execution import BoundedComputeAdapter, CancellationHandle
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.logging import propagate
 from polylogue.operations.audit import (
-    AuditContinuityPendingError,
+    AuditContinuityError,
     AuditRepository,
     MachineRequestBinding,
     MachineRequestConflictError,
@@ -249,7 +249,7 @@ class DaemonOperationRuntime:
                 if record is not None and record["artifact_kind"] == "insight-preview-pages":
                     return None
                 return record
-        except AuditContinuityPendingError:
+        except AuditContinuityError:
             return None
 
     def _recovery_state(self, record: dict[str, object]) -> dict[str, object]:
@@ -271,7 +271,7 @@ class DaemonOperationRuntime:
                 current = audit.machine_request(binding)
                 assert current is not None
                 return machine_request_state(audit, current)
-        except AuditContinuityPendingError:
+        except AuditContinuityError:
             return {
                 "outcome": "indeterminate",
                 "sequence": 0,
@@ -373,7 +373,7 @@ class DaemonOperationRuntime:
                 with audit.settled_machine_read():
                     record = audit.machine_request(binding)
                     durable = machine_request_state(audit, record) if record is not None else None
-            except AuditContinuityPendingError:
+            except AuditContinuityError:
                 durable = None
             except MachineRequestConflictError:
                 return operation_envelope(
@@ -570,7 +570,7 @@ class DaemonOperationRuntime:
                                     # The actual worker settled and continuity
                                     # proves there is no accepted domain work.
                                     envelope["outcome"] = "failed"
-                        except AuditContinuityPendingError:
+                        except AuditContinuityError:
                             envelope["outcome"] = "indeterminate"
                     if record is not None:
                         envelope["accepted_reference"] = AcceptedOperationReference.from_record(record).to_dict()
@@ -684,7 +684,7 @@ class DaemonOperationRuntime:
                             raise ValueError("archive_identity_stale")
                         record = audit.machine_request_for_principal(archive_identity, target, principal.actor_ref)
                         state = machine_request_state(audit, record) if record is not None else None
-                except AuditContinuityPendingError:
+                except AuditContinuityError:
                     pending = True
                     state = {"outcome": "indeterminate", "sequence": 0}
                 if state is None:

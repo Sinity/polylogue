@@ -133,14 +133,24 @@ def open_operation_control(root: Path, *, audit: AuditRepository | None = None) 
 
 def observe_control_authority(root: Path) -> OperationControlRead:
     """Read control provenance without waiting behind the operation actuator."""
-    from polylogue.operations.audit import AuditContinuityPendingError
+    from polylogue.operations.audit import AuditContinuityError, AuditContinuityPendingError
 
     try:
         with open_operation_control(root) as snapshot:
             return snapshot
-    except AuditContinuityPendingError:
+    except AuditContinuityError as exc:
+        # A read never repairs continuity, so every state it cannot settle is
+        # a named gap rather than a raise.  ``AuditContinuityPendingError`` is
+        # an in-flight or unreconciled transition; the wider class also covers
+        # an archive whose continuity halves are not seeded yet -- a bootstrap
+        # condition an operation read must degrade through, not fail on.
+        gap = (
+            "audit_continuity_pending"
+            if isinstance(exc, AuditContinuityPendingError)
+            else "audit_continuity_unavailable"
+        )
         identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root))
-        return OperationControlRead(identity, {}, ("audit_continuity_pending",))
+        return OperationControlRead(identity, {}, (gap,))
 
 
 @contextmanager
