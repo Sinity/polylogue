@@ -15,6 +15,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Literal, cast
 
 from polylogue.operations.authority import authority_for_reader
+from polylogue.operations.query_lowering import cli_query_spec, lower_cli_query_params
 
 if TYPE_CHECKING:
     from polylogue.archive.query.facets import FacetBuckets
@@ -500,44 +501,13 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
 def _lower_cli_query_params(params: Mapping[str, object]) -> tuple[dict[str, object], str]:
     """Lower CLI conveniences without importing Click's ``RootModeRequest``."""
 
-    normalized = dict(params)
-    raw_terms = normalized.pop("query", ())
-    terms: tuple[str, ...]
-    if isinstance(raw_terms, str):
-        terms = (raw_terms,)
-    elif isinstance(raw_terms, (list, tuple)):
-        terms = tuple(str(item) for item in raw_terms)
-    else:
-        raise ValueError("query must be a string or sequence")
-    lexical = bool(normalized.pop("lexical", False))
-    semantic = bool(normalized.pop("semantic", False))
-    if lexical and (semantic or normalized.get("similar_text")):
-        raise ValueError("semantic retrieval cannot be combined with lexical retrieval")
-    if semantic:
-        if not terms:
-            raise ValueError("semantic retrieval requires query terms")
-        normalized["similar_text"] = " ".join(terms)
-        terms = ()
-    if lexical:
-        normalized["retrieval_lane"] = "dialogue"
-    return normalized, _expression_from_query_terms(terms)
+    return lower_cli_query_params(params)
 
 
 def _cli_query_spec(params: Mapping[str, object]) -> SessionQuerySpec:
     """Compile the same CLI selection contract used by canonical execution."""
 
-    from polylogue.archive.query.expression import compile_expression_into
-    from polylogue.archive.query.spec import SessionQuerySpec
-
-    normalized, expression = _lower_cli_query_params(params)
-    base = SessionQuerySpec.from_params(normalized)
-    return compile_expression_into(expression, base) if expression else base
-
-
-def _expression_from_query_terms(terms: tuple[str, ...]) -> str:
-    from polylogue.archive.query.root_lowering import expression_from_query_terms
-
-    return expression_from_query_terms(terms)
+    return cli_query_spec(params)
 
 
 def _non_negative_int(value: object, *, default: int) -> int:

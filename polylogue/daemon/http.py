@@ -5505,7 +5505,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             raw_params = body["params"]
             if not isinstance(raw_params, dict):
                 raise TypeError("params must be an object")
-            from polylogue.cli.root_request import RootModeRequest, _expression_from_query_terms
+            from polylogue.cli.root_request import RootModeRequest
+            from polylogue.operations.query_lowering import expression_from_query_terms
 
             request = RootModeRequest.from_params(raw_params)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
@@ -5522,7 +5523,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 params[str(key)] = ["1"]
             else:
                 params[str(key)] = [str(value)]
-        expression = _expression_from_query_terms(request.query_terms)
+        expression = expression_from_query_terms(request.query_terms)
         if expression:
             params["query"] = [expression]
         self._handle_list_sessions(params)

@@ -13,6 +13,10 @@ from polylogue.cli.operation_kernel import (
     OperationRequest,
     OperationUnavailableError,
 )
+from polylogue.operations.daemon_errors import (
+    DaemonMutationIndeterminateError,
+    DaemonOperationProtocolError,
+)
 
 
 def test_daemon_envelope_is_validated_before_renderer_handoff() -> None:
@@ -105,3 +109,43 @@ def test_error_detail_cannot_demote_indeterminate_effects_to_retryable_failure()
                 "error": {"code": "after_commit_failure", "detail": "receipt reconciliation required"},
             }
         ).execute(OperationRequest("mutation.session.tag", {}))
+
+
+def _raising(exc: Exception) -> OperationKernel:
+    def call(_request: OperationRequest) -> dict[str, object]:
+        raise exc
+
+    return OperationKernel(call)
+
+
+def test_a_raised_indeterminate_mutation_is_typed_by_class_not_by_name() -> None:
+    """A transport exception is classified by its type, never by its spelling.
+
+    Anti-vacuity: the kernel used to compare ``type(exc).__name__`` against the
+    literal ``"DaemonMutationIndeterminateError"``.  ``_RenamedError`` below is that
+    exact class under a different name, so a name-matching kernel demotes it to
+    a retryable ``daemon_transport_error`` and this test goes red; only an
+    ``isinstance`` branch keeps an accepted-but-unreceipted mutation typed.
+    """
+
+    class _RenamedError(DaemonMutationIndeterminateError):
+        pass
+
+    with pytest.raises(OperationIndeterminateError, match="/api/operation"):
+        _raising(_RenamedError(method="POST", path="/api/operation")).execute(
+            OperationRequest("mutation.session.tag", {})
+        )
+
+
+def test_a_raised_size_protocol_error_is_reported_as_an_oversized_result() -> None:
+    """The size refusal survives the move off name matching.
+
+    Anti-vacuity: dropping the ``DaemonOperationProtocolError`` branch leaves
+    the generic ``daemon_transport_error`` code, which this assertion rejects.
+    """
+
+    with pytest.raises(OperationFailedError) as exc_info:
+        _raising(DaemonOperationProtocolError("result exceeds the declared size limit")).execute(
+            OperationRequest("cli.query", {})
+        )
+    assert exc_info.value.code == "result_too_large"

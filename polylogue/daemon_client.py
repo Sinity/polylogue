@@ -16,6 +16,13 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from polylogue.operations.operation_context import OperationContext
 
+from polylogue.operations.daemon_errors import (
+    DaemonMutationIndeterminateError,
+    DaemonOperationProtocolError,
+    DaemonOperationRejected,
+    DaemonOperationRejectedError,
+    DaemonResponseError,
+)
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_OUTCOMES,
     DAEMON_OPERATION_PROTOCOL,
@@ -26,52 +33,6 @@ from polylogue.operations.daemon_protocol import (
     daemon_operation_spec,
     validate_operation_result,
 )
-
-
-class DaemonResponseError(RuntimeError):
-    """A daemon response with a typed non-success HTTP envelope."""
-
-    def __init__(
-        self,
-        *,
-        status: int,
-        code: str | None,
-        detail: str | None,
-        payload: dict[str, Any] | None = None,
-    ) -> None:
-        self.status = status
-        self.code = code
-        self.detail = detail or code or f"daemon returned HTTP {status}"
-        self.payload = payload or {}
-        self.completed_chunks = self.payload.get("completed_chunks")
-        self.affected_count = self.payload.get("affected_count")
-        super().__init__(self.detail)
-
-
-class DaemonMutationIndeterminateError(RuntimeError):
-    """A confirmed mutation may have reached the daemon without a receipt."""
-
-    def __init__(self, *, method: str, path: str, request_id: str | None = None) -> None:
-        self.method = method
-        self.path = path
-        self.request_id = request_id
-        super().__init__(f"daemon outcome is indeterminate after {method} {path}")
-
-
-class DaemonOperationProtocolError(RuntimeError):
-    """A daemon operation response was not a v1 typed envelope."""
-
-
-class DaemonOperationRejectedError(RuntimeError):
-    """The daemon refused an operation before durable acceptance."""
-
-    def __init__(self, outcome: str, detail: str | None = None) -> None:
-        self.outcome = outcome
-        self.detail = detail or outcome
-        super().__init__(self.detail)
-
-
-DaemonOperationRejected = DaemonOperationRejectedError
 
 
 class _UnixHTTPConnection(http.client.HTTPConnection):

@@ -17,12 +17,16 @@ the corpus from degenerating into expressions that lower to nothing.
 
 from __future__ import annotations
 
+import click
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from polylogue.archive.query.filter_kwargs import spec_session_filter_kwargs
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.mcp.query_contracts import build_query_spec
+from polylogue.operations.daemon_reads import _cli_query_spec
 
 #: ``(expression, the filter key it must reach)``.  The three
 #: ``action_sequence``/``action_text``/``since_session`` rows are the filters
@@ -75,3 +79,69 @@ def test_the_probed_expressions_exercise_a_live_filter_key(expression: str, key:
     """An expression that lowers to the default would compare equal for free."""
     empty = dict(spec_session_filter_kwargs(SessionQuerySpec()))
     assert _cli_lowering(expression)[key] != empty[key]
+
+
+# --- The lowering law -------------------------------------------------------
+#
+# ``RootModeRequest`` (the Click root) and ``_cli_query_spec`` (the daemon's
+# in-process reads) must select the same rows for the same parameter map.
+# They now share :mod:`polylogue.operations.query_lowering`; this law is what
+# keeps a future surface-local shortcut from re-splitting them.
+
+_QUERY_TERMS = st.sampled_from(
+    [
+        (),
+        ("refactor",),
+        ("repo:polylogue",),
+        ("repo:polylogue since:7d",),
+        ("tool:bash", "action:file_edit"),
+        ('"exact phrase"',),
+    ]
+)
+
+_FLAG_PARAMS = st.fixed_dictionaries(
+    {
+        "lexical": st.booleans(),
+        "semantic": st.booleans(),
+        "similar_text": st.sampled_from([None, "", "a prior session"]),
+        "limit": st.sampled_from([None, 5, 50]),
+        "origin": st.sampled_from([(), ("claude-code-session",)]),
+        "tag": st.sampled_from([(), ("review",)]),
+        "verbose": st.booleans(),
+    }
+)
+
+
+@given(terms=_QUERY_TERMS, flags=_FLAG_PARAMS)
+def test_root_request_and_daemon_reads_lower_identically(terms: tuple[str, ...], flags: dict[str, object]) -> None:
+    """The lowering law: one parameter map, one selection, on both surfaces.
+
+    Anti-vacuity: the generated corpus covers the ``lexical``/``semantic``/
+    ``similar_text`` combinations that the desugaring exists for, so a surface
+    keeping its own copy of it — a ``retrieval_lane`` set on one side only, a
+    ``similar_text`` promoted on one side only, or a refusal raised on one
+    side and not the other — turns this red.  Deleting the
+    ``desugar_retrieval_flags`` delegation from ``root_request`` (or the
+    ``lower_cli_query_params`` delegation from ``daemon_reads``) and changing
+    either copy is exactly that mutation.
+    """
+    params: dict[str, object] = {**flags, "query": terms}
+
+    cli_error: Exception | None = None
+    cli_spec = None
+    try:
+        cli_spec = RootModeRequest.from_params(dict(params)).query_spec()
+    except click.UsageError as exc:  # the CLI presentation of a refusal
+        cli_error = exc
+
+    daemon_error: Exception | None = None
+    daemon_spec = None
+    try:
+        daemon_spec = _cli_query_spec(dict(params))
+    except ValueError as exc:  # the protocol presentation of the same refusal
+        daemon_error = exc
+
+    assert (cli_error is None) == (daemon_error is None), (
+        f"one surface refused and the other did not for {params!r}: {cli_error!r} vs {daemon_error!r}"
+    )
+    assert cli_spec == daemon_spec
