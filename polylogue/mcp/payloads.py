@@ -16,7 +16,7 @@ from polylogue.core.web_urls import canonical_session_url
 from polylogue.readiness import component_from_outcome_check, component_from_raw_materialization_readiness
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.surfaces.authority import AuthorityEnvelope
-from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
+from polylogue.surfaces.outcome import OutcomeEnvelope
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
     SearchCursor,
@@ -329,6 +329,21 @@ class MCPSessionRefPayload(SurfacePayloadModel):
     depth: int = 0
 
 
+class MCPTopologyNodePayload(SurfacePayloadModel):
+    """One node of the topology graph.
+
+    Distinct from :class:`MCPSessionRefPayload` because a graph node also
+    carries ``is_root``. Reusing the bare ref model here rejected every real
+    topology, since the canonical envelope always emits ``is_root``.
+    """
+
+    session_id: str
+    origin: str = ""
+    title: str | None = None
+    depth: int = 0
+    is_root: bool = False
+
+
 class MCPTopologyEdgePayload(SurfacePayloadModel):
     """The canonical public ``session_links`` topology-edge projection."""
 
@@ -370,7 +385,7 @@ class MCPSessionTopologyPayload(SurfacePayloadModel):
     nodes_complete: bool = True
     edges_complete: bool = True
     continuation: str | None = None
-    nodes: tuple[MCPSessionRefPayload, ...]
+    nodes: tuple[MCPTopologyNodePayload, ...]
     edges: tuple[MCPTopologyEdgePayload, ...]
     ancestors: tuple[MCPSessionRefPayload, ...]
     descendants: tuple[MCPSessionRefPayload, ...]
@@ -635,10 +650,13 @@ def _ref_payload(ref: object) -> MCPSessionRefPayload:
 def session_topology_payload(topology: object, *, session_id: str) -> MCPSessionTopologyPayload:
     """Build the typed MCP payload for ``get_session_topology`` (#1261)."""
     from polylogue.analysis.topology import SessionTopology
+    from polylogue.operations.topology_envelope import topology_public_envelope
 
     assert isinstance(topology, SessionTopology)
-    payload = topology.public_payload(session_id)
-    return MCPSessionTopologyPayload.model_validate({**payload, "outcome": decide_outcome(matched=len(topology.nodes))})
+    # The operation boundary owns the envelope and its one outcome decision;
+    # MCP only frames it. Re-deciding here is what let a truncated or
+    # cycle-bearing topology report `ok`.
+    return MCPSessionTopologyPayload.model_validate(topology_public_envelope(topology, session_id=session_id))
 
 
 def logical_session_payload(logical_session: object) -> MCPLogicalSessionPayload:
