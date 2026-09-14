@@ -72,8 +72,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools scenario` | Run a named archive verification scenario. |
 | `devtools smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools verify` | Run every quick gate, then a bounded affected selection or the explicit complete test corpus. |
-| `devtools verify blob-conservation` | Report blob/reference conservation in both directions against an archive root. |
-| `devtools verify export` | Export one managed verification receipt as stable versioned JSON. |
 | `devtools verify provider-completeness` | Report provider/importer package completeness from OriginSpec declarations. |
 
 ### Generated Surfaces
