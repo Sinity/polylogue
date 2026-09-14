@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Any
 from unittest.mock import patch
 
 _DERIVED_SURFACES = (
@@ -155,4 +156,44 @@ def sqlite_work_counter(*, step_interval: int = 32) -> Iterator[SQLiteWorkCounte
         yield counter
 
 
-__all__ = ["SQLiteWorkCounter", "sqlite_work_counter"]
+_MUTATION = re.compile(r"^\s*(?:insert|update|delete|replace)\b", re.IGNORECASE)
+
+
+def _tier_name(database: object) -> str:
+    """Name the archive tier a connection belongs to, for write attribution."""
+    value = os.fspath(database) if isinstance(database, os.PathLike) else str(database)
+    for tier in ("source", "index", "ops", "user", "audit", "embeddings"):
+        if f"{tier}.db" in value:
+            return tier
+    return "other"
+
+
+@contextmanager
+def mutating_statements() -> Iterator[list[tuple[str, str]]]:
+    """Record every mutating SQL statement executed inside the context.
+
+    The recorder attaches at ``sqlite3.connect`` so production code opens its
+    own connections and runs its own SQL; nothing is emulated. Each entry is
+    ``(tier, normalized_sql)``. This is the direct instrument for the
+    derivation law that a second pass over unchanged inputs writes nothing.
+    """
+    recorded: list[tuple[str, str]] = []
+    real_connect: Callable[..., sqlite3.Connection] = sqlite3.connect
+
+    def recording_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection: sqlite3.Connection = real_connect(*args, **kwargs)
+        tier = _tier_name(args[0] if args else kwargs.get("database", ""))
+
+        def trace(sql: str) -> None:
+            normalized = _normalize_sql(sql)
+            if _MUTATION.match(normalized):
+                recorded.append((tier, normalized))
+
+        connection.set_trace_callback(trace)
+        return connection
+
+    with patch.object(sqlite3, "connect", recording_connect):
+        yield recorded
+
+
+__all__ = ["SQLiteWorkCounter", "mutating_statements", "sqlite_work_counter"]
