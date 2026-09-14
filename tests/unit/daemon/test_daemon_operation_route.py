@@ -466,13 +466,23 @@ def test_disconnected_after_durable_acceptance_recovers_without_replaying_mutati
 def test_uds_refuses_when_kernel_peer_credentials_cannot_be_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Mutation: fall back to a guessed local principal and this read executes."""
+    """Mutation: fall back to a guessed local principal and this read executes.
+
+    Only the *server* side of the connection loses ``SO_PEERCRED`` here. The
+    UDS client performs the mirror-image check before it sends the machine
+    bearer (``polylogue.daemon_client._reject_foreign_peer``), so breaking the
+    option for every socket in the process refuses the request client-side and
+    never exercises the route under test. The accepted server socket is bound
+    to the listening path; the client's connected socket is unbound and
+    reports an empty name, which separates the two ends without weakening
+    either check.
+    """
     from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
 
     original = socket.socket.getsockopt
 
     def unavailable(sock: socket.socket, level: int, name: int, *args: object) -> object:
-        if level == socket.SOL_SOCKET and name == socket.SO_PEERCRED:
+        if level == socket.SOL_SOCKET and name == socket.SO_PEERCRED and sock.getsockname():
             raise OSError("synthetic unavailable peer credentials")
         return original(sock, level, name, *args)
 
