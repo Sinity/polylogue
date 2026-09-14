@@ -462,9 +462,15 @@ def durable_change_train_manifest_path(archive_root: Path, tier: ArchiveTier, sl
 
 
 def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
-    """Record the versions and identity of a direct, current-schema bootstrap."""
-    from polylogue.storage.archive_identity import ArchiveIdentity
+    """Record the versions a direct, current-schema bootstrap created.
 
+    The marker records what the bootstrap produced, not where it produced it.
+    Binding it to the archive root path and to the source/user inodes -- as
+    earlier revisions did -- made an ordinary ``mv`` of the archive root, a
+    restore from backup, or a cross-filesystem move a permanent refusal with
+    no sanctioned repair.  Authenticity is re-established on read from the
+    archive's own durable content (``_assert_fresh_durable_bootstrap_is_own``).
+    """
     archive_root = archive_root.resolve()
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
@@ -480,7 +486,6 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
             versions[tier.value] = int(connection.execute("PRAGMA user_version").fetchone()[0])
     payload: dict[str, object] = {
         "format": _FRESH_DURABLE_BOOTSTRAP_FORMAT,
-        "durable_identity_digest": _durable_identity_digest(ArchiveIdentity.resolve(archive_root)),
         "versions": versions,
     }
     payload["marker_digest"] = _bootstrap_marker_digest(payload)
@@ -586,10 +591,109 @@ def _fresh_bootstrap_intent_identity_digest(archive_root: Path) -> str:
     )
 
 
+def _released_train_proven_floor(manifest_root: Path, tier: ArchiveTier) -> int | None:
+    """Return the version a released train proved this tier stood at before it ran.
+
+    Every released train records the live pre-apply evidence it migrated from:
+    the tier's ``user_version`` and its schema inventory digest, captured on
+    this archive under backup authorization.  When that pre-state matches the
+    canonical DDL for its version, the train is the archive's own proof that
+    the tier legitimately reached that version -- the same fact the fresh
+    bootstrap marker asserts, carried by evidence archive-root relocation
+    already rebinds.  This is what lets the marker be retired.
+    """
+    manifests = _released_train_manifests_by_target(manifest_root, tier)
+    for _target, train in sorted(manifests.items()):
+        if getattr(train, "state", None) is not DurableChangeTrainState.RELEASED:
+            continue
+        # Attribute-wise rather than field-wise: a train whose manifest predates
+        # apply evidence, or a partially specified stand-in, simply proves
+        # nothing here and must not turn an unrelated startup into an error.
+        pre = getattr(getattr(train, "apply_evidence", None), "pre", None)
+        current_version = getattr(train, "current_version", None)
+        pre_version = getattr(pre, "user_version", None)
+        if not isinstance(pre_version, int) or pre_version != current_version:
+            continue
+        if pre_version <= DURABLE_MIGRATION_ADOPTION_FLOORS[tier]:
+            # At or below the adoption floor this proves no authority the floor
+            # does not already grant, and the canonical image for a pre-floor
+            # version is not reconstructible from the shipped migration train.
+            continue
+        try:
+            canonical = _canonical_schema_inventory(tier, pre_version).sha256
+        except DurableChangeTrainError:
+            # A version whose canonical image cannot be reconstructed proves
+            # nothing here; it must not turn an unrelated read into an error.
+            continue
+        if getattr(pre, "schema_inventory_sha256", None) != canonical:
+            continue
+        return pre_version
+    return None
+
+
+def _fresh_durable_bootstrap_tier_is_own(
+    archive_root: Path,
+    manifest_root: Path,
+    tier: ArchiveTier,
+    version: int,
+) -> bool:
+    """Decide whether this archive's own content corroborates one marker claim.
+
+    Two proofs are accepted, neither of which mentions the archive root path or
+    any inode, so both survive ``mv``, a restore from backup, and a
+    cross-filesystem move:
+
+    * the live tier still stands at the recorded version with exactly the
+      canonical schema for it -- the archive is materially the bootstrap the
+      marker describes (the same proof ``_adopt_pre_marker_durable_bootstrap``
+      already accepts from an archive carrying no marker at all); or
+    * a released train on this archive proved the tier stood at that version
+      before it migrated away from it.
+    """
+    tier_path = archive_root / f"{tier.value}.db"
+    if tier_path.is_file():
+        with _open_existing_tier(tier_path) as connection:
+            live_version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
+            if live_version == version:
+                inventory = _migration_runner.capture_durable_schema_inventory(connection)
+                if inventory.sha256 == _canonical_schema_inventory(tier, version).sha256:
+                    return True
+    proven = _released_train_proven_floor(manifest_root, tier)
+    return proven is not None and proven >= version
+
+
+def _assert_fresh_durable_bootstrap_is_own(
+    archive_root: Path,
+    manifest_root: Path,
+    versions: dict[ArchiveTier, int],
+    *,
+    legacy_identity_digest: object = None,
+) -> None:
+    """Refuse a bootstrap marker this archive's own durable content denies.
+
+    ``legacy_identity_digest`` is the path-and-inode seal markers written by
+    earlier revisions still carry. It is never required, but an archive that
+    still matches its own legacy seal is exactly the archive that opens today,
+    so honouring it keeps this change from turning any currently-opening
+    archive into a refusal.
+    """
+    if isinstance(legacy_identity_digest, str):
+        from polylogue.storage.archive_identity import ArchiveIdentity
+
+        if legacy_identity_digest == _durable_identity_digest(ArchiveIdentity.resolve(archive_root)):
+            return
+    for tier, version in versions.items():
+        if version <= DURABLE_MIGRATION_ADOPTION_FLOORS[tier]:
+            # The marker grants nothing above the adoption floor for this tier.
+            continue
+        if not _fresh_durable_bootstrap_tier_is_own(archive_root, manifest_root, tier, version):
+            raise DurableChangeTrainError(
+                f"fresh durable bootstrap marker is not this archive's own {tier.value} bootstrap evidence"
+            )
+
+
 def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> dict[ArchiveTier, int]:
     """Return direct-bootstrap versions when the marker is authentic."""
-    from polylogue.storage.archive_identity import ArchiveIdentity
-
     archive_root = archive_root.resolve()
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
@@ -601,8 +705,6 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
         raise DurableChangeTrainError(f"invalid fresh durable bootstrap marker: {marker_path}") from exc
     if not isinstance(payload, dict) or payload.get("format") != _FRESH_DURABLE_BOOTSTRAP_FORMAT:
         raise DurableChangeTrainError(f"fresh durable bootstrap marker format mismatch: {marker_path}")
-    if payload.get("durable_identity_digest") != _durable_identity_digest(ArchiveIdentity.resolve(archive_root)):
-        raise DurableChangeTrainError("fresh durable bootstrap marker durable identity mismatch")
     marker_digest = payload.get("marker_digest")
     unsigned_payload = dict(payload)
     unsigned_payload.pop("marker_digest", None)
@@ -617,6 +719,12 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
         if not isinstance(raw_version, int) or raw_version < 0:
             raise DurableChangeTrainError(f"fresh durable bootstrap marker version is invalid: {marker_path}")
         versions[tier] = raw_version
+    _assert_fresh_durable_bootstrap_is_own(
+        archive_root,
+        marker_root,
+        versions,
+        legacy_identity_digest=payload.get("durable_identity_digest"),
+    )
     return versions
 
 
@@ -3249,6 +3357,12 @@ def _durable_chain_floor_versions(archive_root: Path, manifest_root: Path) -> di
     adoption of a canonical image into an established archive. Both are the
     archive's own evidence, so both raise the chain floor; trains are still
     required for every version above it.
+
+    A released train's own pre-apply evidence is deliberately not a third
+    route. It authenticates a marker the archive already carries
+    (``_released_train_proven_floor``), but it never raises the floor on its
+    own: a tier standing above the floor with released trains and no declared
+    adoption evidence stays a refusal.
     """
     from polylogue.operations.durable_change_train import (
         audit_adoption_receipt_path,
@@ -3261,6 +3375,45 @@ def _durable_chain_floor_versions(archive_root: Path, manifest_root: Path) -> di
         if adopted is not None:
             versions[ArchiveTier.AUDIT] = max(versions.get(ArchiveTier.AUDIT, 0), adopted)
     return versions
+
+
+def _retire_corroborated_fresh_durable_bootstrap_marker(
+    manifest_root: Path,
+    bootstrap_versions: dict[ArchiveTier, int],
+) -> bool:
+    """Delete the bootstrap marker once released trains carry its whole floor.
+
+    The marker's only authority is the chain floor it grants. Once a tier has
+    walked a complete released train chain from its adoption floor up to the
+    version the marker records, that chain proves everything the marker did and
+    the marker grants nothing -- so keeping it would gate the archive on
+    bootstrap evidence for the rest of its life for no remaining benefit.
+
+    Retirement is decided by running the ordinary chain requirement at the
+    plain adoption floor: the marker is removed only when the archive still
+    satisfies it with the marker's contribution taken away. A tier whose
+    recorded version is already at or below its adoption floor grants nothing
+    to begin with.
+    """
+    marker_path = manifest_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
+    if not marker_path.is_file() or not bootstrap_versions:
+        return False
+    for tier, version in bootstrap_versions.items():
+        adoption_floor = DURABLE_MIGRATION_ADOPTION_FLOORS[tier]
+        if version <= adoption_floor:
+            continue
+        try:
+            _require_released_train_chain(
+                tier,
+                _released_train_manifests_by_target(manifest_root, tier),
+                current_version=version,
+                floor=adoption_floor,
+            )
+        except DurableChangeTrainError:
+            return False
+    marker_path.unlink(missing_ok=True)
+    _migration_runner._fsync_manifest_directory(manifest_root)
+    return True
 
 
 def _chain_floor(tier: ArchiveTier, bootstrap_versions: dict[ArchiveTier, int]) -> int:
@@ -3574,6 +3727,7 @@ def _reconcile_durable_change_train_startup_locked(
     validated_tiers: set[ArchiveTier] = set()
     manifest_paths = _durable_train_manifest_paths(manifest_root)
     fresh_bootstrap_versions = _fresh_durable_bootstrap_versions(archive_root, manifest_root)
+    _retire_corroborated_fresh_durable_bootstrap_marker(manifest_root, fresh_bootstrap_versions)
     chain_floor_versions = _durable_chain_floor_versions(archive_root, manifest_root)
 
     def record_reconciled(path: Path) -> None:

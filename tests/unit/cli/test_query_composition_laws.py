@@ -129,14 +129,11 @@ def _assert_repository_membership(
 
 
 def _copy_archive(source: Path, destination: Path) -> Path:
-    """Copy an archive tree and re-bind its durable bootstrap marker.
+    """Copy an archive tree and re-record its durable bootstrap marker.
 
-    Mirrors ``clone_seeded_archive`` (tests/infra/workload_artifacts.py):
-    the fresh-durable-bootstrap marker binds a ``durable_identity_digest``
-    to the archive root path it was recorded at, so a naive ``copytree``
-    to a different path leaves a stale marker that
-    ``_fresh_durable_bootstrap_versions`` rejects on the first write-mode
-    open (``DurableChangeTrainError: ... durable identity mismatch``).
+    Mirrors ``clone_seeded_archive`` (tests/infra/workload_artifacts.py). The
+    marker no longer binds the archive root path (polylogue-ifb4l), so the copy
+    would open without this; re-recording keeps the two routes identical.
     """
     shutil.copytree(source, destination)
     bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"

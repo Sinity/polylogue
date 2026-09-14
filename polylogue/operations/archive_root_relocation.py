@@ -1140,7 +1140,12 @@ def _durable_trains(
     manifest_root = root / ".maintenance-state" / "durable-change-trains"
     _real_directory(root / ".maintenance-state", label="maintenance state")
     _real_directory(manifest_root, label="durable change-train state")
-    if (manifest_root / ".bootstrap").exists() or (manifest_root / ".bootstrap.pending").exists():
+    # A completed fresh-bootstrap marker no longer binds the archive root path
+    # or the durable inodes, so relocation has nothing to rebind for it: the
+    # chain floor it grants is re-derived from the archive's own durable
+    # content after the move. An *incomplete* bootstrap is different -- the
+    # archive is mid-creation and has no settled train authority to relocate.
+    if (manifest_root / ".bootstrap.pending").exists():
         raise ArchiveRootRelocationError("archive-root relocation does not support fresh-bootstrap train authority")
     tier_identities = tuple(
         TierFileIdentity(
