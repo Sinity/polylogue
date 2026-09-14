@@ -251,8 +251,8 @@ def _fields() -> dict[str, FieldKind]:
         "payload_failures",
     )
 
-    add("duration", "duration_ms", "elapsed_ms", "timeout_ms", "age_ms", "budget_ms")
     add(
+        "duration",
         "duration_ms",
         "elapsed_ms",
         "timeout_ms",
