@@ -205,8 +205,7 @@ class AuditContinuityCoordinator:
             # handler runs. Clear this exact source WAL entry only when the
             # audit head still proves no commit happened, so validation rejects
             # cannot wedge every later audit mutation.
-            if mutation.kind != "accept_ingest":
-                self._abort_prepared(prepared)
+            self._abort_prepared(prepared)
             raise
         self._phase("after_audit_commit", mutation)
         self._promote(prepared)
@@ -507,15 +506,18 @@ class AuditContinuityCoordinator:
                 mutation, prior_generation=int(row[0]), prior_head_sha256=str(row[1])
             )
             if mutation.kind == "accept_ingest":
+                # Prove the manifest's retained inputs here, but publish it in
+                # _promote. A prepare that writes durable source rows cannot be
+                # rolled back by _abort_prepared, which is what made a failed
+                # accept_ingest wedge every later audit mutation and read.
                 from polylogue.storage.sqlite.archive_tiers.source_items import (
                     FrozenSourceManifest,
-                    prepare_frozen_source_manifest,
+                    validate_frozen_source_manifest,
                 )
 
-                prepare_frozen_source_manifest(
+                validate_frozen_source_manifest(
                     conn,
                     FrozenSourceManifest.from_dict(mutation.payload.get("manifest")),
-                    prepared_at_ms=mutation.created_at_ms,
                 )
             payload_json = _canonical_json(prepared)
             conn.execute(
@@ -607,6 +609,21 @@ class AuditContinuityCoordinator:
         mutation = AuditMutation.from_command(prepared["command"])
         with _open_source_write_connection(self.source_path) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
+            if mutation.kind == "accept_ingest":
+                # The audit commit that accepts this manifest is durable, so
+                # publishing the generation here joins the promotion's own
+                # transaction. Republishing an identical manifest is a no-op,
+                # which keeps reconcile's replay of this step idempotent.
+                from polylogue.storage.sqlite.archive_tiers.source_items import (
+                    FrozenSourceManifest,
+                    publish_frozen_source_manifest,
+                )
+
+                publish_frozen_source_manifest(
+                    conn,
+                    FrozenSourceManifest.from_dict(mutation.payload.get("manifest")),
+                    prepared_at_ms=mutation.created_at_ms,
+                )
             cursor = conn.execute(
                 """
                 UPDATE audit_continuity_control
@@ -630,11 +647,6 @@ class AuditContinuityCoordinator:
         """Discard a rejected WAL command after proving its audit transaction rolled back."""
 
         mutation = AuditMutation.from_command(prepared["command"])
-        if mutation.kind == "accept_ingest":
-            # Source prepare already committed both retained input authority
-            # and this accepted identity. Erasing the WAL would lose the only
-            # recoverable audit binding while leaving that durable work behind.
-            return
         prior = (cast(int, prepared["prior_generation"]), str(prepared["prior_head_sha256"]))
         target = (cast(int, prepared["next_generation"]), str(prepared["next_head_sha256"]))
         with open_verified_audit_connection(self.audit_path) as audit:

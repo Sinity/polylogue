@@ -51,8 +51,17 @@ def _apply(conn: sqlite3.Connection, mutation: AuditMutation) -> str:
     return mutation.mutation_id
 
 
-def test_ingest_prepare_retains_manifest_and_wal_when_audit_apply_fails(tmp_path: Path) -> None:
-    """Generic abort would orphan accepted input and erase its recoverable binding."""
+def test_ingest_abort_rolls_back_the_manifest_and_clears_the_wal(tmp_path: Path) -> None:
+    """A failed audit apply rolls the whole accept_ingest prepare back.
+
+    polylogue-2kbrl: this previously asserted the opposite -- that the prepared
+    manifest and its WAL entry were both *retained*, because the prepare phase
+    published durable source rows that an abort could not undo. That retention
+    is what wedged the audit tier: a non-transient failure left the pending
+    entry forever, refusing every later audit mutation and every operation
+    read. The manifest is now published during promotion instead, so the abort
+    is a true rollback and nothing durable is stranded.
+    """
     initialize_active_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic retained input")
@@ -73,17 +82,17 @@ def test_ingest_prepare_retains_manifest_and_wal_when_audit_apply_fails(tmp_path
     with pytest.raises(sqlite3.OperationalError, match="injected audit failure"):
         coordinator.execute(mutation, fail_apply)
     with sqlite3.connect(tmp_path / "source.db") as source:
-        assert (
-            source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone()[0] == "ingest-request"
-        )
-        assert source.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 1
+        assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone()[0] is None
+        assert source.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 0
         assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
-        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
-    coordinator.reconcile(_apply)
+        # The reservation was never spent, so the same manifest stays acceptable.
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+    coordinator.execute(mutation, _apply)
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone()[0] is None
         assert source.execute("SELECT COUNT(*) FROM source_items").fetchone()[0] == 1
         assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
 
 
 def test_ingest_prepare_missing_receipt_rolls_back_manifest_and_wal(tmp_path: Path) -> None:

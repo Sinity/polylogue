@@ -218,3 +218,77 @@ def test_runtime_authority_normal_accept_commits_linked_run(tmp_path: Path, froz
         assert audit_db.execute("SELECT COUNT(*) FROM operation_previews").fetchone()[0] == 1
         assert audit_db.execute("SELECT COUNT(*) FROM operation_authorizations").fetchone()[0] == 1
         assert audit_db.execute("SELECT operation_id FROM operation_runs").fetchone()[0] == part["operation_id"]
+
+
+def test_deterministically_failed_accept_ingest_leaves_a_recoverable_archive(tmp_path: Path) -> None:
+    """A non-transient accept_ingest failure must not wedge the audit tier.
+
+    polylogue-2kbrl: ``_execute_serialized`` skipped ``_abort_prepared`` for
+    ``accept_ingest`` and ``_abort_prepared`` returned early for it, because the
+    prepare phase had already committed the frozen manifest to source.db and
+    erasing the WAL entry would have stranded that durable work. The pending row
+    therefore survived, ``_prepare`` refused every later audit mutation of every
+    kind, ``settled_read`` refused every operation read, and recovery replayed
+    the same failing payload forever -- an unbounded wedge of a durable,
+    append-only, irreplaceable tier, reached by an ordinary failure.
+
+    The prepare phase now only *validates* the manifest and the promotion phase
+    publishes it, so the abort is a true rollback: no audit history is
+    discarded and no durable source row is stranded.
+
+    Anti-vacuity: restore either ``if mutation.kind != "accept_ingest"`` in
+    ``_execute_serialized`` or the ``accept_ingest`` early return in
+    ``_abort_prepared`` and the pending assertion below fails with the wedged
+    mutation id, followed by ``AuditContinuityError: another audit continuity
+    mutation is already pending``.
+    """
+    bootstrap_archive_root(tmp_path)
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
+    publisher.flush()
+    publication_id = publisher.receipt_id(blob_hash)
+    assert publication_id is not None
+    manifest = FrozenSourceManifest(
+        "source-generation:wedge",
+        "d" * 64,
+        (FrozenSourceInput("input.json", "/synthetic/input.json", blob_hash, publication_id),),
+    )
+    principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
+    binding = MachineRequestBinding("archive:test", "request:wedge", principal.actor_ref, "f" * 64, "ingest")
+
+    class _DefectiveCoordinator(AuditContinuityCoordinator):
+        """A non-transient defect in the audit mutation body, not a phase hook."""
+
+        def _apply_prepared(self, prepared, apply, *, allow_rebind=False):  # type: ignore[no-untyped-def]
+            raise RuntimeError("deterministic audit-mutation defect")
+
+    audit = AuditRepository.for_archive_root(tmp_path)
+    audit._continuity = _DefectiveCoordinator(tmp_path)
+    with pytest.raises(RuntimeError, match="deterministic audit-mutation defect"):
+        with audit.bind_machine_request(binding, transition="accept_ingest", deadline_unix_ms=1000):
+            audit.accept_ingest(manifest, principal)
+
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        # The wedge: this held the failed mutation's id and never cleared.
+        assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone()[0] is None
+        # The rolled-back prepare stranded no durable source authority, and the
+        # publication reservation it would have consumed is still spendable.
+        assert source.execute("SELECT COUNT(*) FROM source_generations").fetchone()[0] == 0
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+
+    # Every later audit mutation of every kind was refused; a read must settle.
+    recovered = AuditRepository.for_archive_root(tmp_path)
+    recovered.reconcile_continuity()
+    with recovered.settled_machine_read() as versions:
+        assert set(versions) == {"source", "audit"}
+    assert recovered.machine_request(binding) is None
+
+    # And the same acceptance succeeds once the defect is gone.
+    healthy = AuditRepository.for_archive_root(tmp_path)
+    with healthy.bind_machine_request(binding, transition="accept_ingest", deadline_unix_ms=1000):
+        healthy.accept_ingest(manifest, principal)
+    record = healthy.machine_request(binding)
+    assert record is not None and record["artifact_ref"] == manifest.source_generation_id
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM source_generations").fetchone()[0] == 1
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
