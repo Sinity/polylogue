@@ -225,12 +225,25 @@ That registry already provides exactly the semantics this needs — a
 grandfathered baseline that may shrink and never grow, with stale entries
 reported as prunable debt — so adding a parallel gate would have duplicated it.
 
-**It could not land at zero baseline**, so it did not pretend to: the recorded
-baseline is **22 matches**. A new occurrence anywhere in the tree fails the
-gate today (verified by introducing one and observing `status: failed`), while
-converting a module shrinks the baseline. The end state is a baseline
-containing only `polylogue/logging.py`, which legitimately owns the one
-sanctioned `logging.getLogger` call — the stdlib bridge's own backing logger.
+**It could not land at zero baseline**, so it did not pretend to. A new
+occurrence anywhere in the tree fails the gate today (verified by introducing
+one and observing `status: failed`), while converting a module shrinks the
+baseline. The end state is a baseline containing only `polylogue/logging.py`,
+which legitimately owns the sanctioned `logging.getLogger` calls — the stdlib
+bridge's own backing logger and handler wiring.
+
+The baseline now stands at **7 matches**: `polylogue/logging.py`'s four, plus
+`polylogue/daemon/`'s three. Every other module is converted.
+
+Two properties of the ratchet are worth knowing before you read a verdict:
+
+- The rule matches the AST, so a `logging.getLogger` mentioned in a docstring
+  or comment is not a match. A `grep -c` will therefore read higher than the
+  gate's match count; reconcile against the gate, not against grep.
+- A baseline entry is `path:sha1(stripped source line)`. Editing a *baselined*
+  line — even cosmetically — retires the old anchor and presents a new one,
+  which the ratchet reads as a new violation. Convert such a line rather than
+  reformatting it.
 
 Note the rule deliberately matches only the *acquisition* of a legacy logger,
 not each `logger.warning(...)` call. Acquisition is the reviewable choke point;
