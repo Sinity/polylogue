@@ -49,12 +49,41 @@ def _archive_template(tmp_path_factory: pytest.TempPathFactory) -> Generator[Non
         _ARCHIVE_TEMPLATE = None
 
 
+# Bringing up the child process is not what these tests measure.
+#
+# Python 3.14 made ``forkserver`` the default start method on Linux, so the
+# *first* ``Process.start()`` in a pytest session pays a full fresh-interpreter
+# bring-up (measured here at 4.41s on an idle host, free-threaded build) before
+# the child body runs at all. A 5s readiness deadline sat inside that cost and
+# went red whenever the host was loaded; every later start in the same session
+# reuses the running forkserver and returns in milliseconds, which is why only
+# the first of these two tests to run used to fail.
+#
+# The deadline is a liveness bound, not a latency assertion: these tests assert
+# that a lease held by a *separate process* excludes this one, and nothing here
+# is made weaker by waiting longer for that process to exist. Reaching this
+# deadline still fails the test.
+#
+# Anti-vacuity for the two tests that use these constants, verified by
+# reverting: change the exclusive ``fcntl.flock(fd, lock_type | LOCK_NB)`` in
+# ``index_generation._open_lock_fd`` to ``LOCK_SH`` and
+# ``test_rebuild_lease_excludes_competing_process`` goes red -- no
+# ``RebuildLeaseUnavailableError`` is raised while the child holds the lease.
+# ``test_reports_held_by_a_separate_live_process`` reddens on the owner-text
+# write instead: stop recording ``pid=`` in the lock file and its
+# ``holder_pid == process.pid`` assertion fails.
+_CHILD_READY_TIMEOUT_S = 60.0
+# The child must outlive the parent's inspection of the lock, so its hold is
+# bounded by the same budget rather than a shorter one.
+_CHILD_HOLD_TIMEOUT_S = 60.0
+
+
 def _hold_lease(
     root: str, ready: multiprocessing.synchronize.Event, release: multiprocessing.synchronize.Event
 ) -> None:
     with RebuildLease(Path(root)):
         ready.set()
-        release.wait(5)
+        release.wait(_CHILD_HOLD_TIMEOUT_S)
 
 
 def _archive(root: Path) -> None:
@@ -67,14 +96,14 @@ def test_rebuild_lease_excludes_competing_process(tmp_path: Path) -> None:
     release = multiprocessing.Event()
     process = multiprocessing.Process(target=_hold_lease, args=(str(tmp_path), ready, release))
     process.start()
-    assert ready.wait(5)
+    assert ready.wait(_CHILD_READY_TIMEOUT_S)
     try:
         with pytest.raises(RebuildLeaseUnavailableError):
             with RebuildLease(tmp_path):
                 pass
     finally:
         release.set()
-        process.join(5)
+        process.join(_CHILD_READY_TIMEOUT_S)
     assert process.exitcode == 0
 
 
@@ -1079,7 +1108,7 @@ class TestRebuildLeaseStatus:
         release = multiprocessing.Event()
         process = multiprocessing.Process(target=_hold_lease, args=(str(tmp_path), ready, release))
         process.start()
-        assert ready.wait(5)
+        assert ready.wait(_CHILD_READY_TIMEOUT_S)
         try:
             status = rebuild_lease_status(tmp_path)
             assert status.held is True
@@ -1088,7 +1117,7 @@ class TestRebuildLeaseStatus:
             assert status.stale is False
         finally:
             release.set()
-            process.join(5)
+            process.join(_CHILD_READY_TIMEOUT_S)
         assert process.exitcode == 0
 
     def test_reports_stale_when_recorded_holder_pid_is_dead(self, tmp_path: Path) -> None:
