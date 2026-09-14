@@ -147,6 +147,12 @@ def _fields() -> dict[str, FieldKind]:
         "thread",
         "method",
         "route",
+        # daemon periodic maintenance loop name ("wal checkpoint", "fts merge")
+        "loop",
+        # operation mode within a stage ("PASSIVE" for a WAL checkpoint)
+        "mode",
+        # sub-kind of a recorded event or projection ("profile", "cost")
+        "kind",
         # meta: used by log.field_rejected to name the offending field
         "field",
         "source_event",
@@ -181,9 +187,30 @@ def _fields() -> dict[str, FieldKind]:
         "status_code",
         "exit_code",
         "pid",
+        # reconciliation dispositions: rows cleared, kept for inspection, or
+        # left classified-but-undecided.
+        "cleared",
+        "retained",
+        "unresolved",
+        # WAL checkpoint: frames before/after, pages blocked by a reader, and
+        # pages actually written back.
+        "bytes_before",
+        "bytes_after",
+        "busy_pages",
+        "checkpointed_pages",
+        # fan-out sizes a daemon pass reports about itself.
+        "tiers",
+        "sources",
+        "loops",
+        "services",
+        "orphaned",
+        "alerts",
+        "delivered",
+        # bounded queue/spool depth
+        "depth",
     )
 
-    add("duration", "duration_ms", "elapsed_ms", "timeout_ms", "age_ms")
+    add("duration", "duration_ms", "elapsed_ms", "timeout_ms", "age_ms", "budget_ms")
 
     add("flag", "ok", "changed", "cached", "dry_run", "forced", "degraded", "converged", "held")
 
