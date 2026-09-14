@@ -185,7 +185,7 @@
           "type": "string"
         },
         "identity_source": {
-          "default": "positional",
+          "default": "content",
           "title": "Identity Source",
           "type": "string"
         },

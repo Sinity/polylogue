@@ -224,7 +224,7 @@ def test_claude_extracted_attachment_content_is_acquired(tmp_path: Path, monkeyp
     ).fetchone()
     assert ref is not None
     assert ref[1] == "claude-ai-export:claude-attachment-session"
-    assert ref[2] == archive_message_id("claude-ai-export:claude-attachment-session", "m0", position=0)
+    assert ref[2] == archive_message_id("claude-ai-export:claude-attachment-session", "m0")
 
 
 def test_claude_content_base64_preserves_non_utf8_bytes_and_identity(

@@ -20,6 +20,7 @@ from polylogue.core.enums import (
     WebConstructType,
 )
 from polylogue.core.timestamp_authority import normalize_session_timestamps, producer_timestamp_flags
+from polylogue.pipeline.ids import message_content_identities
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -56,6 +57,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.queries.session_events import sync_session_events_batch
+from tests.infra.identity import archive_message_id
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -172,7 +174,7 @@ def test_merge_append_reconciles_tool_use_from_prior_batch(
         conn.close()
 
 
-def test_writer_separates_native_and_positional_message_identity(tmp_path: Path) -> None:
+def test_writer_separates_native_and_content_message_identity(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     try:
         session = ParsedSession(
@@ -189,10 +191,10 @@ def test_writer_separates_native_and_positional_message_identity(tmp_path: Path)
             "SELECT message_id, native_id FROM messages WHERE session_id = ? ORDER BY position",
             (session_id,),
         ).fetchall()
-        assert [(row["message_id"], row["native_id"]) for row in rows] == [
-            (f"{session_id}:p:0.0", None),
-            (f"{session_id}:n:0.0", "0.0"),
-        ]
+        idless_id, native_row = rows[0]["message_id"], rows[1]
+        assert rows[0]["native_id"] is None
+        assert str(idless_id).startswith(f"{session_id}:c:")
+        assert (native_row["message_id"], native_row["native_id"]) == (f"{session_id}:n:0.0", "0.0")
 
         write_parsed_session_to_archive(conn, session.model_copy(update={"messages": list(reversed(session.messages))}))
         assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 2
@@ -613,13 +615,22 @@ def test_archive_tiers_writer_does_not_collapse_duplicate_message_native_ids(tmp
         (0, "user", None),
         (1, "assistant", None),
     ]
-    assert [row["message_id"] for row in message_rows] == [f"{session_id}:p:0.0", f"{session_id}:p:1.0"]
-    assert [(row["message_id"], row["text"]) for row in block_rows] == [
-        (f"{session_id}:p:0.0", "first"),
-        (f"{session_id}:p:1.0", "second"),
+    # Both messages lost their ambiguous native id, so both fall back to the
+    # content identity the law derives -- distinct because their content is.
+    expected_ids = [
+        archive_message_id(session_id, None, content_identity=identity, content_occurrence=occurrence)
+        for identity, occurrence in message_content_identities(list(session.messages))
+    ]
+    assert [row["message_id"] for row in message_rows] == expected_ids
+    assert [
+        (row["message_id"], row["text"])
+        for row in sorted(block_rows, key=lambda r: expected_ids.index(r["message_id"]))
+    ] == [
+        (expected_ids[0], "first"),
+        (expected_ids[1], "second"),
     ]
     assert session_row["message_count"] == 2
-    assert session_row["active_leaf_message_id"] == f"{session_id}:p:1.0"
+    assert session_row["active_leaf_message_id"] == expected_ids[1]
 
 
 def test_archive_tiers_writer_normalizes_duplicate_idless_active_leaves_by_position(tmp_path: Path) -> None:
@@ -871,13 +882,14 @@ def test_archive_tiers_writer_uses_identity_law_for_messages_without_native_ids(
     session_id = write_parsed_session_to_archive(conn, session)
     envelope = read_archive_session_envelope(conn, session_id)
 
-    assert [message.message_id for message in envelope.messages] == [
-        "codex-session:codex-generated-ids:p:0.0",
-        "codex-session:codex-generated-ids:p:1.0",
+    expected_ids = [
+        archive_message_id(session_id, None, content_identity=identity, content_occurrence=occurrence)
+        for identity, occurrence in message_content_identities(list(session.messages))
     ]
+    assert [message.message_id for message in envelope.messages] == expected_ids
     assert [block.block_id for message in envelope.messages for block in message.blocks] == [
-        "codex-session:codex-generated-ids:p:0.0:0",
-        "codex-session:codex-generated-ids:p:1.0:0",
+        f"{expected_ids[0]}:0",
+        f"{expected_ids[1]}:0",
     ]
 
 

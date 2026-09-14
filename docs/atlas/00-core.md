@@ -57,7 +57,7 @@ Sessions, messages, and blocks form the core tree. Identity is generated, not
 duplicated in caller metadata:
 
 - `session_id = origin:native_id` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:692-705`).
-- `message_id` uses explicit native (`:n:`) or positional (`:p:`) namespaces (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:281-300`).
+- `message_id` uses explicit native (`:n:`) or content-derived (`:c:`) namespaces (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:281-300`).
 - `block_id = message_id:position` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:478-495`).
 
 `material_origin` is independent from role and expresses authoredness. Tool

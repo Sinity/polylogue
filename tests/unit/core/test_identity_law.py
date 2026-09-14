@@ -23,50 +23,58 @@ def test_session_id_is_origin_native_id(origin: str, native_id: str) -> None:
     assert observed == f"{origin.strip()}:{native_id.strip()}"
 
 
-@given(parent=_TOKEN, native_id=_TOKEN, position=_POSITION, variant_index=_POSITION)
-def test_native_message_id_ignores_position_fallback(
+@given(parent=_TOKEN, native_id=_TOKEN, content_identity=_TOKEN, occurrence=_POSITION)
+def test_native_message_id_ignores_the_content_fallback(
     parent: str,
     native_id: str,
-    position: int,
-    variant_index: int,
+    content_identity: str,
+    occurrence: int,
 ) -> None:
     sid = session_id("codex", parent)
-    assert message_id(sid, native_id, position=position, variant_index=variant_index) == f"{sid}:n:{native_id.strip()}"
+    observed = message_id(sid, native_id, content_identity=content_identity, content_occurrence=occurrence)
+    assert observed == f"{sid}:n:{native_id.strip()}"
 
 
-@given(parent=_TOKEN, position=_POSITION, left_variant=_POSITION, right_variant=_POSITION)
-def test_no_native_message_id_uses_variant_index_for_collision_avoidance(
+@given(parent=_TOKEN, content_identity=_TOKEN, left=_POSITION, right=_POSITION)
+def test_idless_message_id_is_its_content_identity_plus_occurrence(
     parent: str,
-    position: int,
-    left_variant: int,
-    right_variant: int,
+    content_identity: str,
+    left: int,
+    right: int,
 ) -> None:
+    """The fallback carries no ordinal: only the digest and the occurrence.
+
+    Anti-vacuity: reintroduce ``position`` into ``message_local_id``'s
+    fallback and the constructed id no longer equals this expectation.
+    """
     sid = session_id("codex", parent)
-    left = message_id(sid, None, position=position, variant_index=left_variant)
-    right = message_id(sid, None, position=position, variant_index=right_variant)
-    assert left == f"{sid}:p:{position}.{left_variant}"
-    assert right == f"{sid}:p:{position}.{right_variant}"
-    assert (left == right) is (left_variant == right_variant)
+    left_id = message_id(sid, None, content_identity=content_identity, content_occurrence=left)
+    right_id = message_id(sid, None, content_identity=content_identity, content_occurrence=right)
+    assert left_id == f"{sid}:c:{content_identity}.{left}"
+    assert right_id == f"{sid}:c:{content_identity}.{right}"
+    assert (left_id == right_id) is (left == right)
 
 
 @given(parent=_TOKEN, message_native_id=_TOKEN, block_position=_POSITION)
 def test_block_id_appends_block_position(parent: str, message_native_id: str, block_position: int) -> None:
-    mid = message_id(session_id("chatgpt", parent), message_native_id, position=0)
+    mid = message_id(session_id("chatgpt", parent), message_native_id)
     assert block_id(mid, position=block_position) == f"{mid}:{block_position}"
 
 
 def test_native_ids_are_opaque_and_may_contain_colons() -> None:
     sid = session_id("antigravity-session", "cascade:with:colon")
-    mid = message_id(sid, "cascade:0:planner_response", position=0)
+    mid = message_id(sid, "cascade:0:planner_response")
 
     assert sid == "antigravity-session:cascade:with:colon"
     assert mid == "antigravity-session:cascade:with:colon:n:cascade:0:planner_response"
 
 
-def test_native_and_positional_message_ids_are_disjoint() -> None:
+def test_native_and_content_message_ids_are_disjoint() -> None:
+    """A provider id spelled like a fallback must not collide with one."""
     sid = session_id("codex", "collision")
+    digest = "b1d7189e2d0ccae512b833b4d6cb77da"
 
-    assert message_id(sid, "0.0", position=99) != message_id(sid, None, position=0, variant_index=0)
+    assert message_id(sid, f"c:{digest}.0") != message_id(sid, None, content_identity=digest)
 
 
 @pytest.mark.parametrize(
@@ -75,8 +83,9 @@ def test_native_and_positional_message_ids_are_disjoint() -> None:
         (session_id, ("", "native"), {}),
         (session_id, ("bad:origin", "native"), {}),
         (session_id, ("origin", ""), {}),
-        (message_local_id, (None,), {"position": -1}),
-        (message_local_id, (None,), {"position": 0, "variant_index": -1}),
+        (message_local_id, (None,), {}),
+        (message_local_id, (None,), {"content_identity": "   "}),
+        (message_local_id, (None,), {"content_identity": "abc", "content_occurrence": -1}),
         (block_id, ("",), {"position": 0}),
         (block_id, ("message",), {"position": -1}),
     ],

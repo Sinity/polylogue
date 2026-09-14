@@ -147,11 +147,11 @@ def index_db_path(workspace: ReaderWorkspace) -> Path:
 READER_C1 = native_session_id_for("claude-code", "reader-c1")
 READER_C2 = native_session_id_for("chatgpt", "reader-c2")
 READER_C3 = native_session_id_for("claude-ai", "reader-c3")
-READER_C1_M1 = archive_message_id(READER_C1, "reader-c1-m1", position=0)
-READER_C1_M2 = archive_message_id(READER_C1, "reader-c1-m2", position=1)
-READER_C1_M3 = archive_message_id(READER_C1, "reader-c1-m3", position=2)
-READER_C3_M1 = archive_message_id(READER_C3, "reader-c3-m1", position=0)
-READER_C3_DIFF = archive_message_id(READER_C3, "reader-c3-diff", position=1)
+READER_C1_M1 = archive_message_id(READER_C1, "reader-c1-m1")
+READER_C1_M2 = archive_message_id(READER_C1, "reader-c1-m2")
+READER_C1_M3 = archive_message_id(READER_C1, "reader-c1-m3")
+READER_C3_M1 = archive_message_id(READER_C3, "reader-c3-m1")
+READER_C3_DIFF = archive_message_id(READER_C3, "reader-c3-diff")
 
 
 def _attachment_native_id(message_id: str, attachment_id: str) -> str:
@@ -174,11 +174,11 @@ ATT_RAWHTML = _attachment_native_id(READER_C1_M1, "att-rawhtml")
 # (failed), and an unpaired Task dispatch — the three AC-critical card
 # kinds plus the suppression contract for a paired tool-result message.
 READER_SEM1 = native_session_id_for("claude-code", "reader-sem1")
-READER_SEM1_SHELL_USE = archive_message_id(READER_SEM1, "reader-sem1-shell-use", position=0)
-READER_SEM1_SHELL_RESULT = archive_message_id(READER_SEM1, "reader-sem1-shell-result", position=1)
-READER_SEM1_EDIT_USE = archive_message_id(READER_SEM1, "reader-sem1-edit-use", position=2)
-READER_SEM1_EDIT_RESULT = archive_message_id(READER_SEM1, "reader-sem1-edit-result", position=3)
-READER_SEM1_TASK_USE = archive_message_id(READER_SEM1, "reader-sem1-task-use", position=4)
+READER_SEM1_SHELL_USE = archive_message_id(READER_SEM1, "reader-sem1-shell-use")
+READER_SEM1_SHELL_RESULT = archive_message_id(READER_SEM1, "reader-sem1-shell-result")
+READER_SEM1_EDIT_USE = archive_message_id(READER_SEM1, "reader-sem1-edit-use")
+READER_SEM1_EDIT_RESULT = archive_message_id(READER_SEM1, "reader-sem1-edit-result")
+READER_SEM1_TASK_USE = archive_message_id(READER_SEM1, "reader-sem1-task-use")
 
 
 def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -> None:

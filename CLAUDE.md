@@ -37,9 +37,14 @@ Identity is computed, never stored redundantly (SQLite generated columns):
 
 - `sessions.session_id = origin || ':' || native_id`
 - `messages.message_id = session_id || ':' || CASE WHEN native_id IS NULL THEN
-  'p:' || position || '.' || variant_index ELSE 'n:' || native_id END` — the
-  `n:`/`p:` prefixes keep a provider-native id from ever colliding with a
-  positional fallback, and `messages.identity_source` records which path fired
+  'c:' || content_identity || '.' || content_occurrence ELSE 'n:' || native_id
+  END` — the `n:`/`c:` prefixes keep a provider-native id from ever colliding
+  with the fallback, and `messages.identity_source` records which path fired.
+  The fallback is **content-derived, never ordinal**: `content_identity` is a
+  digest of the declared semantic partition (`pipeline/ids.py`) and
+  `content_occurrence` separates byte-identical messages, so an export that
+  gains or loses a message cannot renumber a later id and silently re-resolve
+  a durable `user.db` reference onto a different message
 - `blocks.block_id = message_id || ':' || position`
 
 Sessions → messages → blocks, all `STRICT`. Load-bearing semantics:

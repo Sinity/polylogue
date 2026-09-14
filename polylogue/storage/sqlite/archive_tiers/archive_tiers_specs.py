@@ -283,7 +283,7 @@ MESSAGES_SPEC = _make_table_spec(
     (
         _raw_column(
             "message_id",
-            "message_id TEXT GENERATED ALWAYS AS (session_id || ':' || CASE WHEN native_id IS NULL THEN 'p:' || position || '.' || variant_index ELSE 'n:' || native_id END) STORED UNIQUE",
+            "message_id TEXT GENERATED ALWAYS AS (session_id || ':' || CASE WHEN native_id IS NULL THEN 'c:' || content_identity || '.' || content_occurrence ELSE 'n:' || native_id END) STORED UNIQUE",
             record_name="message_id",
             domain_name="id",
         ),
@@ -293,9 +293,27 @@ MESSAGES_SPEC = _make_table_spec(
             record_name="session_id",
         ),
         _raw_column("native_id", "native_id TEXT", record_name="provider_message_id"),
+        # polylogue-eqsri: the identity a message gets when the provider gave
+        # it none. A digest of the message's own declared semantic fields
+        # (``pipeline.ids.message_content_identity``), so an insertion or
+        # removal elsewhere in the export cannot renumber it onto a different
+        # message and silently re-resolve a durable ``user.db`` reference.
+        _raw_column(
+            "content_identity",
+            "content_identity TEXT",
+            record_name="content_identity",
+        ),
+        # Occurrence ordinal among messages in this session sharing that exact
+        # digest -- the only tiebreaker for byte-identical semantics, and
+        # itself insensitive to unrelated insertions.
+        _raw_column(
+            "content_occurrence",
+            "content_occurrence INTEGER NOT NULL DEFAULT 0 CHECK(content_occurrence >= 0)",
+            record_name="content_occurrence",
+        ),
         _raw_column(
             "identity_source",
-            "identity_source TEXT NOT NULL DEFAULT 'positional' CHECK(identity_source IN ('native', 'positional'))",
+            "identity_source TEXT NOT NULL DEFAULT 'content' CHECK(identity_source IN ('native', 'content'))",
             record_name="identity_source",
             domain_name="identity_source",
         ),
@@ -471,7 +489,13 @@ MESSAGES_SPEC = _make_table_spec(
         _derived_column("source_name", "s.origin"),
         _derived_column("version", "1"),
     ),
-    table_constraints=("PRIMARY KEY(session_id, position, variant_index)",),
+    table_constraints=(
+        "PRIMARY KEY(session_id, position, variant_index)",
+        # A row with neither identity would generate a NULL ``message_id``:
+        # UNIQUE admits many NULLs, so every reference into it would silently
+        # dangle. Refuse the row instead (polylogue-eqsri).
+        "CHECK(native_id IS NOT NULL OR content_identity IS NOT NULL)",
+    ),
 )
 
 

@@ -121,11 +121,11 @@ async def test_every_read_route_returns_one_message_order(
     mcp_server: MCPServerUnderTest,
 ) -> None:
     parent_id, child_id = _seed(tmp_path)
-    expected = [archive_message_id(parent_id, f"p{position}", position=position) for position in range(_PARENT_LENGTH)]
+    expected = [archive_message_id(parent_id, f"p{position}") for position in range(_PARENT_LENGTH)]
     # The fork stores only its divergent tail; its composed transcript is the
     # parent's prefix in the very same order, then that tail.
     expected_composed = expected[:_BRANCH_LENGTH] + [
-        archive_message_id(child_id, f"c{index}", position=_BRANCH_LENGTH + index) for index in range(_TAIL_LENGTH)
+        archive_message_id(child_id, f"c{index}") for index in range(_TAIL_LENGTH)
     ]
 
     backend = SQLiteBackend(db_path=tmp_path / "index.db")

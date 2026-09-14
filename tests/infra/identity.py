@@ -10,11 +10,16 @@ def archive_message_id(
     session_id: str,
     native_id: str | None,
     *,
-    position: int,
-    variant_index: int = 0,
+    content_identity: str | None = None,
+    content_occurrence: int = 0,
 ) -> str:
     """Construct the generated message id used by the archive schema."""
-    return _message_id(session_id, native_id, position=position, variant_index=variant_index)
+    return _message_id(
+        session_id,
+        native_id,
+        content_identity=content_identity,
+        content_occurrence=content_occurrence,
+    )
 
 
 def archive_block_id(message_id: str, *, position: int) -> str:

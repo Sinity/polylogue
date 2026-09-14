@@ -947,14 +947,15 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
     finally:
         conn.close()
 
-    assert [(row["message_id"], row["native_id"], row["position"]) for row in message_rows] == [
-        (f"{session_id}:p:0.0", None, 0),
-        (f"{session_id}:p:1.0", None, 1),
-    ]
-    assert [(row["message_id"], row["text"]) for row in block_rows] == [
-        (f"{session_id}:p:0.0", "older text"),
-        (f"{session_id}:p:1.0", "newer text"),
-    ]
+    # Id-less messages, so both ids come from the content fallback.
+    ordered_ids = [str(row["message_id"]) for row in message_rows]
+    assert [(row["native_id"], row["position"]) for row in message_rows] == [(None, 0), (None, 1)]
+    assert all(value.startswith(f"{session_id}:c:") for value in ordered_ids)
+    assert len(set(ordered_ids)) == 2
+    assert {str(row["message_id"]): row["text"] for row in block_rows} == {
+        ordered_ids[0]: "older text",
+        ordered_ids[1]: "newer text",
+    }
     assert session_message_count == 2
 
 

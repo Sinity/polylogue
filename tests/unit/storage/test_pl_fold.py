@@ -136,7 +136,7 @@ def test_repair_messages_fts_uses_the_same_canonical_definition() -> None:
 def _seed_text_block(conn: sqlite3.Connection, *, native_session_id: str, native_message_id: str, text: str) -> str:
     origin = "unknown-export"
     session_id = f"{origin}:{native_session_id}"
-    message_id = archive_message_id(session_id, native_message_id, position=0)
+    message_id = archive_message_id(session_id, native_message_id)
     content_hash = b"x" * 32
     conn.execute(
         "INSERT INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",

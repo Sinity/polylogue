@@ -41,7 +41,11 @@ from pathlib import Path
 
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.logging import get_logger
-from polylogue.pipeline.ids import attachment_message_owner_key, message_owner_resolution
+from polylogue.pipeline.ids import (
+    attachment_message_owner_key,
+    message_content_identities,
+    message_owner_resolution,
+)
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload, ingest_record
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
 from polylogue.sources.parsers.base_support import derive_attachment_provenance
@@ -58,6 +62,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _message_content_hash,
     _next_message_position,
     _normalized_message_native_id,
+    _stored_content_occurrences,
 )
 from polylogue.storage.sqlite.queries.mappers_archive import _row_to_raw_session
 
@@ -376,10 +381,19 @@ def _match_session_payload(
     session_id = payload.session_id
     messages = payload.parsed_session.messages
     position_offset = _next_message_position(index_conn, session_id) if payload.append_only else 0
+    # Resolve the same content-derived fallback identities the production
+    # write resolved for this session, including the append-side occurrence
+    # offsets, so a relink cannot address a message by a different id than
+    # the writer stored (polylogue-eqsri).
+    content_identities = message_content_identities(
+        list(messages),
+        occurrence_offsets=_stored_content_occurrences(index_conn, session_id) if payload.append_only else None,
+    )
     owner_resolution, by_owner_key, owning_messages = _attachment_message_id_maps(
         session_id,
         messages,
         position_offset=position_offset,
+        content_identities=content_identities,
     )
     if payload.append_only:
         materialized_by_owner_key = _append_materialized_attachment_maps(

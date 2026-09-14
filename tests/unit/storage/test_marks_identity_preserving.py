@@ -138,7 +138,7 @@ async def test_list_marks_projects_session_vocabulary(workspace_env: dict[str, P
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("opaque_marker", [":n:", ":p:"])
+@pytest.mark.parametrize("opaque_marker", [":n:", ":c:"])
 async def test_message_user_state_projects_owner_for_opaque_session_native_ids(
     workspace_env: dict[str, Path],
     opaque_marker: str,

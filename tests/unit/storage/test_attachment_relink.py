@@ -359,15 +359,15 @@ def test_append_merge_attaches_idless_message_at_max_position_plus_one(tmp_path:
         "SELECT message_id, native_id, position FROM messages WHERE session_id = ? ORDER BY position",
         (session_id,),
     ).fetchall()
-    assert [tuple(row) for row in messages] == [
-        (f"{session_id}:p:0.0", None, 0),
-        (f"{session_id}:p:1.0", None, 1),
-    ]
+    ordered_ids = [str(row["message_id"]) for row in messages]
+    assert [(row["native_id"], row["position"]) for row in messages] == [(None, 0), (None, 1)]
+    assert all(value.startswith(f"{session_id}:c:") for value in ordered_ids)
+    assert len(set(ordered_ids)) == 2
     ref = index.execute(
         "SELECT message_id FROM attachment_refs WHERE attachment_id = ?",
         (_attachment_id(session_id, attachment),),
     ).fetchone()
-    assert tuple(ref) == (f"{session_id}:p:1.0",)
+    assert tuple(ref) == (ordered_ids[1],)
     index.close()
 
 

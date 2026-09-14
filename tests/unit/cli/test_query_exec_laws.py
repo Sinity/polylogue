@@ -3333,7 +3333,7 @@ class TestSearchQueryContracts:
             assert data["mode"] == "query-unit", case_id
             assert data["unit"] == "message", case_id
             assert [item["message_id"] for item in data["items"]] == [
-                archive_message_id("chatgpt-export:ext-conv1", "m2", position=1)
+                archive_message_id("chatgpt-export:ext-conv1", "m2")
             ], case_id
             assert data["items"][0]["role"] == "assistant", case_id
         elif expectation == "plain_list":

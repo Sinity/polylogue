@@ -943,7 +943,7 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     for index in range(512):
         native_id = "target" if index == 0 else f"irrelevant-{index:04d}"
         session_id = f"codex-session:{native_id}"
-        message_id = archive_message_id(session_id, "m1", position=0)
+        message_id = archive_message_id(session_id, "m1")
         tool_id = f"tool-{index:04d}"
         session_rows.append((native_id, Origin.CODEX_SESSION.value, sha256(session_id.encode()).digest()))
         message_rows.append(

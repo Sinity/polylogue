@@ -1152,7 +1152,7 @@ def message_render_envelope_from_domain(
 ) -> MessageRenderEnvelope:
     values = _domain_values(message, _MESSAGE_MASK)
     values.update(
-        identity_source=getattr(message, "identity_source", "positional"),
+        identity_source=getattr(message, "identity_source", "content"),
         role=role_label(message.role),
         text=message.text or "",
         message_type=role_label(getattr(message, "message_type", "message") or "message"),

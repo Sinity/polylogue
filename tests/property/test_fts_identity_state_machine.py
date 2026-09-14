@@ -91,7 +91,7 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
         message_native_id = f"msg-{self._next_id}"
         session_id = f"{self._origin}:{session_native_id}"
         position = self._next_position(session_native_id)
-        message_id = archive_message_id(session_id, message_native_id, position=position)
+        message_id = archive_message_id(session_id, message_native_id)
         content_hash = self._fresh_content_hash()
         self._conn.execute(
             """
@@ -178,7 +178,7 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
             message_native_id = f"msg-{self._next_id}"
             session_id = f"{self._origin}:{session_native_id}"
             position = self._next_position(session_native_id)
-            message_id = archive_message_id(session_id, message_native_id, position=position)
+            message_id = archive_message_id(session_id, message_native_id)
             content_hash = self._fresh_content_hash()
             self._conn.execute(
                 """
@@ -222,7 +222,7 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
             message_native_id = f"rollback-msg-{self._next_id}"
             session_id = f"{self._origin}:{session_native_id}"
             position = self._next_position(session_native_id)
-            message_id = archive_message_id(session_id, message_native_id, position=position)
+            message_id = archive_message_id(session_id, message_native_id)
             content_hash = self._fresh_content_hash()
             self._conn.execute(
                 """

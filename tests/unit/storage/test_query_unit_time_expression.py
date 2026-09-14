@@ -37,8 +37,9 @@ def _insert_message(
     conn: sqlite3.Connection, *, session_id: str, position: int, occurred_at_ms: int | None = None
 ) -> None:
     conn.execute(
-        "INSERT INTO messages (session_id, position, role, content_hash, occurred_at_ms) VALUES (?, ?, 'assistant', ?, ?)",
-        (session_id, position, bytes(32), occurred_at_ms),
+        "INSERT INTO messages (session_id, position, role, content_hash, occurred_at_ms, content_identity) "
+        "VALUES (?, ?, 'assistant', ?, ?, ?)",
+        (session_id, position, bytes(32), occurred_at_ms, f"{position:032d}"),
     )
 
 
@@ -108,7 +109,7 @@ def test_query_files_first_last_seen_ms_is_none_not_epoch_for_timeless_action(tm
         conn = facade._conn
         timeless = _insert_timeless_session(conn, native_id="timeless-file")
         _insert_message(conn, session_id=timeless, position=0)
-        message_id = archive_message_id(timeless, None, position=0)
+        message_id = archive_message_id(timeless, None, content_identity=f"{0:032d}")
         conn.execute(
             """
             INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, tool_input)

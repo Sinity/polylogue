@@ -52,7 +52,7 @@ def _seed_session(conn: sqlite3.Connection, native_session_id: str, text: str) -
     """Insert one minimal searchable session/message/block."""
     session_id = f"{_ORIGIN}:{native_session_id}"
     content_hash = b"e" * 32
-    message_id = archive_message_id(session_id, "m0", position=0)
+    message_id = archive_message_id(session_id, "m0")
     conn.execute(
         "INSERT OR IGNORE INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
         (native_session_id, _ORIGIN, "snapshot ownership", content_hash),

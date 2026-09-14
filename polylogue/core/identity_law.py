@@ -38,31 +38,67 @@ def session_id(origin: str, native_id: str) -> str:
 def message_local_id(
     native_id: str | None,
     *,
-    position: int,
-    variant_index: int = 0,
+    content_identity: str | None = None,
+    content_occurrence: int = 0,
 ) -> str:
     """Return the message-local identity component.
 
-    Provider-native message IDs and position-derived coordinates occupy
-    disjoint tagged namespaces. This prevents a provider id such as ``0.0``
-    from colliding with the positional identity for ``(position=0,
-    variant_index=0)`` while keeping both components opaque.
+    Provider-native message IDs and the content-derived fallback occupy
+    disjoint tagged namespaces (``n:`` and ``c:``), so a provider id can never
+    collide with a fallback identity while both components stay opaque.
+
+    The fallback is derived from the message's declared semantic fields
+    (``pipeline.ids.message_content_identity``), never from its ordinal. An
+    ordinal fallback renumbers every later message when an upstream export
+    gains or loses one, silently re-resolving a durable ``user.db`` reference
+    onto a *different* message -- a mis-resolution no existence check can see
+    (polylogue-eqsri). ``content_occurrence`` separates messages whose declared
+    semantics are byte-identical; it counts only within one digest, so an
+    unrelated insertion never moves it.
     """
     if native_id is not None and native_id.strip():
         return f"n:{_required_text('message native_id', native_id)}"
-    return f"p:{_required_non_negative('position', position)}.{_required_non_negative('variant_index', variant_index)}"
+    identity = _required_text("content_identity", content_identity or "")
+    return f"c:{identity}.{_required_non_negative('content_occurrence', content_occurrence)}"
 
 
 def message_id(
     parent_session_id: str,
     native_id: str | None,
     *,
-    position: int,
-    variant_index: int = 0,
+    content_identity: str | None = None,
+    content_occurrence: int = 0,
 ) -> str:
     """Return archive ``message_id`` under a session."""
     session = _required_text("session_id", parent_session_id)
-    return f"{session}:{message_local_id(native_id, position=position, variant_index=variant_index)}"
+    local = message_local_id(
+        native_id,
+        content_identity=content_identity,
+        content_occurrence=content_occurrence,
+    )
+    return f"{session}:{local}"
+
+
+def split_message_local_id(stored_message_id: str) -> tuple[str | None, str | None, int]:
+    """Invert ``message_local_id`` on a stored ``message_id``.
+
+    Returns ``(native_id, content_identity, content_occurrence)`` with exactly
+    one of the first two set, so a surface holding a stored id can restate the
+    identity it was built from without re-deriving it from a position.
+    ``ValueError`` if the id carries neither tagged namespace.
+    """
+    native_marker = ":n:"
+    content_marker = ":c:"
+    native_at = stored_message_id.rfind(native_marker)
+    content_at = stored_message_id.rfind(content_marker)
+    if native_at > content_at:
+        return stored_message_id[native_at + len(native_marker) :], None, 0
+    if content_at >= 0:
+        local = stored_message_id[content_at + len(content_marker) :]
+        identity, _, occurrence = local.rpartition(".")
+        if identity and occurrence.isdigit():
+            return None, identity, int(occurrence)
+    raise ValueError(f"not a tagged archive message id: {stored_message_id!r}")
 
 
 def block_id(parent_message_id: str, *, position: int) -> str:
@@ -99,5 +135,6 @@ __all__ = [
     "message_id",
     "message_local_id",
     "session_id",
+    "split_message_local_id",
     "transcript_order_sql",
 ]

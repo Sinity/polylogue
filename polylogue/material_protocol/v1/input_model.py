@@ -73,6 +73,13 @@ class MessageInput:
     position: int
     role: Role
     text: str | None = None
+    #: The content-derived identity a message without a provider id is stored
+    #: under (``pipeline.ids.message_content_identity``), with its occurrence
+    #: ordinal. Required whenever ``native_id`` is None -- the record id
+    #: formulas mirror the ``index.db`` generated column, which no longer has
+    #: a positional branch to fall back on (polylogue-eqsri).
+    content_identity: str | None = None
+    content_occurrence: int = 0
     variant_index: int = 0
     message_type: MessageType = MessageType.MESSAGE
     material_origin: MaterialOrigin = MaterialOrigin.UNKNOWN

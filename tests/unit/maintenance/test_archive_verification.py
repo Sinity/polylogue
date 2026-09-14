@@ -281,7 +281,7 @@ def _seed_coherent_archive(root: Path) -> None:
         index_conn.execute(
             """
             INSERT INTO blocks(message_id, session_id, position, block_type, text)
-            VALUES ('codex-session:session:p:0.0', 'codex-session:session', 0, 'text', 'hello world')
+            VALUES ('codex-session:session:c:0123456789abcdef0123456789abcdef.0', 'codex-session:session', 0, 'text', 'hello world')
             """
         )
         index_conn.commit()

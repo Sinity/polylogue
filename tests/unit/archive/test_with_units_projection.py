@@ -234,8 +234,8 @@ class TestAttachBehaviour:
 
         assert set(attached) == {"message", "action", "file"}
         assert {row["message_id"] for row in attached["message"][session_id]} == {
-            archive_message_id("claude-code-session:ext-evidence", "m-user", position=0),
-            archive_message_id("claude-code-session:ext-evidence", "m-assistant", position=1),
+            archive_message_id("claude-code-session:ext-evidence", "m-user"),
+            archive_message_id("claude-code-session:ext-evidence", "m-assistant"),
         }
         action_payload = attached["action"][session_id][0]
         output_text = action_payload["output_text"]
@@ -271,7 +271,7 @@ class TestAttachBehaviour:
 
         assert attached["message"][session_id] == (
             {
-                "message_id": archive_message_id("claude-code-session:ext-field-select", "m-user", position=0),
+                "message_id": archive_message_id("claude-code-session:ext-field-select", "m-user"),
                 "role": "user",
             },
         )

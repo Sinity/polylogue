@@ -425,7 +425,7 @@ def _native_session_id(provider: str, native_id: str) -> str:
 
 
 def _native_message_id(provider: str, native_id: str, message_native_id: str) -> str:
-    return _archive_message_id(_native_session_id(provider, native_id), message_native_id, position=0)
+    return _archive_message_id(_native_session_id(provider, native_id), message_native_id)
 
 
 # Resolved archive identities for the canonical seeded triple.
@@ -785,7 +785,7 @@ def _seed_import_explain_archive(workspace: dict[str, Path]) -> tuple[str, str]:
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                _archive_message_id("codex-session:route-native", "m1", position=0),
+                _archive_message_id("codex-session:route-native", "m1"),
                 "codex-session:route-native",
                 0,
                 "tool_use",

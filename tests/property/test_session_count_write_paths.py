@@ -15,6 +15,7 @@ from hypothesis import strategies as st
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.pipeline.ids import message_content_identities
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedPasteEvidence, ParsedSession
 from polylogue.storage.derived.session.summary import refresh_session_summary
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
@@ -155,7 +156,12 @@ def test_session_counts_agree_across_full_append_and_refresh_paths(messages: lis
         duplicate_ids = _duplicate_message_native_ids(messages)
         refresh_conn.executemany(
             archive_tier_write._messages_insert_sql(),
-            _build_message_rows(refresh_id, messages, duplicate_native_ids=duplicate_ids),
+            _build_message_rows(
+                refresh_id,
+                messages,
+                duplicate_native_ids=duplicate_ids,
+                content_identities=message_content_identities(list(messages)),
+            ),
         )
         refresh_session_summary(refresh_conn, refresh_id)
 

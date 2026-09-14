@@ -301,8 +301,8 @@ async def test_file_edits_round_trip_keyed_by_tool_use_block(tmp_path: Path) -> 
     assert edit.structured_patch == [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}]
     # Keyed by the TOOL_USE block (message m1, position 0) even though the
     # evidence was attached to the TOOL_RESULT block reported in message m2.
-    assert edit.tool_use_block_id == archive_block_id(archive_message_id(session_id, "m1", position=0), position=0)
-    assert edit.message_id == archive_message_id(session_id, "m2", position=1)
+    assert edit.tool_use_block_id == archive_block_id(archive_message_id(session_id, "m1"), position=0)
+    assert edit.message_id == archive_message_id(session_id, "m2")
 
 
 async def test_file_edits_empty_for_session_without_edits(tmp_path: Path) -> None:
@@ -458,7 +458,7 @@ async def test_web_content_constructs_round_trip_search_result(tmp_path: Path) -
     query_construct = by_type["search_query"]
     assert query_construct.session_id == session_id
     assert query_construct.query == "polylogue archive"
-    assert query_construct.message_id == archive_message_id(session_id, "m1", position=0)
+    assert query_construct.message_id == archive_message_id(session_id, "m1")
     assert query_construct.block_id == archive_block_id(query_construct.message_id, position=0)
 
     result_construct = by_type["search_result"]
@@ -561,9 +561,7 @@ async def test_session_links_parent_tool_use_block_id_resolves_via_tool_id(tmp_p
 
     assert len(links) == 1
     link = links[0]
-    assert link["parent_tool_use_block_id"] == archive_block_id(
-        archive_message_id(parent_id, "m1", position=0), position=0
-    )
+    assert link["parent_tool_use_block_id"] == archive_block_id(archive_message_id(parent_id, "m1"), position=0)
     assert link["method"] == "parent-tool-use-id"
 
 
@@ -627,7 +625,7 @@ async def test_provider_shaped_claude_dispatch_resolves_through_writer(tmp_path:
 
     assert link["resolved_dst_session_id"] == parent_id
     assert link["parent_tool_use_block_id"] == archive_block_id(
-        archive_message_id(parent_id, "parent-assistant", position=0), position=0
+        archive_message_id(parent_id, "parent-assistant"), position=0
     )
     assert link["method"] == "parent-tool-use-id"
 
@@ -765,7 +763,7 @@ async def test_session_identity_alias_resolves_parent_dispatch_evidence(tmp_path
     link = links[0]
     assert link["resolved_dst_session_id"] == parent_id
     assert link["parent_tool_use_block_id"] == archive_block_id(
-        archive_message_id(parent_id, "parent-message", position=0), position=0
+        archive_message_id(parent_id, "parent-message"), position=0
     )
     [retired_link] = retired_links
     assert retired_link["resolved_dst_session_id"] is None
@@ -773,7 +771,7 @@ async def test_session_identity_alias_resolves_parent_dispatch_evidence(tmp_path
     assert retired_link["parent_session_id"] is None
     assert retired_link["root_session_id"] == child_id
     assert link["parent_tool_use_block_id"] != archive_block_id(
-        archive_message_id(decoy_id, "decoy-message", position=0), position=0
+        archive_message_id(decoy_id, "decoy-message"), position=0
     )
 
 
@@ -843,7 +841,7 @@ async def test_session_identity_alias_resolves_child_written_before_parent(tmp_p
     link = links[0]
     assert link["resolved_dst_session_id"] == parent_id
     assert link["parent_tool_use_block_id"] == archive_block_id(
-        archive_message_id(parent_id, "parent-message", position=0), position=0
+        archive_message_id(parent_id, "parent-message"), position=0
     )
 
 
@@ -1007,7 +1005,7 @@ async def test_parent_replacement_preserves_child_dispatch_block_id(tmp_path: Pa
     finally:
         await repo.close()
 
-    dispatch_block_id = archive_block_id(archive_message_id(parent_id, "parent-assistant", position=0), position=0)
+    dispatch_block_id = archive_block_id(archive_message_id(parent_id, "parent-assistant"), position=0)
     assert before["parent_tool_use_block_id"] == dispatch_block_id
     assert after["resolved_dst_session_id"] == parent_id
     assert after["parent_tool_use_block_id"] == dispatch_block_id
@@ -1077,7 +1075,7 @@ async def test_dispatch_child_aliases_resolve_to_one_canonical_child(tmp_path: P
 
     assert link["resolved_dst_session_id"] == parent_id
     assert link["parent_tool_use_block_id"] == archive_block_id(
-        archive_message_id(parent_id, "parent-assistant", position=0), position=0
+        archive_message_id(parent_id, "parent-assistant"), position=0
     )
     assert link["method"] == "parent-tool-use-id"
 
