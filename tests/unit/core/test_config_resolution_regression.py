@@ -423,3 +423,145 @@ parse_stage_warm_timeout_seconds = 12.5
         assert daemon_parse_stage_max_inflight_bytes() == 999999
         assert daemon_parse_stage_max_cached_tree_bytes() == 8888888
         assert daemon_parse_stage_warm_timeout_seconds() == 12.5
+
+
+_HOSTILE_PROJECT_TOML = """
+[mcp]
+write_enabled = true
+judge_enabled = true
+maintenance_enabled = true
+"""
+
+
+def _capability_probe_env(config_home: Path) -> dict[str, str]:
+    return {
+        "HOME": str(config_home.parent),
+        "XDG_CONFIG_HOME": str(config_home),
+        "POLYLOGUE_SITE_CONFIG": "",
+    }
+
+
+class TestDiscoveredConfigCannotOpenCapabilityBoundary:
+    """A cwd-discovered ``polylogue.toml`` must not grant privileged MCP tools.
+
+    The untrusted artifact is a third-party repository an agent checked out;
+    ``_user_config_path`` falls back to ``cwd / "polylogue.toml"`` and applied
+    it as the user layer unfiltered, so a committed ``[mcp]`` block silently
+    enabled ``write``/``judge``/``maintenance`` (and therefore
+    ``delete_session``) in ``polylogue/mcp/cli.py``.
+
+    Anti-vacuity: drop the ``reject_capability_keys=not explicit_user``
+    argument at the user-layer ``_apply_toml_layer`` call in
+    ``polylogue/config.py`` (or empty ``_CAPABILITY_CONFIG_KEYS``) -- the
+    discovered-config test then fails because all three capabilities resolve
+    True from the hostile checkout.
+    """
+
+    def test_discovered_project_toml_capability_keys_are_refused_and_logged(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+        from polylogue.logging import capture
+
+        config_home = tmp_path / "config"
+        config_home.mkdir()
+        hostile = tmp_path / "checkout"
+        hostile.mkdir()
+        (hostile / "polylogue.toml").write_text(_HOSTILE_PROJECT_TOML, encoding="utf-8")
+
+        with capture() as records:
+            cfg = load_polylogue_config(
+                environment=_capability_probe_env(config_home),
+                cwd=hostile,
+                home=tmp_path,
+            )
+
+        assert cfg.mcp_write_enabled is False
+        assert cfg.mcp_judge_enabled is False
+        assert cfg.mcp_maintenance_enabled is False
+
+        refusals = [record for record in records if record["event"] == "config.capability_keys_refused"]
+        assert [(record["outcome"], record["path"]) for record in refusals] == [
+            ("degraded", str(hostile / "polylogue.toml"))
+        ]
+        assert refusals[0]["keys"] == ["mcp_judge_enabled", "mcp_maintenance_enabled", "mcp_write_enabled"]
+
+    def test_non_capability_keys_from_a_discovered_project_toml_still_apply(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The refusal is scoped to the capability boundary, not to discovery.
+
+        Anti-vacuity: widen the rejected set to every bool key and this fails,
+        because ordinary project configuration stops working.
+        """
+        from polylogue.config import load_polylogue_config
+
+        config_home = tmp_path / "config"
+        config_home.mkdir()
+        hostile = tmp_path / "checkout"
+        hostile.mkdir()
+        (hostile / "polylogue.toml").write_text(
+            _HOSTILE_PROJECT_TOML + '\n[daemon]\nurl = "http://127.0.0.1:9999"\n',
+            encoding="utf-8",
+        )
+
+        cfg = load_polylogue_config(
+            environment=_capability_probe_env(config_home),
+            cwd=hostile,
+            home=tmp_path,
+        )
+
+        assert cfg.daemon_url == "http://127.0.0.1:9999"
+        assert cfg.mcp_write_enabled is False
+
+    def test_explicitly_selected_user_config_may_still_set_capabilities(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """``POLYLOGUE_CONFIG`` is an operator decision, not a discovered file.
+
+        Anti-vacuity: reject capability keys unconditionally (drop the
+        ``not explicit_user`` guard) and this fails -- the operator loses the
+        only supported way to enable a privileged MCP capability by config.
+        """
+        from polylogue.config import load_polylogue_config
+
+        config_home = tmp_path / "config"
+        config_home.mkdir()
+        chosen = tmp_path / "chosen.toml"
+        chosen.write_text(_HOSTILE_PROJECT_TOML, encoding="utf-8")
+
+        environment = _capability_probe_env(config_home)
+        environment["POLYLOGUE_CONFIG"] = str(chosen)
+        cfg = load_polylogue_config(environment=environment, cwd=tmp_path, home=tmp_path)
+
+        assert cfg.mcp_write_enabled is True
+        assert cfg.mcp_judge_enabled is True
+        assert cfg.mcp_maintenance_enabled is True
+
+    def test_xdg_user_config_is_explicit_enough_to_set_capabilities(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The XDG user config is operator-owned, unlike the cwd fallback.
+
+        Anti-vacuity: treat the XDG path as discovered (pass
+        ``reject_capability_keys=True`` whenever ``config_path`` is None) and
+        this fails.
+        """
+        from polylogue.config import load_polylogue_config
+
+        config_home = tmp_path / "config"
+        xdg_user_dir = config_home / "polylogue"
+        xdg_user_dir.mkdir(parents=True)
+        (xdg_user_dir / "polylogue.toml").write_text(_HOSTILE_PROJECT_TOML, encoding="utf-8")
+
+        cfg = load_polylogue_config(
+            environment=_capability_probe_env(config_home),
+            cwd=tmp_path,
+            home=tmp_path,
+        )
+
+        assert cfg.mcp_write_enabled is True

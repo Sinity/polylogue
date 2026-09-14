@@ -21,6 +21,7 @@ import tomllib
 
 from .core.errors import PolylogueError
 from .core.loopback import bind_hosts_overlap, is_loopback_host
+from .logging import WARNING, emit
 from .paths import GEMINI_DRIVE_FOLDER
 from .storage.archive_identity import archive_file_set_root, resolve_active_index_path
 
@@ -1664,6 +1665,21 @@ _BOOL_CONFIG_KEYS = frozenset(
     }
 )
 
+# Capability-boundary keys: they unlock privileged MCP operation dispatch
+# (write/judge/maintenance).  A *discovered* user config -- the cwd
+# ``polylogue.toml`` fallback in :func:`_user_config_path` -- is attacker
+# controlled whenever an agent checks out a third-party repository, so these
+# keys are refused from that layer and the refusal is logged.  An explicitly
+# selected user config (``POLYLOGUE_CONFIG`` or the XDG path) may still set
+# them.
+_CAPABILITY_CONFIG_KEYS = frozenset(
+    {
+        "mcp_write_enabled",
+        "mcp_judge_enabled",
+        "mcp_maintenance_enabled",
+    }
+)
+
 
 def _toml_section_layout() -> list[tuple[str, list[tuple[str, str]]]]:
     sections: dict[str, list[tuple[str, str]]] = {}
@@ -1877,6 +1893,7 @@ def _apply_toml_layer(
     layer_name: str,
     *,
     strict: bool,
+    reject_capability_keys: bool = False,
 ) -> None:
     """Load one TOML layer, optionally failing for an explicitly selected file."""
     try:
@@ -1889,6 +1906,20 @@ def _apply_toml_layer(
 
     before = deepcopy(cfg)
     _merge_toml(cfg, toml_data)
+    if reject_capability_keys:
+        rejected = sorted(key for key in _CAPABILITY_CONFIG_KEYS if before.get(key, _MISSING) != cfg.get(key, _MISSING))
+        for key in rejected:
+            cfg[key] = before[key]
+        if rejected:
+            emit(
+                "config.capability_keys_refused",
+                WARNING,
+                outcome="degraded",
+                reason="discovered_config_layer",
+                keys=rejected,
+                layer=layer_name,
+                path=str(path),
+            )
     for key, value in cfg.items():
         if before.get(key, _MISSING) != value:
             layers[key] = layer_name
@@ -1931,7 +1962,17 @@ def load_polylogue_config(
     else:
         user_path = _user_config_path(bootstrap)
     if user_path is not None and user_path.is_file():
-        _apply_toml_layer(cfg, layers, user_path, "user", strict=explicit_user)
+        _apply_toml_layer(
+            cfg,
+            layers,
+            user_path,
+            "user",
+            strict=explicit_user,
+            # Only the *discovered* cwd fallback is attacker-controlled; an
+            # explicit POLYLOGUE_CONFIG and the operator-owned XDG user config
+            # may still set capability keys.
+            reject_capability_keys=(not explicit_user and user_path != bootstrap.config_home / "polylogue.toml"),
+        )
 
     before_env = deepcopy(cfg)
     _apply_env_overrides(cfg, bootstrap.environment)

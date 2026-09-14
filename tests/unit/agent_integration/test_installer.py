@@ -149,6 +149,9 @@ def test_preexisting_equal_native_value_is_not_claimed_or_removed(tmp_path: Path
         "env": {
             "POLYLOGUE_ARCHIVE_ROOT": str((tmp_path / "archive").resolve()),
             "POLYLOGUE_CONFIG": str((tmp_path / "polylogue.toml").resolve()),
+            "POLYLOGUE_MCP_WRITE_ENABLED": "0",
+            "POLYLOGUE_MCP_JUDGE_ENABLED": "0",
+            "POLYLOGUE_MCP_MAINTENANCE_ENABLED": "0",
         },
     }
     path = home / ".gemini" / "settings.json"
@@ -337,3 +340,38 @@ def test_installer_created_directories_are_owner_only(tmp_path: Path) -> None:
 
     published = {str(path): oct(mode) for path, mode in observed.items() if mode != 0o700}
     assert not published, published
+
+
+def test_generated_mcp_entry_pins_disabled_capabilities_explicitly(tmp_path: Path) -> None:
+    """A default read-only entry states "0", never an absent variable.
+
+    An absent ``POLYLOGUE_MCP_*_ENABLED`` lets a lower config layer supply the
+    capability; the generated entry must leave no such gap (defence in depth
+    behind the ``config.py`` refusal of discovered capability keys).
+
+    Anti-vacuity: restore the ``if options.capabilities.write:`` guards in
+    ``installer._mcp_entry`` and this fails with a ``KeyError`` on
+    ``POLYLOGUE_MCP_WRITE_ENABLED`` -- the disabled capability is unstated.
+    """
+    manager, home, polylogue, server = _manager(tmp_path)
+    manager.install(_options(polylogue, server))
+
+    env = json.loads((home / ".claude.json").read_text())["mcpServers"]["polylogue"]["env"]
+    assert env["POLYLOGUE_MCP_WRITE_ENABLED"] == "0"
+    assert env["POLYLOGUE_MCP_JUDGE_ENABLED"] == "0"
+    assert env["POLYLOGUE_MCP_MAINTENANCE_ENABLED"] == "0"
+
+    codex = (home / ".codex" / "config.toml").read_text()
+    assert "POLYLOGUE_MCP_WRITE_ENABLED" in codex
+
+
+def test_enabling_one_capability_leaves_the_others_pinned_off(tmp_path: Path) -> None:
+    """Anti-vacuity: emit "1"/absent instead of "1"/"0" and the two disabled
+    capability assertions below fail with ``KeyError``."""
+    manager, home, polylogue, server = _manager(tmp_path)
+    manager.install(_options(polylogue, server, capabilities=MCPCapabilities(judge=True)))
+
+    env = json.loads((home / ".claude.json").read_text())["mcpServers"]["polylogue"]["env"]
+    assert env["POLYLOGUE_MCP_JUDGE_ENABLED"] == "1"
+    assert env["POLYLOGUE_MCP_WRITE_ENABLED"] == "0"
+    assert env["POLYLOGUE_MCP_MAINTENANCE_ENABLED"] == "0"
