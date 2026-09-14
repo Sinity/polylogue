@@ -465,6 +465,14 @@ def _clear_polylogue_env(
     clear_degraded()
     request.addfinalizer(clear_degraded)
 
+    # Structured-event configuration is process-global: a CLI command that
+    # calls configure_events() would otherwise keep rendering into the next
+    # test's captured output. Reset on both sides of every test.
+    from polylogue.logging import reset_events
+
+    reset_events()
+    request.addfinalizer(reset_events)
+
     # Clear search runtime state to prevent monkeypatched package-level search
     # adapters and cached results from leaking across tests.
     import sys
