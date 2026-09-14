@@ -114,12 +114,14 @@ def execute_read_operation(
     dependencies = dependencies or DaemonReadDependencies()
     cacheable = _cacheable_read(name, payload)
     cache_key_payload = _params(payload) if name in {"cli.query", "facets"} else payload
-    # Completion is a pure protocol read and deliberately accepts the minimal
-    # archive-shaped object used by the public operation seam.  Every other
-    # operation retains the existing index validation, including operations
-    # that do not use the result cache.
+    # A grammar completion is a pure protocol read and deliberately accepts the
+    # minimal archive-shaped object used by the public operation seam, so it
+    # skips index validation.  A completion that names an archive-backed
+    # ``source`` does read the archive and is validated like any other read.
+    # Every other operation retains the existing index validation, including
+    # operations that do not use the result cache.
     generation: str | None = None
-    if name != "completion":
+    if name != "completion" or completion_reads_archive(payload):
         generation = str(archive.index_db_path.resolve())
     if cacheable:
         assert generation is not None
@@ -147,7 +149,7 @@ def execute_read_operation(
         params = _params(payload)
         result = _query_units_payload(params, archive=archive, serving_identity=serving_identity)
     elif name == "completion":
-        result = _completion_payload(payload)
+        result = _completion_payload(payload, archive=archive)
     elif name == "facets":
         result = _facets_payload(_params(payload), archive=archive)
     elif name == "status":
@@ -505,7 +507,48 @@ def _query_units_payload(
     ).model_dump(mode="json")
 
 
-def _completion_payload(payload: Mapping[str, object]) -> dict[str, object]:
+#: Archive-backed completion vocabularies and how each is counted. Session ids
+#: are listed; the rest are ``stats_by`` group counts, which is the same
+#: aggregate ``analyze by <dimension>`` reports, so a completion can never
+#: offer a value the corresponding query would not match.
+_COMPLETION_VALUE_UNITS: Mapping[str, str] = {
+    "repo": "sessions",
+    "tag": "sessions",
+    "tool": "actions",
+}
+
+#: How many sessions a session-id completion scans before filtering. The CLI's
+#: own reader used the same window; it bounds the work a TAB press costs on a
+#: large archive rather than the number of rows that come back.
+_COMPLETION_SESSION_SCAN = 100
+
+#: Every declared completion source reads archive content. ``origin`` is
+#: deliberately not among them: it is a declared vocabulary that must stay
+#: completable on an archive that does not exist yet, so the CLI answers it
+#: from ``sources.origin_specs`` without a read.
+ARCHIVE_COMPLETION_SOURCES: frozenset[str] = frozenset({"session_id", *_COMPLETION_VALUE_UNITS})
+
+
+def completion_reads_archive(payload: Mapping[str, object]) -> bool:
+    """Whether this completion request needs a validated index to answer."""
+
+    source = payload.get("source")
+    return isinstance(source, str) and source in ARCHIVE_COMPLETION_SOURCES
+
+
+def _completion_payload(payload: Mapping[str, object], *, archive: ArchiveStore | None = None) -> dict[str, object]:
+    """Answer one completion question from the grammar, or from the archive.
+
+    ``source`` names an archive-backed vocabulary and is the only path that
+    touches ``archive``; every other kind is a pure protocol read over the
+    declared query grammar, which is why this operation is still servable
+    against the minimal archive-shaped object the public operation seam passes.
+    """
+
+    source = payload.get("source")
+    if isinstance(source, str) and source:
+        return {"value_completions": _completion_values(source, payload, archive=archive)}
+
     from polylogue.archive.query.completions import query_completion_payload
 
     kind = cast("Literal['field', 'operator', 'value', 'unit']", payload.get("kind") or "field")
@@ -517,6 +560,65 @@ def _completion_payload(payload: Mapping[str, object]) -> dict[str, object]:
             field=cast("str | None", payload.get("field")),
         )
     }
+
+
+def _completion_values(
+    source: str, payload: Mapping[str, object], *, archive: ArchiveStore | None
+) -> dict[str, object]:
+    incomplete = str(payload.get("incomplete") or "")
+    raw_limit = payload.get("limit")
+    limit = int(raw_limit) if isinstance(raw_limit, int) and raw_limit > 0 else 32
+    values: list[dict[str, object]]
+    if source == "session_id":
+        values = _session_id_completions(incomplete, archive=_require_archive(archive, source), limit=limit)
+    elif source in _COMPLETION_VALUE_UNITS:
+        values = _grouped_completions(source, incomplete, archive=_require_archive(archive, source), limit=limit)
+    else:
+        raise ValueError(f"completion source is not declared: {source}")
+    return {"source": source, "incomplete": incomplete, "values": values}
+
+
+def _require_archive(archive: ArchiveStore | None, source: str) -> ArchiveStore:
+    if archive is None:
+        raise ValueError(f"completion source requires an archive: {source}")
+    return archive
+
+
+def _session_id_completions(incomplete: str, *, archive: ArchiveStore, limit: int) -> list[dict[str, object]]:
+    current = incomplete.strip()
+    current_lower = current.lower()
+    values: list[dict[str, object]] = []
+    for summary in archive.list_summaries(limit=_COMPLETION_SESSION_SCAN):
+        session_id = str(summary.session_id)
+        title = summary.title or ""
+        if current and not (
+            session_id.startswith(current)
+            or (":" in session_id and current in session_id)
+            or (title and current_lower in title.lower())
+        ):
+            continue
+        values.append({"value": session_id, "help": f"{summary.origin} · {title or session_id}"})
+    values.sort(key=lambda item: cast("str", item["value"]))
+    return values[:limit]
+
+
+def _grouped_completions(source: str, incomplete: str, *, archive: ArchiveStore, limit: int) -> list[dict[str, object]]:
+    unit = _COMPLETION_VALUE_UNITS[source]
+    # Tags live in the durable ``user.db`` and have their own reader; repo and
+    # tool are index aggregates, which is the same ``stats_by`` dimension
+    # ``analyze by <dimension>`` reports -- so a completion can never offer a
+    # value the corresponding query would not match.
+    grouped = archive.list_user_tags() if source == "tag" else archive.stats_by(source)
+    prefix = incomplete.strip().lower()
+    ordered = sorted(grouped.items(), key=lambda pair: (-pair[1], pair[0]))
+    values: list[dict[str, object]] = []
+    for value, count in ordered:
+        if prefix and not value.lower().startswith(prefix):
+            continue
+        values.append({"value": value, "help": f"{count} {unit}"})
+        if len(values) >= limit:
+            break
+    return values
 
 
 def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
