@@ -679,6 +679,16 @@ def _fresh_durable_bootstrap_tier_version_skew(archive_root: Path, tier: Archive
     return live_version != version
 
 
+def _version_skewed_granting_tiers(archive_root: Path, versions: dict[ArchiveTier, int]) -> set[ArchiveTier]:
+    """Return the above-floor tiers whose live version denies the marker."""
+    return {
+        tier
+        for tier, version in versions.items()
+        if version > DURABLE_MIGRATION_ADOPTION_FLOORS[tier]
+        and _fresh_durable_bootstrap_tier_version_skew(archive_root, tier, version)
+    }
+
+
 def _assert_fresh_durable_bootstrap_is_own(
     archive_root: Path,
     manifest_root: Path,
@@ -698,7 +708,10 @@ def _assert_fresh_durable_bootstrap_is_own(
         from polylogue.storage.archive_identity import ArchiveIdentity
 
         if legacy_identity_digest == _durable_identity_digest(ArchiveIdentity.resolve(archive_root)):
-            return set()
+            # The seal proves the marker is this archive's own, so no tier is
+            # transplanted -- but a tier standing at a different version still
+            # grants nothing, exactly as it does without the seal.
+            return _version_skewed_granting_tiers(archive_root, versions)
     ungranted: set[ArchiveTier] = set()
     for tier, version in versions.items():
         if version <= DURABLE_MIGRATION_ADOPTION_FLOORS[tier]:

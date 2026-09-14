@@ -3054,6 +3054,44 @@ def test_fresh_bootstrap_marker_grants_nothing_for_a_version_skewed_tier(tmp_pat
     assert granted[ArchiveTier.SOURCE] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
 
 
+def test_legacy_sealed_marker_also_grants_nothing_for_a_version_skewed_tier(tmp_path: Path) -> None:
+    """The legacy seal proves ownership, not that a skewed tier is current.
+
+    Markers written by earlier revisions carry a path-and-inode
+    ``durable_identity_digest``. Matching it establishes the marker is this
+    archive's own -- so nothing is transplanted -- but a tier standing at a
+    different ``user_version`` still grants nothing, exactly as it does for a
+    marker carrying no seal.
+
+    Anti-vacuity: restoring the unconditional ``return set()`` in the legacy
+    branch makes this fail with the audit tier present in the granted
+    versions. Verified by reverting, not by asserting.
+    """
+    from polylogue.storage.archive_identity import ArchiveIdentity
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    marker = manifest_root / ".bootstrap"
+
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    payload["durable_identity_digest"] = durable_change_train_module._durable_identity_digest(
+        ArchiveIdentity.resolve(tmp_path)
+    )
+    payload.pop("marker_digest", None)
+    payload["marker_digest"] = durable_change_train_module._bootstrap_marker_digest(payload)
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+
+    with closing(sqlite3.connect(tmp_path / "audit.db")) as connection:
+        connection.execute("PRAGMA user_version = 1")
+        connection.commit()
+
+    granted = durable_change_train_module._fresh_durable_bootstrap_versions(tmp_path, manifest_root)
+
+    assert ArchiveTier.AUDIT not in granted
+    assert granted[ArchiveTier.SOURCE] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+
+
 def test_fresh_bootstrap_marker_is_retired_once_it_grants_nothing(tmp_path: Path) -> None:
     """The marker is removed as soon as it stops carrying authority.
 
