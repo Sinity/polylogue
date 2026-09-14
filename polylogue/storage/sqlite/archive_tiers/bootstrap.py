@@ -240,7 +240,27 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
         _TIER_PROTOTYPES.setdefault(key, destination)
 
 
-def converge_same_version_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
+def _apply_derived_identity_policy(conn: sqlite3.Connection, tier: ArchiveTier, policy: str) -> None:
+    """Apply the caller's existing derived-identity policy; see the caller's docstring."""
+    from polylogue.storage.sqlite.schema_bootstrap import (
+        ensure_derived_schema_identity,
+        stamp_derived_schema_identity,
+    )
+
+    if policy == "stamp":
+        stamp_derived_schema_identity(conn, tier.value)
+        # The stamp lands after the convergence commit, so it is its own open
+        # transaction: without this it rolls back on close.
+        conn.commit()
+        return
+    if policy != "verify":
+        raise ValueError(f"unknown derived identity policy: {policy!r}")
+    ensure_derived_schema_identity(conn, tier.value)
+
+
+def converge_same_version_tier(
+    conn: sqlite3.Connection, tier: ArchiveTier, *, derived_identity: str = "verify"
+) -> None:
     """Bring an already-materialised tier at the current version up to date.
 
     The declared same-version policy, and the whole of it. A tier whose stored
@@ -248,15 +268,29 @@ def converge_same_version_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> N
     and committed, so re-running ``executescript`` over it buys nothing but the
     ``IF NOT EXISTS`` no-ops -- and re-stamping its derived schema identity buys
     nothing but the commit fsync that stamp needs. Measured on this checkout,
-    re-opening an already-current index.db through the full initialization route
-    costs ~152ms, of which ~44ms is the redundant DDL and ~102ms the redundant
-    identity stamp; this route costs ~8ms.
+    Measured warm on this checkout, re-opening the six tiers of an initialized
+    archive root costs 123.7ms through the full initialization route and 26.7ms
+    through this one, with ddl_reapply going 50 -> 0 over ten passes. index.db
+    is where the saving is (35.5ms -> 21.4ms per open); the other five tiers
+    were only paying 0.3-4ms of no-op DDL each.
 
     What is *not* redundant stays: ops.db evolves by idempotent additive DDL
     without a version bump, so it keeps the full pass; user.db gains declared
     annotation schemas; index.db takes its registered benign DDL convergence
-    and runtime indexes, and its derived identity is *verified* rather than
-    rewritten, so a foreign identity is still refused here.
+    and runtime indexes.
+
+    ``derived_identity`` selects which of the two existing identity policies the
+    caller already had, because they are not interchangeable and this function
+    is not the place to unify them. ``"verify"`` adopts an unstamped tier and
+    refuses a stale one -- what ``initialize_archive_database`` has always done.
+    ``"stamp"`` rewrites the stamp unconditionally, which is what the open path
+    has always done: an archive it opens may carry a superseded identity that
+    convergence is expected to overwrite in place. Changing the open path to
+    refuse instead is a correctness decision with live consequences, not a
+    performance one, so it is left exactly as it was -- and it costs nothing to
+    leave alone: with the redundant DDL gone the two policies measure the same
+    (21.4ms vs 21.1ms), because what made the stamp look expensive was the DDL
+    transaction it was committing.
     """
     if tier is ArchiveTier.OPS:
         # ops.db is disposable and evolves through idempotent additive DDL
@@ -274,12 +308,11 @@ def converge_same_version_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> N
         # same-version open so an already-populated archive converges without
         # touching INDEX_SCHEMA_VERSION.
         from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
-        from polylogue.storage.sqlite.schema_bootstrap import ensure_derived_schema_identity
         from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
         ensure_runtime_indexes_sync(conn)
         apply_index_benign_ddl_convergence(conn)
-        ensure_derived_schema_identity(conn, tier.value)
+        _apply_derived_identity_policy(conn, tier, derived_identity)
         assert_schema_manifest(conn, tier)
     conn.commit()
 
@@ -871,7 +904,10 @@ def open_initialized_tier_connection(
         # initialization. Version 0 is the create-it case and keeps the DDL
         # route, which is what stamps the version this branch reads.
         if stored_version == required_version:
-            converge_same_version_tier(conn, tier)
+            # Performance only: the redundant whole-tier DDL goes, the identity
+            # policy this route has always applied stays. See
+            # converge_same_version_tier on why the two are separable.
+            converge_same_version_tier(conn, tier, derived_identity="stamp")
         else:
             initialize_archive_tier(conn, tier)
         assert_tier_schema_supported(conn, path, tier)
