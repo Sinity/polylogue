@@ -49,7 +49,7 @@ Session summaries, profiles, raw observations, FTS, and embeddings use
 domain-owned inspection and publication through the derivation kernel. The
 daemon sheet identifies the remaining stage-based owners; the presence of the
 kernel does not imply their retirement (`polylogue/daemon/session_profile_composition.py:37-62`;
-`polylogue/daemon/convergence_stages.py:439-477`).
+`polylogue/daemon/convergence_stages.py:458-469`).
 
 ## Identity you must preserve
 
@@ -96,4 +96,4 @@ not rotted.
 - Tests use synthetic fixtures and managed `devtools test` commands; ambient
   personal archives never enter tracked files.
 
-verified: 0ba47b3d3cc0835ff328ca59826bf148ee48ae96 2026-09-13
+verified: 7a5160fd8b5a7c2a65c2149710713e8f8a4d6485 2026-09-14
