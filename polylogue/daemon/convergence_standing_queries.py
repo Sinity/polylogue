@@ -18,6 +18,7 @@ from polylogue.archive.query.evaluator import CanonicalPlanEvaluator, QueryEvalu
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.hashing import hash_payload
 from polylogue.core.query_identity import query_ref, result_set_ref
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import get_logger
 from polylogue.storage.sqlite.archive_tiers.user_write import (
@@ -107,7 +108,7 @@ def make_standing_query_stage(
                 conn.close()
             return True
         except sqlite3.OperationalError as exc:
-            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+            if is_transient_sqlite_lock(exc):
                 logger.info("standing-queries: evaluation deferred because sqlite is busy")
                 return False
             logger.warning("standing-queries: evaluation failed", exc_info=True)

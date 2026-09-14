@@ -30,6 +30,7 @@ from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
@@ -1153,8 +1154,8 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def _is_sqlite_busy_error(exc: sqlite3.OperationalError) -> bool:
-    detail = str(exc).lower()
-    return "database is locked" in detail or "database is busy" in detail or "database table is locked" in detail
+    """Defer to SQLite's result code so extended LOCKED codes still get 503."""
+    return is_transient_sqlite_lock(exc)
 
 
 def _build_query_spec_params(

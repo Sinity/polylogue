@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import Provider
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import get_logger
@@ -51,10 +52,8 @@ _DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS = 8
 
 
 def _is_transient_sqlite_lock(exc: BaseException) -> bool:
-    if not isinstance(exc, sqlite3.OperationalError):
-        return False
-    message = str(exc).lower()
-    return "database is locked" in message or "database table is locked" in message or "database is busy" in message
+    """Defer to SQLite's result code; text alone misses SQLITE_LOCKED."""
+    return is_transient_sqlite_lock(exc)
 
 
 def _open_archive_insight_write_connection(db_path: Path, *, archive_root: Path) -> sqlite3.Connection:
