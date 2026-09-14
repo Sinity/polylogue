@@ -16,10 +16,12 @@ The three observable outcomes are:
 2. **rejected (input)** — the supplied path does not exist, cannot be
    read, or cannot be staged into the inbox. Click rejects missing paths
    directly; staging errors raise a ``fail()`` with the offending path.
-3. **rejected (daemon)** — the daemon is not reachable, returned an HTTP
-   error, or returned a response with a failed status. The error message
-   names the daemon URL and points the user at ``polylogued`` so they
-   know which process to start or inspect.
+3. **rejected (daemon)** — the daemon is not running, refused the
+   declared ``ingest`` operation, or returned an envelope this command
+   cannot read as acceptance. The error message names the archive the
+   submission was scoped to and points the user at ``polylogued run``:
+   the resident daemon is the only writer, so there is no standalone
+   mode to fall back to.
 """
 
 from __future__ import annotations
@@ -27,10 +29,9 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 import click
 
@@ -45,7 +46,6 @@ if TYPE_CHECKING:
 # observable through the inbox / ``polylogue ops status`` surfaces.
 _ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
 _DEMO_WAIT_POLL_INTERVAL_S = 0.25
-_DEMO_AUGMENT_TIMEOUT_S = 120.0
 
 
 def _default_daemon_url() -> str:
@@ -144,93 +144,135 @@ def _verify_demo_now(*, require_overlays: bool = False) -> DemoVerifyResult:
     return result
 
 
-def _request_demo_augmentation(daemon_url: str, *, with_overlays: bool) -> None:
+def _request_demo_augmentation(env: AppEnv, *, with_overlays: bool) -> None:
     """Ask the daemon to apply demo-only writes under its writer lease."""
-    from polylogue.config import load_polylogue_config
-    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.cli.operation_kernel import (
+        OperationIndeterminateError,
+        OperationKernelError,
+        OperationUnavailableError,
+        configured_mutation_operation,
+    )
+    from polylogue.cli.shared.helpers import load_effective_config
 
-    config = load_polylogue_config()
-    headers = {"Content-Type": "application/json"}
-    token = resolve_api_auth_token(
-        getattr(config, "api_auth_token", None),
-        allow_no_auth=getattr(config, "api_allow_no_auth", False),
-    )
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = Request(
-        f"{daemon_url}/api/demo/augment",
-        data=json.dumps({"with_overlays": with_overlays}).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
+    config = load_effective_config(env)
     try:
-        with urlopen(request, timeout=_DEMO_AUGMENT_TIMEOUT_S) as response:
-            payload = json.loads(response.read())
-    except HTTPError as exc:
-        fail("import", _daemon_http_error_message(exc, daemon_url=daemon_url, staged=archive_root()))
-    except TimeoutError as exc:
-        fail("import", _daemon_submit_timeout_message(daemon_url, staged=archive_root(), exc=exc))
-    except URLError as exc:
-        if isinstance(exc.reason, TimeoutError):
-            fail("import", _daemon_submit_timeout_message(daemon_url, staged=archive_root(), exc=exc.reason))
-        fail("import", _daemon_unreachable_message(daemon_url, str(exc.reason)))
-    except OSError as exc:
-        fail("import", _daemon_unreachable_message(daemon_url, str(exc)))
+        result = configured_mutation_operation(
+            config,
+            "maintenance.demo.augment",
+            {"with_overlays": with_overlays},
+        )
+    except OperationUnavailableError:
+        fail("import", _daemon_required_message(config.archive_root))
+    except OperationIndeterminateError as exc:
+        fail(
+            "import",
+            f"Demo augmentation reached the daemon and no receipt came back ({exc}); "
+            "refusing to claim a verified archive. Inspect the daemon log before retrying.",
+        )
+    except OperationKernelError as exc:
+        fail("import", f"Daemon rejected demo augmentation ({exc}); refusing to claim a verified archive.")
 
-    if not isinstance(payload, dict) or payload.get("ok") is not True:
-        fail("import", "Daemon rejected demo augmentation; refusing to claim a verified archive.")
-
-
-#: Seconds to wait for the daemon to accept an ingest submission. Staging a
-#: corpus and admitting it is real work -- the previous 5s cap timed out on an
-#: ordinary `import --demo` and reported the working daemon as unreachable.
-_INGEST_SUBMIT_TIMEOUT_S = 120.0
+    if result.get("effect") == "indeterminate":
+        fail("import", "Daemon reported an indeterminate demo augmentation; refusing to claim a verified archive.")
 
 
-def _daemon_submit_timeout_message(daemon_url: str, *, staged: object, exc: BaseException) -> str:
-    del exc
-    return (
-        f"Daemon at {daemon_url} accepted the connection but did not answer the ingest "
-        f"submission within {_INGEST_SUBMIT_TIMEOUT_S:g}s.\n"
-        "  The daemon is running; it is busy or stalled admitting this submission. "
-        "Check `polylogue ops status` and the daemon log rather than restarting it.\n"
-        f"  Staged content is preserved at: {staged}"
+def _daemon_endpoint(config: object) -> str:
+    """Return the archive-scoped daemon socket this CLI actually submits to."""
+    from polylogue.daemon.socket_path import daemon_socket_path
+
+    return str(daemon_socket_path(config.archive_root))  # type: ignore[attr-defined]
+
+
+def _preflight_or_fail(staged: Path) -> None:
+    """Refuse an inadmissible source before asking the daemon to schedule it.
+
+    The daemon runs the same read-only admissibility check before it accepts
+    an ingest.  Running it here too costs nothing and lets the operator see
+    "this export shape is not parseable" without a scheduled operation that
+    can only fail later.
+    """
+    from polylogue.operations.import_operations import import_source_admissibility
+
+    preflight = import_source_admissibility(staged)
+    if preflight.admissible:
+        return
+    fail(
+        "import",
+        f"{preflight.error_code}: {preflight.summary()}\n  The staged copy was left in place at {staged}.",
     )
 
 
-def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
-    """Build an actionable error when the daemon is unreachable."""
-    return (
-        f"Could not reach daemon at {daemon_url} ({reason}).\n"
-        "  Is polylogued running? Start it with 'polylogued run' and re-try, "
-        "or pass --daemon-url to point at the correct API endpoint."
+def _submit_ingest(env: AppEnv, *, staged: Path, requested_source: Path) -> dict[str, object]:
+    """Submit the declared ``ingest`` operation and report its acceptance.
+
+    Returns an :class:`~polylogue.operations.import_contracts.ImportOperation`
+    shaped mapping. Acceptance is decided exactly as the daemon's own ingest
+    route decides it: a durable ``accepted_reference`` *and* an outcome that
+    admits the work. Anything else is reported as a failure, never as success.
+    """
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationIndeterminateError,
+        OperationKernelError,
+        OperationUnavailableError,
+        configured_accepted_operation,
     )
+    from polylogue.cli.shared.helpers import load_effective_config
 
-
-def _daemon_http_error_message(exc: HTTPError, *, daemon_url: str, staged: Path) -> str:
-    detail = ""
+    config = load_effective_config(env)
+    payload: dict[str, object] = {
+        "path": str(staged),
+        "source_path": str(requested_source.expanduser().resolve()),
+        "idempotency_key": None,
+    }
     try:
-        raw_body = exc.read()
-    except OSError:
-        raw_body = b""
-    if raw_body:
-        try:
-            payload = json.loads(raw_body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            payload = None
-        if isinstance(payload, dict):
-            error = payload.get("error")
-            body_detail = payload.get("detail")
-            fragments: list[str] = []
-            if isinstance(error, str) and error:
-                fragments.append(error)
-            if isinstance(body_detail, str) and body_detail:
-                fragments.append(body_detail)
-            detail = "\n  Daemon detail: " + " — ".join(fragments) if fragments else ""
+        envelope = configured_accepted_operation(config, "ingest", payload)
+    except OperationUnavailableError:
+        fail("import", _daemon_required_message(config.archive_root))
+    except OperationIndeterminateError as exc:
+        fail(
+            "import",
+            f"The ingest submission reached the daemon and no receipt came back ({exc}).\n"
+            "  The daemon may already have admitted it: check `polylogued status` and the daemon "
+            "log rather than re-running this command.\n"
+            f"  Staged content is preserved at: {staged}",
+        )
+    except OperationFailedError as exc:
+        fail(
+            "import",
+            f"Daemon refused the ingest operation ({exc.code}: {exc.detail}).\n"
+            f"  The staged inbox entry was left in place at {staged}.",
+        )
+    except OperationKernelError as exc:
+        fail(
+            "import",
+            f"Daemon returned an unusable ingest response ({exc}); refusing to claim success.\n"
+            f"  The staged inbox entry was left in place at {staged}.",
+        )
+
+    reference = envelope.get("accepted_reference")
+    outcome = envelope.get("outcome")
+    accepted = reference is not None and outcome in {"accepted", "running", "completed", "indeterminate"}
+    operation_id = ""
+    if isinstance(reference, Mapping):
+        operation_id = str(reference.get("request_id") or "")
+    if not operation_id:
+        operation_id = str(envelope.get("request_id") or "")
+    return {
+        "operation_id": operation_id,
+        "kind": "import",
+        "status": "accepted" if accepted else "failed",
+        "path": str(staged),
+        "error": None if accepted else f"daemon returned outcome {outcome!r} with no durable acceptance reference",
+    }
+
+
+def _daemon_required_message(archive: object) -> str:
+    """Build an actionable error when no daemon owns this archive's writes."""
     return (
-        f"Daemon at {daemon_url} rejected /api/ingest with HTTP {exc.code}: {exc.reason}.{detail}\n"
-        "  Check the daemon log for the cause; the staged inbox file was "
-        f"left in place at {staged}."
+        f"No polylogued daemon is serving the archive at {archive}.\n"
+        "  The resident daemon is the only writer: start it with 'polylogued run' and re-try.\n"
+        "  There is no standalone import mode to fall back to."
     )
 
 
@@ -300,6 +342,12 @@ def import_command(
     actionable error. It never reports success without observable
     processing.
     """
+    # URL policy (mirrors ``polylogue status``, polylogue-2d8oq): the option and
+    # ``POLYLOGUE_DAEMON_URL`` are accepted, but this command no longer speaks
+    # the browser HTTP API — it submits the declared ``ingest`` operation over
+    # the archive-scoped daemon socket, so the URL selects nothing here.
+    del daemon_url
+
     if explain:
         from polylogue.sources.import_explain import explain_import_path
         from polylogue.surfaces.payloads import model_json_document
@@ -334,53 +382,10 @@ def import_command(
         requested_source = path
         staged = _stage_for_daemon(requested_source)
 
-    body = json.dumps(
-        {
-            "path": str(staged),
-            "source_path": str(requested_source.expanduser().resolve()),
-        }
-    ).encode("utf-8")
-    # The daemon auto-mints a bearer token and rejects unauthenticated callers
-    # with 401, so this has to present it the same way every other daemon client
-    # does (daemon_client.DaemonClient, archive_query's fast paths). Without it
-    # `polylogue import` cannot reach an authenticated daemon at all.
-    from polylogue.config import load_polylogue_config
-    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.cli.shared.helpers import load_effective_config
 
-    ingest_config = load_polylogue_config()
-    ingest_headers = {"Content-Type": "application/json"}
-    ingest_auth_token = resolve_api_auth_token(
-        getattr(ingest_config, "api_auth_token", None),
-        allow_no_auth=getattr(ingest_config, "api_allow_no_auth", False),
-    )
-    if ingest_auth_token:
-        ingest_headers["Authorization"] = f"Bearer {ingest_auth_token}"
-    req = Request(
-        f"{daemon_url}/api/ingest",
-        data=body,
-        headers=ingest_headers,
-        method="POST",
-    )
-
-    try:
-        with urlopen(req, timeout=_INGEST_SUBMIT_TIMEOUT_S) as resp:
-            raw = json.loads(resp.read())
-    except HTTPError as exc:
-        # Daemon responded but rejected the request. Surface the status
-        # code so the operator knows it's a contract problem, not a
-        # transport problem.
-        fail("import", _daemon_http_error_message(exc, daemon_url=daemon_url, staged=staged))
-    except TimeoutError as exc:
-        # A daemon that accepted the connection but has not finished replying is
-        # busy, not absent. Saying "could not reach" sends the operator to check
-        # whether polylogued is running, which it demonstrably is.
-        fail("import", _daemon_submit_timeout_message(daemon_url, staged=staged, exc=exc))
-    except URLError as exc:
-        if isinstance(exc.reason, TimeoutError):
-            fail("import", _daemon_submit_timeout_message(daemon_url, staged=staged, exc=exc.reason))
-        fail("import", _daemon_unreachable_message(daemon_url, str(exc.reason)))
-    except OSError as exc:
-        fail("import", _daemon_unreachable_message(daemon_url, str(exc)))
+    _preflight_or_fail(staged)
+    raw = _submit_ingest(env, staged=staged, requested_source=requested_source)
 
     from polylogue.operations.import_contracts import ImportOperation
 
@@ -401,7 +406,7 @@ def import_command(
         f"[bold green]Scheduled:[/bold green] {operation.path or staged}\n"
         f"  Staged file:  {staged}\n"
         f"  Operation:    {operation.operation_id}\n"
-        f"  Daemon:       {daemon_url}\n"
+        f"  Daemon:       {_daemon_endpoint(load_effective_config(env))}\n"
         f"  Next:         the daemon will process the staged file automatically.\n"
         f"                Check progress:    journalctl --user -u polylogued.service -f\n"
         f"                Check convergence: polylogued status\n"
@@ -419,7 +424,7 @@ def import_command(
         # archive matches ``polylogue demo seed``'s semantic contract exactly
         # (polylogue-z1c6). Idempotent: safe even if a prior --wait already
         # applied it against this archive root.
-        _request_demo_augmentation(daemon_url, with_overlays=with_overlays)
+        _request_demo_augmentation(env, with_overlays=with_overlays)
 
         result = _verify_demo_now(require_overlays=with_overlays)
         env.ui.console.print(

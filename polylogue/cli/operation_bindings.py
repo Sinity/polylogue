@@ -51,18 +51,19 @@ class CliOperationBinding:
 
 _ARCHIVE_QUERY = "polylogue.cli.archive_query"
 _LOWERING = "polylogue.cli.lowering"
+_RENDER_ROWS = "polylogue.cli.render.rows"
 
 CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
     "cli.query": CliOperationBinding(
         lowering=f"{_LOWERING}:lower_cli_query",
         renderers=(
-            f"{_ARCHIVE_QUERY}:_emit_daemon_list_payload",
-            f"{_ARCHIVE_QUERY}:_emit_daemon_search_payload",
+            f"{_RENDER_ROWS}:emit_session_list_page",
+            f"{_RENDER_ROWS}:emit_session_search_page",
         ),
     ),
     "query.units": CliOperationBinding(
         lowering=f"{_LOWERING}:lower_query_units",
-        renderers=(f"{_ARCHIVE_QUERY}:_emit_rows",),
+        renderers=(f"{_RENDER_ROWS}:emit_rows",),
     ),
     "query.aggregate": CliOperationBinding(
         lowering=f"{_LOWERING}:lower_query_aggregate",
@@ -128,6 +129,14 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.commands.maintenance._blob_gc:_submit",
         renderers=("polylogue.cli.commands.maintenance._blob_gc:blob_gc_command",),
     ),
+    "ingest": CliOperationBinding(
+        lowering="polylogue.cli.commands.import_command:_submit_ingest",
+        renderers=("polylogue.cli.commands.import_command:import_command",),
+    ),
+    "maintenance.demo.augment": CliOperationBinding(
+        lowering="polylogue.cli.commands.import_command:_request_demo_augmentation",
+        renderers=("polylogue.cli.commands.import_command:import_command",),
+    ),
     "mutation.raw-authority-blocker.resolve": CliOperationBinding(
         lowering="polylogue.cli.commands.maintenance._raw_identity:_submit",
         renderers=("polylogue.cli.commands.maintenance._raw_identity:raw_authority_blocker_resolve_command",),
@@ -136,7 +145,6 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
 
 CLI_PENDING_ADOPTION: Mapping[str, str] = {
     "completion": "archive-backed shell completion still opens a store in-process; S7 routes it here",
-    "ingest": "`polylogue import` still POSTs the browser HTTP route; S11 routes it here",
 }
 
 CLI_EXTERNAL_OPERATIONS: Mapping[str, str] = {

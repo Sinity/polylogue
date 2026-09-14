@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from urllib.request import Request, urlopen
 
 import click
 
+from polylogue.cli.daemon_probe import daemon_serving_probe
 from polylogue.cli.shared.types import AppEnv
 
 
@@ -28,7 +28,7 @@ from polylogue.cli.shared.types import AppEnv
 @click.pass_obj
 def dashboard_command(env: AppEnv, status_only: bool, output_format: str) -> None:
     """Launch the terminal dashboard TUI with explicit runtime evidence."""
-    evidence = _dashboard_launch_evidence()
+    evidence = _dashboard_launch_evidence(env)
     if status_only:
         _emit_dashboard_evidence(evidence, output_format=output_format)
         return
@@ -41,7 +41,8 @@ def dashboard_command(env: AppEnv, status_only: bool, output_format: str) -> Non
     app.run()
 
 
-def _dashboard_launch_evidence() -> dict[str, object]:
+def _dashboard_launch_evidence(env: AppEnv) -> dict[str, object]:
+    from polylogue.cli.shared.helpers import load_effective_config
     from polylogue.config import load_polylogue_config
 
     daemon_url = load_polylogue_config().daemon_url or "http://127.0.0.1:8766"
@@ -55,13 +56,13 @@ def _dashboard_launch_evidence() -> dict[str, object]:
         "daemon_api_reachable": False,
         "failure_reason": None,
     }
-    try:
-        req = Request(f"{daemon_url}/api/status", method="GET")
-        with urlopen(req, timeout=0.5) as resp:
-            resp.read(1)
-        status["daemon_api_reachable"] = True
-    except Exception as exc:
-        status["failure_reason"] = f"{type(exc).__name__}: {exc}"
+    # Reachability is read off the probe's authority, not off the call
+    # succeeding: the ``status`` operation falls back to a direct in-process
+    # read, which would otherwise report "daemon reachable" with no daemon
+    # running at all. See polylogue.cli.daemon_probe.
+    served_by_daemon, failure_reason = daemon_serving_probe(load_effective_config(env))
+    status["daemon_api_reachable"] = served_by_daemon
+    status["failure_reason"] = failure_reason
     return status
 
 
@@ -70,7 +71,7 @@ def _emit_dashboard_evidence(evidence: dict[str, object], *, output_format: str)
         click.echo(json.dumps(evidence, indent=2, sort_keys=True))
         return
     click.echo("Dashboard surface: terminal TUI (Textual)")
-    click.echo(f"Daemon API status probe: {evidence['daemon_api_url']}")
+    click.echo(f"Daemon status-operation probe (configured API URL: {evidence['daemon_api_url']})")
     click.echo("Web reader launch: not attempted by this command")
     if evidence["daemon_api_reachable"]:
         click.echo("Readiness: daemon API reachable")

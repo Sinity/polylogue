@@ -1,17 +1,77 @@
-"""Tests for polylogue import truthfulness (#869 / #1264)."""
+"""Tests for polylogue import truthfulness (#869 / #1264).
+
+Since S11 the command no longer speaks the browser HTTP API: it submits the
+declared ``ingest`` operation through
+:func:`polylogue.cli.operation_kernel.configured_accepted_operation` over the
+archive-scoped daemon socket, and runs the import preflight client-side. The
+truthfulness laws these tests carry are unchanged — an unreachable daemon, a
+refused operation, and an envelope without a durable acceptance reference each
+have to fail loudly and name the staged file — only their seam moved.
+"""
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from io import BytesIO
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from unittest.mock import patch
-from urllib.error import HTTPError, URLError
-from urllib.request import Request
 
-from polylogue.cli.commands.import_command import _INGEST_SUBMIT_TIMEOUT_S
+from polylogue.cli.operation_kernel import (
+    OperationFailedError,
+    OperationIndeterminateError,
+    OperationUnavailableError,
+)
+
+# One record of a shape the import preflight actually admits. The preflight is
+# a real admissibility check, so a placeholder like ``{"type": "session"}`` is
+# refused before any operation is submitted (see
+# ``test_import_refuses_inadmissible_source_before_submitting``).
+_SUPPORTED_RECORD = {
+    "type": "user",
+    "uuid": "u1",
+    "sessionId": "s1",
+    "timestamp": "2024-01-01T00:00:00Z",
+    "message": {"role": "user", "content": "hi"},
+}
+
+
+def _write_supported_source(path: Path) -> Path:
+    path.write_text(json.dumps(_SUPPORTED_RECORD) + "\n")
+    return path
+
+
+def _accepted_envelope(request_id: str = "ingest-request") -> dict[str, object]:
+    """The envelope shape a daemon returns once ingest is durably admitted."""
+    return {
+        "operation": "ingest",
+        "outcome": "accepted",
+        "result": {},
+        "request_id": request_id,
+        "accepted_reference": {"request_id": request_id},
+    }
+
+
+class _RecordingSubmit:
+    """Stand-in for the accepted-operation seam that records its request."""
+
+    def __init__(self, envelope: dict[str, object] | None = None) -> None:
+        self.envelope = envelope if envelope is not None else _accepted_envelope()
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def __call__(self, config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config
+        self.calls.append((operation, dict(payload)))
+        return self.envelope
+
+    @property
+    def payload(self) -> dict[str, object]:
+        assert self.calls, "no ingest submission was made"
+        return self.calls[-1][1]
+
+
+def _patch_submit(submit: _RecordingSubmit) -> Any:
+    return patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=submit)
 
 
 def test_import_command_registered() -> None:
@@ -37,53 +97,25 @@ def test_import_help_includes_inbox_info() -> None:
     assert "--demo" in result.output
 
 
-class _FakeDaemonResponse:
-    def __init__(self, payload: dict[str, object]) -> None:
-        self._payload = payload
-
-    def __enter__(self) -> _FakeDaemonResponse:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        return None
-
-    def read(self) -> bytes:
-        return json.dumps(self._payload).encode("utf-8")
-
-
 def test_import_command_stages_local_path_before_daemon_request(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """CLI owns arbitrary local path reads; HTTP daemon receives inbox path."""
+    """CLI owns arbitrary local path reads; the daemon receives the inbox path.
+
+    Anti-vacuity: submitting ``source_path`` as the operation's ``path`` (the
+    pre-staging path, i.e. asking the daemon to read an arbitrary local file)
+    makes the payload assertion red.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
 
-    source = tmp_path / "source.jsonl"
-    source.write_text('{"type":"session"}\n')
-
-    captured: dict[str, Any] = {}
-
-    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
-        captured["request"] = req
-        captured["timeout"] = timeout
-        assert req.data is not None
-        request_data = cast("bytes", req.data)
-        staged_path = json.loads(request_data.decode("utf-8"))["path"]
-        return _FakeDaemonResponse(
-            {
-                "ok": True,
-                "operation_id": "import-source.jsonl",
-                "kind": "import",
-                "status": "pending",
-                "path": staged_path,
-                "message": "scheduled",
-            }
-        )
+    source = _write_supported_source(tmp_path / "source.jsonl")
+    submit = _RecordingSubmit()
 
     runner = CliRunner()
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+    with _patch_submit(submit):
         result = runner.invoke(
             cli,
             ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"],
@@ -93,16 +125,13 @@ def test_import_command_stages_local_path_before_daemon_request(
     staged = workspace_env["archive_root"] / "inbox" / source.name
     assert staged.read_text() == source.read_text()
 
-    request = cast("Request", captured["request"])
-    assert request.data is not None
-    request_data = cast("bytes", request.data)
-    body = json.loads(request_data.decode("utf-8"))
-    assert body == {"path": str(staged), "source_path": str(source.resolve())}
-    assert body["path"] != str(source)
-    # Bounded and explicit, tied to the policy constant rather than a literal:
-    # the previous hard-coded 5s timed out on an ordinary `import --demo` and
-    # reported the working daemon as unreachable.
-    assert captured["timeout"] == _INGEST_SUBMIT_TIMEOUT_S
+    assert submit.calls[-1][0] == "ingest"
+    assert submit.payload == {
+        "path": str(staged),
+        "source_path": str(source.resolve()),
+        "idempotency_key": None,
+    }
+    assert submit.payload["path"] != str(source)
 
     # Truthfulness: success output must point at observable state — the
     # staged inbox path AND actionable next-step guidance. The old
@@ -119,7 +148,18 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """Hermes state.db staging uses SQLite backup instead of a raw file copy."""
+    """Hermes state.db staging uses SQLite backup instead of a raw file copy.
+
+    The shared import preflight admits only Antigravity trajectory stores among
+    SQLite sources (``sources/import_preflight.py::_preflight_sqlite``), so a
+    Hermes ``state.db`` is refused as ``unsupported_import_source`` today —
+    exactly as the daemon's ingest route already refuses it. That gap is not
+    this test's subject: staging and the submitted payload are, so the
+    admissibility check is stood in for here.
+
+    Anti-vacuity: copying the file byte-for-byte instead of taking a SQLite
+    backup loses the WAL-resident row and makes the message assertion red.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
@@ -175,26 +215,23 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
     )
     writer.commit()
 
-    captured: dict[str, Any] = {}
+    submit = _RecordingSubmit()
 
-    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
-        captured["request"] = req
-        captured["timeout"] = timeout
-        assert req.data is not None
-        staged_path = json.loads(cast("bytes", req.data).decode("utf-8"))["path"]
-        return _FakeDaemonResponse(
-            {
-                "ok": True,
-                "operation_id": "import-state.db",
-                "kind": "import",
-                "status": "pending",
-                "path": staged_path,
-                "message": "scheduled",
-            }
+    def admissible(_path: Path) -> Any:
+        from polylogue.sources.import_preflight import ImportPreflightResult, ImportPreflightStatus
+
+        return ImportPreflightResult(
+            status=ImportPreflightStatus.SUPPORTED,
+            source_path=str(_path),
+            candidate_count=1,
+            supported_count=1,
         )
 
     try:
-        with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+        with (
+            _patch_submit(submit),
+            patch("polylogue.sources.import_preflight.preflight_import_source", new=admissible),
+        ):
             result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:8766"])
     finally:
         writer.close()
@@ -205,9 +242,10 @@ def test_import_command_snapshots_hermes_state_db_before_daemon_request(
         assert conn.execute("SELECT title FROM sessions WHERE id = 'h1'").fetchone()[0] == "Hermes"
         assert conn.execute("SELECT content FROM messages ORDER BY id DESC LIMIT 1").fetchone()[0] == "WAL turn"
     assert original_sqlite_source_path(staged) == source.resolve()
-    assert json.loads(cast("bytes", cast("Request", captured["request"]).data).decode("utf-8")) == {
+    assert submit.payload == {
         "path": str(staged),
         "source_path": str(source.resolve()),
+        "idempotency_key": None,
     }
 
     direct = hermes_state.parse_state_db(source, profile_root=source.parent)[0]
@@ -252,71 +290,50 @@ def test_import_command_uses_daemon_url_env_by_default(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    """Dev-loop imports must not stage into one archive and schedule another daemon."""
+    """Dev-loop imports must not stage into one archive and schedule another daemon.
+
+    Anti-vacuity: restoring the HTTP transport (submitting to the configured
+    ``POLYLOGUE_DAEMON_URL`` and printing it as the endpoint) makes the
+    socket-path assertion red.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
 
-    source = tmp_path / "source.jsonl"
-    source.write_text('{"type":"session"}\n')
+    source = _write_supported_source(tmp_path / "source.jsonl")
     monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:9876")
 
-    captured: dict[str, Any] = {}
-
-    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
-        captured["request"] = req
-        assert req.data is not None
-        staged_path = json.loads(cast("bytes", req.data).decode("utf-8"))["path"]
-        return _FakeDaemonResponse(
-            {
-                "ok": True,
-                "operation_id": "import-source.jsonl",
-                "kind": "import",
-                "status": "pending",
-                "path": staged_path,
-                "message": "scheduled",
-            }
-        )
-
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+    submit = _RecordingSubmit()
+    with _patch_submit(submit):
         result = CliRunner().invoke(cli, ["import", str(source)])
 
     assert result.exit_code == 0, result.output
-    request = cast("Request", captured["request"])
-    assert request.full_url == "http://127.0.0.1:9876/api/ingest"
-    assert "Daemon:       http://127.0.0.1:9876" in result.output
+    # The transport is the archive-scoped daemon socket, so that -- not the
+    # configured browser API URL -- is what the receipt names.
+    from polylogue.daemon.socket_path import daemon_socket_path
+
+    socket_path = str(daemon_socket_path(workspace_env["archive_root"]))
+    assert f"Daemon:       {socket_path}" in result.output
+    assert "http://127.0.0.1:9876" not in result.output
     assert (workspace_env["archive_root"] / "inbox" / source.name).is_file()
 
 
 def test_import_demo_materializes_fixture_world_before_daemon_request(
     workspace_env: dict[str, Path],
 ) -> None:
-    """--demo writes approved fixture sources and still requires daemon acceptance."""
+    """--demo writes approved fixture sources and still requires daemon acceptance.
+
+    Anti-vacuity: returning an envelope with no ``accepted_reference`` (see
+    ``test_import_refuses_envelope_without_durable_acceptance``) makes the
+    success assertions red, so this cannot pass on a fabricated acceptance.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
 
-    captured: dict[str, Any] = {}
-
-    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
-        captured["request"] = req
-        captured["timeout"] = timeout
-        assert req.data is not None
-        request_data = cast("bytes", req.data)
-        staged_path = json.loads(request_data.decode("utf-8"))["path"]
-        return _FakeDaemonResponse(
-            {
-                "ok": True,
-                "operation_id": "import-demo-fixture-world",
-                "kind": "import",
-                "status": "pending",
-                "path": staged_path,
-                "message": "scheduled",
-            }
-        )
-
+    submit = _RecordingSubmit()
     runner = CliRunner()
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+    with _patch_submit(submit):
         result = runner.invoke(cli, ["import", "--demo"])
 
     assert result.exit_code == 0, result.output
@@ -346,14 +363,11 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
     ]
     assert len(tuple(staged.rglob("demo-*.json*"))) == 7
 
-    request = cast("Request", captured["request"])
-    assert request.data is not None
-    body = json.loads(cast("bytes", request.data).decode("utf-8"))
-    assert body == {"path": str(staged), "source_path": str(source_root.resolve())}
-    # Bounded and explicit, tied to the policy constant rather than a literal:
-    # the previous hard-coded 5s timed out on an ordinary `import --demo` and
-    # reported the working daemon as unreachable.
-    assert captured["timeout"] == _INGEST_SUBMIT_TIMEOUT_S
+    assert submit.payload == {
+        "path": str(staged),
+        "source_path": str(source_root.resolve()),
+        "idempotency_key": None,
+    }
     assert str(staged) in result.output
     assert "polylogued status" in result.output
     assert "polylogue status --full" in result.output
@@ -364,10 +378,15 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
 ) -> None:
     """--demo --wait blocks on the semantic verifier after daemon scheduling.
 
-    Since #3179 (b473d9256), the CLI runs ``apply_demo_post_ingest_augmentation``
-    and the real ``_verify_demo_now`` unconditionally after the wait — not only
-    on the ``--with-overlays`` path — so this test must mock both rather than
-    let them hit the (unseeded, in this unit test) archive directly.
+    Since #3179 (b473d9256), the CLI requests the demo augmentation and runs
+    the real ``_verify_demo_now`` unconditionally after the wait — not only on
+    the ``--with-overlays`` path — so this test must stand in for both rather
+    than let them hit the (unseeded, in this unit test) archive directly.
+    Since S11 the augmentation is the declared ``maintenance.demo.augment``
+    operation, not an HTTP POST.
+
+    Anti-vacuity: dropping the augmentation request, or reordering it before
+    the convergence wait, makes the ``events`` assertion red.
     """
     from click.testing import CliRunner
 
@@ -377,26 +396,18 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
     captured: dict[str, Any] = {}
     events: list[str] = []
 
-    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
-        del timeout
-        assert req.data is not None
-        request_data = cast("bytes", req.data)
-        payload = json.loads(request_data.decode("utf-8"))
-        if req.full_url.endswith("/api/demo/augment"):
-            events.append("augment-daemon")
-            return _FakeDaemonResponse({"ok": True, "augmented": True, "overlays": False})
-        staged_path = payload["path"]
+    def fake_submit(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, payload
+        assert operation == "ingest"
         events.append("daemon")
-        return _FakeDaemonResponse(
-            {
-                "ok": True,
-                "operation_id": "import-demo-fixture-world",
-                "kind": "import",
-                "status": "pending",
-                "path": staged_path,
-                "message": "scheduled",
-            }
-        )
+        return _accepted_envelope("import-demo-fixture-world")
+
+    def fake_augment(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config
+        assert operation == "maintenance.demo.augment"
+        captured["augment_payload"] = dict(payload)
+        events.append("augment-daemon")
+        return {"outcome": "completed", "effect": "committed", "sequence": 1}
 
     def fake_wait(*, timeout_s: float, require_overlays: bool = False) -> None:
         captured["timeout_s"] = timeout_s
@@ -420,14 +431,19 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
 
     runner = CliRunner()
     with (
-        patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen),
+        patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=fake_submit),
+        patch("polylogue.cli.operation_kernel.configured_mutation_operation", new=fake_augment),
         patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
         patch("polylogue.cli.commands.import_command._verify_demo_now", side_effect=fake_verify),
     ):
         result = runner.invoke(cli, ["import", "--demo", "--wait", "--timeout", "12.5"])
 
     assert result.exit_code == 0, result.output
-    assert captured == {"timeout_s": 12.5, "require_overlays": False}
+    assert captured == {
+        "timeout_s": 12.5,
+        "require_overlays": False,
+        "augment_payload": {"with_overlays": False},
+    }
     assert events == ["daemon", "wait-base", "augment-daemon", "verify"]
     staged = workspace_env["archive_root"] / "inbox" / "demo-fixture-world-source"
     assert str(staged) in result.output
@@ -441,10 +457,12 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
 ) -> None:
     """--with-overlays applies deterministic user overlays after base ingest.
 
-    Also covers the unconditional ``apply_demo_post_ingest_augmentation`` call
-    introduced by #3179 (b473d9256) between the base wait and overlay seeding —
-    previously unmocked here, which crashed against the unseeded test archive
-    with ``no such table: sessions``.
+    Also covers the unconditional demo augmentation introduced by #3179
+    (b473d9256) between the base wait and overlay seeding, now carried by the
+    declared ``maintenance.demo.augment`` operation.
+
+    Anti-vacuity: dropping ``with_overlays`` from the augmentation request
+    (so the daemon would seed no overlays) makes the payload assertion red.
     """
     from click.testing import CliRunner
 
@@ -452,26 +470,20 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
     from polylogue.demo import DemoVerifyResult
 
     events: list[str] = []
+    augment_payloads: list[dict[str, object]] = []
 
-    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
-        del timeout
-        assert req.data is not None
-        payload = json.loads(cast("bytes", req.data).decode("utf-8"))
-        if req.full_url.endswith("/api/demo/augment"):
-            events.append("augment-daemon")
-            return _FakeDaemonResponse({"ok": True, "augmented": True, "overlays": True})
-        staged_path = payload["path"]
+    def fake_submit(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, payload
+        assert operation == "ingest"
         events.append("daemon")
-        return _FakeDaemonResponse(
-            {
-                "ok": True,
-                "operation_id": "import-demo-fixture-world",
-                "kind": "import",
-                "status": "pending",
-                "path": staged_path,
-                "message": "scheduled",
-            }
-        )
+        return _accepted_envelope("import-demo-fixture-world")
+
+    def fake_augment(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config
+        assert operation == "maintenance.demo.augment"
+        augment_payloads.append(dict(payload))
+        events.append("augment-daemon")
+        return {"outcome": "completed", "effect": "committed", "sequence": 1}
 
     def fake_wait(*, timeout_s: float, require_overlays: bool = False) -> None:
         assert timeout_s == 30.0
@@ -495,7 +507,8 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
 
     runner = CliRunner()
     with (
-        patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen),
+        patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=fake_submit),
+        patch("polylogue.cli.operation_kernel.configured_mutation_operation", new=fake_augment),
         patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
         patch("polylogue.cli.commands.import_command._verify_demo_now", side_effect=fake_verify),
     ):
@@ -503,6 +516,7 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
 
     assert result.exit_code == 0, result.output
     assert events == ["daemon", "wait-base", "augment-daemon", "verify-overlays"]
+    assert augment_payloads == [{"with_overlays": True}]
     assert "sessions=19 messages=31" in result.output
     assert "overlays=yes" in result.output
 
@@ -591,68 +605,116 @@ def test_import_rejects_when_daemon_unreachable(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """With no daemon running, the command must fail with an actionable error."""
+    """With no daemon running, the command must fail with an actionable error.
+
+    The operator's ruling is that the resident daemon is the standard and
+    there is no standalone import mode, so the message has to name
+    ``polylogued run`` and the archive whose writes are unowned.
+
+    Anti-vacuity: swallowing ``OperationUnavailableError`` and printing
+    "Scheduled" anyway makes the nonzero-exit assertion red.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
 
-    source = tmp_path / "source.jsonl"
-    source.write_text('{"type":"session"}\n')
+    source = _write_supported_source(tmp_path / "source.jsonl")
 
-    def fake_urlopen(req: Request, timeout: int) -> object:
-        raise URLError("Connection refused")
+    def unavailable(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, operation, payload
+        raise OperationUnavailableError("daemon is unavailable for operation: ingest")
 
     runner = CliRunner()
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
-        result = runner.invoke(
-            cli,
-            ["import", str(source), "--daemon-url", "http://127.0.0.1:65535"],
-        )
+    with patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=unavailable):
+        result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
-    # Must name the daemon binary so the user knows what to start.
-    assert "polylogued" in combined
-    assert "127.0.0.1:65535" in combined
+    assert "polylogued run" in combined
+    assert str(workspace_env["archive_root"]).lower() in combined
 
 
-def test_import_surfaces_http_error_with_staged_path(
+def test_import_surfaces_refused_operation_with_staged_path(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """Daemon HTTP 4xx/5xx is reported truthfully, naming the staged file."""
+    """A typed operation refusal is reported truthfully, naming the staged file.
+
+    This is the law the old HTTP 4xx/5xx test carried: a daemon that answers
+    and rejects is a contract problem, and the staged inbox entry is still
+    there for the operator to inspect.
+
+    Anti-vacuity: mapping ``OperationFailedError`` onto the success path, or
+    dropping the staged path from the message, makes this red.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
 
-    source = tmp_path / "source.jsonl"
-    source.write_text('{"type":"session"}\n')
+    source = _write_supported_source(tmp_path / "source.jsonl")
 
-    def fake_urlopen(req: Request, timeout: int) -> object:
-        raise HTTPError(
-            url="http://127.0.0.1:8766/api/ingest",
-            code=400,
-            msg="invalid_request",
-            hdrs=None,  # type: ignore[arg-type]
-            fp=None,
-        )
+    def refused(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, operation, payload
+        raise OperationFailedError("invalid_request", "inbox entry could not be resolved")
 
     runner = CliRunner()
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+    with patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=refused):
         result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
     staged = workspace_env["archive_root"] / "inbox" / source.name
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
-    assert "400" in combined
+    assert "invalid_request" in combined
+    assert "inbox entry could not be resolved" in combined
     assert str(staged).lower() in combined
 
 
-def test_import_surfaces_structured_daemon_rejection_detail(
+def test_import_refuses_indeterminate_submission(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """Unsupported/degraded daemon preflight details reach the operator."""
+    """An indeterminate submission is never reported as scheduled, nor retried.
+
+    Anti-vacuity: treating ``OperationIndeterminateError`` as a transport
+    failure the caller may retry makes the "do not re-run" guidance absent
+    and the exit-code assertion red.
+    """
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    source = _write_supported_source(tmp_path / "source.jsonl")
+
+    def indeterminate(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, operation, payload
+        raise OperationIndeterminateError("ingest requires receipt recovery for request abc")
+
+    runner = CliRunner()
+    with patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=indeterminate):
+        result = runner.invoke(cli, ["import", str(source)])
+
+    assert result.exit_code != 0
+    staged = workspace_env["archive_root"] / "inbox" / source.name
+    combined = result.output + (result.stderr if result.stderr_bytes else "")
+    assert "no receipt came back" in combined
+    assert "rather than re-running this command" in combined
+    assert str(staged) in combined
+
+
+def test_import_refuses_inadmissible_source_before_submitting(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Unsupported/degraded preflight detail reaches the operator, client-side.
+
+    This is the law the old HTTP-415 test carried: the operator sees the
+    preflight ``error_code`` and its summary, and the staged copy is named.
+    Since S11 the CLI runs the same read-only check itself, so no operation is
+    submitted at all.
+
+    Anti-vacuity: dropping the client-side preflight makes the "no submission
+    happened" assertion red.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
@@ -660,96 +722,80 @@ def test_import_surfaces_structured_daemon_rejection_detail(
     source = tmp_path / "unknown.json"
     source.write_text('{"not":"an export"}\n')
 
-    def fake_urlopen(req: Request, timeout: int) -> object:
-        del req, timeout
-        raise HTTPError(
-            url="http://127.0.0.1:8766/api/ingest",
-            code=415,
-            msg="Unsupported Media Type",
-            hdrs=None,  # type: ignore[arg-type]
-            fp=BytesIO(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "error": "unsupported_import_source",
-                        "detail": "Import source is unsupported: no parseable Polylogue export shape was detected.",
-                    }
-                ).encode("utf-8")
-            ),
-        )
-
+    submit = _RecordingSubmit()
     runner = CliRunner()
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+    with _patch_submit(submit):
         result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
+    assert submit.calls == []
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
-    assert "415" in combined
     assert "unsupported_import_source" in combined
     assert "no parseable polylogue export shape" in combined
     assert str(workspace_env["archive_root"] / "inbox" / source.name).lower() in combined
 
 
-def test_import_refuses_unrecognized_daemon_status(
+def test_import_refuses_envelope_without_durable_acceptance(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """If the daemon returns an unrecognized status, refuse to claim success."""
+    """Only a durable acceptance reference establishes that ingest was admitted.
+
+    This is the law the old "unrecognized daemon status" test carried: an
+    envelope the command cannot read as acceptance is a failure, never a
+    fabricated success.
+
+    Anti-vacuity: deriving acceptance from the outcome alone makes this red,
+    because the outcome here is ``completed``.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
 
-    source = tmp_path / "source.jsonl"
-    source.write_text('{"type":"session"}\n')
-
-    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
-        return _FakeDaemonResponse(
-            {
-                "ok": True,
-                "operation_id": "import-source.jsonl",
-                "kind": "import",
-                "status": "mystery_status",
-                "path": "/somewhere",
-                "message": "??",
-            }
-        )
+    source = _write_supported_source(tmp_path / "source.jsonl")
+    submit = _RecordingSubmit({"operation": "ingest", "outcome": "completed", "result": {}, "accepted_reference": None})
 
     runner = CliRunner()
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
+    with _patch_submit(submit):
         result = runner.invoke(cli, ["import", str(source)])
 
     assert result.exit_code != 0
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
-    assert "mystery_status" in combined
+    assert "durable acceptance reference" in combined
 
 
-def test_import_surfaces_daemon_failure_status(
+def test_import_demo_wait_refuses_failed_augmentation(
     workspace_env: dict[str, Path],
-    tmp_path: Path,
 ) -> None:
-    """Daemon-reported failure must be surfaced, not swallowed."""
+    """A refused demo augmentation never reports a verified demo archive.
+
+    Anti-vacuity: swallowing the kernel error and continuing to the verifier
+    makes the nonzero-exit assertion red.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
 
-    source = tmp_path / "source.jsonl"
-    source.write_text('{"type":"session"}\n')
+    def fake_submit(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, operation, payload
+        return _accepted_envelope("import-demo-fixture-world")
 
-    def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
-        return _FakeDaemonResponse(
-            {
-                "ok": False,
-                "operation_id": "import-source.jsonl",
-                "kind": "import",
-                "status": "failed",
-                "error": "inbox locked by another operation",
-            }
-        )
+    def refused(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, operation, payload
+        raise OperationFailedError("write_coordinator_unavailable", "no writer lease")
+
+    def fake_wait(*, timeout_s: float, require_overlays: bool = False) -> None:
+        del timeout_s, require_overlays
 
     runner = CliRunner()
-    with patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen):
-        result = runner.invoke(cli, ["import", str(source)])
+    with (
+        patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=fake_submit),
+        patch("polylogue.cli.operation_kernel.configured_mutation_operation", new=refused),
+        patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
+    ):
+        result = runner.invoke(cli, ["import", "--demo", "--wait"])
 
     assert result.exit_code != 0
-    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
-    assert "inbox locked" in combined
+    combined = result.output + (result.stderr if result.stderr_bytes else "")
+    assert "refusing to claim a verified archive" in combined
+    assert "Demo archive verified" not in combined

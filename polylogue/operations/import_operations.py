@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from pathlib import Path
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import ConfigDict
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.operations.specs import OperationKind
 from polylogue.surfaces.payloads import SurfacePayloadModel
+
+if TYPE_CHECKING:
+    from polylogue.sources.import_preflight import ImportPreflightResult
 
 
 class ImportRequest(SurfacePayloadModel):
@@ -58,4 +62,18 @@ class ImportRequest(SurfacePayloadModel):
         return json_document(self.model_dump(mode="json"))
 
 
-__all__ = ["ImportRequest"]
+def import_source_admissibility(path: Path) -> ImportPreflightResult:
+    """Classify a staged import source before anything claims to schedule it.
+
+    The classifier itself lives in ``polylogue.sources``; surfaces reach it
+    through this operation-layer entry point because a surface does not import
+    the source substrate directly (``devtools gate layering``). The returned
+    :class:`~polylogue.sources.import_preflight.ImportPreflightResult` carries
+    ``admissible``, ``error_code`` and ``summary()``.
+    """
+    from polylogue.sources.import_preflight import preflight_import_source
+
+    return preflight_import_source(path)
+
+
+__all__ = ["ImportRequest", "import_source_admissibility"]

@@ -384,6 +384,55 @@ def configured_mutation_operation(config: Any, operation: str, payload: dict[str
     return {str(key): value for key, value in result.value.items()}
 
 
+def configured_accepted_operation(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+    """Submit a declared operation and take its durable acceptance reference.
+
+    The sibling :func:`configured_mutation_operation` waits for the effect to
+    land.  This one returns as soon as the daemon has *durably admitted* the
+    work, which is the contract of a CLI verb that schedules rather than
+    applies: ``polylogue import`` prints "Scheduled" and returns, and its
+    ``--wait`` is a separate opt-in.  Waiting here would silently turn that
+    into a blocking command.
+
+    The declared operation envelope is returned whole, because acceptance is
+    carried by ``accepted_reference`` — the durable handle — and not by the
+    result body.
+
+    An operation whose spec does not declare ``accepted_reference`` is
+    refused: "submit and take the durable reference" is this function's whole
+    contract, and there is nothing to take when the operation declares no
+    durable reference, so returning early would just discard the outcome.
+    """
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+    from polylogue.operations.daemon_protocol import MUTATION_OPERATION_NAMES
+
+    if operation not in MUTATION_OPERATION_NAMES:
+        raise OperationKernelError(f"operation is not a declared mutation: {operation}")
+    spec = daemon_operation_spec(operation)
+    if spec is None or not spec.accepted_reference:
+        raise OperationKernelError(f"operation does not declare a durable acceptance reference: {operation}")
+    client = DaemonClient(
+        daemon_socket_path(config.archive_root),
+        timeout_s=spec.deadline_s,
+        auth_token=lambda: resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
+    )
+    result = OperationKernel(
+        lambda request: client.operation(
+            request.operation,
+            dict(request.payload),
+            archive_root=str(config.archive_root),
+        )
+    ).execute(OperationRequest(operation, payload))
+    if result.envelope is None:
+        raise OperationEnvelopeError(f"{operation} returned no operation envelope")
+    return {str(key): value for key, value in result.envelope.items()}
+
+
 __all__ = [
     "OperationCancelledError",
     "OperationEnvelopeError",
@@ -394,6 +443,7 @@ __all__ = [
     "OperationRequest",
     "OperationResult",
     "OperationUnavailableError",
+    "configured_accepted_operation",
     "configured_mutation_operation",
     "configured_read_operation",
     "dispatch",
