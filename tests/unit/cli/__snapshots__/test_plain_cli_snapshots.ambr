@@ -246,6 +246,11 @@
     "origins": {
       "chatgpt-export": 2
     },
+    "outcome": {
+      "detail": {},
+      "reason": null,
+      "state": "ok"
+    },
     "pending_embedding_sessions": 0,
     "query": null,
     "retrieval_ready": false,

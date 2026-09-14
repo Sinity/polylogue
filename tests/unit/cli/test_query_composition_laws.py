@@ -166,7 +166,11 @@ def _daemon_delete_route(archive_root: Path) -> Any:
             prepared["ids"] = [str(item) for item in cast(list[Any], payload["session_ids"])]
             return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": prepared["ids"]}
         if operation.endswith(".authorize"):
-            return {"status": "authorized", "authorization_token": "test-authorization"}
+            # ``_delete_authorization_refs`` (archive_query.py) reads
+            # ``authorization_refs``/``authorization_ref`` since #4867 renamed the
+            # authorization contract off one-time tokens onto durable refs, and
+            # refuses a count mismatch against the prepared id set.
+            return {"status": "authorized", "authorization_refs": ["test-authorization"]}
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             affected = archive.delete_sessions(tuple(prepared["ids"]))
         return {"status": "deleted", "affected_count": affected, "session_ids": prepared["ids"]}

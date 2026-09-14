@@ -154,14 +154,27 @@ def test_blob_conservation_uses_the_resolved_archive_root(tmp_path: Path, monkey
     assert f'"archive_root": "{archive_root}"' in result.output
 
 
-def test_blob_conservation_json_returns_failure_for_a_failed_census(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_blob_conservation_json_returns_failure_for_a_failed_census(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Automation receives a nonzero status for JSON conservation failures.
 
     Anti-vacuity: returning directly after JSON output leaves Click with a
-    success status despite the failing report.
+    success status despite the failing report. ``catch_exceptions=False`` is
+    what keeps that condition load-bearing -- a ``CliRunner`` that swallows an
+    exception also reports ``exit_code == 1`` with empty output, so the status
+    assertion alone passes for the wrong reason.
+
+    The archive root is pinned because the command calls ``archive_root()``
+    before the stubbed census: resolved ambiently, it depends on whatever a
+    previously executed test left in the environment, which made this test pass
+    alone and fail inside a wider selection.
     """
     from polylogue.cli.commands.maintenance._blob_conservation import blob_conservation_command
     from polylogue.maintenance import blob_conservation
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
 
     monkeypatch.setattr(
         blob_conservation,
@@ -180,7 +193,7 @@ def test_blob_conservation_json_returns_failure_for_a_failed_census(monkeypatch:
         ),
     )
 
-    result = CliRunner().invoke(blob_conservation_command, ["--output-format", "json"])
+    result = CliRunner().invoke(blob_conservation_command, ["--output-format", "json"], catch_exceptions=False)
 
     assert result.exit_code == 1, result.output
     assert json.loads(result.output)["ok"] is False
