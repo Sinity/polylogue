@@ -244,6 +244,16 @@ async def _query_sessions(
     from polylogue.operations.session_contracts import SessionList, SessionSearch
     from polylogue.operations.session_reads import execute_session_operation
 
+    # Apply the declared page-size clamp ONCE, before the typed request is
+    # built. ``clamp_query_limit`` is the shared ceiling "identical across CLI,
+    # MCP, and daemon HTTP", and it folds a non-positive limit to the default.
+    # The probe below already clamped via ``build_spec(hooks.clamp_limit)``,
+    # but the request built further down used the raw value, so an
+    # out-of-range limit reached ``SessionList``'s ``Bound`` field (ge=1,
+    # le=1000) and came back as an ``invalid_argument`` envelope with no
+    # ``total`` -- while the CLI clamped the same input and answered.
+    bounded_limit = hooks.clamp_limit(limit) if limit is not None else None
+
     if continuation is None:
         from polylogue.mcp.query_contracts import build_session_query_request
 
@@ -256,7 +266,7 @@ async def _query_sessions(
                 since=since,
                 until=until,
                 sort=sort,
-                limit=limit,
+                limit=bounded_limit,
                 min_messages=min_messages,
                 max_messages=max_messages,
                 min_words=min_words,
@@ -275,7 +285,7 @@ async def _query_sessions(
             return await _query_advanced_sessions(
                 hooks,
                 expression=expression,
-                limit=limit,
+                limit=bounded_limit,
                 offset=offset,
                 origin=origin,
                 tag=tag,
@@ -308,7 +318,7 @@ async def _query_sessions(
         "min_messages": min_messages,
         "max_messages": max_messages,
         "min_words": min_words,
-        "limit": limit,
+        "limit": bounded_limit,
         "offset": offset,
         "continuation": continuation,
     }
