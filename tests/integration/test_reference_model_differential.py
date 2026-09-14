@@ -50,7 +50,7 @@ CORPUS_SEEDS: tuple[int, ...] = (11, 2027, 90210)
 
 #: Surfaces that carry every request.  MCP's session projection carries named
 #: filters instead of the DSL, so it answers the translatable subset only.
-FULL_COVERAGE_SURFACES: frozenset[str] = frozenset({"api", "cli", "daemon"})
+FULL_COVERAGE_SURFACES: frozenset[str] = frozenset({"api", "cli", "cli-direct", "daemon"})
 
 #: The fewest requests MCP must carry per seed.  Every seed's request set
 #: translates well above this; the floor exists so a translation that quietly

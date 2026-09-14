@@ -1,18 +1,21 @@
-"""Cross-surface differential: one request, four public routes, one oracle.
+"""Cross-surface differential: one request, every public route, one oracle.
 
 Every adapter here carries one request to a public read surface and projects
 the answer down to :class:`SurfaceQueryFacts` — session ids and the reported
 total.  Comparing those facts against the reference model turns cross-surface
 parity from "these two hand-written expectations agree" into "every surface
-computes what the declared corpus says".  Three of the four carry the query
-DSL itself; the fourth carries the same filter through the only parameters it
-has, and says so.
+computes what the declared corpus says".  All but one carry the query DSL
+itself; MCP carries the same filter through the only parameters it has, and
+says so.
 
 The surfaces are the ones an operator or client actually reaches:
 
 * ``api`` — ``compile_expression`` plus the ``Polylogue`` facade, the shared
   lowering every other surface funnels through.
-* ``cli`` — ``polylogue find <expr> --format json``.
+* ``cli`` — ``polylogue find <expr> --format json``, lowered onto the
+  declared ``cli.query`` read operation.
+* ``cli-direct`` — the same invocation with ``--no-daemon``, which declines
+  the operation and executes the CLI's own local ``ArchiveStore`` branch.
 * ``mcp`` — ``query(projection="sessions", ...)``, whose session projection
   carries named filters rather than the DSL, so the adapter translates the
   requests those filters can express and declines the rest.
@@ -21,7 +24,7 @@ The surfaces are the ones an operator or client actually reaches:
 ``tests/infra/surfaces.py`` holds the older scenario parity harness, which
 compares surfaces to each other over a hand-written ``ArchiveQueryCase``.
 This module is the oracle-backed route: the expectation is computed, and a
-false-empty on one surface cannot be absorbed by the other three agreeing.
+false-empty on one surface cannot be absorbed by the others agreeing.
 """
 
 from __future__ import annotations
@@ -42,7 +45,7 @@ from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPred
 from tests.infra.reference_model import ModelRequest, ReferenceArchive
 
 #: Surface names, in the order a report lists them.
-SURFACE_NAMES: tuple[str, ...] = ("api", "cli", "mcp", "daemon")
+SURFACE_NAMES: tuple[str, ...] = ("api", "cli", "cli-direct", "mcp", "daemon")
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,9 +216,19 @@ class ApiExpressionSurface:
 
 
 class CliExpressionSurface:
-    """``polylogue find <expression> --format json``."""
+    """``polylogue find <expression> --format json``.
+
+    This is the CLI's canonical route: the request is lowered onto the
+    declared ``cli.query`` read and executed through
+    ``operation_kernel.configured_read_operation`` — over UDS when a daemon
+    answers, and in-process through the identical handler when none does.
+    """
 
     name = "cli"
+
+    #: Root options placed before the ``find`` marker.  Root options after the
+    #: verb are refused by the query-first grammar.
+    root_flags: tuple[str, ...] = ()
 
     def __init__(self, *, db_path: Path) -> None:
         from click.testing import CliRunner
@@ -232,7 +245,7 @@ class CliExpressionSurface:
         return result.exit_code, result.output
 
     async def execute(self, request: ModelRequest) -> SurfaceQueryFacts:
-        args = ["find", request.expression, "--format", "json"]
+        args = [*self.root_flags, "find", request.expression, "--format", "json"]
         if request.limit is not None:
             args.extend(["--limit", str(request.limit)])
         if request.offset:
@@ -262,6 +275,23 @@ class CliExpressionSurface:
 
     async def close(self) -> None:
         return None
+
+
+class CliDirectExpressionSurface(CliExpressionSurface):
+    """``polylogue --no-daemon find <expression> --format json``.
+
+    ``--no-daemon`` is what makes ``_try_emit_daemon_session_page`` decline,
+    so this surface is the CLI's *local* ``ArchiveStore`` branch of
+    ``archive_query._execute_archive_query_stdout`` — the second
+    implementation of the same read that the ``cli.query`` operation is
+    replacing.  Carrying it as its own surface is what turns "the gate hid a
+    behavioural difference" from an argument into a test: both CLI legs are
+    compared to the same computed oracle, so a route that answers a different
+    question fails on its own rather than by disagreeing with its twin.
+    """
+
+    name = "cli-direct"
+    root_flags = ("--no-daemon",)
 
 
 #: The largest page the MCP session projection is asked for.  Its ``limit``
@@ -463,6 +493,7 @@ def build_expression_surface_set(
     builders: dict[str, Callable[[], ExpressionSurface]] = {
         "api": lambda: ApiExpressionSurface(archive_root=archive_root, db_path=db_path),
         "cli": lambda: CliExpressionSurface(db_path=db_path),
+        "cli-direct": lambda: CliDirectExpressionSurface(db_path=db_path),
         "mcp": lambda: McpExpressionSurface(db_path=db_path),
         "daemon": lambda: DaemonExpressionSurface(db_path=db_path),
     }
@@ -608,6 +639,7 @@ def known_divergence_for(request: ModelRequest) -> KnownDivergence | None:
 
 __all__ = [
     "ApiExpressionSurface",
+    "CliDirectExpressionSurface",
     "CliExpressionSurface",
     "DaemonExpressionSurface",
     "Divergence",
