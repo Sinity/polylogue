@@ -51,19 +51,16 @@ def paths_command(output_format: str) -> None:
     embeddings_db = location.active_tier("embeddings").resolved_path
     ops_db = location.active_tier("ops").resolved_path
     user_db = location.active_tier("user").resolved_path
-    tier_paths = {
-        "source": source_db,
-        "index": db,
-        "embeddings": embeddings_db,
-        "ops": ops_db,
-        "user": user_db,
-    }
+    # Membership is NOT a surface concern: enumerate the canonical tier set so a
+    # tier added to ``ARCHIVE_TIER_SPECS`` is reported here without an edit. The
+    # hand-written copy this replaces had already dropped ``audit``, so an
+    # archive with no ``audit.db`` reported ``archive_complete`` and could never
+    # raise the ``missing_backup_required_tier:audit`` blocker.
+    tier_paths = {name: location.active_tier(name).resolved_path for name in archive_layout.ARCHIVE_TIER_ORDER}
     tier_versions = _tier_version_status(tier_paths)
     present_tiers = [name for name, path in tier_paths.items() if path.exists()]
     missing_tiers = [name for name, path in tier_paths.items() if not path.exists()]
-    archive_schema_ready = all(
-        tier_versions[name]["version_status"] == "ok" for name in ("source", "index", "embeddings", "ops", "user")
-    )
+    archive_schema_ready = all(status["version_status"] == "ok" for status in tier_versions.values())
     raw_materialization_readiness = _raw_materialization_readiness(active_archive)
     archive_materialization_ready = (
         source_db.exists()
@@ -187,13 +184,9 @@ def paths_command(output_format: str) -> None:
 
 # ── helpers ────────────────────────────────────────────────────────
 
-_TIER_ENUM_BY_NAME = {
-    "source": ArchiveTier.SOURCE,
-    "index": ArchiveTier.INDEX,
-    "embeddings": ArchiveTier.EMBEDDINGS,
-    "ops": ArchiveTier.OPS,
-    "user": ArchiveTier.USER,
-}
+#: Name -> enum, built from ``ArchiveTier`` itself so every declared tier has an
+#: entry. The hand-written literal this replaces was missing ``audit``.
+_TIER_ENUM_BY_NAME = {tier.value: tier for tier in ArchiveTier}
 
 
 def _tier_version_status(tier_paths: dict[str, Path]) -> dict[str, dict[str, object]]:
