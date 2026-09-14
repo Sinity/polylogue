@@ -98,11 +98,18 @@ def _status_operation_result(
     include_archive_readiness: bool = False,
 ) -> Any:
     """Use the configured machine endpoint or the same pinned direct reader."""
-    from polylogue.cli.operation_kernel import OperationKernelError, configured_read_operation
+    from polylogue.cli.operation_kernel import configured_read_operation
     from polylogue.cli.shared.helpers import load_effective_config
 
-    if daemon_url not in (None, _BUILTIN_DAEMON_URL):
-        raise OperationKernelError("machine status uses the configured archive's Unix socket, not a daemon URL")
+    # URL policy (polylogue-2d8oq): accept every value ``_default_daemon_url``
+    # can produce. That resolver exists so site/user TOML and
+    # ``POLYLOGUE_DAEMON_URL`` can point the CLI somewhere other than the
+    # built-in address; refusing exactly those values defeated it and turned an
+    # ordinary configuration into a refusal that the renderer then published as
+    # a live daemon. This route reads through the configured archive route
+    # (machine endpoint or pinned direct reader), so the URL selects nothing
+    # here and an address no daemon answers simply yields the direct fallback.
+    del daemon_url
     config = load_effective_config(env)
     return configured_read_operation(
         config,
@@ -249,16 +256,20 @@ def status_command(
                 if diagnostic.kind == "no_archive":
                     _show_direct_status_diagnostic(env, diagnostic, output_format=output_format)
                     return
-            obs.attributes["daemon_reachable"] = True
-            obs.daemon_path = "daemon"
+            # A failed status read proves nothing about daemon liveness; it
+            # must never be recorded or rendered as a reachable daemon.
+            obs.attributes["daemon_reachable"] = False
+            obs.daemon_path = "unreachable"
             if output_format == "json":
                 _show_daemon_status_unavailable_json(env)
             else:
                 _show_daemon_status_unavailable(env, compact=not full_payload)
             raise click.exceptions.Exit(1) from None
         except OperationKernelError:
-            obs.attributes["daemon_reachable"] = True
-            obs.daemon_path = "daemon"
+            # A failed status read proves nothing about daemon liveness; it
+            # must never be recorded or rendered as a reachable daemon.
+            obs.attributes["daemon_reachable"] = False
+            obs.daemon_path = "unreachable"
             if output_format == "json":
                 _show_daemon_status_unavailable_json(env)
             else:
@@ -441,6 +452,11 @@ def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False
 def _render_direct_status_payload(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> bool:
     """Render the already executed reader result without opening any archive."""
     env.ui.console.print("\n[bold]Archive (pinned direct snapshot)[/bold]")
+    # Name the daemon state this read actually observed. "Idle for this read"
+    # is the measured fact -- the operation route served the status directly
+    # instead of through polylogued -- and stops short of claiming liveness
+    # the CLI never probed (polylogue-2d8oq).
+    env.ui.console.print("  [dim]Daemon idle for this read; start it with `polylogued run` to resume ingestion.[/dim]")
     env.ui.console.print(f"  Sessions: {_safe_int(status.get('total_sessions')):,}")
     env.ui.console.print(f"  Messages: {_safe_int(status.get('total_messages')):,}")
     source_tier = status.get("archive_tiers", {}).get("source", {})
@@ -449,15 +465,22 @@ def _render_direct_status_payload(env: AppEnv, status: dict[str, Any], *, compac
     _render_ingest_workload(env, status.get("ingest_workload", {}))
     convergence = status.get("convergence", {})
     if isinstance(convergence, dict):
+        failed = _safe_int(convergence.get("failed_count"))
+        deferred = _safe_int(convergence.get("deferred_count"))
+        retry_due = _safe_int(convergence.get("retry_due_count"))
         if convergence.get("available"):
-            env.ui.console.print(
-                "  Convergence debt: "
-                f"{_safe_int(convergence.get('failed_count'))} failed, "
-                f"{_safe_int(convergence.get('deferred_count'))} deferred, "
-                f"{_safe_int(convergence.get('retry_due_count'))} retry due"
-            )
+            if not (failed or deferred or retry_due):
+                # An inspected ledger with no debt is a different claim from a
+                # ledger that could not be read; say which one this is.
+                env.ui.console.print("  Convergence debt: none (ledger healthy)")
+            else:
+                env.ui.console.print(f"  Convergence debt: {failed} failed, {deferred} deferred, {retry_due} retry due")
         else:
-            env.ui.console.print("  Convergence debt: unavailable")
+            # The reader already named why it could not answer; dropping that
+            # reason turns a refusal into a bare word (polylogue-2d8oq shape).
+            reason = str(convergence.get("error") or "").strip()
+            detail = f" — {reason}" if reason else ""
+            env.ui.console.print(f"  Convergence debt: unavailable{detail}")
     _render_schema_drift_status(env, status.get("schema_drift", {}))
     _render_raw_frontier_integrity(env, status.get("raw_frontier_integrity", {}))
     _render_direct_embedding_status(env, status.get("embedding_status", {}))
@@ -736,20 +759,22 @@ def _raw_failure_lifecycle_is_healthy(status: dict[str, Any]) -> bool:
 
 def _show_daemon_status_unavailable_json(env: AppEnv) -> None:
     payload = {
-        "daemon_liveness": True,
+        # Unreachable, not running: the status read failed, so liveness was
+        # never observed and cannot be published as true (polylogue-2d8oq).
+        "daemon_liveness": False,
         "status_snapshot": {
             "state": "unavailable",
-            "reason": "api_status_timeout",
+            "reason": "status_read_failed",
         },
     }
     env.ui.console.print(json.dumps(_compact_status_payload(payload, source="daemon"), indent=2, default=str))
 
 
 def _show_daemon_status_unavailable(env: AppEnv, *, compact: bool = False) -> None:
-    env.ui.console.print("\n[bold yellow]Daemon: running[/bold yellow]")
+    env.ui.console.print("\n[bold yellow]Daemon: unreachable[/bold yellow]")
     env.ui.console.print("  Status snapshot: [yellow]unavailable[/yellow]")
     if not compact:
-        env.ui.console.print("  [dim]/api/status did not answer within the bounded CLI timeout.[/dim]")
+        env.ui.console.print("  [dim]The status read did not answer; daemon liveness was not observed.[/dim]")
 
 
 def _show_direct_status_diagnostic(env: AppEnv, diagnostic: Any, *, output_format: str | None) -> None:

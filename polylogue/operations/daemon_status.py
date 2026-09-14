@@ -20,6 +20,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 if TYPE_CHECKING:
     from polylogue.config import Config, PolylogueConfig
     from polylogue.readiness.capability import ComponentReadiness
+    from polylogue.readiness.claim_guard import DerivedDomainReadiness
     from polylogue.storage.embeddings.status_payload import EmbeddingStatusSettings
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -155,15 +156,12 @@ def produce_direct_status(
     summary_component = components.get("session_summary", {})
     embedding_component = components.get("embeddings", {})
     derived_domains = [
-        DerivedDomainReadiness(
-            domain="raw_materialization",
-            ready=_raw_ready(materialization),
-            summary=str(raw_component.get("summary", "unknown")),
-        ),
+        _raw_materialization_domain(materialization, raw_component),
         DerivedDomainReadiness(
             domain="raw_frontier_integrity",
             ready=frontier_component.get("state") == "ready",
             summary=str(frontier_component.get("summary", "unknown")),
+            determinate=frontier_component.get("state") != "unknown",
         ),
         DerivedDomainReadiness(
             domain="session_profiles",
@@ -190,6 +188,7 @@ def produce_direct_status(
                 domain="embeddings",
                 ready=embedding_component.get("state") == "ready",
                 summary=str(embedding_component.get("summary", "unknown")),
+                determinate=embedding_component.get("state") != "unknown",
             )
         )
     claim_guard = derive_claim_guard(
@@ -754,10 +753,38 @@ def _sqlite_maintenance(conn: sqlite3.Connection) -> dict[str, object]:
     }
 
 
-def _raw_ready(value: Mapping[str, object]) -> bool:
-    from polylogue.storage.archive_readiness import raw_materialization_ready
+def _raw_materialization_domain(
+    materialization: Mapping[str, object],
+    raw_component: Mapping[str, object],
+) -> DerivedDomainReadiness:
+    """Derive the raw-materialization claim from one predicate, plus a gate.
 
-    return raw_materialization_ready(value)
+    Every sibling domain reads ``ready``, ``summary`` and ``determinate`` off
+    the same component projection. This one used to read ``ready`` from
+    ``raw_materialization_ready`` and ``summary`` from the projection, so a
+    pristine empty archive published ``converged: false`` with reason
+    ``"ready"`` -- two derivations of one fact disagreeing (polylogue-kjy0a).
+
+    ``ready`` and ``summary`` now both come from the projection. The stricter
+    predicate's extra preconditions (parser census, authority frontier, debt
+    classifier) are what they always were -- inspections that may not have run
+    -- so they withhold *certification* via ``determinate=False``.
+
+    They withhold only that. A projection that already found the domain
+    wanting inspected its own output relation and is a determinate refutation;
+    an uninspected precondition must not mask it into "unknown" either.
+    """
+    from polylogue.readiness.claim_guard import DerivedDomainReadiness, raw_materialization_unmeasured_reason
+
+    state = str(raw_component.get("state") or "unknown")
+    summary = str(raw_component.get("summary", "unknown"))
+    if state == "unknown":
+        return DerivedDomainReadiness("raw_materialization", ready=False, summary=summary, determinate=False)
+    if state == "ready":
+        unmeasured = raw_materialization_unmeasured_reason(materialization)
+        if unmeasured is not None:
+            return DerivedDomainReadiness("raw_materialization", ready=True, summary=unmeasured, determinate=False)
+    return DerivedDomainReadiness("raw_materialization", ready=state == "ready", summary=summary, determinate=True)
 
 
 def _not_observed(reason: str, **extra: object) -> dict[str, object]:

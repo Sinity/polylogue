@@ -131,17 +131,24 @@ def test_init_command_json_format_is_machine_readable(isolated_home: Path) -> No
     assert any(d["family"] == "codex" and d["present"] is False for d in payload["detected"])
 
 
-def test_status_reports_unavailable_daemon_on_a_fresh_install(isolated_home: Path) -> None:
-    """Operational status reports the daemon boundary when no snapshot exists."""
+def test_status_reports_absent_daemon_on_a_fresh_install(isolated_home: Path) -> None:
+    """Operational status reports the daemon boundary when no snapshot exists.
+
+    A fresh install has no archive, so the bounded first-run diagnostic is the
+    honest answer. It used to be preempted by the ``--daemon-url`` refusal,
+    which rendered as "Daemon: running" (polylogue-2d8oq). Anti-vacuity: a
+    status route that claims liveness it never observed turns this red.
+    """
     runner = CliRunner()
     result = runner.invoke(
         cli, ["--plain", "--no-daemon", "ops", "status"], catch_exceptions=False, env={"POLYLOGUE_DAEMON": "off"}
     )
-    assert result.exit_code == 1
-    assert "Status snapshot: unavailable" in result.output
+    assert "Daemon: running" not in result.output
+    assert "Daemon: not running" in result.output
+    assert "No archive found." in result.output
 
 
-def test_status_reports_unavailable_daemon_after_init(isolated_home: Path) -> None:
+def test_status_reports_absent_daemon_after_init(isolated_home: Path) -> None:
     runner = CliRunner()
     init_result = runner.invoke(cli, ["--plain", "init"], catch_exceptions=False)
     assert init_result.exit_code == 0
@@ -149,5 +156,5 @@ def test_status_reports_unavailable_daemon_after_init(isolated_home: Path) -> No
     result = runner.invoke(
         cli, ["--plain", "--no-daemon", "ops", "status"], catch_exceptions=False, env={"POLYLOGUE_DAEMON": "off"}
     )
-    assert result.exit_code == 1
-    assert "Status snapshot: unavailable" in result.output
+    assert "Daemon: running" not in result.output
+    assert "Daemon: not running" in result.output

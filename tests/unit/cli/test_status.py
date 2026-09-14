@@ -206,8 +206,14 @@ def test_status_command_renders_canonical_daemon_operation_result() -> None:
     assert payload["status_snapshot"]["state"] == "fresh"
 
 
-def test_status_command_reports_operation_unavailable_as_live_daemon_snapshot() -> None:
-    """A canonical transport failure remains an unavailable live-daemon result."""
+def test_status_command_reports_operation_unavailable_without_claiming_liveness() -> None:
+    """A canonical transport failure never publishes a running daemon.
+
+    Anti-vacuity: restoring the refusal-to-``True`` mapping in
+    ``_show_daemon_status_unavailable_json`` (or the ``daemon_reachable = True``
+    it used to record) turns this red. A read that failed observed no liveness
+    at all, so ``daemon_liveness`` must be False (polylogue-2d8oq).
+    """
     env = _make_app_env()
     config = SimpleNamespace(archive_root=Path("/tmp/status-test"))
     with (
@@ -225,7 +231,7 @@ def test_status_command_reports_operation_unavailable_as_live_daemon_snapshot() 
 
     assert result.exit_code == 1
     payload = json.loads(_combined_calls(env))
-    assert payload["daemon_liveness"] is True
+    assert payload["daemon_liveness"] is False
     assert payload["status_snapshot"]["state"] == "unavailable"
 
 
@@ -253,7 +259,9 @@ def test_status_command_does_not_misclassify_sqlite_failure_with_snapshot(
     assert result.exit_code == 1
     payload = json.loads(_combined_calls(env))
     assert "diagnostic" not in payload
-    assert payload["daemon_liveness"] is True
+    # An unrelated SQLite failure is still a failed read: it proves nothing
+    # about the daemon and must not be published as liveness (polylogue-2d8oq).
+    assert payload["daemon_liveness"] is False
     assert payload["status_snapshot"]["state"] == "unavailable"
 
 
@@ -784,7 +792,14 @@ class TestCanonicalStatusOperation:
         assert payload["archive_readiness"]["reason"] == "direct_status_default_skips_exact_archive_readiness"
 
     def test_direct_operation_fails_closed_for_missing_ops_frontier_authority(self, tmp_path: Path) -> None:
-        """A missing ops cursor cannot produce a green direct claim."""
+        """A missing ops cursor cannot produce a green direct claim.
+
+        It cannot produce a red one either. The frontier inspection reports
+        ``unknown``, and an unmeasured domain withholds the claim instead of
+        refuting it (#5027, polylogue-kjy0a): the guard publishes ``None`` and
+        names the domain. Anti-vacuity: defaulting ``determinate`` back to True
+        for the raw domains makes this claim ``False`` and turns it red.
+        """
         bootstrap_archive_root(tmp_path)
         with sqlite3.connect(tmp_path / "ops.db") as conn:
             conn.execute("DROP TABLE ingest_cursor")
@@ -792,7 +807,10 @@ class TestCanonicalStatusOperation:
 
         payload = self._direct_status(tmp_path)
         assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
-        assert payload["claim_guard"]["converged"]["value"] is False
+        converged = payload["claim_guard"]["converged"]
+        assert converged["value"] is None
+        assert converged["determinate"] is False
+        assert "inspection incomplete" in converged["reason"]
         assert payload["ok"] is False
 
     def test_direct_operation_exact_readiness_blocks_missing_raw_evidence(self, tmp_path: Path) -> None:
@@ -924,7 +942,19 @@ class TestStatusDiagnosticIntegration:
         }
         assert payload["convergence"]["available"] is True
         assert payload["convergence"]["error"] is None
-        assert payload["claim_guard"]["converged"]["reason"] == "ready"
+        # The convergence claim must not be blamed on the debt ledger, and it
+        # must never contradict itself: this archive's raw-authority frontier
+        # was never inspected, so the verdict is withheld and names that gap.
+        # It used to read value=False with reason="ready" -- the two
+        # derivations of raw-materialization readiness disagreeing
+        # (polylogue-kjy0a). Anti-vacuity: deriving ``ready`` and ``summary``
+        # from different predicates again restores that pair and turns this
+        # red, as does dropping ``determinate``.
+        converged = payload["claim_guard"]["converged"]
+        assert converged["value"] is None
+        assert converged["determinate"] is False
+        assert converged["reason"] != "ready"
+        assert "raw_materialization" in converged["signal"]
         assert payload["claim_guard"]["perf_measurable"]["value"] is False
 
     @pytest.mark.integration

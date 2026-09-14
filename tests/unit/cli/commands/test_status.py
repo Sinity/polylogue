@@ -95,6 +95,41 @@ class TestDefaultDaemonUrl:
         assert _default_daemon_url() == _BUILTIN_DAEMON_URL
 
 
+class TestStatusOperationUrlPolicy:
+    """The status route accepts every URL ``_default_daemon_url`` can produce."""
+
+    def test_configured_override_url_is_not_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A configured non-builtin URL reads through the configured route.
+
+        ``_default_daemon_url`` exists so site/user TOML and
+        ``POLYLOGUE_DAEMON_URL`` can point the CLI at an address other than the
+        built-in one. Refusing exactly those values produced an
+        ``OperationKernelError`` the renderer then published as "Daemon:
+        running" (polylogue-2d8oq). Anti-vacuity: reinstating the
+        ``daemon_url not in (None, _BUILTIN_DAEMON_URL)`` refusal makes this
+        raise instead of returning the read, and turns it red.
+        """
+        from polylogue.cli.commands import status as status_module
+
+        monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
+        seen: dict[str, object] = {}
+
+        def _fake_read(config: object, operation: str, arguments: object, **kwargs: object) -> str:
+            seen["operation"] = operation
+            return "read-result"
+
+        monkeypatch.setattr("polylogue.cli.shared.helpers.load_effective_config", lambda _env: object())
+        monkeypatch.setattr("polylogue.cli.operation_kernel.configured_read_operation", _fake_read)
+
+        result = status_module._status_operation_result(
+            object(),  # type: ignore[arg-type]
+            daemon_url=_default_daemon_url(),
+        )
+
+        assert result == "read-result"
+        assert seen["operation"] == "status"
+
+
 class TestFmtBytes:
     """Tests for _fmt_bytes(n)."""
 
