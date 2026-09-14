@@ -122,7 +122,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Convergence Simplification Inventory](design/convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign (polylogue-m6tp). |
 | [Convergence Law Deletion Ledger](convergence-laws-deletion-ledger.md) | Deletion candidates and exact four-law, production-seam mutation conditions for convergence machinery. |
 | [GitHub Merge Queue Evaluation](design/merge-queue-evaluation.md) | Evidence-based decision on whether GitHub merge queue can replace the local harvest merge train. |
-| [CLI Interaction Oracle Deletion Ledger](plans/cli-interaction-deletion-ledger.md) | Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles. |
 | [CLI Operation Kernel Deletion Ledger](plans/cli-operation-kernel-deletion-ledger.md) | Transport ownership and LOC accounting for the CLI operation-kernel migration. |
 | [Workload Artifact Consolidation Ledger](plans/workload-artifact-consolidation-ledger.md) | Census and per-candidate disposition for duplicate workload and corpus artifact builders under tests/infra. |
 | [Typed WebUI Capability Matrix](plans/webui-capability-matrix.md) | Cutover inventory for typed and legacy browser capabilities. |
@@ -136,7 +135,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 |----------|-------------|
 | [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
-| [MCP Surface Report 2026-08](mcp-surface-report-2026-08.md) | Dated closure evidence for the 103-tool-to-10-verb MCP collapse (polylogue-t46.8). |
 
 ## Contributor Workflow
 

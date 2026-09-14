@@ -421,12 +421,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
-        "CLI Interaction Oracle Deletion Ledger",
-        "plans/cli-interaction-deletion-ledger.md",
-        "Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles.",
-        "design",
-    ),
-    _entry(
         "CLI Operation Kernel Deletion Ledger",
         "plans/cli-operation-kernel-deletion-ledger.md",
         "Transport ownership and LOC accounting for the CLI operation-kernel migration.",
@@ -455,12 +449,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "archive",
     ),
     _entry("Retrospective Index", "retro/README.md", "Index of historical incident retrospectives.", "archive"),
-    _entry(
-        "MCP Surface Report 2026-08",
-        "mcp-surface-report-2026-08.md",
-        "Dated closure evidence for the 103-tool-to-10-verb MCP collapse (polylogue-t46.8).",
-        "archive",
-    ),
 )
 
 REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
