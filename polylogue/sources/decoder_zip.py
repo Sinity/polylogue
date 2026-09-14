@@ -22,7 +22,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_coordinates import MemberAddressingMode
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
@@ -32,6 +32,13 @@ from .cursor import _record_cursor_failure
 from .parsers.base import ParsedSession, RawSessionData
 
 logger = get_logger(__name__)
+
+# A classification probe asks only whether a member's decoded content overrides
+# a non-session path rule. It needs the head of a conversation document, not the
+# archival ceiling: reusing ``MAX_UNCOMPRESSED_SIZE`` here turns one ``read()``
+# into a 10 GiB allocation for a member a 1000:1 compression ratio lets a ~10 MB
+# download declare. Real provider conversation documents sit far below this.
+ZIP_PROBE_MAX_BYTES = 256 * 1024 * 1024
 
 
 def is_declared_artifact_path(source_path: str) -> bool:
@@ -145,18 +152,46 @@ def zip_entry_session_artifact(
     provider: Provider,
 ) -> ArtifactClassification | None:
     """Decode a member before applying a terminal artifact path rule."""
-    from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+    from polylogue.archive.raw_payload.decode import JSONL_RECORD_INSPECTION_BYTES, jsonl_session_artifact
 
     lower_name = info.filename.lower()
     if lower_name.endswith((".jsonl", ".jsonl.txt", ".ndjson")):
         with open_bounded_zip_entry(zf, info) as handle:
-            return jsonl_session_artifact(handle, provider=provider)
+            return jsonl_session_artifact(
+                handle,
+                provider=provider,
+                max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
+            )
     if not lower_name.endswith(".json"):
         return None
     try:
-        with open_bounded_zip_entry(zf, info) as handle:
+        # This is a classification probe, not archival retention, so it gets
+        # its own small ceiling rather than reusing the 10 GiB per-member
+        # archival cap as an in-memory limit. Admission allows a 1000:1
+        # compression ratio, so a ~10 MB crafted member could otherwise make
+        # this single ``read()`` allocate 10 GiB before any parse.
+        with open_bounded_zip_entry(zf, info, max_bytes=ZIP_PROBE_MAX_BYTES) as handle:
             payload = json_loads(handle.read())
     except JSONDecodeError:
+        return None
+    except ZipBombError:
+        # Not a silent reclassification: the path rule stands, and the event
+        # names the member whose content evidence was never examined.
+        logger.warning(
+            "zip artifact probe skipped %s: declared %d bytes exceeds the %d-byte content-probe ceiling",
+            info.filename,
+            info.file_size,
+            ZIP_PROBE_MAX_BYTES,
+        )
+        emit(
+            "sources.zip.artifact_probe_unbounded",
+            level=WARNING,
+            outcome="degraded",
+            reason="probe_size_exceeded",
+            entry=info.filename,
+            declared_bytes=info.file_size,
+            probe_ceiling_bytes=ZIP_PROBE_MAX_BYTES,
+        )
         return None
     # Deliberately omit source_path. The caller is asking whether decoded
     # content can override a non-session path rule, so reapplying that rule

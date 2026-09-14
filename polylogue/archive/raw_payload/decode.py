@@ -324,12 +324,20 @@ def jsonl_session_artifact(
     *,
     provider: Provider,
     jsonl_dict_only: bool = False,
+    max_record_bytes: int | None = None,
 ) -> ArtifactClassification | None:
-    """Compatibility wrapper for callers that only need classification."""
+    """Compatibility wrapper for callers that only need classification.
+
+    ``max_record_bytes`` is forwarded so a caller inspecting untrusted bytes
+    can keep the per-record allocation bounded; the wrapper previously dropped
+    it, which silently disabled the bounded reader for every caller that only
+    wanted the classification.
+    """
     return scan_jsonl_session_artifact(
         raw,
         provider=provider,
         jsonl_dict_only=jsonl_dict_only,
+        max_record_bytes=max_record_bytes,
     ).artifact
 
 
