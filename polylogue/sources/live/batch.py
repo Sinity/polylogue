@@ -84,7 +84,6 @@ from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import (
     ZipBombError,
     is_declared_artifact_path,
-    open_bounded_zip_entry,
     provider_detection_path,
 )
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
@@ -183,9 +182,9 @@ from polylogue.sources.revision_backfill import (
     parse_retained_raw_sessions,
 )
 from polylogue.sources.source_acquisition_components import (
-    _DETECTION_PREFIX_SIZE,
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
+    sniff_zip_provider,
     stream_preserved_zip_entry_raw_data,
 )
 from polylogue.sources.source_parsing import has_decoded_session_evidence
@@ -4022,7 +4021,7 @@ class LiveBatchProcessor:
                         )
                     )
                     detection_entries = [info for info in safe_json_entries if provider_detection_path(info.filename)]
-                    zip_provider_hint = self._sniff_zip_provider(zf, detection_entries) or fallback_provider
+                    zip_provider_hint = sniff_zip_provider(zf, detection_entries) or fallback_provider
                 validator = _ZipEntryValidator(
                     zip_provider_hint,
                     cursor_state=None,
@@ -4190,42 +4189,6 @@ class LiveBatchProcessor:
             # of permanently acknowledging this source coordinate as excluded.
             return None
         return records, total_bytes
-
-    @staticmethod
-    def _sniff_zip_provider(
-        zf: zipfile.ZipFile,
-        entries: list[zipfile.ZipInfo],
-    ) -> Provider | None:
-        """Detect a ZIP's dominant provider from whichever member detects cleanly.
-
-        Reads only a small prefix (``_DETECTION_PREFIX_SIZE``, matching the
-        equivalent whole-file detection budget in
-        ``source_acquisition_components.read_plain_source_file``) of each
-        JSON/JSONL member in order until one yields a positive, non-unknown
-        ``detect_provider`` result. Returns ``None`` if no member detects
-        (e.g. a genuinely mixed or non-conversation ZIP), leaving the caller
-        to keep the original ``Provider.UNKNOWN`` fallback.
-        """
-        for info in entries:
-            name_lower = info.filename.lower()
-            if not name_lower.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
-                continue
-            try:
-                with open_bounded_zip_entry(zf, info) as handle:
-                    prefix = handle.read(_DETECTION_PREFIX_SIZE)
-            except (zipfile.BadZipFile, OSError, ZipBombError):
-                continue
-            if not prefix:
-                continue
-            detected = _detect_provider_from_raw_bytes(
-                prefix,
-                info.filename,
-                Provider.UNKNOWN,
-                truncated_tail_ok=True,
-            )
-            if detected is not Provider.UNKNOWN:
-                return detected
-        return None
 
     def _mark_excluded_cursor(
         self,

@@ -148,3 +148,129 @@ def test_one_rejected_zip_member_does_not_abort_its_whole_input(tmp_path: Path) 
         b'{"retained":"first"}\n',
         b'{"retained":"third"}\n',
     ]
+
+
+_DECLARED_ASSET = "file-abc123XYZ.png"
+_PNG_BYTES = bytes.fromhex("89504e470d0a1a0a") + b"synthetic-asset-bytes"
+
+
+def _write_export_zip_with_declared_artifact(path: Path) -> None:
+    """A provider-agnostic export ZIP: one JSON member and one declared asset."""
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("conversations.json", b'[{"title":"synthetic","mapping":{}}]')
+        archive.writestr(_DECLARED_ASSET, _PNG_BYTES)
+
+
+def _capture_retained_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, dict[str, object]]]:
+    captured: list[tuple[str, dict[str, object]]] = []
+
+    def record(event: str, /, **fields: object) -> None:
+        captured.append((event, dict(fields)))
+
+    monkeypatch.setattr("polylogue.sources.retained_acquisition.emit", record)
+    return captured
+
+
+def test_retained_zip_keeps_declared_artifact_members_under_an_unknown_provider(
+    tmp_path: Path,
+) -> None:
+    """A retained export ZIP retains its declared assets, not only JSON.
+
+    Anti-vacuity: the retained blob has no provider-bearing path, so this route
+    resolves ``Provider.UNKNOWN``; dropping either the provider sniff or the
+    ``is_declared_artifact_path`` fallback restores the old inferred rule
+    ``artifact_rule_for_path(Provider.UNKNOWN, name)``, which is always ``None``,
+    and ``file-abc123XYZ.png`` disappears from the retained set while the
+    generator still exhausts normally.
+    """
+    original = tmp_path / "synthetic-export.zip"
+    _write_export_zip_with_declared_artifact(original)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, blob_size = store.write_from_path(original)
+
+    records = list(
+        iter_retained_source_records(
+            source_path=str(original),
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            blob_store=store,
+        )
+    )
+
+    assert [record.data.source_path.rsplit(":", 1)[-1] for record in records] == [
+        "conversations.json",
+        _DECLARED_ASSET,
+    ]
+    # The asset's exact bytes are retained, not a re-encoded interpretation.
+    assert store.read_all(records[1].data.blob_hash or "") == _PNG_BYTES
+
+
+def test_retained_zip_counts_an_unselected_member_instead_of_dropping_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member no declaration owns is reported, never silently skipped.
+
+    Anti-vacuity: the caller records normal exhaustion as proven-complete
+    enumeration. Reverting the ``on_unselected`` branch in
+    ``ZipAdmission.filter_entries`` to a bare ``continue`` leaves ``chat.html``
+    out of the retained records *and* out of every event, so this assertion on
+    ``sources.retained_zip.members_unselected`` goes red.
+    """
+    original = tmp_path / "synthetic-export.zip"
+    with zipfile.ZipFile(original, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("conversations.json", b'[{"title":"synthetic","mapping":{}}]')
+        archive.writestr("chat.html", b"<html>not a declared artifact</html>")
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, blob_size = store.write_from_path(original)
+    captured = _capture_retained_events(monkeypatch)
+
+    records = list(
+        iter_retained_source_records(
+            source_path=str(original),
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            blob_store=store,
+        )
+    )
+
+    assert [record.data.source_path.rsplit(":", 1)[-1] for record in records] == ["conversations.json"]
+    unselected = [fields for event, fields in captured if event == "sources.retained_zip.members_unselected"]
+    assert len(unselected) == 1
+    assert unselected[0]["skipped"] == 1
+    assert "chat.html" in str(unselected[0]["error_detail"])
+
+
+def test_retained_zip_counts_an_inadmissible_member_as_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member refused by admission reaches the refusal event with a count.
+
+    Anti-vacuity: removing the ``sources.retained_zip.members_refused`` emit, or
+    dropping ``on_rejected`` from the ``filter_entries`` call, leaves the bomb
+    member missing from the records with no event naming it, and the
+    ``skipped == 1`` assertion goes red.
+    """
+    original = tmp_path / "synthetic-export.zip"
+    _write_zip_with_pathological_member(original)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, blob_size = store.write_from_path(original)
+    captured = _capture_retained_events(monkeypatch)
+
+    records = list(
+        iter_retained_source_records(
+            source_path=str(original),
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            blob_store=store,
+        )
+    )
+
+    assert [record.entry_ordinal for record in records] == [0, 2]
+    refused = [fields for event, fields in captured if event == "sources.retained_zip.members_refused"]
+    assert len(refused) == 1
+    assert refused[0]["skipped"] == 1
+    assert "compression ratio" in str(refused[0]["error_detail"])

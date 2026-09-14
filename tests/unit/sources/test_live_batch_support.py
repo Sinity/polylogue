@@ -1008,7 +1008,7 @@ def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
     for target in (
         "polylogue.sources.live.batch.iter_zip_entry_raw_data",
-        "polylogue.sources.live.batch.LiveBatchProcessor._sniff_zip_provider",
+        "polylogue.sources.live.batch.sniff_zip_provider",
         "polylogue.sources.live.batch._detect_provider_from_raw_bytes",
         "polylogue.sources.source_acquisition_components.iter_entry_payloads",
         "polylogue.sources.source_acquisition_components.classify_artifact",
@@ -3096,7 +3096,7 @@ def test_unknown_inbox_zip_sniffs_provider_before_sidecar_admission(
         sniffed_paths.extend(info.filename for info in entries)
         return Provider.CLAUDE_CODE
 
-    monkeypatch.setattr(LiveBatchProcessor, "_sniff_zip_provider", staticmethod(sniff_provider))
+    monkeypatch.setattr("polylogue.sources.live.batch.sniff_zip_provider", sniff_provider)
 
     records, _total_bytes = processor._extract_zip_member_records(
         bundle,
@@ -3148,7 +3148,7 @@ def test_unknown_inbox_zip_does_not_sniff_entries_rejected_by_security_admission
         sniffed_paths.extend(info.filename for info in entries)
         return Provider.CLAUDE_CODE
 
-    monkeypatch.setattr(LiveBatchProcessor, "_sniff_zip_provider", staticmethod(sniff_provider))
+    monkeypatch.setattr("polylogue.sources.live.batch.sniff_zip_provider", sniff_provider)
 
     processor._extract_zip_member_records(
         bundle,

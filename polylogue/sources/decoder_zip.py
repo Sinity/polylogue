@@ -42,6 +42,22 @@ def is_declared_artifact_path(source_path: str) -> bool:
     )
 
 
+def declared_artifact_provider(source_path: str) -> Provider | None:
+    """Return the single provider whose declaration owns this archive path.
+
+    ``None`` when no declaration owns it, or when more than one family claims
+    the same path -- an ambiguous claim is not evidence of a provider.
+    """
+    owners = {
+        provider
+        for provider in Provider
+        if provider is not Provider.UNKNOWN and artifact_rule_for_path(provider, source_path) is not None
+    }
+    if len(owners) != 1:
+        return None
+    return next(iter(owners))
+
+
 def provider_detection_path(source_path: str) -> bool:
     """Exclude declaration-owned non-session evidence from provider sniffing."""
     rules = [
@@ -77,6 +93,7 @@ class ZipEntryValidator:
         allowed_suffixes: Collection[str] | None = None,
         allowed_path: Callable[[str], bool] | None = None,
         on_rejected: Callable[[zipfile.ZipInfo, str], None] | None = None,
+        on_unselected: Callable[[zipfile.ZipInfo, str], None] | None = None,
     ) -> Iterable[zipfile.ZipInfo]:
         """Yield safe, relevant entries and record failures in cursor state.
 
@@ -87,7 +104,12 @@ class ZipEntryValidator:
         reopening by filename can select a different duplicate member.
 
         ``on_rejected`` lets read-only surfaces report the same admission
-        decisions without duplicating the security checks.
+        decisions without duplicating the security checks. ``on_unselected``
+        is the separate relevance channel: a member neither matching a
+        requested suffix nor owned by an artifact declaration. It is not a
+        cursor failure -- an ordinary export ships members this filter is not
+        asking for -- but a caller that must account for every physical member
+        needs to see it instead of having it silently disappear.
         """
 
         def reject(info: zipfile.ZipInfo, reason: str) -> None:
@@ -112,6 +134,7 @@ class ZipEntryValidator:
             allowed_suffixes=allowed_suffixes,
             allowed_path=allowed_path,
             on_rejected=reject,
+            on_unselected=on_unselected,
         )
 
 
