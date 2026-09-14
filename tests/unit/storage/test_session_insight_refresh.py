@@ -2251,3 +2251,81 @@ def test_bounded_and_unbounded_terminal_state_agree_on_shared_fixture(
     assert bounded["terminal_state"] == unbounded["terminal_state"]
     assert bounded["terminal_state_method"] == unbounded["terminal_state_method"]
     assert bounded["terminal_state_confidence"] == unbounded["terminal_state_confidence"]
+
+
+def test_bounded_tail_reports_the_block_budget_it_had_to_apply(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The degraded path's 50-message window bounds messages, not what hangs
+    off them: an imported transcript can put an unbounded number of non-text
+    blocks, or a single enormous ``tool_input``, inside those last messages.
+    That runs on the convergence side, where none of the read path's deadlines
+    or admission caps apply, and a persisted session is re-derived on every
+    refresh -- so one import can wedge the daemon repeatedly. The tail read now
+    caps blocks and omits an over-size ``tool_input`` whole (never truncated: a
+    half a JSON document is not a smaller input, it is an unparseable one), and
+    says so in ``terminal_state_evidence``.
+
+    Anti-vacuity: drop the ``LIMIT`` from
+    ``_SESSION_INSIGHT_TAIL_BLOCK_SQL_TEMPLATE`` and the ``tool_input`` CASE,
+    or stop merging ``budget.as_evidence()`` into the terminal-state result,
+    and the two evidence keys below are absent."""
+    db_path = tmp_path / "large-session-tail-budget.db"
+    native = "conv-large-bounded-budget"
+    session_id = _sid(native, "claude-code-session")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(native, source_name="claude-code", title="Large bounded budget"),
+            messages=[
+                make_message(
+                    f"{native}:msg-1",
+                    native,
+                    role="assistant",
+                    text="Running many tools.",
+                    stop_reason="tool_use",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "bash",
+                            "tool_id": f"call-{index}",
+                            "tool_input": {"command": "x" * 4096},
+                        }
+                        for index in range(6)
+                    ],
+                ),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.execute(
+            """
+            UPDATE sessions
+            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
+            WHERE session_id = ?
+            """,
+            (50, 1234, 7, 3, session_id),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
+        monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_TERMINAL_STATE_TAIL_BLOCK_LIMIT", 4)
+        monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_TAIL_TOOL_INPUT_MAX_CHARS", 64)
+
+        def fail_full_load(_conn: sqlite3.Connection, _session_ids: object) -> object:
+            raise AssertionError("large-session degraded path must not hydrate the full session")
+
+        monkeypatch.setattr(rebuild_mod, "load_sync_batch", fail_full_load)
+        counts = rebuild_session_insights_sync(conn, session_ids=[session_id])
+        profile = conn.execute(
+            "SELECT workflow_shape, evidence_payload_json FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+
+    assert counts.profiles == 1
+    assert profile is not None
+    assert profile["workflow_shape"] == "bounded_large_session"
+    evidence = json.loads(profile["evidence_payload_json"])["terminal_state_evidence"]
+    assert evidence["tail_blocks_capped_at"] == 4
+    # Four blocks kept, every one of them over the 64-char input cap.
+    assert evidence["tail_tool_inputs_omitted"] == 4

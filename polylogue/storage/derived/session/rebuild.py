@@ -123,6 +123,15 @@ _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS = 4_096
 # bounded path's whole reason for existing.
 _SESSION_INSIGHT_TERMINAL_STATE_TAIL_MESSAGE_LIMIT = 50
 _SESSION_INSIGHT_TERMINAL_STATE_TAIL_EVENT_LIMIT = 200
+# The 50-message window bounds messages, not what hangs off them. An imported
+# transcript can put an unbounded number of non-text blocks, or a single
+# multi-hundred-megabyte tool_input, inside its last 50 messages -- defeating
+# the degraded path's whole reason for existing, on the convergence side where
+# none of the read-path deadlines or admission caps apply. These bound the
+# blocks themselves. Both are reported in terminal_state_evidence when they
+# bite, so a capped derivation is never mistaken for a complete one.
+_SESSION_INSIGHT_TERMINAL_STATE_TAIL_BLOCK_LIMIT = 2_000
+_SESSION_INSIGHT_TAIL_TOOL_INPUT_MAX_CHARS = 65_536
 _SESSION_INSIGHT_SESSION_SQL_TEMPLATE = """
 SELECT
     session_id,
@@ -315,7 +324,18 @@ SELECT
     END AS text,
     tool_name,
     tool_id,
-    tool_input,
+    -- Omitted whole, never truncated: a half a JSON document is not a
+    -- smaller tool input, it is an unparseable one. Terminal-state
+    -- derivation reads pairing and outcome, not arguments.
+    CASE
+        WHEN tool_input IS NULL THEN NULL
+        WHEN length(tool_input) > ? THEN NULL
+        ELSE tool_input
+    END AS tool_input,
+    CASE
+        WHEN tool_input IS NOT NULL AND length(tool_input) > ? THEN 1
+        ELSE 0
+    END AS tool_input_omitted,
     NULL AS metadata,
     semantic_type,
     tool_result_is_error,
@@ -324,6 +344,7 @@ FROM blocks
 WHERE message_id IN ({placeholders})
   AND block_type != 'text'
 ORDER BY message_id, position
+LIMIT ?
 """
 _SESSION_INSIGHT_TAIL_EVENT_SQL = """
 SELECT * FROM (
@@ -1114,7 +1135,46 @@ def _tail_session_record(
     )
 
 
-def _tail_session_sync(conn: sqlite3.Connection, session_id: str, row: sqlite3.Row) -> Session:
+@dataclass(frozen=True, slots=True)
+class _TailBudgetReport:
+    """What the bounded tail read had to leave out, if anything."""
+
+    blocks_capped: bool = False
+    tool_inputs_omitted: int = 0
+
+    def as_evidence(self) -> dict[str, int | float | str | None]:
+        """Report only when a bound actually bit, so absence means complete."""
+        evidence: dict[str, int | float | str | None] = {}
+        if self.blocks_capped:
+            evidence["tail_blocks_capped_at"] = _SESSION_INSIGHT_TERMINAL_STATE_TAIL_BLOCK_LIMIT
+        if self.tool_inputs_omitted:
+            evidence["tail_tool_inputs_omitted"] = self.tool_inputs_omitted
+        return evidence
+
+
+def _tail_block_params(message_ids: Sequence[str]) -> tuple[object, ...]:
+    return (
+        _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
+        _SESSION_INSIGHT_TAIL_TOOL_INPUT_MAX_CHARS,
+        _SESSION_INSIGHT_TAIL_TOOL_INPUT_MAX_CHARS,
+        *message_ids,
+        _SESSION_INSIGHT_TERMINAL_STATE_TAIL_BLOCK_LIMIT + 1,
+    )
+
+
+def _bounded_tail_blocks(block_rows: Sequence[sqlite3.Row]) -> tuple[list[BlockRecord], _TailBudgetReport]:
+    """Apply the declared block cap, reporting it rather than hiding it."""
+    capped = len(block_rows) > _SESSION_INSIGHT_TERMINAL_STATE_TAIL_BLOCK_LIMIT
+    kept = block_rows[:_SESSION_INSIGHT_TERMINAL_STATE_TAIL_BLOCK_LIMIT] if capped else block_rows
+    omitted = sum(1 for block_row in kept if block_row["tool_input_omitted"])
+    return [_row_to_content_block(block_row) for block_row in kept], _TailBudgetReport(
+        blocks_capped=capped, tool_inputs_omitted=omitted
+    )
+
+
+def _tail_session_sync(
+    conn: sqlite3.Connection, session_id: str, row: sqlite3.Row
+) -> tuple[Session, _TailBudgetReport]:
     message_rows = conn.execute(
         _SESSION_INSIGHT_TAIL_MESSAGE_SQL,
         (
@@ -1126,23 +1186,29 @@ def _tail_session_sync(conn: sqlite3.Connection, session_id: str, row: sqlite3.R
     tail_messages = [_row_to_message(message_row) for message_row in message_rows]
     message_ids = [str(message.message_id) for message in tail_messages]
     blocks: list[BlockRecord] = []
+    budget = _TailBudgetReport()
     if message_ids:
         placeholders = ", ".join("?" for _ in message_ids)
         block_rows = conn.execute(
             _SESSION_INSIGHT_TAIL_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
-            (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *message_ids),
+            _tail_block_params(message_ids),
         ).fetchall()
-        blocks = [_row_to_content_block(block_row) for block_row in block_rows]
+        blocks, budget = _bounded_tail_blocks(list(block_rows))
     attached_messages = attach_blocks_to_messages(tail_messages, blocks)
     event_rows = conn.execute(
         _SESSION_INSIGHT_TAIL_EVENT_SQL,
         (session_id, _SESSION_INSIGHT_TERMINAL_STATE_TAIL_EVENT_LIMIT),
     ).fetchall()
     tail_events = [_row_to_session_event(event_row) for event_row in event_rows]
-    return session_from_records(_tail_session_record(session_id, row), attached_messages, [], tail_events)
+    return (
+        session_from_records(_tail_session_record(session_id, row), attached_messages, [], tail_events),
+        budget,
+    )
 
 
-async def _tail_session_async(conn: aiosqlite.Connection, session_id: str, row: sqlite3.Row) -> Session:
+async def _tail_session_async(
+    conn: aiosqlite.Connection, session_id: str, row: sqlite3.Row
+) -> tuple[Session, _TailBudgetReport]:
     message_rows = await (
         await conn.execute(
             _SESSION_INSIGHT_TAIL_MESSAGE_SQL,
@@ -1156,15 +1222,16 @@ async def _tail_session_async(conn: aiosqlite.Connection, session_id: str, row: 
     tail_messages = [_row_to_message(message_row) for message_row in message_rows]
     message_ids = [str(message.message_id) for message in tail_messages]
     blocks: list[BlockRecord] = []
+    budget = _TailBudgetReport()
     if message_ids:
         placeholders = ", ".join("?" for _ in message_ids)
         block_rows = await (
             await conn.execute(
                 _SESSION_INSIGHT_TAIL_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
-                (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *message_ids),
+                _tail_block_params(message_ids),
             )
         ).fetchall()
-        blocks = [_row_to_content_block(block_row) for block_row in block_rows]
+        blocks, budget = _bounded_tail_blocks(list(block_rows))
     attached_messages = attach_blocks_to_messages(tail_messages, blocks)
     event_rows = await (
         await conn.execute(
@@ -1173,7 +1240,10 @@ async def _tail_session_async(conn: aiosqlite.Connection, session_id: str, row: 
         )
     ).fetchall()
     tail_events = [_row_to_session_event(event_row) for event_row in event_rows]
-    return session_from_records(_tail_session_record(session_id, row), attached_messages, [], tail_events)
+    return (
+        session_from_records(_tail_session_record(session_id, row), attached_messages, [], tail_events),
+        budget,
+    )
 
 
 _TerminalStateResult = tuple[str, float, dict[str, int | float | str | None], str]
@@ -1209,11 +1279,12 @@ def _bounded_session_terminal_state_sync(
     """
     from polylogue.archive.session.runtime import _terminal_state
 
-    session = _tail_session_sync(conn, session_id, row)
+    session, budget = _tail_session_sync(conn, session_id, row)
     if not session.messages:
         return _UNKNOWN_BOUNDED_TERMINAL_STATE
     analysis = build_session_analysis(session)
-    return _terminal_state(session, analysis)
+    state, confidence, evidence, method = _terminal_state(session, analysis)
+    return state, confidence, {**evidence, **budget.as_evidence()}, method
 
 
 async def _bounded_session_terminal_state_async(
@@ -1224,11 +1295,12 @@ async def _bounded_session_terminal_state_async(
     """Async twin of `_bounded_session_terminal_state_sync` -- see its docstring."""
     from polylogue.archive.session.runtime import _terminal_state
 
-    session = await _tail_session_async(conn, session_id, row)
+    session, budget = await _tail_session_async(conn, session_id, row)
     if not session.messages:
         return _UNKNOWN_BOUNDED_TERMINAL_STATE
     analysis = build_session_analysis(session)
-    return _terminal_state(session, analysis)
+    state, confidence, evidence, method = _terminal_state(session, analysis)
+    return state, confidence, {**evidence, **budget.as_evidence()}, method
 
 
 def _bounded_session_cost_summary(
