@@ -75,5 +75,3 @@ Pending generations are restartable; a restart resumes their exact member set in
 
 - The `docs/architecture.md` ring diagram draws only source, index, embeddings, user, and ops; code has six tiers and includes `audit.db` (`docs/architecture.md:25`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:49-85`).
 - `docs/architecture.md` calls embeddings plainly rebuildable; runtime metadata classifies them as `expensive_rebuild` with backup required (`docs/architecture.md:52-55`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:62-67`).
-
-verified: ab850e0b71263ae017e453833e4495b79030c7c3 2026-09-14

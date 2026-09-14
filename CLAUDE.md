@@ -177,7 +177,8 @@ explicit-and-retryable or a typed permanent refusal.
 
 Code-bound orientation facts in this file are kept aligned during edits but
 are not independently anchor-checked; durable citations belong in
-`docs/atlas/`, which `devtools gate atlas` verifies.
+`docs/atlas/`, where `devtools gate atlas` proves every cited path and line
+range still resolves. It does not judge whether the prose is still true.
 
 - `devtools test <sel>` — focused pytest through the managed harness (checkout
   guard, environment, typed result). Never bare `pytest`.
@@ -254,8 +255,10 @@ grep the diff and check both paths.
 
 `docs/atlas/` — agent-orientation sheets with code-verified anchors: read
 `00-core.md` and your area's sheet before exploring (storage, daemon, mcp,
-sources/parsers, query/read-path). Run `devtools gate atlas` when changing
-anchored code; stale sections are re-verified or deleted.
+sources/parsers, query/read-path). `devtools gate atlas` runs in the quick set
+and blocks on a citation whose file or line range no longer exists. Prose that
+a change made wrong is re-verified or deleted by the change's author; no gate
+detects it.
 `docs/architecture.md` (rings, data flow), `docs/internals.md` (invariants,
 schema history), `docs/architecture-spine.md` (decisions), `TESTING.md`,
 `CONTRIBUTING.md`, `docs/devtools.md` (generated), `docs/daemon.md`,

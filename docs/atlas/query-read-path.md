@@ -68,5 +68,3 @@ cross-surface change, run the relevant CLI/API/MCP parity tests, pagination and
 cancellation coverage, then `devtools gate doc-commands` and the generated
 surface check. Use `devtools why` to inspect a managed verification refusal or
 failure before interpreting a receipt.
-
-verified: 7a5160fd8b5a7c2a65c2149710713e8f8a4d6485 2026-09-14

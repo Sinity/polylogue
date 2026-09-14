@@ -81,8 +81,8 @@ Read the area sheet before opening broad source trees:
 
 Then consult `docs/architecture.md` for the ring model, the specific area
 sheet for anchors and gotchas, and `devtools --list-commands` for executable
-verification. `devtools gate atlas` checks that this orientation layer has
-not rotted.
+verification. `devtools gate atlas` checks that every citation on these
+sheets still resolves to a real file and line range.
 
 ## Non-negotiable boundaries
 
@@ -95,5 +95,3 @@ not rotted.
 - Public filters use `origin`; `provider` is a parser/raw-wire concept.
 - Tests use synthetic fixtures and managed `devtools test` commands; ambient
   personal archives never enter tracked files.
-
-verified: ab81d4e5cc063dbb185e9cfb5ea352fa83d4f189 2026-09-14

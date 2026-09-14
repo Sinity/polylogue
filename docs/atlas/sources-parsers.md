@@ -98,5 +98,3 @@ lowering, then the provider parser and its fixture. Follow the parsed object
 into `polylogue/storage/sqlite/archive_tiers/write.py`; do not infer the
 durable contract from a surface serializer. The provider guides under
 `docs/providers/` explain format-specific caveats.
-
-verified: ab850e0b71263ae017e453833e4495b79030c7c3 2026-09-14

@@ -86,5 +86,3 @@ hand-written prose rendered alongside it still summarises `maintenance` as
 mode (`devtools/render_agent_manual.py:230`; `devtools/render_agent_manual.py:234`).
 Correcting the typed contract without the prose narrowed the defect; it did not
 close it.
-
-verified: ab850e0b71263ae017e453833e4495b79030c7c3 2026-09-14
