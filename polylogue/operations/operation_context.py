@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager, ExitStack, closing, contextmanager
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -12,13 +12,31 @@ from polylogue.archive.query.execution_control import InterruptibleSQLiteRead, Q
 from polylogue.archive.query.search_contract import LaneFailure
 from polylogue.core.errors import DatabaseError
 from polylogue.operations.mutation_transaction import MutationPrincipal
-from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation, OwnedArchiveLocation
+from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
     from polylogue.operations.audit import AuditRepository
     from polylogue.operations.daemon_execution import OperationRuntime
     from polylogue.operations.daemon_reads import DaemonReadDependencies
+
+
+class ConcurrentArchivePublicationError(DatabaseError):
+    """An unguarded read observed a republication between resolve and pin.
+
+    Raised only on the reader route that holds no publication exclusion. The
+    correct answer is a typed, retryable refusal: a reader that cannot prove
+    it pinned the generation it resolved must not report those rows as if it
+    had, and must not escalate to the maintenance-writer lease to get
+    certainty.
+
+    Deliberately declared here rather than in ``polylogue.core.errors``: that
+    module is inside the derived-schema identity closure
+    (``devtools schema closure``), so adding a class to it would move the
+    identity and demand a full reconvergence for a read-path bugfix.
+    """
+
+    code = "concurrent_archive_publication"
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,15 +144,6 @@ def observe_control_authority(root: Path) -> OperationControlRead:
 
 
 @contextmanager
-def _direct_pin_guard(root: Path) -> Iterator[None]:
-    ownership = OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root))
-    try:
-        yield
-    finally:
-        ownership.release()
-
-
-@contextmanager
 def open_operation_read(
     root: Path,
     *,
@@ -143,10 +152,35 @@ def open_operation_read(
     vector_model: str | None = None,
     execution_context: QueryExecutionContext | None = None,
 ) -> Iterator[PinnedOperationRead]:
-    """Open and force tier snapshots before releasing publication exclusion."""
+    """Open and force tier snapshots before releasing publication exclusion.
+
+    ``publication_guard`` is supplied by the process that *owns* publication
+    (the daemon runtime), which can genuinely hold a republication off while
+    the snapshot is pinned. A reader with no such authority -- a direct CLI
+    query verb, or a materializer running outside the daemon -- has nothing
+    to exclude and must not pretend otherwise: it previously took
+    :class:`OwnedArchiveLocation`, the *exclusive maintenance/campaign writer*
+    lease, which opens ``.archive-ownership.lock`` ``O_RDWR|O_CREAT`` and
+    writes an owner record. That made a pure read fail on a read-only archive
+    root, on an archive another process legitimately owns, and on any
+    permission-restricted copy -- and it wrote to the thing it was reading.
+
+    The read-appropriate route is optimistic instead of exclusive: resolve the
+    archive identity, open read-only, pin the tier snapshots, then re-resolve
+    and require the identity to be unchanged. A republication that lands
+    mid-pin is a typed refusal (:class:`ConcurrentArchivePublicationError`),
+    never a silently torn read and never a false success. This is the same
+    shape ``open_operation_control`` already uses one level up.
+
+    No read on this route lazily materializes anything, so none of them needs
+    the writer lease. Writers still take it at every mutating call site
+    (archive init, tier migration, root relocation, continuity recovery,
+    embedding restore, the durable change train, and the daemon itself); the
+    sole-writer contract is untouched.
+    """
 
     with ExitStack() as cleanup:
-        with publication_guard() if publication_guard is not None else _direct_pin_guard(root):
+        with publication_guard() if publication_guard is not None else nullcontext():
             location = ArchiveLocation.resolve(root)
             identity = ArchiveIdentity.resolve_location(location)
             opened = ArchiveStore.open_existing(
@@ -175,6 +209,13 @@ def open_operation_read(
                 # Keep operation-read adapters compatible with intentionally
                 # minimal doubles; production ArchiveStore always pins here.
                 versions, degraded = {}, ()
+            if (
+                publication_guard is None
+                and ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != identity
+            ):
+                raise ConcurrentArchivePublicationError(
+                    "archive was republished while pinning an unguarded operation read; retry the read"
+                )
             vector_failure = None
             if vector_model is not None and callable(pin_snapshot):
                 from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
