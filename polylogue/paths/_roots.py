@@ -157,6 +157,31 @@ def _require_absolute_archive_root(raw: str) -> Path:
     return path
 
 
+def archive_root_provenance() -> str:
+    """Name the layer ``archive_root`` actually resolved from.
+
+    Returns one of ``"env"``, ``"env-sentinel-ignored"``, ``"config"`` or
+    ``"default"``. ``"env-sentinel-ignored"`` is the case a plain config-layer
+    reading cannot express: ``POLYLOGUE_ARCHIVE_ROOT`` is set to
+    :data:`CLOUD_SANDBOX_ARCHIVE_ROOT`, a config layer names a real root, and
+    :func:`archive_root` therefore returns the configured root while the
+    five-layer config resolution still reports ``env``. Anything reporting
+    provenance to an operator must use this, not the config layer, or it names
+    an archive the process will not touch.
+    """
+    raw = os.environ.get("POLYLOGUE_ARCHIVE_ROOT", "").strip()
+    if raw and raw != CLOUD_SANDBOX_ARCHIVE_ROOT:
+        return "env"
+
+    from ..config import resolve_archive_root  # lazy: avoid paths<->config import cycle
+
+    scrubbed = {key: value for key, value in os.environ.items() if key != "POLYLOGUE_ARCHIVE_ROOT"}
+    configured = resolve_archive_root(environment=scrubbed)
+    if configured != data_home():
+        return "env-sentinel-ignored" if raw else "config"
+    return "env" if raw else "default"
+
+
 def archive_root() -> Path:
     """Archive root.
 
