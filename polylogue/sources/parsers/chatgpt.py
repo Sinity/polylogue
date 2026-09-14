@@ -84,35 +84,67 @@ def _non_negative_finite_float(value: object) -> float | None:
     return parsed
 
 
-def _generation_branch_key(mapping: Mapping[str, object], node_id: str) -> str:
+def _generation_branch_key(mapping: Mapping[str, object], node_id: str, memo: dict[str, str] | None = None) -> str:
     """Return the first assistant-side node below the nearest user ancestor.
 
     ChatGPT repeats run-wide reasoning metadata across thought, tool, recap,
     and final-answer nodes. Grouping by this branch root deduplicates those
     copies while preserving regenerated alternatives beneath the same user
     message as distinct generations.
+
+    ``memo`` caches the answer for every node the walk passes through. Each of
+    those nodes resolves to the same branch root by definition -- continuing
+    the walk from any of them is the same walk -- so the cache changes no
+    verdict, it only stops one long assistant chain from being re-walked once
+    per node (quadratic in a mapping an export controls). A walk that ended by
+    detecting a cycle is not cached: its answer is the node the cycle closed
+    on, which is not the answer for the nodes leading into it.
     """
 
     current_id = node_id
+    if memo is not None and current_id in memo:
+        return memo[current_id]
     seen: set[str] = set()
+    path: list[str] = []
+    cycle_detected = True
+    result = current_id
     while current_id not in seen:
         seen.add(current_id)
+        path.append(current_id)
+        if memo is not None and current_id != node_id and current_id in memo:
+            cycle_detected = False
+            result = memo[current_id]
+            path.pop()
+            break
         current = mapping.get(current_id)
         if not isinstance(current, Mapping):
+            cycle_detected = False
+            result = current_id
             break
         parent_raw = current.get("parent")
         if not isinstance(parent_raw, str) or not parent_raw:
+            cycle_detected = False
+            result = current_id
             break
         parent = mapping.get(parent_raw)
         if not isinstance(parent, Mapping):
+            cycle_detected = False
+            result = current_id
             break
         parent_message = parent.get("message")
         parent_author = parent_message.get("author") if isinstance(parent_message, Mapping) else None
         parent_role = parent_author.get("role") if isinstance(parent_author, Mapping) else None
         if parent_role == "user":
-            return current_id
+            cycle_detected = False
+            result = current_id
+            break
         current_id = parent_raw
-    return current_id
+    else:
+        result = current_id
+    if memo is not None and not cycle_detected:
+        for visited_id in path:
+            memo[visited_id] = result
+    return result
 
 
 def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_GenerationTiming]:
@@ -143,6 +175,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
     candidates: dict[str, list[tuple[tuple[int, int, int, int, str], _GenerationTiming]]] = {}
     related_message_ids: dict[str, set[str]] = {}
     legacy_duration_by_message_id: dict[str, dict[str, int]] = {}
+    branch_key_memo: dict[str, str] = {}
     for node_id, raw_node in mapping.items():
         if not isinstance(raw_node, Mapping):
             continue
@@ -162,7 +195,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
 
         message_id_raw = raw_message.get("id") or raw_node.get("id") or node_id
         message_id = str(message_id_raw)
-        branch_key = _generation_branch_key(mapping, str(node_id))
+        branch_key = _generation_branch_key(mapping, str(node_id), branch_key_memo)
         native_timing_field_names = (
             "reasoning_start_time",
             "reasoning_end_time",
@@ -1255,7 +1288,14 @@ def extract_messages_from_mapping(
                     AdmissionUnknownReason.UNSUPPORTED_SHAPE,
                 )
             continue
-        parts = content.get("parts") or []
+        # ``content.parts`` is export content. A non-list value was carried
+        # through here and iterated during block construction, raising
+        # ``TypeError`` out of the parser and losing the WHOLE bundle rather
+        # than this one node. ``_extract_content_text`` already treats a
+        # non-list ``parts`` as carrying no text, so matching that isinstance
+        # check here loses nothing beyond what the text path already refused.
+        raw_parts = content.get("parts")
+        parts = raw_parts if isinstance(raw_parts, list) else []
         raw_text = _extract_content_text(content)
         text = _strip_citation_markers(raw_text)
         # Role is required - skip messages without one
@@ -1877,8 +1917,10 @@ def extract_messages_from_mapping(
             first_block.web_constructs.extend(web_constructs)
         if admission is not None:
             part_offset = admission.next_ordinal(AdmissionUnit.PART)
-            admission.expect(AdmissionUnit.PART, len(parts) if isinstance(parts, list) else 0)
-            for part_ordinal, part in enumerate(parts if isinstance(parts, list) else []):
+            # ``parts`` is normalized to a list at extraction, so the former
+            # isinstance guards here are now provably dead.
+            admission.expect(AdmissionUnit.PART, len(parts))
+            for part_ordinal, part in enumerate(parts):
                 if isinstance(part, str) or (
                     isinstance(part, dict)
                     and part.get("content_type")
