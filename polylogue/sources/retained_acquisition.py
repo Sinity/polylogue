@@ -18,7 +18,7 @@ from pathlib import Path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
-from polylogue.logging import emit
+from polylogue.logging import WARNING, emit
 from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.live.admission import ArtifactIdentity
 from polylogue.sources.origin_specs import database_member_for_filename
@@ -104,7 +104,7 @@ def iter_retained_source_records(
     if rejected:
         emit(
             "source.zip.members_refused",
-            level="warning",
+            level=WARNING,
             outcome="degraded",
             path=str(logical_path),
             skipped=len(rejected),
