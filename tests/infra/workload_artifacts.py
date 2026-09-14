@@ -589,13 +589,14 @@ _DURABLE_BOOTSTRAP_RELATIVE = ".maintenance-state/durable-change-trains/.bootstr
 
 
 def rebind_durable_identity(destination: Path) -> None:
-    """Give a tree at ``destination`` its own durable-change-train identity.
+    """Re-record the durable-change-train bootstrap marker for a cloned tree.
 
-    Two archives that share a bootstrap marker are the same durable store as
-    far as the change train is concerned, so a clone that kept the source's
-    marker could not be reopened alongside it. The recorded identity names the
-    tree's own path, so a caller that relocates a clone must rebind it again at
-    its final location.
+    The committed marker no longer names the archive root path or the durable
+    inodes (polylogue-ifb4l), so a faithful clone of an archive carries a
+    marker its own content already corroborates and this rewrite reproduces the
+    same bytes. It is retained because it is the one route that re-establishes
+    the marker for a tree assembled by something other than bootstrap, and it
+    keeps clone equivalence independent of how the marker was produced.
     """
     marker = destination / _DURABLE_BOOTSTRAP_RELATIVE
     if not _is_regular(marker):

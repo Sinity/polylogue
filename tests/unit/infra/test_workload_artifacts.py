@@ -24,7 +24,6 @@ from polylogue.storage.archive_readiness import raw_materialization_readiness_sn
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ReadOnlyArchiveError
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainError
 from tests.infra.workload_artifacts import (
     ArtifactGcDisposition,
     ArtifactGcReport,
@@ -459,12 +458,18 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: 
     assert clone.root.joinpath("index.db").exists()
     assert artifact.root.joinpath("manifest.json").read_bytes() == base_manifest
     assert artifact.root.joinpath(marker_relative).read_bytes() == base_marker
-    assert clone.root.joinpath(marker_relative).read_bytes() != base_marker
+    # The committed marker records what the bootstrap created, not where
+    # (polylogue-ifb4l), so a faithful clone carries the base bytes and opens
+    # on its own content. Transplanting a marker into an archive it does not
+    # describe is still refused -- see
+    # tests/unit/storage/test_durable_change_train.py::
+    # test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe.
+    assert clone.root.joinpath(marker_relative).read_bytes() == base_marker
     assert not artifact.root.joinpath("private-mutation.txt").exists()
 
     clone.root.joinpath(marker_relative).write_bytes(base_marker)
-    with pytest.raises(DurableChangeTrainError, match="durable identity mismatch"):
-        ArchiveStore.open_existing(clone.root, read_only=False)
+    with ArchiveStore.open_existing(clone.root, read_only=False) as reopened:
+        assert reopened.count_sessions() == 64
 
 
 def test_seeded_archive_copy_fallback_rebinds_durable_bootstrap(
