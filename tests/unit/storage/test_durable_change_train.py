@@ -4085,3 +4085,48 @@ def test_audit_adoption_refuses_a_receipt_from_a_different_archive(
         _rebind_audit_adoption_after_durable_rewrite(
             recipient_root, sealed_digest=sealed, proof_ref="proof:durable-change-train:source"
         )
+
+
+def test_durable_change_train_execution_carries_the_bootstrap_seal(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durable rewrite does not strand a fresh archive's own bootstrap marker.
+
+    The marker seals the same inode identity the adoption receipt does, so the
+    first released migration of a directly bootstrapped archive would otherwise
+    make every later startup reconcile refuse it.
+
+    Anti-vacuity: removing the re-seal from ``execute_durable_change_train``
+    raises ``fresh durable bootstrap marker durable identity mismatch`` from
+    ``reconcile_durable_change_train_startup``.
+    """
+    import polylogue.operations.durable_change_train as operations_durable_change_train
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    marker = archive_root / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    assert marker.is_file()
+    sealed_versions = json.loads(marker.read_text(encoding="utf-8"))["versions"]
+
+    def rewrite_instead_of_migrating(root: Path, _tier: ArchiveTier, **_kwargs: object) -> object:
+        _rewrite_durable_tier_file(root / "source.db")
+        return SimpleNamespace(train=None, migration_result=None)
+
+    monkeypatch.setattr(
+        operations_durable_change_train,
+        "_execute_durable_change_train",
+        rewrite_instead_of_migrating,
+    )
+    operations_durable_change_train.execute_durable_change_train(
+        archive_root,
+        ArchiveTier.SOURCE,
+        backup_manifest=None,
+        daemon_stopped_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        release_archive_ownership=lambda: None,
+    )
+
+    assert reconcile_durable_change_train_startup(archive_root) == ()
+    # The marker's authority is the recorded bootstrap versions, not its seal.
+    assert json.loads(marker.read_text(encoding="utf-8"))["versions"] == sealed_versions

@@ -1732,12 +1732,18 @@ def execute_durable_change_train(
     release_archive_ownership: Callable[[], None],
 ) -> DurableChangeTrainExecution:
     """Run one durable migration through the storage authority contract."""
+    from polylogue.storage.sqlite.durable_change_train import (
+        fresh_durable_bootstrap_sealed_identity,
+        reseal_fresh_durable_bootstrap_marker,
+    )
+
     # A durable migration rewrites the tier file, so the archive's durable
-    # identity legitimately changes.  Observe the adoption seal while the
-    # archive still carries it: only this archive can, and carrying it across
-    # the rewrite is what keeps an ordinary released migration from stranding
-    # its own adoption receipt.
+    # identity legitimately changes.  Observe every seal bound to that identity
+    # while the archive still carries it: only this archive can, and carrying
+    # them across the rewrite is what keeps an ordinary released migration from
+    # stranding its own adoption receipt or bootstrap marker.
     sealed_digest = audit_adoption_sealed_authority_digest(archive_root)
+    sealed_bootstrap = fresh_durable_bootstrap_sealed_identity(archive_root)
     execution = _execute_durable_change_train(
         archive_root,
         tier,
@@ -1753,6 +1759,8 @@ def execute_durable_change_train(
             sealed_digest=sealed_digest,
             proof_ref=f"proof:durable-change-train:{tier.value}",
         )
+    if sealed_bootstrap is not None:
+        reseal_fresh_durable_bootstrap_marker(archive_root, sealed_digest=sealed_bootstrap)
     return execution
 
 
