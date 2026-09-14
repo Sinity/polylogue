@@ -70,6 +70,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Atlas: Query and Read Path](atlas/query-read-path.md) | Agent-orientation sheet: query planning, stable reads, and surface ownership. |
 | [Atlas: MCP](atlas/mcp.md) | Agent-orientation sheet: tool dispatch, declarations, contract flow. |
 | [Daemon](daemon.md) | Daemon ownership, convergence, HTTP serving, and service operation. |
+| [Structured Logging](structured-logging.md) | Event vocabulary, correlation context, outcome honesty, the field allowlist, and the conversion recipe. |
 | [Daemon Threat Model](daemon-threat-model.md) | Local API assets, threats, mitigations, and roles. |
 | [Security](security.md) | Security boundaries for local archives and readers. |
 | [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |

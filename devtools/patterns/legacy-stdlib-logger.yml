@@ -1,0 +1,6 @@
+id: legacy-stdlib-logger
+language: Python
+severity: hint
+message: "legacy prose logging: use polylogue.logging emit/span instead of logging.getLogger; see docs/structured-logging.md"
+rule:
+  pattern: logging.getLogger($$$)

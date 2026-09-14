@@ -8,3 +8,4 @@ rules:
   - {id: connection-lifecycle, rule: connection-lifecycle.yml, baseline: baselines/connection-lifecycle.txt, owner: a7xr.1/zqe52, status: pending}
   - {id: no-session-insight-ready-flag, rule: no-session-insight-ready-flag.yml, baseline: baselines/no-session-insight-ready-flag.txt, owner: polylogue-ajxy4, status: enforcing}
   - {id: no-insight-readiness-verdict, rule: no-insight-readiness-verdict.yml, baseline: baselines/no-insight-readiness-verdict.txt, owner: polylogue-ajxy4, status: enforcing}
+  - {id: legacy-stdlib-logger, rule: legacy-stdlib-logger.yml, baseline: baselines/legacy-stdlib-logger.txt, owner: polylogue-logging, status: enforcing}
