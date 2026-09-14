@@ -81,9 +81,9 @@ dev-common = [
   "pyte>=0.8.0",  # Terminal emulator for deterministic output snapshot tests
   "pytest-timeout>=2.4.0",  # Per-test hang guard; fail fast with a stack instead of burning the CI job ceiling
   "mypy>=2.3.1,<2.4",
-  "types-dateparser>=1.4.2.20260813",  # dateparser library stubs for mypy
+  "types-dateparser>=1.4.3.20260907",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
-  "ruff>=0.16.6",
+  "ruff>=0.16.7",
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]
 dev = [
