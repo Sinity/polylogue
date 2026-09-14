@@ -20,7 +20,11 @@ from hypothesis import strategies as st
 
 from polylogue.core import json as core_json
 from polylogue.core.enums import Provider
-from polylogue.core.provider_identity import normalize_provider_token
+from polylogue.core.provider_identity import (
+    _RUNTIME_PROVIDER_ALIASES,
+    CORE_RUNTIME_PROVIDERS,
+    normalize_provider_token,
+)
 from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
 
 # Every backend-parametrized test forces `core_json._BACKEND` via monkeypatch
@@ -628,22 +632,14 @@ def test_provider_from_string_whitespace_stripped(value: str) -> None:
     assert Provider.from_string(f" {value}").value == value
 
 
+# Derived, never hand-maintained. A literal list here silently drifts from the
+# canonicalization table: it omitted every alias in ``_RUNTIME_PROVIDER_ALIASES``
+# and most of ``CORE_RUNTIME_PROVIDERS``, so tokens that legitimately canonicalize
+# to a real provider (``google``/``aistudio``/``ai studio`` -> gemini, ``cursor``
+# -> codex, ``xai`` -> grok) still satisfied the "unknown" precondition and this
+# property failed whenever Hypothesis happened to generate one.
 KNOWN_PROVIDER_TOKENS = {
-    normalize_provider_token(token)
-    for token in (
-        "chatgpt",
-        "claude-ai",
-        "claude-code",
-        "codex",
-        "gemini",
-        "drive",
-        "unknown",
-        "gpt",
-        "openai",
-        "claude-ai",
-        "anthropic",
-        "claudecode",
-    )
+    normalize_provider_token(token) for token in (*CORE_RUNTIME_PROVIDERS, *_RUNTIME_PROVIDER_ALIASES)
 }
 
 
