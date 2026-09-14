@@ -18,6 +18,7 @@ import {
   runningPollDelayMs,
   scheduleFreshnessHint,
 } from "../capture/freshness.js";
+import { clampProviderCooldownMs } from "../capture/provider_cooldown.js";
 import { BACKGROUND_ALARMS } from "./adapters.js";
 import { registerBackgroundEvents } from "./events.js";
 
@@ -1848,13 +1849,34 @@ async function requireProviderThrottleAvailability(provider) {
   if (deadline > now) throw providerThrottleError(deadline, now);
 }
 
+// The background must not trust a content-script number. `error.retryAfterMs`
+// on the `polylogue.providerRateLimited` path is whatever the ChatGPT content
+// script forwarded, and that content script in turn read it out of the
+// page-controlled MAIN world, so this is a privilege boundary, not a formatting
+// helper. Clamp every branch, and say so when we do.
+function boundedProviderRetryDelay(delayMs, source, { floorMs = 0 } = {}) {
+  const clamp = clampProviderCooldownMs(delayMs);
+  if (clamp.clamped) {
+    runtimeChrome?.log?.(
+      "provider retry-after clamped",
+      { source, requested_ms: clamp.requestedMs, applied_ms: clamp.valueMs },
+    );
+  }
+  return Math.max(floorMs, clamp.valueMs);
+}
+
 function retryDelayFromProviderError(error, classified) {
-  if (Number.isFinite(error?.retryAfterMs)) return Math.max(1_000, error.retryAfterMs);
+  if (Number.isFinite(error?.retryAfterMs)) {
+    return boundedProviderRetryDelay(error.retryAfterMs, "provider_error_retry_after_ms", { floorMs: 1_000 });
+  }
   if (error?.retryAfter) {
     const delay = retryAfterMs({ get: (name) => (name.toLowerCase() === "retry-after" ? error.retryAfter : null) }, Date.now());
-    if (delay !== null) return Math.max(1_000, delay);
+    if (delay !== null) return boundedProviderRetryDelay(delay, "provider_error_retry_after_header", { floorMs: 1_000 });
   }
-  return failureRetryDelayMs(0, classified.outcome, classified.retry_after_seconds);
+  return boundedProviderRetryDelay(
+    failureRetryDelayMs(0, classified.outcome, classified.retry_after_seconds),
+    "classified_retry_after_seconds",
+  );
 }
 
 async function recordProviderThrottle(provider, error, classified) {
@@ -1864,6 +1886,7 @@ async function recordProviderThrottle(provider, error, classified) {
     return persistCaptureFreshnessQueue(extendProviderCooldown(current, {
       provider,
       untilMs: now + retryDelayFromProviderError(error, classified),
+      nowMs: now,
     }));
   });
   await scheduleNextCaptureFreshnessWake(queue);

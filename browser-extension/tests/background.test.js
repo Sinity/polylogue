@@ -2402,6 +2402,39 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
+  // Anti-vacuity: drop the boundedProviderRetryDelay() wrapper in
+  // retryDelayFromProviderError (return the raw Math.max(1_000, retryAfterMs))
+  // and the console.debug assertion goes red -- the background would have
+  // accepted the content script's number verbatim. The content script reads
+  // Retry-After out of the page-controlled ChatGPT MAIN world, so this message
+  // is a privilege boundary: the background must clamp it itself and must say
+  // that it did, not rely on a downstream backstop to quietly fix it.
+  it("clamps and reports a content-script-reported rate limit beyond the honoured window", async () => {
+    const debug = vi.spyOn(globalThis.console, "debug").mockImplementation(() => undefined);
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/forged-rate-limit", title: "ChatGPT" }];
+
+    await sendRuntimeMessage({
+      type: "polylogue.providerRateLimited",
+      provider: "chatgpt",
+      retry_after_seconds: 315_360_000,
+    });
+
+    const maxProviderCooldownMs = 24 * 60 * 60 * 1000;
+    expect(stored.polylogueCaptureFreshnessQueue.provider_cooldowns.chatgpt)
+      .toBe(100_000 + maxProviderCooldownMs);
+    expect(debug).toHaveBeenCalledWith(
+      "[polylogue-background]",
+      "provider retry-after clamped",
+      expect.objectContaining({
+        source: "provider_error_retry_after_ms",
+        requested_ms: 315_360_000 * 1000,
+        applied_ms: maxProviderCooldownMs,
+      }),
+    );
+    debug.mockRestore();
+  });
+
   it("serializes concurrent captures without losing either ledger or timeline entry", async () => {
     globalThis.fetch = vi.fn(async (_url, options) => {
       const session = JSON.parse(options.body).session;

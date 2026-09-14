@@ -11,6 +11,7 @@ import {
   runningPollDelayMs,
   scheduleFreshnessHint,
 } from "../src/capture/freshness.js";
+import { MAX_PROVIDER_COOLDOWN_MS } from "../src/capture/provider_cooldown.js";
 
 function hint(queue, nativeId, nowMs = 1000, patch = {}) {
   return scheduleFreshnessHint(queue, {
@@ -121,6 +122,33 @@ describe("capture freshness queue", () => {
     expect(claimDueFreshness(queue, { nowMs: 60_999, owner: "one", leaseMs: 5000 }).claim).toBeNull();
     expect(claimDueFreshness(queue, { nowMs: 61_000, owner: "one", leaseMs: 5000 }).claim?.native_id)
       .toBe("conversation-1");
+  });
+
+  // Anti-vacuity: delete the clamp in extendProviderCooldown (restore the plain
+  // `Math.max(current, Number(untilMs) || 0)`) and this test goes red -- the
+  // stored deadline becomes the forged ~10-year value and provider_cooldown_clamps
+  // stays 0. It is the storage-boundary backstop for a page-forged 429: the
+  // cooldown is monotonic and persisted, so an unbounded deadline reaching here
+  // is permanent until extension storage is cleared.
+  it("clamps a provider cooldown deadline to the maximum honoured window", () => {
+    const tenYearsMs = 315_360_000 * 1000;
+    const queue = extendProviderCooldown(null, {
+      provider: "chatgpt",
+      untilMs: 1_000 + tenYearsMs,
+      nowMs: 1_000,
+    });
+
+    expect(queue.provider_cooldowns.chatgpt).toBe(1_000 + MAX_PROVIDER_COOLDOWN_MS);
+    expect(queue.provider_cooldown_clamps).toBe(1);
+    expect(queue.last_cooldown_clamp).toMatchObject({
+      provider: "chatgpt",
+      requested_until_ms: 1_000 + tenYearsMs,
+      applied_until_ms: 1_000 + MAX_PROVIDER_COOLDOWN_MS,
+    });
+    // An honest deadline is untouched and unreported.
+    const honest = extendProviderCooldown(null, { provider: "chatgpt", untilMs: 61_000, nowMs: 1_000 });
+    expect(honest.provider_cooldowns.chatgpt).toBe(61_000);
+    expect(honest.provider_cooldown_clamps).toBe(0);
   });
 
   it("removes terminal captures and adaptively reschedules running replies", () => {
