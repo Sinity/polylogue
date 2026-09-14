@@ -37,16 +37,36 @@ __all__ = [
 #: the upper end of the measured spread so the estimate errs toward fewer
 #: workers. These are properties of the workload; pressure enters as the live
 #: readings, never as these constants.
-WORKER_PEAK_MIB = 686
+#:
+#: Measured 2026-09-14 by two independent methods that agree within 1%, after a
+#: corpus run was OOM-killed at 93%: the kill-time arithmetic on that run gives
+#: (5600 - 1075) / 2 = 2263 MiB per worker, and a slot receipt for a managed
+#: pytest process running 4,293 tests shows 2290 MiB private / 2352 MiB PSS.
+#: The previous 686 was low by ~3.3x, which is why a width derived from it
+#: produced a sustained-pressure kill rather than the throttling this file
+#: anticipates. Only ~420 MiB of the peak is the import floor (58 MiB base plus
+#: 362 MiB for 1,256 test modules); the rest grows with tests executed, so
+#: trimming imports does not recover width.
+WORKER_PEAK_MIB = 2263
 CONTROLLER_PEAK_MIB = 1075
 #: Memory left unclaimed so the run stays clear of the out-of-memory daemon's
 #: pressure threshold rather than approaching it.
 MEMORY_HEADROOM_FRACTION = 0.2
-#: The pytest pool's soft ceiling: ``agentctl-pytest.slice`` MemoryHigh, 6 GiB
-#: (MemoryMax 8 GiB, no swap). Above the soft ceiling the kernel does not kill
-#: the run, it throttles every allocation, and the slice asks systemd-oomd to
-#: kill on the sustained pressure that throttling produces.
-PYTEST_SLICE_MEMORY_HIGH_MIB: Final = 6 * 1024
+#: The pytest pool's soft ceiling: ``agentctl-pytest.slice`` MemoryHigh, with a
+#: MemoryMax above it and no swap. Above the soft ceiling the kernel does not
+#: kill the run, it throttles every allocation, and the slice asks systemd-oomd
+#: to kill on the sustained pressure that throttling produces.
+#:
+#: MIRROR of Sinnix's ``agentctl-pytest.slice`` ``MemoryHigh``, declared in
+#: ``flake/data/runtime-defaults.nix``. It is a hand-kept copy, so it drifts
+#: silently when that budget changes -- which it did on 2026-09-14, when the
+#: slice went 6G -> 12G after a corpus run was OOM-killed at 93%. The binding
+#: ceiling is the PARENT ``agentctl-pytest.slice``, not the per-pool leaves:
+#: heavy and quick are its children and share one budget, so a run in the quick
+#: pool charges pressure to the same parent a corpus run is accounted against.
+#: ``pytest_slot_available_mib()`` reads the live cgroup and is the authority at
+#: runtime; this constant only sizes the default before a slot is held.
+PYTEST_SLICE_MEMORY_HIGH_MIB: Final = 12 * 1024
 
 
 def width_within(budget_mib: float) -> int:
