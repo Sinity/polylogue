@@ -44,6 +44,14 @@ class _SessionModel:
     updated_at: str = "2026-01-01T00:00:00Z"
     appended_batches: int = 0
     can_be_parent: bool = True
+    #: Set when this session's branch point was hard-deleted. Its inherited
+    #: prefix is then unreachable, so its composed transcript is its own tail.
+    lineage_broken: bool = False
+    #: The inheritance recorded in `session_links` when the link was written.
+    #: `prefix_length` is mutable bookkeeping that a hard delete rewrites, but
+    #: the durable link row is fixed at write time, so the link contract must
+    #: be asserted against this rather than re-inferred from the live prefix.
+    linked_prefix_sharing: bool = False
 
 
 class WritePathStateMachine(RuleBasedStateMachine):
@@ -97,6 +105,7 @@ class WritePathStateMachine(RuleBasedStateMachine):
             own_texts=tail,
             parent_id=parent_id,
             prefix_length=prefix_length,
+            linked_prefix_sharing=bool(prefix_length),
         )
         self._check_invariants()
 
@@ -152,6 +161,7 @@ class WritePathStateMachine(RuleBasedStateMachine):
         self._models[child_id].own_texts = tail
         self._models[child_id].parent_id = parent_id
         self._models[child_id].prefix_length = prefix_length
+        self._models[child_id].linked_prefix_sharing = bool(prefix_length)
         self._check_invariants()
 
     @rule()
@@ -270,26 +280,34 @@ class WritePathStateMachine(RuleBasedStateMachine):
         self._conn.commit()
         self._deletion_done = True
         deleted_position = child.prefix_length - 1
-        self._models[parent_id].own_texts.pop(deleted_position)
-        # Compute every descendant's shift against a pre-mutation snapshot
-        # first, then apply: a grandchild's branch point may live inside an
-        # intermediate session's own tail rather than the deleted-from
-        # session, so its shift must cascade through the intermediate
-        # session's own (not-yet-adjusted) prefix_length rather than being
-        # looked up directly against the deleted session's positions (#866e).
-        shifts = {
-            candidate_id: self._cascaded_prefix_shift(
-                candidate.parent_id,
-                candidate.prefix_length - 1,
-                cut_session_id=parent_id,
-                cut_index=deleted_position,
-            )
+        # A branch point is an identity, not an offset. Index arithmetic over
+        # the deleted position cannot express what a hard delete does to a
+        # deeper descendant: when a link breaks, everything that session
+        # borrowed from above the break becomes unreachable at once, not by
+        # one message. So snapshot each branch point's TEXT before mutating,
+        # then re-derive every prefix from where that text still is (#866e).
+        branch_texts = {
+            candidate_id: self._logical_texts(candidate.parent_id)[candidate.prefix_length - 1]
             for candidate_id, candidate in self._models.items()
             if candidate.parent_id is not None and candidate.prefix_length > 0
         }
-        for candidate_id, shift in shifts.items():
-            if shift:
-                self._models[candidate_id].prefix_length -= shift
+        self._models[parent_id].own_texts.pop(deleted_position)
+        # Parents must settle before their children: a child re-derives its
+        # prefix from the parent's already-updated composed transcript.
+        for candidate_id in self._topological_session_ids():
+            branch_text = branch_texts.get(candidate_id)
+            if branch_text is None:
+                continue
+            candidate = self._models[candidate_id]
+            assert candidate.parent_id is not None
+            parent_logical = self._logical_texts(candidate.parent_id)
+            if branch_text in parent_logical:
+                candidate.prefix_length = parent_logical.index(branch_text) + 1
+            else:
+                # The branch point itself is gone: this link is dangling and
+                # the session reads as its own tail alone.
+                candidate.lineage_broken = True
+                candidate.prefix_length = 0
         self._models[parent_id].can_be_parent = False
         for candidate_id, candidate in self._models.items():
             if self._has_ancestor(candidate_id, parent_id):
@@ -347,9 +365,27 @@ class WritePathStateMachine(RuleBasedStateMachine):
 
     def _logical_texts(self, session_id: str) -> list[str]:
         model = self._models[session_id]
-        if model.parent_id is None:
+        if model.parent_id is None or model.lineage_broken:
             return list(model.own_texts)
         return [*self._logical_texts(model.parent_id)[: model.prefix_length], *model.own_texts]
+
+    def _topological_session_ids(self) -> list[str]:
+        """Session ids ordered so every parent precedes its children."""
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def visit(session_id: str) -> None:
+            if session_id in seen:
+                return
+            seen.add(session_id)
+            parent_id = self._models[session_id].parent_id
+            if parent_id is not None and parent_id in self._models:
+                visit(parent_id)
+            ordered.append(session_id)
+
+        for session_id in self._models:
+            visit(session_id)
+        return ordered
 
     def _choose_session_id(self) -> str:
         session_ids = sorted(session_id for session_id in self._models if session_id not in self._pending_children)
@@ -366,36 +402,6 @@ class WritePathStateMachine(RuleBasedStateMachine):
                 return True
             cursor = self._models[cursor].parent_id
         return False
-
-    def _cascaded_prefix_shift(self, session_id: str, index: int, *, cut_session_id: str, cut_index: int) -> int:
-        """How much a pre-mutation 0-based logical index into ``session_id``'s
-        composed transcript should decrement after a single message is
-        removed at ``cut_index`` within ``cut_session_id``'s own texts.
-
-        A branch point may be recorded several hops away from the deleted
-        session: walk the prefix-sharing chain toward the cut root. An index
-        inside the borrowed prefix segment refers to the very same logical
-        slot in the parent's own composed transcript, so it recurses there
-        unchanged; an index inside the session's own tail is unaffected
-        physically but shifts by exactly however much that borrowed segment
-        shrank (i.e. the shift already computed for its last inherited
-        index), because the whole tail slides down by that same amount.
-        """
-        if session_id == cut_session_id:
-            return 1 if index > cut_index else 0
-        model = self._models[session_id]
-        if model.parent_id is None:
-            return 0
-        prefix_length = model.prefix_length
-        if index < prefix_length:
-            return self._cascaded_prefix_shift(
-                model.parent_id, index, cut_session_id=cut_session_id, cut_index=cut_index
-            )
-        if prefix_length == 0:
-            return 0
-        return self._cascaded_prefix_shift(
-            model.parent_id, prefix_length - 1, cut_session_id=cut_session_id, cut_index=cut_index
-        )
 
     def _new_native_id(self, kind: str) -> str:
         native_id = f"{kind}-{self._next_session}"
@@ -483,7 +489,7 @@ class WritePathStateMachine(RuleBasedStateMachine):
         ).fetchone()
         assert row is not None
         assert row[0] == model.parent_id
-        assert row[2] == ("prefix-sharing" if model.prefix_length else "spawned-fresh")
+        assert row[2] == ("prefix-sharing" if model.linked_prefix_sharing else "spawned-fresh")
         assert row[3] is None
         if model.prefix_length:
             parent_messages = read_archive_session_envelope(self._conn, model.parent_id).messages
