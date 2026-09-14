@@ -14,8 +14,8 @@ The configured archive root contains these durable paths:
 | `index.db` | Parsed sessions, messages, FTS/search indexes, graph rows, and derived read models. | Rebuildable from `source.db`; include in full evidence backups for faster restore, but cache-exclude profiles may omit it. |
 | `embeddings.db` | Vector rows, embedding status, and catch-up metadata. | Back up when present. It is rebuildable, but expensive and may require provider cost. |
 | `user.db` | Human/user/agent overlays stored as assertions, immutable annotation schema definitions and batch provenance, settings, and context-delivery receipts. | Always back up. This tier is irreplaceable user state. |
-| `audit.db` | Append-only mutation authority, authorizations, attempts, receipts, and continuity heads. | Always back up. Relocation full-evidence backups require it. |
-| `ops.db` | Daemon cursors, attempts, convergence debt, stage events, and operational telemetry. | Disposable for ordinary restore profiles, but required by the exact relocation full-evidence tier contract. |
+| `audit.db` | Append-only mutation authority, authorizations, attempts, receipts, and continuity heads. | Always back up. Full-evidence backups require it. |
+| `ops.db` | Daemon cursors, attempts, convergence debt, stage events, and operational telemetry. | Disposable for ordinary restore profiles, but required by the exact full-evidence tier contract. |
 | `source-declared-absent.json` | Operator-authored declared-absent blob hashes for a pre-generation `source.db`. | Copy with `source.db`; never derive or replace it with GC observations. |
 | `blob/` | Content-addressed binary payloads keyed by SHA-256. | Back up referenced blobs with `source.db`/`user.db`; do not prune by age alone. |
 
@@ -30,7 +30,7 @@ Use these profiles when choosing what to copy:
 
 | Profile | Include | Exclude | Use case |
 | --- | --- | --- | --- |
-| Full evidence | All six archive tiers: `source.db`, `index.db`, `embeddings.db`, `user.db`, `ops.db`, and `audit.db`, plus referenced `blob/`. | Temporary SQLite `*-wal`/`*-shm` only after a clean checkpoint. | Complete relocation authority and the fastest restore with raw evidence, read models, vectors, overlays, audit authority, and operational state. |
+| Full evidence | All six archive tiers: `source.db`, `index.db`, `embeddings.db`, `user.db`, `ops.db`, and `audit.db`, plus referenced `blob/`. | Temporary SQLite `*-wal`/`*-shm` only after a clean checkpoint. | The fastest restore with raw evidence, read models, vectors, overlays, audit authority, and operational state. |
 | User overlays | `user.db` and any assertion/note evidence blobs referenced by user-owned rows. | `index.db`, `ops.db`, rebuildable search/derived models. | Protect irreplaceable human/agent state before resets or schema rebuilds. |
 | Rebuildable-cache exclude | `source.db`, `user.db`, referenced `blob/`, optionally `embeddings.db`. | `index.db`, `ops.db`, derived/cache artifacts. | Small backup that can rebuild parsed/indexed data locally. |
 | Diagnostics bundle | `ops.db`, `archive-plan` JSON, `daemon-workload-probe` JSON, logs, and readonly status outputs. | Private raw blobs unless explicitly needed for the incident. | Bug reports and incident triage without over-sharing archive contents. |
@@ -67,7 +67,7 @@ The declaration applies only to source-owned blob hashes. It does not excuse
 missing hashes referenced by `index.db` attachments. A `full_evidence` backup
 therefore cannot attest when an index attachment is missing, even if that hash
 also appears in the source declaration. Restore or otherwise resolve every
-missing index attachment before using that profile for relocation or audit
+missing index attachment before using that profile for audit
 adoption.
 
 After the source generation migration creates `source_generations` and
@@ -76,60 +76,15 @@ After the source generation migration creates `source_generations` and
 before the next verified backup; it is valid only for the pre-generation
 source tier.
 
-## Offline archive-root relocation
+## Changing a configured archive root
 
-An inode-preserving filesystem move is the only supported way to change a configured archive root without restoring or rebuilding it. Stop the daemon and move the complete root without copying its database files. Set `POLYLOGUE_ARCHIVE_ROOT` to the moved root before creating relocation backup evidence.
-
-If the current released source train lacks continuity authority for historical source changes, first run the `source-continuity-recovery` plan and apply sequence documented in [Maintenance Operations](maintenance.md#recovering-the-one-historical-liveness-receipt-shape). Its authenticated pre- and post-backup evidence belongs to the retired path and is used only for that bridge. After the bridge commits, or immediately after the move when no bridge is required, create and verify a fresh complete backup at the moved root:
-
-```bash
-POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
-  polylogue ops backup \
-  --output-dir /safe/operator/location/relocation-backup \
-  --profile full_evidence --verify
-```
-
-For relocation, the profile name alone is insufficient. The moved root must already contain every `ArchiveTier`, and the new backup manifest must contain this exact set with no omitted tiers:
-
-```json
-{
-  "profile": "full_evidence",
-  "included_tiers": [
-    "source.db",
-    "index.db",
-    "embeddings.db",
-    "user.db",
-    "ops.db",
-    "audit.db"
-  ],
-  "omitted_tiers": []
-}
-```
-
-The relocation validator compares `included_tiers` as a set, so JSON list order is not significant. It rejects a missing `audit.db`, a missing `ops.db`, any extra tier, or any non-empty `omitted_tiers` value. Use the `manifest.json` printed by the backup command to create the bound relocation plan. `--old-root` names the retired pre-move root only for the identity transition and active-index pointer mapping:
-
-```bash
-POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
-  polylogue ops maintenance archive-root-relocation plan \
-  --old-root /old/archive/root \
-  --backup-manifest /safe/operator/location/relocation-backup/PACKAGE/manifest.json \
-  --output /safe/operator/location/relocation-plan.json --output-format json
-```
-
-Apply only the exact self-hash printed in that plan:
-
-```bash
-POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
-  polylogue ops maintenance archive-root-relocation apply \
-  --plan /safe/operator/location/relocation-plan.json \
-  --authorize PLAN_SHA256 --output-format json
-```
-
-The route reads every SQLite file immutably and refuses copied files, WAL sidecars, moved-root backup receipts that do not authenticate the current tier paths, changed bytes/schema/version/tier inventory, fresh-bootstrap authority, or any incomplete released durable-train chain. A live source train whose historical content differs from the current source must first carry receipt-backed source-continuity authority. For the one pre-#3868 liveness receipt shape, create that authority with `source-continuity-recovery` using authenticated pre/post backups and a fresh zero-orphan census. That bridge is a separate offline transition, not an exception inside relocation. Relocation records both configured and resolved paths. A configured `index.db` active-generation symlink is permitted only through the existing `ArchiveLocation` resolver; the plan binds its resolved generation, every retained generation's absolute metadata and tier links, and apply remaps those exact objects before publishing the active pointer. Apply writes no SQLite rows, blobs, or sidecars. It CAS-revises released `source`, `user`, and `audit` train manifests when identity or continuity proof requires it, retains the exact plan, and records a prepared then committed receipt under `.maintenance-state/archive-root-relocations/`. Repeated relocations and intervening source refreshes must form one unbranched chain through typed predecessor authority and exact before/after manifest hashes. A prepared receipt blocks daemon startup and prints a shell-quoted exact retained-plan resume command. Live application and post-move observation remain operator evidence outside this code path.
+Changing a configured archive root is a restore into a new root, not an
+in-place transition: create and verify a `full_evidence` backup, then restore
+it at the new root and let the daemon converge. `ArchiveLocation` refuses a
+file set copied to a different root while its `index.db` and active-generation
+tier links still resolve absolutely into the old one.
 
 Active index pointer targets must resolve inside the configured archive root, with one exception for a target that is also the resolved target of the configured `index.db` symlink used by a symlink farm. Copied archives are refused by `ArchiveLocation`: an out-of-root pointer is admitted only when every durable tier at the root is also a symlink, so a symlink-preserving copy — which keeps real durable files inside itself — does not resolve into the archive it was copied from.
-
-For a deployed archive, run these commands only from the Nix package built from the post-merge commit selected for deployment. Record that merge SHA and the resulting Nix store path in the operator receipt, verify the daemon executable resolves to that exact package, and keep `POLYLOGUE_ARCHIVE_ROOT` set to the configured deployed root. Do not resume a stopped daemon with an older deployed package or a branch checkout: its durable-train vocabulary may predate the relocation transition.
 
 ## Runtime Pin for a Restored Archive
 
@@ -212,7 +167,7 @@ The rollback pin is expected to provide field, origin, and date queries while FT
 Restore in place. An archive root can be a symlink farm whose `index.db` and
 active-generation tier links are absolute, so a file set copied to a different
 root resolves back into the old one and `ArchiveLocation` refuses it. Changing
-the root goes through the relocation route above.
+the root goes through the restore route above.
 
 ## Restore Rules
 

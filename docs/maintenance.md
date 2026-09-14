@@ -41,22 +41,12 @@ Restart health and runtime-consumer convergence are the final lifecycle proof
 and are recorded by the durable train lifecycle API, not inferred from this
 command's migration result alone.
 
-## Relocating an archive root
+## Rehearsal clones and audit adoption
 
-Use `ops maintenance archive-root-relocation` only after an offline inode-preserving root move. `--old-root` names the retired pre-move root for the identity transition and active-index pointer mapping. Create a fresh verified `full_evidence` backup after setting `POLYLOGUE_ARCHIVE_ROOT` to the moved root. The relocation plan authenticates that backup against the moved root and revalidates its device/inode inventory there; it never asks a moved-root backup to authenticate the nonexistent retired path. A current source train with post-release source content must first have receipt-backed source-continuity authority; relocation verifies and rebinds that authority but never creates it. Planning is read-only. Applying revalidates all evidence, CAS-revises only the released `source`, `user`, and `audit` durable-train manifests that require relocation authority, and remaps every retained index generation's sealed `archive_root`, `index_path`, and absolute tier symlinks before publishing the active pointer. Mixed exact before/after generation states are accepted only for this plan's crash resume. The exact plan and prepared/committed receipts remain retained. Apply never opens SQLite read-write, changes a row, rebuilds, reindexes, or repairs startup state.
-
-```bash
-POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-relocation plan --old-root /old/archive/root --backup-manifest /path/to/manifest.json --output /safe/relocation-plan.json --output-format json
-POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-relocation apply --plan /safe/relocation-plan.json --authorize PLAN_SHA256 --output-format json
-```
-
-If apply stops after recording a prepared receipt, daemon startup fails closed and names an exact command whose plan path is the retained plan bound by that receipt. Rerun that command with the same authorization after restoring offline ownership. Resume accepts only the exact post-CAS manifest hashes and relocation proof chain sealed for that plan. Do not use this operation for a copy, restore, new archive, migration, or live service move.
-
-This distinction matters for rehearsal clones: a FICLONE or copied archive has
-new source/user device-inode authority and must fail closed on the existing
-audit-adoption receipt. It is not an archive-root relocation. For a rehearsal,
-create the clone through the authorized established-archive adoption route,
-using a verified `full_evidence` backup and
+A FICLONE or copied archive has new source/user device-inode authority and must
+fail closed on the existing audit-adoption receipt. For a rehearsal, create the
+clone through the authorized established-archive adoption route, using a
+verified `full_evidence` backup and
 `migrate-tier audit --adopt-established-audit`; do not copy an adoption receipt
 into a new authority set. A normal inactive index-generation build and
 promotion keeps source/user authority in place, so the adopted audit receipt
@@ -64,18 +54,11 @@ must remain valid across that promotion; the regression test
 `test_audit_adoption_continuity_survives_index_generation_promotion` proves
 that production path.
 
-### Recovering the one historical liveness receipt shape
-
-`source-continuity-recovery` is a one-purpose bridge for a committed pre-#3868 blob-reference-liveness receipt that lacks the modern manifest digest and post-orphan fields. It does not make ordinary liveness receipts permissive. It requires an authenticated pre-mutation backup at the old source path, an authenticated post-mutation backup at that same old path, exact pre/post `blob_refs` delta proof, and a fresh zero-orphan census against the configured moved root. It creates no SQLite rows; apply CAS-revises only the current released source train and retained receipts.
-
-```bash
-POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance source-continuity-recovery plan --old-root /old/archive/root --mutation-receipt /safe/liveness.jsonl --pre-backup-manifest /safe/pre/manifest.json --post-backup-manifest /safe/post/manifest.json --output /safe/continuity-plan.json --output-format json
-POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance source-continuity-recovery apply --plan /safe/continuity-plan.json --authorize PLAN_SHA256 --output-format json
-```
-
-After this bridge commits, create and verify a fresh `full_evidence` backup at the moved root. Use that moved-root manifest with the separate archive-root-relocation plan/apply transition while `--old-root` continues to name the retired pre-move root. Before publishing a prepared bridge receipt, apply retains the exact sealed plan under `.maintenance-state/historical-source-continuity-recovery-plans/`; the blocking daemon error names that retained path in its executable resume command.
-
-Later authenticated source maintenance writes a typed refresh receipt that binds its predecessor authority and the exact durable-train manifest hashes before and after the refresh. Repeated relocations and intervening refreshes therefore validate as one unbranched transition chain ending at the exact current manifest; matching only the current source hash or archive identity is not authority.
+Authenticated source maintenance writes a typed refresh receipt that binds its
+predecessor authority and the exact durable-train manifest hashes before and
+after the refresh. Successive refreshes therefore validate as one unbranched
+transition chain ending at the exact current manifest; matching only the
+current source hash or archive identity is not authority.
 
 ### Deploying a package that owns the live durable schemas
 
@@ -133,8 +116,8 @@ materialization, FTS, embeddings, and derived read models in bounded
 batches from durable source evidence; a stale or missing derived row is
 converged, never repaired by hand. The `ops maintenance` verbs below are
 read-only inspection, or guarded, receipted recovery of durable evidence
-that convergence cannot re-derive (blob quarantine, archive-root
-relocation, durable-tier migrations, raw-authority ledger recovery).
+that convergence cannot re-derive (blob quarantine, durable-tier
+migrations, raw-authority ledger recovery).
 A WAL checkpoint is not a maintenance operation: ingest runs bounded passive
 checkpoints after commits, the daemon runs periodic truncate checkpoints, and
 status/metrics report WAL pressure.
