@@ -883,3 +883,37 @@ def test_normalization_below_a_collapsed_ancestor_is_relevant() -> None:
     structure = observed_structure_schema({"map": {"literal": {"nested": {"field": 1}}}})
     paths = ("$.map", "$.map.*.nested")
     assert relevant_normalization_paths(paths, structure) == paths
+
+
+def test_private_cache_is_created_owner_only(tmp_path: Path) -> None:
+    """Private source evidence is never briefly world-readable.
+
+    The cache holds evidence reduced from the operator's own sources. Creating
+    it under the ambient umask and relocking afterwards leaves a window in which
+    the file -- and the -wal/-shm companions SQLite gives the database's mode --
+    is readable by every local account. Anti-vacuity: restore a
+    ``sqlite3.connect()``-then-``chmod`` sequence and, under the 0o022 umask set
+    below, the mode observed inside the window is 0o644.
+    """
+    import os
+    import stat
+
+    from polylogue.schemas.source_cache import SourceContributionCache
+
+    previous = os.umask(0o022)
+    try:
+        path = tmp_path / "nested" / "contributions.db"
+        with SourceContributionCache(path):
+            observed = stat.S_IMODE(path.stat().st_mode)
+            parent_mode = stat.S_IMODE(path.parent.stat().st_mode)
+            companions = [
+                candidate
+                for candidate in (path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm"))
+                if candidate.exists()
+            ]
+            companion_modes = [stat.S_IMODE(candidate.stat().st_mode) for candidate in companions]
+        assert observed == 0o600, oct(observed)
+        assert parent_mode == 0o700, oct(parent_mode)
+        assert all(mode == 0o600 for mode in companion_modes), [oct(mode) for mode in companion_modes]
+    finally:
+        os.umask(previous)

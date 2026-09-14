@@ -542,17 +542,36 @@ def render_json(record: Event) -> str:
 _CONSOLE_LEAD = ("ts", "level", "event")
 
 
+def _console_safe(value: object) -> str:
+    """Render one console value with control characters made visible.
+
+    Several registered fields carry text that a remote or untrusted party
+    controls -- a browser-capture ``Origin`` header, a provider identifier, a
+    quarantined ``error_detail``. Written raw to a terminal, a newline in such
+    a value forges an additional log line and an ESC introduces a terminal
+    control sequence. Escaping is lossless: nothing is dropped or shortened,
+    so the record is still fully readable and the JSON storage form (which
+    escapes these itself) is unaffected.
+    """
+    text = str(value)
+    if not any(ch < " " or ch == "\x7f" or "\x80" <= ch <= "\x9f" for ch in text):
+        return text
+    return "".join(
+        ch if not (ch < " " or ch == "\x7f" or "\x80" <= ch <= "\x9f") else f"\\x{ord(ch):02x}" for ch in text
+    )
+
+
 def render_console(record: Event, *, redact: bool = False) -> str:
     """The human view. A rendering of the record, never its storage form."""
-    ts = str(record.get("ts", ""))[11:23]
-    level = str(record.get("level", "info")).upper()[:5]
-    event = str(record.get("event", ""))
+    ts = _console_safe(record.get("ts", ""))[11:23]
+    level = _console_safe(record.get("level", "info")).upper()[:5]
+    event = _console_safe(record.get("event", ""))
     rest = {
         key: value
         for key, value in record.items()
         if key not in _CONSOLE_LEAD and not (redact and key in QUARANTINED_FIELDS)
     }
-    trailer = " ".join(f"{key}={value}" for key, value in sorted(rest.items()))
+    trailer = " ".join(f"{key}={_console_safe(value)}" for key, value in sorted(rest.items()))
     return f"{ts} {level:<5} {event} {trailer}".rstrip()
 
 

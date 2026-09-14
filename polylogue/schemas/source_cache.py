@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -44,12 +45,20 @@ class SourceContributionCache:
         self.path = path
 
     def __enter__(self) -> SourceContributionCache:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # The cache holds evidence derived from the operator's private
+        # sources, so it is created owner-only rather than relocked after the
+        # fact: a chmod after sqlite3.connect() leaves a window in which the
+        # umask-derived mode (commonly 0644) is the file's real mode, and
+        # SQLite copies the database file's mode onto its -wal and -shm
+        # companions.
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not self.path.exists():
+            descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            os.close(descriptor)
         self._connection = sqlite3.connect(self.path, timeout=30)
         self._connection.execute("PRAGMA busy_timeout=30000")
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA foreign_keys=ON")
-        self.path.chmod(0o600)
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS source_evidence_contributions (

@@ -357,3 +357,43 @@ def test_propagate_preserves_arguments_and_return_value() -> None:
         return count, label
 
     assert plog.propagate(typed)(3, label="x") == (3, "x")
+
+
+def test_console_rendering_escapes_untrusted_control_characters() -> None:
+    """A remote-controlled field cannot forge a log line or drive the terminal.
+
+    ``origin`` carries a browser-supplied ``Origin`` header and ``error_detail``
+    carries quarantined free text; both reach the console sink verbatim.
+    Anti-vacuity: drop ``_console_safe`` from ``render_console`` and the newline
+    below again splits one record into two rendered lines, with the ESC sequence
+    delivered raw to the terminal.
+    """
+    record = {
+        "ts": "2026-01-01T00:00:00.000000Z",
+        "level": "info",
+        "event": "browser_capture.request",
+        "origin": "chrome-extension://a\nFAKE forged event\x1b[31m",
+    }
+    rendered = plog.render_console(record)
+    assert "\n" not in rendered
+    assert "\x1b" not in rendered
+    assert "\\x0a" in rendered
+    assert "\\x1b" in rendered
+    assert "FAKE forged event" in rendered
+
+
+def test_console_rendering_leaves_ordinary_values_untouched() -> None:
+    """Escaping must not disturb the normal human view.
+
+    Anti-vacuity: escape a character outside the control range and this goes red
+    on the plain ``event``/``origin`` spelling below.
+    """
+    record = {
+        "ts": "2026-01-01T00:00:00.000000Z",
+        "level": "info",
+        "event": "daemon.stage.ok",
+        "origin": "chrome-extension://abcdef",
+    }
+    rendered = plog.render_console(record)
+    assert "daemon.stage.ok" in rendered
+    assert "origin=chrome-extension://abcdef" in rendered
