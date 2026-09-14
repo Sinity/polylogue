@@ -28,7 +28,7 @@ parsed sessions before the storage writer lowers them
 
 Lower number runs first. Tightness must be unique among executable
 `OriginSpec`s, which is enforced at spec validation
-(`polylogue/sources/origin_specs.py:1279-1284`). Current executable order:
+(`polylogue/sources/origin_specs.py:1286-1291`). Current executable order:
 
 | Tightness | Origin |
 | --- | --- |
@@ -99,4 +99,4 @@ into `polylogue/storage/sqlite/archive_tiers/write.py`; do not infer the
 durable contract from a surface serializer. The provider guides under
 `docs/providers/` explain format-specific caveats.
 
-verified: 7a5160fd8b5a7c2a65c2149710713e8f8a4d6485 2026-09-14
+verified: ab850e0b71263ae017e453833e4495b79030c7c3 2026-09-14

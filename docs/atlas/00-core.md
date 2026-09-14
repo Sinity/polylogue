@@ -10,7 +10,7 @@ Polylogue is a local, single-writer archive for AI coding and chat sessions.
 It acquires heterogeneous exports and live captures, parses them into a
 normalized session tree, stores durable evidence in split SQLite tiers, and
 serves query-first reads through the CLI, MCP, Python API, and daemon
-(`polylogue/daemon/cli.py:1854-1897`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:49-85`).
+(`polylogue/daemon/cli.py:2104-2147`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:49-85`).
 
 The useful mental model is a flight recorder: every derived answer should be
 able to resolve to stored source bytes, structured records, and provenance.
@@ -43,7 +43,7 @@ The parsed-session write choke point computes public origin, native identity,
 session identity, and parser fingerprints before lowering records
 (`polylogue/storage/sqlite/archive_tiers/write.py:1063-1068`). The daemon owns
 the normal live write path and serializes admitted mutations; read surfaces
-adapt through operations and insights (`polylogue/daemon/write_coordinator.py:284-340`).
+adapt through operations and insights (`polylogue/daemon/write_coordinator.py:290-346`).
 
 Session summaries, profiles, raw observations, FTS, and embeddings use
 domain-owned inspection and publication through the derivation kernel. The
@@ -96,4 +96,4 @@ not rotted.
 - Tests use synthetic fixtures and managed `devtools test` commands; ambient
   personal archives never enter tracked files.
 
-verified: 7a5160fd8b5a7c2a65c2149710713e8f8a4d6485 2026-09-14
+verified: ab850e0b71263ae017e453833e4495b79030c7c3 2026-09-14
