@@ -274,7 +274,18 @@ exactly this reason: neither had ever used `logging.getLogger`.
 So a green `legacy-stdlib-logger` means "no module acquires a stdlib logger
 directly", not "no module logs prose". Do not read the former as the latter.
 
-Closing that gap needs a **second** rule with its own baseline recorded at the
-true remaining count. Widening this one is not available: an enforcing
-baseline may only shrink, and widening would grow it by every one of those
-modules at once. A new ratchet, by contrast, may start wherever reality is.
+That gap is now closed by a **second** rule, `legacy-prose-logging`, which
+matches prose calls on a `logger`/`_logger` name rather than the acquisition.
+It is enforcing against a baseline recorded at the true remaining count —
+**374 matches across 282 anchors** when it landed — and verified to block by
+introducing a new `logger.warning` and observing exit 1, then restoring.
+
+Widening the older rule was not available: an enforcing baseline may only
+shrink, and widening would have grown it by every wrapper module at once. A
+new ratchet, by contrast, may start wherever reality is, and shrink from
+there.
+
+Read the two together. `legacy-stdlib-logger` at 4 means no module acquires a
+stdlib logger directly. `legacy-prose-logging` at 374 is the honest size of
+what remains: prose that still discards its structured fields. Neither number
+alone answers "is the tree converted".
