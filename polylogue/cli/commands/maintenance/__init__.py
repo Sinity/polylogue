@@ -191,19 +191,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "embedding_preservation_group",
         "Preserve, restore, prove, and discard embedding vectors across a rebuild.",
     ),
-    (
-        "durable-reference-transition",
-        "_durable_reference_transition",
-        "durable_reference_transition_group",
-        "Classify and rebind durable user/audit references across an index rebuild.",
-    ),
 )
 
 _NESTED_GROUP_COMMANDS = frozenset(
     {
         "archive-root-relocation",
         "blob-disposition",
-        "durable-reference-transition",
         "embedding-preservation",
         "source-continuity-recovery",
     }
