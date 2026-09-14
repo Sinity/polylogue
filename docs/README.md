@@ -77,7 +77,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Cost Model](cost-model.md) | Cost, usage, cache, and subscription-credit accounting semantics. |
 | [Agent Forensics](agent-forensics.md) | Forensic investigation methods over agent work. |
 | [Repository Layout](repo-layout.md) | Every top-level entry and its purpose. |
-| [Marker Sigil Collision Scan](marker-sigil-collision-scan.md) | Recorded live-corpus collision evidence for provider-neutral author markers. |
 
 ## Operations and Contributor Workflow
 
@@ -137,7 +136,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 
 | Document | Description |
 |----------|-------------|
-| [Audit Record Index](audits/README.md) | Index of retained investigation records. |
 | [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
 | [MCP Surface Report 2026-08](mcp-surface-report-2026-08.md) | Dated closure evidence for the 103-tool-to-10-verb MCP collapse (polylogue-t46.8). |
