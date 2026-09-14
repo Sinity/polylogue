@@ -186,7 +186,11 @@ async def output_stats_sql(
                 "messages_missing_embedding_provenance",
                 0,
             ),
-            "embedding_coverage_percent": round(getattr(archive_stats, "embedding_coverage", 0.0), 1),
+            "embedding_coverage_percent": (
+                None if archive_stats.embedding_coverage is None else round(archive_stats.embedding_coverage, 1)
+            ),
+            "embedding_coverage_measurable": archive_stats.embedding_coverage_measurable,
+            "embedding_coverage_unmeasurable_reason": archive_stats.embedding_coverage_unmeasurable_reason,
             "embedding_readiness_status": getattr(archive_stats, "embedding_readiness_status", None),
             "retrieval_ready": getattr(archive_stats, "retrieval_ready", None),
         }
@@ -222,10 +226,17 @@ async def output_stats_sql(
     out(f"Unique attachments: {stats['distinct_attachments']:,}")
     if not has_filters:
         assert archive_stats is not None
-        embedding_line = (
-            f"Embeddings: {archive_stats.embedded_sessions:,}/{archive_stats.total_sessions:,} convs, "
-            f"{archive_stats.embedded_messages:,} msgs ({archive_stats.embedding_coverage:.1f}%)"
-        )
+        if not archive_stats.embedding_coverage_measurable:
+            # Rendering "0 msgs" here would read as a measured empty tier.
+            embedding_line = (
+                "Embeddings: unknown -- coverage could not be measured "
+                f"({archive_stats.embedding_coverage_unmeasurable_reason})"
+            )
+        else:
+            embedding_line = (
+                f"Embeddings: {archive_stats.embedded_sessions:,}/{archive_stats.total_sessions:,} convs, "
+                f"{archive_stats.embedded_messages:,} msgs ({archive_stats.embedding_coverage:.1f}%)"
+            )
         if pending_embedding_sessions:
             embedding_line += f", pending {pending_embedding_sessions:,}"
         if stale_embedding_messages:

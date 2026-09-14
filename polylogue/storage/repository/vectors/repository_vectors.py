@@ -296,5 +296,6 @@ class RepositoryVectorMixin:
             embedding_newest_at=embedding_stats.newest_embedded_at,
             embedding_models=embedding_stats.model_counts,
             embedding_dimensions=embedding_stats.dimension_counts,
+            embedding_coverage_unmeasurable_reason=embedding_stats.coverage_unmeasurable_reason,
             db_size_bytes=db_size,
         )

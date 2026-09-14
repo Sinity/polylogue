@@ -114,8 +114,13 @@ class Dashboard(RepositoryBoundContainer):
         self.query_one("#stat-sessions", StatCard).value = str(stats.total_sessions)
         self.query_one("#stat-messages", StatCard).value = str(stats.total_messages)
         self.query_one("#stat-attachments", StatCard).value = str(stats.total_attachments)
-        self.query_one("#stat-embeddings", StatCard).value = str(stats.embedded_messages)
-        self.query_one("#stat-coverage", StatCard).value = f"{stats.embedding_coverage:.1f}%"
+        # "?" keeps an unmeasurable embeddings tier from reading as an empty one.
+        self.query_one("#stat-embeddings", StatCard).value = (
+            "?" if stats.embedded_messages is None else str(stats.embedded_messages)
+        )
+        self.query_one("#stat-coverage", StatCard).value = (
+            "?" if stats.embedding_coverage is None else f"{stats.embedding_coverage:.1f}%"
+        )
 
         # Mount origin bars
         bars_container = self.query_one("#origin-bars", Container)

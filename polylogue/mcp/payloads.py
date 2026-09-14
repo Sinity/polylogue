@@ -762,7 +762,9 @@ class MCPArchiveStatsPayload(SurfacePayloadModel):
             embedded_messages=archive_stats.embedded_messages if include_embedded else None,
             pending_embedding_sessions=(archive_stats.pending_embedding_sessions if include_embedded else None),
             embedding_coverage_percent=(
-                round(float(archive_stats.embedding_coverage), 1) if include_embedded else None
+                round(float(archive_stats.embedding_coverage), 1)
+                if include_embedded and archive_stats.embedding_coverage is not None
+                else None
             ),
             stale_embedding_messages=archive_stats.stale_embedding_messages if include_embedded else None,
             messages_missing_embedding_provenance=(

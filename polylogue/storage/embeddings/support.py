@@ -151,15 +151,64 @@ def build_retrieval_bands_from_status(
     }
 
 
+class EmbeddingCoverageUnmeasurableError(RuntimeError):
+    """The embeddings tier could not be inspected, so coverage is unknown.
+
+    Raised instead of returning a zero when a read fails for a reason that is
+    an *inability to measure* rather than evidence of absence -- today, a
+    SQLite module (``vec0``) that would not load, so a physically present
+    virtual table cannot be read. ``embeddings.db`` is the expensive-to-rebuild
+    tier whose vectors are re-purchased from a paid provider, never replayed
+    from source, so reporting "cannot tell" as "nothing embedded" prescribes
+    exactly the most expensive wrong action.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def is_missing_table_error(exc: sqlite3.OperationalError) -> bool:
+    """True only for a genuinely absent relation -- a measured absence.
+
+    ``no such module: vec0`` was once folded in here and turned an unloadable
+    extension into a measured zero; it is classified by
+    :func:`is_unmeasurable_coverage_error` instead.
+
+    ``no such column`` deliberately stays here. These readers use it as
+    optional-feature detection against older derived shapes (for example
+    ``embedding_status.message_count_embedded``), where the relation is present
+    and the absent column genuinely means the feature is not recorded.
+    """
+
     message = str(exc).lower()
     return (
         "no such table" in message
         or "no such column" in message
         or "does not exist" in message
         or "table not found" in message
-        or "no such module: vec0" in message
     )
+
+
+def is_unmeasurable_coverage_error(exc: sqlite3.OperationalError) -> bool:
+    """True when the failure means *cannot tell*, not *nothing is there*.
+
+    A missing SQLite module is never optional-feature detection: the vectors
+    are physically there and simply cannot be read.
+    """
+
+    message = str(exc).lower()
+    return "no such module" in message
+
+
+def _classify_optional_error(exc: sqlite3.OperationalError) -> None:
+    """Re-raise as unmeasurable, or return so the caller may report absence."""
+
+    if is_unmeasurable_coverage_error(exc):
+        raise EmbeddingCoverageUnmeasurableError(str(exc)) from exc
+    if is_missing_table_error(exc):
+        return
+    raise exc
 
 
 def table_exists_sync_missing_safe(conn: sqlite3.Connection, table: str) -> bool:
@@ -169,27 +218,24 @@ def table_exists_sync_missing_safe(conn: sqlite3.Connection, table: str) -> bool
     try:
         return _table_exists(conn, table)
     except sqlite3.OperationalError as exc:
-        if is_missing_table_error(exc):
-            return False
-        raise
+        _classify_optional_error(exc)
+        return False
 
 
 async def table_exists_async_missing_safe(conn: aiosqlite.Connection, table: str) -> bool:
     try:
         return await _table_exists_async(conn, table)
     except sqlite3.OperationalError as exc:
-        if is_missing_table_error(exc):
-            return False
-        raise
+        _classify_optional_error(exc)
+        return False
 
 
 def optional_count_sync(conn: sqlite3.Connection, sql: str) -> int:
     try:
         row = conn.execute(sql).fetchone()
     except sqlite3.OperationalError as exc:
-        if is_missing_table_error(exc):
-            return 0
-        raise
+        _classify_optional_error(exc)
+        return 0
     return int(row[0]) if row is not None else 0
 
 
@@ -216,18 +262,16 @@ def optional_row_sync(conn: sqlite3.Connection, sql: str) -> StatsRow | None:
     try:
         return _stats_row(conn.execute(sql).fetchone())
     except sqlite3.OperationalError as exc:
-        if is_missing_table_error(exc):
-            return None
-        raise
+        _classify_optional_error(exc)
+        return None
 
 
 def optional_rows_sync(conn: sqlite3.Connection, sql: str) -> list[sqlite3.Row]:
     try:
         return conn.execute(sql).fetchall()
     except sqlite3.OperationalError as exc:
-        if is_missing_table_error(exc):
-            return []
-        raise
+        _classify_optional_error(exc)
+        return []
 
 
 async def optional_count_async(conn: aiosqlite.Connection, sql: str) -> int:
@@ -235,9 +279,8 @@ async def optional_count_async(conn: aiosqlite.Connection, sql: str) -> int:
         cursor = await conn.execute(sql)
         row = await cursor.fetchone()
     except sqlite3.OperationalError as exc:
-        if is_missing_table_error(exc):
-            return 0
-        raise
+        _classify_optional_error(exc)
+        return 0
     return _coerce_int(row[0]) if row is not None else 0
 
 
@@ -257,9 +300,8 @@ async def optional_row_async(conn: aiosqlite.Connection, sql: str) -> StatsRow |
         cursor = await conn.execute(sql)
         return _stats_row(await cursor.fetchone())
     except sqlite3.OperationalError as exc:
-        if is_missing_table_error(exc):
-            return None
-        raise
+        _classify_optional_error(exc)
+        return None
 
 
 async def optional_rows_async(conn: aiosqlite.Connection, sql: str) -> list[sqlite3.Row]:
@@ -267,6 +309,5 @@ async def optional_rows_async(conn: aiosqlite.Connection, sql: str) -> list[sqli
         cursor = await conn.execute(sql)
         return _sqlite_rows(await cursor.fetchall())
     except sqlite3.OperationalError as exc:
-        if is_missing_table_error(exc):
-            return []
-        raise
+        _classify_optional_error(exc)
+        return []

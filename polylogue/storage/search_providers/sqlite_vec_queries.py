@@ -362,13 +362,17 @@ class SqliteVecQueryMixin:
         finally:
             self._release_connection(conn)
 
-    def get_embedding_stats(self) -> dict[str, int]:
+    def get_embedding_stats(self) -> dict[str, int | None]:
         """Run the provider route under managed lifecycle admission."""
         with self._lifecycle_admission():
             return self._get_embedding_stats_unlocked()
 
-    def _get_embedding_stats_unlocked(self) -> dict[str, int]:
-        """Get embedding statistics."""
+    def _get_embedding_stats_unlocked(self) -> dict[str, int | None]:
+        """Get embedding statistics.
+
+        Counts are ``None`` when the tier could not be inspected -- publishing
+        a measured 0 there would prescribe a paid re-embed of intact vectors.
+        """
         conn = self._get_connection()
         try:
             embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)

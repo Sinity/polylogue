@@ -20,9 +20,11 @@ class ArchiveStats:
     role_counts: dict[str, int] = field(default_factory=dict)
     message_types: dict[str, int] = field(default_factory=dict)
     material_origins: dict[str, int] = field(default_factory=dict)
-    embedded_sessions: int = 0
-    embedded_messages: int = 0
-    pending_embedding_sessions: int = 0
+    # ``None`` means the embeddings tier could not be inspected -- distinct
+    # from a measured zero, and never collapsed into one.
+    embedded_sessions: int | None = 0
+    embedded_messages: int | None = 0
+    pending_embedding_sessions: int | None = 0
     stale_embedding_messages: int = 0
     messages_missing_embedding_provenance: int = 0
     embedding_oldest_at: str | None = None
@@ -30,6 +32,11 @@ class ArchiveStats:
     embedding_models: dict[str, int] = field(default_factory=dict)
     embedding_dimensions: dict[int, int] = field(default_factory=dict)
     db_size_bytes: int = 0
+    embedding_coverage_unmeasurable_reason: str | None = None
+
+    @property
+    def embedding_coverage_measurable(self) -> bool:
+        return self.embedding_coverage_unmeasurable_reason is None
 
     @property
     def origin_count(self) -> int:
@@ -44,24 +51,32 @@ class ArchiveStats:
         return self.total_messages / self.total_sessions
 
     @property
-    def embedding_coverage(self) -> float:
-        """Percentage of sessions with embeddings."""
+    def embedding_coverage(self) -> float | None:
+        """Percentage of sessions with embeddings, or ``None`` if unmeasurable."""
+        if self.embedded_sessions is None:
+            return None
         if self.total_sessions == 0:
             return 0.0
         return (self.embedded_sessions / self.total_sessions) * 100
 
     @property
-    def retrieval_ready(self) -> bool:
+    def retrieval_ready(self) -> bool | None:
+        """``None`` keeps "cannot tell" distinct from "not ready"."""
+        if self.embedded_messages is None:
+            return None
         fresh_messages = max(self.embedded_messages - self.stale_embedding_messages, 0)
         return fresh_messages > 0
 
     @property
     def embedding_readiness_status(self) -> str:
+        if self.embedded_messages is None:
+            # Never "none": an unloadable extension is not an empty tier.
+            return "unknown"
         if self.embedded_messages <= 0:
             return "none"
         if self.stale_embedding_messages > 0 or self.messages_missing_embedding_provenance > 0:
             return "stale"
-        if self.pending_embedding_sessions > 0:
+        if (self.pending_embedding_sessions or 0) > 0:
             return "partial"
         return "fresh"
 
@@ -85,7 +100,11 @@ class ArchiveStats:
             "embedding_newest_at": self.embedding_newest_at,
             "embedding_models": self.embedding_models,
             "embedding_dimensions": self.embedding_dimensions,
-            "embedding_coverage_percent": round(self.embedding_coverage, 1),
+            "embedding_coverage_percent": (
+                None if self.embedding_coverage is None else round(self.embedding_coverage, 1)
+            ),
+            "embedding_coverage_measurable": self.embedding_coverage_measurable,
+            "embedding_coverage_unmeasurable_reason": self.embedding_coverage_unmeasurable_reason,
             "embedding_readiness_status": self.embedding_readiness_status,
             "retrieval_ready": self.retrieval_ready,
             "avg_messages_per_session": round(self.avg_messages_per_session, 1),
