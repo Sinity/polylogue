@@ -249,6 +249,9 @@ def test_daemon_mutation_timeout_is_typed_indeterminate(monkeypatch: pytest.Monk
         def __init__(self, _socket_path: Path, _timeout: float | None) -> None:
             pass
 
+        def connect(self) -> None:
+            """PR #5043 connects before resolving credentials; the double must too."""
+
         def request(self, *_args: object, **_kwargs: object) -> None:
             pass
 
@@ -281,6 +284,9 @@ def test_daemon_mutation_interrupt_after_connect_is_typed_indeterminate(
 
         def __init__(self, _socket_path: Path, _timeout: float | None) -> None:
             pass
+
+        def connect(self) -> None:
+            """PR #5043 connects before resolving credentials; the double must too."""
 
         def request(self, *_args: object, **_kwargs: object) -> None:
             pass

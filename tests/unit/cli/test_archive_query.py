@@ -1084,7 +1084,17 @@ class TestEmitDeleteMachineModeNoPrompt:
             config, "mutation.session.delete.preview", {"session_ids": ["s1"]}
         )
 
-        assert initialized == [{"auth_token": None}]
+        # PR #5043 made ``auth_token`` a lazy thunk resolved after connect, so an
+        # absent socket costs nothing -- least of all a write into the archive
+        # root. The kernel must still pass exactly the credential and nothing
+        # else, and the thunk must resolve through ``resolve_api_auth_token``.
+        # Anti-vacuity: pass the resolved token eagerly again and ``callable``
+        # goes False; pass an extra kwarg and the key assertion goes red.
+        assert [sorted(kwargs) for kwargs in initialized] == [["auth_token"]]
+        (kwargs,) = initialized
+        auth_token = kwargs["auth_token"]
+        assert callable(auth_token)
+        assert auth_token() is None
         assert issued == [("mutation.session.delete.preview", {"session_ids": ["s1"]})]
         assert payload == {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1"]}
 
