@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.14"
       - run: uv sync --extra dev --group audit --frozen
@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.14"
       - run: uv sync --extra dev --group audit --frozen
@@ -72,7 +72,7 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --extra dev --group audit --frozen
@@ -90,7 +90,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.14"
       - run: uv sync --extra dev --group audit --frozen
@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.14"
       - run: uv sync --extra dev --group audit --frozen
@@ -114,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.14"
       - run: uv sync --extra dev --group audit --frozen
@@ -156,7 +156,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.14"
       - run: uv sync --extra dev --group audit --frozen
