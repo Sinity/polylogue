@@ -1,4 +1,4 @@
-polylogue/api/archive.py:6b056bb6caf857505d442d413d2157429a1a111a:4
+polylogue/api/archive.py:6b056bb6caf857505d442d413d2157429a1a111a:2
 polylogue/api/archive.py:f7781144eaaa247262019e4f89428e857ea0bfe9
 polylogue/archive/query/production_evaluator.py:4cd68b2544cdb2e0cdac70e7be6e4ab3667db988
 polylogue/archive/query/production_evaluator.py:f676a832137d4edb992227594aa0f877b0cca7fc
@@ -28,6 +28,5 @@ polylogue/storage/embeddings/status_payload.py:bd781e95a0b087649c8201342143c68dc
 polylogue/storage/sqlite/archive_tiers/archive.py:6b056bb6caf857505d442d413d2157429a1a111a
 polylogue/storage/sqlite/archive_tiers/archive_plan.py:6b056bb6caf857505d442d413d2157429a1a111a:2
 polylogue/storage/sqlite/archive_tiers/bootstrap.py:f7781144eaaa247262019e4f89428e857ea0bfe9
-polylogue/storage/sqlite/migration_runner.py:6b056bb6caf857505d442d413d2157429a1a111a
-polylogue/storage/usage.py:6b056bb6caf857505d442d413d2157429a1a111a:2
+polylogue/storage/usage.py:6b056bb6caf857505d442d413d2157429a1a111a
 polylogue/storage/usage.py:f7781144eaaa247262019e4f89428e857ea0bfe9

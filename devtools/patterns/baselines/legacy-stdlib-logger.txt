@@ -1,6 +1,3 @@
-polylogue/daemon/event_bus.py:e9a1361ee4c730813e9c4d22b0b972c675e12c16
-polylogue/daemon/intake.py:e9a1361ee4c730813e9c4d22b0b972c675e12c16
-polylogue/daemon/supervisor.py:e9a1361ee4c730813e9c4d22b0b972c675e12c16
 polylogue/logging.py:2b20020b4d9a04d0d55f358f31f8b4f34f04eabf
 polylogue/logging.py:4f4ee7a540a04fc5da6a8cc7bf292d4ea277e00b
 polylogue/logging.py:5af9ee66e0277a494b8044feabb95661721b24b5

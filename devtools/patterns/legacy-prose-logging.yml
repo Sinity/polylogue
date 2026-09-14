@@ -1,0 +1,16 @@
+id: legacy-prose-logging
+language: Python
+severity: hint
+message: "prose logging through the get_logger wrapper discards structured fields; use polylogue.logging emit/span — see docs/structured-logging.md"
+rule:
+  any:
+    - pattern: logger.info($$$)
+    - pattern: logger.warning($$$)
+    - pattern: logger.error($$$)
+    - pattern: logger.debug($$$)
+    - pattern: logger.exception($$$)
+    - pattern: _logger.info($$$)
+    - pattern: _logger.warning($$$)
+    - pattern: _logger.error($$$)
+    - pattern: _logger.debug($$$)
+    - pattern: _logger.exception($$$)
