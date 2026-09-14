@@ -51,3 +51,20 @@ def write_lease(
         coordinator=coordinator,
     ) as lease:
         yield lease
+
+
+def delegate_write_lease() -> Any:
+    return _implementation().delegate_write_lease()
+
+
+@contextmanager
+def adopt_write_lease(delegation: Any) -> Iterator[Any]:
+    with _implementation().adopt_write_lease(delegation) as lease:
+        yield lease
+
+
+def __getattr__(name: str) -> Any:
+    """Expose the implementation's lease types without a ring-crossing import."""
+    if name in {"WriteLease", "WriteLeaseDelegation", "UnleasedWriteError", "WriteHoldExceededError"}:
+        return getattr(_implementation(), name)
+    raise AttributeError(name)

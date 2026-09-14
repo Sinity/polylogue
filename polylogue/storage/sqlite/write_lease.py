@@ -18,7 +18,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.logging import get_logger
@@ -27,9 +27,12 @@ __all__ = [
     "UnleasedWriteError",
     "WriteHoldExceededError",
     "WriteLease",
+    "WriteLeaseDelegation",
+    "adopt_write_lease",
     "arm_write_lease_enforcement",
     "bind_write_lease_thread",
     "current_write_lease",
+    "delegate_write_lease",
     "require_write_lease",
     "write_lease",
     "write_lease_enforced",
@@ -61,6 +64,47 @@ class WriteHoldExceededError(RuntimeError):
     code = "write_hold_exceeded"
 
 
+@dataclass(eq=False, slots=True)
+class WriteLeaseDelegation:
+    """One explicit, revocable authorization to execute work under a lease.
+
+    A lease's ambient identity -- the ``ContextVar`` plus the bound thread set
+    -- cannot survive a hand-off to an arbitrary worker thread running a
+    freshly created event loop, which is exactly the shape the daemon's HTTP
+    write gate uses. Widening the ambient rules until it did survive would
+    authorize every thread that happens to inherit the context. A delegation
+    instead carries ownership as a *value*: the holder mints one and hands it
+    to the unit of work that will actually write, and only a holder of that
+    object can adopt the lease.
+
+    The sole-writer guarantee is preserved by three properties:
+
+    * it can only be minted by a context that already passes
+      :func:`require_write_lease`, so it is never an escalation;
+    * at most one execution may adopt it at a time, so it cannot fan a single
+      admission out into concurrent writers;
+    * it is revoked when its lease is released, so a stashed delegation
+      authorizes nothing afterwards.
+    """
+
+    actor: str
+    lease: WriteLease
+    _guard: threading.Lock = field(default_factory=threading.Lock)
+    _adopted_by: int | None = None
+    _revoked: bool = False
+
+    @property
+    def live(self) -> bool:
+        """Whether this delegation still authorizes an adoption."""
+        with self._guard:
+            return not self._revoked
+
+    def revoke(self) -> None:
+        """Retire this delegation; further adoptions are refused."""
+        with self._guard:
+            self._revoked = True
+
+
 @dataclass(slots=True)
 class WriteLease:
     """A held authorization to open write-mode connections in this context."""
@@ -73,6 +117,7 @@ class WriteLease:
     owner_task_id: int | None = None
     owner_thread_id: int = 0
     bound_thread_ids: set[int] | None = None
+    delegations: list[WriteLeaseDelegation] = field(default_factory=list)
 
     @property
     def held_seconds(self) -> float:
@@ -175,6 +220,64 @@ def bind_write_lease_thread() -> None:
     lease.bound_thread_ids.add(threading.get_ident())
 
 
+def delegate_write_lease() -> WriteLeaseDelegation:
+    """Mint an explicit authorization for another execution unit to write.
+
+    Callable only from a context that itself holds the lease: the ownership
+    check runs through :func:`require_write_lease`, so delegation can never
+    manufacture authority that the caller does not already have.
+    """
+    lease = require_write_lease("delegating the daemon write lease")
+    if lease is None:
+        raise UnleasedWriteError(
+            "cannot delegate the write lease without holding it; mint the delegation "
+            "inside write_lease(...) so the delegated work stays behind one admission"
+        )
+    delegation = WriteLeaseDelegation(actor=lease.actor, lease=lease)
+    lease.delegations.append(delegation)
+    return delegation
+
+
+@contextmanager
+def adopt_write_lease(delegation: WriteLeaseDelegation) -> Iterator[WriteLease]:
+    """Execute this block under the lease the ``delegation`` authorizes.
+
+    Binds the adopting task *and* thread, so the adopted view is authorized
+    exactly where it is presented and nowhere else. The hold budget stays with
+    the minting lease, which is the hold that is actually being measured; an
+    adopted view never raises :class:`WriteHoldExceededError` of its own.
+    """
+    with delegation._guard:
+        if delegation._revoked:
+            raise UnleasedWriteError(
+                f"write lease delegation for {delegation.actor} was revoked when its lease was released"
+            )
+        if delegation._adopted_by is not None:
+            raise UnleasedWriteError(
+                f"write lease delegation for {delegation.actor} is already executing on thread "
+                f"{delegation._adopted_by}; one admission authorizes one writer at a time"
+            )
+        delegation._adopted_by = threading.get_ident()
+    source = delegation.lease
+    adopted = WriteLease(
+        actor=source.actor,
+        acquired_at=source.acquired_at,
+        max_hold_seconds=None,
+        archive_root=source.archive_root,
+        coordinator=source.coordinator,
+        owner_task_id=_current_task_id(),
+        owner_thread_id=threading.get_ident(),
+        bound_thread_ids={threading.get_ident()},
+    )
+    token = _ACTIVE.set(adopted)
+    try:
+        yield adopted
+    finally:
+        _ACTIVE.reset(token)
+        with delegation._guard:
+            delegation._adopted_by = None
+
+
 @contextmanager
 def write_lease(
     actor: str,
@@ -239,6 +342,8 @@ def write_lease(
         raise
     else:
         _ACTIVE.reset(token)
+        for delegation in lease.delegations:
+            delegation.revoke()
         if lease.over_budget:
             raise WriteHoldExceededError(
                 f"writer {actor} held the lease {lease.held_seconds:.3f}s against a declared "
