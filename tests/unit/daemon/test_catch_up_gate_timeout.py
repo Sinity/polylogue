@@ -8,7 +8,7 @@ Covers two production mutations that would each defeat the fix independently:
    watcher that never reached catch-up-complete (crash, hang, or the
    schema-preflight-blocked startup path) parked every gated loop on that
    ``Event.wait()`` forever, with zero journal signal.
-2. ``run_daemon_services`` now logs a loud ``ERROR`` and emits a
+2. ``run_daemon_services`` now emits a loud ``ERROR`` event and a
    ``maintenance_loops_parked`` daemon event, naming exactly which
    maintenance loops are withheld, whenever the watcher is schema-blocked
    at startup -- previously the only signal was the one-time schema
@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.logging import capture
 from polylogue.sources.live import WatchSource
 
 
@@ -35,10 +36,10 @@ def test_gate_noop_when_no_gate_given() -> None:
     """
     from polylogue.daemon import cli as daemon_cli
 
-    with patch.object(daemon_cli.logger, "warning") as warning:
+    with capture() as records:
         asyncio.run(daemon_cli._await_catch_up_gate(None, loop_name="unit-test-loop", timeout_s=0.01))
 
-    warning.assert_not_called()
+    assert [r for r in records if r["event"] == "daemon.catch_up_gate.timeout"] == []
 
 
 def test_gate_returns_immediately_when_event_preset() -> None:
@@ -52,10 +53,10 @@ def test_gate_returns_immediately_when_event_preset() -> None:
     event = asyncio.Event()
     event.set()
 
-    with patch.object(daemon_cli.logger, "warning") as warning:
+    with capture() as records:
         asyncio.run(daemon_cli._await_catch_up_gate(event, loop_name="unit-test-loop", timeout_s=5.0))
 
-    warning.assert_not_called()
+    assert [r for r in records if r["event"] == "daemon.catch_up_gate.timeout"] == []
 
 
 def test_gate_times_out_and_warns_then_proceeds() -> None:
@@ -63,32 +64,32 @@ def test_gate_times_out_and_warns_then_proceeds() -> None:
 
     Anti-vacuity: reverting to the old bare ``await catch_up_complete.wait()``
     (no ``asyncio.wait_for``/timeout) makes this test hang until the pytest
-    stall timeout instead of returning; removing the ``logger.warning`` call
-    makes the assertion on its content fail.
+    stall timeout instead of returning; removing the
+    ``daemon.catch_up_gate.timeout`` event makes the assertions below fail.
     """
     from polylogue.daemon import cli as daemon_cli
 
     event = asyncio.Event()  # never set
 
-    with patch.object(daemon_cli.logger, "warning") as warning:
+    with capture() as records:
         asyncio.run(daemon_cli._await_catch_up_gate(event, loop_name="unit-test-loop", timeout_s=0.02))
 
-    warning.assert_called_once()
-    message, loop_name_arg, timeout_arg = warning.call_args.args
-    assert "catch-up gate not released" in message
-    assert "proceeding without watcher catch-up" in message
-    assert loop_name_arg == "unit-test-loop"
-    assert timeout_arg == 0
+    timeouts = [r for r in records if r["event"] == "daemon.catch_up_gate.timeout"]
+    assert len(timeouts) == 1
+    assert timeouts[0]["level"] == "warning"
+    assert timeouts[0]["outcome"] == "unmeasured"
+    assert timeouts[0]["loop"] == "unit-test-loop"
+    assert timeouts[0]["timeout_ms"] == 20.0
 
 
 def test_run_daemon_services_schema_block_logs_parked_loops_and_emits_event() -> None:
     """Schema-blocked startup must name every withheld loop, loudly and durably.
 
-    Anti-vacuity: deleting the new ``logger.error("... maintenance loop(s)
-    parked ...")`` call (or the ``emit_daemon_event("maintenance_loops_parked",
-    ...)`` call) from the ``if watcher_blocked:`` branch in
+    Anti-vacuity: deleting the ``emit("daemon.maintenance_loops.parked", ...)``
+    call (or the ``emit_daemon_event("maintenance_loops_parked", ...)``
+    call) from the ``if watcher_blocked:`` branch in
     ``run_daemon_services`` makes the corresponding assertion below fail; the
-    prior behavior only logged the single schema-preflight ERROR with no
+    prior behavior only recorded the single schema-preflight ERROR with no
     enumeration of what was withheld.
     """
     from polylogue.daemon import cli as daemon_cli
@@ -142,7 +143,7 @@ def test_run_daemon_services_schema_block_logs_parked_loops_and_emits_event() ->
         patch("polylogue.daemon.convergence.DaemonConverger", side_effect=fail_background_work),
         patch.object(daemon_cli, "make_server", return_value=server),
         patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event),
-        patch.object(daemon_cli.logger, "error") as error_log,
+        capture() as records,
         pytest.raises(RuntimeError, match="server stopped"),
     ):
         asyncio.run(
@@ -157,9 +158,13 @@ def test_run_daemon_services_schema_block_logs_parked_loops_and_emits_event() ->
             )
         )
 
-    parked_calls = [call for call in error_log.call_args_list if "maintenance loop(s) parked" in str(call.args[0])]
-    assert len(parked_calls) == 1
-    message_fmt, loop_count_arg, loop_names_arg = parked_calls[0].args
+    parked_records = [r for r in records if r["event"] == "daemon.maintenance_loops.parked"]
+    assert len(parked_records) == 1
+    assert parked_records[0]["level"] == "error"
+    assert parked_records[0]["outcome"] == "refused"
+    assert parked_records[0]["reason"] == "schema_version_mismatch"
+    loop_count_arg = parked_records[0]["loops"]
+    loop_names_arg = str(parked_records[0]["error_detail"])
     assert (
         loop_count_arg == len(daemon_cli._SCHEMA_BLOCKED_MAINTENANCE_LOOP_NAMES) + 1
     )  # +1: drive catchup (default on)
