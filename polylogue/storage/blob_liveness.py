@@ -318,6 +318,28 @@ def _direct_surfaces(conn: sqlite3.Connection, blob_bytes: bytes, *, tier: str, 
     return surfaces
 
 
+def index_tier_blob_population(index_conn: sqlite3.Connection) -> int:
+    """Return how many distinct blob hashes the index tier's owners hold.
+
+    Descriptor-driven from :data:`BLOB_OWNERS` so a new index-tier owner is
+    counted without editing this function. Missing tables count as zero: an
+    index tier that lacks its owner tables is refused by ``_schema_blockers``
+    long before any population question is asked.
+    """
+
+    hashes: set[bytes] = set()
+    for owner in _owners(tier="index", ledger=False):
+        assert owner.blob_column is not None
+        if not _table_exists(index_conn, owner.table) or not _column_exists(index_conn, owner.table, owner.blob_column):
+            continue
+        for row in index_conn.execute(
+            f"SELECT DISTINCT {owner.blob_column} FROM {owner.table} WHERE {owner.blob_column} IS NOT NULL"
+        ):
+            if isinstance(row[0], bytes):
+                hashes.add(row[0])
+    return len(hashes)
+
+
 def inspect_blob_liveness(
     source_conn: sqlite3.Connection,
     blob_hash: str,
@@ -325,8 +347,18 @@ def inspect_blob_liveness(
     index_conn: sqlite3.Connection | None = None,
     require_index: bool = False,
     legacy_hook_stage: HookPayloadRefMatchStage | None = None,
+    index_authority_blocker: str | None = None,
 ) -> BlobLiveness:
-    """Return ``live``, ``unreferenced``, or typed ``blocked`` for one hash."""
+    """Return ``live``, ``unreferenced``, or typed ``blocked`` for one hash.
+
+    ``index_authority_blocker`` names a reason the index tier cannot currently
+    prove absence (see :mod:`polylogue.storage.blob_gc_index_watermark`). It is
+    applied *per candidate*, after the surfaces are gathered: a hash the source
+    tier still claims is ``live`` exactly as before, and only a hash whose sole
+    possible referent was the index is blocked rather than reported
+    unreferenced. That keeps GC collecting source-decidable bytes while the
+    index is unmaterialized, which a pass-level refusal would not.
+    """
     blockers = _source_global_blockers(source_conn)
     if index_conn is None:
         if require_index:
@@ -353,7 +385,11 @@ def inspect_blob_liveness(
             surfaces.extend(_direct_surfaces(index_conn, blob_bytes, tier="index", prefix="index.db"))
     except (sqlite3.Error, RuntimeError, ValueError) as exc:
         return BlobLiveness(LivenessState.BLOCKED, blockers=(f"blob liveness query is unreadable: {exc}",))
-    return BlobLiveness(LivenessState.LIVE if surfaces else LivenessState.UNREFERENCED, tuple(surfaces))
+    if surfaces:
+        return BlobLiveness(LivenessState.LIVE, tuple(surfaces))
+    if index_authority_blocker is not None:
+        return BlobLiveness(LivenessState.BLOCKED, blockers=(index_authority_blocker,))
+    return BlobLiveness(LivenessState.UNREFERENCED)
 
 
 def inspect_blob_reservation(source_conn: sqlite3.Connection, blob_hash: str) -> BlobLiveness:
@@ -528,6 +564,7 @@ __all__ = [
     "LivenessState",
     "blob_hash_bytes",
     "blob_refs_has_ref_type_column",
+    "index_tier_blob_population",
     "inspect_blob_liveness",
     "inspect_blob_reservation",
     "project_index_blob_hashes",

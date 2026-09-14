@@ -56,7 +56,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
+from polylogue.core.errors import SchemaSkewError
 from polylogue.logging import ERROR, emit
+from polylogue.storage.blob_gc_index_watermark import index_liveness_authority_blocker
 from polylogue.storage.blob_liveness import (
     BlobLiveness,
     LivenessState,
@@ -216,7 +218,7 @@ def _previous_generation_completed_at(conn: sqlite3.Connection) -> int | None:
 def _database_has_table(path: Path, table: str) -> bool:
     try:
         conn = _readonly(path)
-    except sqlite3.Error:
+    except (sqlite3.Error, SchemaSkewError):
         return False
     try:
         return _table_exists(conn, table)
@@ -239,7 +241,7 @@ def _reference_tier_blockers(tier_paths: dict[str, Path]) -> tuple[str, ...]:
         try:
             with closing(_readonly(path)) as probe:
                 probe.execute("SELECT 1").fetchone()
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, SchemaSkewError) as exc:
             blockers.append(f"{tier} tier at {path} could not be opened for reading: {exc}")
     return tuple(blockers)
 
@@ -711,6 +713,7 @@ def _inspect_gc_protection(
     *,
     legacy_hook_stage: HookPayloadRefMatchStage,
     final_recheck: bool,
+    index_authority_blocker: str | None = None,
 ) -> _GCProtection:
     """Project canonical liveness and reservation from one caller-owned lock state."""
     if final_recheck:
@@ -720,6 +723,11 @@ def _inspect_gc_protection(
             blob_hash,
             legacy_hook_stage=legacy_hook_stage,
         )
+        if liveness.state is LivenessState.UNREFERENCED and index_authority_blocker is not None:
+            # The seam keeps its historical signature so fault-injection doubles
+            # stay valid; the per-candidate index-authority decision is applied
+            # to its answer here, on the one route every GC path shares.
+            liveness = BlobLiveness(LivenessState.BLOCKED, blockers=(index_authority_blocker,))
     else:
         liveness = inspect_blob_liveness(
             source_conn,
@@ -727,6 +735,7 @@ def _inspect_gc_protection(
             index_conn=index_conn,
             require_index=True,
             legacy_hook_stage=legacy_hook_stage,
+            index_authority_blocker=index_authority_blocker,
         )
         reservation = inspect_blob_reservation(source_conn, blob_hash)
     return _GCProtection(liveness, reservation)
@@ -780,6 +789,11 @@ def _execute_gc_generation_members(
         if preflight.state is LivenessState.BLOCKED:
             report.blocked_reason = "; ".join(preflight.blockers)
             return deleted_now, reclaimed_bytes_now
+        index_authority_blocker = index_liveness_authority_blocker(
+            blob_root=blob_root,
+            index_path=sibling_index_db,
+            index_conn=recheck_index,
+        )
         try:
             legacy_hook_stage = prepare_match_stage(source_conn)
         except Exception as exc:
@@ -796,6 +810,7 @@ def _execute_gc_generation_members(
                         blob_hash,
                         legacy_hook_stage=legacy_hook_stage,
                         final_recheck=True,
+                        index_authority_blocker=index_authority_blocker,
                     )
                     if protection.blockers:
                         report.blocked_reason = "; ".join(protection.blockers)
@@ -1014,6 +1029,11 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                 preflight = inspect_blob_liveness(source_conn, "", index_conn=index_conn, require_index=True)
                 if preflight.state is LivenessState.BLOCKED:
                     return 0, 0, preflight.blockers
+                index_authority_blocker = index_liveness_authority_blocker(
+                    blob_root=blob_root,
+                    index_path=index_db_path,
+                    index_conn=index_conn,
+                )
                 legacy_hook_stage = prepare_match_stage(source_conn)
                 for blob_hash in sorted(blob_hashes):
                     size_bytes, namespace_blockers = _read_blob_object(
@@ -1029,6 +1049,7 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                     protection = _inspect_gc_protection(
                         source_conn,
                         index_conn=index_conn,
+                        index_authority_blocker=index_authority_blocker,
                         legacy_hook_stage=legacy_hook_stage,
                         blob_hash=blob_hash,
                         final_recheck=False,
@@ -1120,11 +1141,18 @@ def unlink_unreferenced_blob_hashes_without_generation_ledger(
         preflight = inspect_blob_liveness(source_conn, "", index_conn=index_conn, require_index=True)
         if preflight.state is LivenessState.BLOCKED:
             return LegacyBlobUnlinkResult(blocked=candidates, errors=preflight.blockers)
+        index_authority_blocker = index_liveness_authority_blocker(
+            blob_root=blob_root,
+            index_path=index_db_path,
+            index_conn=index_conn,
+            record=not dry_run,
+        )
         legacy_hook_stage = prepare_match_stage(source_conn)
         for blob_hash in sorted(candidates):
             protection = _inspect_gc_protection(
                 source_conn,
                 index_conn=index_conn,
+                index_authority_blocker=index_authority_blocker,
                 blob_hash=blob_hash,
                 legacy_hook_stage=legacy_hook_stage,
                 final_recheck=True,
@@ -1354,6 +1382,12 @@ def run_blob_gc_report(
             report.blocked_reason = "; ".join(preflight.blockers)
             _emit_gc_refusal(report.blocked_reason, phase="preflight")
             return report
+        planning_index_authority_blocker = index_liveness_authority_blocker(
+            blob_root=blob_path,
+            index_path=sibling_index_db,
+            index_conn=planning_index,
+            record=not dry_run,
+        )
         try:
             planning_legacy_hook_stage = prepare_match_stage(planning_source)
         except Exception as exc:
@@ -1367,6 +1401,7 @@ def run_blob_gc_report(
             protection = _inspect_gc_protection(
                 planning_source,
                 index_conn=planning_index,
+                index_authority_blocker=planning_index_authority_blocker,
                 legacy_hook_stage=planning_legacy_hook_stage,
                 blob_hash=blob_hash,
                 final_recheck=False,
@@ -1472,6 +1507,7 @@ def run_blob_gc_report(
             protection = _inspect_gc_protection(
                 conn,
                 index_conn=recheck_index,
+                index_authority_blocker=planning_index_authority_blocker,
                 legacy_hook_stage=recheck_legacy_hook_stage,
                 blob_hash=blob_hash,
                 final_recheck=False,
