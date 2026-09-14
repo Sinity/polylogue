@@ -508,7 +508,10 @@ def test_disconnected_queued_control_releases_its_compute_admission(tmp_path: Pa
 
     def block_worker() -> None:
         entered.release()
-        assert release.wait(timeout=5)
+        # Generous: this worker must stay parked for the whole exchange
+        # (archive bootstrap, audit reads, the cancel and its envelope), and
+        # its early exit would let the queued task start and void the test.
+        assert release.wait(timeout=60)
 
     with running_daemon_operations(tmp_path / "archive") as stack:
         blockers = [stack.execution_kernel.submit(block_worker) for _ in range(2)]
@@ -910,3 +913,82 @@ def test_control_result_metadata_comes_from_the_durable_receipt_read(
         assert recovered["generation"]["id"] == accepted["generation"]["id"]
         assert recovered["schema_versions"] == {tier: accepted["schema_versions"][tier] for tier in ("source", "audit")}
         assert recovered["result"]["reference"] == accepted["accepted_reference"]
+
+
+def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -> None:
+    """A pre-acceptance cancellation is a cancellation, not an operation failure.
+
+    The scheduler cancels a queued, unstarted task by completing its future
+    with ``DaemonOperationCancelled``
+    (``BoundedComputeAdapter._cancel_before_start``), having already released
+    the reservation with no work started.
+
+    Anti-vacuity: the operation is genuinely queued behind saturated workers
+    (its exchange exists and its future is not done before the cancel), so the
+    scheduler's pre-start path is the one that fires. Removing the
+    ``except DaemonOperationCancelled`` branch from
+    ``DaemonOperationRuntime.call`` sends it to the generic handler, which
+    reports ``outcome == "failed"`` with
+    ``error.code == "DaemonOperationCancelled"``, and both assertions go red.
+    """
+    from polylogue.daemon.execution import CancellationHandle
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS, DaemonOperationRequest
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+
+    entered = threading.Semaphore(0)
+    release = threading.Event()
+
+    def block_worker() -> None:
+        entered.release()
+        # Generous: this worker must stay parked for the whole exchange
+        # (archive bootstrap, audit reads, the cancel and its envelope), and
+        # its early exit would let the queued task start and void the test.
+        assert release.wait(timeout=60)
+
+    request_id = "cancelled-queued-control"
+    principal = MutationPrincipal(
+        actor_ref=f"daemon:unix:uid:{os.getuid()}",
+        capabilities=frozenset(spec.capability for spec in DAEMON_OPERATION_SPECS),
+        surface="cli",
+        role_label="daemon-unix-peer",
+    )
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        blockers = [stack.execution_kernel.submit(block_worker) for _ in range(2)]
+        assert all(entered.acquire(timeout=2) for _ in blockers)
+
+        request = DaemonOperationRequest(
+            "mutation.session.delete.preview",
+            {"session_ids": ["codex:absent"]},
+            request_id=request_id,
+            archive_root=str(stack.archive_root),
+        )
+        disconnect = CancellationHandle()
+        envelopes: list[dict[str, object]] = []
+
+        def call_runtime() -> None:
+            envelopes.append(stack.runtime.call(request, principal, client_disconnect=disconnect))
+
+        caller = threading.Thread(target=call_runtime, name="cancelled-queued-control-caller", daemon=True)
+        caller.start()
+        try:
+            with stack.runtime._condition:
+                assert stack.runtime._condition.wait_for(lambda: request_id in stack.runtime._exchanges, timeout=5)
+                exchange = stack.runtime._exchanges[request_id]
+                assert stack.runtime._condition.wait_for(lambda: exchange.future is not None, timeout=5)
+            assert exchange.future is not None
+            assert not exchange.future.done(), "the operation must still be queued or this test is vacuous"
+            assert not exchange.acceptance_started
+
+            disconnect.cancel()
+            caller.join(timeout=5)
+            assert not caller.is_alive()
+        finally:
+            release.set()
+            for blocker in blockers:
+                blocker.future.result(timeout=10)
+
+    assert len(envelopes) == 1
+    envelope = envelopes[0]
+    assert envelope["outcome"] == "cancelled"
+    assert envelope.get("error") is None

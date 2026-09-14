@@ -3130,6 +3130,12 @@ def daemon_status_payload(
             "fts_readiness": status.fts_readiness.model_dump(),
             "raw_materialization_readiness": status.raw_materialization_readiness.model_dump(),
             "raw_frontier_integrity": status.raw_frontier_integrity.model_dump(),
+            # Collected on every status build but never projected, so the
+            # advertised reservation counts and oldest unresolved age reached
+            # no consumer: not /api/status, not the periodic snapshot, not the
+            # CLI. Its component pass/fail rode along in status_components,
+            # which is what hid the gap.
+            "blob_publication_reservations": status.blob_publication_reservations.model_dump(),
             "raw_replay_backlog": status.raw_replay_backlog,
             "embedding_readiness": status.embedding_readiness.model_dump(),
             "memory": {

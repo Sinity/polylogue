@@ -2944,3 +2944,37 @@ def test_blob_publication_reservation_info_empty_before_source_tier_exists(tmp_p
     assert info.total_reserved_count == 0
     assert info.unresolved_count == 0
     assert info.unresolved_oldest_age_s is None
+
+
+def test_status_payload_projects_blob_publication_reservations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The collected reservation ledger reaches the status payload's consumers.
+
+    Anti-vacuity: the fixture status carries a non-default
+    ``BlobPublicationReservationStatus``, so both assertions read values that
+    exist nowhere else in the payload. Dropping the
+    ``"blob_publication_reservations"`` projection from
+    ``daemon_status_payload`` makes the key lookup raise ``KeyError`` and this
+    test go red; a default-valued fixture could have matched a zeroed stub.
+    """
+    from polylogue.daemon.status import BlobPublicationReservationStatus, DaemonStatus
+
+    reservations = BlobPublicationReservationStatus(
+        total_reserved_count=7,
+        retained_referenced_count=3,
+        retained_missing_count=1,
+        unresolved_count=3,
+        unresolved_oldest_age_s=1234.5,
+    )
+    monkeypatch.setattr(
+        status_module,
+        "build_daemon_status",
+        lambda **_kwargs: DaemonStatus(blob_publication_reservations=reservations),
+    )
+
+    payload = daemon_status_payload(sources=(), include_archive_debt=False)
+
+    projected = payload["blob_publication_reservations"]
+    assert isinstance(projected, dict)
+    assert projected["unresolved_count"] == 3
+    assert projected["total_reserved_count"] == 7
+    assert projected["unresolved_oldest_age_s"] == 1234.5

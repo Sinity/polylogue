@@ -1230,6 +1230,13 @@ def _write_session(
         # with zero commits (2026-07-22) under per-row mode.
         bulk_fts=True,
         fresh_build=fresh_build,
+        # The writer runs the same empty-generation guard as ``_write_session``
+        # above and needs the same batch memory to satisfy it. Passing
+        # ``fresh_build`` without the set left the writer with
+        # ``fresh_build_batch=None``, so the second session of a fresh-build
+        # batch found the first one's row and aborted the batch with
+        # "fresh_build requires an empty archive generation".
+        fresh_build_batch=fresh_build_batch,
         write_outcome=writer_outcomes,
         manage_transaction=manage_transaction,
     )

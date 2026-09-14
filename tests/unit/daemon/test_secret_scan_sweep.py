@@ -146,8 +146,19 @@ async def test_periodic_sweep_records_partial_failure_for_health(
     archive_root = tmp_path / "archive"
 
     class Coordinator:
-        async def run_sync(self, *_args: object, **_kwargs: object) -> SecretScanSweepResult:
-            return SecretScanSweepResult(ran=True, errors=1, remaining_pending=1)
+        """Stand in for the scan, but run every other submitted write for real.
+
+        The loop now submits its ops.db telemetry write to the coordinator too
+        (``maintenance.secret_scan_sweep.event``); a double that answered every
+        actor with the canned scan result would swallow that write and the
+        ``daemon_stage_events`` row asserted below would never exist.
+        """
+
+        async def run_sync(self, actor: str, fn: object, *args: object, **kwargs: object) -> object:
+            if actor == "maintenance.secret_scan_sweep":
+                return SecretScanSweepResult(ran=True, errors=1, remaining_pending=1)
+            assert callable(fn)
+            return fn(*args, **kwargs)
 
     sleep_calls = 0
 
@@ -173,3 +184,57 @@ async def test_periodic_sweep_records_partial_failure_for_health(
     assert row[0] == "failed"
     assert '"errors":1' in row[1]
     assert '"retryable":true' in row[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sweep_fails", [True, False], ids=["failed_sweep", "successful_sweep"])
+async def test_periodic_sweep_telemetry_goes_through_the_write_coordinator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sweep_fails: bool,
+) -> None:
+    """The sweep's ops.db telemetry write is submitted to the daemon writer.
+
+    Anti-vacuity: the double records every actor the loop submits. Reverting
+    the three call sites to the direct ``_record_secret_scan_sweep_event``
+    leaves only the ``maintenance.secret_scan_sweep`` scan actor in the
+    recording, the ``.event`` actor is absent, and this test goes red on both
+    the failing and the succeeding branch -- while the ops.db row still exists
+    either way, so asserting on the row alone would prove nothing.
+    """
+    archive_root = tmp_path / "archive"
+    actors: list[str] = []
+
+    class RecordingCoordinator:
+        async def run_sync(self, actor: str, fn: object, *args: object, **kwargs: object) -> object:
+            actors.append(actor)
+            if actor == "maintenance.secret_scan_sweep" and sweep_fails:
+                raise sqlite3.OperationalError("schema drift")
+            assert callable(fn)
+            return fn(*args, **kwargs)
+
+    sleep_calls = 0
+
+    async def stop_after_one_tick(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise _StopPeriodicLoopError
+
+    monkeypatch.setattr("polylogue.daemon.write_coordinator.daemon_write_coordinator", RecordingCoordinator)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root)
+    monkeypatch.setattr("polylogue.daemon.secret_scan_sweep.asyncio.sleep", stop_after_one_tick)
+
+    with pytest.raises(_StopPeriodicLoopError):
+        await periodic_secret_scan_sweep()
+
+    assert "maintenance.secret_scan_sweep.event" in actors
+    # The telemetry write follows the scan it describes, under the writer gate.
+    assert actors[:2] == ["maintenance.secret_scan_sweep", "maintenance.secret_scan_sweep.event"]
+
+    with sqlite3.connect(archive_root / "ops.db") as conn:
+        row = conn.execute(
+            "SELECT status FROM daemon_stage_events WHERE stage = 'maintenance.secret_scan_sweep'"
+        ).fetchone()
+    assert row is not None
+    assert row[0] == ("failed" if sweep_fails else "completed")
