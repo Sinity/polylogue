@@ -361,8 +361,6 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.storage.archive_identity import ArchiveIdentity
-
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
     _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
@@ -387,16 +385,6 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     )
     train = release_durable_change_train(train, evidence_ref="proof:release")
     assert train.apply_evidence is not None
-    train = replace(
-        train,
-        apply_evidence=replace(
-            train.apply_evidence,
-            post=replace(
-                train.apply_evidence.post,
-                archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
-            ),
-        ),
-    )
     manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
     manifest.parent.mkdir(parents=True)
     write_durable_change_train_manifest(manifest, train, expected_revision=-1)
@@ -459,11 +447,9 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
     assert refreshed.apply_evidence is not None
     assert released.apply_evidence is not None
     assert refreshed.apply_evidence.pre == released.apply_evidence.pre
-    assert refreshed.apply_evidence.post.archive_identity_digest != released.apply_evidence.post.archive_identity_digest
-    assert (
-        refreshed.apply_evidence.post.archive_identity_digest
-        == refreshed.source_continuity_evidence.archive_identity_digest
-    )
+    # The retained apply evidence is carried through unchanged: there is no
+    # pre-split identity rewrite left to admit a legacy full-archive digest.
+    assert refreshed.apply_evidence.post == released.apply_evidence.post
     assert refreshed.proof == released.proof
     assert refreshed.revision == released.revision + 1
     assert any(ref.startswith("proof:source-continuity-refresh:") for ref in refreshed.proof_refs)
@@ -1284,38 +1270,6 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
                 historical_train,
                 current_target_version=3,
                 actual_evidence=tampered,
-            )
-
-
-def test_continuity_admits_legacy_full_archive_identity_digest(tmp_path: Path) -> None:
-    from polylogue.storage.archive_identity import ArchiveIdentity
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-    initialize_active_archive_root(tmp_path)
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        current = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
-        legacy = replace(
-            current,
-            archive_identity_digest=ArchiveIdentity.resolve(tmp_path).authority_identity_digest,
-        )
-        migration_runner._assert_durable_database_continuity(
-            current,
-            legacy,
-            label="legacy identity compatibility",
-            connection=conn,
-        )
-        with pytest.raises(DurableChangeTrainError, match="continuity proof failed"):
-            migration_runner._assert_durable_database_continuity(
-                current,
-                replace(current, archive_identity_digest="a" * 64),
-                label="foreign identity",
-                connection=conn,
-            )
-        with pytest.raises(DurableChangeTrainError, match="continuity proof failed"):
-            migration_runner._assert_durable_database_continuity(
-                current,
-                legacy,
-                label="legacy identity without connection",
             )
 
 

@@ -70,7 +70,6 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
 from polylogue.logging import get_logger
-from polylogue.operations.append_acquisition_replay import codex_legacy_header_size
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
     IngestAttemptDisposition,
@@ -126,7 +125,6 @@ from polylogue.sources.live.batch_support import (
     _throttled_phase_heartbeat,
     claude_semantic_frontier_for_prefix,
     claude_semantic_frontier_for_prefix_with_bytes,
-    codex_append_payload,
     cursor_prefix_hash,
     cursor_state_after_full_ingest,
     decode_claude_semantic_frontier,
@@ -4416,25 +4414,6 @@ class LiveBatchProcessor:
                 blob_path = source_db.parent / "blob" / blob_hash[:2] / blob_hash[2:]
                 delta_start = 0
                 delta_size = int(row[5])
-                if (
-                    str(row[1]) == RawRevisionKind.UNKNOWN.value
-                    and Provider.from_string(
-                        canonical_acquisition_provider(
-                            self._source_name_for(path), source_name=self._source_name_for(path)
-                        )
-                    )
-                    is Provider.CODEX
-                ):
-                    header_size = codex_legacy_header_size(str(path))
-                    if header_size is not None and delta_size > header_size:
-                        try:
-                            with blob_path.open("rb") as blob_handle:
-                                has_legacy_header = blob_handle.read(header_size).startswith(b'{"type":"session_meta"')
-                        except OSError:
-                            continue
-                        if has_legacy_header:
-                            delta_start = header_size
-                            delta_size -= header_size
                 end = previous_end + delta_size
                 if not retained_blob_matches_source(
                     blob_path,
@@ -4568,26 +4547,7 @@ class LiveBatchProcessor:
                         if raw_id in inferred:
                             blob_start = candidate.blob_size - (source_end - source_start)
                         elif candidate.blob_size != source_end - source_start:
-                            # Older Codex append captures prepended the
-                            # session_meta record to each retained delta.  A
-                            # byte-proven append head from that legacy shape
-                            # is still usable, but only when the retained
-                            # blob's exact header length and marker account for
-                            # the extra bytes.
-                            header_size = codex_legacy_header_size(str(path))
-                            if header_size is None or candidate.blob_size != (source_end - source_start) + header_size:
-                                return None
-                            blob_hash = blob_hash_by_raw_id.get(raw_id)
-                            if blob_hash is None:
-                                return None
-                            blob_path = source_db.parent / "blob" / blob_hash[:2] / blob_hash[2:]
-                            try:
-                                with blob_path.open("rb") as blob_handle:
-                                    if not blob_handle.read(header_size).startswith(b'{"type":"session_meta"'):
-                                        return None
-                            except OSError:
-                                return None
-                            blob_start = header_size
+                            return None
                     else:
                         return None
                     if blob_start < 0:
@@ -5102,7 +5062,7 @@ class LiveBatchProcessor:
                 "line and carried as native_id_hint, not spliced into hashed bytes",
             )
             assert identity is not None
-            return codex_append_payload(payload, identity=identity, legacy_header=False), identity, identity
+            return payload, identity, identity
         if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(
             path, payload, existing_id=identity
         ):

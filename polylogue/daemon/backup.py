@@ -34,7 +34,6 @@ from polylogue.core.sources import provider_from_origin
 from polylogue.core.write_lease import write_lease
 from polylogue.daemon.cli import checkpoint_connection, open_isolated_write_connection
 from polylogue.daemon.status import open_readonly_connection
-from polylogue.operations.append_acquisition_replay import codex_legacy_header_size, replay_append_acquisition_payload
 from polylogue.operations.zip_acquisition_replay import MemberCandidateCache, zip_reacquisition_payload
 from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
@@ -719,25 +718,6 @@ def _append_segment_payload(path: str, start: int, end: int) -> tuple[bytes | No
     return payload, None
 
 
-def _replay_append_payload(
-    row: Mapping[str, object],
-    payload: bytes,
-    *,
-    source_name: str | None = None,
-) -> tuple[bytes | None, str | None]:
-    provider = Provider.from_string(str(row.get("capture_mode") or ""))
-    if provider is Provider.UNKNOWN:
-        provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
-    blob_size_value = row.get("blob_size", row.get("size_bytes"))
-    expected_size = int(blob_size_value) if isinstance(blob_size_value, (int, str)) else None
-    return replay_append_acquisition_payload(
-        payload,
-        provider=provider,
-        source_name=source_name or str(row.get("source_path") or "append.jsonl"),
-        expected_size=expected_size,
-    )
-
-
 def _historical_snapshot_prefix_payload(
     row: Mapping[str, object],
     source_path: str,
@@ -833,23 +813,14 @@ def _legacy_append_replay(
     if not predecessors:
         return None, "legacy_append_window_missing", None, None
     _timestamp, start = max(predecessors)
-    provider = Provider.from_string(str(row.get("capture_mode") or ""))
-    if provider is Provider.UNKNOWN:
-        provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
     payload_size = expected_size
-    if provider is Provider.CODEX:
-        header_size = codex_legacy_header_size(source_path)
-        if header_size is None:
-            return None, "legacy_append_window_missing", None, None
-        payload_size -= header_size
     if payload_size < 0:
         return None, "legacy_append_window_missing", None, None
     end = start + payload_size
     payload, error = _append_segment_payload(source_path, start, end)
     if error is not None or payload is None:
         return None, error or "legacy_append_window_missing", start, end
-    payload, error = _replay_append_payload(row, payload, source_name=source_path)
-    return payload, error, start, end
+    return payload, None, start, end
 
 
 def _source_recoverability_proofs(
@@ -934,8 +905,6 @@ def _source_recoverability_proofs(
                         payload, error = None, f"append_segment:{exc}"
                     else:
                         payload, error = _append_segment_payload(resolved, start, end)
-                        if error is None and payload is not None:
-                            payload, error = _replay_append_payload(row, payload, source_name=resolved)
                         # An append row does not always store the appended
                         # window. `admit_raw_observation` writes the whole
                         # observed payload while recording the tail's offsets,
@@ -945,16 +914,12 @@ def _source_recoverability_proofs(
                         # does not prove the blob.
                         if payload is None or hashlib.sha256(payload).hexdigest() != blob_hash:
                             snapshot_payload, snapshot_error = _append_segment_payload(resolved, 0, end)
-                            if snapshot_error is None and snapshot_payload is not None:
-                                replayed, replay_error = _replay_append_payload(
-                                    row, snapshot_payload, source_name=resolved
-                                )
-                                if (
-                                    replay_error is None
-                                    and replayed is not None
-                                    and hashlib.sha256(replayed).hexdigest() == blob_hash
-                                ):
-                                    payload, error = replayed, None
+                            if (
+                                snapshot_error is None
+                                and snapshot_payload is not None
+                                and hashlib.sha256(snapshot_payload).hexdigest() == blob_hash
+                            ):
+                                payload, error = snapshot_payload, None
                 elif _legacy_append_without_window(row):
                     payload, error, historical_append_start, historical_append_end = _legacy_append_replay(
                         row, resolved, prior_full_sizes
@@ -1656,12 +1621,6 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                         recovered_payload, recovery_error = None, f"append_segment:{exc}"
                     else:
                         recovered_payload, recovery_error = _append_segment_payload(source_path, start, end)
-                        if recovery_error is None and recovered_payload is not None:
-                            recovered_payload, recovery_error = _replay_append_payload(
-                                proof,
-                                recovered_payload,
-                                source_name=source_path,
-                            )
                 elif kind == "historical_snapshot_prefix_sha256":
                     recovered_payload, recovery_error = _historical_snapshot_prefix_payload(proof, source_path)[1:]
                 else:
