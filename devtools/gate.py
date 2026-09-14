@@ -231,13 +231,6 @@ GATES: tuple[Gate, ...] = (
         ("devtools.verify_webui",),
         label="gate webui",
     ),
-    Gate(
-        "js",
-        "Run the JavaScript test suites of the browser-extension and webui packages.",
-        "module",
-        ("devtools.verify_js_tests",),
-        label="gate js",
-    ),
 )
 
 GATES_BY_NAME: dict[str, Gate] = {gate.name: gate for gate in GATES}
