@@ -15,13 +15,15 @@
 #     are atomic, rebuildable writes are replayable, and ops writes restart.
 #   - a module may own multiple tiers only through a named twin-write contract.
 
-# Improvised SQLite degradation policy, ratcheted down per file. A handler that
+# Improvised SQLite degradation policy, ratcheted down per site. A handler that
 # turns an unavailable store into a zero or an empty list makes "errored" and
 # "genuinely empty" indistinguishable at the call site; the typed route
 # classifies absence once at the storage seam
 # (polylogue/storage/tier_access.py) and carries it as
-# polylogue/core/evidence.py. The baseline is the per-file ceiling: convert a
-# seam, then lower its entry in the same change.
+# polylogue/core/evidence.py. The baseline anchors each admitted site by
+# (file, sha1 of its normalized handler source) -- not a per-file count, which
+# two branches measured against different bases can sum past on merge. Convert a
+# seam, then drop its anchors in the same change.
 sqlite_degradation:
   baseline: docs/plans/sqlite-degradation-baseline.json
   roots: [polylogue]

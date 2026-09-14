@@ -28,7 +28,11 @@ from pathlib import Path
 from devtools import repo_root as _get_root
 from devtools.manifest_models import validate_layering_manifest
 from devtools.required_gate import evidence_gate_result
-from devtools.sqlite_degradation import census_sqlite_degradation_sites, load_sqlite_degradation_baseline
+from devtools.sqlite_degradation import (
+    anchor_text,
+    census_sqlite_degradation_anchors,
+    load_sqlite_degradation_baseline,
+)
 from polylogue.core.json import dumps
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 
@@ -844,11 +848,14 @@ def _sqlite_degradation_findings(
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Return (violations, ratchet-down opportunities) for improvised sqlite policy.
 
-    A file may carry fewer value-returning ``except sqlite3`` handlers than the
-    baseline records, never more, and a file the baseline does not name may
-    carry none. Explicit failure-boundary rethrows are excluded by the census.
-    Growth is therefore only possible by editing the baseline, which is the
-    thing review looks at.
+    The baseline is a set of content anchors, not a per-file count: a
+    value-returning ``except sqlite3`` handler is admitted only if its own
+    normalized source text is already anchored in the baseline. A file may drop
+    anchors, never gain them, and a file the baseline does not name may carry
+    none. Because an anchor is identified by what the handler *is*, two branches
+    that each add a different handler to the same file each fail on their own
+    instead of summing to a red master after both merge. Growth is therefore
+    only possible by editing the baseline, which is the thing review looks at.
     """
     policy = manifest.get("sqlite_degradation")
     if not isinstance(policy, dict):
@@ -859,24 +866,21 @@ def _sqlite_degradation_findings(
         return [], []
     roots = tuple(str(root) for root in raw_roots)
     baseline = load_sqlite_degradation_baseline(repo_root / baseline_ref)
-    observed = census_sqlite_degradation_sites(repo_root, roots)
+    observed = census_sqlite_degradation_anchors(repo_root, roots)
 
-    violations: list[dict[str, object]] = []
-    for file_rel, count in sorted(observed.items()):
-        allowed = baseline.get(file_rel, 0)
-        if count > allowed:
-            violations.append(
-                {
-                    "file": file_rel,
-                    "rule": "sqlite_degradation_sites_grew",
-                    "observed": count,
-                    "baseline": allowed,
-                }
-            )
+    violations: list[dict[str, object]] = [
+        {
+            "file": anchor[0],
+            "rule": "sqlite_degradation_site_added",
+            "anchor": anchor_text(anchor, count),
+            "digest": anchor[1],
+            "added": count,
+        }
+        for anchor, count in sorted((observed - baseline).items())
+    ]
     shrunk: list[dict[str, object]] = [
-        {"file": file_rel, "observed": observed.get(file_rel, 0), "baseline": allowed}
-        for file_rel, allowed in sorted(baseline.items())
-        if observed.get(file_rel, 0) < allowed
+        {"file": anchor[0], "anchor": anchor_text(anchor, count), "digest": anchor[1], "removed": count}
+        for anchor, count in sorted((baseline - observed).items())
     ]
     return violations, shrunk
 
@@ -896,9 +900,9 @@ def _format_violation(violation: dict[str, object]) -> str:
     if rule.startswith("package_docstring_"):
         detail = f" ({violation['detail']})" if "detail" in violation else ""
         return f"  {violation['file']}: {rule}{detail}"
-    if rule == "sqlite_degradation_sites_grew":
+    if rule == "sqlite_degradation_site_added":
         return (
-            f"  {violation['file']}: {rule} observed={violation['observed']} baseline={violation['baseline']}"
+            f"  {violation['anchor']}: {rule}"
             " (classify absence at the storage seam: polylogue.storage.tier_access + polylogue.core.evidence)"
         )
     if rule.startswith("writer_module_"):

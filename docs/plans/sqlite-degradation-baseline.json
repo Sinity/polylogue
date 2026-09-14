@@ -1,120 +1,989 @@
 {
-  "rule": "Per-file ceiling on hand-written except sqlite3 handlers that return a value in polylogue/. A file may shrink, never grow; a file absent here may carry none. Explicit failure-boundary rethrows are not counted. Convert a seam to polylogue.core.evidence / polylogue.storage.tier_access and lower its entry in the same change.",
-  "total": 424,
-  "sites": {
-    "polylogue/analysis/claude_workflow_materializer.py": 1,
-    "polylogue/analysis/hermes_integration_health.py": 6,
-    "polylogue/analysis/schema_drift.py": 2,
-    "polylogue/api/archive.py": 25,
-    "polylogue/api/user_state_resolver.py": 3,
-    "polylogue/archive/query/production_evaluator.py": 2,
-    "polylogue/archive/query/source_freshness.py": 7,
-    "polylogue/archive/query/transaction.py": 1,
-    "polylogue/browser_capture/receiver.py": 3,
-    "polylogue/browser_capture/server.py": 5,
-    "polylogue/cli/commands/demo.py": 1,
-    "polylogue/cli/commands/embed.py": 1,
-    "polylogue/cli/commands/maintenance/_migrate_tier.py": 1,
-    "polylogue/cli/commands/paths.py": 1,
-    "polylogue/cli/commands/status.py": 6,
-    "polylogue/cli/commands/status_diagnostics.py": 1,
-    "polylogue/cli/read_views/streaming_markdown.py": 2,
-    "polylogue/context/preamble.py": 1,
-    "polylogue/coordination/envelope.py": 4,
-    "polylogue/daemon/backup.py": 3,
-    "polylogue/daemon/blob_gc_periodic.py": 2,
-    "polylogue/daemon/catchup_status.py": 3,
-    "polylogue/daemon/cli.py": 3,
-    "polylogue/daemon/convergence_stages.py": 3,
-    "polylogue/daemon/convergence_standing_queries.py": 1,
-    "polylogue/daemon/cursor_lag_baseline.py": 3,
-    "polylogue/daemon/cursor_lag_status.py": 2,
-    "polylogue/daemon/embedding_backlog.py": 2,
-    "polylogue/daemon/embedding_readiness.py": 1,
-    "polylogue/daemon/events.py": 1,
-    "polylogue/daemon/fts_automerge.py": 1,
-    "polylogue/daemon/fts_status.py": 3,
-    "polylogue/daemon/health.py": 1,
-    "polylogue/daemon/http.py": 11,
-    "polylogue/daemon/judgment_automation.py": 5,
-    "polylogue/daemon/metrics.py": 10,
-    "polylogue/daemon/provenance.py": 1,
-    "polylogue/daemon/secret_scan_sweep.py": 1,
-    "polylogue/daemon/status.py": 8,
-    "polylogue/demo/receipts.py": 3,
-    "polylogue/demo/seed.py": 2,
-    "polylogue/demo/verify.py": 1,
-    "polylogue/hooks/__init__.py": 2,
-    "polylogue/maintenance/archive_verification.py": 58,
-    "polylogue/maintenance/beads_origin_census.py": 1,
-    "polylogue/maintenance/blob_disposition.py": 5,
-    "polylogue/maintenance/blob_ref_liveness_reconciliation.py": 1,
-    "polylogue/maintenance/corpus_fidelity.py": 1,
-    "polylogue/maintenance/schema_inference_gate.py": 11,
-    "polylogue/mcp/server_prompts.py": 2,
-    "polylogue/mcp/server_resources.py": 2,
-    "polylogue/operations/archive_debt.py": 2,
-    "polylogue/operations/archive_space_report.py": 1,
-    "polylogue/operations/daemon_workload_probe.py": 12,
-    "polylogue/operations/durable_change_train.py": 1,
-    "polylogue/operations/mutation_actuators.py": 1,
-    "polylogue/pipeline/services/indexing.py": 4,
-    "polylogue/readiness/__init__.py": 1,
-    "polylogue/schemas/drift_sentinel_sampling.py": 3,
-    "polylogue/security/secret_scan.py": 1,
-    "polylogue/sinex/service.py": 1,
-    "polylogue/sources/assembly_codex.py": 3,
-    "polylogue/sources/codex_state_evidence.py": 1,
-    "polylogue/sources/codex_state_projection.py": 6,
-    "polylogue/sources/hooks.py": 2,
-    "polylogue/sources/import_explain.py": 2,
-    "polylogue/sources/live/batch.py": 12,
-    "polylogue/sources/live/batch_observability.py": 1,
-    "polylogue/sources/live/convergence_debt_retry.py": 2,
-    "polylogue/sources/live/hook_tool_response.py": 2,
-    "polylogue/sources/live/cursor.py": 1,
-    "polylogue/sources/live/sqlite_locking.py": 1,
-    "polylogue/sources/live/watcher.py": 10,
-    "polylogue/sources/parsers/codex_state.py": 1,
-    "polylogue/sources/parsers/hermes_state.py": 1,
-    "polylogue/sources/parsers/hermes_verification.py": 1,
-    "polylogue/sources/revision_backfill.py": 2,
-    "polylogue/sources/sqlite_snapshot.py": 1,
-    "polylogue/storage/archive_readiness.py": 6,
-    "polylogue/storage/artifacts/inspection.py": 1,
-    "polylogue/storage/blob_gc.py": 2,
-    "polylogue/storage/blob_integrity.py": 6,
-    "polylogue/storage/blob_liveness.py": 5,
-    "polylogue/storage/embeddings/generations.py": 3,
-    "polylogue/storage/embeddings/materialization.py": 4,
-    "polylogue/storage/embeddings/preflight.py": 2,
-    "polylogue/storage/embeddings/status_payload.py": 6,
-    "polylogue/storage/embeddings/support.py": 8,
-    "polylogue/storage/fts/drift_sampling.py": 3,
-    "polylogue/storage/hook_event_authority.py": 1,
-    "polylogue/storage/hook_payload_ref_reconciliation.py": 1,
-    "polylogue/storage/raw_convergence.py": 1,
-    "polylogue/storage/raw_failure_lifecycle.py": 2,
-    "polylogue/storage/raw_retention.py": 13,
-    "polylogue/storage/search/runtime.py": 2,
-    "polylogue/storage/search_providers/sqlite_vec_queries.py": 2,
-    "polylogue/storage/search_providers/sqlite_vec_runtime.py": 4,
-    "polylogue/storage/sqlite/archive_tiers/archive.py": 2,
-    "polylogue/storage/sqlite/archive_tiers/archive_plan.py": 2,
-    "polylogue/storage/sqlite/archive_tiers/bootstrap.py": 2,
-    "polylogue/storage/sqlite/archive_tiers/schema_identity.py": 1,
-    "polylogue/storage/sqlite/archive_tiers/schema_inventory.py": 3,
-    "polylogue/storage/sqlite/archive_tiers/write_shard.py": 1,
-    "polylogue/storage/sqlite/archive_tiers/write.py": 2,
-    "polylogue/storage/sqlite/audit_continuity.py": 6,
-    "polylogue/storage/sqlite/audit_leaf.py": 1,
-    "polylogue/storage/sqlite/durable_change_train.py": 1,
-    "polylogue/storage/sqlite/maintenance.py": 2,
-    "polylogue/storage/sqlite/migration_runner.py": 4,
-    "polylogue/storage/sqlite/connection_profile.py": 1,
-    "polylogue/storage/sqlite/schema.py": 1,
-    "polylogue/storage/sqlite/wal_checkpoint.py": 1,
-    "polylogue/storage/tier_access.py": 1,
-    "polylogue/storage/usage.py": 5
-  }
+  "rule": "Content-anchored ratchet on hand-written except sqlite3 handlers that return a value in polylogue/. Each entry anchors one site as (file, sha1 of the normalized handler source); a count is present only where one file repeats literally identical handler text. Anchors may be removed, never added, and a handler whose text is not anchored here is a blocking finding. Anchors are deliberately not per-file counts: counts measured against two different bases sum on merge, so two separately green branches could redden master. Explicit failure-boundary rethrows are not census sites. Convert a seam to polylogue.core.evidence / polylogue.storage.tier_access and drop its anchors in the same change.",
+  "anchors": [
+    {
+      "file": "polylogue/analysis/claude_workflow_materializer.py",
+      "digest": "ca25459cb15b48fd5bd259228614173e1910842a"
+    },
+    {
+      "file": "polylogue/analysis/hermes_integration_health.py",
+      "digest": "2c3ca562218aaa4a1d4901ddd6f9a246bf8b3be9"
+    },
+    {
+      "file": "polylogue/analysis/hermes_integration_health.py",
+      "digest": "efcb8302670275365fc80e973c5a4333fa7e85e0"
+    },
+    {
+      "file": "polylogue/analysis/schema_drift.py",
+      "digest": "5c26188878273f2b61286ebcd61385fc8d8cb751"
+    },
+    {
+      "file": "polylogue/analysis/schema_drift.py",
+      "digest": "73b01cc138abdb3b9956bf940322ce843b118962"
+    },
+    {
+      "file": "polylogue/api/archive.py",
+      "digest": "09030293003b853a067c1b430d98b1b923d60bed"
+    },
+    {
+      "file": "polylogue/api/archive.py",
+      "digest": "6042cb06f7ad5a2e6bde95d9d7de0a05c3f1e34c",
+      "count": 2
+    },
+    {
+      "file": "polylogue/api/archive.py",
+      "digest": "7d74bb8df702297e3dbd655d8e8ce2729486be20"
+    },
+    {
+      "file": "polylogue/api/archive.py",
+      "digest": "897c3c64873990d3ff2c841c89a0f42e459c1710"
+    },
+    {
+      "file": "polylogue/api/archive.py",
+      "digest": "90aef716124fe4b9826933cc5a54bf2680fc271c"
+    },
+    {
+      "file": "polylogue/api/archive.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
+      "count": 2
+    },
+    {
+      "file": "polylogue/api/archive.py",
+      "digest": "b8f5aecd31c164ace91b4949e056e04de0b4fb54",
+      "count": 3
+    },
+    {
+      "file": "polylogue/api/archive.py",
+      "digest": "d6ca74ea9128670b6aac10ab63af845ffa0bec0a"
+    },
+    {
+      "file": "polylogue/api/archive.py",
+      "digest": "e3f0fd84255a415938d243295c29f9f80e7199c8"
+    },
+    {
+      "file": "polylogue/api/user_state_resolver.py",
+      "digest": "9897f1e5f076cb17ac719b9eb9c9f8a4cda8aee7",
+      "count": 3
+    },
+    {
+      "file": "polylogue/archive/query/production_evaluator.py",
+      "digest": "4001fe70084213f736c04dbc62eba28b3a651c37"
+    },
+    {
+      "file": "polylogue/archive/query/production_evaluator.py",
+      "digest": "6de735098af24d2a233eb027a5a916d68c375b78"
+    },
+    {
+      "file": "polylogue/archive/query/source_freshness.py",
+      "digest": "183197da57a7854b3a1cc3f24e9c3021cbe74b4b"
+    },
+    {
+      "file": "polylogue/archive/query/source_freshness.py",
+      "digest": "46765cb0d69fdc38afb14ad5e7e1a541ede1e968"
+    },
+    {
+      "file": "polylogue/archive/query/source_freshness.py",
+      "digest": "4d17a30aa536bd6bc715cf8a5d80c1069a5286d8"
+    },
+    {
+      "file": "polylogue/archive/query/source_freshness.py",
+      "digest": "901686e6db3516c0dc344e1beefcc3e5bb97ad17"
+    },
+    {
+      "file": "polylogue/archive/query/source_freshness.py",
+      "digest": "d43fe09e34e5d35ee5c4786d852fad4764db7b1e"
+    },
+    {
+      "file": "polylogue/browser_capture/receiver.py",
+      "digest": "1b32485d27ac04877dcbf9c485e7ea8479c0179d"
+    },
+    {
+      "file": "polylogue/browser_capture/receiver.py",
+      "digest": "5af706360939db675ef2e4355943e954faca69df"
+    },
+    {
+      "file": "polylogue/browser_capture/receiver.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
+    },
+    {
+      "file": "polylogue/browser_capture/server.py",
+      "digest": "b1fb0bf40d24901b2df0687c7b4d97668485c75b"
+    },
+    {
+      "file": "polylogue/browser_capture/server.py",
+      "digest": "efdc04713894a74ac4b6a34d7485098632f7320e",
+      "count": 4
+    },
+    {
+      "file": "polylogue/cli/commands/paths.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
+    },
+    {
+      "file": "polylogue/cli/commands/status.py",
+      "digest": "0be6ee0758469bbbfc7d56710d12639c4a48af5c"
+    },
+    {
+      "file": "polylogue/cli/commands/status_diagnostics.py",
+      "digest": "1ed556a39db74e174a0646efcac114f1edab937c"
+    },
+    {
+      "file": "polylogue/coordination/envelope.py",
+      "digest": "1324a672d072ee228bc1f86f339440d4315f05ed"
+    },
+    {
+      "file": "polylogue/coordination/envelope.py",
+      "digest": "5771a52ff7994d87b1b998226ead9dde80e09232"
+    },
+    {
+      "file": "polylogue/coordination/envelope.py",
+      "digest": "9274b337d22b0b3726f336a5ade59be8e58cff66"
+    },
+    {
+      "file": "polylogue/coordination/envelope.py",
+      "digest": "b43ea2a563c60d7a047d861250fa7daec323617d"
+    },
+    {
+      "file": "polylogue/daemon/backup.py",
+      "digest": "d12cc3652d9cbc72aa95836708c30c8054d2c93e"
+    },
+    {
+      "file": "polylogue/daemon/backup.py",
+      "digest": "d65f6f25331da8af186e0fb925ca6f48905e683c"
+    },
+    {
+      "file": "polylogue/daemon/catchup_status.py",
+      "digest": "4b3006182f4d41706f2bb43b6e16fe0f2b77b694"
+    },
+    {
+      "file": "polylogue/daemon/catchup_status.py",
+      "digest": "9198064b17098044e3a9af4623b1e43ebc84346b"
+    },
+    {
+      "file": "polylogue/daemon/catchup_status.py",
+      "digest": "ff72e875274ffcc19b05228caaf1cb09f45b030c"
+    },
+    {
+      "file": "polylogue/daemon/cli.py",
+      "digest": "8eb587bcf838ae5e852841cf5d7fe9652f69bca2"
+    },
+    {
+      "file": "polylogue/daemon/convergence_stages.py",
+      "digest": "f99cb98e7c7632c36db993b143bcdbe812c3fec0"
+    },
+    {
+      "file": "polylogue/daemon/convergence_standing_queries.py",
+      "digest": "8e43faf2b67a484c3f7b626c1717c3bcf0d4be8e"
+    },
+    {
+      "file": "polylogue/daemon/cursor_lag_baseline.py",
+      "digest": "55bf32519ac4797eb8eaf177837d225059dcfb50"
+    },
+    {
+      "file": "polylogue/daemon/cursor_lag_baseline.py",
+      "digest": "e0a74cb91ecba9889d4e61c23fbc4c5f70d1b3e4",
+      "count": 2
+    },
+    {
+      "file": "polylogue/daemon/cursor_lag_status.py",
+      "digest": "4df29c135746dfc7b35274b1a3319a920b8066b2"
+    },
+    {
+      "file": "polylogue/daemon/cursor_lag_status.py",
+      "digest": "a5997525b1452ab49d0f8121558ae5ae06320dd4"
+    },
+    {
+      "file": "polylogue/daemon/embedding_readiness.py",
+      "digest": "97dca3c36b4e51d02642c28cb842629ef5e9a1de"
+    },
+    {
+      "file": "polylogue/daemon/events.py",
+      "digest": "ff28968347960a98a8bb9a69e0842b5d62241de7"
+    },
+    {
+      "file": "polylogue/daemon/fts_automerge.py",
+      "digest": "6819064ff85349d02c767bdfb0ee80c794a87544"
+    },
+    {
+      "file": "polylogue/daemon/fts_status.py",
+      "digest": "2cd8182b2452d0af3ab20564b47647f16209e76c"
+    },
+    {
+      "file": "polylogue/daemon/fts_status.py",
+      "digest": "5c141c129aee75ac48374d917905c9e35632832e"
+    },
+    {
+      "file": "polylogue/daemon/health.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
+    },
+    {
+      "file": "polylogue/daemon/http.py",
+      "digest": "0b7f1787d1f214f365a0ce0cd39794a746b4c924"
+    },
+    {
+      "file": "polylogue/daemon/http.py",
+      "digest": "0ef5f84b9aed52b5631c5ac1f21802a5bcd48a16"
+    },
+    {
+      "file": "polylogue/daemon/http.py",
+      "digest": "18e2bc65e2efccc2f6f6f1a13925aa224bdb5726"
+    },
+    {
+      "file": "polylogue/daemon/http.py",
+      "digest": "47e08854c4718f012781075fc3051e9ba6686802"
+    },
+    {
+      "file": "polylogue/daemon/http.py",
+      "digest": "82171ce30d71f68b2247231b7a01f750ee07a9fd"
+    },
+    {
+      "file": "polylogue/daemon/http.py",
+      "digest": "995eb193223394853f53316910d94ffeb8aa1c76"
+    },
+    {
+      "file": "polylogue/daemon/http.py",
+      "digest": "a7b7ee922e57422d174f23e98a95ac3b0440a56c"
+    },
+    {
+      "file": "polylogue/daemon/http.py",
+      "digest": "ae2087f3b26846c6ab9251040b27212f7701b3b9"
+    },
+    {
+      "file": "polylogue/daemon/judgment_automation.py",
+      "digest": "1f1ef25489acd9267ef72d322de3bbd571180198"
+    },
+    {
+      "file": "polylogue/daemon/judgment_automation.py",
+      "digest": "cff0078d415dc7aec786d0633140e95efbfa08c6"
+    },
+    {
+      "file": "polylogue/daemon/metrics.py",
+      "digest": "35ce87112e3c2e14bee114837c58d686eed6a1cd"
+    },
+    {
+      "file": "polylogue/daemon/metrics.py",
+      "digest": "48c998e17585948b11978de09fc0b3db6704c452"
+    },
+    {
+      "file": "polylogue/daemon/metrics.py",
+      "digest": "658ba416bce9ab5336225e7a860eccfc2c930bf2"
+    },
+    {
+      "file": "polylogue/daemon/metrics.py",
+      "digest": "84fbefa515fe4578bdaca44f2ba571832d8a5629"
+    },
+    {
+      "file": "polylogue/daemon/metrics.py",
+      "digest": "9d88af426ea7ec8eac90b1ded0294790b9d0cfed"
+    },
+    {
+      "file": "polylogue/daemon/metrics.py",
+      "digest": "a58b6f69d87674d81597cf75549b7f60e9442dcf"
+    },
+    {
+      "file": "polylogue/daemon/metrics.py",
+      "digest": "e6be594aec644060d044db78875205fd9b58e7cf"
+    },
+    {
+      "file": "polylogue/daemon/metrics.py",
+      "digest": "eb9caff932c44c042e0bab313f6100aa13c4379d"
+    },
+    {
+      "file": "polylogue/daemon/provenance.py",
+      "digest": "e4e0c777299343f2d06750895e431402df1fc7f1"
+    },
+    {
+      "file": "polylogue/daemon/status.py",
+      "digest": "0d9b79727f3f28f02f1d0ca6af292160c6d0fe68"
+    },
+    {
+      "file": "polylogue/daemon/status.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
+      "count": 3
+    },
+    {
+      "file": "polylogue/daemon/status.py",
+      "digest": "af05094a0146bf059222848c96ade347028f380b"
+    },
+    {
+      "file": "polylogue/daemon/status.py",
+      "digest": "ba55f78412d7a28f8c4908be7ac1ce3440d7e4c8"
+    },
+    {
+      "file": "polylogue/daemon/status.py",
+      "digest": "bc95be39a6aa3d8c889123934956901589f416cf"
+    },
+    {
+      "file": "polylogue/demo/seed.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
+    },
+    {
+      "file": "polylogue/demo/seed.py",
+      "digest": "d9bf9bbdd355d63f353f73e7cac16591b7ac5028"
+    },
+    {
+      "file": "polylogue/demo/verify.py",
+      "digest": "2a9b09312feb397bf173b42d36e47be0d861fa71"
+    },
+    {
+      "file": "polylogue/hooks/__init__.py",
+      "digest": "dafb65dec3b76f304e1319b1e3afe976f2286a12",
+      "count": 2
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "005b29f512121d1676ae928abe07953fb14f1b53"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "087df655bf56e23ff6677be358e9aaaa11332d4b"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "09a17de517d9f4208e9d39ddfa18ea14f821d1d3"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "10d08fd82656536cd1927e08de250acc477975be"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "1205edf542c2f7fda4aa4cd7717b36b95d9991d0"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "12c73ce9a443c7ba746334f83f7e65d05446adb5"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "1351876be49ad1a6c00ae6a27a419e00ba5323ca"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "17993bef925b04ed92a31fcf5463d726940758fd"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "17ebbf52e8f2a32ec6f00f940323dded0be21fc6"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "19acbfe0326f11f1cc72b4025423cfb6f4a545a0"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "212315e5a310afb2a665aec60e649b13171b0a26"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "27d4de6fedb7a8779587f5f7daa648e46e0dd92a"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "2a0b90cc384dde95ab9bbf1c2332dac4b62f2ab1"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "3162be99d2bc0e05414505afb0d472f801235cd0"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "3451b2fdc7e0983ffd651ca5a16c943d0442f715"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "368cd3debdcbe247df883d7990f9f49513e6aaff"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "3b7328e52ebd467d17ba445eff9402c43421e8ce"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "4d8fcae70b8e6e70d47baf92bd05294bf29dc70f"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "623fd45b9238a91a5d293f9a8811189e9a4c8d49"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "66668e6b9baf973f00bb0cba471bd045f9b2305c"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "682e63bd68e63e653cbd32629d1331dfd67fa90d"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "6961664c292b6ef2efc810c67827455d4ed25f90"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "7166c45d8da5cf407683fc5fc5beccfd9d8942b1"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "73dd1dc876adae671fd92666b76bd16a29e70ba1"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "73efed1f70518b67176e40facdd42b26398259ec"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "7472c62bbe0df77f4d4caf252764f11a97069cd0"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "77131b66851375eafffa9b9df11e1447c7ee4d92"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "777277ade0a91cad2192c88edec6bf5d2d407bd5"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "779b8ac90223aef97aced83041b5fe2d9330a697"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "7aec80321604fb77415434e3d0b7e2ae45967def"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "7eec2729150451ec0bb87c433b812cb390d010dc"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "8244f9c1632c6d76b9c4bbcc4c58d19a6d68ba94"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "82beb9b1ae5001df546318f358444434a0c93615"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "8c29ecf7f137fd34a249d22ebd1ada291a06ae02"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "91e038e277e850a6bff2fde968d56d0dbf86840e"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "949375913631ff9638ef71422096dd45acce3294"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "97750678addf6e22090cc27dc0eefeb96f6a8226"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "9975602cc9f22674c03084863f737115724d19ff"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "9a71b9ed75872a75bd56aef38c63a2816f2c981d"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "9e02e8b188500d215e4e309e373260dca2a54d8f"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "a326a6640fdc599f7b5adecf64e148ab5cff8ec5"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "a34768245cd1d56649ebafc02609e8dc4000b5e3"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "a888268f32585d1ecb699cbc4e1eea27e07cea70"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "aab77431e48ac0d88b1b3e97ea0cffd2a7c1dbac"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "b1da4d75c07461320836cf5f7a7814889f0b06f6"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "b30cbe7d78dc1bddca574e4c4ff4b42fdc6193e4"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "ba99080cb56a5599380849ddbaf15de78c9a31ad"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "bdd1825ec808b6656463ba77a7b987ce3d580317"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "bde8e5aa777d2298651f4e35fa027491a5908646"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "bef6f2873c891a954208c1648c12e74be62aa076"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "d134056f2a4866965b805f2b0ebd86aab384550a"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "d23ee5d89d22a9e540bd043cd35446aeecb2d924"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "dfa53f59cc67ddbc358447fd742dbe0133cce1be"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "e2a41ca91aa506f39dc85db4acc45ef744c41e28"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "e5a5eae99116ac16e6a6b745d500e4fd9afbf1a3"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "eae365a56d7269b1bc9c2317b64b2e6fc0b91057"
+    },
+    {
+      "file": "polylogue/maintenance/archive_verification.py",
+      "digest": "eddada77b684cf677bf8dc84a6a67295504d8422"
+    },
+    {
+      "file": "polylogue/maintenance/beads_origin_census.py",
+      "digest": "ebdf710d5379afbd20deb75e8cef436e908c7632"
+    },
+    {
+      "file": "polylogue/mcp/server_prompts.py",
+      "digest": "6819064ff85349d02c767bdfb0ee80c794a87544"
+    },
+    {
+      "file": "polylogue/mcp/server_prompts.py",
+      "digest": "c210389b03fdde26344f7463239d2256bcd3f2cb"
+    },
+    {
+      "file": "polylogue/mcp/server_resources.py",
+      "digest": "9ddaf6f183ee180e917ca990572d83e50c44b173",
+      "count": 2
+    },
+    {
+      "file": "polylogue/operations/archive_debt.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
+      "count": 2
+    },
+    {
+      "file": "polylogue/operations/archive_space_report.py",
+      "digest": "2c0d0c0c659e6b5661e3e13a6f2d6028934a0561"
+    },
+    {
+      "file": "polylogue/operations/daemon_workload_probe.py",
+      "digest": "0486974c5f18e06d59d4bc9a7b58cb3b7fbd28bc"
+    },
+    {
+      "file": "polylogue/operations/daemon_workload_probe.py",
+      "digest": "0955e97dd18946470d1d1d4844701777c74b495d"
+    },
+    {
+      "file": "polylogue/operations/daemon_workload_probe.py",
+      "digest": "7aba8c826bb5b7632071636fc55a630a57da9490"
+    },
+    {
+      "file": "polylogue/operations/daemon_workload_probe.py",
+      "digest": "a08f877321e212cd52c75649b1bf4ff1ea4f5bb9"
+    },
+    {
+      "file": "polylogue/operations/daemon_workload_probe.py",
+      "digest": "a6d5e48c23163c07a7f9dca708e3ebab97e6a2eb"
+    },
+    {
+      "file": "polylogue/operations/daemon_workload_probe.py",
+      "digest": "bf1877270023a3f368de6a2a33beaa0c64e43594"
+    },
+    {
+      "file": "polylogue/operations/daemon_workload_probe.py",
+      "digest": "da3c95f166e5da7f47f81a190b6696bdd22db546"
+    },
+    {
+      "file": "polylogue/operations/daemon_workload_probe.py",
+      "digest": "edf794940781f40b1bc67d5c62db862c152ae6d0"
+    },
+    {
+      "file": "polylogue/pipeline/services/indexing.py",
+      "digest": "34b399e79d3a99e8391311b940a64b203604fa15"
+    },
+    {
+      "file": "polylogue/pipeline/services/indexing.py",
+      "digest": "383e3ad114d03f8acc81883ef575935cd3052f7d"
+    },
+    {
+      "file": "polylogue/pipeline/services/indexing.py",
+      "digest": "a34ad1cd2b736e1f61b70ae7162154e99b1dd5fd"
+    },
+    {
+      "file": "polylogue/pipeline/services/indexing.py",
+      "digest": "bdbea2808c2b18e426eb8d4d173e90a7de3ab30b"
+    },
+    {
+      "file": "polylogue/readiness/__init__.py",
+      "digest": "ca25459cb15b48fd5bd259228614173e1910842a"
+    },
+    {
+      "file": "polylogue/schemas/drift_sentinel_sampling.py",
+      "digest": "6b4cb869c495bc1b0d60baa6c7d21b08c2f76222"
+    },
+    {
+      "file": "polylogue/schemas/drift_sentinel_sampling.py",
+      "digest": "ccbd9a596fcb929b5e054444d8fa653721674e45"
+    },
+    {
+      "file": "polylogue/sinex/service.py",
+      "digest": "cd5188d9a28e43307e0e0ac37365dad4c4bf40cb"
+    },
+    {
+      "file": "polylogue/sources/assembly_codex.py",
+      "digest": "42708f99834ee2cb7e1feca20bc3cce395cb6050"
+    },
+    {
+      "file": "polylogue/sources/assembly_codex.py",
+      "digest": "8fcb7ea4aebc81d5a073025f12ec813429160e9d"
+    },
+    {
+      "file": "polylogue/sources/assembly_codex.py",
+      "digest": "922327f2c9c0f1913c946964a1b0973b013a712b"
+    },
+    {
+      "file": "polylogue/sources/codex_state_evidence.py",
+      "digest": "ee473075b4838e5f525887047f00c171ea7c2b8f"
+    },
+    {
+      "file": "polylogue/sources/codex_state_projection.py",
+      "digest": "4a7d58e048b145d7b7bfd6064579c47cf93b33d5"
+    },
+    {
+      "file": "polylogue/sources/codex_state_projection.py",
+      "digest": "870de46d7937dc0d582d50df3de3b7a99f48825c"
+    },
+    {
+      "file": "polylogue/sources/codex_state_projection.py",
+      "digest": "a393281dc7ed982a3503757c039957b625e7c228"
+    },
+    {
+      "file": "polylogue/sources/codex_state_projection.py",
+      "digest": "a3e9a8c5fe67a3d0714645814220240e680e8e88"
+    },
+    {
+      "file": "polylogue/sources/codex_state_projection.py",
+      "digest": "d16c35f14b1a73673b0f0210387ea5d01c5c7a31"
+    },
+    {
+      "file": "polylogue/sources/hooks.py",
+      "digest": "0730aa4e993bcde6365c26b0e8ea7c118dff1b01"
+    },
+    {
+      "file": "polylogue/sources/import_explain.py",
+      "digest": "5c03a12b0aeee0194e2c378546a47350ef437b25"
+    },
+    {
+      "file": "polylogue/sources/import_explain.py",
+      "digest": "f5a4186d9b7f622c9a4cc86e92448ffc9a46a8d0"
+    },
+    {
+      "file": "polylogue/sources/live/batch.py",
+      "digest": "7d74bb8df702297e3dbd655d8e8ce2729486be20",
+      "count": 2
+    },
+    {
+      "file": "polylogue/sources/live/batch.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
+      "count": 4
+    },
+    {
+      "file": "polylogue/sources/live/batch.py",
+      "digest": "e8d27d4353713f0663fbaa33e1c533f3c9f6b137"
+    },
+    {
+      "file": "polylogue/sources/live/batch.py",
+      "digest": "f3314be3912e426ec0132cabf4929924a23fd07e"
+    },
+    {
+      "file": "polylogue/sources/live/batch_observability.py",
+      "digest": "d6389b45a3e782231ed7e888823d3ad7a99402ff"
+    },
+    {
+      "file": "polylogue/sources/live/convergence_debt_retry.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
+      "count": 2
+    },
+    {
+      "file": "polylogue/sources/live/cursor.py",
+      "digest": "81ce7f9a711dc1ef2bf4b4a372c6985e3f0e7b1e"
+    },
+    {
+      "file": "polylogue/sources/live/hook_tool_response.py",
+      "digest": "9ed4db00c6ca6fc8fb93ce408c457615f4badac9"
+    },
+    {
+      "file": "polylogue/sources/live/hook_tool_response.py",
+      "digest": "a7b83dca8221443a76d724228c62f508d6db99a5"
+    },
+    {
+      "file": "polylogue/sources/live/sqlite_locking.py",
+      "digest": "3e145f80dcd15603caefaf2918e03f80f34b4247"
+    },
+    {
+      "file": "polylogue/sources/live/watcher.py",
+      "digest": "318aebc53812afe721960b5b1e1042fef9805f8e"
+    },
+    {
+      "file": "polylogue/sources/live/watcher.py",
+      "digest": "3e6244a3f7e433a14ac8185ea5a0435ea1a8b0bf"
+    },
+    {
+      "file": "polylogue/sources/live/watcher.py",
+      "digest": "704116e7b35058a3c63fdb4767331298e1141e9c"
+    },
+    {
+      "file": "polylogue/sources/live/watcher.py",
+      "digest": "8529d01ca9abe2d6273daaf21fdc2c73c226298e"
+    },
+    {
+      "file": "polylogue/sources/parsers/codex_state.py",
+      "digest": "4531003696389736cd226b874ca4704b7b33756b"
+    },
+    {
+      "file": "polylogue/sources/parsers/hermes_state.py",
+      "digest": "8d6418f20987b10eb510484636ac9ce00ddea2b3"
+    },
+    {
+      "file": "polylogue/sources/parsers/hermes_verification.py",
+      "digest": "8d6418f20987b10eb510484636ac9ce00ddea2b3"
+    },
+    {
+      "file": "polylogue/storage/archive_readiness.py",
+      "digest": "65551e92aba239a338fa72da186c4f4845b74242"
+    },
+    {
+      "file": "polylogue/storage/archive_readiness.py",
+      "digest": "7eaa8fc59c2e7a139f30a35bf372d7310da0a55a"
+    },
+    {
+      "file": "polylogue/storage/archive_readiness.py",
+      "digest": "844eb207aadaf0ca510da2f7bff7f2c5435077ad"
+    },
+    {
+      "file": "polylogue/storage/archive_readiness.py",
+      "digest": "a9a8a4895419b5e448e6bfd8d31be1a278ed42af"
+    },
+    {
+      "file": "polylogue/storage/archive_readiness.py",
+      "digest": "ad235e660b06be6ac63539e497f9728f08c89207"
+    },
+    {
+      "file": "polylogue/storage/archive_readiness.py",
+      "digest": "d755a3079aed5668a9c750c4cc4eb6d8f20a82b0"
+    },
+    {
+      "file": "polylogue/storage/artifacts/inspection.py",
+      "digest": "92b142040b73f9ec47301681673d0b22842e2bf4"
+    },
+    {
+      "file": "polylogue/storage/blob_gc.py",
+      "digest": "3e5082ddfdedca0c4373cb30565b811227d46390"
+    },
+    {
+      "file": "polylogue/storage/blob_integrity.py",
+      "digest": "a4c37e1604c343e45838ae1f84100d37932ea886"
+    },
+    {
+      "file": "polylogue/storage/blob_liveness.py",
+      "digest": "03173b692274a711b86203eb6af5e9ad03a74f42"
+    },
+    {
+      "file": "polylogue/storage/blob_liveness.py",
+      "digest": "799938ade7eb9a8191089ab9171328ef75e8a95f"
+    },
+    {
+      "file": "polylogue/storage/blob_liveness.py",
+      "digest": "7d158325fbf7ea654d9868cf4934912d56da3b2f"
+    },
+    {
+      "file": "polylogue/storage/blob_liveness.py",
+      "digest": "c7663a4df926a6a69b95fc4fb48c49116ca37162"
+    },
+    {
+      "file": "polylogue/storage/blob_liveness.py",
+      "digest": "f27ddac5d09f47e68f9abc0aaf8ab9ab04213447"
+    },
+    {
+      "file": "polylogue/storage/embeddings/materialization.py",
+      "digest": "3962dc1243d3e6bb84b3d4e2362a83f5593009c5"
+    },
+    {
+      "file": "polylogue/storage/embeddings/materialization.py",
+      "digest": "7d74bb8df702297e3dbd655d8e8ce2729486be20"
+    },
+    {
+      "file": "polylogue/storage/embeddings/materialization.py",
+      "digest": "a6d5e48c23163c07a7f9dca708e3ebab97e6a2eb",
+      "count": 2
+    },
+    {
+      "file": "polylogue/storage/embeddings/preflight.py",
+      "digest": "7d74bb8df702297e3dbd655d8e8ce2729486be20"
+    },
+    {
+      "file": "polylogue/storage/embeddings/status_payload.py",
+      "digest": "372ccd8b23340e9aabea8ea67c22ca641a53a81c"
+    },
+    {
+      "file": "polylogue/storage/embeddings/status_payload.py",
+      "digest": "660ed7f5a7716aa10def47da6564e7e9b72e57b5"
+    },
+    {
+      "file": "polylogue/storage/embeddings/status_payload.py",
+      "digest": "7dc856a640115e83851c21c25d7e0d3c7af18adf"
+    },
+    {
+      "file": "polylogue/storage/embeddings/status_payload.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
+    },
+    {
+      "file": "polylogue/storage/embeddings/status_payload.py",
+      "digest": "94fa3650236439bae5dd3fe95ee013f23d9b39b5"
+    },
+    {
+      "file": "polylogue/storage/embeddings/status_payload.py",
+      "digest": "efd16abee4bc3089710a4f0e9f0dcaa4bd514c7b"
+    },
+    {
+      "file": "polylogue/storage/embeddings/support.py",
+      "digest": "17cd556346c1b8dd6af974714c3ddca8f0f13f58",
+      "count": 2
+    },
+    {
+      "file": "polylogue/storage/embeddings/support.py",
+      "digest": "94fa3650236439bae5dd3fe95ee013f23d9b39b5",
+      "count": 2
+    },
+    {
+      "file": "polylogue/storage/embeddings/support.py",
+      "digest": "bb6fad727297ea9fe77157ce6882bad2e0575256",
+      "count": 2
+    },
+    {
+      "file": "polylogue/storage/embeddings/support.py",
+      "digest": "bd583d8046e9d9a51b11e4e40d24af983aafe6ac",
+      "count": 2
+    },
+    {
+      "file": "polylogue/storage/hook_event_authority.py",
+      "digest": "82035220b5a31091e549d04f8b3e40e0280c571a"
+    },
+    {
+      "file": "polylogue/storage/raw_convergence.py",
+      "digest": "4101d44284b6f1a6ab07f25dc842ffd71162c384"
+    },
+    {
+      "file": "polylogue/storage/raw_failure_lifecycle.py",
+      "digest": "21fe7353914733f5a46720cc42150f276438987b"
+    },
+    {
+      "file": "polylogue/storage/raw_failure_lifecycle.py",
+      "digest": "c1670f09c56a877bc5f4cbc661886ecfbb1ae99f"
+    },
+    {
+      "file": "polylogue/storage/raw_retention.py",
+      "digest": "2f9d38298e55b68daa2efe70ed87cc1b04fc35e9"
+    },
+    {
+      "file": "polylogue/storage/raw_retention.py",
+      "digest": "688f4909f56d4bb5ffa05deadb2e5013a48e9d53"
+    },
+    {
+      "file": "polylogue/storage/raw_retention.py",
+      "digest": "d55b450431cf6235c64bc62dce7013ff2531597d"
+    },
+    {
+      "file": "polylogue/storage/raw_retention.py",
+      "digest": "eed6dad726a0d321f198a89f791735b73757bbc8"
+    },
+    {
+      "file": "polylogue/storage/search_providers/sqlite_vec_runtime.py",
+      "digest": "59587c74ed7fbadd083e40c83fc0a7381be43f44",
+      "count": 2
+    },
+    {
+      "file": "polylogue/storage/sqlite/archive_tiers/archive.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
+    },
+    {
+      "file": "polylogue/storage/sqlite/archive_tiers/archive.py",
+      "digest": "e14acf26c2e2b319ce44760fb6c9e17f5408ab24"
+    },
+    {
+      "file": "polylogue/storage/sqlite/archive_tiers/archive_plan.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
+      "count": 2
+    },
+    {
+      "file": "polylogue/storage/sqlite/archive_tiers/bootstrap.py",
+      "digest": "272e7ae7cbba0e9bc2d204176e6c710b81ba8e56"
+    },
+    {
+      "file": "polylogue/storage/sqlite/archive_tiers/bootstrap.py",
+      "digest": "7d74bb8df702297e3dbd655d8e8ce2729486be20"
+    },
+    {
+      "file": "polylogue/storage/sqlite/archive_tiers/schema_identity.py",
+      "digest": "c39856109e5669db9d2ba9f910d4d9cb453c1838"
+    },
+    {
+      "file": "polylogue/storage/sqlite/audit_continuity.py",
+      "digest": "8d4646d35d5aa424ac37aacbc1389babe82b87ad"
+    },
+    {
+      "file": "polylogue/storage/sqlite/connection_profile.py",
+      "digest": "d65f6f25331da8af186e0fb925ca6f48905e683c"
+    },
+    {
+      "file": "polylogue/storage/sqlite/maintenance.py",
+      "digest": "56f72e76fc69fbee35bfebf6c58bcaa396223d76"
+    },
+    {
+      "file": "polylogue/storage/sqlite/migration_runner.py",
+      "digest": "61f1a67754f35b2198b73613ef5c66849fdfe8bf"
+    },
+    {
+      "file": "polylogue/storage/tier_access.py",
+      "digest": "9316ec4dffd9da5cb650277d7ad01f75991a5cfc"
+    },
+    {
+      "file": "polylogue/storage/usage.py",
+      "digest": "7d74bb8df702297e3dbd655d8e8ce2729486be20"
+    },
+    {
+      "file": "polylogue/storage/usage.py",
+      "digest": "84c23aab494d9f6ba9cbc09dbda6f8c868f06549"
+    },
+    {
+      "file": "polylogue/storage/usage.py",
+      "digest": "909cbd552dddc2b9dfea31e160cdd214b4666447"
+    },
+    {
+      "file": "polylogue/storage/usage.py",
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
+    },
+    {
+      "file": "polylogue/storage/usage.py",
+      "digest": "97fe52950a1ef81ad18bea6adf76e4c6bd298919"
+    }
+  ]
 }
