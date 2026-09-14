@@ -5,7 +5,6 @@ polylogue/archive/query/production_evaluator.py:f676a832137d4edb992227594aa0f877
 polylogue/browser_capture/receiver.py:6b056bb6caf857505d442d413d2157429a1a111a
 polylogue/browser_capture/receiver.py:87ff846b7cf686b180ed9824bd8be8022fd24e79
 polylogue/cli/commands/paths.py:6b056bb6caf857505d442d413d2157429a1a111a
-polylogue/daemon/convergence_stages.py:c23a750f206303cacd6b629992939ed2af98c6e3
 polylogue/daemon/health.py:6b056bb6caf857505d442d413d2157429a1a111a
 polylogue/daemon/status.py:6b056bb6caf857505d442d413d2157429a1a111a:3
 polylogue/demo/seed.py:5f2a1cda707f3e13954a3928067638781f806c53
