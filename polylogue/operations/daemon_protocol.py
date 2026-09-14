@@ -343,6 +343,12 @@ class MutationResult(_OperationPayload):
     result: dict[str, object] | None = None
     cancellation_requested: bool | None = None
     accepted: bool | None = None
+    # polylogue-oil1q: ``machine_request_state`` reports the accepted frozen
+    # source generation for a ``source-generation`` artifact (every ingest).
+    # Declaring it keeps ``extra="forbid"`` meaningful instead of making a
+    # clean, committed ingest fail its own await contract and surface to the
+    # client as ``DaemonMutationIndeterminateError``.
+    source_generation_id: str | None = None
 
     @model_validator(mode="after")
     def exact_result_family(self) -> MutationResult:

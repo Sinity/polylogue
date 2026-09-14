@@ -924,8 +924,15 @@ def _write_session(
     fresh_build_batch: set[str] | None = None,
     attachment_owner_resolutions: list[dict[str, str]] | None = None,
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
+    manage_transaction: bool = True,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
+
+    ``manage_transaction=False`` is required whenever the caller already owns a
+    transaction (the bulk ingest batch): the writer's own ``with conn:`` would
+    otherwise COMMIT the caller's ``BEGIN IMMEDIATE`` at the first session, so
+    the batch boundary -- and the FTS-trigger suspension that lives inside it --
+    would not exist at runtime (polylogue-qoa75).
 
     Returns (content_changed, counts).
     """
@@ -1224,6 +1231,7 @@ def _write_session(
         bulk_fts=True,
         fresh_build=fresh_build,
         write_outcome=writer_outcomes,
+        manage_transaction=manage_transaction,
     )
     if writer_outcomes and writer_outcomes[0].stale_skipped:
         _repair_stale_revision_observations(conn, payload)
@@ -1335,6 +1343,18 @@ def _record_write_result(
             summary.counts[key] += value
 
 
+class FtsTriggerRestorationError(RuntimeError):
+    """Raised when the bulk-ingest FTS trigger suspension cannot be undone.
+
+    A dropped-trigger window that survives the batch leaves every subsequent
+    ordinary write out of ``messages_fts`` with no error anywhere, so this
+    failure is escalated rather than suppressed (polylogue-qoa75).
+    """
+
+
+_SESSION_WRITE_SAVEPOINT = "ingest_session_write"
+
+
 def _write_session_entry(
     conn: sqlite3.Connection,
     raw_id: str,
@@ -1350,12 +1370,23 @@ def _write_session_entry(
     fresh_build_batch: set[str] | None = None,
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
 ) -> bool:
+    # polylogue-qoa75: when the batch owns the transaction the writer must not
+    # manage one of its own, or its `with conn:` commits the batch's
+    # BEGIN IMMEDIATE (and the FTS-trigger DROP inside it) at the first
+    # session. Per-session failure isolation -- which the `except Exception`
+    # below relies on to keep draining the batch -- is then provided by a
+    # SAVEPOINT rather than by a per-session commit, so a failed session
+    # contributes no partial rows and the batch transaction stays open.
+    batch_owns_transaction = conn.in_transaction
+    if batch_owns_transaction:
+        conn.execute(f"SAVEPOINT {_SESSION_WRITE_SAVEPOINT}")
     try:
         t_write = time.perf_counter()
         write_stage_timings: dict[str, float] = {}
         content_changed, counts = _write_session(
             conn,
             cdata,
+            manage_transaction=not batch_owns_transaction,
             force_write=force_write,
             signature_cache=signature_cache,
             stage_timings_s=write_stage_timings,
@@ -1391,8 +1422,15 @@ def _write_session_entry(
                 attachments=cdata.attachment_count,
                 stage_top=_top_stage_timings(write_stage_timings),
             )
+        if batch_owns_transaction:
+            conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
         return True
     except Exception as exc:
+        if batch_owns_transaction:
+            # Discard only this session's rows; the batch transaction (and its
+            # suspended FTS triggers) survives so the drain can continue.
+            conn.execute(f"ROLLBACK TO {_SESSION_WRITE_SAVEPOINT}")
+            conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
         logger.error("Error writing session: %s", exc)
         summary.parse_failures += 1
         summary.failed_raw_ids[raw_id] = str(exc)[:500]
@@ -2426,10 +2464,16 @@ def _process_ingest_batch_sync(
                     summary.schema_drift_observations,
                     archive_root=archive_root,
                 )
-    except Exception:
+    except BaseException:
+        # polylogue-qoa75: BaseException, not Exception. The dropped-trigger
+        # window is exactly the window an operator Ctrl-C (KeyboardInterrupt)
+        # or a cancelled task (asyncio.CancelledError) lands in, and neither is
+        # an Exception; catching only Exception left index.db with the FTS
+        # triggers absent and every later write silently unindexed.
+        #
         # Roll back the row writes.  If a caller explicitly opted into
         # dropped-trigger bulk mode, restore triggers before propagating
-        # so ordinary exceptions do not leave the database in a drift
+        # so an interrupted batch does not leave the database in a drift
         # state.  Daemon live ingest leaves triggers active and therefore
         # has no dropped-trigger window to recover from here.
         with contextlib.suppress(Exception):
@@ -2437,9 +2481,22 @@ def _process_ingest_batch_sync(
         if suspend_fts_triggers:
             from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
 
-            with contextlib.suppress(Exception):
+            # Restoration is NOT suppressed: a failure here is the condition
+            # that silently unindexes every subsequent write, so it must be
+            # surfaced (chained to the failure that made restoration
+            # necessary), never swallowed.
+            try:
                 restore_fts_triggers_sync(conn)
                 conn.commit()
+            except Exception as restore_exc:
+                logger.error(
+                    "fts_trigger_restore_failed",
+                    error=str(restore_exc),
+                )
+                raise FtsTriggerRestorationError(
+                    "FTS triggers could not be restored after an interrupted bulk ingest; "
+                    "index.db is unindexed for search until an explicit FTS rebuild"
+                ) from restore_exc
         raise
     finally:
         blob_publisher.discard_pending()
