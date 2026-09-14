@@ -120,6 +120,9 @@ def _fields() -> dict[str, FieldKind]:
         "tool_id",
         "generation_id",
         "branch_point_message_id",
+        "derivation_key",
+        "candidate_ref",
+        "assertion_id",
     )
 
     # -- classification tokens -------------------------------------------
@@ -156,6 +159,16 @@ def _fields() -> dict[str, FieldKind]:
         "mode",
         # sub-kind of a recorded event or projection ("profile", "cost")
         "kind",
+        "check_name",
+        "severity",
+        "status",
+        "action",
+        "policy",
+        "service",
+        "family",
+        "signal_name",
+        "table_name",
+        "schema_name",
         # meta: used by log.field_rejected to name the offending field
         "field",
         "source_event",
@@ -212,11 +225,56 @@ def _fields() -> dict[str, FieldKind]:
         "delivered",
         # bounded queue/spool depth
         "depth",
+        "admitted",
+        "accepted",
+        "rejected",
+        "escalated",
+        "idempotent",
+        "duplicates",
+        "isolated",
+        "attempted",
+        "confirmed",
+        "remaining",
+        "subjects",
+        "candidates",
+        "scanned",
+        "computed",
+        "dropped",
+        "removed",
+        "repaired",
+        "gaps",
+        "runs",
+        "calls",
+        "cohorts",
+        "transport_failures",
+        "payload_failures",
     )
 
-    add("duration", "duration_ms", "elapsed_ms", "timeout_ms", "age_ms", "budget_ms")
+    add(
+        "duration",
+        "duration_ms",
+        "elapsed_ms",
+        "timeout_ms",
+        "age_ms",
+        "wait_ms",
+        "hold_ms",
+        "budget_ms",
+    )
 
-    add("flag", "ok", "changed", "cached", "dry_run", "forced", "degraded", "converged", "held")
+    add(
+        "flag",
+        "ok",
+        "changed",
+        "cached",
+        "dry_run",
+        "forced",
+        "degraded",
+        "converged",
+        "held",
+        "enabled",
+        "available",
+        "more_pending",
+    )
 
     add("path", *sorted(LOCAL_ONLY_FIELDS))
 

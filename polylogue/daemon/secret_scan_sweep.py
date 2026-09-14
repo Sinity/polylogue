@@ -29,10 +29,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, span
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-
-logger = get_logger(__name__)
 
 #: Sessions scanned per sweep tick. Small enough that even a large pending
 #: backlog is drained incrementally across many ticks rather than blocking
@@ -102,35 +100,44 @@ async def periodic_secret_scan_sweep(
     while True:
         await asyncio.sleep(SECRET_SCAN_SWEEP_INTERVAL_SECONDS)
         root = archive_root()
-        try:
-            result = await daemon_write_coordinator().run_sync(
-                SECRET_SCAN_SWEEP_STAGE,
-                run_secret_scan_sweep_once_sync,
-                root,
-            )
-            _record_secret_scan_sweep_event(
-                root,
-                status="failed" if result.errors else "completed",
-                result=result,
-            )
-            if result.ran and (result.sessions_scanned or result.candidates_found):
-                logger.info(
-                    "secret_scan_sweep: scanned=%d candidates_found=%d errors=%d remaining_pending=%d",
-                    result.sessions_scanned,
-                    result.candidates_found,
-                    result.errors,
-                    result.remaining_pending,
+        with span("daemon.secret_scan.sweep", stage=SECRET_SCAN_SWEEP_STAGE) as sweep:
+            try:
+                result = await daemon_write_coordinator().run_sync(
+                    SECRET_SCAN_SWEEP_STAGE,
+                    run_secret_scan_sweep_once_sync,
+                    root,
                 )
-        except sqlite3.OperationalError as exc:
-            if is_transient_sqlite_lock(exc):
-                logger.info("secret_scan_sweep: archive busy; retrying on next tick: %s", exc)
+            except sqlite3.OperationalError as exc:
                 _record_secret_scan_sweep_event(root, status="failed", error=exc)
-                continue
-            logger.warning("secret_scan_sweep: sweep failed", exc_info=True)
-            _record_secret_scan_sweep_event(root, status="failed", error=exc)
-        except Exception as exc:
-            logger.warning("secret_scan_sweep: sweep failed", exc_info=True)
-            _record_secret_scan_sweep_event(root, status="failed", error=exc)
+                if is_transient_sqlite_lock(exc):
+                    sweep.skipped(reason="archive_busy", error_detail=str(exc))
+                    continue
+                sweep.degraded("sweep_failed", error_type=type(exc).__name__, error_detail=str(exc))
+            except Exception as exc:
+                _record_secret_scan_sweep_event(root, status="failed", error=exc)
+                sweep.degraded("sweep_failed", error_type=type(exc).__name__, error_detail=str(exc))
+            else:
+                _record_secret_scan_sweep_event(
+                    root,
+                    status="failed" if result.errors else "completed",
+                    result=result,
+                )
+                fields = {
+                    "scanned": result.sessions_scanned,
+                    "candidates": result.candidates_found,
+                    "errors": result.errors,
+                    "pending": result.remaining_pending,
+                }
+                if not result.ran:
+                    sweep.skipped(reason="sweep_did_not_run", **fields)
+                elif result.errors:
+                    # Per-session scan errors leave sessions unscanned. Prose
+                    # printed them at INFO next to the success counts.
+                    sweep.degraded("scan_errors", **fields)
+                elif result.sessions_scanned or result.candidates_found:
+                    sweep.ok(**fields)
+                else:
+                    sweep.empty(**fields)
 
 
 def _record_secret_scan_sweep_event(
@@ -161,8 +168,17 @@ def _record_secret_scan_sweep_event(
             observed_at_ms=int(time.time() * 1000),
             payload=payload,
         )
-    except Exception:
-        logger.warning("secret_scan_sweep: failed to persist sweep outcome", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.secret_scan.event_record_failed",
+            level=WARNING,
+            outcome="degraded",
+            stage=SECRET_SCAN_SWEEP_STAGE,
+            reason="stage_event_not_recorded",
+            status=status,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
 
 
 __all__ = [

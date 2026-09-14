@@ -16,7 +16,6 @@ depended on it and no pass ever enumerates a whole spool.
 from __future__ import annotations
 
 import inspect
-import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -25,8 +24,8 @@ from typing import Protocol, TypeVar, cast, overload, runtime_checkable
 
 from polylogue.daemon.observation import Observation, ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
+from polylogue.logging import ERROR, WARNING, emit
 
-logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 __all__ = [
@@ -283,7 +282,15 @@ class FairIntakeDispatcher:
         try:
             page: list[IntakeItem] = list(await _maybe_await(spec.adapter.discover(limit=limit)))
         except Exception as exc:
-            logger.warning("intake: class %s discovery failed: %s", spec.name, exc, exc_info=True)
+            emit(
+                "daemon.intake.discovery_failed",
+                level=WARNING,
+                outcome="error",
+                reason="discovery_raised",
+                component=spec.name,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return IntakeClassReport(name=spec.name, reason=f"discovery failed: {exc}")
 
         admitted = duplicates = retried = isolated = 0
@@ -344,7 +351,15 @@ class FairIntakeDispatcher:
                 runtime.retry_after.pop(item.item_id, None)
                 runtime.isolated.add(item.item_id)
                 isolated += 1
-                logger.warning("intake: %s/%s terminal: %s", spec.name, item.item_id, result.reason)
+                emit(
+                    "daemon.intake.item_isolated",
+                    level=WARNING,
+                    outcome="refused",
+                    reason="terminal_refusal",
+                    component=spec.name,
+                    source_id=item.item_id,
+                    error_detail=str(result.reason),
+                )
                 continue
             attempts = runtime.attempts.get(item.item_id, 0) + 1
             runtime.attempts[item.item_id] = attempts
@@ -352,12 +367,15 @@ class FairIntakeDispatcher:
             if attempts >= spec.max_attempts:
                 runtime.attempts.pop(item.item_id, None)
                 runtime.retry_after[item.item_id] = self._clock() + max(0.0, spec.retry_cooldown_s)
-                logger.warning(
-                    "intake: %s/%s cooling down after %d attempts: %s",
-                    spec.name,
-                    item.item_id,
-                    attempts,
-                    result.reason,
+                emit(
+                    "daemon.intake.item_cooling_down",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="max_attempts_reached",
+                    component=spec.name,
+                    source_id=item.item_id,
+                    attempts=attempts,
+                    error_detail=str(result.reason),
                 )
 
         return IntakeClassReport(
@@ -385,7 +403,14 @@ class FairIntakeDispatcher:
 
     def _halt_class(self, class_name: str, message: str) -> None:
         if self._halts is None:
-            logger.error("intake: class %s reported terminal failure with no halt registry: %s", class_name, message)
+            emit(
+                "daemon.intake.halt_unrecorded",
+                level=ERROR,
+                outcome="error",
+                reason="no_halt_registry",
+                component=class_name,
+                error_detail=message,
+            )
             return
         self._halts.halt(
             unit_id(UnitKind.INTAKE_CLASS, class_name),

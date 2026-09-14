@@ -34,12 +34,10 @@ from pydantic import BaseModel, Field
 
 from polylogue.config import PolylogueConfig
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
-from polylogue.logging import get_logger
+from polylogue.logging import ERROR, WARNING, emit
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read, open_readonly_connection
-
-logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Typed enums
@@ -853,7 +851,15 @@ def _check_capture_coverage_medium() -> HealthAlert:
             consecutive_failures=_record_failure("capture_coverage", severity == HealthSeverity.OK),
         )
     except Exception as exc:
-        logger.warning("capture_coverage: check failed", exc_info=True)
+        emit(
+            "daemon.health.check_failed",
+            level=WARNING,
+            outcome="error",
+            check_name="capture_coverage",
+            reason="check_raised",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return HealthAlert(
             check_name="capture_coverage",
             tier=HealthTier.MEDIUM,
@@ -1395,8 +1401,16 @@ def _check_cursor_lag_anomaly_layer(
         # has already produced its baseline view.
         try:
             record_cursor_lag_sample(dbf, summary, ops_db=ops_db)
-        except Exception:
-            logger.warning("cursor_lag_anomaly: sample record failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.health.sample_record_failed",
+                level=WARNING,
+                outcome="degraded",
+                check_name="cursor_lag_anomaly",
+                reason="sample_not_recorded",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
         # GC old samples. Retention covers at least 2x the baseline window
         # so a paused daemon does not starve its own baseline on restart.
@@ -1406,8 +1420,16 @@ def _check_cursor_lag_anomaly_layer(
                 anomaly_thresholds.baseline_window_days * 2,
             )
             gc_cursor_lag_samples(dbf, retention_days=retention, ops_db=ops_db)
-        except Exception:
-            logger.warning("cursor_lag_anomaly: sample GC failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.health.sample_gc_failed",
+                level=WARNING,
+                outcome="degraded",
+                check_name="cursor_lag_anomaly",
+                reason="sample_gc_failed",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
         if not anomaly_thresholds.enabled:
             _record_failure("cursor_lag_anomaly", True)
@@ -1474,8 +1496,16 @@ def _check_archive_verification_domain_medium() -> list[HealthAlert]:
             )
         _record_failure("archive_verification_domain_coverage", not any_error)
         return alerts
-    except Exception:
-        logger.exception("archive_verification_domain health check raised")
+    except Exception as exc:
+        emit(
+            "daemon.health.check_failed",
+            level=ERROR,
+            outcome="error",
+            check_name="archive_verification_domain",
+            reason="check_raised",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return [
             HealthAlert(
                 check_name="archive_verification_domain",

@@ -12,10 +12,8 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-logger = get_logger(__name__)
 
 _REQUIRED_CONVERGENCE_DEBT_COLUMNS = frozenset(
     (
@@ -119,7 +117,15 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
         # An unreadable authoritative debt ledger is unknown, not empty. The
         # claim guard must be able to distinguish this from a genuinely empty
         # convergence_debt table (polylogue-cpf.4).
-        logger.warning("convergence-debt summary query failed for %s: %s", ops_db, exc)
+        emit(
+            "daemon.convergence_debt.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="debt_summary_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return ConvergenceDebtSummary(available=False, error=f"convergence debt status unavailable: {exc}")
 
     try:
@@ -177,7 +183,15 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
         ]
         return _summary_from_parts(stage_summaries=stage_summaries, recent=recent)
     except Exception as exc:
-        logger.warning("convergence-debt summary projection failed for %s: %s", ops_db, exc)
+        emit(
+            "daemon.convergence_debt.projection_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="debt_projection_failed",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return ConvergenceDebtSummary(available=False, error=f"convergence debt status unavailable: {exc}")
 
 

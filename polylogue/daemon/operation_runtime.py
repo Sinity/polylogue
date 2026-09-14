@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, TypeVar
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.daemon.execution import BoundedComputeAdapter, CancellationHandle, DaemonBackpressureError
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+from polylogue.logging import propagate
 from polylogue.operations.audit import (
     AuditContinuityPendingError,
     AuditRepository,
@@ -133,7 +134,10 @@ class DaemonOperationRuntime:
 
     async def compute_phase(self, work: Callable[[], _T]) -> _T:
         """Await shared admission without occupying another kernel worker."""
-        submitted = self._kernel.submit(work, admission_class="control")
+        # The kernel's pool outlives every bind, so its threads carry no
+        # correlation context of their own (verified: a bare submit sees an
+        # empty context where a propagate()d one does not).
+        submitted = self._kernel.submit(propagate(work), admission_class="control")
         pending = asyncio.wrap_future(submitted.future)
         try:
             return await asyncio.shield(pending)
@@ -482,7 +486,7 @@ class DaemonOperationRuntime:
                         exchange.future = asyncio.run_coroutine_threadsafe(staged(request, context), self._owner_loop)
                     else:
                         scheduled = self._kernel.submit(
-                            work,
+                            propagate(work),
                             admission_class="interactive-read" if spec.authority is DaemonAuthority.READ else "control",
                             # A control exchange keeps its durable authority after
                             # acceptance, but before that boundary a disconnect or

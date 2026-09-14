@@ -60,7 +60,7 @@ from polylogue.daemon.live_ingest_attempt_workload import (
     workload_fields,
 )
 from polylogue.daemon.slo import IngestSloStatus, slo_status_info
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root, index_db_path
@@ -86,8 +86,6 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection as open_readonly_connection,
 )
-
-logger = get_logger(__name__)
 
 
 def _authoritative_lifecycle_artifact_kind(sample: Mapping[str, object]) -> str | None:
@@ -783,7 +781,16 @@ def _archive_tier_status(
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("archive tier table-count query failed for %s (%s): %s", path, name, exc, exc_info=True)
+        emit(
+            "daemon.status.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="tier_table_count_unreadable",
+            path=path,
+            tier=name,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
     return ArchiveTierStatus(
         name=name,
         path=probe.path,
@@ -832,7 +839,15 @@ def _insight_freshness_info() -> dict[str, object]:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("status: insight-freshness query failed for %s: %s", dbf, exc, exc_info=True)
+        emit(
+            "daemon.status.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="insight_freshness_unreadable",
+            path=dbf,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return {"checked": False, "reason": str(exc), "sessions_with_profiles": None, "total_sessions": None}
 
 
@@ -897,7 +912,15 @@ def _archive_raw_failure_info(archive_db: Path) -> dict[str, object]:
     try:
         lifecycle_snapshot = read_raw_failure_lifecycle(archive_db, sample_limit=50)
     except Exception as exc:
-        logger.warning("status: raw-failure lifecycle read failed for %s: %s", archive_db, exc, exc_info=True)
+        emit(
+            "daemon.status.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="raw_failure_lifecycle_unreadable",
+            path=archive_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return _unavailable_raw_failure_info(reason=f"could not read raw failure lifecycle: {exc}")
     if not lifecycle_snapshot.available:
         return _unavailable_raw_failure_info(
@@ -1008,7 +1031,15 @@ def _archive_raw_failure_info(archive_db: Path) -> dict[str, object]:
             "samples": combined,
         }
     except (OSError, sqlite3.Error) as exc:
-        logger.warning("status: raw-failure query failed for %s: %s", archive_db, exc, exc_info=True)
+        emit(
+            "daemon.status.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="raw_failure_relations_unreadable",
+            path=archive_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return _unavailable_raw_failure_info(
             reason=f"could not read source.db raw failure relations: {exc}",
         )
@@ -1140,7 +1171,15 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("status: live-cursor summary query failed for %s: %s", dbf, exc, exc_info=True)
+        emit(
+            "daemon.status.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="live_cursor_summary_unreadable",
+            path=dbf,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return LiveCursorSummary()
 
     now = datetime.now(UTC)
@@ -1363,7 +1402,15 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("status: live-ingest-attempt summary query failed for %s: %s", dbf, exc, exc_info=True)
+        emit(
+            "daemon.status.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="live_ingest_attempts_unreadable",
+            path=dbf,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return LiveIngestAttemptSummary()
 
     now = datetime.now(UTC)
@@ -2497,7 +2544,14 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
                 try:
                     return check_health(tiers=_configured_health_tiers())
                 except Exception as exc:
-                    logger.warning("status: check_health() failed: %s", exc, exc_info=True)
+                    emit(
+                        "daemon.status.health_check_failed",
+                        level=WARNING,
+                        outcome="degraded",
+                        reason="check_health_failed",
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
+                    )
                     return DaemonHealth(
                         overall_status=HealthSeverity.ERROR,
                         checked_at=datetime.now(UTC).isoformat(),
@@ -2593,7 +2647,14 @@ def build_daemon_status(
             # alerts — the single most misleading fallback possible for a
             # health check: a failed check would present as "everything is
             # fine" instead of "the check itself broke" (polylogue-cpf.4).
-            logger.warning("status: check_health() failed: %s", exc, exc_info=True)
+            emit(
+                "daemon.status.health_check_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="check_health_failed",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return DaemonHealth(
                 overall_status=HealthSeverity.ERROR,
                 checked_at=datetime.now(UTC).isoformat(),
@@ -2943,7 +3004,14 @@ def daemon_status_payload(
         # last_ingestion stays None, identical to "daemon hasn't ingested
         # anything yet" — log so a get_last_ingestion_batch() failure isn't
         # mistaken for a cold-start daemon.
-        logger.warning("daemon status last-ingestion lookup failed: %s", exc, exc_info=True)
+        emit(
+            "daemon.status.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="last_ingestion_unreadable",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
 
     status = build_daemon_status(
         sources=sources,
@@ -3113,7 +3181,14 @@ def assertion_candidate_queue_status_summary(*, config: Config | None = None) ->
         payload = _archive_assertion_candidate_queue_health(config)
         return cast(dict[str, object], payload.model_dump(mode="json"))
     except Exception as exc:
-        logger.warning("assertion candidate queue health collection failed: %s", exc, exc_info=True)
+        emit(
+            "daemon.status.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="assertion_queue_health_unreadable",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return {
             "mode": "assertion-candidate-queue-health",
             "state": "unavailable",
@@ -3128,10 +3203,17 @@ def _archive_debt_status_summary() -> dict[str, object]:
         from polylogue.operations.archive_debt import archive_debt_list
 
         payload = archive_debt_list(archive_root=archive_root(), limit=5, exact_fts=False)
-    except Exception:
+    except Exception as exc:
         # A failed scan and a feature that was never asked for both produce
         # zero rows; the log and the reason are what tell them apart.
-        logger.warning("archive-debt status summary failed", exc_info=True)
+        emit(
+            "daemon.status.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="archive_debt_scan_failed",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return {
             "endpoint": "/api/archive-debt",
             "available": False,

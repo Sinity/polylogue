@@ -37,13 +37,11 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from polylogue.config import JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT, load_polylogue_config
 from polylogue.core.enums import AssertionKind, AssertionStatus
-from polylogue.logging import get_logger
+from polylogue.logging import ERROR, INFO, WARNING, emit
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
-
-logger = get_logger(__name__)
 
 #: Actor identity recorded on every automated judgment/handoff so the
 #: audit trail (``assertions.author_ref``) can distinguish automated
@@ -261,8 +259,18 @@ def _record_judgment_automation_receipt(
         if receipt_context is not None:
             receipt_context.recorded = True
         return JudgmentAutomationReceiptOutcome.PERSISTED
-    except Exception:
-        logger.warning("judgment_automation: scheduler receipt write failed", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.judgment.receipt_write_failed",
+            level=WARNING,
+            outcome="error",
+            stage=JUDGMENT_AUTOMATION_STAGE,
+            reason="scheduler_receipt_not_persisted",
+            operation_id=operation_id,
+            status=status,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         raise _JudgmentAutomationReceiptPersistenceError(
             "judgment automation scheduler receipt could not be persisted",
             result=result,
@@ -360,8 +368,17 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
     if ops_db.exists():
         try:
             ops_conn = open_readonly_connection(ops_db)
-        except sqlite3.Error:
-            logger.warning("judgment_automation: typed receipt recovery probe could not open ops.db", exc_info=True)
+        except sqlite3.Error as exc:
+            emit(
+                "daemon.judgment.recovery_probe_unavailable",
+                level=WARNING,
+                outcome="degraded",
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                reason="ops_db_unopenable",
+                path=ops_db,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
     acknowledged = 0
     try:
         for marker in list_judgment_automation_receipt_outbox(
@@ -372,17 +389,29 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
             operation_id = value.get("operation_id")
             receipt = value.get("receipt")
             if not isinstance(operation_id, str) or not operation_id or not isinstance(receipt, dict):
-                logger.error("judgment_automation: malformed receipt outbox marker %s", marker.assertion_id)
+                emit(
+                    "daemon.judgment.receipt_marker_malformed",
+                    level=ERROR,
+                    outcome="error",
+                    stage=JUDGMENT_AUTOMATION_STAGE,
+                    reason="missing_operation_id_or_receipt",
+                    assertion_id=marker.assertion_id,
+                )
                 continue
             if ops_conn is not None:
                 try:
                     typed_receipt = read_latest_judgment_scheduler_receipt(ops_conn, operation_id=operation_id)
                 except (sqlite3.Error, ValueError) as exc:
-                    logger.warning(
-                        "judgment_automation: typed receipt recovery probe failed for marker %s: %s",
-                        marker.assertion_id,
-                        exc,
-                        exc_info=True,
+                    emit(
+                        "daemon.judgment.recovery_probe_failed",
+                        level=WARNING,
+                        outcome="degraded",
+                        stage=JUDGMENT_AUTOMATION_STAGE,
+                        reason="typed_receipt_unreadable",
+                        assertion_id=marker.assertion_id,
+                        operation_id=operation_id,
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
                     )
                     typed_receipt = None
                 if typed_receipt is not None:
@@ -401,11 +430,27 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
                 acknowledged += int(ack_judgment_automation_receipt_outbox(conn, marker, now_ms=now_ms))
                 continue
             if latest is not None:
-                logger.error("judgment_automation: refusing malformed receipt event for marker %s", marker.assertion_id)
+                emit(
+                    "daemon.judgment.receipt_event_malformed",
+                    level=ERROR,
+                    outcome="error",
+                    stage=JUDGMENT_AUTOMATION_STAGE,
+                    reason="recorded_event_failed_validation",
+                    assertion_id=marker.assertion_id,
+                    operation_id=operation_id,
+                )
             raw_status_value = receipt.get("status")
             raw_reason = receipt.get("reason")
             if not _valid_judgment_automation_receipt_payload(receipt):
-                logger.error("judgment_automation: malformed receipt payload in marker %s", marker.assertion_id)
+                emit(
+                    "daemon.judgment.receipt_marker_malformed",
+                    level=ERROR,
+                    outcome="error",
+                    stage=JUDGMENT_AUTOMATION_STAGE,
+                    reason="payload_failed_validation",
+                    assertion_id=marker.assertion_id,
+                    operation_id=operation_id,
+                )
                 continue
             if raw_status_value not in {"completed", "parked", "failed"} or not isinstance(raw_reason, str):
                 continue
@@ -428,8 +473,18 @@ def recover_pending_judgment_automation_receipts(root: Path, *, now_ms: int | No
                     operation_id=operation_id,
                     receipt_persistence_recovered=True,
                 )
-            except Exception:
-                logger.warning("judgment_automation: receipt outbox recovery write failed", exc_info=True)
+            except Exception as exc:
+                emit(
+                    "daemon.judgment.recovery_write_failed",
+                    level=WARNING,
+                    outcome="error",
+                    stage=JUDGMENT_AUTOMATION_STAGE,
+                    reason="recovered_receipt_not_persisted",
+                    assertion_id=marker.assertion_id,
+                    operation_id=operation_id,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
                 continue
             if outcome is JudgmentAutomationReceiptOutcome.PERSISTED:
                 acknowledged += int(ack_judgment_automation_receipt_outbox(conn, marker, now_ms=now_ms))
@@ -456,7 +511,16 @@ def _judgment_automation_receipt_outbox_pending(root: Path) -> bool:
     try:
         conn = open_readonly_connection(user_db)
     except (OSError, sqlite3.Error) as exc:
-        logger.warning("judgment_automation: outbox probe could not open user.db: %s", exc)
+        emit(
+            "daemon.judgment.outbox_probe_failed",
+            level=WARNING,
+            outcome="degraded",
+            stage=JUDGMENT_AUTOMATION_STAGE,
+            reason="user_db_unopenable",
+            path=user_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return False
     try:
         return (
@@ -476,7 +540,16 @@ def _judgment_automation_receipt_outbox_pending(root: Path) -> bool:
             is not None
         )
     except sqlite3.Error as exc:
-        logger.warning("judgment_automation: outbox probe query failed: %s", exc)
+        emit(
+            "daemon.judgment.outbox_probe_failed",
+            level=WARNING,
+            outcome="degraded",
+            stage=JUDGMENT_AUTOMATION_STAGE,
+            reason="outbox_query_failed",
+            path=user_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return False
     finally:
         conn.close()
@@ -513,7 +586,14 @@ def parse_judgment_automation_policy(
         try:
             kind = AssertionKind.from_string(str(raw_kind))
         except ValueError:
-            logger.warning("judgment_automation: unknown policy kind %r ignored", raw_kind)
+            emit(
+                "daemon.judgment.policy_kind_ignored",
+                level=WARNING,
+                outcome="degraded",
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                reason="unknown_policy_kind",
+                error_detail=str(raw_kind),
+            )
             continue
         if not isinstance(raw_rule, Mapping):
             continue
@@ -760,10 +840,14 @@ def run_judgment_automation_sweep_once(
                     idempotent += 1
                 else:
                     failed += 1
-                    logger.warning(
-                        "judgment_automation: judge failed candidate_ref=%s error=%s",
-                        item_result.candidate_ref,
-                        item_result.error,
+                    emit(
+                        "daemon.judgment.candidate_failed",
+                        level=WARNING,
+                        outcome="error",
+                        stage=JUDGMENT_AUTOMATION_STAGE,
+                        reason="judge_failed",
+                        candidate_ref=str(item_result.candidate_ref),
+                        error_detail=str(item_result.error),
                     )
 
         for ref in escalated_refs:
@@ -879,8 +963,16 @@ async def periodic_judgment_automation_sweep(
             return archive_root_path
         try:
             root = archive_root()
-        except Exception:
-            logger.warning("judgment_automation: archive root resolution failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.judgment.archive_root_unresolved",
+                level=WARNING,
+                outcome="degraded",
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                reason="falling_back_to_last_valid_root",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return last_valid_root if last_valid_root is not None else data_home()
         last_valid_root = root
         return root
@@ -896,8 +988,16 @@ async def periodic_judgment_automation_sweep(
                 recover_pending_judgment_automation_receipts,
                 root,
             )
-        except Exception:
-            logger.warning("judgment_automation: receipt outbox recovery failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.judgment.recovery_failed",
+                level=WARNING,
+                outcome="error",
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                reason="outbox_recovery_failed",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
     # Recovery is a durability obligation, not an enabled-feature sweep. Run it
     # before the first config load so a malformed reload cannot strand a marker
@@ -938,14 +1038,31 @@ async def periodic_judgment_automation_sweep(
                 operation_id=operation_id,
                 receipt_persistence_degraded=degraded,
             )
-        except Exception:
-            logger.warning("judgment_automation: failure receipt fallback failed", exc_info=True)
+        except Exception as fallback_exc:
+            emit(
+                "daemon.judgment.failure_receipt_fallback_failed",
+                level=WARNING,
+                outcome="error",
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                reason="fallback_write_raised",
+                operation_id=operation_id,
+                error_type=type(fallback_exc).__name__,
+                error_detail=str(fallback_exc),
+            )
             return
         if recorded not in {
             JudgmentAutomationReceiptOutcome.PERSISTED,
             JudgmentAutomationReceiptOutcome.COALESCED,
         }:
-            logger.warning("judgment_automation: failure receipt fallback was not persisted")
+            emit(
+                "daemon.judgment.failure_receipt_fallback_failed",
+                level=WARNING,
+                outcome="error",
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                reason="fallback_not_persisted",
+                operation_id=operation_id,
+                status=str(getattr(recorded, "value", recorded)),
+            )
 
     last_valid_interval_s = JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS
     last_valid_batch_limit = JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT
@@ -965,7 +1082,16 @@ async def periodic_judgment_automation_sweep(
                     root=root,
                     batch_limit=last_valid_batch_limit,
                 )
-            logger.warning("judgment_automation: pre-sleep configuration reload failed", exc_info=True)
+            emit(
+                "daemon.judgment.config_reload_failed",
+                level=WARNING,
+                outcome="degraded",
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                phase="pre_sleep",
+                reason="using_last_valid_interval",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             interval = last_valid_interval_s
         else:
             last_valid_interval_s = max(
@@ -1001,7 +1127,16 @@ async def periodic_judgment_automation_sweep(
                 root=root,
                 batch_limit=last_valid_batch_limit,
             )
-            logger.warning("judgment_automation: post-sleep configuration reload failed", exc_info=True)
+            emit(
+                "daemon.judgment.config_reload_failed",
+                level=WARNING,
+                outcome="degraded",
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                phase="post_sleep",
+                reason="tick_skipped",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             continue
         last_valid_interval_s = max(cfg_interval_s, JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS)
         last_valid_batch_limit = cfg_batch_limit
@@ -1018,14 +1153,29 @@ async def periodic_judgment_automation_sweep(
                     retryable=True,
                     suppress_identical_for_ms=_judgment_automation_receipt_coalescing_horizon_ms(cfg_interval_s),
                 )
-            except Exception:
-                logger.warning("judgment_automation: parked receipt write failed; retrying next tick", exc_info=True)
+            except Exception as exc:
+                emit(
+                    "daemon.judgment.parked_receipt_failed",
+                    level=WARNING,
+                    outcome="error",
+                    stage=JUDGMENT_AUTOMATION_STAGE,
+                    reason="parked_receipt_write_raised",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
             else:
                 if recorded not in {
                     JudgmentAutomationReceiptOutcome.PERSISTED,
                     JudgmentAutomationReceiptOutcome.COALESCED,
                 }:
-                    logger.warning("judgment_automation: parked receipt was not persisted; retrying next tick")
+                    emit(
+                        "daemon.judgment.parked_receipt_failed",
+                        level=WARNING,
+                        outcome="error",
+                        stage=JUDGMENT_AUTOMATION_STAGE,
+                        reason="parked_receipt_not_persisted",
+                        status=str(getattr(recorded, "value", recorded)),
+                    )
             continue
         receipt_context = _JudgmentAutomationReceiptContext(operation_id=f"judgment-automation:{uuid.uuid4().hex}")
         try:
@@ -1044,16 +1194,23 @@ async def periodic_judgment_automation_sweep(
                 raise RuntimeError("judgment automation coordinator returned an invalid sweep result")
             if not isinstance(result, JudgmentAutomationSweepResult):
                 raise RuntimeError("judgment automation coordinator returned an invalid sweep result")
-            if result.considered:
-                logger.info(
-                    "judgment_automation: considered=%d accepted=%d rejected=%d escalated=%d idempotent=%d failed=%d",
-                    result.considered,
-                    result.accepted,
-                    result.rejected,
-                    result.escalated,
-                    result.idempotent,
-                    result.failed,
-                )
+            # A sweep that failed some candidates previously printed one INFO
+            # line carrying failed=N; the reader had to parse the sentence to
+            # notice. The level now follows the failure count.
+            emit(
+                "daemon.judgment.sweep_completed",
+                level=WARNING if result.failed else INFO,
+                outcome="degraded" if result.failed else ("ok" if result.considered else "empty"),
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                reason="candidate_failures" if result.failed else "clean",
+                operation_id=receipt_context.operation_id,
+                considered=result.considered,
+                accepted=result.accepted,
+                rejected=result.rejected,
+                escalated=result.escalated,
+                idempotent=result.idempotent,
+                failed=result.failed,
+            )
         except sqlite3.OperationalError as exc:
             reason = "transient_sqlite_lock" if is_transient_sqlite_lock(exc) else "operational_error"
             if not receipt_context.recorded:
@@ -1064,10 +1221,16 @@ async def periodic_judgment_automation_sweep(
                     root=root,
                     batch_limit=last_valid_batch_limit,
                 )
-            if reason == "transient_sqlite_lock":
-                logger.info("judgment_automation: archive busy; retrying on next tick: %s", exc)
-            else:
-                logger.warning("judgment_automation: archive operation failed; retrying on next tick: %s", exc)
+            emit(
+                "daemon.judgment.sweep_failed",
+                level=INFO if reason == "transient_sqlite_lock" else WARNING,
+                outcome="skipped" if reason == "transient_sqlite_lock" else "error",
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                reason=reason,
+                operation_id=receipt_context.operation_id,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
         except Exception as exc:
             if not receipt_context.recorded:
                 await persist_failure_fallback(
@@ -1081,7 +1244,16 @@ async def periodic_judgment_automation_sweep(
                     root=root,
                     batch_limit=last_valid_batch_limit,
                 )
-            logger.warning("judgment_automation: sweep failed", exc_info=True)
+            emit(
+                "daemon.judgment.sweep_failed",
+                level=WARNING,
+                outcome="error",
+                stage=JUDGMENT_AUTOMATION_STAGE,
+                reason="sweep_exception",
+                operation_id=receipt_context.operation_id,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
 
 __all__ = [

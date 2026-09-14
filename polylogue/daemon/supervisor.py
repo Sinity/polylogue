@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 import time
 from collections.abc import Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass
@@ -35,8 +34,7 @@ from polylogue.daemon.services import (
     select_service_specs,
     service_spec,
 )
-
-logger = logging.getLogger(__name__)
+from polylogue.logging import DEBUG, WARNING, emit
 
 TERMINAL_SERVICE_STATES: frozenset[ServiceState] = frozenset(
     {ServiceState.HALTED, ServiceState.FAILED, ServiceState.ORPHANED}
@@ -309,12 +307,15 @@ class DaemonSupervisor:
             self._settle(spec, ServiceState.FAILED, reason=f"{type(exc).__name__}: {exc}")
             if spec.failure_policy is FailurePolicy.FAIL_DAEMON:
                 raise
-            logger.warning(
-                "daemon: service %s failed (%s); policy=%s",
-                spec.name,
-                exc,
-                spec.failure_policy.value,
-                exc_info=True,
+            emit(
+                "daemon.service.failed",
+                level=WARNING,
+                outcome="error",
+                reason="service_raised",
+                service=spec.name,
+                policy=spec.failure_policy.value,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
             )
             if spec.failure_policy is FailurePolicy.DEGRADE and self._on_degraded is not None:
                 with contextlib.suppress(Exception):
@@ -347,10 +348,14 @@ class DaemonSupervisor:
                 self._states[name] = ServiceState.ORPHANED
                 self._record(name, ServiceState.ORPHANED, reason=f"deadline {spec.shutdown_deadline_s:g}s expired")
                 self._publish(spec, ServiceState.ORPHANED, reason="shutdown deadline expired")
-                logger.warning(
-                    "daemon: service %s did not stop within %.3gs; task is orphaned",
-                    name,
-                    spec.shutdown_deadline_s,
+                emit(
+                    "daemon.service.orphaned",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="shutdown_deadline_expired",
+                    service=name,
+                    state=ServiceState.ORPHANED.value,
+                    timeout_ms=round(spec.shutdown_deadline_s * 1000, 3),
                 )
                 continue
             if self._states.get(name) is ServiceState.FAILED:
@@ -406,12 +411,15 @@ class DaemonSupervisor:
         if current in TERMINAL_SERVICE_STATES:
             # The child is settling its cancellation; the state that caused
             # that cancellation is the honest one. See TERMINAL_SERVICE_STATES.
-            logger.debug(
-                "daemon: service %s stayed %s; not demoted to %s (%s)",
-                spec.name,
-                current.value,
-                state.value,
-                reason,
+            emit(
+                "daemon.service.demotion_refused",
+                level=DEBUG,
+                outcome="skipped",
+                reason="already_terminal",
+                service=spec.name,
+                state=current.value,
+                phase=state.value,
+                error_detail=reason,
             )
             return
         self._states[spec.name] = state

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import OperationStatus
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, span
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -20,8 +20,6 @@ if TYPE_CHECKING:
 
     from polylogue.daemon.embedding_owner import EmbeddingConvergenceResult
     from polylogue.storage.embeddings.reconcile import EmbeddingOrphanReconcileReport
-
-logger = get_logger(__name__)
 
 EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS = 60
 EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS = 900
@@ -78,19 +76,33 @@ async def periodic_embedding_backlog_check(
         ).callback
     while True:
         await asyncio.sleep(EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS)
-        try:
-            result = await callback(None)
-            if result.deferred_reason is not None:
-                logger.info("embed: backlog deferred by policy: %s", result.deferred_reason)
-            elif result.report is not None and result.report.done:
-                logger.info("embed: converged %d message partition(s)", int(result.report.done))
-        except sqlite3.OperationalError as exc:
-            if is_transient_sqlite_lock(exc):
-                logger.info("embed: archive busy; retrying backlog on next tick: %s", exc)
-                continue
-            logger.warning("embed: backlog check failed", exc_info=True)
-        except Exception:
-            logger.warning("embed: backlog check failed", exc_info=True)
+        with span("daemon.embed.backlog_pass") as pass_span:
+            try:
+                result = await callback(None)
+            except sqlite3.OperationalError as exc:
+                if is_transient_sqlite_lock(exc):
+                    pass_span.skipped(reason="archive_busy", error_detail=str(exc))
+                    continue
+                pass_span.degraded(
+                    "backlog_check_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+            except Exception as exc:
+                pass_span.degraded(
+                    "backlog_check_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+            else:
+                if result.deferred_reason is not None:
+                    # A policy deferral leaves the backlog unconverged. It is a
+                    # refusal to do the work, never a pass that found nothing.
+                    pass_span.refused("deferred_by_policy", error_detail=str(result.deferred_reason))
+                elif result.report is not None and result.report.done:
+                    pass_span.ok(messages=int(result.report.done))
+                else:
+                    pass_span.empty(messages=0)
 
 
 async def periodic_embedding_orphan_reconcile_check(
@@ -114,28 +126,44 @@ async def periodic_embedding_orphan_reconcile_check(
     await _await_catch_up_gate(catch_up_complete, loop_name="embedding orphan reconcile")
     while True:
         await asyncio.sleep(EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS)
-        try:
-            from polylogue.daemon.write_coordinator import daemon_write_coordinator
+        with span("daemon.embed.orphan_reconcile") as pass_span:
+            try:
+                from polylogue.daemon.write_coordinator import daemon_write_coordinator
 
-            report = await daemon_write_coordinator().run_sync(
-                "maintenance.embedding_orphan_reconcile",
-                reconcile_embedding_orphans_once,
-                db,
-            )
-            if report is not None and (report.removed_message_rows or report.removed_status_rows):
-                logger.info(
-                    "embed: reconciled %d orphan message row(s), %d orphan status row(s) more_pending=%s",
-                    report.removed_message_rows,
-                    report.removed_status_rows,
-                    report.more_pending,
+                report = await daemon_write_coordinator().run_sync(
+                    "maintenance.embedding_orphan_reconcile",
+                    reconcile_embedding_orphans_once,
+                    db,
                 )
-        except sqlite3.OperationalError as exc:
-            if is_transient_sqlite_lock(exc):
-                logger.info("embed: archive busy; retrying orphan reconcile on next tick: %s", exc)
-                continue
-            logger.warning("embed: orphan reconcile check failed", exc_info=True)
-        except Exception:
-            logger.warning("embed: orphan reconcile check failed", exc_info=True)
+            except sqlite3.OperationalError as exc:
+                if is_transient_sqlite_lock(exc):
+                    pass_span.skipped(reason="archive_busy", error_detail=str(exc))
+                    continue
+                pass_span.degraded(
+                    "orphan_reconcile_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+            except Exception as exc:
+                pass_span.degraded(
+                    "orphan_reconcile_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+            else:
+                if report is None:
+                    pass_span.skipped(reason="reconcile_not_applicable")
+                    continue
+                removed = int(report.removed_message_rows) + int(report.removed_status_rows)
+                if removed:
+                    pass_span.ok(
+                        removed=removed,
+                        messages=int(report.removed_message_rows),
+                        rows=int(report.removed_status_rows),
+                        more_pending=bool(report.more_pending),
+                    )
+                else:
+                    pass_span.empty(removed=0, more_pending=bool(report.more_pending))
 
 
 def reconcile_embedding_orphans_once(db_path: Path) -> EmbeddingOrphanReconcileReport | None:
@@ -184,8 +212,16 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
         # reconcile route, which owns the typed refusal.
         with closing(open_readonly_connection(index_db, timeout=5.0, validate_schema=False)) as conn:
             return index_db if _table_exists(conn, "sessions") else None
-    except Exception:
-        logger.warning("embed: failed to inspect archive index", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.embed.index_probe_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="index_unreadable",
+            path=index_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
 
 
@@ -204,8 +240,16 @@ def _archive_embedding_catchup_estimated_cost_this_month(ops_db: Path) -> float:
                 """
             ).fetchone()
             return float(row[0] or 0.0) if row is not None else 0.0
-    except Exception:
-        logger.warning("embed: failed to inspect archive catch-up spend", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.embed.spend_probe_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="catchup_spend_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return 0.0
 
 

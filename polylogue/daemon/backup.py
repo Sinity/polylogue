@@ -34,7 +34,6 @@ from polylogue.core.sources import provider_from_origin
 from polylogue.core.write_lease import write_lease
 from polylogue.daemon.cli import checkpoint_connection, open_isolated_write_connection
 from polylogue.daemon.status import open_readonly_connection
-from polylogue.logging import get_logger
 from polylogue.operations.append_acquisition_replay import codex_legacy_header_size, replay_append_acquisition_payload
 from polylogue.operations.zip_acquisition_replay import MemberCandidateCache, zip_reacquisition_payload
 from polylogue.paths import archive_root
@@ -52,8 +51,6 @@ from polylogue.storage.blob_integrity import (
     project_source_blob_liveness,
 )
 from polylogue.storage.blob_store import BlobStore
-
-logger = get_logger(__name__)
 
 BackupProfile = Literal["full_evidence", "user_overlays", "rebuildable_cache_exclude", "diagnostics_bundle"]
 BACKUP_PROFILES: tuple[BackupProfile, ...] = (

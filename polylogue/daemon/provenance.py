@@ -36,12 +36,10 @@ from typing import Final
 from polylogue.api.archive import open_readonly_connection
 from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
 from polylogue.core.raw_state import raw_state_authority
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_store import get_blob_store
-
-logger = get_logger(__name__)
 
 # Hard server-side cap on the preview window. The endpoint will never
 # return more than this many bytes of raw content regardless of what a
@@ -155,7 +153,15 @@ def _fetch_archive_provenance_row(
         # identical to a query failure. Provenance is the evidence-chain
         # surface itself, so log loudly rather than let a transient error
         # look like "nothing to show" (polylogue-cpf.4).
-        logger.warning("provenance row query failed for session %s: %s", session_id, exc, exc_info=True)
+        emit(
+            "daemon.provenance.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="provenance_unreadable",
+            session_id=session_id,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
     finally:
         conn.close()

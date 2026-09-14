@@ -51,43 +51,46 @@ from polylogue.daemon.notification_backends.webhook import (
     WebhookNotificationBackend,
     build_webhook_backend,
 )
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
-
+from polylogue.logging import DEBUG, ERROR, WARNING, emit
 
 # ---------------------------------------------------------------------------
 # Built-in backends
 # ---------------------------------------------------------------------------
 
 
+#: Alert severity to event level. A severity absent from this table is not
+#: emitted at all, which is how an OK-with-no-interest alert stays silent.
+_ALERT_LEVELS: dict[HealthSeverity, int] = {
+    HealthSeverity.OK: DEBUG,
+    HealthSeverity.WARNING: WARNING,
+    HealthSeverity.ERROR: ERROR,
+    HealthSeverity.CRITICAL: ERROR,
+}
+
+
 class LogNotificationBackend:
-    """Logs all non-OK alerts to the structured logger."""
+    """Emit each alert as a ``daemon.health.alert`` event.
+
+    The severity decides the level (see :data:`_ALERT_LEVELS`), so an operator
+    filtering the stream at WARNING sees exactly the alerts that are not OK
+    without the backend having to decide what is worth printing.
+    """
 
     def notify(self, alerts: list[HealthAlert], *, config: dict[str, object] | None = None) -> None:
         for alert in alerts:
-            if alert.severity == HealthSeverity.OK:
-                logger.debug(
-                    "daemon.health",
-                    check_name=alert.check_name,
-                    severity=alert.severity.value,
-                    tier=alert.tier.value,
-                    consecutive_failures=alert.consecutive_failures,
-                )
-            elif alert.severity == HealthSeverity.WARNING:
-                logger.warning(
-                    "daemon.health: %s [%s] %s",
-                    alert.check_name,
-                    alert.severity.value,
-                    alert.message,
-                )
-            elif alert.severity == HealthSeverity.ERROR or alert.severity == HealthSeverity.CRITICAL:
-                logger.error(
-                    "daemon.health: %s [%s] %s",
-                    alert.check_name,
-                    alert.severity.value,
-                    alert.message,
-                )
+            level = _ALERT_LEVELS.get(alert.severity)
+            if level is None:
+                continue
+            emit(
+                "daemon.health.alert",
+                level=level,
+                outcome="ok" if alert.severity is HealthSeverity.OK else "degraded",
+                check_name=alert.check_name,
+                severity=alert.severity.value,
+                tier=alert.tier.value,
+                failed=alert.consecutive_failures,
+                error_detail=alert.message,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -121,10 +124,14 @@ class FanOutNotificationBackend:
             try:
                 backend.notify(alerts, config=config)
             except Exception as err:  # per-backend isolation is the point of fan-out
-                logger.warning(
-                    "daemon.notifications.fanout: %s failed: %s",
-                    type(backend).__name__,
-                    err,
+                emit(
+                    "daemon.notifications.backend_failed",
+                    level=WARNING,
+                    outcome="error",
+                    reason="backend_raised",
+                    backend=type(backend).__name__,
+                    error_type=type(err).__name__,
+                    error_detail=str(err),
                 )
                 if first_error is None:
                     first_error = err
@@ -216,7 +223,7 @@ def send_notifications(
     if alerts:
         _backend.notify(alerts, config=config)
     else:
-        logger.debug("daemon.health: no alerts to notify")
+        emit("daemon.health.notify", level=DEBUG, outcome="empty", alerts=0)
 
 
 __all__ = [

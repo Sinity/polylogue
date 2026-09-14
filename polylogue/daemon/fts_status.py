@@ -8,12 +8,10 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from polylogue.core.payload_coercion import row_int as _row_int
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-logger = get_logger(__name__)
 
 
 class FTSReadiness(BaseModel):
@@ -124,7 +122,15 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("fts archive readiness query failed for %s: %s", index_db, exc, exc_info=True)
+        emit(
+            "daemon.fts.readiness_query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="archive_readiness_unreadable",
+            path=index_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return {
             "indexed_surface": "messages_fts",
             "messages_ready": False,
@@ -184,7 +190,15 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
             conn.rollback()
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("fts readiness query failed for %s: %s", dbf, exc, exc_info=True)
+        emit(
+            "daemon.fts.readiness_query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="readiness_unreadable",
+            path=dbf,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return {
             "messages_ready": False,
             "session_work_events_ready": False,

@@ -21,7 +21,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
-from polylogue.logging import get_logger
+from polylogue.logging import INFO, WARNING, emit, span
 from polylogue.operations.raw_authority_verdict_cache import (
     RawAuthorityVerdictCacheWork,
     find_raw_authority_verdict_cache_work,
@@ -43,12 +43,71 @@ if TYPE_CHECKING:
     from polylogue.sinex.service import PublicationService
     from polylogue.sinex.transport import SinexTransport
 
-logger = get_logger(__name__)
-
 _HOT_INSIGHT_SOURCE_BYTES = 64 * 1024 * 1024
 _HOT_INSIGHT_QUIET_SECONDS = 60.0
 _ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS = 120_000
 _DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS = 8
+
+
+def _sinex_drain_reason(*, rejected: int, transport_failures: int, payload_failures: int) -> str:
+    """Name the dominant failure lane so the reason token is not a catch-all."""
+    if transport_failures:
+        return "transport_failures"
+    if payload_failures:
+        return "payload_failures"
+    if rejected:
+        return "rejected_revisions"
+    return "durable_debt"
+
+
+def _emit_sinex_drain(scope: str, subjects: int, summary: object, *, path: Path | None = None) -> None:
+    """Report one outbox drain with every failure lane kept distinct.
+
+    Prose collapsed transport failures, payload failures and durable debt into
+    one sentence; a reader of a long rebuild could not tell a transport outage
+    from a malformed payload. Each stays its own counted field, and any
+    non-zero failure lane makes the event a WARNING rather than an INFO.
+    """
+    attempted = int(getattr(summary, "attempted", 0))
+    rejected = int(getattr(summary, "rejected", 0))
+    transport_failures = int(getattr(summary, "transport_failures", 0))
+    payload_failures = int(getattr(summary, "payload_failures", 0))
+    debt = int(getattr(summary, "durable_debt", 0))
+    remaining = int(getattr(summary, "remaining_lag", 0))
+    failed = rejected + transport_failures + payload_failures
+    if failed or debt:
+        level = WARNING
+        outcome = "degraded"
+        reason = _sinex_drain_reason(
+            rejected=rejected,
+            transport_failures=transport_failures,
+            payload_failures=payload_failures,
+        )
+    else:
+        level = INFO
+        outcome = "ok" if attempted else "empty"
+        reason = "clean"
+    # ``path`` is present only for the per-path drain; a null field on the
+    # batch and session scopes would be noise in every rendered line.
+    scoped: dict[str, object] = {} if path is None else {"path": path}
+    emit(
+        "daemon.stage.drained",
+        level,
+        outcome=outcome,
+        reason=reason,
+        stage="sinex_publication",
+        action=scope,
+        subjects=subjects,
+        attempted=attempted,
+        confirmed=int(getattr(summary, "confirmed", 0)),
+        rejected=rejected,
+        transport_failures=transport_failures,
+        payload_failures=payload_failures,
+        failed=failed,
+        debt=debt,
+        remaining=remaining,
+        **scoped,
+    )
 
 
 def _is_transient_sqlite_lock(exc: BaseException) -> bool:
@@ -118,8 +177,17 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
                 observed_at_ms=int(time.time() * 1000),
                 payload=payload,
             )
-    except Exception:
-        logger.warning("claude-workflow: failed to record materialization stage event", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.stage.event_record_failed",
+            level=WARNING,
+            stage="claude_workflow",
+            outcome="degraded",
+            reason="stage_event_not_recorded",
+            status=status,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
 
 
 def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
@@ -145,31 +213,55 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
             # No archive to materialize from is genuinely "no work", but it is the
             # one place in convergence where a swallowed exception still answers
             # "converged" -- say so rather than deciding it silently.
-            logger.info("claude-workflow freshness probe found no archive; treating as no work")
+            emit(
+                "daemon.stage.check_skipped",
+                stage="claude_workflow",
+                outcome="skipped",
+                reason="no_archive",
+                path=path,
+            )
             return False
-        except Exception:
-            logger.warning("claude-workflow freshness probe failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.stage.check_failed",
+                level=WARNING,
+                stage="claude_workflow",
+                outcome="degraded",
+                reason="probe_failed_assuming_work",
+                path=path,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return True
 
     def execute(path: Path) -> StageExecuteReturn:
         if not relevant(path):
             return True
-        try:
-            from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
+        with span("daemon.stage.execute", stage="claude_workflow", path=path) as work:
+            try:
+                from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
 
-            summary = materialize_claude_workflow_archive(archive_root())
-            logger.info(
-                "claude-workflow: materialized runs=%d calls=%d attempts=%d gaps=%d",
-                summary.run_count,
-                summary.call_count,
-                summary.attempt_count,
-                len(summary.gaps),
-            )
+                summary = materialize_claude_workflow_archive(archive_root())
+            except Exception as exc:
+                work.degraded(
+                    "materialization_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+                return False
+            gaps = len(summary.gaps)
+            fields = {
+                "runs": summary.run_count,
+                "calls": summary.call_count,
+                "attempts": summary.attempt_count,
+                "gaps": gaps,
+            }
             _record_claude_workflow_stage_event(archive_root(), summary)
+            if gaps:
+                work.degraded("unresolved_workflow_gaps", **fields)
+            else:
+                work.ok(**fields)
             return True
-        except Exception:
-            logger.warning("claude-workflow: materialization failed", exc_info=True)
-            return False
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
         candidates = {path for path in paths if relevant(path)}
@@ -212,23 +304,39 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
             return delegation_work_evidence_materialization_needed(archive_root())
         except FileNotFoundError:
             return False
-        except Exception:
-            logger.warning("delegation work-evidence freshness probe failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.stage.check_failed",
+                level=WARNING,
+                stage="delegation_work_evidence",
+                outcome="degraded",
+                reason="probe_failed_assuming_work",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return True
 
     def execute(path: Path) -> StageExecuteReturn:
         del path
-        try:
-            from polylogue.analysis.delegation_work_evidence_materializer import (
-                materialize_delegation_work_evidence_archive,
-            )
+        with span("daemon.stage.execute", stage="delegation_work_evidence") as work:
+            try:
+                from polylogue.analysis.delegation_work_evidence_materializer import (
+                    materialize_delegation_work_evidence_archive,
+                )
 
-            count = materialize_delegation_work_evidence_archive(archive_root())
-            logger.info("delegation work-evidence: materialized rows=%d", count)
+                count = materialize_delegation_work_evidence_archive(archive_root())
+            except Exception as exc:
+                work.degraded(
+                    "materialization_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+                return False
+            if count:
+                work.ok(rows=count)
+            else:
+                work.empty(rows=0)
             return True
-        except Exception:
-            logger.warning("delegation work-evidence materialization failed", exc_info=True)
-            return False
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
         return set(paths) if paths and check(next(iter(paths))) else set()
@@ -282,17 +390,7 @@ def make_sinex_publication_stage(
         if not session_ids:
             return True
         summary = service.drain_once(object_ids=session_ids, limit=service.max_batch)
-        logger.info(
-            "sinex_publication: drain attempted=%d confirmed=%d debt=%d rejected=%d "
-            "transport_failures=%d payload_failures=%d remaining=%d",
-            summary.attempted,
-            summary.confirmed,
-            summary.durable_debt,
-            summary.rejected,
-            summary.transport_failures,
-            summary.payload_failures,
-            summary.remaining_lag,
-        )
+        _emit_sinex_drain("path", len(session_ids), summary, path=path)
         return not service.unresolved_object_ids(session_ids)
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
@@ -307,18 +405,7 @@ def make_sinex_publication_stage(
         if not all_ids:
             return True
         summary = service.drain_once(object_ids=all_ids, limit=service.max_batch)
-        logger.info(
-            "sinex_publication: batch drain subjects=%d attempted=%d confirmed=%d debt=%d rejected=%d "
-            "transport_failures=%d payload_failures=%d remaining=%d",
-            len(all_ids),
-            summary.attempted,
-            summary.confirmed,
-            summary.durable_debt,
-            summary.rejected,
-            summary.transport_failures,
-            summary.payload_failures,
-            summary.remaining_lag,
-        )
+        _emit_sinex_drain("batch", len(all_ids), summary)
         return not service.unresolved_object_ids(all_ids)
 
     def check_sessions(session_ids: Sequence[str]) -> set[str]:
@@ -328,18 +415,7 @@ def make_sinex_publication_stage(
         if not session_ids:
             return True
         summary = service.drain_once(object_ids=session_ids, limit=service.max_batch)
-        logger.info(
-            "sinex_publication: session drain subjects=%d attempted=%d confirmed=%d debt=%d rejected=%d "
-            "transport_failures=%d payload_failures=%d remaining=%d",
-            len(tuple(dict.fromkeys(session_ids))),
-            summary.attempted,
-            summary.confirmed,
-            summary.durable_debt,
-            summary.rejected,
-            summary.transport_failures,
-            summary.payload_failures,
-            summary.remaining_lag,
-        )
+        _emit_sinex_drain("sessions", len(tuple(dict.fromkeys(session_ids))), summary)
         return not service.unresolved_object_ids(session_ids)
 
     def barrier(path: Path) -> bool:
@@ -378,8 +454,16 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
     def check(_path: Path) -> bool:
         try:
             discovered = work()
-        except Exception:
-            logger.warning("raw_authority_verdict_cache: readiness probe failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.stage.check_failed",
+                level=WARNING,
+                stage="raw_authority_verdict_cache",
+                outcome="degraded",
+                reason="probe_failed_assuming_work",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return True
         if discovered is None:
             return False
@@ -390,8 +474,17 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
             return set()
         try:
             discovered = work()
-        except Exception:
-            logger.warning("raw_authority_verdict_cache: batch readiness probe failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.stage.check_failed",
+                level=WARNING,
+                stage="raw_authority_verdict_cache",
+                outcome="degraded",
+                reason="batch_probe_failed_assuming_work",
+                files=len(paths),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return set(paths)
         if discovered is None:
             return set()
@@ -401,21 +494,22 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
         return execute_many((_path,))
 
     def execute_many(_paths: Sequence[Path]) -> StageExecuteReturn:
-        try:
+        with span("daemon.stage.execute", stage="raw_authority_verdict_cache", files=len(_paths)) as work:
             outcome = warm_raw_authority_verdict_cache(
                 db_path.parent,
                 max_cohorts=_DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS,
                 now_ms=int(time.time() * 1000),
             )
-        except Exception:
-            logger.warning("raw_authority_verdict_cache: bounded warmup failed", exc_info=True)
-            raise
-        logger.info(
-            "raw_authority_verdict_cache: warmed cohorts=%d pending=%s",
-            outcome.warmed_cohorts,
-            outcome.pending_cohorts,
-        )
-        return not outcome.pending_cohorts
+            pending = int(outcome.pending_cohorts or 0)
+            if pending:
+                # Backlog remains: the stage is not converged this pass, and
+                # false_means_pending will schedule the retry.
+                work.degraded("cohorts_still_pending", cohorts=outcome.warmed_cohorts, pending=pending)
+            elif outcome.warmed_cohorts:
+                work.ok(cohorts=outcome.warmed_cohorts, pending=0)
+            else:
+                work.empty(cohorts=0, pending=0)
+            return not outcome.pending_cohorts
 
     return ConvergenceStage(
         name="raw_authority_verdict_cache",
@@ -547,8 +641,16 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
             return index_db if _table_exists(conn, "sessions") else None
         finally:
             conn.close()
-    except Exception:
-        logger.warning("archive convergence: failed to inspect archive", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.archive.index_probe_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="active_index_unreadable",
+            path=index_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
 
 
@@ -623,8 +725,15 @@ def _archive_hot_insight_session_ids(
         try:
             if not _ensure_source_tier_attached(conn, archive_root=archive_root):
                 return set()
-        except sqlite3.Error:
-            logger.warning("archive convergence: failed to attach source tier", exc_info=True)
+        except sqlite3.Error as exc:
+            emit(
+                "daemon.archive.source_tier_attach_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="hot_insight_probe_unavailable",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return set()
     placeholders = ", ".join("?" for _ in unique_ids)
     rows = conn.execute(

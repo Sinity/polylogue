@@ -7,13 +7,11 @@ import contextlib
 import sqlite3
 from pathlib import Path
 
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.archive_tiers.write import repair_stale_prefix_branch_points
 from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, open_daemon_connection
-
-logger = get_logger(__name__)
 
 
 def _open_lineage_startup_write_connection(db_path: Path) -> sqlite3.Connection:
@@ -30,11 +28,23 @@ def ensure_lineage_startup_readiness_sync(*, limit: int | None = None) -> int:
         conn = _open_lineage_startup_write_connection(db)
         repaired = repair_stale_prefix_branch_points(conn, limit=limit)
         conn.commit()
-        if repaired:
-            logger.info("daemon: repaired %d stale prefix-sharing branch point(s) on startup", repaired)
+        emit(
+            "daemon.lineage.startup_repair",
+            outcome="ok" if repaired else "empty",
+            repaired=repaired,
+            path=db,
+        )
         return repaired
-    except Exception:
-        logger.warning("daemon: lineage startup readiness failed", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.lineage.startup_repair_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="startup_readiness_failed",
+            path=db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return 0
     finally:
         if conn is not None:

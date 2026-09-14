@@ -27,9 +27,7 @@ from polylogue.daemon.notification_backends import (
     BackendUnavailableError,
     build_envelope,
 )
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
+from polylogue.logging import WARNING, emit
 
 
 class AppriseConfigError(BackendConfigError):
@@ -82,10 +80,19 @@ class AppriseNotificationBackend:
         if not urls:
             raise AppriseConfigError("notification_backend='apprise' requires notification_apprise_urls in config")
         self._client = client if client is not None else _resolve_default_client()
-        for url in urls:
+        for position, url in enumerate(urls):
             ok = self._client.add(url)
             if not ok:
-                logger.warning("daemon.notifications.apprise: failed to add URL %r", url)
+                # The URL itself is deliberately not a field: an Apprise URL
+                # routinely embeds a token. Its position identifies it.
+                emit(
+                    "daemon.notifications.url_rejected",
+                    level=WARNING,
+                    outcome="refused",
+                    reason="apprise_rejected_url",
+                    backend="apprise",
+                    position=position,
+                )
         self._urls = tuple(urls)
         self._include_envelope = bool(include_envelope)
 
@@ -106,9 +113,14 @@ class AppriseNotificationBackend:
                 body_format="text",
             )
             if not ok:
-                logger.warning(
-                    "daemon.notifications.apprise: notify returned false for %s",
-                    alert.check_name,
+                emit(
+                    "daemon.notifications.delivery_failed",
+                    level=WARNING,
+                    outcome="error",
+                    reason="notify_returned_false",
+                    backend="apprise",
+                    check_name=alert.check_name,
+                    severity=alert.severity.value,
                 )
 
 

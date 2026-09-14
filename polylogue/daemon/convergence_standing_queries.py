@@ -20,7 +20,7 @@ from polylogue.core.hashing import hash_payload
 from polylogue.core.query_identity import query_ref, result_set_ref
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
-from polylogue.logging import get_logger
+from polylogue.logging import INFO, WARNING, emit
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     FindingAssertion,
     list_assertion_claims,
@@ -37,8 +37,6 @@ from polylogue.storage.sqlite.query_objects import (
     put_result_set,
     put_watched_query_baseline,
 )
-
-logger = get_logger(__name__)
 
 
 def make_standing_query_stage(
@@ -71,8 +69,17 @@ def make_standing_query_stage(
                 if list_watched_queries(conn) or _has_promoted_expected_findings(conn):
                     return set(session_ids)
                 return set()
-        except Exception:
-            logger.warning("standing-queries: watch lookup failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.stage.check_failed",
+                level=WARNING,
+                outcome="degraded",
+                stage="standing-queries",
+                reason="watch_lookup_failed_assuming_work",
+                path=user_db,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return set(session_ids)
 
     def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
@@ -108,13 +115,31 @@ def make_standing_query_stage(
                 conn.close()
             return True
         except sqlite3.OperationalError as exc:
-            if is_transient_sqlite_lock(exc):
-                logger.info("standing-queries: evaluation deferred because sqlite is busy")
+            transient = is_transient_sqlite_lock(exc)
+            emit(
+                "daemon.stage.execute_failed",
+                level=INFO if transient else WARNING,
+                outcome="skipped" if transient else "error",
+                stage="standing-queries",
+                reason="archive_busy" if transient else "evaluation_failed",
+                sessions=len(ids),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            if transient:
                 return False
-            logger.warning("standing-queries: evaluation failed", exc_info=True)
             raise
-        except Exception:
-            logger.warning("standing-queries: evaluation deferred", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.stage.execute_failed",
+                level=WARNING,
+                outcome="error",
+                stage="standing-queries",
+                reason="evaluation_deferred",
+                sessions=len(ids),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             raise
 
     return ConvergenceStage(

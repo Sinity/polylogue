@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import pytest
 from click.testing import CliRunner
 
+import polylogue.logging as plog
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
@@ -563,7 +564,6 @@ def test_minimal_status_payload_reports_gil_enabled(monkeypatch: pytest.MonkeyPa
 
 def test_daemon_status_check_health_failure_reports_error_not_ok(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A check_health() exception must not present as a clean bill of health.
 
@@ -578,7 +578,7 @@ def test_daemon_status_check_health_failure_reports_error_not_ok(
 
     monkeypatch.setattr(status_module, "check_health", _boom)
 
-    with caplog.at_level("WARNING"):
+    with plog.capture() as records:
         status = build_daemon_status(sources=())
 
     assert status.health.overall_status == "error"
@@ -586,7 +586,10 @@ def test_daemon_status_check_health_failure_reports_error_not_ok(
     alert = status.health.alerts[0]
     assert alert.severity == "error"
     assert "health backend unavailable" in alert.message
-    assert "check_health() failed" in caplog.text
+    failures = [r for r in records if r["event"] == "daemon.status.health_check_failed"]
+    assert failures, "the swallowed check_health() exception must still be emitted"
+    assert failures[0]["outcome"] == "degraded"
+    assert "health backend unavailable" in str(failures[0]["error_detail"])
 
 
 def _health_payload(tmp_path: Path, health: DaemonHealth) -> JSONDocument:

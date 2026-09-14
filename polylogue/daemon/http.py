@@ -1760,10 +1760,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     # The kernel's ThreadPoolExecutor predates every bind, so
                     # this callable would otherwise run with no correlation
                     # context and its events could not be joined to this span.
-                    cast(
-                        "Callable[[], object]",
-                        propagate(lambda: asyncio.run(self._archive_query_coroutine(handler))),
-                    ),
+                    propagate(lambda: asyncio.run(self._archive_query_coroutine(handler))),
                     admission_class=admission_class,
                     cancellation=cancellation,
                 )

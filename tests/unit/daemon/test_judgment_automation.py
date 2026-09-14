@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import polylogue.logging as plog
 from polylogue.config import ConfigError
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.daemon.events import emit_daemon_event
@@ -1161,7 +1162,7 @@ def test_periodic_classifies_inner_policy_reload_failure_as_configuration_reload
 
 
 def test_periodic_coalesces_identical_disabled_receipt_through_default_interval(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
 ) -> None:
     """A normal default-interval disabled tick does not duplicate telemetry."""
 
@@ -1190,7 +1191,8 @@ def test_periodic_coalesces_identical_disabled_receipt_through_default_interval(
         ),
     ):
         write_coordinator.run_sync.side_effect = _fake_run_sync
-        asyncio.run(_run_ticks(2))
+        with plog.capture() as records:
+            asyncio.run(_run_ticks(2))
 
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         rows = conn.execute(
@@ -1201,7 +1203,7 @@ def test_periodic_coalesces_identical_disabled_receipt_through_default_interval(
     assert len(rows) == 1
     assert rows[0][0] == base_ms
     assert json.loads(rows[0][1])["reason"] == "capability_gate_disabled"
-    assert "parked receipt was not persisted" not in caplog.text
+    assert not [r for r in records if r["event"] == "daemon.judgment.parked_receipt_failed"]
 
 
 def test_periodic_preserves_sweep_failure_reason_when_receipt_write_fails(tmp_path: Path) -> None:
@@ -1572,7 +1574,7 @@ def test_periodic_false_coordinator_outcome_uses_retryable_fallback(tmp_path: Pa
     assert calls == 2
 
 
-def test_periodic_false_fallback_is_logged_as_unpersisted(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_periodic_false_fallback_is_logged_as_unpersisted(tmp_path: Path) -> None:
     _init_ops_db(tmp_path / "ops.db")
     cfg = SimpleNamespace(
         judgment_automation_enabled=True,
@@ -1588,17 +1590,20 @@ def test_periodic_false_fallback_is_logged_as_unpersisted(tmp_path: Path, caplog
         patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
         patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
         patch("polylogue.paths.archive_root", return_value=tmp_path),
+        plog.capture() as records,
     ):
         asyncio.run(_run_one_tick())
 
     assert write_coordinator.run_sync.await_count == 2
-    assert "failure receipt fallback was not persisted" in caplog.text
+    failures = [r for r in records if r["event"] == "daemon.judgment.failure_receipt_fallback_failed"]
+    assert [r["reason"] for r in failures] == ["fallback_not_persisted"]
+    assert failures[0]["outcome"] == "error"
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM daemon_events").fetchone() == (0,)
 
 
 def test_periodic_non_lock_sqlite_failure_is_logged_at_warning_severity(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
 ) -> None:
     """Persistent SQLite failures remain visible above informational logs."""
     _init_ops_db(tmp_path / "ops.db")
@@ -1624,15 +1629,19 @@ def test_periodic_non_lock_sqlite_failure_is_logged_at_warning_severity(
             side_effect=sqlite3.OperationalError("disk I/O error"),
         ),
     ):
-        caplog.set_level("INFO")
-        asyncio.run(_run_one_tick())
+        with plog.capture() as records:
+            asyncio.run(_run_one_tick())
 
-    assert "archive operation failed; retrying on next tick" in caplog.text
-    assert "archive busy; retrying on next tick" not in caplog.text
+    # A persistent disk error and a transient lock share one event name; the
+    # level and reason are what keep them apart, which prose could not.
+    failures = [r for r in records if r["event"] == "daemon.judgment.sweep_failed"]
+    assert [r["reason"] for r in failures] == ["operational_error"]
+    assert failures[0]["level"] == "warning"
+    assert failures[0]["outcome"] == "error"
 
 
 def test_periodic_disabled_receipt_failure_is_logged_and_retried(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
 ) -> None:
     _init_ops_db(tmp_path / "ops.db")
     cfg = SimpleNamespace(
@@ -1659,11 +1668,14 @@ def test_periodic_disabled_receipt_failure_is_logged_and_retried(
         patch("polylogue.daemon.judgment_automation.load_polylogue_config", return_value=cfg),
         patch("polylogue.daemon.write_coordinator.daemon_write_coordinator", return_value=write_coordinator),
         patch("polylogue.paths.archive_root", return_value=tmp_path),
+        plog.capture() as records,
     ):
         asyncio.run(_run_ticks(2))
 
     assert write_coordinator.run_sync.await_count == 2
-    assert "parked receipt write failed; retrying next tick" in caplog.text
+    failures = [r for r in records if r["event"] == "daemon.judgment.parked_receipt_failed"]
+    assert [r["reason"] for r in failures] == ["parked_receipt_write_raised"]
+    assert failures[0]["error_type"] == "RuntimeError"
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         row = conn.execute(
             "SELECT payload_json FROM daemon_events WHERE kind = 'judgment-automation' ORDER BY id DESC LIMIT 1"

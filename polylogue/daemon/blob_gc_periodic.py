@@ -12,13 +12,11 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.logging import get_logger
+from polylogue.logging import span
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 
 if TYPE_CHECKING:
     from polylogue.storage.blob_gc import BlobGCResult
-
-logger = get_logger(__name__)
 
 BLOB_GC_INTERVAL_SECONDS = 900
 BLOB_GC_MAX_BATCH = 200
@@ -34,28 +32,38 @@ async def periodic_blob_gc_check(*, catch_up_complete: asyncio.Event | None = No
     await _await_catch_up_gate(catch_up_complete, loop_name="blob gc check")
     while True:
         await asyncio.sleep(BLOB_GC_INTERVAL_SECONDS)
-        try:
-            from polylogue.daemon.write_coordinator import daemon_write_coordinator
+        with span("daemon.blob_gc.pass") as pass_span:
+            try:
+                from polylogue.daemon.write_coordinator import daemon_write_coordinator
 
-            result = await daemon_write_coordinator().run_sync(
-                "maintenance.blob_gc",
-                run_blob_gc_once,
-                source_db_path(),
-                archive_root() / "blob",
-            )
-            if result is not None and result.deleted_count:
-                logger.info(
-                    "blob gc: reclaimed %d blob(s), %d byte(s)",
-                    result.deleted_count,
-                    result.reclaimed_bytes,
+                result = await daemon_write_coordinator().run_sync(
+                    "maintenance.blob_gc",
+                    run_blob_gc_once,
+                    source_db_path(),
+                    archive_root() / "blob",
                 )
-        except sqlite3.OperationalError as exc:
-            if is_transient_sqlite_lock(exc):
-                logger.info("blob gc: archive busy; retrying on next tick: %s", exc)
-                continue
-            logger.warning("blob gc: periodic reclaim failed", exc_info=True)
-        except Exception:
-            logger.warning("blob gc: periodic reclaim failed", exc_info=True)
+            except sqlite3.OperationalError as exc:
+                if is_transient_sqlite_lock(exc):
+                    pass_span.skipped(reason="archive_busy", error_detail=str(exc))
+                    continue
+                pass_span.degraded(
+                    "reclaim_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+            except Exception as exc:
+                pass_span.degraded(
+                    "reclaim_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+            else:
+                if result is None:
+                    pass_span.skipped(reason="gc_not_applicable")
+                elif result.deleted_count:
+                    pass_span.ok(removed=result.deleted_count, bytes=result.reclaimed_bytes)
+                else:
+                    pass_span.empty(removed=0, bytes=0)
 
 
 async def periodic_blob_publication_reconciliation_check(*, catch_up_complete: asyncio.Event | None = None) -> None:
@@ -72,23 +80,39 @@ async def periodic_blob_publication_reconciliation_check(*, catch_up_complete: a
     after_publication_id: str | None = None
     while True:
         await asyncio.sleep(BLOB_PUBLICATION_RECONCILIATION_INTERVAL_SECONDS)
-        try:
-            outcome = await _reconcile_blob_publications(
-                actor="maintenance.blob_publication_reconciliation",
-                max_count=BLOB_PUBLICATION_RECONCILIATION_MAX_BATCH,
-                after_publication_id=after_publication_id,
-            )
-            if outcome is None or outcome.scanned < BLOB_PUBLICATION_RECONCILIATION_MAX_BATCH:
-                after_publication_id = None
+        with span("daemon.blob_publication.reconcile") as pass_span:
+            try:
+                outcome = await _reconcile_blob_publications(
+                    actor="maintenance.blob_publication_reconciliation",
+                    max_count=BLOB_PUBLICATION_RECONCILIATION_MAX_BATCH,
+                    after_publication_id=after_publication_id,
+                )
+            except sqlite3.OperationalError as exc:
+                if is_transient_sqlite_lock(exc):
+                    pass_span.skipped(reason="archive_busy", error_detail=str(exc))
+                    continue
+                pass_span.degraded(
+                    "reconcile_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+            except Exception as exc:
+                pass_span.degraded(
+                    "reconcile_failed",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
             else:
-                after_publication_id = outcome.last_scanned_publication_id
-        except sqlite3.OperationalError as exc:
-            if is_transient_sqlite_lock(exc):
-                logger.info("blob publication reconciliation: archive busy; retrying on next tick: %s", exc)
-                continue
-            logger.warning("blob publication reconciliation: periodic pass failed", exc_info=True)
-        except Exception:
-            logger.warning("blob publication reconciliation: periodic pass failed", exc_info=True)
+                if outcome is None or outcome.scanned < BLOB_PUBLICATION_RECONCILIATION_MAX_BATCH:
+                    after_publication_id = None
+                else:
+                    after_publication_id = outcome.last_scanned_publication_id
+                if outcome is None:
+                    pass_span.skipped(reason="reconciliation_not_applicable")
+                elif outcome.scanned:
+                    pass_span.ok(scanned=outcome.scanned, more_pending=after_publication_id is not None)
+                else:
+                    pass_span.empty(scanned=0)
 
 
 def run_blob_gc_once(source_db_path_arg: Path, blob_dir: Path) -> BlobGCResult | None:

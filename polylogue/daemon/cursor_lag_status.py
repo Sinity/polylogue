@@ -38,10 +38,8 @@ from pydantic import BaseModel, Field
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-logger = get_logger(__name__)
 
 
 class CursorLagBaselineState(BaseModel):
@@ -146,7 +144,15 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None, ops_db: P
         # reads identically to "archive genuinely has no cursor lag" — log
         # loudly so a transient query failure isn't mistaken for a clean
         # ingest state (polylogue-cpf.4).
-        logger.warning("cursor-lag summary query failed for %s: %s", dbf, exc, exc_info=True)
+        emit(
+            "daemon.cursor_lag.summary_query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="summary_unreadable",
+            path=dbf,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return CursorLagSummary()
 
     summary = _project_rows(rows, now=resolved_now)
@@ -181,7 +187,15 @@ def _archive_cursor_lag_summary_info(ops_db: Path, *, now: datetime) -> CursorLa
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("cursor-lag ops-archive query failed for %s: %s", ops_db, exc, exc_info=True)
+        emit(
+            "daemon.cursor_lag.ops_query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="ops_archive_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
 
     projected_rows: list[sqlite3.Row | tuple[object, ...]] = [
@@ -235,7 +249,14 @@ def _decorate_with_baselines(
             ops_db=ops_db,
         )
     except Exception as exc:
-        logger.warning("cursor-lag baseline decoration failed: %s", exc, exc_info=True)
+        emit(
+            "daemon.cursor_lag.baseline_decoration_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="baseline_decoration_failed",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return summary
 
     decorated: list[CursorLagFamilySummary] = []

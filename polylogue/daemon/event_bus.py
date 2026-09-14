@@ -50,13 +50,12 @@ conversion work.
 
 from __future__ import annotations
 
-import logging
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
-logger = logging.getLogger(__name__)
+from polylogue.logging import ERROR, emit
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,11 +163,15 @@ class EventBus:
         for handler in tuple(handlers):
             try:
                 handler(event)
-            except Exception:
-                logger.exception(
-                    "daemon_event_bus_subscriber_failed event=%s handler=%r",
-                    type(event).__name__,
-                    handler,
+            except Exception as exc:
+                emit(
+                    "daemon.event_bus.subscriber_failed",
+                    level=ERROR,
+                    outcome="error",
+                    reason="handler_raised",
+                    source_event=type(event).__name__,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
                 )
                 continue
             delivered += 1

@@ -188,7 +188,7 @@ The remaining work is grind, not judgement.
 **Find the legacy form:**
 
 ```sh
-grep -rn "logging.getLogger" --include="*.py" polylogue        # 19 modules
+grep -rn "logging.getLogger" --include="*.py" polylogue        # 17 modules
 grep -rn "logger\.\(debug\|info\|warning\|error\|exception\)(" --include="*.py" polylogue
 ```
 
@@ -207,6 +207,8 @@ grep -rn "logger\.\(debug\|info\|warning\|error\|exception\)(" --include="*.py" 
 6. Delete the module-level `logger`.
 
 `convergence.py` is the worked example: 14 legacy sites, zero remaining.
+The rest of `daemon/` followed it — every module except `cli.py` and `http.py`
+now emits events, which is why the baseline below has shrunk.
 
 **Nothing goes dark during the migration.** `configure_events()` installs a
 `logging.Handler` that bridges surviving stdlib records into the event stream as
@@ -232,8 +234,15 @@ baseline. The end state is a baseline containing only `polylogue/logging.py`,
 which legitimately owns the sanctioned `logging.getLogger` calls — the stdlib
 bridge's own backing logger and handler wiring.
 
-The baseline now stands at **7 matches**: `polylogue/logging.py`'s four, plus
-`polylogue/daemon/`'s three. Every other module is converted.
+The baseline now stands at its end state: **4 matches, all in
+`polylogue/logging.py`** — the stdlib bridge's own backing logger and handler
+wiring, which legitimately use `logging.getLogger`. Every other module in the
+tree is converted. The last three to go were `event_bus.py`, `intake.py` and
+`supervisor.py`, the only daemon modules that acquired a stdlib logger
+directly.
+
+This is the end state *for this rule*, which is narrower than "no legacy
+logging remains". See the scope note below.
 
 Two properties of the ratchet are worth knowing before you read a verdict:
 
@@ -248,3 +257,24 @@ Two properties of the ratchet are worth knowing before you read a verdict:
 Note the rule deliberately matches only the *acquisition* of a legacy logger,
 not each `logger.warning(...)` call. Acquisition is the reviewable choke point;
 once a module has no legacy logger, its call sites cannot survive.
+
+### Scope note: what the ratchet does not catch
+
+`legacy-stdlib-logger` matches `logging.getLogger(...)` — the *acquisition* of
+a stdlib logger. That is not the only legacy form, and today it is no longer
+the dominant one.
+
+Roughly 140 modules acquire their logger through
+`polylogue.logging.get_logger`, which the rule does not match. Those call sites
+still emit prose through `_StdlibBoundLogger`, whose `bind()` is a no-op and
+which discards every structured keyword it is given. Converting the two largest
+daemon modules (59 and 31 prose sites) eliminated **zero** baseline entries for
+exactly this reason: neither had ever used `logging.getLogger`.
+
+So a green `legacy-stdlib-logger` means "no module acquires a stdlib logger
+directly", not "no module logs prose". Do not read the former as the latter.
+
+Closing that gap needs a **second** rule with its own baseline recorded at the
+true remaining count. Widening this one is not available: an enforcing
+baseline may only shrink, and widening would grow it by every one of those
+modules at once. A new ratchet, by contrast, may start wherever reality is.
