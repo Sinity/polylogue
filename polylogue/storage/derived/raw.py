@@ -123,6 +123,24 @@ class RawObservationDerivation:
         finally:
             conn.close()
 
+    def _require_bootstrapped_source_tier(self, conn: sqlite3.Connection) -> None:
+        """Refuse a present-but-unbootstrapped source tier with a typed reason.
+
+        ``source.db`` existing as a file is not proof that the durable source
+        tier was ever bootstrapped: a bare ``sqlite3.connect(...)`` creates the
+        file with no schema at all. Every caller already handles
+        ``FileNotFoundError`` as "this backlog is unavailable, and here is why",
+        so an absent ``raw_sessions`` table reports through that same channel
+        rather than escaping as a bare ``OperationalError``.
+        """
+        if (
+            conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_sessions'").fetchone()
+            is None
+        ):
+            raise FileNotFoundError(
+                f"durable source tier is not bootstrapped: {self.archive_root / 'source.db'} has no raw_sessions table"
+            )
+
     def _current(self, frame: RawFrame) -> bool:
         return (
             Path(frame.archive_root).resolve() == self.archive_root.resolve()
@@ -153,6 +171,7 @@ class RawObservationDerivation:
                 parameters.extend((root, root + "/", root + "0"))
             predicates.append("(" + " OR ".join(bounds) + ")")
         with self._read() as conn:
+            self._require_bootstrapped_source_tier(conn)
             rows = conn.execute(
                 f"SELECT r.raw_id FROM raw_sessions r WHERE {' AND '.join(predicates)} ORDER BY r.raw_id LIMIT ?",
                 (*parameters, limit),
@@ -180,6 +199,7 @@ class RawObservationDerivation:
         keys: list[str] = []
         probes = 0
         with self._read() as conn:
+            self._require_bootstrapped_source_tier(conn)
             while position < 2 * len(ordered) and len(keys) < limit and probes < max(2, limit):
                 root = ordered[position // 2]
                 if position % 2:
@@ -221,6 +241,13 @@ class RawObservationDerivation:
         return False
 
     def inspect(self, frame: RawFrame, keys: Sequence[str]) -> Mapping[str, str]:
+        if not keys:
+            # Nothing to inspect: opening the read connection here would demand
+            # an existing source.db purely to answer the empty question, which
+            # is how a probe of an archive with no source tier used to die on
+            # "unable to open database file". ``source_paths`` already guards
+            # the same way.
+            return {}
         if not self._current(frame):
             return dict.fromkeys(keys, "stale")
         with self._read() as conn:

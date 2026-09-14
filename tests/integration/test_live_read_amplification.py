@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
@@ -397,7 +397,18 @@ class TestActiveAppendNoFullReread:
         accepted_frontier = path.stat().st_size
         appended_after_persistence = False
 
-        def append_after_persistence(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        def append_after_persistence(
+            paths: Iterable[Path],
+            *,
+            whole_archive: bool = True,
+            session_ids: Iterable[str] = (),
+        ) -> tuple[set[Path], float, dict[str, float], list[object]]:
+            # Bound to the production signature of
+            # ``LiveBatchProcessor._converge_paths``: the real route passes
+            # ``whole_archive=`` and ``session_ids=`` as keywords, and a double
+            # that accepts only positional paths makes the harness fail with a
+            # TypeError that looks nothing like the behaviour under test.
+            del whole_archive, session_ids
             nonlocal appended_after_persistence
             if not appended_after_persistence:
                 _append_jsonl(path, [_claude_code_record(session_id=session_id, uuid="later")])

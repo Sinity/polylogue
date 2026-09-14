@@ -165,16 +165,35 @@ def _write_existing_lifecycle(
     A terminating signal must not spend the ordinary daemon writer timeout
     waiting for an external SQLite lock, so this deliberately skips bootstrap
     DDL and uses a short connection timeout.
+
+    The write is taken under an explicit ``write_lease``. The daemon arms
+    ``arm_write_lease_enforcement(process_wide=True)`` for its whole lifetime,
+    and every other lifecycle write reaches the ops tier through the write
+    coordinator, which holds that lease. This path does not: it runs
+    synchronously on the main thread from a signal handler, whose context holds
+    no lease, so ``require_write_lease`` refused the connection with
+    ``UnleasedWriteError``. ``record_signal_best_effort`` swallowed that, the
+    signal name was never persisted, and the row ended up incoherent -- a NULL
+    ``signal`` beside ``exit_kind='signal'``, which is what
+    ``test_sigterm_read_only_daemon_records_forensics`` caught.
+
+    The lease is an in-process, re-entrant ContextVar authority, not a
+    contended resource, so taking it here cannot block the handler. The
+    single-writer boundary is not weakened: the bounded connection timeout above
+    remains what limits real SQLite contention.
     """
-    conn = open_daemon_connection(
-        ops_db_path,
-        timeout=_SIGNAL_WRITE_TIMEOUT_SECONDS,
-        busy_timeout_ms=int(_SIGNAL_WRITE_TIMEOUT_SECONDS * 1000),
-    )
-    try:
-        writer(conn, **kwargs)
-    finally:
-        conn.close()
+    from polylogue.core.write_lease import write_lease
+
+    with write_lease("daemon.lifecycle.signal", archive_root=ops_db_path.parent):
+        conn = open_daemon_connection(
+            ops_db_path,
+            timeout=_SIGNAL_WRITE_TIMEOUT_SECONDS,
+            busy_timeout_ms=int(_SIGNAL_WRITE_TIMEOUT_SECONDS * 1000),
+        )
+        try:
+            writer(conn, **kwargs)
+        finally:
+            conn.close()
 
 
 def note_process_heartbeat(*, now_monotonic: float | None = None) -> None:

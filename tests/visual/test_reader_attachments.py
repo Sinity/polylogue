@@ -92,9 +92,12 @@ def test_attachment_to_envelope_shape() -> None:
 def test_reader_attachment_surface_contract(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
         seed_reader_attachments(reader_workspace)
-        # The interpolated shell this test reads answers on the workspace
-        # routes; the root serves the typed WebUI.
-        status, content_type, body = get_text(base_url, "/w/stack")
+        # The root serves the typed WebUI archive overview, which is the page
+        # that emits the overview island asserted below. ``/w/stack`` is the
+        # bounded workspace view and renders its "choose valid session targets"
+        # empty state when no ``ids`` are supplied, which is what this test
+        # used to read after the #4645 WebUI cutover.
+        status, content_type, body = get_text(base_url, "/")
         conv_payload = get_json(base_url, f"/api/sessions/{READER_C1}")
         per_conv = get_json(base_url, f"/api/sessions/{READER_C1}/attachments")
         library = get_json(base_url, "/api/attachments?limit=100")

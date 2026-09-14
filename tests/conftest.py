@@ -552,6 +552,26 @@ def _clear_polylogue_env(
 
     reset_mcp_call_log()
 
+    # Drop the process-global shared compute adapter.
+    # ``polylogue.daemon.execution._SHARED_COMPUTE_ADAPTER`` is published once
+    # per process by whichever daemon owns an API server
+    # (``publish_daemon_compute_adapter(api_server.execution_kernel)`` in
+    # daemon/cli.py) and is read by every lease-free background derivation via
+    # ``daemon_compute_adapter()``. A test that patches the API server with a
+    # ``MagicMock`` publishes ``mock.execution_kernel`` into that global, and a
+    # test that owns a real adapter leaves a *shut down* one behind. Both
+    # survive into later tests, where ``convergence._converge_serialized`` then
+    # fails on ``asyncio.wrap_future(submitted.future)`` with
+    # "concurrent.futures.Future is expected, got <MagicMock ...>", or raises
+    # "daemon compute adapter is shutting down".
+    #
+    # Process-lifetime publication is correct for a real daemon, whose adapter
+    # outlives every request. It is only wrong for a test process that starts
+    # and discards many daemons, so the production route is not weakened.
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+
+    reset_daemon_compute_adapter()
+
     # Strip every POLYLOGUE_* host env var so tests never inherit operator
     # configuration (archive root, daemon api host/port, validation mode,
     # notification webhook, etc.) from the developer host (#1325). A live

@@ -21,7 +21,6 @@ from tests.infra.archive_scenarios import (
     ScenarioAttachment,
     ScenarioContentBlock,
     ScenarioMessage,
-    archive_for_scenario_db,
     seed_workspace_scenarios,
 )
 from tests.infra.json_contracts import json_object
@@ -29,6 +28,7 @@ from tests.infra.semantic_facts import (
     SessionProfileFacts,
     assert_same_session_profile_facts,
 )
+from tests.infra.storage_records import materialize_session_insights
 from tests.infra.surfaces import CLISurface, DaemonHTTPSurface, FacadeSurface, RepositorySurface
 
 _SELECTED_ORIGIN = "claude-code-session"
@@ -144,12 +144,12 @@ async def test_session_profile_fact_survives_repository_facade_cli_and_daemon_ht
     selected, decoy, missing = _profile_fact_scenarios()
     db_path, _ = seed_workspace_scenarios(workspace_env, (selected, decoy))
 
-    materializer = archive_for_scenario_db(db_path)
-    try:
-        rebuild = await materializer.rebuild_insights()
-        assert rebuild.profiles == 2
-    finally:
-        await materializer.close()
+    # ``Polylogue.rebuild_insights`` refuses in-process execution: a sweep is a
+    # sealed machine owned by ``polylogued run``. This test needs materialized
+    # rows to compare across surfaces, so it calls the same materializer both
+    # sanctioned owners reach.
+    rebuild = materialize_session_insights(db_path)
+    assert rebuild.profiles == 2
 
     # This session exists in the archive but was deliberately planted after
     # the one rebuild. It is the independent q-missing fact, not a fabricated

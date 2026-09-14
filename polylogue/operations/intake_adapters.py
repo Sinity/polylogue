@@ -140,9 +140,16 @@ class FileIntakeAdapter(IntakeAdapter):
         if root_mtime_ns is not None and root_mtime_ns != self._last_root_mtime_ns:
             self._after = None
             self._last_root_mtime_ns = root_mtime_ns
+        # The cursor advances in ``acknowledge``, over items the dispatcher
+        # actually consumed -- never here, over everything merely discovered.
+        # A page is routinely truncated by the class deficit, so advancing on
+        # discovery skipped every file past the first admitted one and, because
+        # the walk only ever moves forward, those files were never revisited:
+        # a static root silently retained just its lexicographically-first
+        # session. Revisiting an already-admitted file is explicitly harmless
+        # (durable cursor/raw identity, see above), so the conservative
+        # direction here is to re-discover, never to skip.
         paths = _bounded_source_paths(self.source, self.context.sources, limit=limit, after=self._after)
-        if paths:
-            self._after = str(paths[-1])
         items: list[IntakeItem] = []
         for path in paths:
             try:
@@ -198,8 +205,14 @@ class FileIntakeAdapter(IntakeAdapter):
 
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable
-        # cursor/raw commit is the acknowledgement projection.
-        return None
+        # cursor/raw commit is the acknowledgement projection.  The scheduling
+        # cursor advances here, monotonically, so an item dropped by the class
+        # deficit is rediscovered on the next pass instead of being skipped.
+        payload = item.payload
+        if isinstance(payload, (str, Path)):
+            position = str(payload)
+            if self._after is None or position > self._after:
+                self._after = position
 
 
 class MultiplexIntakeAdapter(IntakeAdapter):
@@ -512,11 +525,20 @@ class DaemonIntakeService:
         self,
         dispatcher: FairIntakeDispatcher,
         *,
-        budget: int = 64,
+        budget: int = 64 * 1024 * 1024,
         idle_delay_s: float = 5.0,
         wakeup: asyncio.Event | None = None,
     ) -> None:
         self.dispatcher = dispatcher
+        # Byte-denominated, because that is what these adapters charge:
+        # ``FileIntakeAdapter`` and the hook/raw adapters all report
+        # ``estimated_cost`` in payload bytes and reconcile against
+        # ``source_payload_read_bytes``. A count-scale budget (the previous 64)
+        # left a class's per-pass share three to four orders of magnitude below
+        # one ordinary session file, so a single admission drove the deficit
+        # deeply negative and the class did no work at all for hundreds of
+        # passes. ``IntakeClassSpec.page_size`` still bounds each discovery
+        # call, so this bounds bytes per pass, not items.
         self.budget = max(1, budget)
         self.idle_delay_s = max(0.05, idle_delay_s)
         self._wakeup = wakeup if wakeup is not None else asyncio.Event()
