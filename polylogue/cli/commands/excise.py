@@ -216,7 +216,9 @@ def excise_command(
         env.ui.summary(
             f"Would excise session {session_id}",
             [
-                f"  source.db raw rows: {plan.source_raw_rows}",
+                f"  source.db raw rows: {plan.source_raw_rows}"
+                + (f" (including {plan.source_fact_rows} fact/plan snapshot row(s))" if plan.source_fact_rows else ""),
+                f"  source.db hook events: {plan.source_hook_events}",
                 f"  source.db blob refs: {plan.source_blob_refs}",
                 f"  index.db sessions: {plan.index_sessions}",
                 f"  index.db messages: {plan.index_messages}",
@@ -235,14 +237,6 @@ def excise_command(
                         + ", ".join(plan.lineage_dependent_session_ids)
                     ]
                     if plan.lineage_dependent_session_ids
-                    else []
-                ),
-                *(
-                    [
-                        f"  WARNING {len(plan.retained_hook_events)} hook event(s) for this session are "
-                        "NOT excised and stay readable in source.db with their blobs rooting GC"
-                    ]
-                    if plan.retained_hook_events
                     else []
                 ),
             ],

@@ -19,13 +19,33 @@ excision:
    blob-ref/streaming routes respectively, shared by the CLI import path and
    the daemon watch path) refuse to re-store a payload whose blob hash is
    recorded there, even after an unrelated ``index.db`` rebuild.
-3. Deletes ``user.db`` assertions targeting the excised session/messages/
+3. Deletes the session's durable hook events (``raw_hook_events`` +
+   ``hook_event_carriers`` + their ``hook_payload`` blob refs, through
+   ``delete_source_hook_event``) and records an ``excised_content`` marker
+   for every blob hash they owned. Hook payloads are session-addressable by
+   ``(origin, session_native_id)`` and carry no ``raw_sessions`` row, so no
+   raw target above reaches them; without this step a completed excision
+   left every PreToolUse/PostToolUse payload readable (polylogue-bhhsa).
+   Whatever is still readable after the commit is named on the receipt as
+   ``retained_hook_events`` and makes ``ExcisionReceipt.complete`` false.
+4. Deletes ``user.db`` assertions targeting the excised session/messages/
    blocks (including any prior ``SECRET_CANDIDATE`` finding about that exact
    content -- its whole purpose was pointing at now-gone bytes) and writes
    one durable ``EXCISION_RECORD`` audit receipt.
-4. Deletes the session from ``index.db`` -- ``sessions`` cascades to
+5. Deletes the session from ``index.db`` -- ``sessions`` cascades to
    ``messages``/``blocks``/``session_links`` via ``ON DELETE CASCADE``, and
    the FTS triggers clean the contentless search index.
+
+**Fact-tier evidence.** Artifacts admitted with ``parse_policy='fact'``
+get their own ``raw_sessions`` row but mint no ``sessions`` row, so
+``sessions.raw_id`` never names them. Claude Code's
+``todos/<session-uuid>[-agent-<uuid>].json`` plan snapshots are linked to
+their session only by the identity in their own filename, which is why
+excising a session used to leave its plan text readable under the excised
+session id (polylogue-si5kj). ``resolve_session_excision_target`` resolves
+them from that declared identity and folds them into the seed set *before*
+the revision closure runs, so every retained revision of the same plan file
+is covered too.
 
 **Attachments referenced from elsewhere.** ``attachment_refs.session_id``/
 ``message_id`` carry ``ON DELETE CASCADE`` to ``sessions``/``messages``, so
@@ -70,15 +90,18 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, Origin, Provider
 from polylogue.security.excision_policy import (
     ExcisionPolicyError,
     ExcisionPolicySnapshot,
     build_excision_policy_snapshot,
 )
+from polylogue.sources.origin_specs import artifact_rule_for_path
+from polylogue.sources.parsers.claude.todos import session_and_agent_id_from_filename
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
+    delete_source_hook_event,
     is_blob_hash_excised,
     record_excised_blob_hash,
 )
@@ -132,17 +155,25 @@ class ExcisionTarget:
     raw_targets: tuple[ExcisionRawTarget, ...] = ()
     message_ids: tuple[str, ...] = ()
     block_ids: tuple[str, ...] = ()
-    #: Durable hook-event ids for this session that this excision does NOT
-    #: remove. Hook payloads are session-addressable by
-    #: (origin, session_native_id) but carry no raw_sessions row, so they are
-    #: outside every raw target below. Named here so the plan and receipt
-    #: report them as a counted residual instead of letting the operation
-    #: claim an excision it did not perform (polylogue-bhhsa).
-    retained_hook_event_ids: tuple[str, ...] = ()
+    #: Durable hook-event ids this excision removes. Hook payloads are
+    #: session-addressable by (origin, session_native_id) but carry no
+    #: raw_sessions row, so no raw target above reaches them; they are
+    #: resolved here and deleted through ``delete_source_hook_event``, with
+    #: every blob hash they own marked excised (polylogue-bhhsa).
+    hook_event_ids: tuple[str, ...] = ()
+    #: Raw ids of fact-tier evidence (parse_policy='fact') whose declared
+    #: identity resolves to this session -- today Claude Code's
+    #: ``todos/<session-uuid>[-agent-<uuid>].json`` plan snapshots, which
+    #: carry no ``sessions`` row and are linked only by their filename
+    #: (polylogue-si5kj). Each also appears in ``raw_targets``; this tuple
+    #: exists so the plan and receipt can name them separately.
+    fact_raw_ids: tuple[str, ...] = ()
 
     @property
     def found(self) -> bool:
-        return self.session_exists or bool(self.raw_targets or self.message_ids or self.block_ids)
+        return self.session_exists or bool(
+            self.raw_targets or self.message_ids or self.block_ids or self.hook_event_ids
+        )
 
 
 def resolve_session_excision_target(archive_root: Path, session_id: str) -> ExcisionTarget:
@@ -200,10 +231,17 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
             conn.close()
 
     raw_targets: tuple[ExcisionRawTarget, ...] = ()
-    retained_hook_event_ids: tuple[str, ...] = ()
+    hook_event_ids: tuple[str, ...] = ()
+    fact_raw_ids: tuple[str, ...] = ()
     if source_db.exists():
         conn = _connect_ro(source_db)
         try:
+            # Fact-tier evidence carries no sessions row, so the index can
+            # never seed it. Resolve it from its own declared identity and
+            # add it to the seed set before the revision closure runs, so
+            # every retained revision of that same file is covered too.
+            fact_raw_ids = _session_fact_raw_ids(conn, session_id)
+            raw_ids.extend(fact_raw_ids)
             if raw_ids:
                 resolved = _durable_revision_closure(conn, raw_ids)
                 placeholders = ",".join("?" for _ in resolved)
@@ -214,7 +252,7 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
                 raw_targets = tuple(
                     ExcisionRawTarget(raw_id=str(r[0]), blob_hash=bytes(r[1]), source_path=str(r[2])) for r in rows
                 )
-            retained_hook_event_ids = _session_hook_event_ids(conn, session_id)
+            hook_event_ids = _session_hook_event_ids(conn, session_id)
         finally:
             conn.close()
 
@@ -224,7 +262,8 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
         raw_targets=raw_targets,
         message_ids=message_ids,
         block_ids=block_ids,
-        retained_hook_event_ids=retained_hook_event_ids,
+        hook_event_ids=hook_event_ids,
+        fact_raw_ids=fact_raw_ids,
     )
 
 
@@ -323,12 +362,13 @@ def _durable_revision_closure(conn: sqlite3.Connection, seeds: Sequence[str]) ->
 
 
 def _session_hook_event_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
-    """Hook events addressed to this session, which excision does not remove.
+    """Hook events addressed to this session, which excision removes.
 
     Hook payloads are durable and session-addressable by
     ``(origin, session_native_id)`` but deliberately carry no
-    ``raw_sessions``/``sessions`` row, so no raw target reaches them. They are
-    reported, not deleted: see the residual note on ``ExcisionTarget``.
+    ``raw_sessions``/``sessions`` row, so no raw target reaches them. Resolved
+    here so the apply can delete each one through the source tier's own paired
+    delete route and mark every blob it owns excised.
     """
     origin, _, native_id = session_id.partition(":")
     if not origin or not native_id or not _table_exists(conn, "raw_hook_events"):
@@ -340,6 +380,42 @@ def _session_hook_event_ids(conn: sqlite3.Connection, session_id: str) -> tuple[
             (origin, native_id),
         ).fetchall()
     )
+
+
+def _session_fact_raw_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
+    """Raw ids of fact-tier evidence whose declared identity is this session.
+
+    Fact artifacts (``parse_policy='fact'``) are admitted as their own
+    ``raw_sessions`` rows but mint no ``sessions`` row, so
+    ``sessions.raw_id`` never names them and no index relation reaches them.
+    Their only link to a session is the identity their own declaration
+    carries. Today exactly one admitted fact kind carries a session-derived
+    identity: Claude Code's ``todos/<session-uuid>[-agent-<uuid>].json`` plan
+    snapshots, whose filename is the owning session's native id (a delegated
+    subagent's snapshot keeps the parent session's uuid as its stem prefix,
+    so it belongs to the same excision). The artifact rule, not a local path
+    guess, decides what counts as that kind.
+
+    A fact kind whose identity is *not* session-derived is deliberately not
+    matched here: excising a session must not take unrelated evidence with
+    it.
+    """
+    origin, _, native_id = session_id.partition(":")
+    if not origin or not native_id or origin != Origin.CLAUDE_CODE_SESSION.value:
+        return ()
+    rows = conn.execute(
+        "SELECT raw_id, source_path FROM raw_sessions WHERE origin = ? AND source_path LIKE '%todos/%.json'",
+        (origin,),
+    ).fetchall()
+    resolved: list[str] = []
+    for raw_id, source_path in rows:
+        rule = artifact_rule_for_path(Provider.CLAUDE_CODE, str(source_path))
+        if rule is None or rule.kind != "todo_snapshot":
+            continue
+        owner_session_id, _agent_id = session_and_agent_id_from_filename(str(source_path))
+        if owner_session_id == native_id:
+            resolved.append(str(raw_id))
+    return tuple(sorted(resolved))
 
 
 def find_lineage_dependents(archive_root: Path, session_id: str) -> tuple[str, ...]:
@@ -435,10 +511,14 @@ class ExcisionPlan:
     user_assertions: int = 0
     already_excised_blob_hashes: tuple[str, ...] = ()
     lineage_dependent_session_ids: tuple[str, ...] = ()
-    #: Durable hook-event rows for this session that an apply will NOT
-    #: remove. Named so the preview is honest about what survives rather
-    #: than presenting a count of what it happens to reach as the whole job.
-    retained_hook_events: tuple[str, ...] = ()
+    #: Durable hook-event rows for this session that an apply will remove
+    #: (polylogue-bhhsa).
+    source_hook_events: int = 0
+    #: Fact-tier raw rows resolved by declared identity rather than by any
+    #: index relation -- Claude Code TODO plan snapshots (polylogue-si5kj).
+    #: Already counted in ``source_raw_rows``; named so the preview shows
+    #: that this evidence class is in scope.
+    source_fact_rows: int = 0
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -453,7 +533,8 @@ class ExcisionPlan:
             "user_assertions": self.user_assertions,
             "already_excised_blob_hashes": list(self.already_excised_blob_hashes),
             "lineage_dependent_session_ids": list(self.lineage_dependent_session_ids),
-            "retained_hook_events": list(self.retained_hook_events),
+            "source_hook_events": self.source_hook_events,
+            "source_fact_rows": self.source_fact_rows,
         }
 
 
@@ -530,7 +611,8 @@ def plan_session_excision(archive_root: Path, session_id: str) -> ExcisionPlan:
         user_assertions=user_assertions,
         already_excised_blob_hashes=tuple(already_excised),
         lineage_dependent_session_ids=find_lineage_dependents(archive_root, session_id),
-        retained_hook_events=target.retained_hook_event_ids,
+        source_hook_events=len(target.hook_event_ids),
+        source_fact_rows=len(target.fact_raw_ids),
     )
 
 
@@ -551,11 +633,12 @@ class ExcisionReceipt:
     # excised alongside session_id, whose per-tier counts are already
     # folded into `counts`/`removed_blob_hashes` above.
     cascaded_session_ids: tuple[str, ...] = ()
-    #: Durable hook-event rows addressed to the excised session that this
-    #: excision did not remove. A privacy operation must not report
-    #: unqualified success while session-addressable payloads -- tool inputs
-    #: and outputs, file contents, anything pasted -- stay readable in
-    #: source.db with their blobs still rooting GC (polylogue-bhhsa).
+    #: Hook-event rows addressed to the excised session that were still
+    #: readable in ``source.db`` after the apply committed -- a verified
+    #: post-condition, not an assumption. A privacy operation must not
+    #: report unqualified success while session-addressable payloads -- tool
+    #: inputs and outputs, file contents, anything pasted -- survive it
+    #: (polylogue-bhhsa).
     retained_hook_events: tuple[str, ...] = ()
 
     @property
@@ -623,6 +706,8 @@ def _apply_single_session_excision(
         "index_blocks": len(target.block_ids),
         "source_blob_refs": 0,
         "source_raw_rows": 0,
+        "source_fact_rows": len(target.fact_raw_ids),
+        "source_hook_events": 0,
         "user_assertions_removed": 0,
     }
 
@@ -684,7 +769,8 @@ def _apply_single_session_excision(
 
     source_db = archive_root / "source.db"
     removed_hashes: list[str] = []
-    if source_db.exists() and target.raw_targets:
+    retained_hook_events: tuple[str, ...] = ()
+    if source_db.exists() and (target.raw_targets or target.hook_event_ids):
         conn = _connect_rw(source_db)
         conn.execute("PRAGMA foreign_keys = ON")
         try:
@@ -724,6 +810,69 @@ def _apply_single_session_excision(
                             excised_at_ms=timestamp,
                         )
                         removed_hashes.append(blob_hash.hex())
+
+                for hook_event_id in target.hook_event_ids:
+                    # A hook event owns its payload bytes through three
+                    # durable coordinates: its own blob_hash column, its
+                    # carrier rows, and the 'hook_payload' blob ref keyed by
+                    # the event id. Read all three BEFORE deleting -- a row
+                    # written before the v22 blob_hash backfill has a NULL
+                    # there and would otherwise leave an unmarked,
+                    # re-ingestible payload behind.
+                    owned_hashes: set[bytes] = set()
+                    row = conn.execute(
+                        "SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = ?",
+                        (hook_event_id,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    if row[0]:
+                        owned_hashes.add(bytes(row[0]))
+                    owned_hashes.update(
+                        bytes(r[0])
+                        for r in conn.execute(
+                            "SELECT DISTINCT blob_hash FROM hook_event_carriers WHERE hook_event_id = ?",
+                            (hook_event_id,),
+                        ).fetchall()
+                        if r[0]
+                    )
+                    owned_hashes.update(
+                        bytes(r[0])
+                        for r in conn.execute(
+                            "SELECT DISTINCT blob_hash FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ?",
+                            (hook_event_id,),
+                        ).fetchall()
+                        if r[0]
+                    )
+                    # The source tier's own paired delete route: event row,
+                    # carriers and the owned blob ref together, so no
+                    # durable row is left pinning the blob.
+                    delete_source_hook_event(conn, hook_event_id, manage_transaction=False)
+                    counts["source_hook_events"] += 1
+                    for blob_hash in owned_hashes:
+                        record_excised_blob_hash(
+                            conn,
+                            blob_hash=blob_hash,
+                            reason=reason,
+                            actor=actor,
+                            prior_revision=hook_event_id,
+                            span=None,
+                            excised_at_ms=timestamp,
+                        )
+                        removed_hashes.append(blob_hash.hex())
+
+            # Verified post-condition, after the transaction committed: any
+            # hook event still readable is a residual this operation must
+            # name rather than let the per-tier counts read as the whole job.
+            retained_hook_events = tuple(
+                hook_event_id
+                for hook_event_id in target.hook_event_ids
+                if conn.execute(
+                    "SELECT 1 FROM raw_hook_events WHERE hook_event_id = ?",
+                    (hook_event_id,),
+                ).fetchone()
+                is not None
+            )
         finally:
             conn.close()
 
@@ -807,7 +956,7 @@ def _apply_single_session_excision(
                 tuple(str(item) for item in stored_hashes) if isinstance(stored_hashes, (list, tuple)) else ()
             ),
             counts=dict(stored_counts) if isinstance(stored_counts, dict) else {},
-            retained_hook_events=target.retained_hook_event_ids,
+            retained_hook_events=retained_hook_events,
         )
 
     return ExcisionReceipt(
@@ -819,7 +968,7 @@ def _apply_single_session_excision(
         receipt_assertion_id=receipt_id,
         removed_blob_hashes=tuple(removed_hashes),
         counts=counts,
-        retained_hook_events=target.retained_hook_event_ids,
+        retained_hook_events=retained_hook_events,
     )
 
 

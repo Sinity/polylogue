@@ -12,8 +12,11 @@ freely re-ingestible while the receipt reported success.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
+
+import pytest
 
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
@@ -26,7 +29,12 @@ from polylogue.security.excision import (
     resolve_session_excision_target,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveHookEvent,
+    ContentExcisedError,
+    write_source_hook_event,
+    write_source_raw_session,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _LOGICAL_KEY = "codex-session:multi-revision"
@@ -110,6 +118,20 @@ def _seed_two_revisions(archive_root: Path) -> tuple[str, str, str, bytes, bytes
     return session_id, baseline_raw_id, head_raw_id, baseline_payload, head_payload
 
 
+def _hook_event(hook_event_id: str, payload: bytes, source_path: str, observed_at_ms: int) -> ArchiveHookEvent:
+    """One hook event addressed to the seeded session by session_native_id."""
+    return ArchiveHookEvent(
+        hook_event_id=hook_event_id,
+        origin="codex-session",
+        native_id=f"native-{hook_event_id}",
+        session_native_id="multi-revision",
+        source_path=source_path,
+        event_type="PreToolUse",
+        payload=json.loads(payload.decode()),
+        observed_at_ms=observed_at_ms,
+    )
+
+
 def _raw_ids(archive_root: Path) -> set[str]:
     with sqlite3.connect(archive_root / "source.db") as conn:
         return {str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")}
@@ -172,52 +194,118 @@ def test_excision_reaches_every_revision_of_the_session(tmp_path: Path) -> None:
     assert hashlib.sha256(head_payload).digest() in excised
 
 
-def test_excision_reports_hook_evidence_it_does_not_remove(tmp_path: Path) -> None:
-    """A session's hook payloads survive excision, so the receipt says so.
+def test_excision_removes_hook_evidence_and_its_blobs(tmp_path: Path) -> None:
+    """A session's hook payloads must not survive its excision.
 
     Hook events are durable and session-addressable by
     ``(origin, session_native_id)`` but carry no ``raw_sessions`` row, so no
-    raw target reaches them. Until excision covers them, reporting unqualified
-    success is the defect; naming them as a counted residual is the honest
-    partial result.
+    raw target reaches them. Before the fix, ``polylogue excise`` reported a
+    completed excision while every PreToolUse/PostToolUse payload -- tool
+    inputs and outputs, file contents, anything pasted -- stayed readable in
+    ``source.db`` with its blob still rooting GC.
 
-    Anti-vacuity: dropping ``retained_hook_event_ids`` from the resolver, or
-    ``retained_hook_events`` from the receipt, makes ``receipt.complete`` true
-    again while the hook row is still readable below.
+    Anti-vacuity: deleting the hook loop from
+    ``_apply_single_session_excision`` leaves the ``raw_hook_events`` row, its
+    carrier, its ``hook_payload`` blob ref and the unmarked hash behind --
+    every assertion below goes red, and the re-ingest refusal at the bottom
+    stops refusing.
     """
     session_id, _baseline, _head, _bp, _hp = _seed_two_revisions(tmp_path)
+    hook_payload = b'{"tool_input": "content the operator asked to forget"}'
+    hook_hash = hashlib.sha256(hook_payload).digest()
 
     source_conn = sqlite3.connect(tmp_path / "source.db")
     try:
-        with source_conn:
-            source_conn.execute(
-                "INSERT INTO raw_hook_events ("
-                "  hook_event_id, origin, native_id, session_native_id, source_path,"
-                "  event_type, payload_json, observed_at_ms"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    "hook-1",
-                    "codex-session",
-                    "hook-native-1",
-                    "multi-revision",
-                    "/fake/hooks.jsonl",
-                    "PreToolUse",
-                    '{"tool_input": "content the operator asked to forget"}',
-                    2_500,
-                ),
-            )
+        write_source_hook_event(
+            source_conn,
+            origin="codex-session",
+            source_path="/fake/hooks/pre-tool-use.json",
+            payload=hook_payload,
+            acquired_at_ms=2_500,
+            raw_id="raw-hook-1",
+            hook_event=_hook_event("hook-1", hook_payload, "/fake/hooks/pre-tool-use.json", 2_500),
+        )
+        source_conn.commit()
     finally:
         source_conn.close()
 
     plan = plan_session_excision(tmp_path, session_id)
-    assert plan.retained_hook_events == ("hook-1",)
+    assert plan.source_hook_events == 1, "the preview must name the hook evidence in scope"
 
     receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.retained_hook_events == ("hook-1",)
-    assert receipt.complete is False, "an excision that leaves hook payloads must not report completeness"
-    assert receipt.as_dict()["retained_hook_events"] == ["hook-1"]
+    assert receipt.found
+    assert receipt.counts["source_hook_events"] == 1
+    assert receipt.retained_hook_events == (), "nothing should have survived the excision"
+    assert receipt.complete is True
 
-    # The residual is real: the payload is still readable.
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        rows = conn.execute("SELECT payload_json FROM raw_hook_events WHERE hook_event_id = 'hook-1'").fetchall()
-    assert len(rows) == 1
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'hook_payload'").fetchone()[0] == 0, (
+            "a hook_payload ref left behind would keep pinning the blob against GC"
+        )
+    assert hook_hash in _excised_hashes(tmp_path), "the hook payload's hash was never marked excised"
+
+    # Non-resurrection: re-acquiring the identical hook payload is refused.
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        with pytest.raises(ContentExcisedError):
+            write_source_hook_event(
+                source_conn,
+                origin="codex-session",
+                source_path="/fake/hooks/pre-tool-use.json",
+                payload=hook_payload,
+                acquired_at_ms=9_000,
+                raw_id="raw-hook-1",
+                hook_event=_hook_event("hook-1", hook_payload, "/fake/hooks/pre-tool-use.json", 9_000),
+            )
+    finally:
+        source_conn.close()
+
+
+def test_excision_names_hook_evidence_it_could_not_remove(tmp_path: Path) -> None:
+    """What survives is named, not silently dropped.
+
+    ``ExcisionReceipt.retained_hook_events`` is a post-condition read back
+    after the commit, so a hook row that resists deletion (here an ``AFTER
+    DELETE`` trigger reinstates it, standing in for any durable obstruction)
+    is reported instead of being assumed gone.
+
+    Anti-vacuity: replacing the post-commit read-back with
+    ``retained_hook_events = ()`` reports unqualified success while the
+    payload below is still readable.
+    """
+    session_id, _baseline, _head, _bp, _hp = _seed_two_revisions(tmp_path)
+    hook_payload = b'{"tool_input": "stubborn"}'
+
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        write_source_hook_event(
+            source_conn,
+            origin="codex-session",
+            source_path="/fake/hooks/stubborn.json",
+            payload=hook_payload,
+            acquired_at_ms=2_500,
+            raw_id="raw-hook-2",
+            hook_event=_hook_event("hook-2", hook_payload, "/fake/hooks/stubborn.json", 2_500),
+        )
+        source_conn.execute(
+            "CREATE TRIGGER reinstate_hook AFTER DELETE ON raw_hook_events BEGIN "
+            "  INSERT INTO raw_hook_events (hook_event_id, origin, native_id, session_native_id,"
+            "    source_path, event_type, payload_json, observed_at_ms, blob_hash)"
+            "  VALUES (old.hook_event_id, old.origin, old.native_id, old.session_native_id,"
+            "    old.source_path, old.event_type, old.payload_json, old.observed_at_ms, old.blob_hash);"
+            "END"
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
+    assert receipt.retained_hook_events == ("hook-2",)
+    assert receipt.complete is False, "an excision that leaves hook payloads must not report completeness"
+    assert receipt.as_dict()["retained_hook_events"] == ["hook-2"]
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = conn.execute("SELECT payload_json FROM raw_hook_events WHERE hook_event_id = 'hook-2'").fetchall()
+    assert len(rows) == 1, "the residual this receipt names must be real"
