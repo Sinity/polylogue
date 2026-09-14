@@ -245,34 +245,44 @@ def _active_index_raw_authority(
 def _active_index_raw_authority_from_connection(
     conn: sqlite3.Connection,
 ) -> tuple[frozenset[str], tuple[_IndexRawRevisionHead, ...], tuple[_EligibleRawReceipt, ...]]:
-    """Read the retention authority from an already-observed index tier."""
+    """Read the retention authority from an already-observed index tier.
 
-    session_rows = conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
-    head_rows = conn.execute(
-        """SELECT logical_source_key, accepted_raw_id, accepted_source_revision,
-                      accepted_frontier_kind, accepted_frontier,
-                      acquisition_generation, append_end_offset
-               FROM raw_revision_heads"""
-    ).fetchall()
-    eligible_rows = conn.execute(
-        """SELECT DISTINCT application.raw_id,
-                      application.logical_source_key,
-                      application.source_revision,
-                      application.baseline_raw_id,
-                      application.predecessor_raw_id
-               FROM raw_revision_applications AS application
-               JOIN raw_revision_heads AS head
-                 ON head.logical_source_key = application.logical_source_key
-                AND head.session_id = application.session_id
-                AND head.accepted_raw_id = application.accepted_raw_id
-                AND head.accepted_source_revision = application.accepted_source_revision
-                AND head.accepted_content_hash = application.accepted_content_hash
-                AND head.acquisition_generation = application.acquisition_generation
-                AND head.append_end_offset IS application.append_end_offset
-                AND head.decided_at_ms = application.decided_at_ms
-               WHERE application.decision = 'superseded'
-                 AND head.accepted_frontier_kind = 'byte'"""
-    ).fetchall()
+    The failure contract is the path reader's, not the connection's: a damaged
+    index page, a busy pinned reader or a tier missing the revision tables must
+    reach the caller as ``RawRetentionSafetyError`` so the frontier resolves to
+    ``unknown``. Letting a bare ``sqlite3.Error`` escape turns a
+    degraded-but-readable archive into a raised status operation instead.
+    """
+
+    try:
+        session_rows = conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
+        head_rows = conn.execute(
+            """SELECT logical_source_key, accepted_raw_id, accepted_source_revision,
+                          accepted_frontier_kind, accepted_frontier,
+                          acquisition_generation, append_end_offset
+                   FROM raw_revision_heads"""
+        ).fetchall()
+        eligible_rows = conn.execute(
+            """SELECT DISTINCT application.raw_id,
+                          application.logical_source_key,
+                          application.source_revision,
+                          application.baseline_raw_id,
+                          application.predecessor_raw_id
+                   FROM raw_revision_applications AS application
+                   JOIN raw_revision_heads AS head
+                     ON head.logical_source_key = application.logical_source_key
+                    AND head.session_id = application.session_id
+                    AND head.accepted_raw_id = application.accepted_raw_id
+                    AND head.accepted_source_revision = application.accepted_source_revision
+                    AND head.accepted_content_hash = application.accepted_content_hash
+                    AND head.acquisition_generation = application.acquisition_generation
+                    AND head.append_end_offset IS application.append_end_offset
+                    AND head.decided_at_ms = application.decided_at_ms
+                   WHERE application.decision = 'superseded'
+                     AND head.accepted_frontier_kind = 'byte'"""
+        ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        raise RawRetentionSafetyError(f"index tier raw authority is unreadable: {exc}") from exc
     session_raw_ids = frozenset(str(row[0]) for row in session_rows if row[0] is not None and str(row[0]))
     heads = tuple(
         _IndexRawRevisionHead(
