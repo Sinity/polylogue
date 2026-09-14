@@ -671,9 +671,9 @@ def test_status_json_default_uses_bounded_exact_archive_session_state(
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
     observed: dict[str, object] = {}
 
-    def fake_exact_session_state(*args: object, **kwargs: object) -> tuple[int, int, int, int]:
+    def fake_exact_session_state(*args: object, **kwargs: object) -> status_payload_mod.ArchiveEmbeddingStateProbe:
         observed.update(kwargs)
-        return (1, 1, 1, 0)
+        return status_payload_mod.ArchiveEmbeddingStateProbe(counts=(1, 1, 1, 0))
 
     monkeypatch.setattr(
         status_payload_mod,
@@ -760,13 +760,16 @@ def test_status_json_refuses_to_certify_from_a_legacy_status_ledger(tmp_path: Pa
     ``message_embedding_refs`` with current message semantics and no physical
     vectors. Under v6 readiness is inspected -- current ref, current message
     content hash, complete recipe identity, and an existing vector -- so an
-    uninspectable archive reports nothing embedded rather than trusting the
-    ledger. (This test previously asserted the opposite; the ledger-trusting
-    behavior is what v6 deliberately removed.)
+    uninspectable archive reports coverage as *unknown* rather than trusting
+    the ledger. (This test previously asserted the ledger-trusting behavior,
+    which v6 deliberately removed, and then a measured zero, which is the
+    opposite lie.)
 
     Anti-vacuity: make the payload fall back to ``embedding_status.
     message_count_embedded`` when inspection is unavailable and this goes red
-    with ``embedded_sessions == 1`` for an archive that holds no vector at all.
+    with ``embedded_sessions == 1`` for an archive that holds no vector at all;
+    collapse the unmeasurable state back to zero and it goes red on the
+    ``is None`` assertion.
     """
     index_db = tmp_path / "index.db"
     embeddings_db = tmp_path / "embeddings.db"
@@ -819,9 +822,11 @@ def test_status_json_refuses_to_certify_from_a_legacy_status_ledger(tmp_path: Pa
 
     payload = _run_status(tmp_path / "custom.sqlite", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
-    assert payload["embedded_sessions"] == 0
-    assert payload["pending_sessions"] == 2
-    assert payload["embedding_coverage_percent"] == 0.0
+    assert payload["coverage_measurable"] is False
+    assert payload["status"] == "unknown"
+    assert payload["embedded_sessions"] is None
+    assert payload["pending_sessions"] is None
+    assert payload["embedding_coverage_percent"] is None
     assert payload["retrieval_ready"] is False
 
 
@@ -869,10 +874,10 @@ def test_status_json_detail_falls_back_when_exact_session_state_times_out(
     db_anchor = tmp_path / "custom.sqlite"
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
 
-    def unavailable_session_state(*args: object, **kwargs: object) -> None:
-        # The v6 inspection returns None when it cannot certify itself within
-        # its timeout; the caller must degrade rather than guess.
-        return None
+    def unavailable_session_state(*args: object, **kwargs: object) -> status_payload_mod.ArchiveEmbeddingStateProbe:
+        # The v6 inspection cannot certify itself within its timeout; the
+        # caller must report that it does not know, not guess.
+        return status_payload_mod.ArchiveEmbeddingStateProbe(counts=None, reason="readiness_inspection_timeout")
 
     monkeypatch.setattr(
         status_payload_mod,
@@ -882,15 +887,21 @@ def test_status_json_detail_falls_back_when_exact_session_state_times_out(
 
     payload = _run_status(db_anchor, "--detail", cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
-    # Nothing is provably embedded when readiness cannot be inspected, so the
-    # payload reports the conservative backlog instead of the previous
-    # behaviour of trusting the session ledger's embedded count.
+    # Nothing is *known* when readiness cannot be inspected. The payload must
+    # neither trust the session ledger's embedded count nor report a measured
+    # zero -- reporting zero for an uninspectable archive prescribes a paid
+    # regeneration of vectors that may be present and intact.
     #
-    # Anti-vacuity: have the None branch fall back to
+    # Anti-vacuity: have the unmeasurable branch fall back to
     # ``embedding_status.message_count_embedded`` and this goes red with
-    # ``embedded_sessions == 1``.
-    assert payload["embedded_sessions"] == 0
-    assert payload["pending_sessions"] == 2
+    # ``embedded_sessions == 1``; collapse it back to a measured zero and it
+    # goes red on the ``is None`` assertions below.
+    assert payload["coverage_measurable"] is False
+    assert payload["coverage_unmeasurable_reason"] == "readiness_inspection_timeout"
+    assert payload["status"] == "unknown"
+    assert payload["embedded_sessions"] is None
+    assert payload["pending_sessions"] is None
+    assert payload["next_action"]["code"] == "coverage_unmeasurable"
     assert payload["retrieval_ready"] is False
     assert payload["candidate_prose_messages"] == 3
     assert payload["candidate_prose_messages_exact"] is True

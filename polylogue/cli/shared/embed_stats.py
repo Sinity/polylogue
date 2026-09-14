@@ -129,10 +129,17 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
         _render_field("Monthly cost cap", "unbounded")
     _render_field("Status", payload["status"])
     _render_field("Total sessions", payload["total_sessions"])
-    _render_field("Embedded sessions", payload["embedded_sessions"])
-    _render_field("Blocked sessions", payload["blocked_sessions"])
-    _render_field("Embedded messages", payload["embedded_messages"])
-    _render_field("Session coverage", f"{payload['embedding_coverage_percent']:.1f}%")
+    if not payload.get("coverage_measurable", True):
+        reason = payload.get("coverage_unmeasurable_reason") or "inspection unavailable"
+        _render_field("Embedded sessions", f"unknown ({reason})")
+        _render_field("Blocked sessions", payload["blocked_sessions"])
+        _render_field("Embedded messages", "unknown")
+        _render_field("Session coverage", "unknown")
+    else:
+        _render_field("Embedded sessions", payload["embedded_sessions"])
+        _render_field("Blocked sessions", payload["blocked_sessions"])
+        _render_field("Embedded messages", payload["embedded_messages"])
+        _render_field("Session coverage", f"{payload['embedding_coverage_percent']:.1f}%")
     candidate_prose_messages = payload.get("candidate_prose_messages")
     message_coverage_percent = payload.get("message_coverage_percent")
     if candidate_prose_messages is not None and message_coverage_percent is not None:
@@ -144,7 +151,8 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
     pending_messages = (
         f"{payload['pending_messages']} msgs" if payload["pending_messages_exact"] else "msgs not calculated"
     )
-    _render_field("Pending", f"{payload['pending_sessions']} convs, {pending_messages}")
+    pending_sessions_text = "unknown" if payload["pending_sessions"] is None else f"{payload['pending_sessions']}"
+    _render_field("Pending", f"{pending_sessions_text} convs, {pending_messages}")
     _render_field("Retrieval ready", "yes" if payload["retrieval_ready"] else "no")
     _render_field("Freshness", payload["freshness_status"])
     _render_field("Stale messages", payload["stale_messages"])

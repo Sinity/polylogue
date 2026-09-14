@@ -125,16 +125,18 @@ class EmbeddingStatusPayload(TypedDict):
     configured_dimension: int | None
     monthly_cost_cap_usd: float | None
     status: str
+    coverage_measurable: bool
+    coverage_unmeasurable_reason: str | None
     total_sessions: int
-    embedded_sessions: int
+    embedded_sessions: int | None
     blocked_sessions: int
-    embedded_messages: int
-    pending_sessions: int
+    embedded_messages: int | None
+    pending_sessions: int | None
     pending_messages: int | None
     pending_messages_exact: bool
     candidate_prose_messages: int | None
     candidate_prose_messages_exact: bool
-    embedding_coverage_percent: float
+    embedding_coverage_percent: float | None
     embedding_coverage_basis: str
     message_coverage_percent: float | None
     retrieval_ready: bool
@@ -507,6 +509,38 @@ def _message_coverage_percent(
     return embedded_messages / candidate_prose_messages * 100
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveEmbeddingStateProbe:
+    """The outcome of inspecting embedded-vs-pending readiness.
+
+    Three states, deliberately not collapsed:
+
+    ``counts`` present
+        Measured. The inspection ran and its four counts are authoritative.
+    ``counts`` absent with ``tier_absent`` true
+        Measured absence. There is no embeddings tier to inspect, so nothing
+        is embedded -- a genuine zero.
+    ``counts`` absent with ``tier_absent`` false
+        **Unmeasurable.** The inspection could not run (the sqlite-vec
+        extension would not load, the refs schema predates the message-level
+        contract, or the query timed out). Nothing is known about coverage.
+
+    The third state must never be rendered as the second. ``embeddings.db``
+    is the expensive-to-rebuild tier, and reporting an unmeasurable archive as
+    ``none`` prescribes a paid regeneration of vectors that may be present and
+    intact. ``reason`` retains why the inspection could not certify itself, in
+    the same spirit as a retained unknown-outcome reason on a tool result.
+    """
+
+    counts: tuple[int, int, int, int] | None
+    tier_absent: bool = False
+    reason: str | None = None
+
+    @property
+    def measurable(self) -> bool:
+        return self.counts is not None or self.tier_absent
+
+
 def _authoritative_archive_embedding_state(
     conn: sqlite3.Connection,
     *,
@@ -515,7 +549,7 @@ def _authoritative_archive_embedding_state(
     vectors_table: str,
     recipe: EmbeddingRecipe,
     timeout_ms: int | None,
-) -> tuple[int, int, int, int] | None:
+) -> ArchiveEmbeddingStateProbe:
     """Count readiness from desired message membership and vector provenance.
 
     ``embedding_status`` and ``embedding_derivation_state`` are attempt
@@ -525,18 +559,26 @@ def _authoritative_archive_embedding_state(
     embeddable messages are valid-empty partitions.
     """
 
-    if (
-        not refs_table
-        or not meta_table
-        or not vectors_table
-        or not _embedding_refs_have_message_semantics(conn, refs_table)
-    ):
-        return None
+    if not refs_table and not meta_table and not vectors_table:
+        # No embeddings tier at all: a measured absence, not an unknown.
+        return ArchiveEmbeddingStateProbe(counts=None, tier_absent=True, reason="embeddings_tier_absent")
+    if not refs_table or not meta_table or not vectors_table:
+        return ArchiveEmbeddingStateProbe(counts=None, reason="embeddings_tier_incomplete")
+    if not _embedding_refs_have_message_semantics(conn, refs_table):
+        # A pre-v6 refs schema cannot express the message-level contract this
+        # count asserts.  Vectors may well be present; they are unmeasurable.
+        return ArchiveEmbeddingStateProbe(counts=None, reason="refs_schema_predates_message_semantics")
     from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
-    loaded, _error = try_load_sqlite_vec(conn)
+    loaded, error = try_load_sqlite_vec(conn)
     if not loaded:
-        return None
+        # ``message_embeddings`` is a vec0 virtual table; without the extension
+        # it cannot be read at all.  That is an inability to inspect, never
+        # evidence that the vectors are missing.
+        return ArchiveEmbeddingStateProbe(
+            counts=None,
+            reason=f"sqlite_vec_unavailable: {error}" if error is not None else "sqlite_vec_unavailable",
+        )
     relation = archive_embeddable_messages_relation(conn, alias="desired", model=recipe.model)
     sql = f"""
         WITH desired_messages AS (
@@ -578,8 +620,9 @@ def _authoritative_archive_embedding_state(
     )
     rows = _rows_with_timeout(conn, sql, params=params, timeout_ms=timeout_ms)
     if not rows:
-        return None
-    return tuple(_payload_int(value) for value in rows[0])  # type: ignore[return-value]
+        return ArchiveEmbeddingStateProbe(counts=None, reason="readiness_inspection_timeout")
+    counts: tuple[int, int, int, int] = tuple(_payload_int(value) for value in rows[0])  # type: ignore[assignment]
+    return ArchiveEmbeddingStateProbe(counts=counts)
 
 
 def _blocked_archive_embedding_counts(
@@ -743,6 +786,22 @@ def _next_action(
     }
 
 
+def _unmeasurable_next_action(reason: str | None) -> EmbeddingNextActionPayload:
+    """Never prescribe a paid backfill for coverage that was not measured."""
+
+    return {
+        "code": "coverage_unmeasurable",
+        "command": "polylogue ops embed preflight --detail",
+        "reason": (
+            "Embedding coverage could not be inspected"
+            + (f" ({reason})" if reason else "")
+            + "; stored vectors may be present and intact. Restore the inspection before "
+            "treating this archive as unembedded -- regenerating vectors is expensive and "
+            "an unmeasured archive is not an empty one."
+        ),
+    }
+
+
 def _payload_from_stats(
     *,
     settings: EmbeddingStatusSettings,
@@ -755,19 +814,28 @@ def _payload_from_stats(
     terminal_failure_count: int = 0,
     retryable_failure_count: int = 0,
     blocked_sessions: int = 0,
+    coverage_unmeasurable_reason: str | None = None,
 ) -> EmbeddingStatusPayload:
+    measurable = coverage_unmeasurable_reason is None
     embedded_sessions = stats.embedded_sessions
     pending_sessions = stats.pending_sessions
     eligible_sessions = embedded_sessions + pending_sessions + blocked_sessions
-    status = _embedding_status(
-        total_sessions=total_sessions,
-        embedded_sessions=embedded_sessions,
-        pending_sessions=pending_sessions,
-        blocked_sessions=blocked_sessions,
-    )
-    if stats.failure_count > 0 and status == "complete":
-        status = "partial"
-    retrieval_ready = _retrieval_ready(stats)
+    if measurable:
+        status = _embedding_status(
+            total_sessions=total_sessions,
+            embedded_sessions=embedded_sessions,
+            pending_sessions=pending_sessions,
+            blocked_sessions=blocked_sessions,
+        )
+        if stats.failure_count > 0 and status == "complete":
+            status = "partial"
+        retrieval_ready = _retrieval_ready(stats)
+    else:
+        # The inspection could not run.  Coverage is unknown -- reporting it as
+        # a measured absence would prescribe regenerating vectors that may be
+        # present and intact.
+        status = "unknown"
+        retrieval_ready = False
     message_coverage = _message_coverage_percent(
         embedded_messages=stats.embedded_messages,
         candidate_prose_messages=stats.candidate_prose_messages,
@@ -785,25 +853,33 @@ def _payload_from_stats(
         "configured_dimension": settings.configured_dimension,
         "monthly_cost_cap_usd": settings.monthly_cost_cap_usd,
         "status": status,
+        "coverage_measurable": measurable,
+        "coverage_unmeasurable_reason": coverage_unmeasurable_reason,
         "total_sessions": total_sessions,
-        "embedded_sessions": embedded_sessions,
+        "embedded_sessions": embedded_sessions if measurable else None,
         "blocked_sessions": blocked_sessions,
-        "embedded_messages": stats.embedded_messages,
-        "pending_sessions": pending_sessions,
-        "pending_messages": stats.pending_messages if pending_messages_exact else None,
-        "pending_messages_exact": pending_messages_exact,
+        "embedded_messages": stats.embedded_messages if measurable else None,
+        "pending_sessions": pending_sessions if measurable else None,
+        "pending_messages": stats.pending_messages if (measurable and pending_messages_exact) else None,
+        "pending_messages_exact": pending_messages_exact and measurable,
         "candidate_prose_messages": stats.candidate_prose_messages,
         "candidate_prose_messages_exact": stats.candidate_prose_messages_exact,
-        "embedding_coverage_percent": round(
-            _coverage_percent(
-                embedded_sessions=embedded_sessions,
-                eligible_sessions=eligible_sessions,
-                total_sessions=total_sessions,
-            ),
-            1,
+        "embedding_coverage_percent": (
+            round(
+                _coverage_percent(
+                    embedded_sessions=embedded_sessions,
+                    eligible_sessions=eligible_sessions,
+                    total_sessions=total_sessions,
+                ),
+                1,
+            )
+            if measurable
+            else None
         ),
         "embedding_coverage_basis": "sessions",
-        "message_coverage_percent": round(message_coverage, 1) if message_coverage is not None else None,
+        "message_coverage_percent": (
+            round(message_coverage, 1) if (measurable and message_coverage is not None) else None
+        ),
         "retrieval_ready": retrieval_ready,
         "freshness_status": _freshness_status(status, stats),
         "stale_messages": stats.stale_messages,
@@ -820,7 +896,9 @@ def _payload_from_stats(
         "total_estimated_cost_usd": stats.total_estimated_cost_usd,
         "latest_catchup_run": latest_catchup_run,
         "latest_material_catchup_run": latest_material_catchup_run,
-        "next_action": _next_action(
+        "next_action": _unmeasurable_next_action(coverage_unmeasurable_reason)
+        if not measurable
+        else _next_action(
             config_enabled=settings.config_enabled,
             has_voyage_api_key=settings.has_voyage_api_key,
             total_sessions=total_sessions,
@@ -922,17 +1000,20 @@ def _archive_embedding_status_payload(
         # detail pass still downgrades this to False when one of its own
         # queries times out.
         pending_messages_exact = include_detail
-        if authoritative_state is None:
+        coverage_unmeasurable_reason = None if authoritative_state.measurable else authoritative_state.reason
+        if authoritative_state.counts is None:
             # Readiness is unavailable until current refs, recipe metadata,
             # and physical vectors can be inspected together.  Attempt and
             # failure ledgers remain health evidence below, but cannot certify
-            # an output that may be absent or stale.
+            # an output that may be absent or stale.  When the tier is simply
+            # absent this is a measured zero; otherwise the counts stay
+            # unknown and are carried as such all the way to the surface.
             embedded_sessions = 0
             pending_sessions = total_sessions
             embedded_messages = 0
             pending_messages = 0
         else:
-            embedded_sessions, pending_sessions, embedded_messages, pending_messages = authoritative_state
+            embedded_sessions, pending_sessions, embedded_messages, pending_messages = authoritative_state.counts
         # Pending is `required - valid`, but a key the domain terminally
         # refuses is neither.  The embeddings domain already classifies those
         # keys -- the `blocked` branch of its freshness predicate, the same one
@@ -999,7 +1080,7 @@ def _archive_embedding_status_payload(
             include_detail=include_detail,
             timeout_ms=detail_timeout_ms,
         )
-        if authoritative_state is None:
+        if authoritative_state.counts is None:
             pending_messages = 0
         candidate_prose_messages: int | None = None
         candidate_prose_messages_exact = False
@@ -1201,6 +1282,7 @@ def _archive_embedding_status_payload(
         terminal_failure_count=terminal_failure_count,
         retryable_failure_count=retryable_failure_count,
         blocked_sessions=blocked_sessions,
+        coverage_unmeasurable_reason=coverage_unmeasurable_reason,
     )
 
 

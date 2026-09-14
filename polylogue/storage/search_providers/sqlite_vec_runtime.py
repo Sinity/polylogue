@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 from collections.abc import Callable, Iterator
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
+from polylogue.core.errors import SchemaSkewError
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.embeddings.identity import (
     VECTOR_DERIVATION_HASH_SQL_FUNCTION,
@@ -291,8 +293,9 @@ class SqliteVecRuntimeMixin:
         """Create required vector and metadata tables if they don't exist.
 
         Detects dimension mismatches between the configured dimension and the
-        existing vec0 table. Drops and recreates the vec0 table when the
-        dimension has changed.
+        existing vec0 table and refuses with a typed
+        :class:`~polylogue.core.errors.SchemaSkewError`. This runs on every
+        semantic query, so it must never discard the stored vectors.
 
         Uses the canonical archive_tiers DDL (:mod:`polylogue.storage.sqlite.
         archive_tiers.embeddings`) rather than a duplicate hand-rolled schema
@@ -305,7 +308,7 @@ class SqliteVecRuntimeMixin:
         conn = self._get_connection()
         try:
             # Detect and handle dimension mismatch before creating tables
-            _reconcile_vec0_dimension(conn, self.dimension)
+            _assert_vec0_dimension(conn, self.dimension)
 
             from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_DDL
 
@@ -354,17 +357,70 @@ def _vec0_table_dimension(conn: sqlite3.Connection) -> int | None:
         return None
 
 
-def _reconcile_vec0_dimension(conn: sqlite3.Connection, configured_dimension: int) -> None:
-    """Drop vec0 table when its dimension differs from the configured dimension."""
+def _assert_vec0_dimension(conn: sqlite3.Connection, configured_dimension: int) -> None:
+    """Refuse to serve a vec0 table whose dimension differs from the configured one.
+
+    ``embeddings.db`` is the expensive-to-rebuild tier, and this runs from
+    :meth:`SqliteVecQueryMixin.query` -- a read. A read must never destroy the
+    stored vectors, so a dimension mismatch is a typed refusal naming both
+    dimensions, not a silent ``DROP TABLE``. Discarding the vectors remains
+    available, but only through the explicit operator route
+    :func:`drop_vec0_for_dimension_change`.
+    """
+
     current = _vec0_table_dimension(conn)
     if current is not None and current != configured_dimension:
-        logger.info(
-            "vec0 dimension mismatch: stored=%d configured=%d — dropping message_embeddings",
+        logger.warning(
+            "vec0 dimension mismatch: stored=%d configured=%d — refusing to serve",
             current,
             configured_dimension,
         )
-        conn.execute("DROP TABLE IF EXISTS message_embeddings")
-        conn.commit()
+        raise SchemaSkewError(
+            "embeddings",
+            configured_dimension,
+            current,
+            remedy=(
+                f"stored vectors are {current}-dimensional but this runtime is configured for "
+                f"{configured_dimension}. Restore the configured embedding_dimension to {current} to keep "
+                "the existing vectors, or discard them deliberately with "
+                "`polylogue.storage.search_providers.sqlite_vec_runtime.drop_vec0_for_dimension_change`."
+            ),
+        )
 
 
-__all__ = ["SqliteVecRuntimeMixin", "_reconcile_vec0_dimension", "open_vector_read_snapshot"]
+def drop_vec0_for_dimension_change(conn: sqlite3.Connection, configured_dimension: int) -> int:
+    """Discard stored vectors so the tier can be rebuilt at a new dimension.
+
+    Destructive and explicit: only an operator-initiated maintenance route may
+    call this. It also clears the ``message_embeddings_meta`` rows recorded at
+    the outgoing dimension, because leaving them behind strands the archive
+    with neither vectors nor a working path to recreate them -- the meta table
+    carries ``CHECK(dimension = ...)`` at the old value and re-embedding then
+    fails outright.
+
+    Returns the dimension that was discarded, or ``configured_dimension`` when
+    there was nothing to discard.
+    """
+
+    current = _vec0_table_dimension(conn)
+    if current is None or current == configured_dimension:
+        return configured_dimension
+    logger.warning(
+        "discarding %d-dimensional vectors for reconfiguration to %d",
+        current,
+        configured_dimension,
+    )
+    conn.execute("DROP TABLE IF EXISTS message_embeddings")
+    # No metadata table to clear leaves the vector drop standing on its own.
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("DELETE FROM message_embeddings_meta WHERE dimension = ?", (current,))
+    conn.commit()
+    return current
+
+
+__all__ = [
+    "SqliteVecRuntimeMixin",
+    "_assert_vec0_dimension",
+    "drop_vec0_for_dimension_change",
+    "open_vector_read_snapshot",
+]

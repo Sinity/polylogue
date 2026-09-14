@@ -925,6 +925,11 @@ def _render_direct_embedding_status(env: AppEnv, payload: dict[str, Any]) -> Non
         return
 
     status = str(payload.get("status", "unknown"))
+    if not payload.get("coverage_measurable", True):
+        reason = payload.get("coverage_unmeasurable_reason") or "inspection unavailable"
+        # Never render an unmeasurable tier as measured zeros.
+        env.ui.console.print(f"  Embeddings: [yellow]coverage unknown ({reason})[/yellow]")
+        return
     freshness = str(payload.get("freshness_status", status))
     retrieval_ready = bool(payload.get("retrieval_ready", False))
     embedded_messages = int(payload.get("embedded_messages", 0) or 0)
