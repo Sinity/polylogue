@@ -48,7 +48,14 @@ or the equivalent `POLYLOGUE_MCP_WRITE_ENABLED` / `POLYLOGUE_MCP_JUDGE_ENABLED` 
 `POLYLOGUE_MCP_MAINTENANCE_ENABLED` environment variables. Enabling one does not enable
 another.
 
-Add to your Claude Code `.mcp.json`:
+### Client setup
+
+The same stdio server entry works for every MCP client; only the file it goes
+in differs. It runs in stdio mode, logs to stderr, and takes no capability
+flags.
+
+Claude Code — `.mcp.json` in the project, or `~/.claude/settings.json` for
+every project:
 
 ```json
 {
@@ -60,5 +67,19 @@ Add to your Claude Code `.mcp.json`:
 }
 ```
 
-See `docs/mcp-integration.md` for the full client-integration walkthrough
-(Claude Code, Codex, other MCP clients).
+Claude Desktop — `~/.config/claude/claude_desktop_config.json` (macOS:
+`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "polylogue": {
+      "command": "polylogue-mcp"
+    }
+  }
+}
+```
+
+Other MCP clients take the same command in their own server map. Use the
+running server's discovery response for the exact current tool and resource
+list rather than copying one from documentation.

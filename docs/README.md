@@ -36,7 +36,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [CLI Reference](cli-reference.md) | Generated command reference from live help output. |
 | [MCP Reference](mcp-reference.md) | MCP tools, capability opt-ins, and client setup. |
 | [Library API](library-api.md) | Async archive API, filters, and query patterns. |
-| [MCP Integration](mcp-integration.md) | Model Context Protocol server setup and usage. |
 | [Session Orchestration Evidence](orchestration-evidence.md) | Stored session topology, executor observations, usage, and provenance gaps through the API and MCP. |
 | [Agent Integration Reference](agent-integration-reference.md) | Generated typed contract, recipes, client delivery, and cutover reconciliation reference. |
 | [Configuration](configuration.md) | XDG paths, environment variables, and runtime configuration. |
@@ -113,16 +112,11 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Hermes Archival Export Contract](design/hermes-archival-export-contract.md) | Versioned Hermes session export schema, durable lifecycle-event spool, and snapshot reconciliation. |
 | [Project Memory](design/project-memory.md) | Long-term memory model and product intent. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
-| [Analyze Projections](design/analyze-projections.md) | Named aggregate projections and their shared query execution contract. |
 | [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
-| [Physical Session Identity](design/physical-session-identity.md) | Durable identity proposal beneath lossy public origin projection. |
 | [Analysis Rigor](design/analysis-rigor.md) | Rigor mechanisms for agent claims: population validity and comparative judgment. |
 | [Prefix-Blob Reclamation](design/prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes. |
 | [Derived-artifact freshness](design/derived-artifact-freshness.md) | Source-digest and verify-or-refuse law for derived state. |
 | [Convergence Simplification Inventory](design/convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign (polylogue-m6tp). |
-| [Convergence Law Deletion Ledger](convergence-laws-deletion-ledger.md) | Deletion candidates and exact four-law, production-seam mutation conditions for convergence machinery. |
-| [GitHub Merge Queue Evaluation](design/merge-queue-evaluation.md) | Evidence-based decision on whether GitHub merge queue can replace the local harvest merge train. |
-| [CLI Operation Kernel Deletion Ledger](plans/cli-operation-kernel-deletion-ledger.md) | Transport ownership and LOC accounting for the CLI operation-kernel migration. |
 | [Workload Artifact Consolidation Ledger](plans/workload-artifact-consolidation-ledger.md) | Census and per-candidate disposition for duplicate workload and corpus artifact builders under tests/infra. |
 | [Typed WebUI Capability Matrix](plans/webui-capability-matrix.md) | Cutover inventory for typed and legacy browser capabilities. |
 | [Second Brain](design/second-brain.md) | Vision note for remembered work. |
