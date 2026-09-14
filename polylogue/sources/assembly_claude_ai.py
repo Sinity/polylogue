@@ -43,7 +43,7 @@ import json
 from pathlib import Path
 
 from polylogue.core.enums import Provider
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.storage.blob_store import BlobStore
 
 from .assembly import SidecarData
@@ -70,6 +70,7 @@ def _acquire_recovered_blobs(
     acquired: dict[str, tuple[str, int]] = {}
     if not isinstance(payload, dict):
         return acquired
+    manifest_root = manifest_dir.resolve()
     entries = payload.get("attachments")
     if not isinstance(entries, list):
         return acquired
@@ -81,6 +82,20 @@ def _acquire_recovered_blobs(
         if not isinstance(native_id, str) or not native_id or not isinstance(rel_path, str) or not rel_path:
             continue
         file_path = (manifest_dir / rel_path).resolve()
+        # ``rel_path`` is untrusted manifest content. An absolute path, a
+        # ``..`` component, or a symlink pointing away all resolve outside the
+        # manifest's own directory, which would pull unrelated local files
+        # into the archive as "recovered attachment bytes". Containment is
+        # checked on the resolved path and a violation is refused and logged,
+        # never followed.
+        if not _is_contained(file_path, manifest_root):
+            emit(
+                "sources.claude_ai.attachment_recovery_path_refused",
+                level=WARNING,
+                native_id=native_id,
+                reason="outside_manifest_directory",
+            )
+            continue
         if not file_path.is_file():
             logger.warning(
                 "claude_ai_attachment_recovery_file_missing",
@@ -102,6 +117,11 @@ def _acquire_recovered_blobs(
             continue
         acquired[native_id] = (blob_hash, size)
     return acquired
+
+
+def _is_contained(candidate: Path, root: Path) -> bool:
+    """True when ``candidate`` is ``root`` itself or lies beneath it."""
+    return candidate == root or root in candidate.parents
 
 
 class ClaudeAIAssemblySpec:
