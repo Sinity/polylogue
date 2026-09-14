@@ -6,14 +6,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from polylogue.archive.query.root_lowering import expression_from_query_terms
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.query_contracts import coerce_query_terms
+from polylogue.operations.query_lowering import (
+    QueryLoweringError,
+    desugar_retrieval_flags,
+    expression_from_query_terms,
+)
 
 if TYPE_CHECKING:
     import click
-
-_expression_from_query_terms = expression_from_query_terms
 
 
 @dataclass(frozen=True)
@@ -37,30 +39,13 @@ class RootModeRequest:
 
     @classmethod
     def _from_normalized_params(cls, params: dict[str, object], query_terms: tuple[str, ...]) -> RootModeRequest:
-        # --lexical and --semantic are ergonomic shortcuts that desugar
-        # into existing query knobs so downstream specs stay unchanged.
+        """Desugar retrieval flags through the one shared lowering."""
         import click
 
-        lexical = bool(params.pop("lexical", False))
-        semantic = bool(params.pop("semantic", False))
-        has_similar = bool(params.get("similar_text"))
-        # --lexical (FTS-only) and --semantic/--similar (vector-only) are
-        # opposing retrieval overrides; accepting both silently ran whichever
-        # branch was checked first. Reject the contradiction (#1749).
-        if lexical and (semantic or has_similar):
-            conflicting = "--semantic" if semantic else "--similar"
-            raise click.UsageError(
-                f"{conflicting} cannot be combined with --lexical (they are opposing retrieval modes)."
-            )
-        if semantic and not query_terms:
-            # --semantic promotes the query terms into a similarity prompt;
-            # with no terms it was previously a silent no-op (#1749).
-            raise click.UsageError("--semantic requires query terms to use as the similarity prompt.")
-        if semantic:
-            params["similar_text"] = " ".join(query_terms)
-            query_terms = ()
-        if lexical:
-            params["retrieval_lane"] = "dialogue"
+        try:
+            params, query_terms = desugar_retrieval_flags(params, query_terms)
+        except QueryLoweringError as exc:
+            raise click.UsageError(exc.cli_message) from exc
         return cls(params=params, query_terms=query_terms)
 
     def query_params(self) -> dict[str, object]:
@@ -84,7 +69,7 @@ class RootModeRequest:
         if not self.query_terms:
             return base
 
-        return compile_expression_into(_expression_from_query_terms(self.query_terms), base)
+        return compile_expression_into(expression_from_query_terms(self.query_terms), base)
 
     @property
     def verbose(self) -> bool:

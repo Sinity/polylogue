@@ -14,6 +14,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from polylogue.operations.daemon_errors import (
+    DaemonMutationIndeterminateError,
+    DaemonOperationProtocolError,
+)
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
     MAX_OPERATION_RESULT_BYTES,
@@ -122,15 +126,14 @@ class OperationKernel:
             envelope = self._daemon_call(request)
         except (TimeoutError, ConnectionError, OSError) as exc:
             raise OperationFailedError("daemon_transport_error", str(exc)) from exc
-        except Exception as exc:
-            # The stdlib daemon client uses typed transport errors. Keep those
-            # distinctions visible to callers while preserving direct fallback
-            # for ordinary daemon absence.
-            name = type(exc).__name__
-            if name == "DaemonMutationIndeterminateError":
-                raise OperationIndeterminateError(str(exc)) from exc
-            if name == "DaemonOperationProtocolError" and "size" in str(exc):
+        except DaemonMutationIndeterminateError as exc:
+            # A confirmed mutation may already have landed; never re-issue it.
+            raise OperationIndeterminateError(str(exc)) from exc
+        except DaemonOperationProtocolError as exc:
+            if "size" in str(exc):
                 raise OperationFailedError("result_too_large", str(exc)) from exc
+            raise OperationFailedError("daemon_transport_error", str(exc)) from exc
+        except Exception as exc:
             raise OperationFailedError("daemon_transport_error", str(exc)) from exc
         if envelope is not None:
             if envelope.get("operation") not in (None, request.operation):
