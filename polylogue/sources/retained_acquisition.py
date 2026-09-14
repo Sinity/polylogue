@@ -103,10 +103,11 @@ def iter_retained_source_records(
                 )
     if rejected:
         emit(
-            "source.zip.members_refused",
+            "sources.retained_zip.members_refused",
             level=WARNING,
             outcome="degraded",
-            path=str(logical_path),
+            reason="member_refused",
+            path=logical_path,
             skipped=len(rejected),
             error_detail="; ".join(rejected),
         )

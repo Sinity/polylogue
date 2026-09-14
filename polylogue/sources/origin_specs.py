@@ -19,7 +19,6 @@ import ast
 import gzip
 import hashlib
 import json
-import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -38,14 +37,13 @@ from polylogue.declarations import (
     OutputSpec,
     validate_registry,
 )
+from polylogue.logging import WARNING, emit
 from polylogue.sources.detection import (
     CompiledDetectorRegistry,
     DetectionMode,
     DetectorBinding,
     compile_detector_registry,
 )
-
-logger = logging.getLogger(__name__)
 
 OriginLifecycle = Literal["executable", "reserved", "unsupported", "compatibility-only"]
 OriginCompletenessMaturity = Literal["accepted", "proposed", "reserved", "unsupported"]
@@ -795,7 +793,16 @@ def schema_observed_leaf_values(provider: str, field_path: str, *, schema_root: 
         try:
             document = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
         except (OSError, gzip.BadGzipFile, json.JSONDecodeError, UnicodeDecodeError) as error:
-            logger.warning("schema_package_unreadable path=%s error=%s", path, error)
+            emit(
+                "sources.schema_package.unreadable",
+                level=WARNING,
+                outcome="degraded",
+                reason="schema_package_unreadable",
+                provider=str(provider),
+                path=path,
+                error_type=type(error).__name__,
+                error_detail=str(error),
+            )
             continue
         for node in _resolve_schema_path(document, segments):
             observed = node.get("x-polylogue-values")

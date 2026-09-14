@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -11,13 +10,12 @@ from typing import Any
 from urllib.parse import quote
 
 from polylogue.core.enums import Origin, Provider
+from polylogue.logging import DEBUG, emit
 from polylogue.sources import codex_state_projection
 from polylogue.sources.parsers import codex_state
 from polylogue.sources.sqlite_snapshot import is_declared_logical_export
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.materials import admit_material, link_material
-
-logger = logging.getLogger(__name__)
 
 CODEX_STATE_CENSUS_DETAIL = "retained Codex state evidence applied"
 
@@ -261,7 +259,14 @@ def _thread_state_projection_is_current(archive_root: Path) -> bool:
                 for export in latest
             }
     except sqlite3.Error as exc:
-        logger.debug("codex state: could not compare the retained export against the projection: %s", exc)
+        emit(
+            "sources.codex_state.projection_compare_failed",
+            level=DEBUG,
+            outcome="unmeasured",
+            reason="index_unreadable",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return True
     for export in latest:
         projection = current[export.source_scope]
@@ -334,7 +339,12 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
         # this pass: without this the recomputed rows are discarded.
         archive.commit()
     if resolved:
-        logger.info("codex state: finalized %d retained export(s) without a terminal receipt", resolved)
+        emit(
+            "sources.codex_state.exports_finalized",
+            outcome="ok",
+            reason="missing_terminal_receipt",
+            rows=resolved,
+        )
     return resolved
 
 
