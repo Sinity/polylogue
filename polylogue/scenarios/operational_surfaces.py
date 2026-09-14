@@ -34,56 +34,6 @@ OPERATIONAL_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         ),
     ),
     CliSurfaceFamily(
-        slug="doctor-session-insights-preview",
-        command_args=("ops", "doctor", "--format", "json", "--repair", "--preview", "--target", "session_insights"),
-        tags=("maintenance", "session-insights"),
-        contract_variant=CliSurfaceVariant(
-            name="json-doctor-session-insights-preview",
-            description="doctor JSON contract",
-            suffix_args=(),
-            needs_data=False,
-            tier=0,
-            env="any",
-        ),
-    ),
-    CliSurfaceFamily(
-        slug="doctor-session-insights-repair",
-        command_args=("ops", "doctor", "--format", "json", "--repair", "--target", "session_insights"),
-        tags=("live", "repair", "session-insights"),
-        live_variants=(
-            CliSurfaceVariant(
-                name="live-session-insight-repair",
-                description="Live archive evidence/inference session-insight rebuild and repair surface",
-                suffix_args=(),
-                env="any",
-            ),
-        ),
-    ),
-    CliSurfaceFamily(
-        slug="maintenance-preview",
-        command_args=("ops", "doctor", "--format", "json", "--repair", "--cleanup", "--preview"),
-        tags=("live", "maintenance", "preview"),
-        live_variants=(
-            CliSurfaceVariant(
-                name="live-maintenance-preview",
-                description="Live archive machine-readable maintenance preview for safe repairs and destructive cleanup",
-                suffix_args=(),
-                timeout_s=240,
-                env="any",
-            ),
-        ),
-        memory_budget_variants=(
-            CliSurfaceVariant(
-                name="maintenance-memory-budget",
-                description="Live archive maintenance preview under an explicit RSS budget",
-                suffix_args=(),
-                timeout_s=240,
-                max_rss_mb=1024,
-                env="any",
-            ),
-        ),
-    ),
-    CliSurfaceFamily(
         slug="embed-stats",
         command_args=("ops", "embed", "--stats", "--format", "json"),
         tags=("live", "embeddings", "readiness"),

@@ -100,7 +100,7 @@ _SHORT_HELP: dict[str, str] = {
     "annotations": "Import typed annotation batches.",
     "auth": "Authenticate optional external services.",
     "backup": "Create a timestamped durability-tier backup.",
-    "check": "Run archive health checks and repairs.",
+    "check": "Report archive, runtime, daemon, blob, and schema health.",
     "compare": "Blind pairwise comparative judgment and calibration.",
     "context": "Compile a context seed for the next session.",
     "completions": "Emit shell completion setup for polylogue.",

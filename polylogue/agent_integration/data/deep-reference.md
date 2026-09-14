@@ -26,6 +26,7 @@ Arguments:
 | `expression` | `string` | no | Parser-owned DSL expression; omit when resuming with continuation. |
 | `limit` | `integer` | no | Requested page size, subject to server and transport bounds. |
 | `projection` | `string` | no | Declared result projection such as session-summary or cost-rollup. |
+| `session_operation` | `string` | no | Declared session operation; required by the session-operations projection. |
 | `continuation` | `string` | no | Opaque token from the preceding response; send alone. |
 | `offset` | `integer` | no | Offset for projections that use decimal offset pagination. |
 | `origin` | `string` | no | Public origin filter. |
@@ -191,6 +192,7 @@ Arguments:
 | `recent_files` | `array` | no | Recently touched files used for continuity. |
 | `session_id` | `string` | no | Current agent session identity. |
 | `limit` | `integer` | no | Bound on related context candidates. |
+| `offset` | `integer` | no | Offset into ranked candidates for decimal offset pagination. |
 | `recipient_ref` | `string` | no | Recipient identity for delivery receipts. |
 | `assertion_ref` | `string` | no | Assertion identity to include in context. |
 
@@ -362,44 +364,30 @@ A result_ref and receipt for the declared recipe; mutation authority is never ga
 - result semantics: `maintenance`
 - continuation: `none`
 - emits result ref: `no`
-- purpose: Preview, authorize, execute, inspect, and reconcile administrative maintenance through preview-bound confirmation.
+- purpose: Rebuild session insights and inspect or adjudicate operation recovery; there is no generic maintenance or repair umbrella.
 
 Arguments:
 
 | Name | Kind | Required initially | Meaning |
 |---|---|---:|---|
-| `operation` | `string` | yes | Declared maintenance operation. |
-| `targets` | `array` | no | Maintenance targets. |
-| `dry_run` | `boolean` | no | Preview without applying effects. |
-| `session_ids` | `array` | no | Session targets. |
-| `origin` | `string` | no | Public origin filter. |
-| `source_family` | `string` | no | Source-family filter. |
-| `source_root` | `string` | no | Source-root filter. |
-| `since` | `string` | no | Lower time bound. |
-| `until` | `string` | no | Upper time bound. |
-| `failure_kind` | `string` | no | Failure classification filter. |
-| `parser_version` | `string` | no | Parser-version filter. |
-| `operation_id` | `string` | no | Exact operation identity. |
-| `target_outcomes` | `object` | no | Observed target outcomes. |
+| `operation` | `string` | yes | One of rebuild_insights, recovery_status, recovery_adjudicate. |
+| `operation_id` | `string` | no | Exact operation identity to adjudicate. |
+| `target_outcomes` | `object` | no | Observed target outcomes for adjudication. |
 | `reason` | `string` | no | Operator reason. |
-| `confirm` | `boolean` | no | Explicit confirmation for governed execution. |
+| `confirm` | `boolean` | no | Explicit confirmation; rebuild_insights and recovery_adjudicate fail closed without it. |
 
-Example — Preview an index rebuild before authorization:
+Example — Inspect unreconciled operation recovery:
 
 ```json
 {
   "arguments": {
-    "dry_run": true,
-    "operation": "preview",
-    "targets": [
-      "index"
-    ]
+    "operation": "recovery_status"
   },
   "name": "maintenance"
 }
 ```
 
-A non-mutating preview receipt with target digest and the data required to obtain a bound confirmation token.
+A read-only operation_result describing operations whose applied/not-applied outcome is still unknown.
 
 ## Exact continuation contract
 

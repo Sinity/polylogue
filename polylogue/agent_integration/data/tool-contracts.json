@@ -37,6 +37,12 @@
           "required_initial": false
         },
         {
+          "description": "Declared session operation; required by the session-operations projection.",
+          "kind": "string",
+          "name": "session_operation",
+          "required_initial": false
+        },
+        {
           "description": "Opaque token from the preceding response; send alone.",
           "kind": "string",
           "name": "continuation",
@@ -354,6 +360,12 @@
           "required_initial": false
         },
         {
+          "description": "Offset into ranked candidates for decimal offset pagination.",
+          "kind": "integer",
+          "name": "offset",
+          "required_initial": false
+        },
+        {
           "description": "Recipient identity for delivery receipts.",
           "kind": "string",
           "name": "recipient_ref",
@@ -643,79 +655,19 @@
     {
       "arguments": [
         {
-          "description": "Declared maintenance operation.",
+          "description": "One of rebuild_insights, recovery_status, recovery_adjudicate.",
           "kind": "string",
           "name": "operation",
           "required_initial": true
         },
         {
-          "description": "Maintenance targets.",
-          "kind": "array",
-          "name": "targets",
-          "required_initial": false
-        },
-        {
-          "description": "Preview without applying effects.",
-          "kind": "boolean",
-          "name": "dry_run",
-          "required_initial": false
-        },
-        {
-          "description": "Session targets.",
-          "kind": "array",
-          "name": "session_ids",
-          "required_initial": false
-        },
-        {
-          "description": "Public origin filter.",
-          "kind": "string",
-          "name": "origin",
-          "required_initial": false
-        },
-        {
-          "description": "Source-family filter.",
-          "kind": "string",
-          "name": "source_family",
-          "required_initial": false
-        },
-        {
-          "description": "Source-root filter.",
-          "kind": "string",
-          "name": "source_root",
-          "required_initial": false
-        },
-        {
-          "description": "Lower time bound.",
-          "kind": "string",
-          "name": "since",
-          "required_initial": false
-        },
-        {
-          "description": "Upper time bound.",
-          "kind": "string",
-          "name": "until",
-          "required_initial": false
-        },
-        {
-          "description": "Failure classification filter.",
-          "kind": "string",
-          "name": "failure_kind",
-          "required_initial": false
-        },
-        {
-          "description": "Parser-version filter.",
-          "kind": "string",
-          "name": "parser_version",
-          "required_initial": false
-        },
-        {
-          "description": "Exact operation identity.",
+          "description": "Exact operation identity to adjudicate.",
           "kind": "string",
           "name": "operation_id",
           "required_initial": false
         },
         {
-          "description": "Observed target outcomes.",
+          "description": "Observed target outcomes for adjudication.",
           "kind": "object",
           "name": "target_outcomes",
           "required_initial": false
@@ -727,7 +679,7 @@
           "required_initial": false
         },
         {
-          "description": "Explicit confirmation for governed execution.",
+          "description": "Explicit confirmation; rebuild_insights and recovery_adjudicate fail closed without it.",
           "kind": "boolean",
           "name": "confirm",
           "required_initial": false
@@ -737,19 +689,15 @@
       "examples": [
         {
           "arguments": {
-            "dry_run": true,
-            "operation": "preview",
-            "targets": [
-              "index"
-            ]
+            "operation": "recovery_status"
           },
-          "id": "maintenance-preview",
-          "result_note": "A non-mutating preview receipt with target digest and the data required to obtain a bound confirmation token.",
-          "title": "Preview an index rebuild before authorization"
+          "id": "maintenance-recovery-status",
+          "result_note": "A read-only operation_result describing operations whose applied/not-applied outcome is still unknown.",
+          "title": "Inspect unreconciled operation recovery"
         }
       ],
       "name": "maintenance",
-      "purpose": "Preview, authorize, execute, inspect, and reconcile administrative maintenance through preview-bound confirmation.",
+      "purpose": "Rebuild session insights and inspect or adjudicate operation recovery; there is no generic maintenance or repair umbrella.",
       "required_capability": "maintenance",
       "result_semantics": [
         "maintenance"

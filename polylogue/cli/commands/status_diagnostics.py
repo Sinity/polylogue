@@ -158,10 +158,10 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
                 headline="Archive database is locked.",
                 detail=(
                     "Another process (likely the daemon) holds the database. "
-                    "Stop or wait for it, then retry. If no daemon is running, "
-                    "remove a stale lock with `polylogue ops doctor --repair`."
+                    "Stop or wait for it, then retry. `polylogue ops doctor` "
+                    "reports which writer holds the archive."
                 ),
-                next_action="polylogue ops doctor --repair",
+                next_action="polylogue ops doctor",
             )
         return StatusDiagnostic(
             kind="unknown_db_error",

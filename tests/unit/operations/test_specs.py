@@ -146,3 +146,21 @@ def test_operation_catalog_resolve_filters_unknown_names() -> None:
     assert tuple(spec.name for spec in catalog.resolve(("project-session-insight-readiness", "missing"))) == (
         "project-session-insight-readiness",
     )
+
+
+def test_no_declared_operation_names_a_repair_surface() -> None:
+    """The operation catalog may not advertise a surface that no longer exists.
+
+    Three operations still declared a `repair` surface after the generic repair
+    product was deleted (polylogue-6kur). Nothing consumed the token, so it
+    survived as a catalog claim that Polylogue has a repair surface.
+
+    Anti-vacuity: adding "repair" back to any spec's `surfaces` makes this red.
+    Verified by reverting the removal. The assertion reads the real
+    DECLARED_OPERATION_SPECS, so it cannot pass on an empty catalog.
+    """
+    from polylogue.operations.specs import DECLARED_OPERATION_SPECS
+
+    assert DECLARED_OPERATION_SPECS, "expected a non-empty declared operation catalog"
+    offenders = [(spec.name, spec.surfaces) for spec in DECLARED_OPERATION_SPECS if "repair" in spec.surfaces]
+    assert not offenders, offenders

@@ -98,3 +98,53 @@ def test_origin_teaching_follows_authoritative_enum() -> None:
     # beads-issue stays in the enum: its route is retired, but the durable
     # CHECKs still admit the token, so the teaching table names it as reserved.
     assert {item.token for item in ORIGIN_MEANINGS} >= {"beads-issue"}
+
+
+def test_generated_contract_arguments_match_the_live_mcp_signatures() -> None:
+    """Every documented tool argument must exist on the registered MCP handler.
+
+    The generated manual advertised ten arguments the privileged ``maintenance``
+    tool never accepted (``targets``, ``dry_run``, ``session_ids``, ``origin``,
+    ``source_family``, ``source_root``, ``since``, ``until``, ``failure_kind``,
+    ``parser_version``) plus a typed ``operation="preview"`` example, because the
+    only signature comparison lived in a lane gated behind ``--require-live``.
+
+    Anti-vacuity: adding a phantom argument to any contract in
+    ``agent_integration/spec.py``, or dropping one the live handler declares,
+    makes this red. Verified by reverting the maintenance-contract fix.
+    """
+    import inspect
+
+    from polylogue.mcp.declarations import MCPCapabilities
+    from polylogue.mcp.server import build_server
+
+    server = build_server(capabilities=MCPCapabilities(write=True, judge=True, maintenance=True))
+    # The registered tool surface is the authority for the live signature.
+    tools = server._tool_manager._tools
+
+    problems: list[str] = []
+    for contract in TOOL_CONTRACTS:
+        surface = tools.get(contract.name)
+        if surface is None:
+            problems.append(f"{contract.name}: no registered MCP tool")
+            continue
+        signature = inspect.signature(surface.fn)
+        live = set(signature.parameters)
+        documented = set(contract.argument_names)
+        if documented - live:
+            problems.append(f"{contract.name}: documented but absent live {sorted(documented - live)}")
+        if live - documented:
+            problems.append(f"{contract.name}: live but undocumented {sorted(live - documented)}")
+        live_required = {
+            name
+            for name, param in signature.parameters.items()
+            if param.default is inspect.Parameter.empty
+            and param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        }
+        if live_required != set(contract.required_initial_arguments):
+            problems.append(
+                f"{contract.name}: required-argument mismatch "
+                f"(live={sorted(live_required)}, manual={sorted(contract.required_initial_arguments)})"
+            )
+
+    assert not problems, problems
