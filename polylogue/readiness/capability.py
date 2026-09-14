@@ -664,7 +664,13 @@ def normalize_raw_frontier_status_payload(
 
 def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentReadiness:
     failure_count = int(payload.get("failure_count") or 0)
-    if not bool(payload.get("config_enabled")):
+    measurable = bool(payload.get("coverage_measurable", True))
+    if not measurable:
+        # The vector tier could not be inspected. Reporting it as REBUILDING
+        # with zero counts would claim a measured absence of expensive,
+        # possibly-intact vectors.
+        state = CapabilityReadinessState.UNKNOWN
+    elif not bool(payload.get("config_enabled")):
         state = CapabilityReadinessState.MISSING
     elif not bool(payload.get("has_voyage_api_key")):
         state = CapabilityReadinessState.BLOCKED
@@ -680,6 +686,16 @@ def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentRea
     caveats = (
         (f"{failure_count} historical embedding failure(s) remain operation-health evidence",) if failure_count else ()
     )
+    if not measurable:
+        reason = str(payload.get("coverage_unmeasurable_reason") or "inspection unavailable")
+        caveats = (
+            *caveats,
+            f"embedding coverage could not be inspected ({reason}); stored vectors may be present and intact",
+        )
+
+    def _count(key: str) -> int | None:
+        value = payload.get(key)
+        return None if value is None else int(value)
 
     return ComponentReadiness(
         component="embeddings",
@@ -688,9 +704,9 @@ def component_from_embedding_payload(payload: Mapping[str, Any]) -> ComponentRea
         summary=str(payload.get("status") or ""),
         counts={
             "total_sessions": int(payload.get("total_sessions") or 0),
-            "embedded_sessions": int(payload.get("embedded_sessions") or 0),
-            "embedded_messages": int(payload.get("embedded_messages") or 0),
-            "pending_sessions": int(payload.get("pending_sessions") or 0),
+            "embedded_sessions": _count("embedded_sessions"),
+            "embedded_messages": _count("embedded_messages"),
+            "pending_sessions": _count("pending_sessions"),
             "pending_messages": pending_messages,
             "pending_messages_exact": pending_messages_exact,
             "stale_messages": int(payload.get("stale_messages") or 0),

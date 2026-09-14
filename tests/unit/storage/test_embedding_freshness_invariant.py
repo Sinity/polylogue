@@ -567,3 +567,90 @@ def test_common_derivation_replaces_physical_vector_with_existing_metadata(
     finally:
         conn.close()
     assert converge(DerivationRegistry([adapter]), frame).wrote_nothing
+
+
+def test_unloadable_sqlite_vec_reports_unknown_coverage_not_a_measured_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A complete vector set must never be reported as ``none`` when unmeasurable.
+
+    ``embeddings.db`` is the expensive-to-rebuild tier. When the sqlite-vec
+    extension cannot load, readiness cannot be inspected at all -- reporting
+    zero embedded sessions prescribes a paid regeneration of vectors that are
+    present and intact.
+
+    Anti-vacuity: restoring the former ``return None`` -> ``embedded_sessions
+    = 0, pending_sessions = total`` collapse in
+    ``_archive_embedding_status_payload`` makes this red -- ``status`` returns
+    to ``"none"``, ``embedded_sessions`` to ``0``, and ``next_action`` back to
+    the ``drain_backlog`` paid-backfill prescription.
+    """
+    from polylogue import config as config_module
+    from polylogue.storage.embeddings import status_payload as status_payload_module
+    from polylogue.storage.embeddings.status_payload import embedding_status_payload
+
+    root = tmp_path / "archive"
+    session_id = _write_archive_session(root, native_id="unmeasurable", text=_INITIAL_TEXT)
+    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
+    assert embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id).status == "embedded"
+
+    monkeypatch.setattr(
+        config_module,
+        "load_polylogue_config",
+        lambda: config_module.PolylogueConfig(_EmbeddingConfig()),
+    )
+    app = SimpleNamespace(config=SimpleNamespace(db_path=root / "index.db"))
+
+    measured = embedding_status_payload(app)
+    assert measured is not None
+    assert measured["coverage_measurable"] is True
+    assert measured["embedded_sessions"] == 1
+
+    import polylogue.storage.sqlite.sqlite_vec_extension as vec_extension
+
+    monkeypatch.setattr(
+        vec_extension,
+        "try_load_sqlite_vec",
+        lambda conn: (False, ImportError("sqlite_vec is not installed")),
+    )
+    unmeasurable = embedding_status_payload(app)
+
+    assert unmeasurable is not None
+    assert unmeasurable["status"] == "unknown"
+    assert unmeasurable["coverage_measurable"] is False
+    assert "sqlite_vec_unavailable" in (unmeasurable["coverage_unmeasurable_reason"] or "")
+    # The three states stay distinct: this is not a measured zero.
+    assert unmeasurable["embedded_sessions"] is None
+    assert unmeasurable["pending_sessions"] is None
+    assert unmeasurable["embedded_messages"] is None
+    assert unmeasurable["embedding_coverage_percent"] is None
+    assert unmeasurable["retrieval_ready"] is False
+    assert unmeasurable["next_action"]["code"] == "coverage_unmeasurable"
+    assert status_payload_module.ArchiveEmbeddingStateProbe(counts=None, tier_absent=True).measurable is True
+
+
+def test_absent_embeddings_tier_stays_a_measured_absence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The third state must not swallow the genuine one.
+
+    Anti-vacuity: marking the tier-absent probe unmeasurable makes this red --
+    an archive that truly has no vectors would stop reporting ``none`` and
+    stop prescribing the backfill it genuinely needs.
+    """
+    from polylogue import config as config_module
+    from polylogue.storage.embeddings.status_payload import embedding_status_payload
+
+    root = tmp_path / "archive"
+    _write_archive_session(root, native_id="no-vectors", text=_INITIAL_TEXT)
+    (root / "embeddings.db").unlink(missing_ok=True)
+
+    monkeypatch.setattr(
+        config_module,
+        "load_polylogue_config",
+        lambda: config_module.PolylogueConfig(_EmbeddingConfig()),
+    )
+    payload = embedding_status_payload(SimpleNamespace(config=SimpleNamespace(db_path=root / "index.db")))
+
+    assert payload is not None
+    assert payload["coverage_measurable"] is True
+    assert payload["embedded_sessions"] == 0
+    assert payload["status"] == "none"

@@ -63,7 +63,13 @@ def print_summary_impl(
         f"Sources: {format_sources_summary_fn(config.sources)}",
         "Ingestion: owned by polylogued",
     ]
-    if embedding_stats is not None:
+    if embedding_stats is not None and not embedding_stats.get("coverage_measurable", True):
+        # Coverage could not be inspected. Rendering it as zero would read as
+        # an unembedded archive and invite a paid regeneration of vectors that
+        # may be present and intact.
+        reason = embedding_stats.get("coverage_unmeasurable_reason") or "inspection unavailable"
+        lines.append(f"Embeddings: coverage unknown ({reason})")
+    elif embedding_stats is not None:
         embedding_line = (
             f"Embeddings: {embedding_stats['embedded_sessions']:,}/{embedding_stats['total_sessions']:,} convs, "
             f"{embedding_stats['embedded_messages']:,} msgs ({embedding_stats['embedding_coverage_percent']:.1f}%)"
