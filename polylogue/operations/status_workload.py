@@ -318,7 +318,21 @@ def raw_failure_status_from_connection(
     schema: str = "main",
     sample_limit: int = 50,
 ) -> dict[str, object]:
-    """Project raw-failure lifecycle using the canonical supplied-reader classifier."""
+    """Project raw-failure lifecycle using the canonical supplied-reader classifier.
+
+    Shares the failure contract of its path sibling
+    ``polylogue.daemon.status._archive_raw_failure_info``, which converts
+    ``(OSError, sqlite3.Error)`` from these same source-tier reads into an
+    unavailable projection. A degraded-but-readable source tier (SQLITE_BUSY
+    under a concurrent writer, a malformed page, a relation the pinned
+    snapshot predates) therefore resolves to the unavailable payload rather
+    than raising. ``_raw_failure_status`` in
+    :mod:`polylogue.operations.daemon_status` calls this unguarded, so a bare
+    driver error here fails the whole status operation.
+
+    ``ValueError`` from ``_require_reader_schema`` stays a raise: a caller bug,
+    not a tier degradation.
+    """
 
     _require_reader_schema(schema)
     unavailable = {
@@ -333,7 +347,35 @@ def raw_failure_status_from_connection(
         "raw_failure_lifecycle_reason": "source tier unavailable",
         "raw_failure_samples": [],
     }
-    if conn is None or not _table_exists(conn, schema, "raw_sessions"):
+    if conn is None:
+        return unavailable
+    result = capture_sqlite_read(
+        lambda: _raw_failure_status_from_present_connection(
+            conn, schema=schema, sample_limit=sample_limit, unavailable=unavailable
+        )
+    )
+    if isinstance(result, Measured):
+        return result.value
+    if not isinstance(result, Unavailable):
+        raise AssertionError("raw failure reader produced an unsupported evidence state")
+    return {
+        **unavailable,
+        "raw_failure_lifecycle_reason": (
+            f"could not read source.db raw failure relations: {result.detail or result.reason}"
+        ),
+    }
+
+
+def _raw_failure_status_from_present_connection(
+    conn: sqlite3.Connection,
+    *,
+    schema: str,
+    sample_limit: int,
+    unavailable: dict[str, object],
+) -> dict[str, object]:
+    """Unguarded projection body; see the wrapper for the failure contract."""
+
+    if not _table_exists(conn, schema, "raw_sessions"):
         return unavailable
     if schema != "main":
         # The source reader is opened as its own pinned handle.  The existing
