@@ -17,6 +17,7 @@ it off a terminal is red rather than silently hanging in a pipe.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,6 +32,8 @@ from polylogue.cli.contextual_errors import (
     ContextualCliError,
     EmptySelectionError,
     NextAction,
+    ambiguous_selection_actions,
+    display_ref,
 )
 from polylogue.cli.select import resolve_ambiguous_selection
 from polylogue.cli.verb_cardinality import (
@@ -241,3 +244,50 @@ def test_an_ambiguous_refusal_lists_the_candidate_refs(refusal_archive: Path) ->
     assert result.exit_code != 0
     assert "Candidates:" in result.output
     assert "ambiguous-0" in result.output
+
+
+def test_a_next_action_command_quotes_the_provider_supplied_ref() -> None:
+    """A ref carrying shell metacharacters stays one word in printed guidance.
+
+    A session ref embeds the provider's native id verbatim, and no import
+    path restricts it: a ChatGPT export whose conversation id is
+    ``innocent; touch /tmp/pwned #`` reaches this helper unchanged. The next
+    action is deliberately copy-pasteable, so an unquoted ref makes the
+    refusal itself the injection vector -- pasting the command the tool
+    recommended runs the injected command as the archive owner.
+
+    Anti-vacuity: drop ``shlex.quote`` from ``ref_command_argument`` and the
+    command becomes ``polylogue find id:innocent; touch /tmp/pwned # then
+    delete``, whose ``shlex.split`` yields ``polylogue`` / ``find`` /
+    ``id:innocent;`` -- the single-token assertion below goes red. Asserting
+    through ``shlex.split`` rather than a literal string is what makes this
+    test about shell semantics instead of about formatting.
+    """
+    hostile = "chatgpt-export:innocent; touch /tmp/pwned #"
+    command = ambiguous_selection_actions("delete", hostile)[0].command
+    assert command is not None
+
+    words = shlex.split(command)
+    assert words[:2] == ["polylogue", "find"]
+    assert words[2] == f"id:{hostile}"
+    assert words[3:] == ["then", "delete"]
+
+
+def test_control_characters_in_a_ref_are_shown_escaped_not_emitted() -> None:
+    """A ref carrying ESC cannot repaint the terminal that displays it.
+
+    The candidate list of an ambiguity refusal prints archive-derived refs,
+    so a provider-supplied id containing ``\x1b[2K`` would erase the line it
+    is printed on and let a hostile export forge the surrounding refusal
+    text.
+
+    Anti-vacuity: render the candidates with ``f"  {ref}"`` again and the raw
+    ESC reaches the rendered message, so the ``"\x1b" not in rendered``
+    assertion goes red.
+    """
+    hostile = "chatgpt-export:a\x1b[2Kforged"
+    rendered = AmbiguousSelectionError("ambiguous", candidates=[hostile]).format_message()
+
+    assert "\x1b" not in rendered
+    assert "\\x1b[2Kforged" in rendered
+    assert display_ref(hostile) in rendered
