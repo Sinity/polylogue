@@ -3746,10 +3746,29 @@ class LiveBatchProcessor:
                     # caller's cursor bookkeeping treats it the same as any
                     # other unavailable content.
                     result.excised_skips += 1
+                    # The bytes were published (staged and reserved) before the
+                    # write refused them. Nothing will ever reference them, so
+                    # the success path's receipt consumption never runs and the
+                    # orphaned reservation keeps blob GC away from the excised
+                    # hash forever -- while every repeat pass over the same
+                    # unchanged file accrues another receipt. Release it here so
+                    # ordinary GC reclaims the content the operator excised.
+                    from polylogue.storage.blob_publication import release_refused_publication_receipt
+
+                    released = release_refused_publication_receipt(
+                        archive.source_db_path,
+                        record.blob_publication_receipt_id,
+                        # Same hash spelling the write used: a streaming
+                        # record carries blob_hash, and a route that derived
+                        # its raw_id from the content hash carries it there.
+                        record.blob_hash or record.raw_id,
+                    )
                     logger.info(
-                        "live.watcher: skipping durably excised content for %s: %s",
+                        "live.watcher: skipping durably excised content for %s: %s "
+                        "(publication reservation released: %s)",
                         record.source_path,
                         exc,
+                        released,
                     )
                 except Exception as exc:
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):

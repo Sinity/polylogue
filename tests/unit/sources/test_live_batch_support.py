@@ -6608,6 +6608,23 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
         rows = conn.execute("SELECT source_path FROM raw_sessions").fetchall()
         assert all("excised.jsonl" not in str(row[0]) for row in rows)
 
+        # The streaming route publishes (stages and reserves) the payload
+        # before the write refuses it, and the success path's receipt
+        # consumption never runs on a refusal. An orphaned reservation makes
+        # the excised hash permanently GC-immune -- inspect_blob_reservation
+        # reports LIVE -- while every later pass over the same unchanged file
+        # accrues another receipt. The refusal handler must release it so
+        # ordinary blob GC can reclaim the content the operator excised.
+        #
+        # Anti-vacuity: removing release_refused_publication_receipt from the
+        # ContentExcisedError handler in _ingest_full_records_archive leaves
+        # exactly one reservation row here for the excised hash.
+        excised_hash = deterministic_blob_hash(excised_payload)
+        reserved = {
+            bytes(row[0]) for row in conn.execute("SELECT blob_hash FROM blob_publication_reservations").fetchall()
+        }
+        assert excised_hash not in reserved, "a refused excised write left its publication reservation behind"
+
 
 def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> None:
     root = tmp_path / "inbox"

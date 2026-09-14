@@ -281,6 +281,48 @@ def consume_blob_publication_receipt(
     )
 
 
+def release_refused_publication_receipt(
+    source_db_path: Path,
+    publication_id: str | None,
+    blob_hash: str | None,
+) -> bool:
+    """Drop the reservation for a publication whose referent was refused.
+
+    A reservation protects staged bytes only until the durable row that
+    references them exists. When the archive *refuses* that row --
+    ``ContentExcisedError`` on durably excised content -- the referent will
+    never exist, and the success path's ``consume_blob_publication_receipt``
+    never runs. The orphaned reservation then makes the hash permanently
+    GC-immune (``inspect_blob_reservation`` reports ``LIVE``), so every
+    repeat pass over the same unchanged source file accrues another receipt
+    and the excised bytes stay on disk forever.
+
+    Releasing it hands the bytes back to ordinary blob GC, which reclaims
+    them precisely because nothing references them. Returns whether a row
+    was removed, so the caller can report the disposition rather than
+    assuming it.
+    """
+    if publication_id is None or blob_hash is None:
+        return False
+    require_write_lease(f"blob publication refusal({source_db_path})", archive_root=source_db_path.parent)
+    conn = sqlite3.connect(source_db_path, timeout=30.0)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            "DELETE FROM blob_publication_reservations WHERE publication_id = ? AND blob_hash = ?",
+            (publication_id, bytes.fromhex(blob_hash)),
+        )
+        removed = cursor.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return removed > 0
+
+
 def _liveness_decision(
     source_conn: sqlite3.Connection,
     index_conn: sqlite3.Connection | None,
