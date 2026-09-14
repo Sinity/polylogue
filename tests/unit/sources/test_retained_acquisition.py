@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.zip_admission import MAX_REPORTED_MEMBER_DETAIL_CHARS, MAX_REPORTED_MEMBER_DETAILS
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.sources.retained_acquisition import iter_retained_source_records
 from polylogue.storage.blob_store import BlobStore
@@ -274,3 +275,52 @@ def test_retained_zip_counts_an_inadmissible_member_as_refused(
     assert len(refused) == 1
     assert refused[0]["skipped"] == 1
     assert "compression ratio" in str(refused[0]["error_detail"])
+
+
+def test_retained_zip_bounds_unselected_detail_while_counting_exactly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Many skipped members cost a bounded report, not one string each.
+
+    Anti-vacuity: ZIP member names and counts are attacker-controlled. Reverting
+    the ``BoundedMemberReport`` accumulation in ``iter_retained_source_records``
+    to a per-member list plus ``"; ".join(...)`` makes ``error_detail`` grow with
+    the archive -- it would carry every one of the 400 names and far exceed the
+    bound asserted here -- so both the length assertion and the explicit
+    "withheld" accounting go red while ``skipped`` alone stays green.
+    """
+    member_count = 400
+    long_name = "A" * 500
+    original = tmp_path / "hostile-export.zip"
+    with zipfile.ZipFile(original, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("conversations.json", b'[{"title":"synthetic","mapping":{}}]')
+        for index in range(member_count):
+            archive.writestr(f"{long_name}-{index}.html", b"")
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, blob_size = store.write_from_path(original)
+    captured = _capture_retained_events(monkeypatch)
+
+    records = list(
+        iter_retained_source_records(
+            source_path=str(original),
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            blob_store=store,
+        )
+    )
+
+    assert [record.data.source_path.rsplit(":", 1)[-1] for record in records] == ["conversations.json"]
+    unselected = [fields for event, fields in captured if event == "sources.retained_zip.members_unselected"]
+    assert len(unselected) == 1
+    # The count stays exact: that denominator is what the event exists for.
+    assert unselected[0]["skipped"] == member_count
+    detail = str(unselected[0]["error_detail"])
+    # The bound is observable, not a silent shortening: the detail says how many
+    # members it named and how many it withheld.
+    assert f"{member_count - MAX_REPORTED_MEMBER_DETAILS} withheld" in detail
+    assert f"{MAX_REPORTED_MEMBER_DETAILS} of {member_count} members named" in detail
+    # Bounded sample count x bounded per-name length, plus the accounting clause.
+    assert len(detail) < MAX_REPORTED_MEMBER_DETAILS * (MAX_REPORTED_MEMBER_DETAIL_CHARS + 120) + 200
+    # A single oversized name is truncated rather than retained whole.
+    assert long_name not in detail
