@@ -177,11 +177,21 @@ def test_direct_status_keeps_source_ops_and_embeddings_on_the_pinned_snapshot(tm
 
     assert payload["raw_parse_failures"] == 1
     assert payload["raw_failure_lifecycle_state"] == "blocked"
-    # A bare session status row is not proof of an eligible, current vector:
-    # the canonical session classifier also requires its message/derivation
-    # evidence. The status rollup itself remains pinned at the pre-write row.
-    assert payload["embedding_status"]["embedded_sessions"] == 0
-    assert payload["embedding_status"]["embedded_messages"] == 1
+    # `late-session` has no `index.sessions` row, so the authoritative rollup
+    # never sees it: since #5027 readiness is classified over desired message
+    # membership in the pinned index tier, not over `embedding_status`
+    # telemetry. Both numbers below now come from that one CTE, so the old
+    # (0 sessions, 1 message) pair is unreachable by construction -- it was a
+    # pre-#5027 shape where the two came from different sources.
+    #
+    # The seeded session has no `messages` rows at all, so it is a valid-empty
+    # partition (required == valid == 0) and counts as embedded, while
+    # `embedded_messages` is 0 because no vector, ref, or meta row exists
+    # anywhere in the fixture. A bare `embedding_status` row still certifies
+    # nothing -- the invariant the old comment wanted is enforced more
+    # strictly now, not less.
+    assert payload["embedding_status"]["embedded_sessions"] == 1
+    assert payload["embedding_status"]["embedded_messages"] == 0
     assert payload["schema_drift"]["origins"][0]["total"] == 1
     readiness = payload["raw_materialization_readiness"]
     assert readiness["raw_authority_parser_census"]["available"] is True
