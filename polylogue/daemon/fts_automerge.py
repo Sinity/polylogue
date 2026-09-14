@@ -24,13 +24,24 @@ from contextlib import suppress
 from pathlib import Path
 
 from polylogue.logging import get_logger
-from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
-# FTS5 surfaces managed by this module.  Must be kept in sync with the
-# trigger names in fts_lifecycle.py.
-_FTS_SURFACES = ("messages_fts", "session_work_events_fts")
+
+def _fts_surfaces(conn: sqlite3.Connection) -> tuple[str, ...]:
+    """Return every FTS5 virtual table present in *conn*, read from its schema.
+
+    Derived, never hand-listed: the tier DDL that declares an FTS5 surface is
+    the sole owner of this set, so a newly declared surface is tuned by this
+    module the moment it exists. A hand-maintained copy here previously
+    omitted ``blocks_command_trigram``, leaving it on FTS5's default automerge
+    and paying unbounded inline merges on the live-ingest writer.
+    """
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE '%USING fts5%' COLLATE NOCASE ORDER BY name"
+    ).fetchall()
+    return tuple(str(name) for (name,) in rows)
+
 
 # Work-unit budget per periodic merge call.  500 units bounds each call
 # to roughly 2–4 MiB of WAL writes so the periodic merge never becomes an
@@ -50,9 +61,7 @@ def configure_fts_automerge_sync(conn: sqlite3.Connection) -> list[str]:
     startup — not per write.
     """
     configured: list[str] = []
-    for surface in _FTS_SURFACES:
-        if not _table_exists(conn, surface):
-            continue
+    for surface in _fts_surfaces(conn):
         with suppress(sqlite3.OperationalError):
             conn.execute(f"INSERT INTO {surface}({surface}, rank) VALUES('automerge', 0)")
             configured.append(surface)
@@ -83,9 +92,7 @@ def run_periodic_fts_merge_sync(db: Path) -> None:
 
         conn = open_connection(db, timeout=5.0)
         merged: list[str] = []
-        for surface in _FTS_SURFACES:
-            if not _table_exists(conn, surface):
-                continue
+        for surface in _fts_surfaces(conn):
             with suppress(sqlite3.OperationalError):
                 conn.execute(f"INSERT INTO {surface}({surface}, rank) VALUES('merge', {_PERIODIC_MERGE_WORK_UNITS})")
                 merged.append(surface)

@@ -13,9 +13,15 @@ from polylogue.cli.commands.maintenance import _backup_plan as maintenance_backu
 from polylogue.cli.commands.paths import paths_command
 from polylogue.daemon.provenance import _build_raw_preview
 from polylogue.paths import blob_store_root
+from polylogue.storage.archive_layout import ARCHIVE_TIER_ORDER
 from polylogue.storage.blob_store import get_blob_store
 
-_ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
+#: Derived from the canonical tier registry, never restated: a tier added to
+#: ``ARCHIVE_TIER_SPECS`` must appear in this fixture (and in the assertions
+#: below) without an edit here. A hand-written copy of this tuple previously
+#: omitted ``audit``, which is what let the five-tier drift in the command go
+#: unnoticed.
+_ARCHIVE_TIERS = tuple(f"{name}.db" for name in ARCHIVE_TIER_ORDER)
 
 
 def _clear_archive_tiers(archive_root: Path) -> None:
@@ -225,9 +231,11 @@ def test_paths_json_reports_database_existence(cli_workspace: dict[str, Path], c
         "missing_backup_required_tier:source",
         "missing_backup_required_tier:embeddings",
         "missing_backup_required_tier:user",
+        "missing_backup_required_tier:audit",
     ]
     assert payload["present_tiers"] == []
-    assert payload["missing_tiers"] == ["source", "index", "embeddings", "ops", "user"]
+    assert payload["missing_tiers"] == list(ARCHIVE_TIER_ORDER)
+    assert "audit" in payload["missing_tiers"]
 
 
 def test_paths_json_reports_archive_final_shape(
@@ -261,7 +269,7 @@ def test_paths_json_reports_archive_final_shape(
     assert payload["archive_layout_ready"] is True
     assert payload["archive_layout_blockers"] == []
     assert payload["archive_tier_versions"]["index"]["version_status"] == "invalid"
-    assert payload["present_tiers"] == ["source", "index", "embeddings", "ops", "user"]
+    assert payload["present_tiers"] == list(ARCHIVE_TIER_ORDER)
     assert payload["missing_tiers"] == []
 
 
