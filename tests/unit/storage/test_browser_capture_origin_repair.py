@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-import dataclasses
 import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import patch
 
 import pytest
 
-import polylogue.storage.raw_reconciler as raw_reconciler
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import AssertionStatus, Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.raw_authority import RawReplayPlanStatus, resolve_raw_authority_blocker
+from polylogue.storage.raw_authority import resolve_raw_authority_blocker
 from polylogue.storage.raw_convergence import (
     inspect_browser_canonical_authority_conflicts,
     inspect_browser_capture_origin_mismatches,
@@ -27,7 +24,6 @@ from polylogue.storage.raw_reconciler import (
     RawAuthorityFrontierItem,
     RawAuthorityFrontierState,
     _record_judgment_candidate,
-    apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -625,28 +621,6 @@ def _journal_modes(root: Path) -> dict[str, str]:
     return modes
 
 
-def test_unified_frontier_applies_browser_origin_without_incident_receipt(tmp_path: Path) -> None:
-    raw_id = _seed_mismatched_browser_head(tmp_path)
-    preview = inspect_raw_authority_frontier(_config(tmp_path))
-    selected = next(item for item in preview.items if item.raw_id == raw_id)
-
-    report = apply_raw_authority_frontier(
-        _config(tmp_path),
-        preview_census_id=preview.census_id,
-        selected_plan_ids=(selected.plan_id,),
-    )
-
-    assert report.executed_plan_count == 1
-    assert report.retryable_plan_count == 0
-    postflight = inspect_raw_authority_frontier(_config(tmp_path))
-    assert all(item.raw_id != raw_id or item.state is RawAuthorityFrontierState.SUPERSEDED for item in postflight.items)
-    assert set(postflight.state_counts) <= {
-        RawAuthorityFrontierState.PROVEN_CURRENT.value,
-        RawAuthorityFrontierState.SUPERSEDED.value,
-    }
-    assert not (tmp_path / "recovery").exists()
-
-
 def test_excised_duplicate_browser_hash_is_terminally_ineligible_during_inspection(tmp_path: Path) -> None:
     raw_id, duplicate_raw_id, blob_hash = _seed_duplicate_browser_raw(tmp_path)
     _mark_blob_excised(tmp_path, blob_hash)
@@ -669,7 +643,7 @@ def test_excised_duplicate_browser_hash_is_terminally_ineligible_during_inspecti
         ).fetchone() == (blob_hash,)
 
 
-def test_excised_duplicate_browser_hash_is_not_retryable_when_marked_after_preview(tmp_path: Path) -> None:
+def test_excised_duplicate_browser_hash_is_terminal_when_marked_after_preview(tmp_path: Path) -> None:
     raw_id, _duplicate_raw_id, blob_hash = _seed_duplicate_browser_raw(tmp_path)
     preview = inspect_raw_authority_frontier(_config(tmp_path))
     selected = next(item for item in preview.items if item.raw_id == raw_id)
@@ -677,55 +651,13 @@ def test_excised_duplicate_browser_hash_is_not_retryable_when_marked_after_previ
     assert selected.executable
 
     _mark_blob_excised(tmp_path, blob_hash)
-    report = apply_raw_authority_frontier(
-        _config(tmp_path),
-        preview_census_id=preview.census_id,
-        selected_plan_ids=(selected.plan_id,),
-    )
 
-    assert report.success
-    assert report.executed_plan_count == 1
-    assert report.retryable_plan_count == 0
-    with sqlite3.connect(tmp_path / "source.db") as source:
-        outcome_status = source.execute(
-            """
-            SELECT cp.outcome_status
-            FROM raw_authority_census_plans AS cp
-            WHERE cp.census_id = ? AND cp.plan_id = ?
-            """,
-            (report.census_id, selected.plan_id),
-        ).fetchone()
-        assert outcome_status == (RawReplayPlanStatus.TERMINAL.value,)
     postflight = inspect_raw_authority_frontier(_config(tmp_path))
     terminal_item = next(item for item in postflight.items if item.raw_id == raw_id)
     assert terminal_item.state is RawAuthorityFrontierState.UNRESOLVED_PROVENANCE
     assert terminal_item.actuator is RawAuthorityActuator.NONE
     assert terminal_item.executable is False
     assert "durably excised" in terminal_item.reason
-
-
-def test_terminal_race_does_not_rebind_when_only_auxiliary_input_is_terminal(tmp_path: Path) -> None:
-    raw_id, _duplicate_raw_id, blob_hash = _seed_duplicate_browser_raw(tmp_path)
-    preview = inspect_raw_authority_frontier(_config(tmp_path))
-    selected = next(item for item in preview.items if item.raw_id == raw_id)
-    auxiliary_raw_id = next(raw_id_value for raw_id_value in selected.input_raw_ids if raw_id_value != raw_id)
-
-    _mark_blob_excised(tmp_path, blob_hash)
-    current_terminal = next(
-        item for item in inspect_raw_authority_frontier(_config(tmp_path)).items if item.raw_id == raw_id
-    )
-    auxiliary_terminal = dataclasses.replace(current_terminal, raw_id=auxiliary_raw_id)
-    with patch.object(
-        raw_reconciler,
-        "_frontier_items",
-        return_value=((auxiliary_terminal,), 1, 0),
-    ):
-        with pytest.raises(RuntimeError, match="selected raw authority plans changed after preview"):
-            apply_raw_authority_frontier(
-                _config(tmp_path),
-                preview_census_id=preview.census_id,
-                selected_plan_ids=(selected.plan_id,),
-            )
 
 
 def test_unified_frontier_strategy_uses_the_selected_active_generation(tmp_path: Path) -> None:
@@ -749,31 +681,16 @@ def test_unified_frontier_strategy_uses_the_selected_active_generation(tmp_path:
     assert selected.actuator is RawAuthorityActuator.COPY_FORWARD_ORIGIN
 
 
-def test_unified_frontier_restores_equivalent_canonical_browser_head(tmp_path: Path) -> None:
+def test_unified_frontier_plans_restore_of_equivalent_canonical_browser_head(tmp_path: Path) -> None:
     mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
-    canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
+    _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
     preview = inspect_raw_authority_frontier(_config(tmp_path))
     selected = next(item for item in preview.items if item.raw_id == mismatched_raw_id)
     strategy_item = cast(dict[str, Any], selected.strategy_witness["item"])
+
+    assert selected.state is RawAuthorityFrontierState.SAFELY_REKEYABLE
+    assert selected.actuator is RawAuthorityActuator.COPY_FORWARD_ORIGIN
     assert strategy_item["repair_strategy"] == "restore_canonical_head"
-
-    report = apply_raw_authority_frontier(
-        _config(tmp_path),
-        preview_census_id=preview.census_id,
-        selected_plan_ids=(selected.plan_id,),
-    )
-
-    assert report.executed_plan_count == 1
-    assert report.retryable_plan_count == 0
-    with sqlite3.connect(tmp_path / "index.db") as index:
-        assert index.execute(
-            "SELECT raw_id FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
-        ).fetchone() == (canonical_raw_id,)
-    postflight = inspect_raw_authority_frontier(_config(tmp_path))
-    assert set(postflight.state_counts) <= {
-        RawAuthorityFrontierState.PROVEN_CURRENT.value,
-        RawAuthorityFrontierState.SUPERSEDED.value,
-    }
 
 
 @pytest.mark.parametrize(
@@ -849,15 +766,6 @@ def test_unified_frontier_admits_historical_null_native_id_strategies(tmp_path: 
     assert selected.actuator is RawAuthorityActuator.COPY_FORWARD_ORIGIN
     assert strategy["legacy_null_native_id"] is (authority == "quarantined")
     assert strategy["byte_proven_null_native_id_rekey"] is (authority == "byte_proven")
-
-    report = apply_raw_authority_frontier(
-        _config(tmp_path),
-        preview_census_id=preview.census_id,
-        selected_plan_ids=(selected.plan_id,),
-    )
-
-    assert report.executed_plan_count == 1
-    assert report.retryable_plan_count == 0
 
 
 def test_inspect_conflicts_reports_resolved_when_actuator_would_succeed(tmp_path: Path) -> None:
@@ -950,9 +858,9 @@ def test_semantic_browser_copy_requires_application_frontier_to_match_head(tmp_p
     assert "canonical logical source" in item.reason
 
 
-def test_unified_frontier_conflict_requires_typed_judgment_then_resumes_same_evidence(tmp_path: Path) -> None:
+def test_unified_frontier_conflict_requires_typed_judgment_then_replans_same_evidence(tmp_path: Path) -> None:
     mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
-    canonical_raw_id = _seed_diverging_canonical_byte_head(tmp_path, mismatched_raw_id)
+    _seed_diverging_canonical_byte_head(tmp_path, mismatched_raw_id)
 
     census = inspect_raw_authority_frontier(_config(tmp_path))
 
@@ -1001,22 +909,6 @@ def test_unified_frontier_conflict_requires_typed_judgment_then_resumes_same_evi
     assert successor.plan_id != conflict.plan_id
     assert successor.state is RawAuthorityFrontierState.SAFELY_REKEYABLE
     assert successor.actuator is RawAuthorityActuator.RESOLVE_CONFLICT
-    applied = apply_raw_authority_frontier(
-        _config(tmp_path),
-        preview_census_id=repeated.census_id,
-        selected_plan_ids=(successor.plan_id,),
-    )
-    assert applied.executed_plan_count == 1
-    assert applied.retryable_plan_count == 0
-    postflight = inspect_raw_authority_frontier(_config(tmp_path))
-    assert set(postflight.state_counts) <= {
-        RawAuthorityFrontierState.PROVEN_CURRENT.value,
-        RawAuthorityFrontierState.SUPERSEDED.value,
-    }
-    with sqlite3.connect(tmp_path / "index.db") as index:
-        assert index.execute(
-            "SELECT raw_id FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
-        ).fetchone() == (canonical_raw_id,)
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute(
             "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",

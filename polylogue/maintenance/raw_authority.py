@@ -17,7 +17,7 @@ from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_authority import RawAuthorityCensusReceipt
-    from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport, RawAuthorityFrontierCensus
+    from polylogue.storage.raw_reconciler import RawAuthorityFrontierCensus
 
 
 RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES: Final = 64 * 1024 * 1024
@@ -30,47 +30,6 @@ def inspect_frontier(config: Config) -> RawAuthorityFrontierCensus:
     return inspect_raw_authority_frontier(config)
 
 
-def _validate_frontier_apply_report(
-    report: object,
-    *,
-    selected_plan_ids: tuple[str, ...],
-    preview_census_id: str,
-) -> RawAuthorityFrontierApplyReport:
-    """Reject an actuator response that cannot conserve selected plan outcomes."""
-    from polylogue.storage.raw_reconciler import validate_raw_authority_frontier_apply_report
-
-    return validate_raw_authority_frontier_apply_report(
-        report,
-        selected_plan_ids=selected_plan_ids,
-        preview_census_id=preview_census_id,
-    )
-
-
-def apply_frontier(
-    config: Config,
-    *,
-    preview_census_id: str,
-    selected_plan_ids: tuple[str, ...],
-) -> RawAuthorityFrontierApplyReport:
-    from polylogue.daemon.write_coordinator import daemon_write_lease_active
-
-    if not daemon_write_lease_active():
-        raise RuntimeError("raw authority frontier apply requires the daemon writer lease")
-
-    from polylogue.storage.raw_reconciler import apply_raw_authority_frontier
-
-    report = apply_raw_authority_frontier(
-        config,
-        preview_census_id=preview_census_id,
-        selected_plan_ids=selected_plan_ids,
-    )
-    return _validate_frontier_apply_report(
-        report,
-        selected_plan_ids=selected_plan_ids,
-        preview_census_id=preview_census_id,
-    )
-
-
 def finalize_codex_state_snapshots(config: Config) -> int:
     """Finalize admitted Codex state snapshots that carry no terminal receipt.
 
@@ -81,12 +40,6 @@ def finalize_codex_state_snapshots(config: Config) -> int:
     from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
 
     return resolve_retained_codex_state_receipts(config.archive_root)
-
-
-def recover_interrupted_frontier(config: Config) -> tuple[str, ...]:
-    from polylogue.storage.raw_reconciler import recover_interrupted_raw_authority_frontier
-
-    return recover_interrupted_raw_authority_frontier(config)
 
 
 def auto_resolve_stale_plan_blockers(config: Config) -> int:
@@ -236,14 +189,12 @@ def list_blockers(archive_root: Path, *, limit: int = 100, offset: int = 0) -> J
 
 __all__ = [
     "ArchiveWriterRebuildExclusion",
-    "apply_frontier",
     "archive_writer_rebuild_exclusion",
     "inspect_frontier",
     "list_blockers",
     "materialization_generation_lease",
     "read_census",
     "read_detail",
-    "recover_interrupted_frontier",
     "recover_materialization_censuses",
     "unfinished_materialization_census_ids",
 ]

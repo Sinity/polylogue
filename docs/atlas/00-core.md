@@ -10,7 +10,7 @@ Polylogue is a local, single-writer archive for AI coding and chat sessions.
 It acquires heterogeneous exports and live captures, parses them into a
 normalized session tree, stores durable evidence in split SQLite tiers, and
 serves query-first reads through the CLI, MCP, Python API, and daemon
-(`polylogue/daemon/cli.py:2104-2147`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:49-85`).
+(`polylogue/daemon/cli.py:2027-2070`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:49-85`).
 
 The useful mental model is a flight recorder: every derived answer should be
 able to resolve to stored source bytes, structured records, and provenance.

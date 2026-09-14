@@ -20,7 +20,6 @@ from polylogue.storage.raw_convergence import _stageable_quarantined_census_coho
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierState,
-    apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
 )
 from polylogue.storage.sqlite.archive_tiers import revision_governance
@@ -195,42 +194,6 @@ def _retarget_fixture_raw_id(root: Path, old_raw_id: str, new_raw_id: str) -> No
             (new_raw_id, new_raw_id, new_raw_id, old_raw_id),
         )
         index.commit()
-
-
-@pytest.mark.parametrize("typed_quarantined", [False, True])
-def test_unified_frontier_applies_quarantine_refinement_without_incident_receipt(
-    tmp_path: Path, typed_quarantined: bool
-) -> None:
-    raw_id = _seed_invalid_head(tmp_path, typed_quarantined=typed_quarantined)
-    with sqlite3.connect(tmp_path / "source.db") as source:
-        source.execute(
-            """
-            INSERT INTO raw_artifacts (
-                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
-                support_status, classification_reason, parse_as_session, schema_eligible,
-                malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
-            ) VALUES ('unified-artifact-witness', ?, 'chatgpt-export', 'repair-one.json', 0,
-                      'session', 'supported_parseable', 'witness', 1, 1, 0, 1, 2)
-            """,
-            (raw_id,),
-        )
-    preview = inspect_raw_authority_frontier(_config(tmp_path))
-    selected = next(item for item in preview.items if item.raw_id == raw_id)
-
-    report = apply_raw_authority_frontier(
-        _config(tmp_path),
-        preview_census_id=preview.census_id,
-        selected_plan_ids=(selected.plan_id,),
-    )
-
-    assert report.executed_plan_count == 1
-    assert report.retryable_plan_count == 0
-    with sqlite3.connect(tmp_path / "source.db") as source:
-        assert source.execute(
-            "SELECT revision_authority, baseline_raw_id FROM raw_sessions WHERE raw_id = ?",
-            (raw_id,),
-        ).fetchone() == ("byte_proven", raw_id)
-    assert not (tmp_path / "recovery").exists()
 
 
 @pytest.mark.parametrize(
@@ -505,52 +468,6 @@ def test_quarantine_refinement_fanout_scopes_by_logical_source_key(tmp_path: Pat
     assert inspected[0].status == "ineligible"
     assert "expected one accepted head" not in inspected[0].reason
     assert "differs from the accepted session" in inspected[0].reason
-
-
-def test_quarantine_refinement_applies_for_the_matching_sibling_only(tmp_path: Path) -> None:
-    """polylogue-zaiz regression: the genuinely-matching sibling refines cleanly.
-
-    Unlike duplicate-alias fan-out (where eligibility is a race -- any
-    sibling looks eligible until a canonical twin is claimed), quarantine-
-    refinement eligibility is a fixed content-match fact: only
-    ``session_a`` (whose accepted content genuinely matches the raw) is
-    ever ``SAFELY_REKEYABLE``. Applying its plan must succeed end-to-end
-    without disturbing ``session_b``'s own (permanently ineligible,
-    unaffected) accepted-head row.
-    """
-    raw_id, heads = _seed_quarantined_raw_fanout(tmp_path)
-    (session_a, key_a), (session_b, key_b) = heads
-
-    preview = inspect_raw_authority_frontier(_config(tmp_path))
-    selected = next(
-        item
-        for item in preview.items
-        if item.raw_id == raw_id
-        and item.logical_source_key == key_a
-        and item.state is RawAuthorityFrontierState.SAFELY_REKEYABLE
-    )
-
-    report = apply_raw_authority_frontier(
-        _config(tmp_path),
-        preview_census_id=preview.census_id,
-        selected_plan_ids=(selected.plan_id,),
-    )
-
-    assert report.executed_plan_count == 1
-    assert report.retryable_plan_count == 0
-    assert report.success
-
-    with sqlite3.connect(tmp_path / "source.db") as source:
-        assert source.execute(
-            "SELECT revision_authority, baseline_raw_id FROM raw_sessions WHERE raw_id = ?",
-            (raw_id,),
-        ).fetchone() == ("byte_proven", raw_id)
-    with sqlite3.connect(tmp_path / "index.db") as index:
-        # session_b's own head still points at the shared raw_id -- the
-        # refinement is scoped to session_a only, not a global side effect.
-        assert index.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE session_id = ?", (session_b,)
-        ).fetchone() == (raw_id,)
 
 
 def test_quarantine_refinement_tolerates_prior_superseded_application_history(tmp_path: Path) -> None:
