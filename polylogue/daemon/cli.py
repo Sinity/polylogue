@@ -13,6 +13,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
@@ -63,7 +64,7 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteThreadBridge,
     daemon_write_coordinator,
 )
-from polylogue.logging import configure_logging, get_logger
+from polylogue.logging import configure_events, configure_logging, emit, get_logger, set_run_context
 from polylogue.maintenance.raw_authority import (
     RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
     RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
@@ -3261,6 +3262,13 @@ def run_command(
     """
     _enable_faulthandler_if_supported()
     configure_logging()
+    configure_events()
+
+    # One run_id binds every event this process emits, across every task,
+    # thread and writer-lease hop, so a completed rebuild log can be filtered
+    # to exactly one daemon run.
+    set_run_context(run_id=uuid.uuid4().hex[:16], component="daemon")
+    emit("daemon.run.start", pid=os.getpid())
 
     from polylogue.config import resolve_runtime_config
 
