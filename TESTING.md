@@ -330,6 +330,34 @@ Browser or deployment media remains local operator evidence unless the run is
 backed by an explicit command artifact. The fast visual lane is browserless and
 checks HTTP/DOM/API contracts rather than screenshots.
 
+## Golden Bytes for the Root Query Surface
+
+Two harnesses in `scripts/` replay the root `find`/`analyze` surface in-process
+against the immutable seeded `cli-mixed` workload with a frozen clock, and
+record exit code plus exact stdout/stderr bytes. A refactor that claims to
+preserve behaviour runs **both** before and after and diffs them.
+
+```bash
+# Every documented `polylogue ...` invocation in docs/cli-reference.md
+uv run python scripts/golden_find_bytes.py BEFORE.json
+
+# Hand-picked invocations that produce rows
+uv run python scripts/golden_nonempty_bytes.py AFTER.json --compare BEFORE-NONEMPTY.json
+```
+
+They are a pair, and the second is not optional. The documented set is the
+right acceptance evidence for "the documented surface did not change", but on
+the seeded corpus its aggregate and `id:`-scoped examples all match nothing, so
+a change can pass every documented invocation without one aggregate row, ranked
+hit, page boundary or attached-unit projection ever being rendered. Zeroing
+`total` on every list page, for instance, leaves all 37 documented goldens
+byte-identical and is caught only by the non-empty companion.
+
+`golden_nonempty_bytes.py --compare` exits nonzero when any case changed, and
+normalizes the three authority fields (`run_id`, `generation_id`,
+`archive_epoch`) that vary per run on an unmodified checkout. `golden_find_bytes.py`
+records only; diff its output yourself.
+
 ## Protected Files
 
 Never delete:
