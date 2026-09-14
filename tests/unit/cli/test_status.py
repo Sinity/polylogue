@@ -792,7 +792,14 @@ class TestCanonicalStatusOperation:
         assert payload["archive_readiness"]["reason"] == "direct_status_default_skips_exact_archive_readiness"
 
     def test_direct_operation_fails_closed_for_missing_ops_frontier_authority(self, tmp_path: Path) -> None:
-        """A missing ops cursor cannot produce a green direct claim."""
+        """A missing ops cursor cannot produce a green direct claim.
+
+        It cannot produce a red one either. The frontier inspection reports
+        ``unknown``, and an unmeasured domain withholds the claim instead of
+        refuting it (#5027, polylogue-kjy0a): the guard publishes ``None`` and
+        names the domain. Anti-vacuity: defaulting ``determinate`` back to True
+        for the raw domains makes this claim ``False`` and turns it red.
+        """
         bootstrap_archive_root(tmp_path)
         with sqlite3.connect(tmp_path / "ops.db") as conn:
             conn.execute("DROP TABLE ingest_cursor")
@@ -800,7 +807,10 @@ class TestCanonicalStatusOperation:
 
         payload = self._direct_status(tmp_path)
         assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
-        assert payload["claim_guard"]["converged"]["value"] is False
+        converged = payload["claim_guard"]["converged"]
+        assert converged["value"] is None
+        assert converged["determinate"] is False
+        assert "inspection incomplete" in converged["reason"]
         assert payload["ok"] is False
 
     def test_direct_operation_exact_readiness_blocks_missing_raw_evidence(self, tmp_path: Path) -> None:
@@ -932,7 +942,19 @@ class TestStatusDiagnosticIntegration:
         }
         assert payload["convergence"]["available"] is True
         assert payload["convergence"]["error"] is None
-        assert payload["claim_guard"]["converged"]["reason"] == "ready"
+        # The convergence claim must not be blamed on the debt ledger, and it
+        # must never contradict itself: this archive's raw-authority frontier
+        # was never inspected, so the verdict is withheld and names that gap.
+        # It used to read value=False with reason="ready" -- the two
+        # derivations of raw-materialization readiness disagreeing
+        # (polylogue-kjy0a). Anti-vacuity: deriving ``ready`` and ``summary``
+        # from different predicates again restores that pair and turns this
+        # red, as does dropping ``determinate``.
+        converged = payload["claim_guard"]["converged"]
+        assert converged["value"] is None
+        assert converged["determinate"] is False
+        assert converged["reason"] != "ready"
+        assert "raw_materialization" in converged["signal"]
         assert payload["claim_guard"]["perf_measurable"]["value"] is False
 
     @pytest.mark.integration

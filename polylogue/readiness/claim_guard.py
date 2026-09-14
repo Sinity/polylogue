@@ -27,8 +27,9 @@ derivation and cannot silently drift apart.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +101,43 @@ class DerivedDomainReadiness:
     An indeterminate domain cannot certify convergence and cannot refute it
     either, so it withholds the claim instead of negating it.
     """
+
+
+def raw_materialization_unmeasured_reason(readiness: Mapping[str, Any] | object | None) -> str | None:
+    """Name the precondition a raw-materialization snapshot never measured.
+
+    ``storage.archive_readiness.raw_materialization_ready`` returns False both
+    when an inspection ran and found debt and when the inspection never ran at
+    all. Only the first is a refutation; the second is an unmeasured state, and
+    collapsing it into ``converged: false`` publishes a claim about the archive
+    that nothing checked (polylogue-kjy0a). Status producers call this to mark
+    the domain indeterminate instead of negating it.
+
+    This lives beside the claim guard rather than in ``archive_readiness``
+    because that module is inside the derived-schema identity closure: the
+    predicate it mirrors is unchanged, and classifying its output is a
+    claim-publication concern, not a storage one.
+    """
+    payload: Mapping[str, Any] | None
+    if readiness is None:
+        payload = None
+    elif isinstance(readiness, Mapping):
+        payload = readiness
+    else:
+        model_dump = getattr(readiness, "model_dump", None)
+        dumped = model_dump() if callable(model_dump) else None
+        payload = dumped if isinstance(dumped, Mapping) else None
+    if payload is None or not bool(payload.get("available", False)):
+        return "raw-materialization readiness was not inspected"
+    if payload.get("debt_classifier_error"):
+        return "raw debt classifier did not run"
+    parser_census = payload.get("raw_authority_parser_census")
+    if not isinstance(parser_census, Mapping) or parser_census.get("available") is not True:
+        return "source parser census not measured"
+    frontier = payload.get("raw_authority_frontier")
+    if not isinstance(frontier, Mapping) or frontier.get("lifecycle_status") != "completed":
+        return "raw authority frontier inspection not completed"
+    return None
 
 
 def derive_claim_guard(
@@ -193,4 +231,10 @@ def derive_claim_guard(
     return ClaimGuard(openable=openable, converged=converged, search_ready=search, perf_measurable=perf)
 
 
-__all__ = ["ClaimGuard", "ClaimGuardEntry", "DerivedDomainReadiness", "derive_claim_guard"]
+__all__ = [
+    "ClaimGuard",
+    "ClaimGuardEntry",
+    "DerivedDomainReadiness",
+    "derive_claim_guard",
+    "raw_materialization_unmeasured_reason",
+]

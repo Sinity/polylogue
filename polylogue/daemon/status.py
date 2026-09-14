@@ -65,7 +65,11 @@ from polylogue.maintenance.archive_verification import read_raw_failure_lifecycl
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
-from polylogue.readiness.claim_guard import DerivedDomainReadiness, derive_claim_guard
+from polylogue.readiness.claim_guard import (
+    DerivedDomainReadiness,
+    derive_claim_guard,
+    raw_materialization_unmeasured_reason,
+)
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -1926,6 +1930,32 @@ def _daemon_component_readiness(
     return components
 
 
+def _raw_materialization_domain(
+    raw_component: ComponentReadiness,
+    unmeasured_reason: str | None,
+) -> DerivedDomainReadiness:
+    """Derive the raw-materialization claim from one projection, plus a gate.
+
+    An uninspected precondition cannot certify convergence, but it also cannot
+    erase a projection that already found the domain wanting: only a ``ready``
+    projection is downgraded to indeterminate.
+    """
+    if raw_component.state is CapabilityReadinessState.UNKNOWN:
+        return DerivedDomainReadiness(
+            domain="raw_materialization", ready=False, summary=raw_component.summary, determinate=False
+        )
+    if raw_component.state is CapabilityReadinessState.READY and unmeasured_reason is not None:
+        return DerivedDomainReadiness(
+            domain="raw_materialization", ready=True, summary=unmeasured_reason, determinate=False
+        )
+    return DerivedDomainReadiness(
+        domain="raw_materialization",
+        ready=raw_component.state is CapabilityReadinessState.READY,
+        summary=raw_component.summary,
+        determinate=True,
+    )
+
+
 def _daemon_claim_guard(
     *,
     archive_storage: ArchiveStorageStatus,
@@ -1939,6 +1969,7 @@ def _daemon_claim_guard(
 ) -> dict[str, object]:
     """Derive the claim-guard block for the daemon-serving status path."""
     raw_component = _component_from_raw_materialization_readiness(raw_materialization_readiness)
+    raw_unmeasured = raw_materialization_unmeasured_reason(raw_materialization_readiness)
     fts_component = _component_from_fts_readiness(fts_readiness)
     profile_component = _component_from_insight_freshness(insight_freshness)
     embedding_component = _component_from_daemon_embedding_readiness(embedding_readiness)
@@ -1947,15 +1978,16 @@ def _daemon_claim_guard(
     if live_ingest_attempts.running_count:
         writer_parts.append(f"{live_ingest_attempts.running_count} live ingest attempt(s) running")
     derived_domains = [
-        DerivedDomainReadiness(
-            domain="raw_materialization",
-            ready=raw_materialization_ready(raw_materialization_readiness),
-            summary=raw_component.summary,
-        ),
+        # ready and summary come from one projection, and the stricter
+        # predicate's never-run preconditions withhold certification rather
+        # than refute (polylogue-kjy0a). Same derivation as the direct path's
+        # operations.daemon_status._raw_materialization_domain.
+        _raw_materialization_domain(raw_component, raw_unmeasured),
         DerivedDomainReadiness(
             domain="raw_frontier_integrity",
             ready=raw_frontier_integrity.overall_status == "healthy",
             summary=raw_frontier_integrity_summary(raw_frontier_integrity.model_dump()),
+            determinate=raw_frontier_integrity.overall_status != "unknown",
         ),
         DerivedDomainReadiness(
             domain="session_profiles",
@@ -1981,6 +2013,7 @@ def _daemon_claim_guard(
                 domain="embeddings",
                 ready=embedding_component.state is CapabilityReadinessState.READY,
                 summary=embedding_component.summary,
+                determinate=embedding_component.state is not CapabilityReadinessState.UNKNOWN,
             )
         )
     guard = derive_claim_guard(
