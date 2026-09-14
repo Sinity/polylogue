@@ -27,6 +27,7 @@ cannot turn a simulated kill into a successful operation.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
@@ -46,6 +47,7 @@ class DurabilityFaultPoint(StrEnum):
     COMMIT = "commit"
     REPLACE = "replace"
     UNLINK = "unlink"
+    STATEMENT = "statement"
 
 
 class InjectedFaultError(RuntimeError):
@@ -256,6 +258,76 @@ def durability_faults() -> Iterator[DurabilityFaultRegistry]:
     )
 
 
+class _CrashingConnection:
+    """Wrap a real connection and crash after a counted mutating statement.
+
+    ``sqlite3.Connection`` is an immutable type, so the counter is attached by
+    delegation rather than by patching the class. Only the statement-issuing
+    methods are intercepted; everything else is forwarded untouched, so
+    production code runs its own SQL on a real connection.
+    """
+
+    _MUTATION = re.compile(r"^\s*(?:insert|update|delete|replace)\b", re.IGNORECASE)
+
+    def __init__(self, connection: sqlite3.Connection, budget: list[int]) -> None:
+        object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "_budget", budget)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._connection, name, value)
+
+    def _count(self, sql: object) -> None:
+        if not self._MUTATION.match(str(sql)):
+            return
+        budget = self._budget
+        budget[0] += 1
+        if budget[0] == budget[1]:
+            raise InjectedCrash(DurabilityFaultPoint.STATEMENT, budget[1])
+
+    def execute(self, sql: object, *args: Any, **kwargs: Any) -> Any:
+        self._count(sql)
+        return self._connection.execute(sql, *args, **kwargs)
+
+    def executemany(self, sql: object, *args: Any, **kwargs: Any) -> Any:
+        self._count(sql)
+        return self._connection.executemany(sql, *args, **kwargs)
+
+    def backup(self, target: Any, *args: Any, **kwargs: Any) -> Any:
+        inner = target._connection if isinstance(target, _CrashingConnection) else target
+        return self._connection.backup(inner, *args, **kwargs)
+
+    def __enter__(self) -> _CrashingConnection:
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, *exc: Any) -> Any:
+        return self._connection.__exit__(*exc)
+
+
+@contextmanager
+def crash_after_mutating_statements(count: int) -> Iterator[list[int]]:
+    """Raise :class:`InjectedCrash` on the ``count``-th mutating statement.
+
+    The crash lands inside whatever transaction is open at that point, which is
+    the interesting case for resume: unlike a commit-boundary fault it leaves a
+    partially applied statement sequence for SQLite to roll back. The yielded
+    list carries ``[observed, target]`` so a caller can assert the fault fired.
+    """
+    if count < 1:
+        raise ValueError("crash count must be positive")
+    budget = [0, count]
+    real_connect = sqlite3.connect
+
+    def crashing_connect(*args: Any, **kwargs: Any) -> Any:
+        return _CrashingConnection(real_connect(*args, **kwargs), budget)
+
+    with patch.object(sqlite3, "connect", crashing_connect):
+        yield budget
+
+
 __all__ = [
     "DurabilityFaultPoint",
     "DurabilityFaultRegistry",
@@ -264,4 +336,5 @@ __all__ = [
     "InjectedFault",
     "InjectedFaultError",
     "RecoveryRun",
+    "crash_after_mutating_statements",
 ]
