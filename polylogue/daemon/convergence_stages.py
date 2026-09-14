@@ -21,7 +21,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
-from polylogue.logging import WARNING, emit, span
+from polylogue.logging import INFO, WARNING, emit, span
 from polylogue.operations.raw_authority_verdict_cache import (
     RawAuthorityVerdictCacheWork,
     find_raw_authority_verdict_cache_work,
@@ -75,37 +75,39 @@ def _emit_sinex_drain(scope: str, subjects: int, summary: object, *, path: Path 
     debt = int(getattr(summary, "durable_debt", 0))
     remaining = int(getattr(summary, "remaining_lag", 0))
     failed = rejected + transport_failures + payload_failures
-    fields: dict[str, object] = {
-        "stage": "sinex_publication",
-        "action": scope,
-        "subjects": subjects,
-        "attempted": attempted,
-        "confirmed": int(getattr(summary, "confirmed", 0)),
-        "rejected": rejected,
-        "transport_failures": transport_failures,
-        "payload_failures": payload_failures,
-        "failed": failed,
-        "debt": debt,
-        "remaining": remaining,
-    }
-    if path is not None:
-        fields["path"] = path
     if failed or debt:
-        emit(
-            "daemon.stage.drained",
-            level=WARNING,
-            outcome="degraded",
-            reason=_sinex_drain_reason(
-                rejected=rejected,
-                transport_failures=transport_failures,
-                payload_failures=payload_failures,
-            ),
-            **fields,
+        level = WARNING
+        outcome = "degraded"
+        reason = _sinex_drain_reason(
+            rejected=rejected,
+            transport_failures=transport_failures,
+            payload_failures=payload_failures,
         )
-    elif attempted:
-        emit("daemon.stage.drained", outcome="ok", **fields)
     else:
-        emit("daemon.stage.drained", outcome="empty", **fields)
+        level = INFO
+        outcome = "ok" if attempted else "empty"
+        reason = "clean"
+    # ``path`` is present only for the per-path drain; a null field on the
+    # batch and session scopes would be noise in every rendered line.
+    scoped: dict[str, object] = {} if path is None else {"path": path}
+    emit(
+        "daemon.stage.drained",
+        level,
+        outcome=outcome,
+        reason=reason,
+        stage="sinex_publication",
+        action=scope,
+        subjects=subjects,
+        attempted=attempted,
+        confirmed=int(getattr(summary, "confirmed", 0)),
+        rejected=rejected,
+        transport_failures=transport_failures,
+        payload_failures=payload_failures,
+        failed=failed,
+        debt=debt,
+        remaining=remaining,
+        **scoped,
+    )
 
 
 def _is_transient_sqlite_lock(exc: BaseException) -> bool:

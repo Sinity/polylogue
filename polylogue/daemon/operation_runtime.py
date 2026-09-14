@@ -486,7 +486,7 @@ class DaemonOperationRuntime:
                         exchange.future = asyncio.run_coroutine_threadsafe(staged(request, context), self._owner_loop)
                     else:
                         scheduled = self._kernel.submit(
-                            cast("Callable[[], object]", propagate(work)),
+                            cast("Callable[[], DaemonOperationEnvelope]", propagate(work)),
                             admission_class="interactive-read" if spec.authority is DaemonAuthority.READ else "control",
                             # A control exchange keeps its durable authority after
                             # acceptance, but before that boundary a disconnect or
