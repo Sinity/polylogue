@@ -489,12 +489,35 @@
     return responsePromise;
   }
 
+  // Mirror of MAX_PROVIDER_COOLDOWN_MS in src/capture/provider_cooldown.js --
+  // that module owns the value and its justification. Content scripts are
+  // classic (non-module) scripts in the manifest and cannot import it, so
+  // tests/content/chatgpt.test.js asserts this literal still matches.
+  const maxProviderCooldownMs = 24 * 60 * 60 * 1000;
+
+  // `value` here is page-controlled: the MAIN-world bridge response is just a
+  // window message any page script can forge, so an unbounded Retry-After from
+  // here becomes a persisted, monotonic, restart-surviving provider cooldown.
+  function clampRetryAfterMs(requestedMs) {
+    if (!Number.isFinite(requestedMs) || requestedMs <= maxProviderCooldownMs) return requestedMs;
+    // A clamp must be observable: native_attempts is the diagnostic channel this
+    // content script already reports upward with every capture result.
+    rememberNativeAttempt({
+      stage: "provider_retry_after_clamped",
+      accepted: false,
+      outcome: "rate_limited",
+      requested_ms: requestedMs,
+      applied_ms: maxProviderCooldownMs,
+    });
+    return maxProviderCooldownMs;
+  }
+
   function retryAfterMilliseconds(value) {
     if (typeof value !== "string" || !value.trim()) return null;
     const seconds = Number(value);
-    if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+    if (Number.isFinite(seconds) && seconds >= 0) return clampRetryAfterMs(Math.ceil(seconds * 1000));
     const deadline = Date.parse(value || "");
-    return Number.isFinite(deadline) ? Math.max(0, deadline - Date.now()) : null;
+    return Number.isFinite(deadline) ? clampRetryAfterMs(Math.max(0, deadline - Date.now())) : null;
   }
 
   function rateLimitedNativeFetch(retryAfter) {
@@ -1008,6 +1031,10 @@
           retry_after_seconds: nativeFetch.retryAfterMs === null
             ? null
             : Math.ceil(nativeFetch.retryAfterMs / 1000),
+          // Carries the provider_retry_after_clamped diagnostic upward, so a
+          // clamped (i.e. forged or broken) Retry-After is visible to the caller
+          // rather than silently rewritten.
+          native_attempts: nativeAttemptDiagnostics.slice(-6),
         };
       }
       nativePayload = nativeFetch.payload || latestNativePayload(requestedConversationId || conversationIdFromUrl());

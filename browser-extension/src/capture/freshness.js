@@ -1,3 +1,5 @@
+import { MAX_PROVIDER_COOLDOWN_MS, clampProviderCooldownMs } from "./provider_cooldown.js";
+
 export const CAPTURE_FRESHNESS_QUEUE_VERSION = 1;
 export const CAPTURE_FRESHNESS_MAX_ENTRIES = 500;
 
@@ -28,6 +30,8 @@ export function normalizeFreshnessQueue(value) {
         : {}),
     },
     dropped_count: Number(value?.dropped_count) || 0,
+    provider_cooldown_clamps: Number(value?.provider_cooldown_clamps) || 0,
+    last_cooldown_clamp: value?.last_cooldown_clamp || null,
     sweep_partition: Number(value?.sweep_partition) || 0,
     sweep_not_before_ms: Number(value?.sweep_not_before_ms) || 0,
     last_sweep_at: value?.last_sweep_at || null,
@@ -96,14 +100,33 @@ export function scheduleFreshnessHint(queueValue, {
   return { ...queue, entries, dropped_count: dropped };
 }
 
-export function extendProviderCooldown(queueValue, { provider, untilMs }) {
+export function extendProviderCooldown(queueValue, { provider, untilMs, nowMs = Date.now() }) {
   const queue = normalizeFreshnessQueue(queueValue);
   const current = Number(queue.provider_cooldowns[provider]) || 0;
-  const deadline = Math.max(current, Number(untilMs) || 0);
-  if (deadline === current) return queue;
+  const requested = Number(untilMs) || 0;
+  // Storage-boundary backstop. This cooldown is monotonic and persisted, so an
+  // over-long deadline that reaches here is permanent until storage is cleared.
+  // Every earlier clamp is independently reachable and independently bypassable
+  // (a future caller, a different provider path); this one is the last line.
+  const base = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const clamp = clampProviderCooldownMs(requested - base);
+  const bounded = clamp.clamped ? base + MAX_PROVIDER_COOLDOWN_MS : requested;
+  const deadline = Math.max(current, bounded);
+  if (deadline === current && !clamp.clamped) return queue;
   return {
     ...queue,
     provider_cooldowns: { ...queue.provider_cooldowns, [provider]: deadline },
+    // A clamp must be observable, not silent: the queue is the surface the
+    // popup and telemetry already read (`dropped_count`, `last_sweep_error`).
+    provider_cooldown_clamps: queue.provider_cooldown_clamps + (clamp.clamped ? 1 : 0),
+    last_cooldown_clamp: clamp.clamped
+      ? {
+        provider,
+        requested_until_ms: requested,
+        applied_until_ms: base + MAX_PROVIDER_COOLDOWN_MS,
+        at_ms: base,
+      }
+      : queue.last_cooldown_clamp,
   };
 }
 

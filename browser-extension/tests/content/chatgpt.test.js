@@ -27,6 +27,8 @@ import { Script } from "node:vm";
 import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { MAX_PROVIDER_COOLDOWN_MS } from "../../src/capture/provider_cooldown.js";
+
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const bridgeSource = readFileSync(resolve(testDirectory, "../../src/content/chatgpt_bridge.js"), "utf8");
 const commonSource = readFileSync(resolve(testDirectory, "../../src/common.js"), "utf8");
@@ -280,6 +282,62 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
     }));
     expect(fetch.mock.calls.filter(([input]) => String(input).includes("/backend-api/conversation/conv-manual-429")))
       .toHaveLength(1);
+  });
+
+  // Anti-vacuity: remove clampRetryAfterMs() from retryAfterMilliseconds (return
+  // the raw Math.ceil(seconds * 1000)) and this goes red -- the content script
+  // forwards retry_after_seconds: 315360000 to the background, which persists a
+  // ~10-year monotonic cooldown that survives browser restarts. A 429 with an
+  // arbitrary Retry-After is forgeable by any ChatGPT page script (the MAIN-world
+  // bridge response is an unauthenticated window message), so this number must
+  // never be honoured unbounded, and the clamp must be reported, not silent.
+  // Anti-vacuity: change either the literal in chatgpt.js or the constant in
+  // src/capture/provider_cooldown.js without changing the other and this goes
+  // red. Content scripts are classic (non-module) manifest scripts and cannot
+  // import the shared module, so this test is what keeps the mirrored literal
+  // from drifting away from the single source of truth.
+  it("mirrors the shared maximum provider cooldown constant", () => {
+    const mirrored = /const maxProviderCooldownMs = ([^;]+);/.exec(contentSource);
+    expect(mirrored).not.toBeNull();
+    expect(Function(`return (${mirrored[1]});`)()).toBe(MAX_PROVIDER_COOLDOWN_MS);
+  });
+
+  it("clamps a provider-supplied Retry-After beyond the maximum honoured window", async () => {
+    const runtimeMessages = [];
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      if (url.pathname === "/backend-api/conversation/conv-forged-429") {
+        return new globalThis.Response(JSON.stringify({ detail: "rate limited" }), {
+          status: 429,
+          headers: { "content-type": "application/json", "Retry-After": "315360000" },
+        });
+      }
+      return notFoundResponse();
+    });
+    const { sendRuntimeMessage } = installChatgpt({
+      url: "https://chatgpt.com/c/conv-forged-429",
+      fetch,
+      runtimeMessage: async (message) => {
+        runtimeMessages.push(message);
+        if (message.type === "polylogue.providerThrottle") return { ok: true };
+        if (message.type === "polylogue.providerRateLimited") return { ok: true };
+        return undefined;
+      },
+    });
+
+    const maxProviderCooldownSeconds = 24 * 60 * 60;
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+
+    expect(result).toMatchObject({ ok: false, outcome: "rate_limited", retry_after_seconds: maxProviderCooldownSeconds });
+    expect(runtimeMessages).toContainEqual(expect.objectContaining({
+      type: "polylogue.providerRateLimited",
+      retry_after_seconds: maxProviderCooldownSeconds,
+    }));
+    expect(result.native_attempts).toContainEqual(expect.objectContaining({
+      stage: "provider_retry_after_clamped",
+      requested_ms: 315_360_000 * 1000,
+      applied_ms: maxProviderCooldownSeconds * 1000,
+    }));
   });
 
   it("fails closed when the shared throttle authority is unavailable", async () => {
