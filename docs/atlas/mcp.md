@@ -37,7 +37,7 @@ The live MCP surface is a twelve-tool operation algebra. Six read tools are alwa
 
 - Production-visible names come from `declared_tool_names(capabilities)`, which filters declarations through capability checks (`polylogue/mcp/declarations/registry.py:372-384`).
 - Test infrastructure derives `EXPECTED_TOOL_NAMES` from the all-capabilities declaration set rather than maintaining a second copied list (`tests/infra/mcp.py:25-30`).
-- The six-name read baseline remains frozen independently, so deleting both a handler and its declaration cannot self-authorize a public surface contraction (`tests/infra/mcp.py:20`; `tests/unit/mcp/test_tool_declarations.py:19-24`).
+- The six-name read baseline remains frozen independently, so deleting both a handler and its declaration cannot self-authorize a public surface contraction (`tests/infra/mcp.py:18`; `tests/unit/mcp/test_tool_declarations.py:19-24`).
 - Every registered tool must also appear in `TOOL_CONTRACT`, and stale classifications fail (`tests/unit/mcp/test_envelope_contracts.py:85-113`).
 
 ## Operation to contract flow
@@ -66,7 +66,7 @@ The generated agent manual and the `agent_integration` spec describe a
 "ten-tool MCP surface" and omit `record_work_event`/`emit_decision`, which are
 live registered tools under the `write` capability
 (`devtools/render_agent_manual.py:125`; `polylogue/agent_integration/spec.py:5`;
-`polylogue/mcp/declarations/registry.py:1-6`; `tests/infra/mcp.py:22`). The
+`polylogue/mcp/declarations/registry.py:1-6`; `tests/infra/mcp.py:20`). The
 declaration-derived count is twelve (`polylogue/mcp/declarations/registry.py:372-384`).
 
 The same manual states that "a legacy `confirm=true` boolean is not the
@@ -77,4 +77,14 @@ dry-run operation (`polylogue/mcp/server_cutover.py:2672-2678`;
 `polylogue/mcp/declarations/registry.py:256-273`). These manual strings are
 hand-written, not generated from the declarations.
 
-verified: 7a5160fd8b5a7c2a65c2149710713e8f8a4d6485 2026-09-14
+The two halves of that manual now contradict each other in one document.
+`agent_integration/spec.py` was corrected to the three live operations and
+declares `operation` as "One of rebuild_insights, recovery_status,
+recovery_adjudicate" (`polylogue/agent_integration/spec.py:499-517`), while the
+hand-written prose rendered alongside it still summarises `maintenance` as
+"Preview/status/reconcile" and prescribes `operation="preview"` with a dry-run
+mode (`devtools/render_agent_manual.py:230`; `devtools/render_agent_manual.py:234`).
+Correcting the typed contract without the prose narrowed the defect; it did not
+close it.
+
+verified: ab850e0b71263ae017e453833e4495b79030c7c3 2026-09-14
