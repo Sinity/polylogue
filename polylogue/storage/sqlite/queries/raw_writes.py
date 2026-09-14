@@ -17,7 +17,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionPlan,
     RawAdmissionResult,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, pending_raw_logical_source_key
 from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
 
 
@@ -239,9 +239,19 @@ async def save_raw_session(
     # the explicit pending arm rather than inserting a nullable/unknown row.
     # A supplied envelope is retained for replay/append callers whose byte
     # relation was already adjudicated by their owning acquisition planner.
+    # The key must come from pending_raw_logical_source_key, never a local
+    # f-string: bind_source_raw_revision replaces a provisional identity only
+    # when it matches `pending-raw:%`, and parser-census canonicalisation
+    # excludes exactly that prefix. A key spelled any other way is neither
+    # replaceable nor excludable, so the raw stays quarantined and its census
+    # entry stays incomplete -- blocking materialization readiness for an
+    # otherwise valid import.
     revision = record.revision or RawRevisionEnvelope(
-        logical_source_key=(
-            f"pending:{origin.value}:{record.source_path}:{int(record.source_index or 0)}:{record.raw_id}"
+        logical_source_key=pending_raw_logical_source_key(
+            origin=origin,
+            source_path=record.source_path,
+            source_index=int(record.source_index or 0),
+            raw_id=record.raw_id,
         ),
         kind=RawRevisionKind.FULL,
         source_revision=blob_hash.hex(),
