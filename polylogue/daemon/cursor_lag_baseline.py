@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.stats import percentile
 from polylogue.daemon.cursor_lag_status import CursorLagItem, CursorLagSummary
 from polylogue.logging import get_logger
@@ -330,7 +331,8 @@ def _epoch_ms(moment: datetime) -> int:
 
 
 def _database_is_locked(exc: sqlite3.OperationalError) -> bool:
-    return "database is locked" in str(exc).lower()
+    """Defer to SQLite's result code; text alone misses SQLITE_LOCKED."""
+    return is_transient_sqlite_lock(exc)
 
 
 __all__ = [
