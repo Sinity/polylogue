@@ -38,8 +38,26 @@ def test_clone_refuses_a_template_holding_a_symlink(tmp_path: Path) -> None:
     assert list(clone.iterdir()) == []
 
 
-def test_clone_rebinds_durable_bootstrap_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reusing the source store or global identity would make this reopen unsafe."""
+def test_clone_reproduces_the_durable_bootstrap_marker_and_both_roots_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A faithful clone carries the template's own bootstrap marker, byte for byte.
+
+    PR #5070 (polylogue-ifb4l) rebound the marker to the archive's durable
+    *content*, dropping the root path and the source/user inodes it used to
+    seal. ``clone_archive_template`` still calls ``rebind_durable_identity``,
+    but that rewrite is now idempotent for a faithful clone: same content,
+    same marker. The transplant property the old location seal was protecting
+    is covered by
+    ``test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe``
+    in ``tests/unit/storage/test_durable_change_train.py``.
+
+    Anti-vacuity: re-seal anything location-dependent in
+    ``_record_fresh_durable_bootstrap`` -- the configured root, or the
+    ``dev:``/``ino:`` pair -- and the clone's marker diverges from the
+    template's, which is exactly the regression that made a plain ``mv`` of an
+    archive root refuse to open.
+    """
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     template = tmp_path / "template"
@@ -52,7 +70,7 @@ def test_clone_rebinds_durable_bootstrap_identity(tmp_path: Path, monkeypatch: p
 
     clone_archive_template(template, clone)
 
-    assert clone.joinpath(marker).read_bytes() != source_identity
+    assert clone.joinpath(marker).read_bytes() == source_identity
     with ArchiveStore(template):
         pass
     with ArchiveStore(clone):
