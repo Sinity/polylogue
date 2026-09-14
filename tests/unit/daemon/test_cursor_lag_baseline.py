@@ -19,6 +19,7 @@ from polylogue.daemon.cursor_lag_status import (
     CursorLagItem,
     CursorLagSummary,
 )
+from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement
 
 
 def _summary(
@@ -306,3 +307,40 @@ def test_baseline_restart_safe_persists_history(tmp_path: Path) -> None:
     post_restart = load_family_baseline(db, "f", window_days=7, min_samples=50, now=now)
     assert pre_restart == post_restart
     assert post_restart.confident is True
+
+
+def test_sample_and_gc_write_under_armed_lease_enforcement(tmp_path: Path) -> None:
+    """Both ops-tier writes hold the lease, so an armed daemon does not refuse them.
+
+    Determinism: no threads, no sleeps, no timing window. Enforcement is a
+    synchronous flag, so arming it makes an unleased write-mode open raise on
+    the calling thread every run. ``arm_write_lease_enforcement`` is used in
+    its default thread-local scope, so it cannot leak to other pytest workers.
+
+    Anti-vacuity: dropping either ``write_lease`` from
+    ``cursor_lag_baseline`` turns this red with ``UnleasedWriteError``. That
+    was the live defect -- ``daemon/status.py``'s health collector thread and
+    ``daemon/http.py``'s ``/health`` handler both reach these writes without a
+    lease, and ``daemon/health.py`` swallows the refusal to a warning, so the
+    rolling baseline silently accrued only from the write-coordinator caller.
+    """
+    db = tmp_path / "index.db"
+    summary = _summary("claude-code-session", stuck_count=2, max_lag_s=120.0, item_lags=[60.0, 120.0])
+    now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
+
+    with arm_write_lease_enforcement():
+        assert record_cursor_lag_sample(db, summary, now=now) == 1
+        # A lease-refused write is swallowed by the health loop, so assert the
+        # row rather than merely that no exception escaped.
+        with sqlite3.connect(str(db.with_name("ops.db"))) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM cursor_lag_samples").fetchone()[0] == 1
+
+        removed = gc_cursor_lag_samples(
+            db,
+            retention_days=1,
+            now=now + timedelta(days=10),
+        )
+
+    assert removed == 1
+    with sqlite3.connect(str(db.with_name("ops.db"))) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM cursor_lag_samples").fetchone()[0] == 0
