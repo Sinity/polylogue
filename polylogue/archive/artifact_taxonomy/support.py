@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from itertools import islice
 from pathlib import Path
 
@@ -218,17 +219,33 @@ def looks_like_beads_interaction(payload: object) -> bool:
     )
 
 
-def looks_like_file_history_snapshot_only_stream(dict_items: list[JSONDocument]) -> bool:
+def looks_like_file_history_snapshot_only_stream(dict_items: Iterable[JSONDocument]) -> bool:
     """True when every decoded record's ``type`` is a file-history checkpoint.
 
-    ``dict_items`` should be the decoded records of a Claude Code
-    ``projects/<proj>/<uuid>.jsonl`` stream (or a bounded prefix of one).
+    ``dict_items`` must be the decoded records of a **complete** Claude Code
+    ``projects/<proj>/<uuid>.jsonl`` stream. A bounded prefix is not admissible
+    evidence: this predicate's caller uses a positive result to override a
+    positive session verdict, so a prefix of checkpoints followed by real
+    conversational records would drop a genuine session from ingest with no
+    gap recorded.
+
+    The scan is lazy and exits on the first record that is not a checkpoint, so
+    a real session -- which reaches a ``user``/``assistant`` record almost
+    immediately -- costs no more than the old 32-record prefix did.
+
     Empty input is not positive evidence either way.
     """
-    if not dict_items:
-        return False
-    types = {item.get("type") for item in dict_items if isinstance(item.get("type"), str)}
-    return bool(types) and types <= _FILE_HISTORY_SNAPSHOT_ONLY_TYPES
+    saw_checkpoint = False
+    for item in dict_items:
+        if not item:
+            continue
+        record_type = item.get("type")
+        if not isinstance(record_type, str):
+            continue
+        if record_type not in _FILE_HISTORY_SNAPSHOT_ONLY_TYPES:
+            return False
+        saw_checkpoint = True
+    return saw_checkpoint
 
 
 def looks_like_message_entry(payload: object) -> bool:

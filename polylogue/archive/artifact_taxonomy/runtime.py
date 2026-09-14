@@ -367,6 +367,31 @@ def _extracted_transcript_corpus_classification(
     )
 
 
+def _is_bare_codex_session_meta_stream(payload: object) -> bool:
+    """True when EVERY record of the stream is an exact bare Codex header.
+
+    Deliberately scans the complete payload rather than the shared 32-record
+    prefix the surrounding classifier uses. A positive result admits the stream
+    as a parseable session, so a prefix of bare headers followed by real records
+    would let this narrow recovery shape claim a file it was never meant to.
+
+    The loop returns on the first record that is not an exact bare header, so a
+    stream that is not this shape costs one record, and one that is costs
+    exactly what it is -- a file of nothing but headers.
+    """
+    if not isinstance(payload, Sequence) or isinstance(payload, str | bytes | bytearray):
+        return False
+    seen = 0
+    for item in payload:
+        document = json_document(item)
+        if not document:
+            continue
+        if document != {"type": "session_meta"}:
+            return False
+        seen += 1
+    return seen > 1
+
+
 def _file_history_snapshot_override(
     explicit: ArtifactClassification,
     payload: JSONValue,
@@ -390,9 +415,12 @@ def _file_history_snapshot_override(
         return None
     if not isinstance(payload, Sequence) or isinstance(payload, str | bytes | bytearray):
         return None
-    dict_items = [json_document(item) for item in islice(payload, 32)]
-    dict_items = [item for item in dict_items if item]
-    if not looks_like_file_history_snapshot_only_stream(dict_items):
+    # The complete payload, not a 32-record prefix: a positive result here
+    # OVERRIDES a positive session verdict, so deciding it on a prefix dropped
+    # any real session whose first records happened to be checkpoints. The
+    # predicate scans lazily and exits on the first non-checkpoint record, so a
+    # genuine session still costs only its first few records.
+    if not looks_like_file_history_snapshot_only_stream(json_document(item) for item in payload):
         return None
     return ArtifactClassification(
         provider=provider,
@@ -529,11 +557,11 @@ def _classify_list(
     # Keep this before the generic record predicate so the narrow recovery
     # shape reaches schema inference without reopening the generic type-only
     # false-positive class.
-    if (
-        provider is Provider.CODEX
-        and len(dict_items) > 1
-        and all(item == {"type": "session_meta"} for item in dict_items)
-    ):
+    # Decided on the COMPLETE payload, not the 32-record prefix above: this
+    # branch admits a stream as a session, so a prefix of bare headers followed
+    # by any other record would admit a file this rule was never meant to
+    # claim. The scan exits on the first non-matching record.
+    if provider is Provider.CODEX and _is_bare_codex_session_meta_stream(payload):
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.SESSION_RECORD_STREAM,
