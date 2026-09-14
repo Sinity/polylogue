@@ -1021,7 +1021,7 @@ def count_archive_session_embeddable_messages(conn: sqlite3.Connection, session_
                 WHERE {archive_embeddable_message_where("m")}
                   AND m.session_id = ?
                 GROUP BY m.message_id, m.position, m.variant_index
-                HAVING LENGTH(TRIM(COALESCE(text, ''))) >= 20
+                HAVING LENGTH(TRIM(COALESCE({prose_expr}, ''))) >= 20
             ) embeddable_messages
             """,
             (session_id,),
