@@ -14,6 +14,7 @@ import tempfile
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 from typing import Any, Final, Literal, cast
@@ -2819,11 +2820,31 @@ def _canonical_schema_inventory(tier: ArchiveTier, target_version: int) -> _migr
     archive_ddl = registry.get(tier) if isinstance(registry, dict) else None
     if not isinstance(archive_ddl, str):
         raise DurableChangeTrainError(f"no canonical archive DDL is registered for {tier.value}")
+    return _canonical_schema_inventory_for_ddl(tier, normalized_target_version, archive_ddl)
+
+
+@lru_cache(maxsize=64)
+def _canonical_schema_inventory_for_ddl(
+    tier: ArchiveTier, target_version: int, archive_ddl: str
+) -> _migration_runner.DurableSchemaInventory:
+    """Build the canonical inventory for one (tier, version, DDL) triple.
+
+    The result is a pure function of exactly these three inputs -- it never
+    reads the archive -- so it is memoized per process. The registered DDL
+    text is part of the key rather than assumed constant, so a substituted
+    ``ARCHIVE_DDL_BY_TIER`` entry (tests do substitute one) yields a different
+    inventory instead of a stale hit. ``DurableSchemaInventory`` is frozen, so
+    callers share one instance safely.
+
+    This matters because startup reconciliation rebuilds these inventories on
+    every active-root bootstrap, and active-root bootstrap runs once per ingest
+    batch -- once per catch-up chunk during a rebuild.
+    """
     with closing(sqlite3.connect(":memory:")) as fresh:
         fresh.execute("PRAGMA foreign_keys = ON")
         fresh.executescript(archive_ddl)
-        fresh.execute(f"PRAGMA user_version = {normalized_target_version}")
-        _migration_runner._prepare_fresh_connection_for_target(fresh, tier, normalized_target_version)
+        fresh.execute(f"PRAGMA user_version = {target_version}")
+        _migration_runner._prepare_fresh_connection_for_target(fresh, tier, target_version)
         fresh.commit()
         return _migration_runner.capture_durable_schema_inventory(fresh)
 

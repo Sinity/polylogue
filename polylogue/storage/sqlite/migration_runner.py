@@ -16,6 +16,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import StrEnum
+from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 from typing import Final, cast, get_args, get_origin, get_type_hints
@@ -2022,6 +2023,18 @@ def _normalize_schema_sql(sql: str | None) -> str:
     """
     if sql is None:
         return ""
+    return _normalize_schema_sql_text(sql)
+
+
+@lru_cache(maxsize=8192)
+def _normalize_schema_sql_text(sql: str) -> str:
+    """Normalize one non-null DDL string.
+
+    A pure ``str -> str`` transform, so it is memoized per process. Schema
+    inventories are captured repeatedly over the same small set of DDL strings
+    (every active-root bootstrap re-normalizes every object in three durable
+    tiers), and active-root bootstrap runs once per ingest batch.
+    """
     unquoted: list[str] = []
     string_literals: list[str] = []
     index = 0
