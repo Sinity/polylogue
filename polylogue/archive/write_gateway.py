@@ -9,7 +9,6 @@ index-only FTS or cache work.
 from __future__ import annotations
 
 import asyncio
-import logging
 import sqlite3
 from dataclasses import dataclass
 from enum import Enum
@@ -21,8 +20,6 @@ from polylogue.storage.sqlite.connection_profile import open_connection as _open
 
 if TYPE_CHECKING:
     from polylogue.archive.write_effects import WriteEffectReceipt
-
-logger = logging.getLogger(__name__)
 
 
 class WriteOperation(Enum):
