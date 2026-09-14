@@ -225,6 +225,9 @@ class TestUserMutationRefusal:
     """The matched-page tag/metadata route has no offline write path."""
 
     def test_absent_daemon_refuses_the_tag_write(self, tmp_path: Path) -> None:
+        # The route no longer takes an archive at all -- there is no local
+        # writer to fall back to. The double stays as the negative evidence:
+        # nothing may reach a store while the daemon is absent.
         archive = MagicMock()
         env = _env()
         with (
@@ -236,7 +239,6 @@ class TestUserMutationRefusal:
         ):
             _emit_user_mutations(
                 env,
-                archive,
                 ("s1",),
                 tags_to_add=("triage",),
                 metadata_to_set=(),

@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-import types
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -15,7 +14,6 @@ import pytest
 
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.archive_query import (
-    _build_cursor,
     _csv,
     _csv_tokens,
     _decode_cursor,
@@ -31,16 +29,13 @@ from polylogue.cli.archive_query import (
     _offset,
     _optional_int,
     _optional_str,
-    _paginate_rows,
     _project_payload,
     _selected_fields,
     _session_summary_text,
     _session_text,
     _sort,
-    _spec_filter_kwargs,
     _stats_by_line,
     _summary_line_renderer,
-    _summary_payload,
     _tool_tokens,
     _tuple_tokens,
     _validate_cursor_request_identity,
@@ -57,7 +52,17 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
 
 
-def test_summary_payload_renders_read_time_display_label() -> None:
+def test_session_list_row_renders_read_time_display_label() -> None:
+    """A summary with no stored title still names its computed display label.
+
+    The row builder moved into the declared ``cli.query`` handler when the CLI's
+    local executor was retired; the law did not move.  Anti-vacuity: make
+    ``_session_list_row`` read ``summary.title`` instead of letting
+    ``session_list_envelope_from_summary`` fall back to ``display_label`` and
+    this goes red with ``title is None``.
+    """
+    from polylogue.operations.daemon_reads import _session_list_row
+
     summary = ArchiveSessionSummary(
         session_id="claude-code-session:display-label",
         native_id="display-label",
@@ -71,9 +76,9 @@ def test_summary_payload_renders_read_time_display_label() -> None:
         display_label="polylogue · 2 files · 3 msgs · 2026-08-06",
     )
 
-    payload = _summary_payload(summary)
+    row = _session_list_row(summary)
 
-    assert payload["title"] == "polylogue · 2 files · 3 msgs · 2026-08-06"
+    assert row["title"] == "polylogue · 2 files · 3 msgs · 2026-08-06"
 
 
 def test_emit_no_results_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:
@@ -451,26 +456,44 @@ class TestOffset:
 
 
 # Tests for the date lowering the plan owns
-class TestSpecFilterKwargsDates:
-    """``--since``/``--until`` lowering through the canonical plan."""
+class TestUnparseableDateBound:
+    """``--since``/``--until`` lowering, observed where the operator sees it.
 
-    def test_valid_iso_date(self) -> None:
-        """Valid ISO date is lowered to a millisecond bound."""
-        kwargs = _spec_filter_kwargs(SessionQuerySpec.from_params({"since": "2026-01-15"}))
-        assert isinstance(kwargs["since_ms"], int)
-        assert kwargs["since_ms"] > 0
+    ``_spec_filter_kwargs`` was the CLI's own lowering of the date bounds into
+    the storage plan; it went with the local executor.  The refusal it produced
+    did not: ``_reject_date_bounds_that_cannot_parse`` runs the same pure
+    lowering CLI-side purely to ask whether the bound parses, so an unparseable
+    ``--since`` still reaches the terminal as ``Cannot parse date`` with exit 1
+    rather than a traceback, an empty page, or a silently widened bound.
 
-    def test_absent_date(self) -> None:
-        """An unset bound stays unset."""
-        kwargs = _spec_filter_kwargs(SessionQuerySpec.from_params({}))
-        assert kwargs["since_ms"] is None
-        assert kwargs["until_ms"] is None
+    Anti-vacuity: delete that pre-dispatch check and the refusal case goes red
+    -- the bound reaches the handler, which refuses it as a spec error with a
+    different message and the usage exit class.
+    """
 
-    def test_invalid_date_raises_exception(self) -> None:
-        """An unparseable date reaches the terminal as a Click error."""
-        spec = SessionQuerySpec.from_params({"since": "not-a-date"})
-        with pytest.raises(click.ClickException, match="Cannot parse date"):
-            _spec_filter_kwargs(spec)
+    @staticmethod
+    def _run(bound: str, value: str) -> tuple[int, str]:
+        from click.testing import CliRunner
+
+        from polylogue.cli import cli
+
+        result = CliRunner().invoke(
+            cli, ["--plain", "--no-daemon", bound, value, "find", "--format", "json"], catch_exceptions=True
+        )
+        if result.exception is not None and not isinstance(result.exception, SystemExit):
+            raise result.exception
+        return result.exit_code, result.output
+
+    def test_valid_iso_date_is_accepted(self, cli_workspace: dict[str, Path]) -> None:
+        exit_code, output = self._run("--since", "2026-01-15")
+        assert "Cannot parse date" not in output, output
+        assert exit_code in (0, 2), output
+
+    def test_invalid_date_reaches_the_terminal_as_a_refusal(self, cli_workspace: dict[str, Path]) -> None:
+        exit_code, output = self._run("--since", "not-a-date")
+        assert "Cannot parse date" in output, output
+        assert "not-a-date" in output, output
+        assert exit_code == 1, output
 
 
 # Tests for _has_value
@@ -736,7 +759,7 @@ class TestStatsByLine:
         assert "42" in result
 
 
-# Tests for _decode_cursor and _build_cursor
+# Tests for _decode_cursor
 class TestCursorRoundtrip:
     """Tests for cursor encoding/decoding."""
 
@@ -749,75 +772,6 @@ class TestCursorRoundtrip:
         """Invalid cursor token raises UsageError."""
         with pytest.raises(click.UsageError, match="invalid --cursor"):
             _decode_cursor("invalid-cursor-token")
-
-    def test_cursor_roundtrip(self) -> None:
-        """Cursor can be built and decoded."""
-        summary = cast(
-            ArchiveSessionSummary,
-            types.SimpleNamespace(session_id="test-session-id"),
-        )
-        built_cursor = _build_cursor(summary, rank=10, retrieval_lane="dialogue")
-        assert isinstance(built_cursor, str)
-
-        decoded = _decode_cursor(built_cursor)
-        assert decoded is not None
-        assert decoded.r == 10
-        assert decoded.c == "test-session-id"
-        assert decoded.lane == "dialogue"
-
-
-# Tests for _paginate_rows
-class TestPaginateRows:
-    """Tests for _paginate_rows."""
-
-    def test_rows_within_limit(self) -> None:
-        """Rows within limit return all rows and no cursor."""
-        rows = [
-            cast(
-                ArchiveSessionSummary,
-                types.SimpleNamespace(session_id=f"session-{i}"),
-            )
-            for i in range(5)
-        ]
-        page, next_cursor = _paginate_rows(rows, limit=10, offset=0)
-        assert len(page) == 5
-        assert next_cursor is None
-
-    def test_rows_exceed_limit(self) -> None:
-        """Rows exceeding limit return limited page and cursor."""
-        rows = [
-            cast(
-                ArchiveSessionSummary,
-                types.SimpleNamespace(session_id=f"session-{i}"),
-            )
-            for i in range(30)
-        ]
-        page, next_cursor = _paginate_rows(rows, limit=10, offset=0)
-        assert len(page) == 10
-        assert next_cursor is not None
-
-    def test_empty_rows(self) -> None:
-        """Empty rows return empty page and no cursor."""
-        page, next_cursor = _paginate_rows([], limit=10, offset=0)
-        assert len(page) == 0
-        assert next_cursor is None
-
-    def test_offset_applied_to_cursor_rank(self) -> None:
-        """Offset is applied to cursor rank."""
-        rows = [
-            cast(
-                ArchiveSessionSummary,
-                types.SimpleNamespace(session_id=f"session-{i}"),
-            )
-            for i in range(30)
-        ]
-        page, next_cursor = _paginate_rows(rows, limit=10, offset=5)
-        assert len(page) == 10
-        assert next_cursor is not None
-
-        decoded = _decode_cursor(next_cursor)
-        assert decoded is not None
-        assert decoded.r == 15  # offset + len(page) = 5 + 10
 
 
 def test_validate_cursor_request_identity_rejects_query_change() -> None:
@@ -963,7 +917,9 @@ class TestEmitDeleteMachineModeNoPrompt:
         env = self._env(plain=True)
         with (
             patch(
-                "polylogue.cli.archive_query.archive_read_context",
+                # Patched at its definition site: the delete path imports it
+                # lazily, so guarding the source covers every importer.
+                "polylogue.archive.query.transaction.archive_read_context",
                 side_effect=AssertionError("must not pin a WAL reader"),
             ),
             patch("polylogue.cli.archive_query._emit_delete") as emit_delete,
@@ -1180,7 +1136,17 @@ class TestSessionSummaryText:
     """
 
     @staticmethod
-    def _envelope() -> ArchiveSessionEnvelope:
+    def _session() -> dict[str, object]:
+        """The ``session.read`` body for this transcript.
+
+        The renderers take the operation's result mapping now, not an
+        ``ArchiveSessionEnvelope``.  The fixture is produced by the production
+        projection rather than hand-written, so a renamed field there fails
+        these tests instead of silently leaving them asserting on a shape no
+        operation returns.
+        """
+        from polylogue.operations.daemon_reads import _session_identity_projection
+
         messages = (
             ArchiveMessageRow(
                 message_id="s1:1",
@@ -1219,19 +1185,22 @@ class TestSessionSummaryText:
                 word_count=2,
             ),
         )
-        return ArchiveSessionEnvelope(
-            session_id="claude-code-session:abc",
-            native_id="abc",
-            origin="claude-code-session",
-            title="Fix the thing",
-            active_leaf_message_id="s1:3",
-            messages=messages,
+        return _session_identity_projection(
+            ArchiveSessionEnvelope(
+                session_id="claude-code-session:abc",
+                native_id="abc",
+                origin="claude-code-session",
+                title="Fix the thing",
+                active_leaf_message_id="s1:3",
+                messages=messages,
+            ),
+            excluded_blocks=frozenset(),
         )
 
     def test_summary_differs_from_transcript(self) -> None:
-        envelope = self._envelope()
-        summary = _session_summary_text(envelope)
-        transcript = _session_text(envelope)
+        session = self._session()
+        summary = _session_summary_text(session)
+        transcript = _session_text(session)
         assert summary != transcript
         # The summary is a synopsis (counts + first/last excerpt), not a
         # per-message transcript dump -- it must not contain every message's
@@ -1241,8 +1210,8 @@ class TestSessionSummaryText:
         assert "## assistant\n" not in summary
 
     def test_summary_reports_counts_and_first_last_turn(self) -> None:
-        envelope = self._envelope()
-        summary = _session_summary_text(envelope)
+        session = self._session()
+        summary = _session_summary_text(session)
         assert "messages: 3" in summary
         assert "user: 1" in summary
         assert "assistant: 2" in summary
@@ -1251,8 +1220,8 @@ class TestSessionSummaryText:
         assert "all done" in summary  # last turn excerpt
 
     def test_transcript_still_renders_every_message(self) -> None:
-        envelope = self._envelope()
-        transcript = _session_text(envelope)
+        session = self._session()
+        transcript = _session_text(session)
         assert "hello there" in transcript
         assert "using a tool now" in transcript
         assert "all done" in transcript

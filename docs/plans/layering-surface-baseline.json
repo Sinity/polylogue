@@ -201,36 +201,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/archive_query.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/archive_query.py",
-    "import": "polylogue.storage.search_providers"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/archive_query.py",
-    "import": "polylogue.storage.search_providers.sqlite_vec_support"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/archive_query.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.archive"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/archive_query.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.index"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/archive_query.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.write"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/click_app.py",
     "import": "polylogue.storage.sqlite.archive_tiers.index"
   },

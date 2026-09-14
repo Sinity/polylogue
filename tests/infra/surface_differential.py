@@ -14,8 +14,8 @@ The surfaces are the ones an operator or client actually reaches:
   lowering every other surface funnels through.
 * ``cli`` — ``polylogue find <expr> --format json``, lowered onto the
   declared ``cli.query`` read operation.
-* ``cli-direct`` — the same invocation with ``--no-daemon``, which declines
-  the operation and executes the CLI's own local ``ArchiveStore`` branch.
+* ``cli-direct`` — the same invocation with ``--no-daemon``, which runs the
+  same declared operation through the in-process direct-read transport.
 * ``mcp`` — ``query(projection="sessions", ...)``, whose session projection
   carries named filters rather than the DSL, so the adapter translates the
   requests those filters can express and declines the rest.
@@ -280,14 +280,14 @@ class CliExpressionSurface:
 class CliDirectExpressionSurface(CliExpressionSurface):
     """``polylogue --no-daemon find <expression> --format json``.
 
-    ``--no-daemon`` is what makes ``_try_emit_daemon_session_page`` decline,
-    so this surface is the CLI's *local* ``ArchiveStore`` branch of
-    ``archive_query._execute_archive_query_stdout`` — the second
-    implementation of the same read that the ``cli.query`` operation is
-    replacing.  Carrying it as its own surface is what turns "the gate hid a
-    behavioural difference" from an argument into a test: both CLI legs are
-    compared to the same computed oracle, so a route that answers a different
-    question fails on its own rather than by disagreeing with its twin.
+    ``--no-daemon`` selects the kernel's declared ``DIRECT_READ`` transport:
+    the same ``cli.query`` handler runs in-process instead of over UDS.  The
+    CLI's second, local ``ArchiveStore`` implementation of this read is gone,
+    so the two CLI legs no longer differ in *what* they compute.  Carrying the
+    direct leg as its own surface still earns its place: both are compared to
+    the same computed oracle, so a transport that drops a filter on the wire —
+    a payload key the envelope cannot carry, a coercion the socket applies —
+    fails on its own rather than by disagreeing with its twin.
     """
 
     name = "cli-direct"

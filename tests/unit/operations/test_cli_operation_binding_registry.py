@@ -57,12 +57,14 @@ def test_each_binding_resolves_to_real_callables(operation: str) -> None:
 
 
 def test_read_operations_declared_for_the_cli_are_bound_not_pending() -> None:
-    """Mutation: declare these three and wire nothing -- the point of the step
-    is that each arrives with a client-side lowering and a renderer."""
+    """Mutation: declare a root-query read and wire nothing -- the point of the
+    step is that each arrives with a Seam A lowering and a real renderer."""
 
-    for operation in ("query.aggregate", "session.read", "session.reference"):
+    for operation in ("cli.query", "query.units", "query.aggregate", "session.read", "session.reference"):
         binding = binding_for(operation)
-        assert binding.lowering.startswith("polylogue.cli.operation_bindings:")
+        assert binding.lowering.startswith("polylogue.cli.lowering:"), (
+            f"{operation} must lower through Seam A, not through a surface-local helper"
+        )
         assert binding.renderers
 
 
@@ -76,59 +78,69 @@ def test_an_unclassified_operation_names_itself() -> None:
         binding_for("operation.await")
 
 
-class TestNewReadLowerings:
-    def test_aggregate_lowering_reads_the_mode_from_the_root_flags(self) -> None:
-        """Mutation: hardcode a mode and `analyze count` and `analyze by` become
-        the same request."""
+class TestSeamALowerings:
+    """The real Seam A lowerings the registry now names."""
 
-        from polylogue.cli.operation_bindings import lower_query_aggregate
+    def test_aggregate_mode_reads_the_mode_from_the_root_flags(self) -> None:
+        """Mutation: hardcode a mode and ``analyze --count`` and ``analyze --by``
+        become the same request."""
 
-        assert lower_query_aggregate({"count_only": True, "origin": "codex-session"}) == {
-            "mode": "count",
-            "params": {"origin": "codex-session"},
-        }
-        assert lower_query_aggregate({"stats_by": "origin"})["mode"] == "stats_by"
-        assert lower_query_aggregate({"stats_only": True})["mode"] == "stats"
-        with pytest.raises(OperationBindingError):
-            lower_query_aggregate({"origin": "codex-session"})
+        from polylogue.cli.lowering import aggregate_mode
+
+        assert aggregate_mode({"count_only": True, "origin": "codex-session"}) == "count"
+        assert aggregate_mode({"stats_by": "origin"}) == "stats_by"
+        assert aggregate_mode({"stats_only": True}) == "stats"
+        # ``--by`` is checked first: the root callback allows both, and the
+        # grouped answer is the specific one.
+        assert aggregate_mode({"stats_only": True, "stats_by": "origin"}) == "stats_by"
+        assert aggregate_mode({"origin": "codex-session"}) is None
+
+    def test_aggregate_lowering_carries_the_selection_and_the_grouping(self) -> None:
+        """Mutation: drop ``group_by`` from the ``stats_by`` payload and the
+        handler has no field to group on; drop the selection projection and the
+        aggregate summarises a different set than the page it belongs to."""
+
+        import click
+
+        from polylogue.cli.lowering import lower_query_aggregate
+        from polylogue.cli.root_request import RootModeRequest
+
+        request = RootModeRequest(params={"origin": "codex-session", "stats_by": "origin"}, query_terms=("retry",))
+        lowered = lower_query_aggregate(request, mode="stats_by")
+        assert lowered.operation == "query.aggregate"
+        assert lowered.payload["mode"] == "stats_by"
+        assert lowered.payload["group_by"] == "origin"
+        assert lowered.payload["params"] == {"origin": "codex-session", "query": ["retry"]}
+
+        with pytest.raises(click.UsageError):
+            lower_query_aggregate(RootModeRequest(params={}, query_terms=()), mode="stats_by")
 
     def test_session_read_lowering_refuses_a_continuation_with_a_window(self) -> None:
         """Mutation: accept both and the supplied offset is silently ignored in
         favour of the token's, or worse, applied to it."""
 
-        from polylogue.cli.operation_bindings import lower_session_read
+        import click
 
-        assert lower_session_read("session:x", limit=10, offset=4) == {
+        from polylogue.cli.lowering import lower_session_read
+
+        assert lower_session_read("session:x", limit=10, offset=4).payload == {
             "ref": "session:x",
             "limit": 10,
             "offset": 4,
         }
-        with pytest.raises(OperationBindingError):
+        assert lower_session_read("session:x", continuation="q2.token").payload == {
+            "ref": "session:x",
+            "continuation": "q2.token",
+        }
+        with pytest.raises(click.UsageError):
             lower_session_read("session:x", limit=10, continuation="q2.token")
 
-    def test_session_read_renderer_states_an_incomplete_window(self) -> None:
-        """Mutation: drop the trailing notice and a bounded window renders
-        exactly like a whole transcript."""
+    def test_session_reference_lowering_carries_only_a_positive_bound(self) -> None:
+        """Mutation: forward a negative ``--limit`` and the handler is asked for
+        a window no reference membership can satisfy."""
 
-        from polylogue.cli.operation_bindings import render_session_read
+        from polylogue.cli.lowering import lower_session_reference
 
-        lines = render_session_read(
-            {
-                "session": {"messages": [{"role": "user", "text": "hello"}]},
-                "offset": 0,
-                "next_offset": 1,
-                "total": 9,
-                "complete": False,
-            }
-        )
-        assert lines[0].endswith("hello")
-        assert "remain" in lines[-1]
-
-    def test_reference_renderer_states_truncation(self) -> None:
-        """Mutation: drop the notice and a truncated member list reads as the
-        complete membership of the reference."""
-
-        from polylogue.cli.operation_bindings import render_session_reference
-
-        lines = render_session_reference({"members": ["a"], "member_count": 5, "truncated": True})
-        assert lines == ["a", "... 5 members in total"]
+        assert lower_session_reference("from tag:x").payload == {"expression": "from tag:x"}
+        assert lower_session_reference("from tag:x", limit=5).payload["limit"] == 5
+        assert "limit" not in lower_session_reference("from tag:x", limit=-1).payload

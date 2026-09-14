@@ -10,10 +10,9 @@ import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
 from contextvars import ContextVar
-from dataclasses import replace
-from pathlib import Path
+from dataclasses import dataclass
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, NoReturn, TypeVar, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 from urllib.parse import quote
 
 import click
@@ -25,13 +24,8 @@ from polylogue.archive.query.expression import (
     parse_unit_source_expression,
     split_with_projection_clause,
 )
-from polylogue.archive.query.filter_kwargs import (
-    SessionFilterKwargs,
-    spec_session_filter_kwargs,
-    stats_filter_kwargs,
-)
+from polylogue.archive.query.filter_kwargs import spec_session_filter_kwargs
 from polylogue.archive.query.metadata import query_unit_descriptor
-from polylogue.archive.query.predicate import QueryBoolPredicate, QueryLineagePredicate, QueryPredicate
 from polylogue.archive.query.search_hits import bound_display_text
 from polylogue.archive.query.spec import (
     DEFAULT_SESSION_LIST_LIMIT,
@@ -39,7 +33,8 @@ from polylogue.archive.query.spec import (
     SessionQuerySpec,
     session_count_unit_label,
 )
-from polylogue.archive.query.transaction import archive_read_context
+from polylogue.cli.lowering import aggregate_mode
+from polylogue.cli.operation_kernel import OperationRequest
 from polylogue.cli.query_contracts import QueryOutputSpec
 from polylogue.cli.query_feedback import maybe_subcommand_typo_hint
 from polylogue.cli.query_output_contracts import QueryOutputDocument
@@ -49,7 +44,6 @@ from polylogue.cli.shared.machine_errors import error_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.logging import get_logger
-from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 from polylogue.surfaces.outcome import (
     OUTCOME_EXIT_CODES,
@@ -59,31 +53,19 @@ from polylogue.surfaces.outcome import (
     render_outcome_line,
 )
 
-# The names below are used only as type annotations across this module (never
-# constructed/called at the module's own top level) except at the specific
-# call sites noted, which import them locally. Each backing module is heavy
-# (ArchiveStore's chain alone costs ~2.2s of import time: schemas/validator ->
-# sources/dispatch -> the whole provider-parser universe, plus surfaces.payloads'
-# pydantic models). Importing them unconditionally here meant every CLI query
-# invocation paid that cost even when the daemon fast path
-# (``_try_emit_daemon_session_page``) served the request over UDS and never
-# touched ArchiveStore, search_providers, or the local emit/mutation renderers
-# at all (polylogue-g3jk). `from __future__ import annotations` (top of file)
-# means annotation-only uses below never evaluate these names at runtime, so
-# TYPE_CHECKING-gating them here is safe; each function that actually
-# constructs/calls one of these imports it locally at first use.
+# The names below are used only as type annotations across this module and are
+# constructed, if at all, behind a function-local import. This module no longer
+# reaches ``polylogue.storage`` at all: the archive is opened by the operation
+# executor, not here, which is what removed this file's six surface->substrate
+# layering entries. Keeping the remaining annotations under TYPE_CHECKING
+# preserves the cold-path import budget (polylogue-g3jk) — ``surfaces.payloads``
+# alone is a full pydantic model graph. `from __future__ import annotations`
+# (top of file) means annotation-only uses below never evaluate these names at
+# runtime, so the gating is safe.
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from polylogue.archive.stats import ArchiveStats
-    from polylogue.core.protocols import VectorProvider
-    from polylogue.storage.sqlite.archive_tiers.archive import (
-        ArchiveSessionSearchHit,
-        ArchiveSessionSummary,
-        ArchiveStore,
-    )
-    from polylogue.storage.sqlite.archive_tiers.write import (
-        ArchiveMessageRow,
-        ArchiveSessionEnvelope,
-    )
     from polylogue.surfaces.payloads import (
         MutationOperation,
         QueryMissDiagnosticsPayload,
@@ -91,29 +73,7 @@ if TYPE_CHECKING:
     )
 
 
-def __getattr__(name: str) -> object:
-    """PEP 562 lazy module attribute for ``ArchiveStore``.
-
-    ``ArchiveStore`` is otherwise only referenced as a (never-evaluated,
-    ``from __future__ import annotations``) type annotation in this module,
-    so its heavy import chain stays deferred on the daemon fast path
-    (polylogue-g3jk). But several tests patch
-    ``polylogue.cli.archive_query.ArchiveStore.open_existing`` by dotted
-    string path — a function-local import binds a name that shadows this
-    module's own attribute and is invisible to that patch target, so the
-    class must remain resolvable as a real module attribute on demand
-    without being imported eagerly at module load time.
-    """
-    if name == "ArchiveStore":
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        return ArchiveStore
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 logger = get_logger(__name__)
-
-_PageRow = TypeVar("_PageRow", "ArchiveSessionSummary", "ArchiveSessionSearchHit")
 
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
@@ -123,36 +83,16 @@ _DAEMON_MUTATION_TIMEOUT_S: float | None = None
 # completed one.
 _CANCELLED_EXIT_CODE = 130
 _NATIVE_REF_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]{11,}")
+# One ``session.read`` window.  A whole transcript can exceed the operation
+# result bound, so the adapter reads it as a bounded sequence of these.
+_SESSION_READ_WINDOW = 200
 _TIMING_ENV: ContextVar[AppEnv | None] = ContextVar("archive_query_timing_env", default=None)
-
-
-def create_vector_provider(config: Config, *, db_path: Path) -> VectorProvider | None:
-    """Lazy module-level indirection so tests can patch this name.
-
-    A function-local ``from ... import create_vector_provider`` would bind a
-    local variable that shadows this module attribute, so
-    ``unittest.mock.patch("polylogue.cli.archive_query.create_vector_provider")``
-    would never reach the real call sites below. Keeping the deferred import
-    inside a persistent module-level function preserves both the patch seam
-    and the daemon-fast-path import-cost deferral (polylogue-g3jk).
-    """
-    from polylogue.storage.search_providers import create_vector_provider as _create_vector_provider
-
-    return _create_vector_provider(config, db_path=db_path)
 
 
 def _object_int(value: object) -> int:
     if value is None:
         return 0
     return int(str(value))
-
-
-def _spec_filter_kwargs(spec: SessionQuerySpec) -> SessionFilterKwargs:
-    """Lower the compiled selection through the canonical plan."""
-    try:
-        return spec_session_filter_kwargs(spec)
-    except QuerySpecError as exc:
-        raise click.ClickException(f"Cannot parse date: {exc.value!r}") from exc
 
 
 def execute_delete_by_session_ids(
@@ -208,88 +148,424 @@ def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
         _TIMING_ENV.reset(timing_token)
 
 
-def _execute_reference_query_pipeline(
+@dataclass(frozen=True, slots=True)
+class _ServedBy:
+    """Which executor answered, as the result's own authority reports it."""
+
+    identity: str
+    elapsed_ms: int | None
+
+    def line(self) -> str:
+        if self.elapsed_ms is None:
+            return self.identity
+        transport = "uds, " if self.identity == "daemon" else ""
+        return f"{self.identity} ({transport}{self.elapsed_ms}ms)"
+
+
+def _dispatch_read(
+    config: Config,
+    request: OperationRequest,
+    *,
+    daemon_disabled: bool,
+) -> tuple[dict[str, object], _ServedBy]:
+    """Run one declared read and return its result body plus the daemon timing.
+
+    Every root-query capability goes through here, so "which executor answered"
+    is a transport fact recorded in the envelope rather than a semantic fork in
+    the adapter.
+    """
+    from polylogue.cli.operation_kernel import OperationEnvelopeError, dispatch
+
+    result = dispatch(config, request, daemon_disabled=daemon_disabled)
+    if not isinstance(result.value, dict):
+        raise OperationEnvelopeError(f"{request.operation} returned a non-object result")
+    timing = result.envelope.get("timing") if result.envelope is not None else None
+    elapsed_ms = timing.get("elapsed_ms") if isinstance(timing, Mapping) else None
+    # The executor is named by the result's own authority, not by which branch
+    # of this adapter ran: a rendered "daemon" provenance for a read the
+    # in-process executor answered would be a claim the result does not support.
+    identity = str(result.authority.get("server_identity") or result.authority.get("mode") or "unknown")
+    return dict(result.value), _ServedBy(identity, elapsed_ms if isinstance(elapsed_ms, int) else None)
+
+
+def _read_failure_detail(exc: Exception) -> str:
+    return str(getattr(exc, "detail", None) or exc)
+
+
+def _read_failure_as_usage_error(exc: Exception) -> NoReturn:
+    """Re-raise a declared read's typed refusal as the CLI's own refusal.
+
+    The handler states *what* it refused; naming it in the operator's terms and
+    choosing the exit class is the adapter's job.  ``daemon_required`` is not a
+    usage mistake, so it stays a plain failure rather than printing usage.
+    """
+    from polylogue.cli.operation_kernel import OperationFailedError, OperationUnavailableError
+
+    detail = _read_failure_detail(exc)
+    if isinstance(exc, OperationUnavailableError) or (
+        isinstance(exc, OperationFailedError) and exc.code in {"daemon_required", "result_too_large"}
+    ):
+        raise click.ClickException(detail) from exc
+    raise click.UsageError(detail) from exc
+
+
+def _emit_reference_query(
+    config: Config,
     expression: str,
     *,
-    archive_root: Path,
-    index_db_path: Path,
     output_format: str,
     limit: int | None,
-) -> str | None:
-    """Execute the supported reference root through the canonical planner.
+    daemon_disabled: bool,
+) -> bool:
+    """Resolve and render a bare ``from <ref>`` root, or decline it.
 
-    This is deliberately a narrow CLI seam: only a bare ``from <ref>`` root is
-    supported here.  Pipeline stages remain typed errors rather than being
-    silently discarded by the compatibility selector path.
+    Detection is syntax and stays here; resolution reads durable reference
+    state and is the ``session.reference`` operation's job.
     """
-    from polylogue.archive.query.evaluator import DurableRefResolver
-    from polylogue.archive.query.expression import (
-        ExpressionCompileError,
-        RefOperandCycleError,
-        parse_reference_query_pipeline,
-        resolve_ref_operand,
-    )
-    from polylogue.archive.query.production_evaluator import (
-        ArchiveCanonicalPlanEvaluator,
-        LegacyQueryDefinitionNotExecutableError,
-        UnsupportedEvaluationGrainError,
-    )
+    from polylogue.archive.query.expression import parse_reference_query_pipeline
 
+    if not expression:
+        return False
     pipeline = parse_reference_query_pipeline(expression)
     if pipeline is None:
-        return None
+        return False
     if pipeline.stages:
         raise click.UsageError(
             "reference pipeline stages are not supported by the CLI find surface; "
             "only the bare `from <ref>` operand is supported"
         )
-    user_db_path = archive_root / "user.db"
-    if not user_db_path.exists() or not index_db_path.exists():
-        raise click.ClickException("archive is not initialized")
-    from contextlib import closing
+    from polylogue.cli.lowering import lower_session_reference
+    from polylogue.cli.operation_kernel import OperationKernelError
 
-    from polylogue.api.archive import open_readonly_connection
-
-    evaluator = ArchiveCanonicalPlanEvaluator(index_db_path)
     try:
-        with closing(
-            open_readonly_connection(
-                user_db_path,
-                timeout_class="interactive-read",
-                validate_schema=False,
-            )
-        ) as conn:
-            resolved = resolve_ref_operand(pipeline.operand, DurableRefResolver(conn, evaluator))
-    except KeyError as exc:
-        raise click.UsageError(f"reference not found: {pipeline.operand.reference.format()}") from exc
-    except (
-        ExpressionCompileError,
-        RefOperandCycleError,
-        LegacyQueryDefinitionNotExecutableError,
-        UnsupportedEvaluationGrainError,
-        NotImplementedError,
-        ValueError,
-    ) as exc:
-        raise click.UsageError(str(exc)) from exc
-
-    member_refs = resolved.member_refs
-    if limit is not None and limit >= 0:
-        member_refs = member_refs[:limit]
-    payload = {
-        "source": pipeline.operand.reference.format(),
-        "grain": resolved.grain,
-        "lineage": [ref.format() for ref in resolved.lineage],
-        "member_count": len(resolved.member_refs),
-        "members": list(member_refs),
-        "truncated": len(member_refs) < len(resolved.member_refs),
-    }
+        payload, _ = _dispatch_read(
+            config,
+            lower_session_reference(expression, limit=limit),
+            daemon_disabled=daemon_disabled,
+        )
+    except OperationKernelError as exc:
+        _read_failure_as_usage_error(exc)
     if output_format in {"json", "ndjson"}:
-        return json.dumps(payload, sort_keys=True)
-    return "\\n".join(member_refs)
+        click.echo(
+            json.dumps(
+                {
+                    "source": payload.get("source"),
+                    "grain": payload.get("grain"),
+                    "lineage": payload.get("lineage"),
+                    "member_count": payload.get("member_count"),
+                    "members": payload.get("members"),
+                    "truncated": payload.get("truncated"),
+                },
+                sort_keys=True,
+            )
+        )
+        return True
+    members = payload.get("members")
+    # Newline-separated, one member ref per line.  The previous local renderer
+    # joined on the two-character escape ``"\\n"`` and emitted every ref on one
+    # line with a literal backslash-n between them.
+    click.echo("\n".join(str(member) for member in members) if isinstance(members, list) else "")
+    return True
+
+
+def _read_session_windows(
+    config: Config,
+    ref: str,
+    *,
+    daemon_disabled: bool,
+    message_limit: int | None = None,
+) -> dict[str, object]:
+    """Compose one whole transcript out of the operation's bounded windows.
+
+    ``session.read`` is windowed because a full transcript can exceed the
+    declared result bound, so the adapter owns the loop.  ``complete`` — not an
+    empty window — ends it: a truncated read must never render as a finished
+    one.  A caller that only needs a prefix (``--stream --limit``) asks for
+    exactly that prefix and stops.
+    """
+    from polylogue.cli.lowering import lower_session_read
+
+    messages: list[dict[str, object]] = []
+    session: dict[str, object] = {}
+    continuation: str | None = None
+    while True:
+        window_limit: int | None = None
+        if message_limit is not None:
+            remaining = message_limit - len(messages)
+            if remaining <= 0:
+                break
+            window_limit = min(remaining, _SESSION_READ_WINDOW)
+        payload, _ = _dispatch_read(
+            config,
+            (
+                lower_session_read(ref, continuation=continuation)
+                if continuation is not None
+                else lower_session_read(ref, limit=window_limit)
+            ),
+            daemon_disabled=daemon_disabled,
+        )
+        window = payload.get("session")
+        if not isinstance(window, Mapping):
+            raise click.ClickException("session.read returned no session body")
+        if not session:
+            session = {key: value for key, value in window.items() if key != "messages"}
+        window_messages = window.get("messages")
+        if isinstance(window_messages, list):
+            messages.extend(item for item in window_messages if isinstance(item, dict))
+        if payload.get("complete") or message_limit is not None:
+            break
+        next_continuation = payload.get("continuation")
+        if not isinstance(next_continuation, str):
+            break
+        continuation = next_continuation
+    session["messages"] = messages if message_limit is None else messages[:message_limit]
+    return session
+
+
+def _session_result_payload(session: Mapping[str, object]) -> dict[str, object]:
+    """Project a ``session.read`` body onto the CLI's own session document.
+
+    The operation carries more than this document needs (the per-message word
+    and tool-use counts the summary view reads).  Naming the kept fields here
+    keeps the machine document stable when the operation grows another one.
+    """
+    messages = session.get("messages")
+    rows = [row for row in messages if isinstance(row, Mapping)] if isinstance(messages, list) else []
+    return {
+        "mode": "session",
+        "session_id": session.get("session_id"),
+        "native_id": session.get("native_id"),
+        "origin": session.get("origin"),
+        "source": session.get("origin"),
+        "title": session.get("title"),
+        "active_leaf_message_id": session.get("active_leaf_message_id"),
+        "messages": [
+            {key: value for key, value in row.items() if key not in {"word_count", "has_tool_use"}} for row in rows
+        ],
+    }
+
+
+def _session_messages(session: Mapping[str, object]) -> list[Mapping[str, object]]:
+    messages = session.get("messages")
+    return [row for row in messages if isinstance(row, Mapping)] if isinstance(messages, list) else []
+
+
+def _session_message_text(message: Mapping[str, object]) -> str:
+    blocks = message.get("blocks")
+    rows = [block for block in blocks if isinstance(block, Mapping)] if isinstance(blocks, list) else []
+    return "\n".join(str(block.get("text") or "") for block in rows if block.get("text"))
+
+
+def _emit_session_result(
+    session: Mapping[str, object],
+    *,
+    output_format: str,
+    fields: str | None,
+    view: str = "transcript",
+) -> None:
+    payload = _session_result_payload(session)
+    if output_format == "json":
+        click.echo(json.dumps(_project_payload(payload, fields), indent=2, sort_keys=True))
+        return
+    if output_format == "yaml":
+        import yaml
+
+        click.echo(yaml.safe_dump(_project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
+        return
+    if output_format == "ndjson":
+        messages = payload["messages"]
+        if not isinstance(messages, list):
+            raise TypeError("session payload messages must be a list")
+        for message in messages:
+            click.echo(json.dumps(message, sort_keys=True))
+        return
+    if output_format not in {"markdown", "plaintext"}:
+        raise click.UsageError(f"Full-session reads do not support --format {output_format}.")
+    if view == "summary":
+        click.echo(_session_summary_text(session))
+        return
+    click.echo(_session_text(session))
+
+
+def _session_text(session: Mapping[str, object]) -> str:
+    session_id = str(session.get("session_id") or "")
+    lines = [f"# {session.get('title') or session_id}", "", f"`{session_id}`", ""]
+    for message in _session_messages(session):
+        lines.append(f"## {message.get('role')}")
+        lines.append(_session_message_text(message))
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _session_summary_text(session: Mapping[str, object]) -> str:
+    """Condensed session synopsis: counts, roles, tool usage, first/last excerpts.
+
+    Deliberately distinct from :func:`_session_text` (the full transcript) --
+    ``read --view summary`` previously routed to the same renderer as
+    ``read --view transcript`` and produced byte-identical output for any
+    session (polylogue-zumd class: a surface claiming to do X silently did
+    the whole-transcript Y instead).
+    """
+    session_id = str(session.get("session_id") or "")
+    rows = _session_messages(session)
+    role_counts: dict[str, int] = {}
+    tool_use_message_count = 0
+    total_words = 0
+    for message in rows:
+        role = str(message.get("role") or "")
+        role_counts[role] = role_counts.get(role, 0) + 1
+        total_words += _object_int(message.get("word_count"))
+        if message.get("has_tool_use"):
+            tool_use_message_count += 1
+
+    lines = [
+        f"# {session.get('title') or session_id}",
+        "",
+        f"`{session_id}`  ({session.get('origin')})",
+        "",
+        f"- messages: {len(rows)}",
+    ]
+    for role in sorted(role_counts):
+        lines.append(f"  - {role}: {role_counts[role]}")
+    lines.append(f"- words (sum of per-message word_count): {total_words}")
+    lines.append(f"- messages with tool use: {tool_use_message_count}")
+    created_at = session.get("created_at")
+    updated_at = session.get("updated_at")
+    if created_at or updated_at:
+        lines.append(f"- created: {created_at or 'unknown'}  updated: {updated_at or 'unknown'}")
+
+    def _first_authored_text(candidates: Iterable[Mapping[str, object]]) -> str:
+        for message in candidates:
+            if message.get("role") not in ("user", "assistant"):
+                continue
+            blocks = message.get("blocks")
+            block_rows = [block for block in blocks if isinstance(block, Mapping)] if isinstance(blocks, list) else []
+            # The archive's own display flattening (``archive_message_display_text``):
+            # every non-empty block's text in block order, blank-line separated.
+            text = "\n\n".join(str(block.get("text")) for block in block_rows if block.get("text"))
+            if text.strip():
+                return text
+        return ""
+
+    first_text = _first_authored_text(rows)
+    last_text = _first_authored_text(reversed(rows))
+    if first_text:
+        lines += ["", "## First turn", "", bound_display_text(first_text, max_chars=500)]
+    if last_text and last_text != first_text:
+        lines += ["", "## Last turn", "", bound_display_text(last_text, max_chars=500)]
+    return "\n".join(lines).rstrip()
+
+
+def _emit_stream(session: Mapping[str, object], *, output_format: str) -> None:
+    payload = _session_result_payload(session)
+    raw_messages = payload["messages"]
+    if not isinstance(raw_messages, list):
+        raise TypeError("session payload messages must be a list")
+    if output_format in {"json", "json-lines", "ndjson"}:
+        for message in raw_messages:
+            click.echo(json.dumps(message, sort_keys=True))
+        return
+    if output_format not in {"markdown", "plaintext"}:
+        raise click.UsageError(f"Stream does not support --format {output_format}.")
+    lines: list[str] = []
+    for message in _session_messages(session):
+        lines.append(f"## {message.get('role')}")
+        lines.append(_session_message_text(message))
+        lines.append("")
+    click.echo("\n".join(lines).rstrip())
+
+
+def _archive_stats_from_result(body: Mapping[str, object]) -> ArchiveStats:
+    """Rebuild the stats dataclass from its wire form.
+
+    ``embedding_dimensions`` is keyed by dimension *number*; JSON object keys
+    are strings, so the round trip has to restore the integer keys or the
+    rendered document silently changes shape by transport.
+    """
+    from dataclasses import fields as dataclass_fields
+
+    from polylogue.archive.stats import ArchiveStats
+
+    values = dict(body)
+    dimensions = values.get("embedding_dimensions")
+    if isinstance(dimensions, Mapping):
+        values["embedding_dimensions"] = {int(key): _object_int(value) for key, value in dimensions.items()}
+    declared = {field.name for field in dataclass_fields(ArchiveStats)}
+    return ArchiveStats(**cast("Any", {key: value for key, value in values.items() if key in declared}))
+
+
+def _emit_aggregate_result(
+    payload: Mapping[str, object],
+    *,
+    output_format: str,
+    origin: str | None,
+    query: str,
+    fields: str | None,
+) -> None:
+    """Render one ``query.aggregate`` result through the aggregate renderers."""
+    mode = str(payload.get("mode") or "")
+    if mode == "count":
+        _emit_count(_object_int(payload.get("count")), output_format=output_format, origin=origin)
+        return
+    if mode == "stats_by":
+        groups = payload.get("groups")
+        _emit_stats_by(
+            {str(key): _object_int(value) for key, value in groups.items()} if isinstance(groups, Mapping) else {},
+            group_by=str(payload.get("group_by") or ""),
+            output_format=output_format,
+            origin=origin,
+            query=query,
+            fields=fields,
+        )
+        return
+    body = payload.get("stats")
+    _emit_stats(
+        _archive_stats_from_result(body if isinstance(body, Mapping) else {}),
+        output_format=output_format,
+        origin=origin,
+        query=query,
+        fields=fields,
+    )
+
+
+def _transcript_or_page(
+    config: Config,
+    ref: str,
+    *,
+    daemon_disabled: bool,
+    message_limit: int | None,
+    certain: bool,
+) -> dict[str, object] | None:
+    """Read ``ref`` as a transcript, or decline when it was only ref-*shaped*.
+
+    ``repo:polylogue`` and other structured field clauses pass the cheap
+    syntactic ref probe.  They are not identity queries, so a miss falls
+    through to ordinary page execution — but an *ambiguous* reference is a real
+    identity failure and must not broaden into a text search.
+    """
+    from polylogue.cli.operation_kernel import OperationKernelError
+
+    try:
+        return _read_session_windows(config, ref, daemon_disabled=daemon_disabled, message_limit=message_limit)
+    except OperationKernelError as exc:
+        detail = _read_failure_detail(exc)
+        if certain:
+            if "not found" in detail:
+                _fail(f"Session not found: {ref}")
+            _read_failure_as_usage_error(exc)
+        if "ambiguous" in detail:
+            raise click.UsageError(detail) from exc
+        return None
 
 
 def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None:
-    """Render root query output to stdout."""
+    """Render root query output to stdout.
+
+    Every read below is a declared operation dispatched through the kernel.
+    There is no second, local implementation of what ``find`` means: this
+    adapter chooses the operation, projects argv onto its payload (Seam A,
+    :mod:`polylogue.cli.lowering`), and renders the result.
+    """
     params = dict(request.params)
     cursor_request_identity = search_cursor_request_identity(params)
     _reject_unsupported_params(params)
@@ -297,25 +573,28 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     config_started_at = perf_counter()
     config = load_effective_config(env)
     # polylogue-yla8.1 split-root contract: config.db_path always names a
-    # concrete index.db (explicit override or resolved active generation).
-    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
+    # concrete index.db (explicit override or resolved active generation).  The
+    # dispatch resolves the file set that index belongs to, so a ``--db`` pin at
+    # a non-active generation is answered from the generation the operator named
+    # rather than from whatever is active.
     index_db_path = config.db_path
     env.record_timing("config", config_started_at)
     compile_started_at = perf_counter()
     typo_hint = maybe_subcommand_typo_hint(request.query_terms)
     raw_query = _query_text(request.query_terms, params)
     output_format = str(params.get("output_format") or "markdown")
-    reference_output = _execute_reference_query_pipeline(
+    daemon_disabled = _daemon_disabled(flag=bool(params.get("no_daemon")))
+
+    if _emit_reference_query(
+        config,
         raw_query,
-        archive_root=archive_root,
-        index_db_path=index_db_path,
         output_format=output_format,
         limit=_optional_int(params.get("limit")),
-    )
-    if reference_output is not None:
-        click.echo(reference_output)
+        daemon_disabled=daemon_disabled,
+    ):
         env.record_timing("compile", perf_counter() - compile_started_at)
         return
+
     fields = _optional_str(params.get("fields"))
     read_view = str(params.get("view") or "transcript")
     # Split a trailing ``with <units>`` projection clause off the FTS text so it
@@ -345,6 +624,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         with_units = compiled_spec.with_units
         with_unit_fields = compiled_spec.with_unit_fields
         with_unit_windows = compiled_spec.with_unit_windows
+    _reject_date_bounds_that_cannot_parse(compiled_spec)
     env.record_timing("compile", compile_started_at)
 
     tags_to_add = _tuple_tokens(params.get("add_tag"))
@@ -371,550 +651,285 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     similar_session_id = compiled_spec.similar_session_id
     retrieval_lane = _optional_str(params.get("retrieval_lane")) or compiled_spec.retrieval_lane
     delete_matched = bool(params.get("delete_matched"))
-    filter_kwargs = _spec_filter_kwargs(compiled_spec)
+    aggregate = aggregate_mode(params)
+    searching = bool(query or similar_text or similar_session_id)
     session_scope_id = compiled_spec.session_id or (
         str(params["conv_id"]) if params.get("conv_id") is not None else None
     )
-    lineage_seed_session_id = _lineage_seed_from_predicate(compiled_spec.boolean_predicate)
-    if _try_emit_daemon_session_page(
-        env,
-        config=config,
-        request=request,
-        params=params,
-        compiled_spec=compiled_spec,
-        unit_source=unit_source,
-        with_units=with_units,
-        with_unit_fields=with_unit_fields,
-        with_unit_windows=with_unit_windows,
-        query=query,
-        raw_query=raw_query,
-        limit=limit,
-        offset=page_offset,
-        output_format=output_format,
-        origin=origin,
-        fields=fields,
-        typo_hint=typo_hint,
-        tags_to_add=tags_to_add,
-        metadata_to_set=metadata_to_set,
-        delete_matched=delete_matched,
-        stream=stream,
-        sample_count=sample_count,
-        cursor=cursor,
-    ):
-        return
-    if _try_emit_daemon_unit_page(
-        config=config,
-        request=request,
-        params=params,
-        source=unit_source,
-        expression=unit_source_query,
-        limit=limit,
-        offset=page_offset,
-        output_format=output_format,
-        fields=fields,
-        stream=stream,
-        tags_to_add=tags_to_add,
-        metadata_to_set=metadata_to_set,
-        delete_matched=delete_matched,
-        sample_count=sample_count,
-        since_session_id=since_session_id,
-        cursor=cursor,
-        sort=sort,
-        reverse=reverse,
-    ):
-        return
-    if not index_db_path.exists():
-        if _emit_missing_archive_empty_read(
-            params,
-            output_format=output_format,
-            origin=origin,
-            query=query,
-            fields=fields,
-        ):
-            return
-        message = f"archive index database not found at {index_db_path}"
-        if typo_hint is not None:
-            message = f"{message}\n{typo_hint}"
-        _fail(message)
 
-    if cursor is not None and any(
-        params.get(key) for key in ("stats_only", "stats_by", "count_only", "conv_id", "latest")
-    ):
+    # --- Syntax refusals.  These name option combinations no operation will
+    # ever be asked to answer, so they are decided before any transport.
+    if cursor is not None and (aggregate is not None or session_scope_id is not None or params.get("latest")):
         raise click.UsageError("Root query --cursor is only supported for list and search pages.")
     if retrieval_lane == "hybrid" and not query:
         raise click.UsageError("Hybrid retrieval requires lexical query terms.")
-    if tags_to_add and any(params.get(key) for key in ("stats_only", "stats_by", "count_only")):
+    if tags_to_add and aggregate is not None:
         raise click.UsageError("--add-tag is only supported for matched sessions.")
-    if delete_matched and any(params.get(key) for key in ("stats_only", "stats_by", "count_only")):
+    if delete_matched and aggregate is not None:
         raise click.UsageError("Delete is only supported for matched sessions.")
     if delete_matched and tags_to_add:
         raise click.UsageError("Root query cannot combine delete with --add-tag.")
     if delete_matched and metadata_to_set:
         raise click.UsageError("Root query cannot combine delete with --set.")
+    if sample_count is not None and aggregate is not None:
+        raise click.UsageError("Root query does not combine --sample with stats.")
+    if sample_count is not None and searching:
+        raise click.UsageError("Root query does not combine --sample with search terms.")
+    if unit_source is not None and any(
+        (
+            aggregate is not None,
+            stream,
+            tags_to_add,
+            metadata_to_set,
+            delete_matched,
+            params.get("open_result"),
+            params.get("conv_id"),
+            sample_count is not None,
+            since_session_id is not None,
+            cursor is not None,
+            sort is not None,
+            reverse,
+        )
+    ):
+        unit_label = _unit_source_display_name(unit_source)
+        raise click.UsageError(
+            f"{unit_label} where queries return {unit_source.unit} rows and do not combine "
+            "with session-only actions, aggregate modes, sort, reverse, or cursor."
+        )
+
+    # A missing local index tier is only decisive when nothing else can answer.
+    # A resident daemon owns its own file set and may well be able to serve this
+    # page, so the refusal is deferred until the dispatch below actually fails
+    # for want of an archive (:func:`_missing_archive_refusal`).
+    if daemon_disabled and not index_db_path.exists():
+        _missing_archive_refusal(
+            params,
+            index_db_path=index_db_path,
+            output_format=output_format,
+            origin=origin,
+            query=query,
+            fields=fields,
+            typo_hint=typo_hint,
+        )
+
+    from polylogue.cli.lowering import lower_cli_query, lower_query_aggregate, lower_query_units
+    from polylogue.cli.operation_kernel import OperationKernelError
 
     db_open_started_at = perf_counter()
-    with archive_read_context(
-        archive_root,
-        operation="cli.root_query",
-        arguments={
-            "query": query,
-            "unit_source": unit_source_query,
-            "limit": limit,
-            "offset": page_offset,
-            "params": params,
-        },
-        page_size=limit,
-        offset=page_offset,
-        projection=output_format,
-        stable_order=sort or "date,session_id",
-        workload_class="scan" if unit_source is not None or params.get("stats_only") else "interactive",
-    ) as archive:
-        env.record_timing("db-open", db_open_started_at)
-        if unit_source is not None:
-            if any(
-                (
-                    params.get("stats_only"),
-                    params.get("stats_by"),
-                    params.get("count_only"),
-                    stream,
-                    tags_to_add,
-                    metadata_to_set,
-                    delete_matched,
-                    params.get("open_result"),
-                    params.get("conv_id"),
-                    sample_count is not None,
-                    since_session_id is not None,
-                    cursor is not None,
-                    sort is not None,
-                    reverse,
-                )
-            ):
-                unit_label = _unit_source_display_name(unit_source)
-                raise click.UsageError(
-                    f"{unit_label} where queries return {unit_source.unit} rows and do not combine "
-                    "with session-only actions, aggregate modes, sort, reverse, or cursor."
-                )
-            _emit_unit_source_rows(
-                archive,
-                source=unit_source,
-                query=unit_source_query,
-                limit=limit,
-                offset=page_offset,
-                session_filters=_unit_source_session_filters(filter_kwargs),
-                output_format=output_format,
-                fields=fields,
-            )
-            return
-        if params.get("stats_only") or params.get("stats_by"):
-            if sample_count is not None:
-                raise click.UsageError("Root query does not combine --sample with stats.")
-            aggregate_limit = _optional_int(params.get("limit"))
-            session_ids = _matched_session_ids_for_stats(
-                archive,
-                query=query,
-                session_id=session_scope_id,
-                limit=aggregate_limit,
-                filter_kwargs=filter_kwargs,
-            )
-            if params.get("stats_by"):
-                group_by = str(params["stats_by"])
-                if query and not session_ids:
-                    _emit_stats_by(
-                        {},
-                        group_by=group_by,
-                        output_format=output_format,
-                        origin=origin,
-                        query=query,
-                        fields=fields,
-                    )
-                    return
-                try:
-                    grouped = archive.stats_by(
-                        group_by,
-                        **cast(Any, stats_filter_kwargs(filter_kwargs)),
-                        session_ids=session_ids,
-                    )
-                except ValueError as exc:
-                    raise click.UsageError(str(exc)) from exc
-                _emit_stats_by(
-                    grouped,
-                    group_by=group_by,
-                    output_format=output_format,
-                    origin=origin,
-                    query=query,
-                    fields=fields,
-                )
-                return
-            if query and not session_ids:
-                from polylogue.archive.stats import ArchiveStats
 
-                _emit_stats(
-                    ArchiveStats(total_sessions=0, total_messages=0),
-                    output_format=output_format,
-                    origin=origin,
-                    query=query,
-                    fields=fields,
-                )
-                return
-            stats = archive.stats(
-                **cast(Any, stats_filter_kwargs(filter_kwargs)),
-                session_ids=session_ids,
+    if unit_source is not None:
+        try:
+            payload, _ = _dispatch_read(
+                config,
+                lower_query_units(request, expression=unit_source_query, limit=limit, offset=page_offset),
+                daemon_disabled=daemon_disabled,
             )
-            _emit_stats(stats, output_format=output_format, origin=origin, query=query, fields=fields)
-            return
-        if params.get("count_only"):
-            if query:
-                _emit_count(
-                    archive.count_search_sessions(
-                        query,
-                        session_id=session_scope_id,
-                        **filter_kwargs,
-                    ),
-                    output_format=output_format,
-                    origin=origin,
-                )
-                return
-            _emit_count(
-                archive.count_sessions(
-                    session_id=session_scope_id,
-                    **filter_kwargs,
-                ),
-                output_format=output_format,
-                origin=origin,
+        except OperationKernelError as exc:
+            _read_failure_as_usage_error(exc)
+        env.record_timing("db-open", db_open_started_at)
+        raw_items = payload.get("items")
+        items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+        if not items:
+            _emit_unit_no_results(payload, unit=unit_source.unit, output_format=output_format)
+        text_line = (
+            _aggregate_query_line
+            if payload.get("mode") == "query-unit-aggregate"
+            else _query_unit_text_line(unit_source.unit)
+        )
+        _emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields)
+        return
+
+    if aggregate is not None:
+        try:
+            payload, _ = _dispatch_read(
+                config,
+                lower_query_aggregate(request, mode=aggregate),
+                daemon_disabled=daemon_disabled,
             )
-            return
-        conv_id = compiled_spec.session_id or params.get("conv_id")
-        if conv_id:
-            try:
-                session_id = archive.resolve_session_id(str(conv_id))
-                if query or similar_text or similar_session_id:
-                    if sample_count is not None:
-                        raise click.UsageError("Root query does not combine --sample with search terms.")
-                    hits, resolved_lane = _query_hits(
-                        archive,
-                        config=config,
-                        query=query,
-                        similar_text=similar_text,
-                        similar_session_id=similar_session_id,
-                        retrieval_lane=retrieval_lane,
-                        limit=limit + 1,
-                        offset=page_offset,
-                        sort=sort,
-                        reverse=reverse,
-                        session_id=session_id,
-                        filter_kwargs=filter_kwargs,
-                    )
-                    page_hits, next_cursor = _paginate_rows(
-                        hits,
-                        limit=limit,
-                        offset=page_offset,
-                        retrieval_lane=resolved_lane,
-                        request_identity=cursor_request_identity,
-                    )
-                    if stream:
-                        if not page_hits:
-                            _fail("Stream found no matching session.")
-                        envelope = archive.read_session(session_id)
-                        _emit_stream(
-                            envelope,
-                            output_format=stream_output_format,
-                            message_limit=_stream_message_limit(params),
-                        )
-                        return
-                    matched_session_ids = (session_id,) if page_hits else ()
-                    if tags_to_add or metadata_to_set:
-                        _emit_user_mutations(
-                            env,
-                            archive,
-                            matched_session_ids,
-                            tags_to_add=tags_to_add,
-                            metadata_to_set=metadata_to_set,
-                        )
-                        return
-                    if delete_matched:
-                        _emit_delete(env, matched_session_ids, params=params)
-                        return
-                    if params.get("open_result"):
-                        if not page_hits:
-                            _emit_open_no_results(output_format=output_format, origin=origin)
-                        _open_session(
-                            env,
-                            session_id,
-                            output_format=output_format,
-                            print_url=bool(params.get("print_url")),
-                        )
-                        return
-                    _emit_search(
-                        page_hits,
-                        archive=archive,
-                        query=similar_text or query or similar_session_id or "",
-                        total=_count_root_matches(
-                            archive,
-                            query=query,
-                            similar_text=similar_text,
-                            similar_session_id=similar_session_id,
-                            session_id=session_id,
-                            filter_kwargs=filter_kwargs,
-                        ),
-                        limit=limit,
-                        offset=page_offset,
-                        next_cursor=next_cursor,
-                        retrieval_lane=resolved_lane,
-                        output_format=output_format,
-                        origin=origin,
-                        fields=fields,
-                        root=filter_kwargs["root"],
-                        typo_hint=typo_hint,
-                        with_units=with_units,
-                        with_unit_fields=with_unit_fields,
-                        with_unit_windows=with_unit_windows,
-                        diagnostics=(
-                            _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why")))
-                            if not page_hits
-                            else None
-                        ),
-                    )
-                    return
-                if stream:
-                    envelope = archive.read_session(session_id)
-                    _emit_stream(
-                        envelope,
-                        output_format=stream_output_format,
-                        message_limit=_stream_message_limit(params),
-                    )
-                    return
-                if tags_to_add or metadata_to_set:
-                    _emit_user_mutations(
-                        env, archive, (session_id,), tags_to_add=tags_to_add, metadata_to_set=metadata_to_set
-                    )
-                    return
-                if delete_matched:
-                    _emit_delete(env, (session_id,), params=params)
-                    return
-                if params.get("open_result"):
-                    _open_session(env, session_id, output_format=output_format, print_url=bool(params.get("print_url")))
-                    return
-                envelope = archive.read_session(session_id)
-            except KeyError:
-                _fail(f"Session not found: {conv_id}")
-            except ValueError as exc:
-                raise click.UsageError(str(exc)) from exc
-            _emit_session(
-                envelope,
-                output_format=output_format,
-                fields=fields,
-                view=read_view,
-            )
-            return
-        if query and not similar_text:
-            try:
-                exact_session_id = _resolve_single_query_ref(archive, query)
-            except ValueError as exc:
-                raise click.UsageError(str(exc)) from exc
-            if exact_session_id is not None:
-                envelope = archive.read_session(exact_session_id)
-                _emit_session(
-                    envelope,
-                    output_format=output_format,
-                    fields=fields,
-                    view=read_view,
-                )
-                return
-        if query or similar_text or similar_session_id:
-            if sample_count is not None:
-                raise click.UsageError("Root query does not combine --sample with search terms.")
-            fetch_limit = limit + 1
-            hits, resolved_lane = _query_hits(
-                archive,
-                config=config,
-                query=query,
-                similar_text=similar_text,
-                similar_session_id=similar_session_id,
-                retrieval_lane=retrieval_lane,
-                limit=fetch_limit,
-                offset=page_offset,
-                sort=sort,
-                reverse=reverse,
-                session_id=None,
-                filter_kwargs=filter_kwargs,
-            )
-            page_hits, next_cursor = _paginate_rows(
-                hits,
-                limit=limit,
-                offset=page_offset,
-                retrieval_lane=resolved_lane,
-                request_identity=cursor_request_identity,
-            )
+        except OperationKernelError as exc:
+            _read_failure_as_usage_error(exc)
+        env.record_timing("db-open", db_open_started_at)
+        _emit_aggregate_result(payload, output_format=output_format, origin=origin, query=query, fields=fields)
+        return
+
+    # --- An exact session reference selects one transcript, not a page.  A
+    # scoped search (``--id X <terms>``) is still a page, inside that session.
+    transcript_ref: str | None = None
+    certain_ref = False
+    if session_scope_id is not None and not searching:
+        transcript_ref, certain_ref = session_scope_id, True
+    elif session_scope_id is None and query and not similar_text and _single_query_token_looks_like_ref(query):
+        transcript_ref = query
+    if transcript_ref is not None and certain_ref and params.get("open_result"):
+        # Opening a session needs its identity, not its content: a one-message
+        # window resolves the reference (and proves the session exists) without
+        # reading a transcript the launcher immediately discards.
+        opened = _transcript_or_page(
+            config, transcript_ref, daemon_disabled=daemon_disabled, message_limit=1, certain=True
+        )
+        _open_session(
+            env,
+            str((opened or {}).get("session_id") or transcript_ref),
+            output_format=output_format,
+            print_url=bool(params.get("print_url")),
+        )
+        return
+    if transcript_ref is not None:
+        session = _transcript_or_page(
+            config,
+            transcript_ref,
+            daemon_disabled=daemon_disabled,
+            message_limit=_stream_message_limit(params) if stream else None,
+            certain=certain_ref,
+        )
+        if session is not None:
+            env.record_timing("db-open", db_open_started_at)
+            session_id = str(session.get("session_id") or transcript_ref)
             if stream:
-                if not page_hits:
-                    _fail("Stream found no matching session.")
-                envelope = archive.read_session(page_hits[0].session_id)
-                _emit_stream(
-                    envelope,
-                    output_format=stream_output_format,
-                    message_limit=_stream_message_limit(params),
-                )
+                _emit_stream(session, output_format=stream_output_format)
                 return
             if tags_to_add or metadata_to_set:
-                session_ids = tuple(hit.session_id for hit in page_hits)
-                _emit_user_mutations(
-                    env, archive, session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set
-                )
+                _emit_user_mutations(env, (session_id,), tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
                 return
             if delete_matched:
-                session_ids = tuple(hit.session_id for hit in page_hits)
-                _emit_delete(env, session_ids, params=params)
+                _emit_delete(env, (session_id,), params=params)
                 return
             if params.get("open_result"):
-                if not page_hits:
-                    _fail("Open found no matching session.")
-                _open_session(
-                    env,
-                    page_hits[0].session_id,
-                    output_format=output_format,
-                    print_url=bool(params.get("print_url")),
-                )
+                _open_session(env, session_id, output_format=output_format, print_url=bool(params.get("print_url")))
                 return
-            _emit_search(
-                page_hits,
-                archive=archive,
-                query=similar_text or query or similar_session_id or "",
-                total=_count_root_matches(
-                    archive,
-                    query=query,
-                    similar_text=similar_text,
-                    similar_session_id=similar_session_id,
-                    session_id=None,
-                    filter_kwargs=filter_kwargs,
-                ),
+            _emit_session_result(session, output_format=output_format, fields=fields, view=read_view)
+            return
+
+    # --- Ordinary page: one declared session query, rendered as list or search.
+    try:
+        payload, served_by = _dispatch_read(
+            config,
+            lower_cli_query(
+                request,
                 limit=limit,
                 offset=page_offset,
-                next_cursor=next_cursor,
-                retrieval_lane=resolved_lane,
-                output_format=output_format,
-                origin=origin,
-                fields=fields,
-                root=filter_kwargs["root"],
-                typo_hint=typo_hint,
+                sample=sample_count,
                 with_units=with_units,
                 with_unit_fields=with_unit_fields,
                 with_unit_windows=with_unit_windows,
-                diagnostics=(
-                    _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why"))) if not page_hits else None
-                ),
-            )
-            return
-        if params.get("latest"):
-            limit = 1
-        fetch_limit = limit if sample_count is not None else limit + 1
-        summaries = archive.list_summaries(
-            limit=fetch_limit,
-            offset=page_offset,
-            sample=sample_count is not None,
-            sort=sort,
-            reverse=reverse,
-            **filter_kwargs,
+            ),
+            daemon_disabled=daemon_disabled,
         )
-        page_summaries, next_cursor = _paginate_rows(
-            summaries, limit=limit, offset=page_offset, request_identity=cursor_request_identity
-        )
-        if stream:
-            if not page_summaries:
-                _fail("Stream found no matching session.")
-            envelope = archive.read_session(page_summaries[0].session_id)
-            _emit_stream(
-                envelope,
-                output_format=stream_output_format,
-                message_limit=_stream_message_limit(params),
-            )
-            return
-        if tags_to_add or metadata_to_set:
-            session_ids = tuple(summary.session_id for summary in page_summaries)
-            _emit_user_mutations(env, archive, session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
-            return
-        if delete_matched:
-            session_ids = tuple(summary.session_id for summary in page_summaries)
-            _emit_delete(env, session_ids, params=params)
-            return
-        if params.get("open_result"):
-            if not page_summaries:
-                _emit_open_no_results(output_format=output_format, origin=origin)
-            _open_session(
-                env,
-                page_summaries[0].session_id,
+    except OperationKernelError as exc:
+        detail = _read_failure_detail(exc)
+        if session_scope_id is not None and "session not found" in detail.lower():
+            # An explicit ``--id`` that resolves to nothing is a missing
+            # session, not a malformed command line: same wording and exit
+            # class as an exact-ref read of the same reference.
+            _fail(f"Session not found: {session_scope_id}")
+        if not index_db_path.exists():
+            _missing_archive_refusal(
+                params,
+                index_db_path=index_db_path,
                 output_format=output_format,
-                print_url=bool(params.get("print_url")),
+                origin=origin,
+                query=query,
+                fields=fields,
+                typo_hint=typo_hint,
             )
             return
-        list_total = (
-            None
-            if sample_count is not None
-            else _count_root_matches(
-                archive,
-                query="",
-                similar_text=None,
-                session_id=None,
-                filter_kwargs=filter_kwargs,
-            )
+        _read_failure_as_usage_error(exc)
+    env.record_timing("db-open", db_open_started_at)
+    if bool(params.get("verbose")):
+        click.echo(f"served-by: {served_by.line()}", err=True)
+
+    ranked = isinstance(payload.get("hits"), list)
+    raw_rows = payload.get("hits") if ranked else payload.get("items")
+    rows = [row for row in raw_rows if isinstance(row, Mapping)] if isinstance(raw_rows, list) else []
+    matched_session_ids = tuple(
+        session_id for session_id in (str(row.get("id") or row.get("session_id") or "") for row in rows) if session_id
+    )
+
+    if stream:
+        if not matched_session_ids:
+            _fail("Stream found no matching session.")
+        _emit_stream(
+            _read_session_windows(
+                config,
+                matched_session_ids[0],
+                daemon_disabled=daemon_disabled,
+                message_limit=_stream_message_limit(params),
+            ),
+            output_format=stream_output_format,
         )
-        _emit_list_miss_if_field_syntax(
+        return
+    if tags_to_add or metadata_to_set:
+        _emit_user_mutations(env, matched_session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
+        return
+    if delete_matched:
+        _emit_delete(env, matched_session_ids, params=params)
+        return
+    if params.get("open_result"):
+        if not matched_session_ids:
+            if searching:
+                _fail("Open found no matching session.")
+            _emit_open_no_results(output_format=output_format, origin=origin)
+        _open_session(
             env,
-            items=page_summaries,
-            total=list_total,
-            raw_query=raw_query,
-            compiled_spec=compiled_spec,
-            why=bool(params.get("why")),
+            matched_session_ids[0],
             output_format=output_format,
-            origin=origin,
-            limit=limit,
-            offset=page_offset,
-            root=filter_kwargs["root"],
-            typo_hint=typo_hint,
+            print_url=bool(params.get("print_url")),
         )
-        _emit_list(
-            page_summaries,
-            total=list_total,
+        return
+
+    if ranked:
+        _emit_daemon_search_payload(
+            payload,
+            query=similar_text or query or similar_session_id or "",
             limit=limit,
             offset=page_offset,
-            next_cursor=next_cursor,
             output_format=output_format,
             origin=origin,
             fields=fields,
-            root=filter_kwargs["root"],
-            archive=archive,
-            with_units=with_units,
-            with_unit_fields=with_unit_fields,
-            with_unit_windows=with_unit_windows,
-            lineage_seed_session_id=lineage_seed_session_id,
+            typo_hint=typo_hint,
+            env=env,
+            compiled_spec=compiled_spec,
+            why=bool(params.get("why")),
+            source=served_by.identity,
         )
+        return
+    _emit_list_miss_if_field_syntax(
+        env,
+        items=list(rows),
+        total=_object_int(payload.get("total")) if payload.get("total") is not None else None,
+        raw_query=raw_query,
+        compiled_spec=compiled_spec,
+        why=bool(params.get("why")),
+        output_format=output_format,
+        origin=origin,
+        limit=limit,
+        offset=page_offset,
+        root=True,
+        typo_hint=typo_hint,
+    )
+    _emit_daemon_list_payload(
+        payload,
+        limit=limit,
+        offset=page_offset,
+        output_format=output_format,
+        origin=origin,
+        fields=fields,
+        source=served_by.identity,
+    )
 
 
-def _lineage_seed_from_predicate(predicate: QueryPredicate | None) -> str | None:
-    """Return the ``lineage:id:`` seed session id carried by ``predicate``, if any.
+def _reject_date_bounds_that_cannot_parse(spec: SessionQuerySpec) -> None:
+    """Refuse an unparseable ``--since``/``--until`` literal as a CLI usage fault.
 
-    ``lineage:id:<ref>`` compiles to :class:`QueryLineagePredicate` (possibly
-    ANDed with other clauses), which the SQL layer already uses to filter
-    session rows to one shared-root lineage family. This walks the same
-    boolean-predicate tree to detect that shape so the list route can
-    materialize the declared recursive-graph projection columns for it (#z9gh.3).
-
-    Only descends into ``and`` nodes. A ``lineage:id:X or repo:foo`` result
-    set is NOT purely lineage X's family -- rows matched only via the ``or``
-    branch would get X's parent_refs/child_refs/continuation stamped on them,
-    which is wrong, not just imprecise. An ``or`` node (or a ``not`` wrapping
-    the predicate, which isn't a ``QueryBoolPredicate``/``QueryLineagePredicate``
-    at all) correctly yields no seed here.
+    Whether a date literal parses is a property of what the operator typed, so
+    it is answered here with the wording and exit class the CLI has always
+    used, rather than surfacing as the handler's generic invalid-request
+    refusal. The lowering is pure and repeated only to ask the question.
     """
-    if predicate is None:
-        return None
-    if isinstance(predicate, QueryLineagePredicate):
-        return predicate.seed_session_id
-    if isinstance(predicate, QueryBoolPredicate) and predicate.op == "and":
-        for child in predicate.children:
-            seed = _lineage_seed_from_predicate(child)
-            if seed is not None:
-                return seed
-    return None
+    try:
+        spec_session_filter_kwargs(spec)
+    except QuerySpecError as exc:
+        raise click.ClickException(f"Cannot parse date: {exc.value!r}") from exc
 
 
 def _reject_unsupported_params(params: dict[str, object]) -> None:
@@ -929,508 +944,9 @@ def _validate_retrieval_params(params: dict[str, object]) -> None:
         raise click.UsageError("Root query retrieval lane must be auto, dialogue, semantic, or hybrid.")
 
 
-def _query_hits(
-    archive: ArchiveStore,
-    *,
-    config: Config,
-    query: str,
-    similar_text: str | None,
-    similar_session_id: str | None,
-    retrieval_lane: str,
-    limit: int,
-    offset: int,
-    sort: str | None,
-    reverse: bool,
-    session_id: str | None,
-    filter_kwargs: SessionFilterKwargs,
-) -> tuple[list[ArchiveSessionSearchHit], str]:
-    from polylogue.storage.search_providers import reciprocal_rank_fusion
-
-    # polylogue-yla8.1 split-root contract: config.db_path always names a
-    # concrete index.db (explicit override or resolved active generation).
-    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-    embeddings_db = archive_root / "embeddings.db"
-    if similar_session_id is not None:
-        # near:id: is an explicit request to rank by a *stored* session's
-        # embeddings; unlike near:"text" there is no lexical fallback query.
-        # Reuse the same VectorProvider mechanism (sqlite-vec + Voyage
-        # embeddings) that backs the near:"text" branch below and the
-        # SessionFilter route (archive_execution.py's ``_session_seed_scored``)
-        # rather than silently degrading to an unfiltered session list
-        # (polylogue-z9gh.3).
-        from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
-
-        vector_provider = create_vector_provider(config, db_path=embeddings_db)
-        if vector_provider is None:
-            raise click.UsageError(
-                "near:id: requires configured sqlite-vec and Voyage embeddings; none is available for this archive."
-            )
-        pool = max(limit + offset, limit) * 3
-        try:
-            seed_scored = vector_provider.query_by_session(similar_session_id, limit=pool)
-        except SqliteVecError as exc:
-            raise click.UsageError(str(exc)) from exc
-        seed_hits = archive.semantic_summaries(
-            seed_scored,
-            limit=pool,
-            offset=0,
-            session_id=session_id,
-            **filter_kwargs,
-        )
-        return seed_hits[offset : offset + limit], "semantic"
-    # ``auto`` is intentionally lexical. A default ``find`` must not open or scan
-    # embeddings.db before returning FTS results; large active archives can make
-    # that probe block in I/O wait. Vector retrieval remains explicit through
-    # ``--semantic`` / ``--similar`` / ``--retrieval-lane hybrid``.
-    if similar_text is None and retrieval_lane in {"auto", "dialogue"}:
-        return (
-            archive.search_summaries(
-                query,
-                limit=limit,
-                offset=offset,
-                sort=sort,
-                reverse=reverse,
-                session_id=session_id,
-                **filter_kwargs,
-            ),
-            "dialogue",
-        )
-    if retrieval_lane == "hybrid" and not query:
-        raise click.UsageError("Hybrid retrieval requires lexical query terms.")
-    vector_provider = create_vector_provider(config, db_path=embeddings_db)
-    if vector_provider is None:
-        raise click.UsageError("Vector retrieval requires configured sqlite-vec and Voyage embeddings.")
-    semantic_query = similar_text or query
-    semantic_scored = vector_provider.query(semantic_query, limit=max(limit + offset, limit) * 3)
-    semantic_hits = archive.semantic_summaries(
-        semantic_scored,
-        limit=max(limit + offset, limit) * 3,
-        offset=0,
-        session_id=session_id,
-        **filter_kwargs,
-    )
-    if retrieval_lane != "hybrid":
-        return semantic_hits[offset : offset + limit], "semantic"
-
-    lexical_hits = archive.search_summaries(
-        query,
-        limit=max(limit + offset, limit) * 3,
-        offset=0,
-        sort=sort,
-        reverse=reverse,
-        session_id=session_id,
-        **filter_kwargs,
-    )
-    hit_by_session: dict[str, ArchiveSessionSearchHit] = {}
-    for hit in [*lexical_hits, *semantic_hits]:
-        hit_by_session.setdefault(hit.session_id, hit)
-    fused = reciprocal_rank_fusion(
-        [(hit.session_id, 0.0) for hit in lexical_hits],
-        [(hit.session_id, 0.0) for hit in semantic_hits],
-    )
-    page = fused[offset : offset + limit]
-    return [
-        replace(hit_by_session[session_id], rank=offset + index)
-        for index, (session_id, _score) in enumerate(page, start=1)
-        if session_id in hit_by_session
-    ], "hybrid"
-
-
-def _count_root_matches(
-    archive: ArchiveStore,
-    *,
-    query: str,
-    similar_text: str | None,
-    similar_session_id: str | None = None,
-    session_id: str | None,
-    filter_kwargs: SessionFilterKwargs,
-) -> int | None:
-    """Return an exact indexed total for lexical/list pages.
-
-    Vector and hybrid retrieval have no cheap count relation: their result set
-    is ranked from embeddings and/or fused candidate windows.  Reporting the
-    page length for those lanes would be a false total, so the envelope uses
-    ``null`` there.  Lexical and browse pages have exact indexed count
-    primitives and retain the full total even when the page itself is bounded.
-    """
-
-    if similar_text is not None or similar_session_id is not None:
-        return None
-    counter = getattr(archive, "count_search_sessions" if query else "count_sessions", None)
-    if not callable(counter):
-        # Some narrow adapter doubles implement only the page primitives. A
-        # missing count is genuinely unknown; never substitute page length.
-        return None
-    if query:
-        return int(counter(query, session_id=session_id, **filter_kwargs))
-    return int(counter(session_id=session_id, **filter_kwargs))
-
-
-def _try_emit_daemon_session_page(
-    env: AppEnv,
-    *,
-    config: Config,
-    request: RootModeRequest,
-    params: dict[str, object],
-    compiled_spec: SessionQuerySpec,
-    unit_source: QueryUnitSource | None,
-    with_units: tuple[str, ...],
-    with_unit_fields: dict[str, tuple[str, ...]],
-    with_unit_windows: Mapping[str, WithUnitWindow],
-    query: str,
-    raw_query: str,
-    limit: int,
-    offset: int,
-    output_format: str,
-    origin: str | None,
-    fields: str | None,
-    typo_hint: str | None,
-    tags_to_add: tuple[str, ...],
-    metadata_to_set: tuple[tuple[str, str], ...],
-    delete_matched: bool,
-    stream: bool,
-    sample_count: int | None,
-    cursor: SearchCursor | None,
-) -> bool:
-    """Serve an ordinary session page through the declared ``cli.query`` read.
-
-    The operation is the canonical execution of a session query: over UDS when
-    a daemon answers, in-process through the same handler when it does not.
-    Local ``ArchiveStore`` execution is retained only for the capabilities the
-    operation does not declare yet — aggregates, attached-unit projection,
-    ``sample``, list-mode cursors, exact-ref/stream transcripts — and for
-    mutations.
-    """
-    if compiled_spec.session_id is not None or _single_query_token_looks_like_ref(query):
-        return False
-    if not _daemon_session_page_supported(
-        params,
-        compiled_spec=compiled_spec,
-        cursor=cursor,
-        unit_source=unit_source,
-        with_units=with_units,
-        with_unit_fields=with_unit_fields,
-        with_unit_windows=with_unit_windows,
-        tags_to_add=tags_to_add,
-        metadata_to_set=metadata_to_set,
-        delete_matched=delete_matched,
-        stream=stream,
-        sample_count=sample_count,
-    ):
-        return False
-    if bool(params.get("no_daemon")):
-        return False
-    daemon_params = _cli_query_operation_params(request, limit=limit, offset=offset)
-    payload = _fetch_daemon_sessions_payload(config, daemon_params)
-    if payload is None:
-        return False
-    elapsed_ms = payload.pop("_daemon_elapsed_ms", None)
-    if bool(params.get("verbose")) and isinstance(elapsed_ms, int):
-        click.echo(f"served-by: daemon (uds, {elapsed_ms}ms)", err=True)
-    if isinstance(payload.get("hits"), list):
-        _emit_daemon_search_payload(
-            payload,
-            query=query or str(daemon_params.get("query") or ""),
-            limit=limit,
-            offset=offset,
-            output_format=output_format,
-            origin=origin,
-            fields=fields,
-            typo_hint=typo_hint,
-        )
-        return True
-    if isinstance(payload.get("items"), list):
-        daemon_items = cast(list[object], payload.get("items"))
-        _emit_list_miss_if_field_syntax(
-            env,
-            items=daemon_items,
-            total=_object_int(payload.get("total")) if payload.get("total") is not None else None,
-            raw_query=raw_query,
-            compiled_spec=compiled_spec,
-            why=bool(params.get("why")),
-            output_format=output_format,
-            origin=origin,
-            limit=limit,
-            offset=offset,
-            root=True,
-            typo_hint=typo_hint,
-        )
-        _emit_daemon_list_payload(
-            payload,
-            limit=limit,
-            offset=offset,
-            output_format=output_format,
-            origin=origin,
-            fields=fields,
-        )
-        return True
-    return False
-
-
-def _try_emit_daemon_unit_page(
-    *,
-    config: Config,
-    request: RootModeRequest,
-    params: dict[str, object],
-    source: QueryUnitSource | None,
-    expression: str,
-    limit: int,
-    offset: int,
-    output_format: str,
-    fields: str | None,
-    stream: bool,
-    tags_to_add: tuple[str, ...],
-    metadata_to_set: tuple[tuple[str, str], ...],
-    delete_matched: bool,
-    sample_count: int | None,
-    since_session_id: str | None,
-    cursor: object | None,
-    sort: str | None,
-    reverse: bool,
-) -> bool:
-    """Render daemon query-unit envelopes with the existing CLI renderer."""
-
-    if source is None or stream or tags_to_add or metadata_to_set or delete_matched:
-        return False
-    if any(
-        (
-            params.get("stats_only"),
-            params.get("stats_by"),
-            params.get("count_only"),
-            params.get("open_result"),
-            params.get("conv_id"),
-            sample_count is not None,
-            since_session_id is not None,
-            cursor is not None,
-            sort is not None,
-            reverse,
-        )
-    ):
-        # Session-only modes must keep failing with the local UsageError; the
-        # daemon endpoint would silently ignore these flags and return rows.
-        return False
-    daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
-    daemon_params["expression"] = expression
-    payload = _fetch_daemon_payload(
-        config,
-        "query.units",
-        daemon_params,
-        disabled=bool(params.get("no_daemon")),
-    )
-    if payload is None:
-        return False
-    payload.pop("_daemon_elapsed_ms", None)
-    raw_items = payload.get("items")
-    if not isinstance(raw_items, list):
-        return False
-    items = [item for item in raw_items if isinstance(item, dict)]
-    if not items:
-        _emit_unit_no_results(payload, unit=source.unit, output_format=output_format)
-    text_line = (
-        _aggregate_query_line if payload.get("mode") == "query-unit-aggregate" else _query_unit_text_line(source.unit)
-    )
-    _emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields)
-    return True
-
-
-def _resolve_single_query_ref(archive: ArchiveStore, query: str) -> str | None:
-    """Resolve a singleton query token as a session ref before FTS fallback."""
-    if not _single_query_token_looks_like_ref(query):
-        return None
-    try:
-        return archive.resolve_session_id(query)
-    except KeyError:
-        return None
-    except ValueError as exc:
-        # ``repo:polylogue`` and other structured field clauses can look
-        # ref-shaped to the cheap syntactic probe. They are not identity queries;
-        # let normal DSL/list execution handle them. Ambiguous suffix/prefix
-        # matches are real identity failures and should not broaden to FTS.
-        if "ambiguous" in str(exc):
-            raise
-        return None
-
-
 def _single_query_token_looks_like_ref(query: str) -> bool:
     token = query.strip()
     return bool(token and " " not in token and (":" in token or _NATIVE_REF_RE.fullmatch(token)))
-
-
-def _spec_is_ranked(spec: SessionQuerySpec) -> bool:
-    """Whether ``cli.query`` answers this spec through its ranked-search path.
-
-    Mirrors the branch in ``operations/daemon_reads._query_payload``: a spec
-    with lexical terms, a similarity seed or the hybrid lane is answered by
-    ``_search_payload`` (which decodes, identity-checks and continues search
-    cursors); everything else is answered by the list path (which has no
-    cursor support yet).
-    """
-    return bool(
-        spec.query_terms
-        or spec.contains_terms
-        or spec.similar_text
-        or spec.similar_session_id
-        or spec.retrieval_lane == "hybrid"
-    )
-
-
-def _daemon_session_page_supported(
-    params: dict[str, object],
-    *,
-    compiled_spec: SessionQuerySpec,
-    cursor: SearchCursor | None,
-    unit_source: QueryUnitSource | None,
-    with_units: tuple[str, ...],
-    with_unit_fields: dict[str, tuple[str, ...]],
-    with_unit_windows: Mapping[str, WithUnitWindow],
-    tags_to_add: tuple[str, ...],
-    metadata_to_set: tuple[tuple[str, str], ...],
-    delete_matched: bool,
-    stream: bool,
-    sample_count: int | None,
-) -> bool:
-    """Whether the declared ``cli.query`` read can answer this request.
-
-    Only genuine capability gaps remain here.  Ranked cursors, sort/reverse,
-    Boolean predicates, ``since_session_id``, ``project``, ``typed_only``,
-    ``message_type`` and ``latest`` are all compiled by
-    ``SessionQuerySpec.from_params`` inside the operation handler from the
-    parameters :func:`_cli_query_operation_params` forwards, so rejecting them
-    here only forked execution into a second implementation of the same read.
-    """
-    if unit_source is not None or with_units or with_unit_fields or with_unit_windows:
-        # ``with``-projected attached units have no declared operation; unit
-        # sources have their own (``query.units``) with its own gate.
-        return False
-    if any(params.get(key) for key in ("stats_only", "stats_by", "count_only")):
-        # No aggregate operation is declared yet.
-        return False
-    if params.get("open_result"):
-        # Opening a result is a client-side action on rows, not a read the
-        # operation can perform; the local branch owns the launcher.
-        return False
-    if stream or tags_to_add or metadata_to_set or delete_matched:
-        # Streaming transcripts and user mutations are not session-page reads.
-        return False
-    if sample_count is not None:
-        # ``sample`` is dropped by the operation's list path rather than
-        # honoured, so serving it there would silently widen the page.
-        return False
-    if compiled_spec.similar_text is not None or compiled_spec.similar_session_id is not None:
-        return False
-    if compiled_spec.retrieval_lane not in {"auto", "dialogue"}:
-        # Vector and hybrid retrieval stay local, and NOT because the operation
-        # cannot run them: ``_search_payload`` resolves a vector provider and
-        # calls ``archive_search_hits``.  The two routes disagree on what
-        # happens when no backend is configured -- the local branch raises
-        # ``click.UsageError`` with two distinct near:id:/near:"text" messages
-        # (``_query_hits``), the operation raises the typed
-        # ``EmbeddingRetrievalNotReadyError`` -- and their ranked/fused hit
-        # order has never been compared on a seeded embeddings corpus.  Deleting
-        # this rejection would silently change the CLI's refusal contract, so it
-        # is held for the step that declares one (polylogue-v1mnm).
-        return False
-    # Ranked cursors are decoded, identity-checked and continued by
-    # ``_search_payload``.  The operation's *list* path has no cursor machinery
-    # at all, so a list continuation must stay local until one is declared, or
-    # the cursor would be silently ignored.
-    return cursor is None or _spec_is_ranked(compiled_spec)
-
-
-def _cli_query_operation_params(
-    request: RootModeRequest,
-    *,
-    limit: int,
-    offset: int,
-) -> dict[str, object]:
-    """Project a root request onto the ``cli.query`` selection parameters.
-
-    The handler compiles its spec with the same
-    ``SessionQuerySpec.from_params`` the local branch uses, so forwarding the
-    recognised parameter set verbatim — rather than a hand-maintained rename
-    table — is what makes the two routes compile *one* spec.  The previous
-    table renamed ``filter_has_paste``/``filter_has_tool_use``/
-    ``filter_has_thinking`` to keys ``from_params`` does not read, which
-    dropped ``--has-paste``/``--has-tool-use``/``--has-thinking`` silently,
-    and joined the query terms into a single string, re-tokenising phrases.
-    Presentation-only keys are left behind because the spec ignores them and
-    they would otherwise vary the operation's result-cache key.
-
-    ``exclude_text`` is deliberately still withheld.  It is a content
-    post-filter the two routes answer differently -- the operation applies it
-    to a list page and, on a ranked page, to the count but not the hits, while
-    the local branch ignores it everywhere -- so forwarding it would change
-    ``find --exclude-text`` results before anyone has decided which of those
-    three answers is right (polylogue-v1mnm).
-    """
-    # Imported under its private name deliberately: ``archive/query/spec.py``
-    # is IN the derived-schema identity closure, and adding a public alias
-    # there would move the identity (and invalidate a rebuild) for a rename.
-    from polylogue.archive.query.spec import _RECOGNIZED_PARAMS
-
-    query_params: dict[str, object] = {
-        key: value
-        for key, value in request.params.items()
-        if key in _RECOGNIZED_PARAMS and key != "exclude_text" and value is not None and value != () and value != []
-    }
-    query_params["query"] = list(request.query_terms)
-    query_params["limit"] = limit
-    query_params["offset"] = offset
-    return query_params
-
-
-def _daemon_session_query_params(
-    request: RootModeRequest,
-    params: dict[str, object],
-    *,
-    limit: int,
-    offset: int,
-) -> dict[str, object]:
-    """Hand-listed unit-query filters.
-
-    ``query.units`` forwards its filter params as keyword arguments to
-    ``query_unit_request``, so this list stays explicit: an unrecognised key
-    would be a ``TypeError`` rather than an ignored parameter.
-    """
-    query_params: dict[str, object] = {"limit": limit, "offset": offset}
-    raw_query = " ".join(term for term in request.query_terms if term).strip()
-    if raw_query:
-        query_params["query"] = raw_query
-    for source_key, dest_key in (
-        ("contains", "contains"),
-        ("origin", "origin"),
-        ("exclude_origin", "exclude_origin"),
-        ("tag", "tag"),
-        ("exclude_tag", "exclude_tag"),
-        ("repo", "repo"),
-        ("has_type", "has_type"),
-        ("tool", "tool"),
-        ("exclude_tool", "exclude_tool"),
-        ("action", "action"),
-        ("exclude_action", "exclude_action"),
-        ("action_sequence", "action_sequence"),
-        ("action_text", "action_text"),
-        ("referenced_path", "referenced_path"),
-        ("cwd_prefix", "cwd_prefix"),
-        ("title", "title"),
-        ("min_messages", "min_messages"),
-        ("max_messages", "max_messages"),
-        ("min_words", "min_words"),
-        ("max_words", "max_words"),
-        ("since", "since"),
-        ("until", "until"),
-    ):
-        value = params.get(source_key)
-        if _has_value(value):
-            query_params[dest_key] = value
-    for source_key, dest_key in (
-        ("has_paste", "has_paste_evidence"),
-        ("has_tool_use", "has_tool_use"),
-        ("has_thinking", "has_thinking"),
-    ):
-        if bool(params.get(source_key)):
-            query_params[dest_key] = "1"
-    return query_params
 
 
 def _daemon_disabled(*, flag: bool = False) -> bool:
@@ -1442,40 +958,6 @@ def _daemon_disabled(*, flag: bool = False) -> bool:
     if settings.no_daemon:
         return True
     return settings.daemon_client_mode == "off"
-
-
-def _fetch_daemon_sessions_payload(
-    config: Config,
-    query_params: Mapping[str, object],
-    *,
-    disabled: bool = False,
-) -> dict[str, object] | None:
-    return _fetch_daemon_payload(config, "cli.query", query_params, disabled=disabled)
-
-
-def _fetch_daemon_payload(
-    config: Config,
-    operation: str,
-    params: Mapping[str, object],
-    *,
-    disabled: bool = False,
-) -> dict[str, object] | None:
-    """Run the identical declared read over UDS or an explicitly pinned local reader."""
-    from polylogue.cli.operation_kernel import OperationEnvelopeError, configured_read_operation
-
-    result = configured_read_operation(
-        config,
-        operation,
-        {"params": dict(params)},
-        daemon_disabled=_daemon_disabled(flag=disabled),
-    )
-    if not isinstance(result.value, dict):
-        raise OperationEnvelopeError(f"{operation} returned a non-object result")
-    payload = dict(result.value)
-    timing = result.envelope.get("timing") if result.envelope is not None else None
-    if isinstance(timing, Mapping):
-        payload["_daemon_elapsed_ms"] = timing.get("elapsed_ms", 0)
-    return payload
 
 
 def _submit_mutation_operation(
@@ -1517,6 +999,13 @@ _DAEMON_LIST_ITEM_KEEP_KEYS = (
     "total_cost_usd",
     "relative_time",
     "flags",
+    # Projection columns the operation materialises only when the query asked
+    # for them: ``with <unit>`` attachments and the recursive-graph edges of a
+    # ``lineage:id:``-seeded page.
+    "attached_units",
+    "parent_refs",
+    "child_refs",
+    "continuation",
 )
 
 
@@ -1550,12 +1039,14 @@ def _emit_daemon_list_payload(
     output_format: str,
     origin: str | None,
     fields: str | None,
+    source: str = "daemon",
 ) -> None:
     items = [
         _normalize_daemon_list_item(item)
         for item in cast(list[object], payload.get("items") or [])
         if isinstance(item, Mapping)
     ]
+    _attach_projected_units(items, payload.get("attached_units"))
     total = _object_int(payload.get("total") or len(items))
     # The daemon may clamp the requested limit.  Continue from the number it
     # actually returned, otherwise a request for 5000 against a 1000 cap can
@@ -1573,13 +1064,35 @@ def _emit_daemon_list_payload(
         "offset": offset,
         "next_offset": next_offset,
         "next_cursor": None,
-        "source": "daemon",
+        "source": source,
     }
     daemon_outcome = payload.get("outcome")
     envelope["outcome"] = (
         dict(daemon_outcome) if isinstance(daemon_outcome, Mapping) else decide_outcome(matched=total).to_dict()
     )
     _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line_renderer(items), fields=fields)
+
+
+def _attach_projected_units(items: list[dict[str, object]], attached: object) -> None:
+    """Fold the page-level ``with <unit>`` projection back onto its rows.
+
+    The operation returns the projection once per page, keyed by unit and then
+    by session, because that is how it was fetched -- one bounded query per
+    unit rather than one per row.  The renderer reads it per row, so the join
+    happens here, and every requested unit names every row (an empty list is a
+    real answer, a missing key would look like "not projected").
+    """
+
+    if not isinstance(attached, Mapping) or not attached:
+        return
+    for item in items:
+        session_id = str(item.get("id") or "")
+        projected = {
+            str(unit): list(rows.get(session_id, ()) if isinstance(rows, Mapping) else ())
+            for unit, rows in attached.items()
+        }
+        if projected:
+            item["attached_units"] = projected
 
 
 def _daemon_preview_refs(payload: Mapping[str, object]) -> tuple[str, ...] | None:
@@ -1607,8 +1120,14 @@ def _emit_daemon_search_payload(
     origin: str | None,
     fields: str | None,
     typo_hint: str | None,
+    env: AppEnv | None = None,
+    compiled_spec: SessionQuerySpec | None = None,
+    why: bool = False,
+    source: str = "daemon",
 ) -> None:
-    _emit_degraded_daemon_search_payload(payload, query=query, output_format=output_format, fields=fields)
+    _emit_degraded_daemon_search_payload(
+        payload, query=query, output_format=output_format, fields=fields, source=source
+    )
     hits = [dict(item) for item in cast(list[object], payload.get("hits") or []) if isinstance(item, Mapping)]
     total = _object_int(payload.get("total") or len(hits))
     effective_limit = _object_int(payload.get("limit") or len(hits) or limit)
@@ -1628,7 +1147,7 @@ def _emit_daemon_search_payload(
         # (``build_search_envelope`` -> ``build_search_cursor``); dropping it
         # here made ranked pages non-continuable by transport.
         "next_cursor": payload.get("next_cursor") if isinstance(payload.get("next_cursor"), str) else None,
-        "source": "daemon",
+        "source": source,
     }
     daemon_outcome = payload.get("outcome")
     envelope["outcome"] = (
@@ -1636,11 +1155,17 @@ def _emit_daemon_search_payload(
     )
     if not hits:
         diagnostics_payload = payload.get("diagnostics")
+        if not isinstance(diagnostics_payload, Mapping) and env is not None and compiled_spec is not None:
+            # A zero-hit page still owes the operator a diagnosis.  No read
+            # operation declares one yet, so the adapter asks the same
+            # clause-drop/relaxation/FTS-disagreement diagnosis the TUI, daemon
+            # and API surfaces use rather than dropping the explanation.
+            diagnostics_payload = _search_miss_diagnostics(env, compiled_spec, why=why)
         _emit_no_results(
             envelope,
             output_format=output_format,
             typo_hint=typo_hint,
-            diagnostics=diagnostics_payload if isinstance(diagnostics_payload, Mapping) else None,
+            diagnostics=cast("QueryMissDiagnosticsPayload | Mapping[str, object] | None", diagnostics_payload),
         )
     _emit_rows(envelope, hits, output_format=output_format, text_line=_hit_line, fields=fields)
 
@@ -1651,6 +1176,7 @@ def _emit_degraded_daemon_search_payload(
     query: str,
     output_format: str,
     fields: str | None,
+    source: str = "daemon",
 ) -> None:
     route_state = payload.get("route_state")
     if not isinstance(route_state, Mapping) or route_state.get("state") != "degraded":
@@ -1662,7 +1188,7 @@ def _emit_degraded_daemon_search_payload(
         "retrieval_lane": str(payload.get("retrieval_lane") or "dialogue"),
         "items": [],
         "total": None,
-        "source": "daemon",
+        "source": source,
         "route_state": dict(route_state),
         "outcome": decide_outcome(matched=0, degraded=(reason,)).to_dict(),
     }
@@ -1691,48 +1217,9 @@ def _decode_cursor(token: str | None) -> SearchCursor | None:
     return cursor
 
 
-def _paginate_rows(
-    rows: Sequence[_PageRow],
-    *,
-    limit: int,
-    offset: int,
-    retrieval_lane: str = "dialogue",
-    request_identity: str | None = None,
-) -> tuple[list[_PageRow], str | None]:
-    page = list(rows[:limit])
-    if len(rows) <= limit or not page:
-        return page, None
-    return page, _build_cursor(
-        page[-1], rank=offset + len(page), retrieval_lane=retrieval_lane, request_identity=request_identity
-    )
-
-
 def _validate_cursor_request_identity(cursor: SearchCursor | None, request_identity: str) -> None:
     if cursor is not None and cursor.query_hash is not None and cursor.query_hash != request_identity:
         raise click.UsageError("invalid --cursor: cursor belongs to a different ranked-search request")
-
-
-def _build_cursor(
-    row: ArchiveSessionSummary | ArchiveSessionSearchHit,
-    *,
-    rank: int,
-    retrieval_lane: str,
-    request_identity: str | None = None,
-) -> str:
-    import base64
-
-    from polylogue.surfaces.payloads import SEARCH_CURSOR_VERSION, SearchCursor
-
-    cursor = SearchCursor(
-        v=SEARCH_CURSOR_VERSION,
-        r=rank,
-        s=None,
-        c=row.session_id,
-        lane=retrieval_lane,
-        query_hash=request_identity,
-    )
-    payload = cursor.model_dump_json(by_alias=True)
-    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
 
 
 def _open_session(env: AppEnv, session_id: str, *, output_format: str, print_url: bool) -> None:
@@ -1754,43 +1241,6 @@ def _stream_message_limit(params: dict[str, object]) -> int | None:
     if isinstance(value, int) and value > 0:
         return value
     return None
-
-
-def _emit_stream(
-    envelope: ArchiveSessionEnvelope,
-    *,
-    output_format: str,
-    message_limit: int | None,
-) -> None:
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
-
-    messages = envelope.messages[:message_limit] if message_limit is not None else envelope.messages
-    payload = _session_payload(
-        ArchiveSessionEnvelope(
-            session_id=envelope.session_id,
-            native_id=envelope.native_id,
-            origin=envelope.origin,
-            title=envelope.title,
-            active_leaf_message_id=envelope.active_leaf_message_id,
-            messages=tuple(messages),
-        )
-    )
-    raw_messages = payload["messages"]
-    if not isinstance(raw_messages, list):
-        raise TypeError("session payload messages must be a list")
-    if output_format in {"json", "json-lines", "ndjson"}:
-        for message in raw_messages:
-            click.echo(json.dumps(message, sort_keys=True))
-        return
-    if output_format not in {"markdown", "plaintext"}:
-        raise click.UsageError(f"Stream does not support --format {output_format}.")
-    lines: list[str] = []
-    for message in messages:
-        lines.append(f"## {message.role}")
-        text = "\n".join(block.text or "" for block in message.blocks if block.text)
-        lines.append(text)
-        lines.append("")
-    click.echo("\n".join(lines).rstrip())
 
 
 def _has_value(value: object) -> bool:
@@ -1903,6 +1353,35 @@ def _compiled_session_spec(request: RootModeRequest, *, params: dict[str, object
     return RootModeRequest(params=spec_params, query_terms=()).query_spec()
 
 
+def _missing_archive_refusal(
+    params: dict[str, object],
+    *,
+    index_db_path: Path,
+    output_format: str,
+    origin: str | None,
+    query: str,
+    fields: str | None,
+    typo_hint: str | None,
+) -> None:
+    """Render, or refuse, a read against an archive that is not there.
+
+    Browse and aggregate modes have a correct empty answer; a search does not,
+    and says so with the path it looked for.
+    """
+    if _emit_missing_archive_empty_read(
+        params,
+        output_format=output_format,
+        origin=origin,
+        query=query,
+        fields=fields,
+    ):
+        return
+    message = f"archive index database not found at {index_db_path}"
+    if typo_hint is not None:
+        message = f"{message}\n{typo_hint}"
+    _fail(message)
+
+
 def _emit_missing_archive_empty_read(
     params: dict[str, object],
     *,
@@ -1936,16 +1415,21 @@ def _emit_missing_archive_empty_read(
         )
         return True
     if params.get("list_mode") and not query:
-        _emit_list(
-            [],
-            total=0,
-            limit=_limit(params),
-            offset=_offset(params),
-            next_cursor=None,
-            output_format=output_format,
-            origin=origin,
-            fields=fields,
-        )
+        # Browse mode over an archive that does not exist yet: "show me
+        # everything, there is nothing" is a valid success, not an error.
+        envelope: dict[str, object] = {
+            "mode": "list",
+            "origin": origin,
+            "items": [],
+            "total": 0,
+            "total_unit": session_count_unit_label(True),
+            "limit": _limit(params),
+            "offset": _offset(params),
+            "next_offset": None,
+            "next_cursor": None,
+            "outcome": decide_outcome(matched=0).to_dict(),
+        }
+        _emit_rows(envelope, [], output_format=output_format, text_line=_summary_line_renderer([]), fields=fields)
         return True
     return False
 
@@ -1955,24 +1439,6 @@ def _emit_count(count: int, *, output_format: str, origin: str | None) -> None:
         click.echo(json.dumps({"mode": "count", "origin": origin, "count": count}, indent=2))
         return
     click.echo(count)
-
-
-def _matched_session_ids_for_stats(
-    archive: ArchiveStore,
-    *,
-    query: str,
-    session_id: str | None,
-    limit: int | None,
-    filter_kwargs: SessionFilterKwargs,
-) -> tuple[str, ...]:
-    if session_id is not None:
-        try:
-            return (archive.resolve_session_id(session_id),)
-        except KeyError:
-            return ()
-    if not query:
-        return ()
-    return archive.search_session_ids(query, limit=limit, **filter_kwargs)
 
 
 def _emit_stats(
@@ -2053,7 +1519,6 @@ def _emit_mutation(changed: int, *, operation: MutationOperation) -> None:
 
 def _emit_user_mutations(
     env: AppEnv,
-    archive: ArchiveStore,
     session_ids: tuple[str, ...],
     *,
     tags_to_add: tuple[str, ...],
@@ -2068,11 +1533,10 @@ def _emit_user_mutations(
     write authority whose preview, authorization and audit records the
     daemon's journal does not have.
 
-    Selection is finished by the time this runs, so the evidence snapshot is
-    released first: it holds ``user.db`` attached inside an open read
-    transaction, which the daemon's writer cannot set up against.
+    Selection is finished by the time this runs, and it came from a declared
+    read that has already released its own reader, so no snapshot of this
+    process holds ``user.db`` attached while the daemon's writer works.
     """
-    archive.end_read_snapshot()
     from polylogue.cli.operation_kernel import OperationKernelError
     from polylogue.surfaces.payloads import MutationResultPayload
 
@@ -2344,105 +1808,6 @@ def _prepared_delete_session_ids(
     return session_ids
 
 
-def _inject_attached_units(
-    items: list[dict[str, object]],
-    session_ids: Sequence[str],
-    *,
-    archive: ArchiveStore | None,
-    with_units: tuple[str, ...],
-    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
-    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
-) -> None:
-    """Attach ``with <units>`` projection rows to each rendered row payload.
-
-    Each item gains an ``attached_units`` key mapping every requested unit to a
-    list of JSON-ready row payloads for that session (empty list when the
-    session has no rows for the unit), keeping the output shape predictable.
-    """
-
-    if not with_units or archive is None or not items:
-        return
-    from polylogue.archive.query.attached_units import fetch_attached_units
-
-    attached = fetch_attached_units(
-        archive, session_ids, with_units, unit_fields=with_unit_fields, unit_windows=with_unit_windows
-    )
-    for item, session_id in zip(items, session_ids, strict=False):
-        item["attached_units"] = {unit: list(by_session.get(session_id, ())) for unit, by_session in attached.items()}
-
-
-def _emit_list(
-    summaries: list[ArchiveSessionSummary],
-    *,
-    total: int | None,
-    limit: int,
-    offset: int,
-    next_cursor: str | None,
-    output_format: str,
-    origin: str | None,
-    fields: str | None,
-    root: bool | None = True,
-    archive: ArchiveStore | None = None,
-    with_units: tuple[str, ...] = (),
-    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
-    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
-    lineage_seed_session_id: str | None = None,
-) -> None:
-    lineage_edges: dict[str, tuple[str | None, tuple[str, ...]]] = {}
-    if lineage_seed_session_id is not None and archive is not None and summaries:
-        # Materialize the declared recursive-graph projection columns
-        # (parent_refs/child_refs/continuation) for a lineage:id:-seeded page:
-        # per-page direct edges plus the page-level cursor, reusing the
-        # already-fetched page instead of a second unbounded graph walk
-        # (#z9gh.3).
-        lineage_edges = archive.session_lineage_edges([summary.session_id for summary in summaries])
-
-    def _parent_refs(session_id: str) -> tuple[str, ...] | None:
-        edge = lineage_edges.get(session_id)
-        if edge is None:
-            return None
-        parent_id = edge[0]
-        return (parent_id,) if parent_id else ()
-
-    def _child_refs(session_id: str) -> tuple[str, ...] | None:
-        edge = lineage_edges.get(session_id)
-        return edge[1] if edge is not None else None
-
-    items = [
-        _summary_payload(
-            summary,
-            parent_refs=_parent_refs(summary.session_id),
-            child_refs=_child_refs(summary.session_id),
-            continuation=(next_cursor if lineage_seed_session_id is not None else None),
-        )
-        for summary in summaries
-    ]
-    _inject_attached_units(
-        items,
-        [summary.session_id for summary in summaries],
-        archive=archive,
-        with_units=with_units,
-        with_unit_fields=with_unit_fields,
-        with_unit_windows=with_unit_windows,
-    )
-    envelope: dict[str, object] = {
-        "mode": "list",
-        "origin": origin,
-        "items": items,
-        "total": total,
-        "total_unit": session_count_unit_label(root),
-        "limit": limit,
-        "offset": offset,
-        "next_offset": offset + limit if next_cursor is not None else None,
-        "next_cursor": next_cursor,
-        "outcome": decide_outcome(matched=total if total is not None else len(items)).to_dict(),
-    }
-    # Browse/list mode emits an empty envelope (exit 0) when the archive has no
-    # matching rows: "show me everything, there is nothing" is a valid success.
-    # Only search mode (a lexical/semantic query that matched nothing) exits 2.
-    _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line_renderer(items), fields=fields)
-
-
 def _search_miss_diagnostics(
     env: AppEnv,
     spec: SessionQuerySpec,
@@ -2451,12 +1816,16 @@ def _search_miss_diagnostics(
 ) -> QueryMissDiagnosticsPayload | None:
     """Best-effort zero-hit diagnosis for the root query search path.
 
-    Bridges into the async facade (this file is otherwise a synchronous
-    ``ArchiveStore``-direct query path) so ``find``/root search shares the
-    same clause-drop/relaxation/FTS-disagreement diagnosis as the
-    TUI/daemon/API surfaces (polylogue-jnj.12) instead of a third
-    reimplementation. Degrades to ``None`` on any failure -- a failed
-    diagnosis must never turn a legitimate zero-hit result into an error.
+    **The one in-process read left in this module.** Every other root-query
+    read is a declared operation dispatched through the kernel; no operation
+    declares a query-miss diagnosis, so this still bridges into the async
+    facade to share the clause-drop/relaxation/FTS-disagreement diagnosis with
+    the TUI/daemon/API surfaces (polylogue-jnj.12) rather than becoming a
+    fourth reimplementation. Declaring it is follow-up work, not a reason to
+    drop the explanation a zero-hit page owes the operator.
+
+    Degrades to ``None`` on any failure -- a failed diagnosis must never turn
+    a legitimate zero-hit result into an error.
     """
     from polylogue.api.sync.bridge import run_coroutine_sync
     from polylogue.surfaces.payloads import QueryMissDiagnosticsPayload
@@ -2536,92 +1905,6 @@ def _emit_list_miss_if_field_syntax(
         typo_hint=typo_hint,
         diagnostics=_search_miss_diagnostics(env, compiled_spec, why=why),
     )
-
-
-def _emit_search(
-    hits: list[ArchiveSessionSearchHit],
-    *,
-    archive: ArchiveStore,
-    query: str,
-    total: int | None,
-    limit: int,
-    offset: int,
-    next_cursor: str | None,
-    retrieval_lane: str,
-    output_format: str,
-    origin: str | None,
-    fields: str | None,
-    root: bool | None = True,
-    typo_hint: str | None = None,
-    with_units: tuple[str, ...] = (),
-    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
-    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
-    diagnostics: QueryMissDiagnosticsPayload | None = None,
-) -> None:
-    items = [
-        _hit_payload(
-            hit,
-            summary=archive.read_summary(hit.session_id),
-            retrieval_lane=retrieval_lane,
-        )
-        for hit in hits
-    ]
-    _inject_attached_units(
-        items,
-        [hit.session_id for hit in hits],
-        archive=archive,
-        with_units=with_units,
-        with_unit_fields=with_unit_fields,
-        with_unit_windows=with_unit_windows,
-    )
-    envelope: dict[str, object] = {
-        "mode": "search",
-        "origin": origin,
-        "query": query,
-        "retrieval_lane": retrieval_lane,
-        "items": items,
-        "total": total,
-        "total_unit": session_count_unit_label(root),
-        "limit": limit,
-        "offset": offset,
-        "next_offset": offset + limit if next_cursor is not None else None,
-        "next_cursor": next_cursor,
-        "outcome": decide_outcome(matched=total if total is not None else len(items)).to_dict(),
-    }
-    if not items:
-        _emit_no_results(envelope, output_format=output_format, typo_hint=typo_hint, diagnostics=diagnostics)
-    _emit_rows(envelope, items, output_format=output_format, text_line=_hit_line, fields=fields)
-
-
-def _emit_session(
-    envelope: ArchiveSessionEnvelope,
-    *,
-    output_format: str,
-    fields: str | None,
-    view: str = "transcript",
-) -> None:
-    payload = _session_payload(envelope)
-    if output_format == "json":
-        click.echo(json.dumps(_project_payload(payload, fields), indent=2, sort_keys=True))
-        return
-    if output_format == "yaml":
-        import yaml
-
-        click.echo(yaml.safe_dump(_project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
-        return
-    if output_format == "ndjson":
-        messages = payload["messages"]
-        if not isinstance(messages, list):
-            raise TypeError("session payload messages must be a list")
-        for message in messages:
-            click.echo(json.dumps(message, sort_keys=True))
-        return
-    if output_format not in {"markdown", "plaintext"}:
-        raise click.UsageError(f"Full-session reads do not support --format {output_format}.")
-    if view == "summary":
-        click.echo(_session_summary_text(envelope))
-        return
-    click.echo(_session_text(envelope))
 
 
 def _diagnostics_dict(
@@ -2767,51 +2050,11 @@ def _emit_rows(
             env.finish_timing("render")
 
 
-def _emit_unit_source_rows(
-    archive: ArchiveStore,
-    *,
-    source: QueryUnitSource,
-    query: str,
-    limit: int,
-    offset: int,
-    session_filters: Mapping[str, object] | None = None,
-    output_format: str,
-    fields: str | None,
-) -> None:
-    from polylogue.archive.query.unit_results import query_unit_rows
-
-    envelope_model = query_unit_rows(
-        archive,
-        source,
-        query=query,
-        limit=limit,
-        offset=offset,
-        session_filters=session_filters,
-    )
-    envelope = envelope_model.model_dump(mode="json")
-    items = [item.model_dump(mode="json") for item in envelope_model.items]
-    text_line = (
-        _aggregate_query_line if envelope_model.mode == "query-unit-aggregate" else _query_unit_text_line(source.unit)
-    )
-
-    if not items:
-        _emit_unit_no_results(envelope, unit=source.unit, output_format=output_format)
-    _emit_rows(envelope, items, output_format=output_format, text_line=text_line, fields=fields)
-
-
 def _unit_source_display_name(source: QueryUnitSource) -> str:
     descriptor = query_unit_descriptor(source.unit)
     if descriptor is None:
         return source.unit
     return descriptor.plural_source
-
-
-def _unit_source_session_filters(filter_kwargs: SessionFilterKwargs) -> dict[str, object]:
-    from polylogue.archive.query.unit_results import query_unit_session_filters
-
-    filters = dict(filter_kwargs)
-    filters.pop("since_session_id", None)
-    return query_unit_session_filters(**filters)
 
 
 def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_format: str) -> NoReturn:
@@ -2932,204 +2175,6 @@ def _csv(items: list[dict[str, object]]) -> str:
     writer.writeheader()
     writer.writerows(items)
     return buf.getvalue()
-
-
-def _summary_payload(
-    summary: ArchiveSessionSummary,
-    *,
-    parent_refs: tuple[str, ...] | None = None,
-    child_refs: tuple[str, ...] | None = None,
-    continuation: str | None = None,
-) -> dict[str, object]:
-    from polylogue.surfaces.payloads import (
-        SessionListRowPayload,
-        TargetRefPayload,
-        model_json_document,
-        reader_anchor,
-    )
-    from polylogue.surfaces.query_rows import session_row
-
-    row = session_row(summary)
-
-    return cast(
-        "dict[str, object]",
-        model_json_document(
-            SessionListRowPayload(
-                id=summary.session_id,
-                origin=summary.origin,
-                title=row.title,
-                target_ref=TargetRefPayload.session(summary.session_id),
-                anchor=reader_anchor("session", summary.session_id),
-                created_at=summary.created_at,
-                updated_at=summary.updated_at,
-                message_count=summary.message_count,
-                tags=summary.tags,
-                words=summary.word_count,
-                repo=summary.git_repository_url,
-                cwd_display=summary.working_directories[0] if summary.working_directories else None,
-                terminal_state=row.outcome,
-                total_cost_usd=row.cost_usd,
-                relative_time=row.relative_time,
-                parent_refs=parent_refs,
-                child_refs=child_refs,
-                continuation=continuation,
-            ),
-            exclude_none=True,
-        ),
-    )
-
-
-def _hit_payload(
-    hit: ArchiveSessionSearchHit,
-    *,
-    summary: ArchiveSessionSummary,
-    retrieval_lane: str,
-) -> dict[str, object]:
-    from polylogue.archive.query.search_hits import bound_search_snippet
-    from polylogue.surfaces.payloads import (
-        SessionSearchHitPayload,
-        SessionSearchMatchPayload,
-        SessionSummaryPayload,
-        TargetRefPayload,
-        model_json_document,
-        reader_anchor,
-        reader_message_actions,
-    )
-    from polylogue.surfaces.query_rows import session_row
-
-    row = session_row(summary)
-    snippet = bound_search_snippet(hit.snippet)
-
-    return cast(
-        "dict[str, object]",
-        model_json_document(
-            SessionSearchHitPayload(
-                session=SessionSummaryPayload(
-                    id=summary.session_id,
-                    origin=summary.origin,
-                    title=row.title,
-                    message_count=summary.message_count,
-                    terminal_state=row.outcome,
-                    total_cost_usd=row.cost_usd,
-                    relative_time=row.relative_time,
-                    target_ref=TargetRefPayload.session(summary.session_id),
-                    anchor=reader_anchor("session", summary.session_id),
-                ),
-                match=SessionSearchMatchPayload(
-                    rank=hit.rank,
-                    retrieval_lane=retrieval_lane,
-                    match_surface="message",
-                    target_ref=TargetRefPayload.message(session_id=hit.session_id, message_id=hit.message_id),
-                    anchor=reader_anchor("message", hit.message_id),
-                    actions=reader_message_actions(),
-                    message_id=hit.message_id,
-                    snippet=snippet,
-                    score=None,
-                    score_kind=None,
-                ),
-            ),
-            exclude_none=True,
-        ),
-    )
-
-
-def _session_payload(envelope: ArchiveSessionEnvelope) -> dict[str, object]:
-    from polylogue.archive.hydration import archive_message_to_domain
-    from polylogue.surfaces.payloads import message_topology_from_domain
-
-    return {
-        "mode": "session",
-        "session_id": envelope.session_id,
-        "native_id": envelope.native_id,
-        "origin": envelope.origin,
-        "source": envelope.origin,
-        "title": envelope.title,
-        "active_leaf_message_id": envelope.active_leaf_message_id,
-        "messages": [
-            {
-                "message_id": message.message_id,
-                "native_id": message.native_id,
-                "role": message.role,
-                **message_topology_from_domain(archive_message_to_domain(message)),
-                "blocks": [
-                    {
-                        "block_id": block.block_id,
-                        "message_id": block.message_id,
-                        "block_type": block.block_type,
-                        "text": block.text,
-                        "tool_name": block.tool_name,
-                        "tool_id": block.tool_id,
-                        "semantic_type": block.semantic_type,
-                    }
-                    for block in message.blocks
-                ],
-            }
-            for message in envelope.messages
-        ],
-    }
-
-
-def _session_text(envelope: ArchiveSessionEnvelope) -> str:
-    lines = [f"# {envelope.title or envelope.session_id}", "", f"`{envelope.session_id}`", ""]
-    for message in envelope.messages:
-        lines.append(f"## {message.role}")
-        text = "\n".join(block.text or "" for block in message.blocks if block.text)
-        lines.append(text)
-        lines.append("")
-    return "\n".join(lines).rstrip()
-
-
-def _session_summary_text(envelope: ArchiveSessionEnvelope) -> str:
-    """Condensed session synopsis: counts, roles, tool usage, first/last excerpts.
-
-    Deliberately distinct from ``_session_text`` (the full transcript) --
-    ``read --view summary`` previously routed to the same renderer as
-    ``read --view transcript`` and produced byte-identical output for any
-    session (polylogue-zumd class: a surface claiming to do X silently did
-    the whole-transcript Y instead).
-    """
-    messages = envelope.messages
-    role_counts: dict[str, int] = {}
-    tool_use_message_count = 0
-    total_words = 0
-    for message in messages:
-        role_counts[message.role] = role_counts.get(message.role, 0) + 1
-        total_words += message.word_count
-        if message.has_tool_use:
-            tool_use_message_count += 1
-
-    lines = [
-        f"# {envelope.title or envelope.session_id}",
-        "",
-        f"`{envelope.session_id}`  ({envelope.origin})",
-        "",
-        f"- messages: {len(messages)}",
-    ]
-    for role in sorted(role_counts):
-        lines.append(f"  - {role}: {role_counts[role]}")
-    lines.append(f"- words (sum of per-message word_count): {total_words}")
-    lines.append(f"- messages with tool use: {tool_use_message_count}")
-    if envelope.created_at or envelope.updated_at:
-        lines.append(f"- created: {envelope.created_at or 'unknown'}  updated: {envelope.updated_at or 'unknown'}")
-
-    def _first_authored_text(candidates: Iterable[ArchiveMessageRow]) -> str:
-        from polylogue.storage.sqlite.archive_tiers.write import archive_message_display_text
-
-        for message in candidates:
-            if message.role not in ("user", "assistant"):
-                continue
-            text = archive_message_display_text(message.blocks)
-            if text.strip():
-                return text
-        return ""
-
-    first_text = _first_authored_text(messages)
-    last_text = _first_authored_text(reversed(messages))
-    if first_text:
-        lines += ["", "## First turn", "", bound_display_text(first_text, max_chars=500)]
-    if last_text and last_text != first_text:
-        lines += ["", "## Last turn", "", bound_display_text(last_text, max_chars=500)]
-    return "\n".join(lines).rstrip()
 
 
 def _summary_line_renderer(items: list[dict[str, object]]) -> Callable[[dict[str, object]], str]:

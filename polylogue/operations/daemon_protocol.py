@@ -254,10 +254,16 @@ class QueryResult(_OperationResult):
             )
         ):
             raise ValueError("attached units must map each unit to per-session row lists")
+        # ``total_unit`` is a sibling of both envelopes for the same reason as
+        # the projection above: it names what the total counted (top-level
+        # sessions, or subagent/branch children under ``--no-root``), and the
+        # envelopes forbid extras.  A ranked page owes that label exactly as a
+        # list page does — without it a reader has only a default to fall back
+        # on, which mislabels every non-default root filter.
+        unit = payload.pop("total_unit", None)
+        if not isinstance(unit, str) or not unit:
+            raise ValueError("session query result requires its total unit")
         if "items" in payload:
-            unit = payload.pop("total_unit", None)
-            if not isinstance(unit, str) or not unit:
-                raise ValueError("session list result requires its total unit")
             SessionListResponse.model_validate_json(json.dumps(payload), strict=True)
         else:
             SearchEnvelope.model_validate_json(json.dumps(payload), strict=True)

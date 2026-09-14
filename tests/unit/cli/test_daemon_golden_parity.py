@@ -8,12 +8,12 @@ through :class:`click.testing.CliRunner` twice — once with no daemon socket
 present (direct path) and once with the daemon reachable (proxied path) — so
 this is an end-to-end regression test, not a mock of the daemon transport.
 
-The two envelopes are compared field-for-field rather than as raw text: the
-daemon envelope carries an explicit ``"source": "daemon"`` provenance marker
-that the direct envelope does not (`archive_query.py::_emit_daemon_list_payload`
-vs `_emit_list`) — that is the one intentional, documented difference. Every
-other field (`items`, `total`, `limit`, `offset`, `origin`, `next_offset`,
-`next_cursor`) must match exactly.
+Both routes now render one declared ``cli.query`` result through one renderer,
+so every field of the two envelopes must match except ``source`` — the route's
+own provenance marker, which names the executor the result's authority reports
+(``daemon`` over UDS, ``direct`` in-process). That marker is asserted
+explicitly on each leg rather than merely stripped, so a route that silently
+answers as the other one fails here.
 """
 
 from __future__ import annotations
@@ -84,10 +84,9 @@ def _run_find_json(args: list[str], *, no_daemon: bool = False) -> dict[str, obj
     # `--no-daemon` and `--repo` are root options (`click_app.py::cli`), not
     # `find` verb options — they must precede `find` in argv. Passing `--repo`
     # here as the root option (rather than a `repo:polylogue` DSL query token,
-    # which routes through a different, older rendering path with a distinct
-    # envelope shape — see the module docstring follow-up note) is what
-    # actually exercises `_try_emit_daemon_session_page` /
-    # `_daemon_session_page_supported`, the code this test targets.
+    # which routes through a different rendering path with a distinct envelope
+    # shape) is what exercises the plain `cli.query` list page this test
+    # targets.
     root_flags = ["--plain", *args, *(["--no-daemon"] if no_daemon else [])]
     result = runner.invoke(cli, [*root_flags, "find", "--format", "json", "--limit", "10"])
     assert result.exit_code == 0, result.output
@@ -108,9 +107,12 @@ def test_find_list_json_parity_between_direct_and_daemon(
     with running_daemon_operations(archive_root, seed_archive=_seed_golden_archive) as stack:
         _pin_cli_daemon_socket(monkeypatch, stack)
         direct_payload = _run_find_json(args, no_daemon=True)
-        assert "source" not in direct_payload
         daemon_payload = _run_find_json(args)
 
+    # Each leg must name the executor that actually answered, and everything
+    # else must agree.  Anti-vacuity is the ``items`` assertion below -- two
+    # empty pages would agree trivially.
+    assert direct_payload["source"] == "direct"
     assert daemon_payload["source"] == "daemon"
     assert _strip_provenance(daemon_payload) == _strip_provenance(direct_payload)
     assert direct_payload["items"], "fixture query must actually match rows, or parity is vacuous"

@@ -1,50 +1,34 @@
-"""Per-flag differential: the CLI's local branch vs the ``cli.query`` operation.
+"""Per-flag selection laws for the root query's one declared read.
 
-``archive_query._daemon_session_page_supported`` used to refuse the declared
-``cli.query`` read for thirteen groups of inputs, forking execution into a
-second local ``ArchiveStore`` implementation of the same query.  Most of those
-refusals were stale, and every one of them hid the possibility of a
-behavioural difference between the two routes.
+``archive_query`` once carried a second, local ``ArchiveStore`` implementation
+of the root query behind ``_daemon_session_page_supported``, and this module
+was a differential between the two routes.  That gate and that executor are
+gone: every root page is now lowered onto ``cli.query`` (Seam A,
+``polylogue/cli/lowering.py``) and dispatched by
+``polylogue/cli/operation_kernel.py``.  ``--no-daemon`` selects the transport,
+not the implementation -- the same declared handler answers either way -- so
+a route differential can no longer say anything.
 
-Each case below runs one flag twice against one seeded archive:
+What survives is the part that was never about routes: each flag must select,
+order or bound a specific set of sessions out of one seeded archive.  Those
+were the assertions the differential was protecting, and the forwarding bugs it
+caught (``--has-tool-use``/``--has-thinking`` renamed to keys
+``SessionQuerySpec.from_params`` does not read, so the filter was dropped
+silently) are exactly what ``expected_ids`` catches directly.
 
-* ``--no-daemon`` — ``_try_emit_daemon_session_page`` declines and
-  ``_execute_archive_query_stdout`` executes locally against ``ArchiveStore``.
-* no flag — the request is lowered onto ``cli.query`` and executed through
-  ``operation_kernel.configured_read_operation``.  No daemon socket exists in
-  this workspace, so the kernel's declared ``DIRECT_READ`` fallback runs the
-  identical ``operations/daemon_reads`` handler in-process.  That is the
-  "direct mode" leg: same handler, no transport.
-
-The comparison is the whole ``--format json`` envelope, minus the one
-documented difference — ``source: "daemon"``, the route's own provenance
-marker.  A flag the operation silently ignores shows up as different
-``items``/``total``; a flag whose two implementations disagree on row shape
-shows up as a different row.
-
-Anti-vacuity.  Two guards, both required:
-
-* ``test_flag_reaches_the_operation_route`` asserts the operation actually
-  answered (``source == "daemon"``).  Without it, a case the gate still
-  refuses would compare the local branch with itself and prove nothing.
-* ``test_every_case_changes_the_answer`` asserts each flag selects, orders or
-  bounds something different from the unflagged page.  Without it, a
-  forwarding bug that widened every filter back to "the whole archive" would
-  still make both routes agree.
-
-The named mutation for the whole module: revert
-``archive_query._cli_query_operation_params`` to the hand-listed rename table
-and the ``has-tool-use``/``has-thinking`` cases go red (those keys were
-renamed to names ``SessionQuerySpec.from_params`` does not read, so the filter
-was dropped); revert the gate deletion and every case fails its
-``source == "daemon"`` assertion instead.
+Anti-vacuity for the module: drop a key from
+``lowering._selection_params`` -- or rename it on the way onto the payload --
+and that flag's case goes red with the unflagged answer.
+``test_every_case_changes_the_answer`` is the guard that makes that true: it
+proves each flag's expectation differs from the whole-archive page, so a
+forwarding bug that widened every filter cannot pass by agreeing with itself.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -62,7 +46,7 @@ PARENT_A = "claude-code-session:ext-parent-a"
 
 @pytest.fixture
 def query_route_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
-    """A seeded archive both CLI routes read, with daemon discovery neutral."""
+    """A seeded archive for the root query, with daemon discovery neutral."""
 
     monkeypatch.delenv("POLYLOGUE_NO_DAEMON", raising=False)
     monkeypatch.delenv("POLYLOGUE_DAEMON", raising=False)
@@ -129,9 +113,9 @@ def _seed(db_path: Path) -> None:
 
 @dataclass(frozen=True)
 class FlagCase:
-    """One retired gate rejection, with the argv that exercises it."""
+    """One root-query flag, with the argv that exercises it."""
 
-    #: Test id, which names the rejection group the case retires.
+    #: Test id, which names the flag group under test.
     name: str
     #: Root options placed before the ``find`` marker.
     root_args: tuple[str, ...] = ()
@@ -139,10 +123,8 @@ class FlagCase:
     find_args: tuple[str, ...] = ()
     #: What must break this case.
     breaks_if: str = ""
-    #: Session ids the case must select, in envelope order, when it names a set.
+    #: Session ids the case must select, in envelope order.
     expected_ids: tuple[str, ...] | None = None
-    #: Envelope keys dropped before comparing, beyond ``source``.
-    ignore_keys: frozenset[str] = field(default_factory=frozenset)
 
 
 FLAG_CASES: tuple[FlagCase, ...] = (
@@ -174,11 +156,6 @@ FLAG_CASES: tuple[FlagCase, ...] = (
         name="latest",
         root_args=("--latest",),
         expected_ids=(LONE_C,),
-        # The local branch forces ``limit = 1`` and then fetches ``limit + 1``
-        # rows for its pagination probe, so it mints a continuation cursor for a
-        # query that means "exactly one". The operation's ``None`` is the honest
-        # answer; the difference is the local probe, not the selection.
-        ignore_keys=frozenset({"next_cursor", "next_offset"}),
         breaks_if="the operation ignores spec.latest and returns a full page",
     ),
     FlagCase(
@@ -196,55 +173,28 @@ FLAG_CASES: tuple[FlagCase, ...] = (
 )
 
 
-#: Inputs that must keep declining the operation, because ``cli.query``
-#: declares no equivalent.  The parity assertion still runs: it compares the
-#: local branch with itself, which is worth nothing on its own, so the
-#: load-bearing claim here is the absence of ``source``.
-STILL_LOCAL_CASES: tuple[FlagCase, ...] = (
-    FlagCase(
-        name="sample-stays-local",
-        root_args=("--sample", "2"),
-        ignore_keys=frozenset({"items"}),
-        breaks_if="`sample` routes to `cli.query`, whose list path drops it and answers an ordered page",
-    ),
-    FlagCase(
-        name="exact-ref-stays-local",
-        root_args=("--id", PARENT_B),
-        breaks_if="an exact-ref read routes to `cli.query`, which has no session-document result",
-    ),
-    FlagCase(
-        name="semantic-stays-local",
-        root_args=("--similar", "retry budget"),
-        breaks_if="vector retrieval routes to `cli.query`, whose unavailable-backend refusal is a "
-        "typed EmbeddingRetrievalNotReadyError rather than the CLI's UsageError",
-    ),
-)
+def _run(args: Sequence[str]) -> tuple[int, dict[str, object]]:
+    """Run one root query end to end against the seeded archive.
 
-
-def _run(args: Sequence[str], *, no_daemon: bool) -> tuple[int, dict[str, object]]:
+    ``--no-daemon`` pins the transport: no daemon socket exists in this
+    workspace, and the declared ``DIRECT_READ`` fallback would run the same
+    handler in-process anyway, but naming it keeps the test from depending on
+    an ambient daemon on the host.
+    """
     from polylogue.cli import cli
 
-    root: list[str] = ["--plain"]
-    if no_daemon:
-        root.append("--no-daemon")
-    result = CliRunner().invoke(cli, [*root, *args], catch_exceptions=True)
+    result = CliRunner().invoke(cli, ["--plain", "--no-daemon", *args], catch_exceptions=True)
     if result.exception is not None and not isinstance(result.exception, SystemExit):
         raise result.exception
     try:
         return result.exit_code, json.loads(result.output) if result.output.strip() else {}
     except json.JSONDecodeError:
-        # A refusal that never reaches the renderer (Click's own UsageError
-        # line).  Comparing it verbatim is the point for the cases that must
-        # keep refusing the same way on both routes.
+        # A refusal that never reaches the renderer (Click's own UsageError line).
         return result.exit_code, {"_refusal": result.output}
 
 
 def _argv(case: FlagCase) -> list[str]:
     return [*case.root_args, "find", *case.find_args, "--format", "json", "--limit", "10"]
-
-
-def _comparable(envelope: dict[str, object], case: FlagCase) -> dict[str, object]:
-    return {key: value for key, value in envelope.items() if key != "source" and key not in case.ignore_keys}
 
 
 def _ids(envelope: dict[str, object]) -> tuple[str, ...]:
@@ -265,77 +215,56 @@ def _ids(envelope: dict[str, object]) -> tuple[str, ...]:
 
 
 @pytest.mark.parametrize("case", FLAG_CASES, ids=lambda case: case.name)
-def test_flag_reaches_the_operation_route(query_route_workspace: dict[str, Path], case: FlagCase) -> None:
-    """The gate must let this flag through, or the parity case is self-comparison."""
-    _, payload = _run(_argv(case), no_daemon=False)
-    assert payload.get("source") == "daemon", (
-        f"{case.name} is still refused by _daemon_session_page_supported: the parity case for it "
-        "would compare the local branch with itself"
-    )
-
-
-@pytest.mark.parametrize("case", (*FLAG_CASES, *STILL_LOCAL_CASES), ids=lambda case: case.name)
-def test_local_branch_and_cli_query_operation_answer_identically(
-    query_route_workspace: dict[str, Path],
-    case: FlagCase,
-) -> None:
-    """One flag, two routes, one envelope."""
-    argv = _argv(case)
-    local_code, local_payload = _run(argv, no_daemon=True)
-    operation_code, operation_payload = _run(argv, no_daemon=False)
-
-    if case in STILL_LOCAL_CASES:
-        # ``--id`` answers with a session document whose own ``source`` field is
-        # acquisition provenance, not route provenance, so the route marker is
-        # read as "not the daemon envelope's marker" instead.
-        assert operation_payload.get("mode") == local_payload.get("mode")
-        assert operation_payload.get("source") != "daemon", (
-            f"{case.name} names a capability `cli.query` does not declare; it must keep declining the operation"
-        )
-    else:
-        assert "source" not in local_payload, "the local branch must not claim daemon provenance"
-    assert operation_code == local_code
-    assert _comparable(operation_payload, case) == _comparable(local_payload, case), case.breaks_if
+def test_flag_selects_exactly_its_sessions(query_route_workspace: dict[str, Path], case: FlagCase) -> None:
+    """One flag, one declared read, one selected set in envelope order."""
+    exit_code, payload = _run(_argv(case))
+    assert exit_code == 0, payload
+    assert case.expected_ids is not None
+    assert _ids(payload) == case.expected_ids, case.breaks_if
 
 
 @pytest.mark.parametrize("case", FLAG_CASES, ids=lambda case: case.name)
 def test_every_case_changes_the_answer(query_route_workspace: dict[str, Path], case: FlagCase) -> None:
     """The flag under test must select, order or bound something different."""
-    _, unflagged = _run(["find", "--format", "json", "--limit", "10"], no_daemon=True)
+    _, unflagged = _run(["find", "--format", "json", "--limit", "10"])
     assert set(_ids(unflagged)) == {PARENT_A, CHILD_A, PARENT_B, LONE_C}
 
-    _, flagged = _run(_argv(case), no_daemon=True)
-    if case.expected_ids is not None:
-        assert _ids(flagged) == case.expected_ids
-        return
-    assert _ids(flagged) != _ids(unflagged), f"{case.name} produced the unflagged answer; it exercises nothing"
+    _, flagged = _run(_argv(case))
+    assert case.expected_ids is not None
+    assert _ids(flagged) == case.expected_ids
+    if case.name not in {"sort", "reverse"}:
+        assert set(_ids(flagged)) != set(_ids(unflagged)), (
+            f"{case.name} produced the unflagged selection; it exercises nothing"
+        )
+    else:
+        assert _ids(flagged) != _ids(unflagged), f"{case.name} produced the unflagged order; it exercises nothing"
 
 
-def test_exclude_text_is_withheld_from_the_operation_because_the_routes_disagree(
+def test_exclude_text_is_withheld_from_the_operation_because_no_answer_is_chosen(
     query_route_workspace: dict[str, Path],
 ) -> None:
-    """``--exclude-text`` is the one recognised parameter still not forwarded.
+    """``--exclude-text`` is the one recognised parameter deliberately not forwarded.
 
     Three answers exist for one flag and none has been chosen: ``cli.query``
     applies the content post-filter to a list page
-    (``_archive_list_summaries_with_post_filters``); on a ranked page it
-    applies it to the count and not to the hits, reporting a total smaller
-    than the page it returned; and the CLI's local branch ignores it
-    everywhere.  Forwarding it would silently change ``find --exclude-text``
-    results, so ``_cli_query_operation_params`` withholds it and both routes
-    keep answering the same -- today's -- way (polylogue-v1mnm).
+    (``_archive_list_summaries_with_post_filters``); on a ranked page it applies
+    it to the count and not to the hits, reporting a total smaller than the page
+    it returned; and the CLI's retired local branch ignored it everywhere.
+    Forwarding it would silently change ``find --exclude-text`` results, so
+    ``lowering._SELECTION_EXCLUDED`` withholds it and the flag stays inert
+    (polylogue-v1mnm).
 
-    Anti-vacuity: drop the ``key != "exclude_text"`` guard from
-    ``_cli_query_operation_params`` and this test goes red, because the two
-    routes then return different rows and a different total.
+    Anti-vacuity: remove ``exclude_text`` from ``lowering._SELECTION_EXCLUDED``
+    and this goes red -- ``harder`` appears in one seeded session, so the page
+    and the total both shrink.
     """
-    argv = ["--exclude-text", "harder", "find", "--format", "json", "--limit", "10"]
-    _, local_payload = _run(argv, no_daemon=True)
-    _, operation_payload = _run(argv, no_daemon=False)
+    plain = ["find", "--format", "json", "--limit", "10"]
+    excluded = ["--exclude-text", "harder", *plain]
+    _, baseline = _run(plain)
+    _, filtered = _run(excluded)
 
-    assert operation_payload["source"] == "daemon"
-    assert _ids(operation_payload) == _ids(local_payload)
-    assert operation_payload["total"] == local_payload["total"]
+    assert _ids(filtered) == _ids(baseline)
+    assert filtered["total"] == baseline["total"]
 
 
 def test_exclude_text_post_filter_hydrates_in_bounded_chunks(monkeypatch: pytest.MonkeyPatch) -> None:

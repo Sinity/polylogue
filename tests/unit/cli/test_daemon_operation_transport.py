@@ -1,14 +1,17 @@
-"""CLI daemon reads travel as an operation and its parameters, not as a URL.
+"""CLI reads travel as a declared operation and its parameters, not as a URL.
 
-Both daemon-backed read routes -- the session page and the query-unit page --
-lower to a declared operation on the UDS protocol. The parameters ride on the
-operation envelope, so there is no query string to build and none to parse back:
-the daemon coerces each value to the ``list[str]`` its handler reads.
+Both root-query read routes -- the session page and the query-unit page --
+lower to a declared operation (Seam A, :mod:`polylogue.cli.lowering`) and are
+dispatched by :func:`polylogue.cli.operation_kernel.dispatch`.  The parameters
+ride on the operation envelope, so there is no query string to build and none
+to parse back.
 
 Anti-vacuity: :func:`test_unit_route_sends_parameters_as_values` asserts the
-parameter mapping the kernel receives. Reintroducing a query-string hop makes
-``params`` a URL fragment or a re-parsed ``dict[str, list[str]]`` rather than
-the values the caller passed, and the assertion fails.
+parameter mapping the daemon client receives.  Reintroducing a query-string hop
+makes ``params`` a URL fragment or a re-parsed ``dict[str, list[str]]`` rather
+than the values the caller passed, and the assertion fails.
+:func:`test_a_disabled_daemon_never_opens_a_client` goes red if ``dispatch``
+constructs its transport before deciding that the daemon is disabled.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.cli import archive_query
+from polylogue.cli.operation_kernel import OperationRequest, dispatch
 
 
 @pytest.fixture
@@ -31,41 +34,40 @@ def _config(tmp_path: Any) -> Any:
     return config
 
 
-def _captured_operation(monkeypatch: pytest.MonkeyPatch, config: Any, call: Any) -> tuple[str, dict[str, object]]:
-    """Run ``call`` and return the (operation, payload) the daemon client saw."""
+def _captured_operation(
+    monkeypatch: pytest.MonkeyPatch, config: Any, request: OperationRequest
+) -> tuple[str, dict[str, object]]:
+    """Dispatch ``request`` and return the (operation, payload) the client saw."""
     seen: dict[str, Any] = {}
 
     class _Client:
-        last_elapsed_ms = None
-
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def operation_with_read_fallback(
-            self, operation: str, payload: dict[str, object], **_kwargs: object
-        ) -> dict[str, object]:
+        def operation(self, operation: str, payload: dict[str, object], **_kwargs: object) -> dict[str, object]:
             seen["operation"] = operation
             seen["payload"] = payload
             return {"operation": operation, "outcome": "completed", "result": {"items": [], "total": 0}}
 
     monkeypatch.setattr("polylogue.daemon_client.DaemonClient", _Client)
-    monkeypatch.setattr(archive_query, "_daemon_disabled", lambda **_kwargs: False)
-    call(config)
+    dispatch(config, request)
     return seen["operation"], seen["payload"]
 
 
 def test_session_route_lowers_to_the_cli_query_operation(monkeypatch: pytest.MonkeyPatch, _config: Any) -> None:
-    """The session page names its operation; the params are the ones passed."""
-    operation, payload = _captured_operation(
-        monkeypatch,
-        _config,
-        lambda config: archive_query._fetch_daemon_sessions_payload(
-            config, {"limit": 50, "offset": 0, "repo": "polylogue"}
-        ),
+    """The session page names its operation; the params are the ones lowered."""
+    from polylogue.cli.lowering import lower_cli_query
+    from polylogue.cli.root_request import RootModeRequest
+
+    request = lower_cli_query(
+        RootModeRequest(params={"repo": "polylogue"}, query_terms=()),
+        limit=50,
+        offset=0,
     )
+    operation, payload = _captured_operation(monkeypatch, _config, request)
 
     assert operation == "cli.query"
-    assert payload["params"] == {"limit": 50, "offset": 0, "repo": "polylogue"}
+    assert payload["params"] == {"repo": "polylogue", "query": [], "limit": 50, "offset": 0}
 
 
 def test_unit_route_sends_parameters_as_values(monkeypatch: pytest.MonkeyPatch, _config: Any) -> None:
@@ -76,11 +78,7 @@ def test_unit_route_sends_parameters_as_values(monkeypatch: pytest.MonkeyPatch, 
         "offset": 0,
         "origin": ("codex-session", "claude-code-session"),
     }
-    operation, payload = _captured_operation(
-        monkeypatch,
-        _config,
-        lambda config: archive_query._fetch_daemon_payload(config, "query.units", params),
-    )
+    operation, payload = _captured_operation(monkeypatch, _config, OperationRequest("query.units", {"params": params}))
 
     assert operation == "query.units"
     assert payload["params"] == params
@@ -97,7 +95,7 @@ def test_a_disabled_daemon_never_opens_a_client(monkeypatch: pytest.MonkeyPatch,
 
     monkeypatch.setattr("polylogue.daemon_client.DaemonClient", _explode)
 
-    result = archive_query._fetch_daemon_payload(_config, "cli.query", {}, disabled=True)
-    assert result is not None
-    assert result["items"] == []
-    assert result["total"] == 0
+    result = dispatch(_config, OperationRequest("cli.query", {"params": {}}), daemon_disabled=True)
+    assert isinstance(result.value, dict)
+    assert result.value["items"] == []
+    assert result.value["total"] == 0

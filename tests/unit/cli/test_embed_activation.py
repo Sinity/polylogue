@@ -877,6 +877,24 @@ def _seed_embeddings_meta(archive_root: Path, *, needs_reindex: int) -> None:
         conn.close()
 
 
+def _bound_vector_provider(provider: object) -> Any:
+    """Bind ``provider`` where the declared read handler looks for one.
+
+    The CLI's local search executor (and its ``create_vector_provider`` patch
+    seam) is gone: ``operations/daemon_reads._search_payload`` reads
+    ``DaemonReadDependencies.vector_provider``, which the operation context
+    resolves from the pinned embeddings snapshot.  Binding it here is the
+    equivalent of "a vector backend is available and constructible".
+
+    Anti-vacuity for each caller below: make the auto lane elevate to hybrid
+    (or pass the provider into ``spec.to_plan`` on the dialogue lane) and
+    ``provider.query`` is called, which every assertion here forbids.
+    """
+    from polylogue.operations.daemon_reads import DaemonReadDependencies
+
+    return patch.object(DaemonReadDependencies, "vector_provider", property(lambda _self: provider))
+
+
 def _run_native_search(archive_root: Path, state_dir: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
@@ -913,7 +931,7 @@ class TestHybridAutoElevation:
 
         fake_provider = MagicMock()
         fake_provider.query = MagicMock(return_value=[])
-        with patch("polylogue.cli.archive_query.create_vector_provider", return_value=fake_provider):
+        with _bound_vector_provider(fake_provider):
             payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
 
         assert payload["retrieval_lane"] == "dialogue"
@@ -929,7 +947,7 @@ class TestHybridAutoElevation:
 
         fake_provider = MagicMock()
         fake_provider.query = MagicMock(return_value=[])
-        with patch("polylogue.cli.archive_query.create_vector_provider", return_value=fake_provider):
+        with _bound_vector_provider(fake_provider):
             payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
 
         assert payload["retrieval_lane"] == "dialogue"
@@ -948,7 +966,7 @@ class TestHybridAutoElevation:
 
         fake_provider = MagicMock()
         fake_provider.query = MagicMock(return_value=[])
-        with patch("polylogue.cli.archive_query.create_vector_provider", return_value=fake_provider):
+        with _bound_vector_provider(fake_provider):
             result = CliRunner().invoke(cli, ["--plain", "--lexical", "find", "Python", "-f", "json"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
