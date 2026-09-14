@@ -23,6 +23,7 @@ from typing import Any, cast
 
 import pytest
 
+import polylogue.analysis.session_commit as session_commit_module
 from polylogue.analysis.session_commit import (
     SOURCE_HEURISTIC,
     SOURCE_TYPED,
@@ -693,3 +694,70 @@ class TestBridgeSessionIdsFromEvents:
             payload = {"pr_number": 1}
 
         assert bridge_session_ids_from_events([_FakeEvent()]) == []
+
+
+def test_commit_bodies_are_not_read_without_own_trailer_tokens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the full-body log pass when nothing can consume it.
+
+    ``commit_bodies`` feeds only ``trailer_tokens``, read by the
+    ``trailer_tokens & own_trailer_tokens`` short-circuit and by
+    ``foreign_trailer`` (which itself requires ``bool(own_trailer_tokens)``).
+    With no own tokens, accumulating every commit message in the window buys
+    nothing.
+
+    Anti-vacuity: restoring the unconditional
+    ``commit_bodies = _git_log_commit_bodies(...)`` call site makes the spy
+    fire and the ``calls == []`` assertion go red. The second half pins that
+    the pass is still performed -- and its result still used -- when own
+    tokens exist, so the guard cannot be "fixed" by dropping the call.
+    """
+    _init_git_repo(tmp_path)
+    other_token = "01OtherSessionToken0000000"
+    sha = _commit(
+        tmp_path,
+        "src/main.py",
+        f"fix: ship it\n\nClaude-Session: https://claude.ai/code/session_{other_token}\n",
+    )
+    now = datetime.now(timezone.utc)
+    messages = [
+        {
+            "id": "m1",
+            "text": "editing src/main.py",
+            "content_blocks": [{"type": "tool_use", "name": "Edit", "affected_paths": ["src/main.py"]}],
+        }
+    ]
+
+    calls: list[str] = []
+    real_bodies = session_commit_module._git_log_commit_bodies
+
+    def spy(repo_path: str, window_start: datetime, window_end: datetime) -> dict[str, str]:
+        calls.append(repo_path)
+        return real_bodies(repo_path, window_start, window_end)
+
+    monkeypatch.setattr(session_commit_module, "_git_log_commit_bodies", spy)
+
+    edges = detect_session_commits(
+        session_id="claude-code-session:own-session",
+        messages=messages,
+        session_created_at=now - timedelta(minutes=5),
+        session_updated_at=now,
+        repo_path=str(tmp_path),
+        bridge_session_ids=None,
+    )
+    assert calls == []
+    assert len(edges) == 1
+    assert edges[0].commit_sha == sha
+    assert edges[0].detection_method == "file_overlap"
+    assert edges[0].disagreement_note is None
+
+    flagged = detect_session_commits(
+        session_id="claude-code-session:own-session",
+        messages=messages,
+        session_created_at=now - timedelta(minutes=5),
+        session_updated_at=now,
+        repo_path=str(tmp_path),
+        bridge_session_ids=["cse_this-session-does-not-match"],
+    )
+    assert calls == [str(tmp_path)]
+    assert flagged[0].disagreement_note is not None
+    assert other_token in flagged[0].disagreement_note

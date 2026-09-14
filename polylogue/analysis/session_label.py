@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from polylogue.archive.session.repo_identity import repo_relative_path
 
 __all__ = [
+    "MAX_DISTINCT_FILE_COUNT",
+    "DistinctFileCount",
     "SessionLabelInputs",
     "SessionRepoRootPath",
     "compute_session_structural_label",
@@ -32,6 +34,23 @@ __all__ = [
     "dominant_repo_relative_path_for_session",
     "session_structural_label_for_session",
 ]
+
+
+#: Ceiling on the distinct repo-relative path set built in Python. A session
+#: that touched more distinct files than this is labelled ``"<cap>+ files"``.
+MAX_DISTINCT_FILE_COUNT = 10_000
+
+
+@dataclass(frozen=True, slots=True)
+class DistinctFileCount:
+    """A distinct-file count plus whether it hit its declared ceiling.
+
+    ``capped=True`` means ``count`` is a floor, not the true total; callers
+    must surface that rather than printing it as an exact count.
+    """
+
+    count: int
+    capped: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +70,9 @@ class SessionLabelInputs:
     """Retained for compatibility with the earlier path-based projection."""
     message_count: int
     distinct_file_count: int | None = None
+    distinct_file_count_capped: bool = False
+    """``True`` when ``distinct_file_count`` is a floor that hit
+    :data:`MAX_DISTINCT_FILE_COUNT`; the label then reads ``"<n>+ files"``."""
     duration_ms: int | None = None
     session_date: str | None = None
 
@@ -78,8 +100,9 @@ def compute_session_structural_label(inputs: SessionLabelInputs) -> str:
     if distinct_file_count is None:
         distinct_file_count = (1 + inputs.additional_file_count) if inputs.dominant_path else 0
     if distinct_file_count:
-        noun = "file" if distinct_file_count == 1 else "files"
-        parts.append(f"{distinct_file_count} {noun}")
+        noun = "file" if distinct_file_count == 1 and not inputs.distinct_file_count_capped else "files"
+        suffix = "+" if inputs.distinct_file_count_capped else ""
+        parts.append(f"{distinct_file_count}{suffix} {noun}")
 
     parts.append(f"{inputs.message_count} msgs")
     if inputs.duration_ms is not None and inputs.duration_ms >= 0:
@@ -186,20 +209,49 @@ def dominant_repo_relative_path_for_session(
 def distinct_repo_relative_file_count_for_session(
     conn: sqlite3.Connection,
     session_id: str,
-) -> int:
-    """Return the number of distinct repo-relative files touched by a session."""
+) -> DistinctFileCount:
+    """Return the distinct repo-relative file count touched by a session.
+
+    Bounded by construction. With no checkout root to strip, the count is a
+    SQL ``COUNT(DISTINCT ...)`` aggregate -- constant memory regardless of how
+    many ``action_pairs`` rows a session has. When a root *must* be stripped
+    (``repo_relative_path`` is Python, not SQL), the cursor is iterated rather
+    than materialized and the distinct set is capped at
+    :data:`MAX_DISTINCT_FILE_COUNT`; hitting the cap returns
+    ``capped=True`` so the shortfall is displayed as a degradation
+    (``"10000+ files"``) rather than reported as an exact -- and wrong -- count.
+    """
     repo_root = _session_repo_root(conn, session_id)
     root_path = repo_root.root_path if repo_root else ""
-    rows = conn.execute(
+
+    if not root_path:
+        row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT tool_path)
+            FROM action_pairs
+            WHERE session_id = ? AND tool_path IS NOT NULL AND tool_path != ''
+            """,
+            (session_id,),
+        ).fetchone()
+        return DistinctFileCount(count=int(row[0]) if row and row[0] is not None else 0, capped=False)
+
+    cursor = conn.execute(
         """
         SELECT tool_path
         FROM action_pairs
         WHERE session_id = ? AND tool_path IS NOT NULL AND tool_path != ''
         """,
         (session_id,),
-    ).fetchall()
-    paths = {repo_relative_path(str(raw_path), root_path) if root_path else str(raw_path) for (raw_path,) in rows}
-    return len({path for path in paths if path})
+    )
+    paths: set[str] = set()
+    for (raw_path,) in cursor:
+        relative = repo_relative_path(str(raw_path), root_path)
+        if not relative:
+            continue
+        paths.add(relative)
+        if len(paths) >= MAX_DISTINCT_FILE_COUNT:
+            return DistinctFileCount(count=MAX_DISTINCT_FILE_COUNT, capped=True)
+    return DistinctFileCount(count=len(paths), capped=False)
 
 
 def session_structural_label_for_session(
@@ -217,7 +269,7 @@ def session_structural_label_for_session(
     ``action_pairs``), never writes.
     """
     repo_root = _session_repo_root(conn, session_id)
-    distinct_file_count = distinct_repo_relative_file_count_for_session(conn, session_id)
+    distinct_files = distinct_repo_relative_file_count_for_session(conn, session_id)
 
     inputs = SessionLabelInputs(
         provider_title=provider_title,
@@ -226,7 +278,8 @@ def session_structural_label_for_session(
         dominant_path=None,
         additional_file_count=0,
         message_count=message_count,
-        distinct_file_count=distinct_file_count,
+        distinct_file_count=distinct_files.count,
+        distinct_file_count_capped=distinct_files.capped,
         duration_ms=duration_ms,
         session_date=session_date,
     )
