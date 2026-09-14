@@ -1029,8 +1029,15 @@ def record_daemon_stage_event(
     attempt_id: str | None = None,
     payload: dict[str, object] | None = None,
     event_id: str | None = None,
+    commit: bool = True,
 ) -> str:
-    """Record one daemon stage event and return its event id."""
+    """Record one daemon stage event and return its event id.
+
+    ``commit=False`` leaves the row in the caller's open transaction, so a
+    caller batching several events (or pairing one with the attempt-row update
+    it describes) takes a single commit instead of one per row. The row itself
+    is written in full either way.
+    """
     if event_id is None:
         event_id = str(uuid.uuid4())
     conn.execute(
@@ -1047,7 +1054,8 @@ def record_daemon_stage_event(
         """,
         (event_id, attempt_id, stage, status, observed_at_ms, _json_dumps(payload or {})),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return event_id
 
 

@@ -814,7 +814,36 @@ class LiveBatchProcessor:
         raw and cursor commits while leaving derived work for a later bounded
         catch-up batch. It also leaves existing convergence debt untouched;
         only an executed pass may resolve that evidence.
+
+        The batch is the scope of one shared ``ops.db`` write connection
+        (:meth:`CursorStore.ops_write_scope`): the cursor store's attempt,
+        cursor and telemetry writes share it instead of opening one connection
+        each. The scope opens and closes inside this call, so it never spans a
+        chunk boundary, and its flush runs on every exit path.
         """
+        with self._cursor.ops_write_scope():
+            return await self._ingest_files_in_ops_scope(
+                paths,
+                queued_file_count=queued_file_count,
+                skipped_file_count=skipped_file_count,
+                emit_event=emit_event,
+                max_pass_seconds=max_pass_seconds,
+                whole_archive_convergence=whole_archive_convergence,
+                defer_convergence=defer_convergence,
+            )
+
+    async def _ingest_files_in_ops_scope(
+        self,
+        paths: list[Path],
+        *,
+        queued_file_count: int | None = None,
+        skipped_file_count: int = 0,
+        emit_event: bool = True,
+        max_pass_seconds: float | None = None,
+        whole_archive_convergence: bool = True,
+        defer_convergence: bool = False,
+    ) -> LiveBatchMetrics:
+        """Body of :meth:`ingest_files`, run under its ``ops.db`` write scope."""
         authorization = self.require_cursor_authority(paths)
         refused_paths = self._refused_paths
         self._refused_paths = frozenset()
@@ -2065,7 +2094,7 @@ class LiveBatchProcessor:
                 )
         return await self._run_sync(
             "watcher.live_ingest.full",
-            self._ingest_full_paths_sync,
+            self._ingest_full_paths_sync_in_ops_scope,
             paths,
             source_name=source_name,
             heartbeat=heartbeat,
@@ -2086,6 +2115,22 @@ class LiveBatchProcessor:
         if self._sync_runner is not None:
             return cast(T, await self._sync_runner(actor, function, *args, **kwargs))
         return await asyncio.to_thread(function, *args, **kwargs)
+
+    def _ingest_full_paths_sync_in_ops_scope(
+        self,
+        paths: list[Path],
+        **kwargs: Any,
+    ) -> _FullIngestResult:
+        """Run the blocking full-ingest body under its own ``ops.db`` scope.
+
+        ``_run_sync`` hands the body to a worker thread, and the scope is
+        thread-local, so the scope entered in :meth:`ingest_files` does not
+        reach it. Entering one here shares a single ``ops.db`` connection
+        across this body's cursor and telemetry writes as well; it is left
+        before the thread returns.
+        """
+        with self._cursor.ops_write_scope():
+            return self._ingest_full_paths_sync(paths, **kwargs)
 
     def _ingest_full_paths_sync(
         self,
