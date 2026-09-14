@@ -6,7 +6,6 @@ import csv
 import io
 import json
 import re
-import sqlite3
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
@@ -1387,29 +1386,12 @@ def _fetch_daemon_payload(
     """Run the identical declared read over UDS or an explicitly pinned local reader."""
     from polylogue.cli.operation_kernel import OperationEnvelopeError, configured_read_operation
 
-    try:
-        result = configured_read_operation(
-            config,
-            operation,
-            {"params": dict(params)},
-            daemon_disabled=_daemon_disabled(flag=disabled),
-        )
-    except sqlite3.OperationalError as exc:
-        if "unable to open database file" not in str(exc):
-            raise
-        # No archive here. Report "no payload" so the caller falls through to
-        # the missing-archive guard in ``_execute_archive_query_stdout``, which
-        # owns the typed message for this state.
-        #
-        # This fast path used to reach that guard on its own: with no daemon
-        # socket the payload came back ``None``. It stopped doing so once the
-        # read path gained an in-process fallback
-        # (``operation_with_read_fallback``), which executes the read locally
-        # and so opens the archive before anything has checked that the archive
-        # exists -- surfacing on a fresh XDG root as a bare
-        # ``OperationalError`` that ``cli/machine_main.py`` renders as
-        # "unexpected error".
-        return None
+    result = configured_read_operation(
+        config,
+        operation,
+        {"params": dict(params)},
+        daemon_disabled=_daemon_disabled(flag=disabled),
+    )
     if not isinstance(result.value, dict):
         raise OperationEnvelopeError(f"{operation} returned a non-object result")
     payload = dict(result.value)
