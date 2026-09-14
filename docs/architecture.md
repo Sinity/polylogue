@@ -49,9 +49,12 @@ flowchart TD
     R4 -.audits.-> R2
 ```
 
-Source evidence and user-authored state (rings 1 and the `user.db` tier) are
-durable; indexes, insight read models, embeddings, and daemon telemetry are
-rebuildable. Surfaces (ring 3) are leaf adapters — they read through the same
+Source evidence, user-authored state, and the append-only audit trail
+(`source.db`, `user.db`, `audit.db`) are irreplaceable and require backup;
+indexes and insight read models are rebuildable, and daemon telemetry
+(`ops.db`) is disposable. Embeddings are neither: `embeddings.db` is
+rebuildable only by re-purchasing vectors from the embedding provider, so
+`bootstrap.py` classes it `expensive_rebuild` with `backup_required=True`. Surfaces (ring 3) are leaf adapters — they read through the same
 archive/query substrate rather than owning their own stores.
 
 ## Rings
