@@ -258,6 +258,49 @@ def test_retained_wal_page_image_inspection_keeps_blob_namespace_pristine(
     assert verification.passed, verification.failures
 
 
+def test_environmental_failure_is_recorded_not_reported_as_unsupported(
+    blob_store: BlobStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OSError while reading the export is an error, not a verdict on the content.
+
+    ``_hermes_state_db_schema_version`` deliberately catches only
+    ``sqlite3.Error`` and ``LogicalExportError`` -- verdicts about the bytes.
+    An ``OSError`` (ENOSPC/EMFILE while materializing the export into its
+    temporary reconstruction) says nothing about the artifact, so it must reach
+    ``inspect_raw_artifact``'s outer handler and be recorded as a
+    ``decode_error``. Reporting it as a silent ``unsupported_parseable`` would
+    durably misrecord supported material with no error attached.
+
+    Anti-vacuity: add ``OSError`` back to that ``except`` tuple and this goes
+    red -- ``decode_error`` is ``None`` and the status is a quiet
+    ``unsupported_parseable``.
+    """
+    database = tmp_path / "state.db"
+    _write_hermes_v16(database)
+    export = _write_logical_export(database, tmp_path / "state.db.export")
+
+    def _explode(*_args: object, **_kwargs: object) -> object:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("polylogue.storage.artifacts.inspection.open_logical_source", _explode)
+
+    observation = inspect_raw_artifact(
+        _record(
+            blob_store,
+            export,
+            raw_id="hermes:profile-a:enospc",
+            source_path="/original/profile/state.db",
+        )
+    )
+
+    assert observation.decode_error is not None
+    assert "OSError" in observation.decode_error
+    assert observation.support_status is not ArtifactSupportStatus.SUPPORTED_PARSEABLE
+    assert observation.resolved_package_version is None
+
+
 def test_corrupt_retained_snapshot_is_decode_failed(blob_store: BlobStore, tmp_path: Path) -> None:
     snapshot = tmp_path / "state.db"
     snapshot.write_bytes(b"not a SQLite database")

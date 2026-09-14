@@ -121,11 +121,23 @@ def _hermes_state_db_schema_version(path: Path, *, immutable: bool = False) -> i
     use. A plain read-only SQLite open sees an export as a non-database and
     returns no version, which downgrades every retained Hermes observation to
     ``unsupported_parseable`` with no resolved package.
+
+    Only a verdict about the *content* returns ``None`` here. ``sqlite3.Error``
+    and ``LogicalExportError`` both mean "these bytes are not a readable Hermes
+    state source", which is evidence, and the caller re-checks that
+    independently through ``looks_like_state_db_path``. An ``OSError`` is not
+    evidence about the content -- ENOSPC or EMFILE while materializing the
+    export into its temporary reconstruction says nothing about the artifact --
+    so it is deliberately NOT caught: ``inspect_raw_artifact``'s outer handler
+    records it as a ``decode_error`` on the observation, which is loud and
+    diagnosable. Swallowing it would durably record supported material as
+    ``unsupported_parseable`` with no error attached, which is the exact silent
+    misreport this function was repaired to remove.
     """
     try:
         with closing(open_logical_source(path.resolve(), immutable=immutable)) as conn:
             row = conn.execute("SELECT version FROM schema_version ORDER BY rowid DESC LIMIT 1").fetchone()
-    except (sqlite3.Error, LogicalExportError, OSError):
+    except (sqlite3.Error, LogicalExportError):
         return None
     if row is None or isinstance(row[0], bool) or not isinstance(row[0], int):
         return None
