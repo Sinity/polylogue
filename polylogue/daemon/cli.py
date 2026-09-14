@@ -99,7 +99,6 @@ from polylogue.storage.sqlite.wal_checkpoint import (
 from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
-    from polylogue.config import Config
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner
     from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.lifecycle import DaemonLifecycle
@@ -1603,83 +1602,6 @@ def _browser_capture_spool_has_pending_files() -> bool:
             if fingerprint != cursor.content_fingerprint:
                 return True
     return False
-
-
-def _converge_raw_authority_frontier(config: Config, *, limit: int) -> int:
-    """Census the entire accepted frontier and execute a bounded safe slice.
-
-    This runs only beneath ``DaemonWriteCoordinator``. Conflicts, missing
-    bytes, unresolved provenance, and corruption are persisted as obligations;
-    only strategies carrying an exact deterministic proof become selectable.
-    """
-    from polylogue.maintenance import raw_authority
-
-    census = raw_authority.inspect_frontier(config)
-    executable = tuple(item.plan_id for item in census.items if item.executable)[:limit]
-    if not executable:
-        return 0
-    report = raw_authority.apply_frontier(
-        config,
-        preview_census_id=census.census_id,
-        selected_plan_ids=executable,
-    )
-    if report.retryable_plan_count:
-        emit(
-            "daemon.raw_authority.plans_retryable",
-            level=WARNING,
-            outcome="degraded",
-            reason="frontier_plans_remain_retryable",
-            pending=int(report.retryable_plan_count),
-            considered=int(report.selected_plan_count),
-            operation_id=str(report.census_id),
-        )
-    return int(report.executed_plan_count)
-
-
-def _emit_raw_materialization_pass(result: Any) -> None:
-    """Persist the conserved plan outcomes for one bounded daemon pass."""
-    outcomes = tuple(getattr(result, "plan_outcomes", ()))
-    outcome_sample_limit = 8
-    from polylogue.daemon.events import emit_daemon_event
-
-    metrics = dict(getattr(result, "metrics", {}))
-    census = getattr(result, "census_receipt", None)
-    census_payload = None
-    if census is not None:
-        census_payload = {
-            "census_id": census.census_id,
-            "sequence_no": census.sequence_no,
-            "inventory_digest": census.inventory_digest,
-            "residual_digest": census.residual_digest,
-            "plan_count": census.plan_count,
-            "post_inventory_digest": census.post_inventory_digest,
-            "post_residual_digest": census.post_residual_digest,
-            "post_plan_count": census.post_plan_count,
-            "executable_plan_count": census.executable_plan_count,
-            "residual_plan_count": census.residual_plan_count,
-            "predecessor_census_id": census.predecessor_census_id,
-            "mode": census.mode,
-            "lifecycle_status": census.lifecycle_status,
-            "quiescent": census.quiescent,
-            "fixed_point": census.fixed_point,
-            "query_handle": census.query_handle,
-        }
-    payload = {
-        "pass_id": f"raw-materialization:{os.urandom(16).hex()}",
-        "success": bool(result.success),
-        "repaired_count": int(result.repaired_count),
-        "detail": str(result.detail),
-        "metrics": metrics,
-        "plan_outcome_count": len(outcomes),
-        "plan_outcome_sample": [outcome.to_summary_dict() for outcome in outcomes[:outcome_sample_limit]],
-        "plan_outcome_sample_truncated": len(outcomes) > outcome_sample_limit,
-    }
-    if census_payload is not None:
-        payload["census"] = census_payload
-    emit_daemon_event(
-        "raw_materialization_pass",
-        payload=payload,
-    )
 
 
 def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT) -> int:

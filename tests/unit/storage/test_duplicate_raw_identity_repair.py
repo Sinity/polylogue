@@ -1,8 +1,8 @@
 """Tests for polylogue-t0dy: reconcile the pre-#2729 duplicate-raw scheme.
 
 PR #2729 aligned the one-shot importer and live watcher on one deterministic
-raw-id scheme. These tests prove the shared raw-authority reconciler discovers,
-applies, and crash-recovers the resulting historical duplicate-alias state.
+raw-id scheme. These tests prove the shared raw-authority reconciler discovers
+and classifies the resulting historical duplicate-alias state.
 """
 
 from __future__ import annotations
@@ -22,16 +22,12 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.raw_authority import (
-    finalize_raw_authority_census,
     read_raw_authority_detail,
-    record_raw_replay_outcome,
 )
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierState,
-    apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
-    recover_interrupted_raw_authority_frontier,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -278,143 +274,6 @@ def test_unified_frontier_first_census_rejects_replaced_blob_bytes(tmp_path: Pat
     assert replaced.actuator is RawAuthorityActuator.REACQUIRE
 
 
-def test_unified_frontier_apply_obeys_offline_daemon_guard(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stale_raw_id, _canonical_raw_id, _session_id, _logical_key = _seed_duplicate_raw_pair(tmp_path)
-    preview = inspect_raw_authority_frontier(_config(tmp_path))
-    selected = next(item for item in preview.items if item.raw_id == stale_raw_id)
-    monkeypatch.setattr(
-        "polylogue.maintenance.offline_guard.offline_maintenance_block_reason",
-        lambda *_args, **_kwargs: "daemon owns the archive write lease",
-    )
-
-    with pytest.raises(RuntimeError, match="daemon owns"):
-        apply_raw_authority_frontier(
-            _config(tmp_path),
-            preview_census_id=preview.census_id,
-            selected_plan_ids=(selected.plan_id,),
-        )
-
-
-def test_unified_frontier_apply_drives_duplicate_strategy_and_postflight(tmp_path: Path) -> None:
-    stale_raw_id, canonical_raw_id, session_id, logical_key = _seed_duplicate_raw_pair(tmp_path)
-    preview = inspect_raw_authority_frontier(_config(tmp_path))
-    selected = next(item for item in preview.items if item.raw_id == stale_raw_id)
-
-    report = apply_raw_authority_frontier(
-        _config(tmp_path),
-        preview_census_id=preview.census_id,
-        selected_plan_ids=(selected.plan_id,),
-    )
-
-    assert report.success is True
-    assert report.selected_plan_count == report.executed_plan_count == 1
-    assert report.retryable_plan_count == 0
-    assert len(report.outcome_refs) == 1
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
-            (logical_key,),
-        ).fetchone() == (canonical_raw_id,)
-        assert conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone() == (
-            canonical_raw_id,
-        )
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        row = conn.execute(
-            "SELECT lifecycle_status FROM raw_authority_censuses WHERE census_id = ?",
-            (report.census_id,),
-        ).fetchone()
-        assert row == ("completed",)
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (stale_raw_id,)).fetchone() == (1,)
-    postflight = inspect_raw_authority_frontier(_config(tmp_path))
-    assert any(
-        item.raw_id == stale_raw_id and item.state is RawAuthorityFrontierState.SUPERSEDED for item in postflight.items
-    )
-
-
-def test_unified_frontier_recovers_crash_after_strategy_commit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stale_raw_id, canonical_raw_id, _session_id, logical_key = _seed_duplicate_raw_pair(tmp_path)
-    preview = inspect_raw_authority_frontier(_config(tmp_path))
-    selected = next(item for item in preview.items if item.raw_id == stale_raw_id)
-
-    def crash_before_outcome(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("injected crash after strategy commit")
-
-    monkeypatch.setattr("polylogue.storage.raw_reconciler.record_raw_replay_outcome", crash_before_outcome)
-    with pytest.raises(RuntimeError, match="injected crash"):
-        apply_raw_authority_frontier(
-            _config(tmp_path),
-            preview_census_id=preview.census_id,
-            selected_plan_ids=(selected.plan_id,),
-        )
-    monkeypatch.setattr("polylogue.storage.raw_reconciler.record_raw_replay_outcome", record_raw_replay_outcome)
-
-    recovered = recover_interrupted_raw_authority_frontier(_config(tmp_path))
-
-    assert recovered == (selected.plan_id,)
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
-            (logical_key,),
-        ).fetchone() == (canonical_raw_id,)
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT lifecycle_status FROM raw_authority_censuses WHERE mode = 'apply' ORDER BY sequence_no DESC LIMIT 1"
-        ).fetchone() == ("interrupted",)
-        assert conn.execute(
-            "SELECT outcome_status FROM raw_authority_census_plans WHERE selected = 1 ORDER BY ordinal DESC LIMIT 1"
-        ).fetchone() == ("rejected_stale",)
-        assert conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone() == (
-            1,
-        )
-
-
-def test_unified_frontier_recovers_crash_after_outcome_before_postflight(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stale_raw_id, _canonical_raw_id, _session_id, _logical_key = _seed_duplicate_raw_pair(tmp_path)
-    preview = inspect_raw_authority_frontier(_config(tmp_path))
-    selected = next(item for item in preview.items if item.raw_id == stale_raw_id)
-
-    def crash_before_postflight(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("injected crash after durable outcome")
-
-    monkeypatch.setattr("polylogue.storage.raw_reconciler.finalize_raw_authority_census", crash_before_postflight)
-    with pytest.raises(RuntimeError, match="injected crash"):
-        apply_raw_authority_frontier(
-            _config(tmp_path),
-            preview_census_id=preview.census_id,
-            selected_plan_ids=(selected.plan_id,),
-        )
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            """
-            SELECT lifecycle_status, outcome_recorded
-            FROM raw_authority_censuses AS c
-            JOIN raw_authority_census_plans AS cp USING (census_id)
-            WHERE c.mode = 'apply' ORDER BY c.sequence_no DESC LIMIT 1
-            """
-        ).fetchone() == ("planned", 1)
-
-    monkeypatch.setattr(
-        "polylogue.storage.raw_reconciler.finalize_raw_authority_census",
-        finalize_raw_authority_census,
-    )
-    recovered = recover_interrupted_raw_authority_frontier(_config(tmp_path))
-
-    assert recovered == ()
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT lifecycle_status FROM raw_authority_censuses WHERE mode = 'apply' ORDER BY sequence_no DESC LIMIT 1"
-        ).fetchone() == ("interrupted",)
-
-
 def _rows(root: Path, tier: str, table: str, where: str, params: tuple[object, ...]) -> list[tuple[object, ...]]:
     with closing(sqlite3.connect(root / f"{tier}.db")) as conn:
         return sorted(conn.execute(f"SELECT * FROM {table} WHERE {where}", params).fetchall())
@@ -559,64 +418,6 @@ def test_duplicate_alias_witness_is_scoped_to_its_own_session_not_a_fanout_sibli
     assert by_key[key_a].plan_id != by_key[key_b].plan_id
 
 
-def test_duplicate_alias_fold_reaches_terminal_postcondition_under_fanout(tmp_path: Path) -> None:
-    """polylogue-ihc8 regression: applying one fanout sibling must not corrupt the other.
-
-    Before the fix, applying the plan for one sibling's head could instead
-    repoint a *different* sibling's head (whichever the ambiguous
-    ``accepted_raw_id``-only lookup happened to find), so the typed re-inspect
-    postcondition then failed every retry with the exact plan hash unchanged
-    -- an infinite non-converging RuntimeError loop (observed live: 7
-    identical failures over 90 minutes for one plan, matching this exact
-    shape). With the fix, each sibling's plan folds its own head only; this is
-    verified from both directions -- whichever sibling is selected reaches the
-    canonical twin, and the untouched sibling's own head/session pointer is
-    provably unaffected.
-    """
-    for selected, other in (("a", "b"), ("b", "a")):
-        stale_raw_id, canonical_raw_id, heads = _seed_duplicate_raw_fanout(tmp_path / selected)
-        by_suffix = dict(zip(("a", "b"), heads, strict=True))
-        selected_session, selected_key = by_suffix[selected]
-        other_session, other_key = by_suffix[other]
-
-        preview = inspect_raw_authority_frontier(_config(tmp_path / selected))
-        duplicate_items = {
-            item.logical_source_key: item
-            for item in preview.items
-            if item.raw_id == stale_raw_id and item.state is RawAuthorityFrontierState.DUPLICATE_ALIAS
-        }
-        plan_id = duplicate_items[selected_key].plan_id
-
-        report = apply_raw_authority_frontier(
-            _config(tmp_path / selected),
-            preview_census_id=preview.census_id,
-            selected_plan_ids=(plan_id,),
-        )
-
-        assert report.selected_plan_count == report.executed_plan_count == 1
-        assert report.retryable_plan_count == 0
-
-        with sqlite3.connect(tmp_path / selected / "index.db") as conn:
-            assert conn.execute(
-                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
-                (selected_key,),
-            ).fetchone() == (canonical_raw_id,)
-            assert conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (selected_session,)).fetchone() == (
-                canonical_raw_id,
-            )
-            # The other fanout sibling's own head/session pointer must be
-            # untouched -- the ambiguity bug repointed whichever sibling an
-            # unscoped lookup happened to find, which could corrupt this row
-            # instead of the one actually selected.
-            assert conn.execute(
-                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
-                (other_key,),
-            ).fetchone() == (stale_raw_id,)
-            assert conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (other_session,)).fetchone() == (
-                stale_raw_id,
-            )
-
-
 def test_duplicate_alias_ineligible_proof_does_not_crash_the_whole_census(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -678,57 +479,3 @@ def test_duplicate_alias_ineligible_proof_does_not_crash_the_whole_census(
     assert sibling_item.actuator is RawAuthorityActuator.NONE
     assert not sibling_item.executable
     assert "already an accepted head" in sibling_item.reason
-
-
-def test_duplicate_alias_batch_race_does_not_crash_postflight(tmp_path: Path) -> None:
-    """polylogue-ewfp regression: applying BOTH fan-out siblings together must not crash.
-
-    At a single pre-apply census snapshot, the canonical raw is still
-    genuinely dangling for every fan-out sibling, so a batch selection can
-    (and, live, did) select more than one sibling's fold together in the
-    SAME ``apply_raw_authority_frontier`` call. The first plan applied
-    commits and claims the canonical; the second plan's own re-inspection
-    inside ``_apply_strategy`` then legitimately finds ``status="ineligible"``
-    (not a transient failure). Before the fix, this raised, which the
-    caller's generic exception handler labeled ``RETRYABLE`` -- an outcome
-    the postflight check then required to remain byte-identical forever,
-    crashing every subsequent raw-materialization pass that reached this
-    fan-out group (observed live: a 405s writer-lock hold ending in
-    "raw authority postflight changed a retryable/carried-forward plan").
-    The second plan must instead resolve as a permanent, non-retryable
-    no-op.
-    """
-    stale_raw_id, canonical_raw_id, heads = _seed_duplicate_raw_fanout(tmp_path)
-    (session_a, key_a), (session_b, key_b) = heads
-
-    preview = inspect_raw_authority_frontier(_config(tmp_path))
-    duplicate_items = {
-        item.logical_source_key: item
-        for item in preview.items
-        if item.raw_id == stale_raw_id and item.state is RawAuthorityFrontierState.DUPLICATE_ALIAS
-    }
-    assert set(duplicate_items) == {key_a, key_b}
-
-    # The regression: selecting BOTH siblings together must not raise.
-    report = apply_raw_authority_frontier(
-        _config(tmp_path),
-        preview_census_id=preview.census_id,
-        selected_plan_ids=(duplicate_items[key_a].plan_id, duplicate_items[key_b].plan_id),
-    )
-
-    assert report.selected_plan_count == 2
-    assert report.executed_plan_count == 2
-    assert report.retryable_plan_count == 0
-    assert report.success
-
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        heads_by_key = dict(
-            conn.execute(
-                "SELECT logical_source_key, accepted_raw_id FROM raw_revision_heads WHERE logical_source_key IN (?, ?)",
-                (key_a, key_b),
-            ).fetchall()
-        )
-    # Exactly one sibling folded onto the canonical; the other's own head is
-    # untouched, still pointing at the (now-orphaned) stale raw -- correctly
-    # recognized as permanently ineligible rather than corrupted or retried.
-    assert sorted(heads_by_key.values()) == sorted((canonical_raw_id, stale_raw_id))
