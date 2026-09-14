@@ -274,6 +274,64 @@ class TestFtsAutomergeConfiguration:
         finally:
             conn.close()
 
+    def test_fresh_archive_reaches_automerge_zero_without_a_restart(self, tmp_path: Path) -> None:
+        """A wiped archive converges to automerge=0 once the index exists (polylogue-n3mn4).
+
+        Reproduces the real post-wipe ordering with the production routes: the
+        daemon starts against an archive root with no ``index.db`` (so the
+        startup configure pass has nothing to configure and the periodic pass
+        no-ops), the index is then created by the ordinary bootstrap the ingest
+        write path uses, and the next periodic maintenance pass must leave every
+        declared FTS surface at ``automerge=0``.
+
+        Anti-vacuity: revert the ``configure_fts_automerge_sync`` call inside
+        ``run_periodic_fts_merge_sync`` (so the periodic pass issues only
+        ``merge=N``) and this goes red — every surface's ``%_config`` table has
+        no ``automerge`` row at all, i.e. FTS5's default ``automerge=8`` for the
+        entire first rebuild, fixed only by a later daemon restart.
+        """
+        from polylogue.daemon.fts_automerge import run_periodic_fts_merge_sync
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+        root = tmp_path / "wiped-archive"
+        index_db = root / "index.db"
+
+        # Daemon startup against a wiped root: the index does not exist yet, so
+        # neither the startup configure pass nor a periodic pass can do anything.
+        assert not index_db.exists()
+        run_periodic_fts_merge_sync(index_db)
+        assert not index_db.exists(), "periodic pass must not create the index"
+
+        # The ingest write path creates the tiers lazily, after startup.
+        initialize_active_archive_root(root)
+        assert index_db.exists()
+
+        conn = sqlite3.connect(str(index_db))
+        try:
+            surfaces = [
+                str(name)
+                for (name,) in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE '%USING fts5%' COLLATE NOCASE"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        assert surfaces, "fixture declared no FTS5 surfaces -- test would be vacuous"
+
+        # One ordinary periodic maintenance turn, no restart.
+        run_periodic_fts_merge_sync(index_db)
+
+        conn = sqlite3.connect(str(index_db))
+        try:
+            unconfigured = {
+                surface: conn.execute(f"SELECT v FROM {surface}_config WHERE k = 'automerge'").fetchone()
+                for surface in surfaces
+            }
+        finally:
+            conn.close()
+        bad = {surface: row for surface, row in unconfigured.items() if row is None or str(row[0]) != "0"}
+        assert not bad, f"surfaces left on FTS5 default automerge after the first post-wipe pass: {bad}"
+
     def test_configure_is_idempotent(self, tmp_path: Path) -> None:
         """Calling configure twice must not raise."""
         from polylogue.daemon.fts_automerge import configure_fts_automerge_sync
