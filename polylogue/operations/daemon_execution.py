@@ -225,7 +225,8 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                 or QueryExecutionContext(
                     call_id=str(request.request_id),
                     query_ref=request.fingerprint,
-                    deadline_monotonic=started + min(spec.deadline_s, (request.deadline_ms or 2000) / 1000),
+                    deadline_monotonic=started
+                    + min(spec.deadline_s, (request.deadline_ms or int(spec.deadline_s * 1000)) / 1000),
                     owner_ref=context.principal.actor_ref,
                 )
             )
