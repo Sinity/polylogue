@@ -256,16 +256,28 @@ def test_relocation_nested_dispatch_keeps_analyze_facets_on_the_real_action(cli_
     assert "Facets (global)" in result.output
 
 
-def test_plan_refuses_fresh_bootstrap_without_writing_the_moved_archive(
+def test_plan_refuses_an_incomplete_bootstrap_without_writing_the_moved_archive(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The plan enters backup attestation and immutable archive inspection, never a write route."""
+    """The plan enters backup attestation and immutable archive inspection, never a write route.
+
+    An archive carrying ``.bootstrap.pending`` is mid-creation: its durable
+    train authority is not settled, so there is nothing to relocate. A
+    *completed* bootstrap marker is no longer a refusal (polylogue-ifb4l) --
+    see ``test_plan_accepts_a_completed_fresh_bootstrap_marker`` below.
+
+    Anti-vacuity: dropping the ``.bootstrap.pending`` branch from
+    ``_durable_trains`` lets the plan proceed past this point, and the
+    ``pytest.raises`` here goes red.
+    """
     old_root = workspace_env["archive_root"]
     new_root = tmp_path / "moved-archive"
     os.rename(old_root, new_root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
     backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
     assert backup.ok and backup.output_path is not None
+    manifest_root = new_root / ".maintenance-state" / "durable-change-trains"
+    (manifest_root / ".bootstrap.pending").write_text("{}", encoding="utf-8")
     before = {
         path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
     }
@@ -283,6 +295,39 @@ def test_plan_refuses_fresh_bootstrap_without_writing_the_moved_archive(
         path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
     }
     assert after == before
+
+
+def test_plan_accepts_a_completed_fresh_bootstrap_marker(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directly bootstrapped archive is relocatable rather than permanently refused.
+
+    Every archive current code creates carries the committed marker and no code
+    path removes it until a released train replaces its floor, so the old
+    blanket refusal made the sanctioned relocation route unreachable for the
+    entire post-restart population (polylogue-ifb4l).
+
+    Anti-vacuity: restoring ``(manifest_root / ".bootstrap").exists()`` to the
+    refusal in ``_durable_trains`` raises
+    ``archive-root relocation does not support fresh-bootstrap train authority``
+    here.
+    """
+    old_root = workspace_env["archive_root"]
+    new_root = tmp_path / "moved-archive"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    assert (new_root / ".maintenance-state" / "durable-change-trains" / ".bootstrap").is_file()
+
+    prepared = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:test-daemon-stopped",
+        single_writer_evidence_ref="proof:test-writer-lock",
+    )
+    assert prepared is not None
 
 
 def test_plan_rejects_mutated_manifest_and_stale_authenticated_receipt(
