@@ -47,6 +47,19 @@ pytestmark = [
     # times). Wall-clock-bound -> the bounded `load_sensitive` lane owns it,
     # capped at devtools.verify.SERIAL_LANE_MAX_WORKERS.
     pytest.mark.load_sensitive,
+    # The default bound is 120s (pyproject: timeout, timeout_func_only). Every
+    # deadline in this file is a hang detector sized to survive starvation (see
+    # the calibration note above `_wait_for_lifecycle_start`), and several
+    # declare more than the default on their own: `_wait_for_sessions(...,
+    # timeout_s=300.0)` in the memory-pressure test, `_wait_for_messages(...,
+    # timeout_s=300.0)` in the large-session test, and a 120s lifecycle wait
+    # plus a 90s `daemon.wait` in the SIGTERM tests. Under the default ceiling
+    # those waits could never reach their own deadline -- pytest-timeout always
+    # fired first, so a starved run reported "Timeout (>120.0s) from
+    # pytest-timeout" instead of the test's own diagnostic. This raises the
+    # bound above the largest declared wait chain; it is still well inside the
+    # 900s policy maximum, and it does not make any individual wait longer.
+    pytest.mark.timeout(600),
 ]
 
 # Bin-packing for the bounded lane.
