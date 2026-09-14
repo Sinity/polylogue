@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,10 +13,8 @@ from polylogue import Polylogue
 from polylogue.core.enums import Provider
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows
 
 
 def _claude_message(
@@ -62,41 +61,19 @@ def _lock_first_index_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
     original = archive_revision_governance._write_parsed_precedence_result
     attempts = 0
 
-    def lock_once(
-        self: archive_revision_governance.RawRevisionGovernanceHost,
-        session: ParsedSession,
-        *,
-        raw_id: str,
-        source_index: int,
-        stage_timings_s: dict[str, float] | None,
-        stage_timing_prefix: str,
-        manage_transaction: bool,
-        preacquired_attachment_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
-        revision_authoritative: bool = False,
-        bulk_fts: bool = False,
-        bulk_build: bool = False,
-        defer_fts_rebuild: bool = False,
-        prepared: PreparedSessionRows | None = None,
-    ) -> ArchiveRawParsedWriteResult:
+    def lock_once(*args: Any, **kwargs: Any) -> ArchiveRawParsedWriteResult:
+        # Deliberately signature-agnostic. Mirroring the production parameter
+        # list here has drifted twice (``bulk_build`` in #3183, then
+        # ``fresh_build``/``fresh_build_batch``/``prepared_required``/
+        # ``prepared_write`` in #4924), and each time the stub raised TypeError
+        # instead of the injected lock -- which the ingest routes then handled
+        # as a genuine per-file failure, so these tests silently stopped
+        # exercising the retryable-lock guard they exist to prove.
         nonlocal attempts
         attempts += 1
         if attempts == 1:
             raise sqlite3.OperationalError("database is locked")
-        return original(
-            self,
-            session,
-            raw_id=raw_id,
-            source_index=source_index,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            preacquired_attachment_blobs=preacquired_attachment_blobs,
-            revision_authoritative=revision_authoritative,
-            bulk_fts=bulk_fts,
-            bulk_build=bulk_build,
-            defer_fts_rebuild=defer_fts_rebuild,
-            prepared=prepared,
-        )
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", lock_once)
 
