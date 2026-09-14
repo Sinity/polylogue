@@ -8,7 +8,6 @@ one substrate helper so status, preflight, and maintenance gates cannot drift.
 
 from __future__ import annotations
 
-import logging
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass
@@ -21,11 +20,11 @@ from polylogue.core.raw_failure_evidence import (
     raw_failure_outcome_code,
     validated_raw_failure_evidence_kind,
 )
+from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 RawFailureLifecycle = Literal["deferred", "terminal", "unexplained"]
 RawFailureLifecycleState = Literal["healthy", "degraded", "blocked", "unavailable"]
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,10 +126,28 @@ def read_raw_failure_lifecycle(
             # Admission classifies raws by a schema contract it must therefore
             # hold. A skewed tier yields an explicit unavailable verdict, never a
             # classification derived from a shape this runtime cannot read.
-            logger.warning("source.db schema is not served by this runtime", exc_info=exc)
+            emit(
+                "storage.raw_failure_lifecycle.unavailable",
+                level=WARNING,
+                outcome="refused",
+                reason="schema_skew",
+                tier="source",
+                db_path=source_db,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return RawFailureLifecycleSnapshot(False, reason=f"source.db schema skew: {exc}")
         except (OSError, sqlite3.Error) as exc:
-            logger.warning("could not open source.db read-only", exc_info=exc)
+            emit(
+                "storage.raw_failure_lifecycle.unavailable",
+                level=WARNING,
+                outcome="degraded",
+                reason="open_readonly_failed",
+                tier="source",
+                db_path=source_db,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return RawFailureLifecycleSnapshot(False, reason=f"could not open source.db read-only: {exc}")
     else:
         conn = _connection
@@ -261,7 +278,15 @@ def read_raw_failure_lifecycle(
         sample_params: tuple[object, ...] = typed_failure_params + (sample_limit,) if has_artifacts else (sample_limit,)
         sample_rows = conn.execute(sample_sql, sample_params).fetchall()
     except sqlite3.Error as exc:
-        logger.warning("could not read raw failure lifecycle", exc_info=exc)
+        emit(
+            "storage.raw_failure_lifecycle.unavailable",
+            level=WARNING,
+            outcome="degraded",
+            reason="read_failed",
+            tier="source",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return RawFailureLifecycleSnapshot(False, reason=f"could not read raw failure lifecycle: {exc}")
     finally:
         if owns_connection:

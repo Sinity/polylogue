@@ -46,7 +46,6 @@ regression proof across every verdict value.
 
 from __future__ import annotations
 
-import logging
 import os
 import sqlite3
 import stat
@@ -57,6 +56,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
+from polylogue.logging import ERROR, emit
 from polylogue.storage.blob_liveness import (
     BlobLiveness,
     LivenessState,
@@ -77,7 +77,17 @@ from polylogue.storage.sqlite.connection_profile import (
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
-logger = logging.getLogger(__name__)
+
+def _emit_gc_refusal(reason: str | None, *, phase: str) -> None:
+    """One refusal event. ``reason`` is operator prose, so it rides quarantined."""
+    emit(
+        "storage.blob_gc.refused",
+        level=ERROR,
+        outcome="refused",
+        reason="gc_blocked",
+        phase=phase,
+        error_detail=reason,
+    )
 
 
 def _readonly(path: Path) -> sqlite3.Connection:
@@ -915,7 +925,7 @@ def _resume_pending_gc_generation(
     pending_generation, pending_blocker = _pending_gc_generation(control_db_path)
     if pending_blocker is not None:
         report.blocked_reason = pending_blocker
-        logger.error("Blob GC refused to run: %s", report.blocked_reason)
+        _emit_gc_refusal(report.blocked_reason, phase="preflight")
         return True
     if pending_generation is None:
         return False
@@ -1251,17 +1261,17 @@ def run_blob_gc_report(
     blockers = _reference_tier_blockers(required_tiers)
     if blockers:
         reason = "; ".join(blockers)
-        logger.error("Blob GC refused to run: %s", reason)
+        _emit_gc_refusal(reason, phase="preflight")
         report.blocked_reason = reason
         return report
     if not _database_has_table(control_db_path, "gc_generation_members"):
         report.blocked_reason = "blob GC durable member-intent schema is unavailable"
-        logger.error("Blob GC refused to run: %s", report.blocked_reason)
+        _emit_gc_refusal(report.blocked_reason, phase="preflight")
         return report
     with closing(_readonly(control_db_path)) as schema_conn:
         if not _gc_namespace_identity_columns_available(schema_conn):
             report.blocked_reason = "blob GC durable namespace-identity schema is unavailable"
-            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            _emit_gc_refusal(report.blocked_reason, phase="preflight")
             return report
 
     # A dry run never reaches the namespace-bound unlink path below (its
@@ -1276,7 +1286,7 @@ def run_blob_gc_report(
             namespace_identity = _blob_namespace_identity(blob_path, create_marker=True)
         except _BlobNamespaceUnavailableError as exc:
             report.blocked_reason = str(exc)
-            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            _emit_gc_refusal(report.blocked_reason, phase="preflight")
             return report
 
     if not dry_run and _resume_pending_gc_generation(
@@ -1300,7 +1310,7 @@ def run_blob_gc_report(
         candidates = _candidate_blobs(blob_path, older_than=older_than)
     except _BlobNamespaceUnavailableError as exc:
         report.blocked_reason = str(exc)
-        logger.error("Blob GC refused to run: %s", report.blocked_reason)
+        _emit_gc_refusal(report.blocked_reason, phase="preflight")
         return report
     report.candidate_count = len(candidates)
     if not candidates:
@@ -1342,13 +1352,13 @@ def run_blob_gc_report(
         )
         if preflight.state is LivenessState.BLOCKED:
             report.blocked_reason = "; ".join(preflight.blockers)
-            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            _emit_gc_refusal(report.blocked_reason, phase="preflight")
             return report
         try:
             planning_legacy_hook_stage = prepare_match_stage(planning_source)
         except Exception as exc:
             report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
-            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            _emit_gc_refusal(report.blocked_reason, phase="preflight")
             return report
         for blob_hash, mtime in candidates:
             if len(shortlist) >= max_batch:
@@ -1363,7 +1373,7 @@ def run_blob_gc_report(
             )
             if protection.blockers:
                 report.blocked_reason = "; ".join(protection.blockers)
-                logger.error("Blob GC refused to run: %s", report.blocked_reason)
+                _emit_gc_refusal(report.blocked_reason, phase="preflight")
                 return report
             if protection.is_live:
                 evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
@@ -1386,7 +1396,7 @@ def run_blob_gc_report(
             )
             if namespace_blockers:
                 report.blocked_reason = "; ".join(namespace_blockers)
-                logger.error("Blob GC refused to run: %s", report.blocked_reason)
+                _emit_gc_refusal(report.blocked_reason, phase="preflight")
                 return report
             if size_bytes is None:
                 # A readable vanished planning candidate is neither an unlink
@@ -1449,13 +1459,13 @@ def run_blob_gc_report(
         recheck_preflight = inspect_blob_liveness(conn, "", index_conn=recheck_index, require_index=True)
         if recheck_preflight.state is LivenessState.BLOCKED:
             report.blocked_reason = "; ".join(recheck_preflight.blockers)
-            logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
+            _emit_gc_refusal(report.blocked_reason, phase="final_recheck")
             return report
         try:
             recheck_legacy_hook_stage = prepare_match_stage(conn)
         except Exception as exc:
             report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
-            logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
+            _emit_gc_refusal(report.blocked_reason, phase="final_recheck")
             return report
 
         for blob_hash, _mtime in shortlist:
@@ -1468,7 +1478,7 @@ def run_blob_gc_report(
             )
             if protection.blockers:
                 report.blocked_reason = "; ".join(protection.blockers)
-                logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
+                _emit_gc_refusal(report.blocked_reason, phase="final_recheck")
                 return report
             if protection.is_live:
                 evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE

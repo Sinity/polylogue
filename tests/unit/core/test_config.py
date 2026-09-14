@@ -5,7 +5,6 @@ Consolidated from test_config.py and test_logging.py.
 
 from __future__ import annotations
 
-import logging
 import sys
 from io import StringIO
 from pathlib import Path
@@ -14,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from polylogue.config import Config, ConfigError, DriveConfig, PolylogueConfig, Source
-from polylogue.logging import _StderrProxy, configure_logging, get_logger
+from polylogue.logging import _StderrProxy, capture, configure_logging, get_logger
 
 
 class TestConfig:
@@ -157,11 +156,18 @@ class TestConfig:
         active_index.write_text("real active generation")
         (archive_root / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
 
-        with caplog.at_level(logging.WARNING):
+        with capture() as records:
             config = Config(archive_root=archive_root, render_root=tmp_path / "render", sources=[])
 
         assert config.db_path == active_index
-        assert "stale conventional index path" in caplog.text
+        # Anti-vacuity: a resolver that served the stale file silently would
+        # emit nothing here, and the divergence would be invisible.
+        divergences = [
+            record for record in records if record.get("event") == "storage.archive_identity.stale_conventional_index"
+        ]
+        assert len(divergences) == 1
+        assert divergences[0]["outcome"] == "degraded"
+        assert divergences[0]["reason"] == "shadow_index_diverges_from_active_pointer"
 
     def test_config_optional_fields_default_none(self, tmp_path: Path) -> None:
         """Optional fields default to None."""
