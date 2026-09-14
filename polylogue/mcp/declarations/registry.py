@@ -269,7 +269,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "operation_result",
         "mutate-rebuild-insights",
         target_object_kinds=("maintenance-plan", "maintenance-operation"),
-        target_purpose="Preview, authorize, execute, inspect, and reconcile maintenance operations.",
+        target_purpose="Rebuild session insights and inspect or adjudicate operation recovery.",
     ),
 )
 
