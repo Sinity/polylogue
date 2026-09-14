@@ -73,8 +73,6 @@ def _tree_bytes(root: Path, *, budget: int = _TREE_ENTRY_BUDGET) -> tuple[int, i
     visited = 0
     stack = [root]
     while stack:
-        if visited >= budget:
-            return apparent, allocated, True
         current = stack.pop()
         try:
             with os.scandir(current) as scan:
@@ -82,17 +80,21 @@ def _tree_bytes(root: Path, *, budget: int = _TREE_ENTRY_BUDGET) -> tuple[int, i
         except OSError:
             continue
         for entry in entries:
+            # Per entry, not per directory: a pytest basetemp is one directory
+            # holding a subdirectory per test, so a between-directories check
+            # would leave the walk unbounded exactly where it grows.
+            if visited >= budget:
+                return apparent, allocated, True
+            visited += 1
             try:
                 if entry.is_dir(follow_symlinks=False):
                     stack.append(Path(entry.path))
-                    visited += 1
                     continue
                 status = entry.stat(follow_symlinks=False)
             except OSError:
                 continue
             apparent += status.st_size
             allocated += status.st_blocks * 512
-            visited += 1
     return apparent, allocated, False
 
 

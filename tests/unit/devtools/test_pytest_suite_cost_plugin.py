@@ -52,8 +52,9 @@ def test_scratch_tree_walk_is_off_unless_asked_for(tmp_path: Path) -> None:
     """
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    (scratch / "payload.bin").write_bytes(b"x" * 4096)
     recorder = suite_cost.SuiteCostRecorder(tmp_path / "receipts", "gw0", scratch)
+    # After the recorder, so the write lands inside the window it measures.
+    (scratch / "payload.bin").write_bytes(b"x" * 4096)
     recorder.note_test()
     recorder.sample_storage()
 
@@ -92,8 +93,11 @@ def test_aggregate_uses_controller_elapsed_without_summing_parallel_peaks(tmp_pa
                     "duration_s": duration,
                     "io": {"write_bytes": write_bytes},
                     "tier_init": {"ops.prototype_hit": tests, "ops.ddl_fresh": 1},
-                    "peak_scratch_apparent_bytes": 100,
-                    "peak_scratch_allocated_bytes": 200,
+                    # Distinct per worker: with both at one value, max and sum
+                    # are indistinguishable and the assertion below cannot tell
+                    # the reported peak from the summed peak this test forbids.
+                    "peak_scratch_apparent_bytes": 100 * (index + 1),
+                    "peak_scratch_allocated_bytes": 200 * (index + 1),
                 }
             )
         )
@@ -111,6 +115,7 @@ def test_aggregate_uses_controller_elapsed_without_summing_parallel_peaks(tmp_pa
     assert aggregate["tier_init"] == {"ops.ddl_fresh": 2, "ops.prototype_hit": 40}
     assert aggregate["archive_tier_initializations"] == 42
     assert aggregate["peak_scratch_apparent_bytes"] == 200
+    assert aggregate["peak_scratch_allocated_bytes"] == 400
 
 
 def test_controller_receipt_covers_collection_and_worker_warmup(tmp_path: Path) -> None:
