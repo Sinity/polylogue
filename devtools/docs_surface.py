@@ -480,12 +480,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Dated closure evidence for the 103-tool-to-10-verb MCP collapse (polylogue-t46.8).",
         "archive",
     ),
-    _entry(
-        "Schema Disposition Audit",
-        "schema-disposition-2026-08-19.md",
-        "Generated six-tier target schema disposition and canonical DDL inventory (polylogue-gvzkr).",
-        "archive",
-    ),
 )
 
 REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (

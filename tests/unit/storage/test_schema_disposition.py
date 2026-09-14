@@ -13,7 +13,6 @@ from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
     assert_complete_schema_dispositions,
     audit_column_dispositions,
     canonical_audit_columns,
-    schema_disposition_report,
     schema_dispositions,
 )
 
@@ -111,14 +110,3 @@ def test_six_tier_disposition_rejects_undeclared_object() -> None:
 
     with pytest.raises(ValueError, match="undeclared schema objects"):
         assert_complete_schema_dispositions(rows)
-
-
-def test_six_tier_report_is_generated_from_the_complete_disposition() -> None:
-    report = schema_disposition_report()
-
-    assert report["complete"] is True
-    assert report["object_count"] == len(schema_dispositions())
-    counts = cast("dict[str, int]", report["disposition_counts"])
-    objects = cast("list[object]", report["objects"])
-    assert sum(counts.values()) == report["object_count"]
-    assert len(objects) == report["object_count"]
