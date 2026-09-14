@@ -389,6 +389,12 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
             _record_tier_init(tier, "ddl_fresh")
             return
         _initialize_archive_tier_ddl(conn, tier)
+        if tier is ArchiveTier.INDEX:
+            from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+
+            # Same obligation as both sibling branches above: a tier reaching
+            # the manifest assertion without its runtime indexes is refused.
+            ensure_runtime_indexes_sync(conn)
         _record_tier_init(tier, "ddl_reapply")
         return
     # Explicit escape hatch for a future tier that cannot safely be restored
