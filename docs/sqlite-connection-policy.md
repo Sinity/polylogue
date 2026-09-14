@@ -108,9 +108,8 @@ pair of read frames), `operations/mutation_actuators.py`,
 `immutable=1` wrapper in `storage/blob_integrity.py`,
 `storage/artifacts/inspection.py`, `storage/sqlite/migration_runner.py`,
 `sources/sqlite_snapshot.py`, `sources/parsers/{codex_state,hermes_state,hermes_verification}.py`,
-`maintenance/embedding_preservation.py`, `operations/durable_change_train.py`,
-`operations/archive_root_relocation.py` and
-`operations/historical_source_continuity_recovery.py`.
+`maintenance/embedding_preservation.py` and
+`operations/durable_change_train.py`.
 
 The API, CLI status, `operations/archive_debt.py` and `daemon/similarity.py`
 readers already used the declared factories and named classes.
