@@ -27,6 +27,8 @@ from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
+    BLOCKER_ORIGIN_FRONTIER_OBLIGATION,
+    BLOCKER_ORIGIN_KEY,
     RawAuthorityCensusReceipt,
     RawReplayPlan,
     raw_authority_detail_query_handle,
@@ -1009,6 +1011,10 @@ def _reconcile_frontier_obligations(
             blocker_id = f"raw-authority-blocker:{_digest(['frontier', census_id, item.plan_id])}"
             observed = {
                 "schema": "polylogue.raw-authority-frontier-obligation.v1",
+                # Writer-declared blocker class; automatic clearing selects on
+                # this positively (polylogue-l8tdh) and never clears a frontier
+                # obligation.
+                BLOCKER_ORIGIN_KEY: BLOCKER_ORIGIN_FRONTIER_OBLIGATION,
                 "state": item.state.value,
                 "actuator": item.actuator.value,
                 "reason": item.reason,
