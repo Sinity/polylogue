@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import time
 from itertools import permutations
+
+import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session_revision_membership import (
     MembershipRevision,
     _content_by_identity,
+    _event_axis_relation,
     _maximal_evidence_fallback,
     _relation,
     classify_membership_revisions,
 )
 from polylogue.core.enums import Provider
-from polylogue.pipeline.ids import session_revision_projection
+from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_projection
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 
 
@@ -1313,3 +1317,63 @@ def test_anchor_tolerance_is_scoped_to_the_provider_remeasured_shape() -> None:
         return MembershipRevision(raw_id, session_revision_projection(session))
 
     assert _relation(_dom_observed("a", "986a3a7e").projection, _dom_observed("b", "1175c3a7").projection) == "conflict"
+
+
+@pytest.mark.uses_real_clock(
+    "measures real elapsed time of one pairing shape against a control shape; a frozen clock "
+    "reports zero for both and the comparison becomes vacuous"
+)
+def test_anchor_free_event_pairing_does_not_degrade_on_a_single_shared_key() -> None:
+    """One anchor-free key holding a whole event cohort must not cost quadratic work.
+
+    ChatGPT re-anchors every ``generation_lifecycle`` event of an export
+    vintage, so a hostile export can collect its entire event set under one
+    anchor-free key. Pairing consumed candidates with ``list.pop(0)``, which
+    shifts the whole remainder on each match: an n-event cohort cost O(n^2)
+    pointer moves, and a ~27 MB ChatGPT-shaped document stays inside the
+    ordinary raw-materialization limit while stalling an import worker.
+
+    The measurement is control-versus-treatment on identical work: both
+    projections pair every event and run the same identity-set construction,
+    differing only in whether the anchor-free keys collide. Host speed and
+    contention scale both timings together, so the ratio -- not an absolute
+    ceiling -- carries the verdict.
+
+    Anti-vacuity: restore ``available`` to ``dict[bytes, list[bytes]]`` with
+    ``candidates.pop(0)`` and this goes red. Measured at this cohort size,
+    the collapsed-key shape costs 0.76x the control with ``deque.popleft()``
+    and 2.45x with ``list.pop(0)``; the 2.0x ceiling sits between them with
+    room on both sides, and the gap widens with cohort size because only the
+    broken shape grows super-linearly.
+    """
+    cohort = 120_000
+
+    def _projection(prefix: bytes, *, collapsed: bool) -> SessionRevisionProjection:
+        return SessionRevisionProjection(
+            session_hash=b"session",
+            message_hashes=(),
+            message_contents=frozenset(),
+            attachment_identities=frozenset(),
+            attachment_contents=frozenset(),
+            event_hashes=(),
+            event_contents=frozenset((b"%s%08d" % (prefix, index), b"content") for index in range(cohort)),
+            anchor_free_event_identities=frozenset(
+                (b"%s%08d" % (prefix, index), b"one-key" if collapsed else b"key%08d" % index)
+                for index in range(cohort)
+            ),
+        )
+
+    def _elapsed(*, collapsed: bool) -> float:
+        left = _projection(b"a", collapsed=collapsed)
+        right = _projection(b"b", collapsed=collapsed)
+        started = time.perf_counter()
+        assert _event_axis_relation(left, right) == "equal"
+        return time.perf_counter() - started
+
+    control = min(_elapsed(collapsed=False) for _ in range(3))
+    collapsed = min(_elapsed(collapsed=True) for _ in range(3))
+
+    assert collapsed < control * 2.0, (
+        f"collapsing {cohort} events onto one anchor-free key cost "
+        f"{collapsed / control:.2f}x the distinct-key control; pairing is not O(1) per match"
+    )
