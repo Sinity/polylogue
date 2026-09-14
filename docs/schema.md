@@ -56,11 +56,6 @@ Daemon startup reconciles a backup-authorized manifest left by a crash before
 schema probing and retains the recovery evidence. No train state table and no
 parallel migration engine are created.
 
-The runtime table inventory per tier is also enumerated in
-`polylogue/cli/commands/status.py` (`_ARCHIVE_TIER_TABLES`), which `polylogue
-status` uses to report row counts; that dict is a useful cross-check against
-the DDL.
-
 ## The Six Tiers
 
 ### `source.db` — raw acquisition (rebuild-from-source)
