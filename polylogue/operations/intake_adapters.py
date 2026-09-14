@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,48 +67,101 @@ class DaemonIntakeContext:
         return cast(_T, await self.write_runner(actor, function, *args, **kwargs))
 
 
+def _walk_entry_key(path: Path, *, is_dir: bool) -> str:
+    """The order key a walk entry occupies among its siblings.
+
+    A file's key is its path string -- exactly the key the resume cursor
+    compares against. A directory's key is its path string plus the path
+    separator, which is what makes descending at the keyed position exact:
+    ``root/a.json`` sorts below ``root/a`` + separator because ``.`` (46)
+    sorts below ``/`` (47), so ``root/a.json`` is emitted before every file
+    under ``root/a/``. Both comparisons are plain code-point ordering, so
+    unicode and mixed-case names order identically here and at the cursor.
+    """
+
+    text = str(path)
+    return text + os.sep if is_dir else text
+
+
+def _ordered_children(
+    source: WatchSource,
+    directory: Path,
+    after: str | None,
+    scandir: Callable[[Path], Any] = os.scandir,
+) -> list[tuple[str, Path, bool]]:
+    """Siblings of ``directory``, reverse-sorted so a stack pops them in order."""
+
+    children: list[tuple[str, Path, bool]] = []
+    try:
+        entries = scandir(directory)
+    except OSError:
+        return children
+    with entries:
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if source.ignores_directory(path):
+                        continue
+                    key = _walk_entry_key(path, is_dir=True)
+                    # Every descendant path begins with ``key``. When the
+                    # cursor sorts above ``key`` without having it as a
+                    # prefix, it sorts above every such descendant too, so
+                    # the whole subtree is already behind the cursor.
+                    if after is not None and after > key and not after.startswith(key):
+                        continue
+                    children.append((key, path, True))
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            children.append((_walk_entry_key(path, is_dir=False), path, False))
+    children.sort(key=lambda child: child[0], reverse=True)
+    return children
+
+
 def _bounded_source_paths(
     source: WatchSource,
     all_sources: tuple[WatchSource, ...],
     *,
     limit: int,
     after: str | None,
+    scandir: Callable[[Path], Any] = os.scandir,
 ) -> list[Path]:
-    """Collect at most ``limit`` files, stopping as soon as it is full."""
+    """Collect at most ``limit`` files, stopping as soon as it is full.
+
+    Files are emitted in exact lexicographic order of their path strings.
+    That order is authoritative because it is the order the resume cursor
+    compares in (``after``, advanced in ``acknowledge`` over consumed
+    items): a producer that emitted ``os.scandir`` order instead let a
+    high-water mark skip files it had never emitted, which was permanent
+    loss rather than delay. Emitting in cursor order also makes the
+    ``limit`` early exit safe -- the next pass resumes at exactly the key
+    the previous one stopped on, mid-directory or not.
+    """
 
     if limit <= 0 or not source.root.is_dir():
         return []
-    pending: deque[Path] = deque([source.root])
     found: list[Path] = []
-    while pending and len(found) < limit:
-        directory = pending.popleft()
+    stack: list[list[tuple[str, Path, bool]]] = [_ordered_children(source, source.root, after, scandir)]
+    while stack and len(found) < limit:
+        level = stack[-1]
+        if not level:
+            stack.pop()
+            continue
+        key, path, is_dir = level.pop()
+        if is_dir:
+            stack.append(_ordered_children(source, path, after, scandir))
+            continue
+        if after is not None and key <= after:
+            continue
         try:
-            entries = os.scandir(directory)
+            if deepest_source_for_path(path, all_sources) is not source or not source.accepts(path):
+                continue
         except OSError:
             continue
-        with entries:
-            for entry in entries:
-                path = Path(entry.path)
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        if source.ignores_directory(path):
-                            continue
-                        pending.append(path)
-                        continue
-                    if not entry.is_file(follow_symlinks=False):
-                        continue
-                except OSError:
-                    continue
-                if after is not None and str(path) <= after:
-                    continue
-                try:
-                    if deepest_source_for_path(path, all_sources) is not source or not source.accepts(path):
-                        continue
-                except OSError:
-                    continue
-                found.append(path)
-                if len(found) >= limit:
-                    break
+        found.append(path)
     return found
 
 
