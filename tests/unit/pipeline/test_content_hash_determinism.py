@@ -91,9 +91,9 @@ def test_content_hash_nfc_nfd_message_text_equivalence() -> None:
 def test_normalize_for_hash_none_sentinel_unique() -> None:
     """None should normalize to a sentinel distinct from any string."""
     result = _normalize_for_hash(None)
-    assert result != "__POLYLOGUE_NULL__" or result == "__POLYLOGUE_NULL__"
-    # The sentinel should never appear in real content.
-    assert isinstance(result, str)
+    assert result == "__POLYLOGUE_NULL__"
+    # Distinct from the empty-string sentinel, which is the collision that matters.
+    assert result != _normalize_for_hash("")
 
 
 def test_normalize_for_hash_empty_string_sentinel_unique() -> None:

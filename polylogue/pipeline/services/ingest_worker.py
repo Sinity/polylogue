@@ -39,6 +39,7 @@ from polylogue.pipeline.ingest_outcomes import (
     classify_decode_exception,
     classify_parse_exception,
     corrupt_input_disposition,
+    non_session_artifact_disposition,
     parser_defect_disposition,
     success_disposition,
     unsupported_shape_disposition,
@@ -107,8 +108,12 @@ class IngestRecordResult:
     # polylogue-cnu3: typed disposition for this raw record's acquire/parse
     # outcome, classified structurally (exception type / artifact policy),
     # never by text-matching ``error``/``validation_error`` above.
-    outcome_code: str = IngestOutcome.SUCCESS.value
-    retryable: bool | None = False
+    # polylogue-u1ww0: the default is the *unclassified* code, never
+    # SUCCESS. A construction site that forgets to classify (the batch's
+    # worker-crash and progress-deadline paths did exactly that) must not
+    # inherit a positive claim it never established.
+    outcome_code: str = IngestOutcome.LEGACY_UNKNOWN.value
+    retryable: bool | None = None
     evidence_ref: str | None = None
     remediation: str | None = None
     diagnostic: str | None = None
@@ -916,16 +921,88 @@ def _materialize_parsed_sessions(
     )
 
 
+def _unparseable_plan_reason(plan: _ParsePlan) -> str | None:
+    """Why nothing could parse this plan, or ``None`` if it was recognized.
+
+    Two structurally different situations reach the ``parse_as_session is
+    False`` branch and must never collapse into each other (polylogue-u1ww0):
+
+    * the artifact was *recognized* and its own kind declares it is not a
+      conversation -- a sidecar, journal, index or memory document. Zero
+      sessions is the complete, correct result; the bytes stay retained as
+      source evidence. ``None`` is returned for that case.
+    * nothing recognized the payload at all: there is no parser for the
+      provider (``Provider.UNKNOWN``), or the shape matched no known
+      document (``ArtifactKind.UNKNOWN``). The record contributed nothing
+      and no one can say what it held. That is a refusal with an
+      attributable reason, returned here as a non-empty string.
+    """
+    if plan.provider is Provider.UNKNOWN:
+        return (
+            "parse: no parser is registered for an unknown provider "
+            f"(payload_provider={plan.payload_provider!r}, "
+            f"artifact={plan.artifact.kind.value}: {plan.artifact.reason})"
+        )
+    if plan.artifact.kind is ArtifactKind.UNKNOWN:
+        return f"parse: payload shape was not recognized for provider {str(plan.provider)!r} ({plan.artifact.reason})"
+    return None
+
+
+def _non_session_plan_result(
+    context: _IngestContext,
+    plan: _ParsePlan,
+) -> IngestRecordResult:
+    """Report a plan the taxonomy refused to parse as a session, honestly.
+
+    This branch used to return the default ``success`` disposition with an
+    empty ``sessions`` list and no ``error`` at all, so an unparseable record
+    was counted as a successful ingest that contributed nothing
+    (polylogue-u1ww0). Neither case below is a success; the unrecognized case
+    additionally carries an ``error`` so the batch records it as a failed raw
+    id and the source tier retains ``TERMINAL_UNSUPPORTED_SHAPE`` failure
+    evidence for it instead of losing it in the skipped set.
+    """
+    unparseable = _unparseable_plan_reason(plan)
+    if unparseable is not None:
+        return _record_result(
+            context,
+            plan.payload_provider,
+            validation_status=ValidationStatus.SKIPPED,
+            # ``error`` but deliberately NOT ``parse_error``: the batch routes
+            # on ``error`` (failed_raw_ids -> durable TERMINAL_UNSUPPORTED_SHAPE
+            # failure evidence), while ``parse_error`` is what
+            # ``source_conservation``'s term ladder reads. That ladder tests
+            # ``parse_error IS NOT NULL`` -> the NON-blocking ``parse_failure``
+            # term *before* the blocking ``unclassified_shape`` term
+            # (maintenance/source_conservation.py term_case). Writing
+            # parse_error here would downgrade an unrecognized record from a
+            # conservation blocker to an excused one -- the opposite of what
+            # this fix is for. The reason is still durable, via the
+            # disposition's diagnostic (-> raw detection_warnings) and the
+            # retained failure evidence.
+            error=unparseable,
+            disposition=unsupported_shape_disposition(
+                evidence_ref=f"unrecognized_artifact:{plan.artifact.kind.value}",
+                diagnostic=unparseable,
+            ),
+        )
+    return _record_result(
+        context,
+        plan.payload_provider,
+        validation_status=ValidationStatus.SKIPPED,
+        disposition=non_session_artifact_disposition(
+            evidence_ref=f"artifact_not_session:{plan.artifact.kind.value}",
+            diagnostic=f"artifact kind {plan.artifact.kind.value} is not a session ({plan.artifact.reason})",
+        ),
+    )
+
+
 def _run_parse_plan(
     context: _IngestContext,
     plan: _ParsePlan,
 ) -> IngestRecordResult:
     if not plan.artifact.parse_as_session:
-        return _record_result(
-            context,
-            plan.payload_provider,
-            validation_status=ValidationStatus.SKIPPED,
-        )
+        return _non_session_plan_result(context, plan)
 
     validation = _validate_parse_plan(context, plan)
     if validation.validation_error is not None:

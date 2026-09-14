@@ -330,7 +330,26 @@ class TestParsingServiceCorruption:
         assert result.error is None
 
     def test_wrong_envelope_in_codex_raw(self, tmp_path: Path) -> None:
-        """Codex JSONL with 1 wrong-envelope line: parsing still works."""
+        """Codex JSONL with 1 wrong-envelope line: refused, loudly and typed.
+
+        ``classify_artifact`` refuses a Codex record stream wholesale once it
+        contains a record shape it does not support (artifact_taxonomy/
+        runtime.py, "Codex record stream contains unsupported session
+        records" -> ArtifactKind.UNKNOWN, parse_as_session=False). All 50
+        records of this rollout are therefore dropped, not just the corrupted
+        one.
+
+        This test previously asserted only ``result.error is None`` and so
+        pinned the polylogue-u1ww0 defect in place: the drop was reported as
+        ``outcome_code='success'`` with zero sessions, which is precisely the
+        silent-content-loss shape a from-scratch rebuild cannot tolerate. The
+        classifier's wholesale refusal is deliberate and unchanged here; what
+        changed is that it is now *reported* as a refusal.
+
+        Anti-vacuity: restoring the silent-success branch makes both outcome
+        assertions below fail.
+        """
+        from polylogue.core.enums import IngestOutcome
         from polylogue.pipeline.services.ingest_worker import ingest_record
 
         lines = generate_large_jsonl(50, provider="codex")
@@ -339,7 +358,9 @@ class TestParsingServiceCorruption:
 
         record = _make_raw_record("codex-wrong-env-1", "codex", content, "/exports/codex.jsonl")
         result = ingest_record(record, str(tmp_path / "archive"), "off")
-        assert result.error is None
+        assert not result.sessions
+        assert result.outcome_code == IngestOutcome.UNSUPPORTED_SHAPE.value
+        assert result.error is not None and "was not recognized" in result.error
 
 
 # ===========================================================================

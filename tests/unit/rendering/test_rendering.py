@@ -180,7 +180,7 @@ class TestBranchRendering:
         conv = _make_conv(msgs)
         html = render_session_html(conv)
         assert "<details" not in html
-        assert "branches" not in html or "branches" in html
+        assert 'class="branches"' not in html
 
     def test_branching_session_has_details(self) -> None:
         """Branching sessions should render <details> sections."""

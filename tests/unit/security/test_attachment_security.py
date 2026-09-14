@@ -147,8 +147,12 @@ def test_known_path_traversal_inputs_do_not_crash(path: str) -> None:
         path=path,
         name=path,
     )
-    assert att is not None
-    assert att.name is not None or att.path is not None
+    # Anti-vacuity: the constructor must neutralize the hostile path rather than
+    # storing it verbatim. Removing the sanitizer makes both assertions red.
+    sanitized = att.path
+    assert sanitized is not None
+    assert ".." not in sanitized
+    assert "\x00" not in sanitized
 
 
 @given(path_traversal_strategy())
@@ -159,8 +163,10 @@ def test_path_traversal_creates_valid_attachment(malicious_path: str) -> None:
         path=malicious_path,
         name=malicious_path,
     )
-    assert att is not None
-    assert att.name is not None or att.path is not None
+    sanitized = att.path
+    assert sanitized is not None
+    assert ".." not in sanitized
+    assert "\x00" not in sanitized
 
 
 @given(symlink_path_strategy())

@@ -95,6 +95,23 @@ def corrupt_input_disposition(*, evidence_ref: str, diagnostic: str | None) -> I
     )
 
 
+def non_session_artifact_disposition(*, evidence_ref: str, diagnostic: str | None = None) -> IngestAttemptDisposition:
+    """The disposition for a *recognized* artifact whose kind is not a session.
+
+    Zero sessions is the correct and complete result here -- the bytes are
+    retained as source evidence by policy (a sidecar, a journal, an index, a
+    memory document). It is still not a session-ingest ``SUCCESS``
+    (polylogue-u1ww0): reporting it as one makes an archive that contains no
+    conversation from this record indistinguishable from one that does.
+    """
+    return IngestAttemptDisposition(
+        outcome=IngestOutcome.UNSUPPORTED_SHAPE,
+        evidence_ref=evidence_ref,
+        diagnostic=bounded_diagnostic(diagnostic),
+        remediation="no action: this artifact kind is retained as source evidence and is never parsed as a session",
+    )
+
+
 def unsupported_shape_disposition(*, evidence_ref: str, diagnostic: str | None = None) -> IngestAttemptDisposition:
     return IngestAttemptDisposition(
         outcome=IngestOutcome.UNSUPPORTED_SHAPE,
@@ -219,6 +236,7 @@ __all__ = [
     "downstream_failure_disposition",
     "interrupted_disposition",
     "legacy_unknown_disposition",
+    "non_session_artifact_disposition",
     "parser_defect_disposition",
     "success_disposition",
     "transient_error_disposition",

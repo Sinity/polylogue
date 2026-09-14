@@ -24,7 +24,7 @@ from typing_extensions import TypedDict
 from polylogue.archive.message.roles import Role
 from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.config import Source
-from polylogue.core.enums import BlockType, Provider, ValidationStatus
+from polylogue.core.enums import BlockType, IngestOutcome, Provider, ValidationStatus
 from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.validation import ValidationService
@@ -244,7 +244,15 @@ def test_parse_unknown_source_name(tmp_path: Path) -> None:
         json.dumps({"id": "conv-1", "title": "Test"}).encode(),
     )
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None or result.error is not None
+    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
+    # polylogue-u1ww0: an unparseable record must never be reported as a
+    # successful ingest that contributed nothing. Anti-vacuity: restoring the
+    # old silent-success branch in ``_run_parse_plan`` makes all three
+    # assertions below fail (outcome_code becomes "success", error None).
+    assert not result.sessions
+    assert result.outcome_code == IngestOutcome.UNSUPPORTED_SHAPE.value
+    assert result.error is not None and "no parser is registered" in result.error
+    assert result.evidence_ref is not None and result.evidence_ref.startswith("unrecognized_artifact:")
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +270,7 @@ def test_parse_claude_code_jsonl_with_null_fields(tmp_path: Path) -> None:
     )
     record = _make_raw_record("null-fields", "claude-code", content, "/exports/session.jsonl")
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None or result.error is not None
+    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +338,7 @@ def test_parse_chatgpt_deeply_nested_malformed_nodes(tmp_path: Path) -> None:
     ).encode()
     record = _make_raw_record("malformed-nodes", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None or result.error is not None
+    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +375,7 @@ def test_parse_chatgpt_bundle_with_one_invalid_item(tmp_path: Path) -> None:
     ).encode()
     record = _make_raw_record("bundle-one-invalid", "chatgpt", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None or result.error is not None
+    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +401,57 @@ def test_parse_gemini_missing_text_fields(tmp_path: Path) -> None:
     ).encode()
     record = _make_raw_record("gemini-no-text", "gemini", payload)
     result = ingest_record(record, str(tmp_path / "archive"), "off")
-    assert result.sessions is not None or result.error is not None
+    assert result.sessions or result.error is not None, f"ingest produced neither sessions nor an error: {result!r}"
+    # polylogue-u1ww0: same rule for a payload whose shape no parser claims.
+    assert not result.sessions
+    assert result.outcome_code == IngestOutcome.UNSUPPORTED_SHAPE.value
+    assert result.error is not None and "was not recognized" in result.error
+    assert result.evidence_ref == "unrecognized_artifact:unknown"
+    # polylogue-u1ww0 conservation guard: ``source_conservation``'s term
+    # ladder types ``parse_error IS NOT NULL`` as the NON-blocking
+    # ``parse_failure`` term *before* the blocking ``unclassified_shape``
+    # term. A refusal must therefore stay out of parse_error, or an
+    # unrecognized record would silently stop blocking the conservation
+    # gate. Anti-vacuity: setting parse_error=... on the refusal branch in
+    # ``_non_session_plan_result`` makes this assertion fail.
+    assert result.parse_error is None
+
+
+# ---------------------------------------------------------------------------
+# polylogue-u1ww0: legitimately-empty must stay distinguishable from refused
+# ---------------------------------------------------------------------------
+
+
+def test_recognized_non_session_artifact_is_not_a_refusal(tmp_path: Path) -> None:
+    """A declared non-session artifact yields zero sessions without an error.
+
+    The fix for the silent-success defect must not collapse the two
+    situations: a Claude Code tool-result sidecar is *recognized* (its payload here is
+    deliberately session-shaped, which is the documented trap -- only the path
+    rule can refuse it), and its
+    kind declares it is evidence rather than a conversation, so zero sessions
+    is the complete correct result and the batch skips it. It is still not
+    reported as a session-ingest SUCCESS.
+
+    Anti-vacuity: if the refusal branch were widened to cover every
+    ``parse_as_session is False`` artifact, ``result.error`` would become
+    non-None here and the batch would record this sidecar as a failed raw id.
+    """
+    from polylogue.pipeline.services.ingest_worker import ingest_record
+
+    record = _make_raw_record(
+        "tool-result-sidecar",
+        "claude-code",
+        json.dumps({"uuid": "s1", "name": "export", "messages": [{"role": "user", "content": "hi"}]}).encode(),
+        "/home/u/.claude/projects/proj/abcd-1234/tool-results/output.txt",
+    )
+    result = ingest_record(record, str(tmp_path / "archive"), "off")
+
+    assert not result.sessions
+    assert result.error is None, f"a declared evidence artifact must not be a refusal: {result!r}"
+    assert result.outcome_code != IngestOutcome.SUCCESS.value
+    assert result.outcome_code == IngestOutcome.UNSUPPORTED_SHAPE.value
+    assert result.evidence_ref is not None and result.evidence_ref.startswith("artifact_not_session:")
 
 
 # =====================================================================

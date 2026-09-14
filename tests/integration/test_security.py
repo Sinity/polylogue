@@ -87,7 +87,7 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path: Path) -> None:
     list(iter_source_sessions(source, cursor_state=cursor_state))
     failed = _failed_files(cursor_state)
     failed_count = _failed_count(cursor_state)
-    assert failed_count >= 1 or not failed
+    assert failed_count >= 1, "zip bomb was not recorded as a failed file"
     if failed:
         has_expected_error = any(
             "ratio" in str(f.get("error", "")).lower() or "json" in str(f.get("error", "")).lower() for f in failed
