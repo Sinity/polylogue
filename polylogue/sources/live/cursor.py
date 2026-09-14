@@ -51,6 +51,10 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 
 _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
+# Upper bound on stage events buffered inside one ``ops_write_scope``. Reaching
+# it writes and commits the buffer immediately, so the memory held by a scope is
+# bounded no matter how long its batch runs.
+_MAX_BUFFERED_OPS_STAGE_EVENTS = 128
 _FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S = 60
 logger = get_logger(__name__)
 
@@ -285,6 +289,31 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _BufferedStageEvent:
+    """One daemon stage event held for the active ops scope's next commit."""
+
+    attempt_id: str
+    stage: str
+    status: str
+    observed_at_ms: int
+    payload: dict[str, object]
+
+
+def _insert_stage_events(conn: sqlite3.Connection, events: list[_BufferedStageEvent]) -> None:
+    """Write buffered daemon stage events into the caller's open transaction."""
+    for event in events:
+        record_archive_daemon_stage_event(
+            conn,
+            attempt_id=event.attempt_id,
+            stage=event.stage,
+            status=event.status,
+            observed_at_ms=event.observed_at_ms,
+            payload=event.payload,
+            commit=False,
+        )
+
+
 class CursorStore:
     """SQLite-backed live cursor store keyed by source path."""
 
@@ -297,6 +326,10 @@ class CursorStore:
         # that already know the plain root should pass it explicitly via
         # ``ops_db_path`` instead of relying on the sibling derivation.
         self._ops_db_path = ops_db_path if ops_db_path is not None else db_path.with_name("ops.db")
+        # Per-thread holder for ``ops_write_scope``: ``conn`` (the shared
+        # connection, or None), ``depth`` (re-entry count) and ``pending``
+        # (buffered stage events awaiting the next commit on ``conn``).
+        self._ops_scope = threading.local()
         self._initialize_lock = threading.Lock()
         self._initialized = False
         if initialize:
@@ -331,13 +364,82 @@ class CursorStore:
             conn.close()
 
     @contextmanager
-    def _connect_ops(self) -> Iterator[sqlite3.Connection]:
+    def ops_write_scope(self) -> Iterator[None]:
+        """Hold one ``ops.db`` write connection for one bounded, single-thread scope.
+
+        Every ``ops.db`` operation on this store opened, committed and closed its
+        own connection, which is ~38 open/close pairs per catch-up chunk. Inside
+        a scope they share one connection instead. Commit semantics per operation
+        are unchanged: each ``_connect_ops`` block still commits on success and
+        rolls back on failure, so no write is held open across unrelated work.
+
+        The scope is deliberately per-thread and per-chunk. It is keyed on a
+        :class:`threading.local`, so a different thread never touches another
+        thread's connection and simply opens its own as before; and it is entered
+        and left inside one ingest batch, so the flush below is reached on every
+        exit path, including an exception or a cancellation. Nothing is carried
+        across a chunk boundary -- the failure shape of polylogue-5llcz (#5098)
+        was an obligation deferred past the boundary that an interrupt then lost.
+        """
+        state = self._ops_scope
+        if getattr(state, "conn", None) is not None:
+            state.depth += 1
+            try:
+                yield
+            finally:
+                state.depth -= 1
+            return
         conn = open_connection(self._ops_db_path, timeout=10.0)
+        state.conn = conn
+        state.depth = 1
+        state.pending = []
         try:
-            with conn:
-                yield conn
+            yield
         finally:
-            conn.close()
+            state.depth = 0
+            state.conn = None
+            pending = state.pending
+            state.pending = []
+            try:
+                # Guaranteed flush: buffered telemetry lands even when the scope
+                # is left by an exception. A buffered row is a whole row, so this
+                # never publishes a partial event.
+                if pending:
+                    _insert_stage_events(conn, pending)
+                conn.commit()
+            finally:
+                conn.close()
+
+    @contextmanager
+    def _connect_ops(self) -> Iterator[sqlite3.Connection]:
+        held = cast(sqlite3.Connection | None, getattr(self._ops_scope, "conn", None))
+        if held is None:
+            conn = open_connection(self._ops_db_path, timeout=10.0)
+            try:
+                with conn:
+                    yield conn
+            finally:
+                conn.close()
+            return
+        try:
+            yield held
+        except BaseException:
+            held.rollback()
+            raise
+        else:
+            # Buffered telemetry rides this operation's commit rather than
+            # taking one of its own, and is written before it so a reader never
+            # sees a finished attempt whose events are still buffered. A block
+            # that wrote nothing has no open transaction and therefore no commit
+            # to ride: flushing there would add back the commit the buffer
+            # exists to avoid, so the events stay buffered for the next writer
+            # (and, failing that, for the scope's own exit flush).
+            if held.in_transaction:
+                pending = self._ops_scope.pending
+                if pending:
+                    self._ops_scope.pending = []
+                    _insert_stage_events(held, pending)
+                held.commit()
 
     @contextmanager
     def _connect_ops_readonly(self) -> Iterator[sqlite3.Connection]:
@@ -751,6 +853,7 @@ class CursorStore:
                 stage="planning",
                 status="running",
                 observed_at_ms=now_ms,
+                commit=False,
                 payload={
                     "phase": "planning",
                     "status": "running",
@@ -893,6 +996,7 @@ class CursorStore:
                     status=_archive_attempt_status(status),
                     observed_at_ms=now_ms,
                     payload=payload,
+                    commit=False,
                 )
                 conn.commit()
 
@@ -985,17 +1089,41 @@ class CursorStore:
             payload.update({"phase": phase, "status": status})
             if stage_payload:
                 payload.update(stage_payload)
+            event = _BufferedStageEvent(
+                attempt_id=attempt_id,
+                stage=phase,
+                status=_archive_attempt_status(status),
+                observed_at_ms=observed_at_ms,
+                payload=payload,
+            )
+            if self._buffer_stage_event(event):
+                return
             with self._connect_ops() as conn:
-                record_archive_daemon_stage_event(
-                    conn,
-                    attempt_id=attempt_id,
-                    stage=phase,
-                    status=_archive_attempt_status(status),
-                    observed_at_ms=observed_at_ms,
-                    payload=payload,
-                )
+                _insert_stage_events(conn, [event])
 
         return best_effort_cursor_write("live ingest stage event", write)
+
+    def _buffer_stage_event(self, event: _BufferedStageEvent) -> bool:
+        """Buffer one telemetry-only stage event onto the active ops scope.
+
+        Returns False when no scope is active, so the caller writes and commits
+        the event itself exactly as before. Inside a scope the event is held
+        until the scope's next ``ops.db`` commit -- which every non-telemetry
+        operation still takes, and which the scope itself guarantees on exit --
+        so a batch of events costs one commit rather than one commit each. The
+        buffer is capped, and reaching the cap writes and commits it at once.
+        """
+        state = self._ops_scope
+        conn = cast(sqlite3.Connection | None, getattr(state, "conn", None))
+        if conn is None:
+            return False
+        state.pending.append(event)
+        if len(state.pending) >= _MAX_BUFFERED_OPS_STAGE_EVENTS:
+            pending = state.pending
+            state.pending = []
+            _insert_stage_events(conn, pending)
+            conn.commit()
+        return True
 
     def finish_ingest_attempt(
         self,
