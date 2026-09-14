@@ -8,6 +8,8 @@ from typing import Any
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.paths._roots import archive_root as effective_archive_root
+from polylogue.paths._roots import archive_root_provenance
 
 #: Human-readable description of where each config layer's value came from,
 #: keyed by the layer names `PolylogueConfig.layer_of` returns
@@ -36,6 +38,19 @@ def archive_root_provenance_line(env: AppEnv) -> str:
     settings = env.runtime.settings
     layer = settings.layer_of("archive_root")
     archive_root = env.config.archive_root
+    # Report what the command will actually touch. Maintenance commands
+    # resolve through ``polylogue.paths.archive_root``, which scrubs the
+    # cloud-sandbox sentinel; the five-layer config resolution behind
+    # ``env.config`` does not, and still reports ``env``. Reading the layer
+    # alone therefore named an empty scratch stub while the command mutated
+    # the configured archive -- the inverse of the mistake this line exists to
+    # prevent, and worse, because it understates the blast radius.
+    if archive_root_provenance() == "env-sentinel-ignored":
+        return (
+            f"Archive root: {effective_archive_root()} "
+            "[source: polylogue.toml; POLYLOGUE_ARCHIVE_ROOT is the cloud-sandbox "
+            "sentinel and was ignored]"
+        )
     if layer in ("site", "user"):
         config_path = settings.layer_paths.get(layer)
         source = f"{layer} config file ({config_path})" if config_path else f"{layer} config file"

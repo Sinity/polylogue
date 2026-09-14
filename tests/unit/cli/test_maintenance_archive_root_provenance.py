@@ -80,3 +80,50 @@ def test_maintenance_status_prints_user_config_archive_root_provenance(
     assert f"Archive root: {archive_root}" in result.output
     assert f"user config file ({user_toml})" in result.output
     assert "POLYLOGUE_ARCHIVE_ROOT environment variable" not in result.output
+
+
+def test_maintenance_banner_names_the_root_the_command_will_actually_touch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    empty_archive_template: Path,
+) -> None:
+    """The cloud sentinel must not make the banner understate the blast radius.
+
+    ``.claude/settings.json`` sets ``POLYLOGUE_ARCHIVE_ROOT`` to the
+    cloud-sandbox sentinel, and agent subprocesses inherit it on the
+    workstation. ``polylogue.paths.archive_root`` deliberately scrubs that
+    sentinel when a config layer names a real root, so every maintenance
+    command operates on the *configured* archive -- but the five-layer config
+    resolution the banner read still reported ``env``, so a destructive
+    ``ops maintenance`` invocation announced an empty scratch stub while
+    mutating the live archive.
+
+    Red if the banner goes back to reading ``env.config.archive_root`` or the
+    raw config layer: it then prints ``/tmp/polylogue-archive`` and calls the
+    source the environment variable.
+    """
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "/tmp/polylogue-archive")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "unused-data-home"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
+
+    archive_root = tmp_path / "toml-configured-archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    import subprocess
+
+    subprocess.run(
+        ["cp", "-a", "--reflink=auto", f"{empty_archive_template}/.", str(archive_root)],
+        check=True,
+    )
+    user_toml = tmp_path / "user.toml"
+    user_toml.write_text(f'[archive]\nroot = "{archive_root.as_posix()}"\n', encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(user_toml))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["ops", "maintenance", "archive-plan"])
+
+    assert result.exit_code == 0, result.output
+    assert f"Archive root: {archive_root}" in result.output
+    assert "was ignored" in result.output
+    assert "/tmp/polylogue-archive" not in result.output.split("was ignored")[0]
