@@ -31,6 +31,7 @@ from polylogue.cli.machine_main import run_machine_entry
 from polylogue.cli.query_group import QueryFirstGroupBase
 from polylogue.cli.shared.formatting import should_use_plain
 from polylogue.cli.shared.types import AppEnv
+from polylogue.cli.shell_completion_classes import register_completion_classes
 from polylogue.cli.shell_words import completion_words
 from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.logging import configure_logging
@@ -41,6 +42,11 @@ if TYPE_CHECKING:
 
 
 _CLI_CALLBACK_STARTED_AT = perf_counter()
+
+# Both halves of the completion protocol -- the installed script and the
+# process that answers it -- resolve their shell class from Click's registry,
+# so the message-aware classes must be registered before either runs.
+register_completion_classes()
 
 
 class QueryFirstGroup(QueryFirstGroupBase):

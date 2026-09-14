@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import click
 import pytest
@@ -28,18 +29,7 @@ def test_shell_completion_helpers_cover_csv_prefix_rows_and_trimming(tmp_path: P
     assert shell_completion_values._trim_help("line one\nline two", limit=9) == "line one…"
     assert shell_completion_values._trim_help("short help") == "short help"
 
-    db = tmp_path / "archive.sqlite"
-    with patch("polylogue.cli.shell_completion_values.resolve_active_index_path", return_value=db):
-        assert shell_completion_values._db_exists() is False
-        db.write_text("", encoding="utf-8")
-        assert shell_completion_values._db_exists() is True
-
-    # Native stats-by completion action: archive.stats_by(group) -> count items.
-    action = shell_completion_values._stats_by_items("tool", "", unit="actions")
-    mock_archive = MagicMock()
-    mock_archive.stats_by.return_value = {"alpha": 7}
-    items = action(mock_archive)
-    assert [(item.value, item.help) for item in items] == [("alpha", "7 actions")]
+    del tmp_path
 
 
 def test_origin_completion_matches_public_filter_projection() -> None:
@@ -69,34 +59,24 @@ def test_completion_functions_cover_origin_session_tag_tool_and_open_targets() -
     message_type_items = shell_completion_values.complete_message_type_values(ctx, param, "m")
     retrieval_lane_items = shell_completion_values.complete_retrieval_lane_values(ctx, param, "h")
 
-    # Archive-backed completions now run an ArchiveCompletionAction against an ArchiveStore via
-    # ``_run_completion``; drive the action against a mock archive exposing the
-    # archive read surface (list_summaries / list_user_tags / stats_by).
-    summary = MagicMock()
-    summary.session_id = "conv-1"
-    summary.title = "Test Conv"
-    summary.origin = "claude-code-session"
-
-    stats_by_groups = {
-        "repo": {"polylogue": 4},
-        "cwd": {"/realm/project/polylogue": 2},
-        "tool": {"read_file": 7},
+    # Archive-backed completions are one declared ``completion`` operation, so
+    # the seam a completion test controls is the operation's value rows.
+    values = {
+        "session_id": [{"value": "conv-1", "help": "claude-code-session \u00b7 Test Conv"}],
+        "tag": [{"value": "review", "help": "3 sessions"}],
+        "repo": [{"value": "polylogue", "help": "4 sessions"}],
+        "tool": [{"value": "read_file", "help": "7 actions"}],
     }
-    mock_archive = MagicMock()
-    mock_archive.list_summaries.return_value = [summary]
-    mock_archive.list_user_tags.return_value = {"review": 3}
-    mock_archive.stats_by.side_effect = lambda group_by, **_: stats_by_groups[group_by]
 
-    def fake_run_completion(action: object) -> list[object]:
-        return list(action(mock_archive))  # type: ignore[operator]
+    def fake_dispatch(_config: object, request: object, **_kwargs: object) -> object:
+        source = request.payload["source"]  # type: ignore[attr-defined]
+        return SimpleNamespace(
+            value={"value_completions": {"source": source, "incomplete": "", "values": values[source]}},
+            authority={},
+            envelope=None,
+        )
 
-    with (
-        patch(
-            "polylogue.cli.shell_completion_values._run_completion",
-            side_effect=fake_run_completion,
-        ),
-        patch("polylogue.cli.shell_completion_values._db_exists", return_value=True),
-    ):
+    with patch("polylogue.cli.operation_kernel.dispatch", fake_dispatch):
         session_items = shell_completion_values.complete_session_ids(ctx, param, "conv")
         tag_items = shell_completion_values.complete_tag_values(ctx, param, "alpha,rev")
         repo_items = shell_completion_values.complete_repo_values(ctx, param, "old,poly")
@@ -283,13 +263,21 @@ def test_query_expression_value_completion_uses_field_completion_source() -> Non
         "origin:claude-design-session",
     ]
 
-    with (
-        patch("polylogue.cli.shell_completion_values._db_exists", return_value=True),
-        patch("polylogue.cli.shell_completion_values._run_completion") as run_completion,
-    ):
-        mock_archive = MagicMock()
-        mock_archive.stats_by.return_value = {"polylogue": 4}
-        run_completion.side_effect = lambda action: list(action(mock_archive))
+    def fake_dispatch(_config: object, request: object, **_kwargs: object) -> object:
+        assert request.payload["source"] == "repo"  # type: ignore[attr-defined]
+        return SimpleNamespace(
+            value={
+                "value_completions": {
+                    "source": "repo",
+                    "incomplete": "poly",
+                    "values": [{"value": "polylogue", "help": "4 sessions"}],
+                }
+            },
+            authority={},
+            envelope=None,
+        )
+
+    with patch("polylogue.cli.operation_kernel.dispatch", fake_dispatch):
         repo_items = shell_completion_values.complete_query_expression_fields(ctx, param, "repo:poly")
 
     assert [item.value for item in repo_items] == ["repo:polylogue"]

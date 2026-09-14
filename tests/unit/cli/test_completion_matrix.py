@@ -35,6 +35,7 @@ from polylogue.archive.query.metadata import (
     terminal_query_sources,
 )
 from polylogue.cli.click_app import cli
+from polylogue.cli.shell_completion_values import DAEMON_REQUIRED_COMPLETION_MESSAGE
 from polylogue.operations.action_contracts import CompletionContext, action_completion_contexts
 from tests.infra.cli_interaction import SUPPORTED_SHELLS as SUPPORTED_SHELL_NAMES
 from tests.infra.workload_artifacts import (
@@ -848,28 +849,37 @@ def test_read_format_completion_uses_selected_view_per_shell(
 
 
 @pytest.mark.parametrize("label,cwords", DYNAMIC_COMPLETERS, ids=[label for label, _ in DYNAMIC_COMPLETERS])
-def test_dynamic_completers_return_nothing_on_an_empty_archive(
+def test_dynamic_completers_offer_no_candidate_without_a_daemon(
     label: str,
     cwords: list[str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every archive-backed completer degrades to an empty list, not a traceback.
+    """No daemon means no candidate -- and, where the source is archive-backed, a reason.
 
-    The shell axis is omitted deliberately: with no archive there are no items
-    to format, so per-shell ``format_completion`` is unreached and every shell
-    would exercise the same code. Per-shell formatting of real items is covered
-    by ``test_dynamic_completers_format_seeded_items_per_shell``.
+    Archive-backed completion is the resident daemon's answer. With no daemon
+    the completer offers nothing rather than opening the archive itself, and
+    renders one non-insertable ``message`` naming the remedy, because an empty
+    candidate list is indistinguishable from "the archive has no matching
+    values". ``cwd_prefix`` has no archive source at all and stays silent.
 
-    Anti-vacuity: a completer that raised on a missing database, or that
-    returned static placeholder values instead of archive-derived ones, fails
-    here.
+    The shell axis is omitted deliberately: the same items are produced for
+    every shell, and per-shell rendering of a message is pinned in
+    ``tests/unit/cli/test_completion_daemon_boundary.py``.
+
+    Anti-vacuity: a completer that raised on a missing daemon, that answered
+    from a local archive read, or that returned static placeholder values
+    instead of the refusal, fails here.
     """
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
-    assert _run_completion("bash", BashComplete, cwords) == []
+    items = _run_completion("bash", BashComplete, cwords)
+    if label == "cwd_prefix":
+        assert items == []
+    else:
+        assert items == [(DAEMON_REQUIRED_COMPLETION_MESSAGE, DAEMON_REQUIRED_COMPLETION_MESSAGE)]
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
@@ -879,20 +889,29 @@ def test_dynamic_completers_format_seeded_items_per_shell(
     completion_seeded_archive_ro: SeededArchiveQueryLease,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Session-id completion yields archive-derived items that every shell formats.
+    """A populated archive is still not read by the completer, on any shell.
 
     ``session_id`` is the one dynamic completer the synthetic corpus always
-    populates, so it is the only case that puts real items through each shell's
-    ``format_completion`` (asserted inside ``_run_completion``). Tags, repos and
-    cwd prefixes may legitimately be empty in the default corpus, which would
-    make a per-shell formatting claim vacuous — their resolution is covered
-    against an empty archive above and by the query-field matrix below.
+    populates, so it is the case that would silently start opening the archive
+    again: a seeded archive is right there, and the completer must still route
+    the question to a daemon that is not running. Every shell renders the same
+    single refusal, and ``_run_completion`` puts it through each shell's
+    ``format_completion``.
+
+    The archive-derived vocabulary itself is proven where it is now produced:
+    ``tests/unit/operations/test_daemon_reads.py``
+    ``::test_archive_backed_completion_answers_from_the_pinned_reader``.
+
+    Anti-vacuity: restore a local archive read in ``completion_values`` and
+    this returns session ids instead of the refusal.
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(completion_seeded_archive_ro.root))
     monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
 
     items = _run_completion(shell, comp_cls, CONTRACT_COMPLETION_COMMANDS["session_id"])
-    assert items, f"session_id returned no items on the seeded archive ({shell})"
+    assert items == [(DAEMON_REQUIRED_COMPLETION_MESSAGE, DAEMON_REQUIRED_COMPLETION_MESSAGE)], (
+        f"session_id answered from the archive without a daemon ({shell}): {items}"
+    )
 
 
 @pytest.mark.parametrize("label,cwords", DYNAMIC_COMPLETERS, ids=[label for label, _ in DYNAMIC_COMPLETERS])
@@ -904,17 +923,21 @@ def test_every_dynamic_completer_resolves_against_a_seeded_archive(
 ) -> None:
     """Each dynamic completer resolves without raising on a populated archive.
 
-    Anti-vacuity: a completer whose query no longer matches the archive schema
-    raises here rather than silently returning nothing, because the empty-archive
-    test above pins the same completers to ``[]`` — a completer that started
-    raising on *both* would fail this test while the other stayed green.
+    Presence of an archive must change nothing about the daemon-off answer: the
+    completer neither raises nor starts reading locally because rows happen to
+    be available.
+
+    Anti-vacuity: a completer that raised on this path fails here, and one that
+    read the seeded archive returns candidates instead of the refusal.
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(completion_seeded_archive_ro.root))
     monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
 
     items = _run_completion("bash", BashComplete, cwords)
-    if label == "session_id":
-        assert items, "session_id must resolve to archive-derived items"
+    if label == "cwd_prefix":
+        assert items == []
+    else:
+        assert items == [(DAEMON_REQUIRED_COMPLETION_MESSAGE, DAEMON_REQUIRED_COMPLETION_MESSAGE)]
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])

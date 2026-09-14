@@ -76,10 +76,21 @@ class QueryUnitsRequest(QueryRequest):
 
 
 class CompletionRequest(_OperationPayload):
+    """One shell-completion question.
+
+    ``source`` selects the archive-backed value vocabularies (session ids,
+    user tags, repositories, tool names); every other ``kind`` is answered from
+    the declared query grammar alone and needs no archive. A completer runs on
+    every TAB, so ``limit`` is part of the request rather than a server
+    default: the shell wants a short list quickly, not a complete one.
+    """
+
     kind: str = "field"
     incomplete: str = ""
     unit: str | None = None
     field: str | None = None
+    source: str | None = None
+    limit: int = Field(default=32, ge=1, le=200)
 
 
 class FacetsRequest(QueryRequest):
@@ -310,8 +321,42 @@ class CompletionCandidatesResult(_OperationPayload):
     candidates: list[CompletionCandidateResult]
 
 
+class CompletionValueResult(_OperationPayload):
+    """One archive-backed completion value and the count that explains it."""
+
+    value: str
+    help: str | None = None
+
+
+class CompletionValuesResult(_OperationPayload):
+    source: str
+    incomplete: str
+    values: list[CompletionValueResult]
+
+
 class CompletionResult(_OperationPayload):
-    query_completions: CompletionCandidatesResult
+    """Exactly one of the two completion vocabularies.
+
+    A grammar completion reports ``query_completions``; an archive-backed value
+    completion reports ``value_completions``. They are separate fields rather
+    than one polymorphic list because they answer different questions and a
+    consumer must not have to guess which it received.
+    """
+
+    query_completions: CompletionCandidatesResult | None = None
+    value_completions: CompletionValuesResult | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_vocabulary(self) -> CompletionResult:
+        """A completion result carries one answer, never none and never both.
+
+        Without this an empty document validates, and "the archive has no
+        matching tags" would be indistinguishable from "nothing answered this
+        request" -- a completer that silently produces nothing forever.
+        """
+        if (self.query_completions is None) == (self.value_completions is None):
+            raise ValueError("supply exactly one of query_completions or value_completions")
+        return self
 
 
 class FacetsResult(_OperationResult):

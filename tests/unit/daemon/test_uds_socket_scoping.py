@@ -21,6 +21,8 @@ These tests cover two acceptance criteria:
 from __future__ import annotations
 
 import shutil
+import subprocess
+import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -222,3 +224,43 @@ def test_a_live_peer_socket_is_never_unlinked(short_socket_dir: Path) -> None:
         assert socket_path.is_socket(), "a socket with a live listener must survive"
     finally:
         live.close()
+
+
+def test_socket_path_import_is_lightweight() -> None:
+    """Asking where the socket is must not import the daemon that serves it.
+
+    ``polylogue.daemon.__init__`` used to import ``polylogue.daemon.cli``
+    eagerly, so importing any daemon submodule pulled in the whole storage and
+    convergence stack -- seconds of import for a few dozen lines of path
+    arithmetic. Shell completion resolves this path on a keystroke.
+
+    Mutation: restore the eager ``from polylogue.daemon.cli import main`` in
+    the package ``__init__`` and ``polylogue.storage`` is in ``sys.modules``
+    again, failing this.
+    """
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import polylogue.daemon.socket_path; "
+            "assert 'polylogue.storage' not in sys.modules, sorted(m for m in sys.modules if 'polylogue' in m)",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_daemon_package_still_exports_its_public_names() -> None:
+    """Laziness is an import-time change only; the exports stay resolvable.
+
+    Mutation: drop a name from the package ``__getattr__`` and this raises
+    ``AttributeError`` -- a lazy re-export that forgot half its surface.
+    """
+
+    import polylogue.daemon as daemon_package
+
+    for name in daemon_package.__all__:
+        assert getattr(daemon_package, name) is not None
