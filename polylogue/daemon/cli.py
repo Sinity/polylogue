@@ -454,6 +454,13 @@ async def _configure_fts_automerge() -> None:
     ~8–12 MiB of WAL writes per small ingest batch.  Setting automerge=0
     disables per-write merging; the periodic ``_periodic_fts_merge`` loop
     amortises merge cost over time instead.
+
+    This is a best-effort fast path only, and deliberately not the guarantee:
+    a wiped archive has no ``index.db`` at startup (it is created later and
+    lazily by the ingest write path), so this returns having configured
+    nothing. ``_periodic_fts_merge`` re-checks the index on every iteration
+    and ensures ``automerge=0`` there, which is what actually holds for the
+    first post-wipe rebuild.
     """
     db = _active_index_db_path()
     if not db.exists():
