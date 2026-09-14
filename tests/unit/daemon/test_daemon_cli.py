@@ -28,6 +28,7 @@ from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+from polylogue.logging import capture
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
@@ -411,14 +412,17 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
             "daemon_write_coordinator",
             return_value=SimpleNamespace(run_sync=fake_run_sync),
         ),
-        patch.object(daemon_cli.logger, "info") as info,
-        patch.object(daemon_cli.logger, "warning") as warning,
+        capture() as records,
     ):
         asyncio.run(daemon_cli._retry_convergence_debt_once(db))
 
-    info.assert_called_once()
-    assert info.call_args.args[0] == "convergence: archive busy; retrying derived debt on next tick: %s"
-    warning.assert_not_called()
+    # ``.start`` is DEBUG and sits below the default threshold; the terminal
+    # event is the one an operator reads.
+    terminals = [r for r in records if str(r["event"]).startswith("daemon.convergence_debt.pass.")]
+    assert [r["event"] for r in terminals] == ["daemon.convergence_debt.pass.degraded"]
+    assert terminals[-1]["outcome"] == "degraded"
+    assert terminals[-1]["reason"] == "archive_busy"
+    assert terminals[-1]["error_type"] == "OperationalError"
 
 
 def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
@@ -866,15 +870,19 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
             "daemon_write_coordinator",
             return_value=SimpleNamespace(run_sync=fake_run_sync),
         ),
-        patch.object(daemon_cli.logger, "info") as info,
-        patch.object(daemon_cli.logger, "warning") as warning,
+        capture() as records,
     ):
         asyncio.run(daemon_cli._retry_convergence_debt_once(db))
 
-    info.assert_not_called()
-    warning.assert_called_once()
-    assert warning.call_args.args[0] == "convergence: check failed"
-    assert warning.call_args.kwargs == {"exc_info": True}
+    # The span's terminal event is emitted from ``__exit__``, so the swallowed
+    # failure is still on the record at ERROR rather than silently dropped.
+    errors = [r for r in records if r["event"] == "daemon.convergence_debt.pass.error"]
+    assert len(errors) == 1
+    assert errors[0]["level"] == "error"
+    assert errors[0]["outcome"] == "error"
+    assert errors[0]["error_type"] == "RuntimeError"
+    assert "unexpected convergence retry failure" in str(errors[0]["error_detail"])
+    assert [r for r in records if r["event"] == "daemon.convergence_debt.pass.ok"] == []
 
 
 def test_polylogued_browser_capture_help_lists_service_commands() -> None:
@@ -1263,12 +1271,19 @@ def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(tmp_pat
         patch("polylogue.config.get_config", return_value=config),
         patch("polylogue.services.build_runtime_services", return_value=FakeServices()),
         patch("polylogue.pipeline.services.parsing.ParsingService", FakeParser),
-        patch.object(daemon_cli.logger, "warning") as warning,
+        capture() as records,
     ):
         changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(failing_callback))
 
     assert changed == 1
-    warning.assert_called_once_with("daemon: Drive session-profile convergence failed (non-fatal)", exc_info=True)
+    failures = [r for r in records if r["event"] == "daemon.drive_catchup.session_profile_failed"]
+    assert len(failures) == 1
+    assert failures[0]["outcome"] == "degraded"
+    assert failures[0]["error_type"] == "RuntimeError"
+    # The pass itself still completed, and says so separately.
+    assert [r["event"] for r in records if str(r["event"]).startswith("daemon.drive_catchup.pass.")][-1] == (
+        "daemon.drive_catchup.pass.ok"
+    )
 
 
 def test_drive_source_catchup_safe_wrapper_logs_failure() -> None:
@@ -1279,12 +1294,16 @@ def test_drive_source_catchup_safe_wrapper_logs_failure() -> None:
 
     with (
         patch.object(daemon_cli, "_run_drive_source_catchup_once", fail_catchup),
-        patch.object(daemon_cli.logger, "warning") as warning,
+        capture() as records,
     ):
         changed = asyncio.run(daemon_cli._run_drive_source_catchup_safely(_unused_session_profile_callback))
 
     assert changed == 0
-    warning.assert_called_once_with("daemon: Drive source catch-up failed", exc_info=True)
+    failures = [r for r in records if r["event"] == "daemon.drive_catchup.failed"]
+    assert len(failures) == 1
+    assert failures[0]["outcome"] == "error"
+    assert failures[0]["error_type"] == "RuntimeError"
+    assert "drive unavailable" in str(failures[0]["error_detail"])
 
 
 def test_explicit_archive_inbox_root_keeps_import_suffixes(workspace_env: dict[str, Path]) -> None:

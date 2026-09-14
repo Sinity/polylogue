@@ -64,7 +64,18 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteThreadBridge,
     daemon_write_coordinator,
 )
-from polylogue.logging import configure_events, configure_logging, emit, get_logger, set_run_context
+from polylogue.logging import (
+    DEBUG,
+    ERROR,
+    INFO,
+    WARNING,
+    configure_events,
+    configure_logging,
+    emit,
+    propagate,
+    set_run_context,
+    span,
+)
 from polylogue.maintenance.raw_authority import (
     RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
     RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
@@ -97,7 +108,6 @@ if TYPE_CHECKING:
     from polylogue.sources.live.watcher import EmbeddingConvergenceOwner
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
-logger = get_logger(__name__)
 _WHALE_RECEIPT_ROOT: Path | None = None
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 #: Debt rows one retry tick inspects, shared by the admitted pass and the
@@ -201,10 +211,13 @@ async def _await_catch_up_gate(
     try:
         await asyncio.wait_for(catch_up_complete.wait(), timeout=timeout_s)
     except TimeoutError:
-        logger.warning(
-            "daemon: %s catch-up gate not released after %ds; proceeding without watcher catch-up",
-            loop_name,
-            int(timeout_s),
+        emit(
+            "daemon.catch_up_gate.timeout",
+            level=WARNING,
+            outcome="unmeasured",
+            reason="catch_up_gate_not_released",
+            loop=loop_name,
+            timeout_ms=round(timeout_s * 1000, 3),
         )
 
 
@@ -252,9 +265,11 @@ async def _periodic_schema_preflight_recheck() -> None:
         await asyncio.sleep(_SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS)
         alert = _check_schema_version_fast()
         if alert.severity != HealthSeverity.CRITICAL:
-            logger.info(
-                "daemon: schema preflight recovered (%s); exiting for supervised restart",
-                alert.message,
+            emit(
+                "daemon.schema_preflight.recovered",
+                outcome="ok",
+                reason="restart_required",
+                error_detail=alert.message,
             )
             raise RuntimeError("schema preflight recovered; restart required to start the live watcher")
 
@@ -445,8 +460,15 @@ async def _configure_fts_automerge() -> None:
         return
     try:
         await daemon_write_coordinator().run_sync("startup.fts_automerge", _configure_fts_automerge_sync, db)
-    except Exception:
-        logger.warning("daemon: FTS automerge configuration failed", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.fts_automerge.configure_failed",
+            level=WARNING,
+            outcome="error",
+            path=db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
 
 
 def _configure_fts_automerge_sync(db: Path) -> None:
@@ -500,8 +522,16 @@ async def _periodic_fts_merge() -> None:
             continue
         try:
             await daemon_write_coordinator().run_sync("maintenance.fts_merge", run_periodic_fts_merge_sync, db)
-        except Exception:
-            logger.warning("daemon: FTS periodic merge failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.fts_merge.failed",
+                level=WARNING,
+                outcome="error",
+                loop="fts merge",
+                path=db,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
 
 async def _periodic_wal_checkpoint() -> None:
@@ -538,21 +568,35 @@ async def _periodic_wal_checkpoint() -> None:
             for observation in observations:
                 if not observation.ran and observation.error is None:
                     continue
-                logger.info(
-                    "daemon: WAL checkpoint %s before=%d after=%d busy=%d checkpointed=%d "
-                    "hold_s=%.3f budget_s=%.1f error=%s blockers=%s",
-                    observation.mode,
-                    observation.wal_bytes_before,
-                    observation.wal_bytes_after,
-                    observation.busy_pages,
-                    observation.checkpointed_pages,
-                    observation.elapsed_s,
-                    CHECKPOINT_HOLD_BUDGET_S,
-                    observation.error,
-                    ",".join(observation.blocking_processes[:5]),
+                failed = observation.error is not None
+                blockers = ",".join(observation.blocking_processes[:5])
+                emit(
+                    "daemon.wal_checkpoint.observed",
+                    level=WARNING if failed else INFO,
+                    outcome="error" if failed else ("degraded" if observation.busy_pages else "ok"),
+                    reason="checkpoint_error"
+                    if failed
+                    else ("reader_held_frames" if observation.busy_pages else "clean"),
+                    loop="wal checkpoint",
+                    mode=str(observation.mode),
+                    bytes_before=observation.wal_bytes_before,
+                    bytes_after=observation.wal_bytes_after,
+                    busy_pages=observation.busy_pages,
+                    checkpointed_pages=observation.checkpointed_pages,
+                    duration_ms=round(observation.elapsed_s * 1000, 3),
+                    budget_ms=round(CHECKPOINT_HOLD_BUDGET_S * 1000, 3),
+                    error_detail=f"{observation.error or ''} blockers={blockers}".strip(),
                 )
-        except Exception:
-            logger.warning("daemon: WAL checkpoint failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.wal_checkpoint.failed",
+                level=WARNING,
+                outcome="error",
+                loop="wal checkpoint",
+                root=root,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
 
 async def _periodic_status_snapshot_refresh() -> None:
@@ -562,8 +606,15 @@ async def _periodic_status_snapshot_refresh() -> None:
     while True:
         try:
             await asyncio.to_thread(refresh_status_snapshot)
-        except Exception:
-            logger.warning("daemon: status snapshot refresh failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.status_snapshot.refresh_failed",
+                level=WARNING,
+                outcome="error",
+                loop="status snapshot refresh",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
         await asyncio.sleep(10)
 
 
@@ -584,48 +635,63 @@ async def _run_drive_source_catchup_once(
     config = get_config()
     sources = [source for source in config.sources if source.is_drive]
     if not sources:
+        emit(
+            "daemon.drive_catchup.pass.empty",
+            level=DEBUG,
+            outcome="empty",
+            reason="no_drive_sources_configured",
+            loop="drive source catch-up",
+        )
         return 0
 
     services = build_runtime_services(config=config, db_path=config.db_path)
     try:
-        repository = services.get_repository()
-        execution = DriveCatchupExecution(daemon_write_coordinator())
-        parser = ParsingService(
-            repository=repository,
-            archive_root=config.archive_root,
-            config=config,
-            execution=execution,
-        )
-        result = await parser.ingest_sources(
-            sources=sources,
-            stage="all",
-            parse_records=True,
-            max_pass_seconds=_DRIVE_CATCHUP_MAX_PASS_SECONDS,
-        )
-        session_ids = tuple(sorted(result.parse_result.processed_ids))
-        if session_ids:
-            try:
-                await session_profile_callback(session_ids)
-            except Exception:
-                logger.warning(
-                    "daemon: Drive session-profile convergence failed (non-fatal)",
-                    exc_info=True,
-                )
-        if result.parse_result.time_budget_exceeded:
-            logger.info(
-                "daemon: Drive catch-up pass yielded at time-budget checkpoint "
-                "(max_pass_seconds=%.1f); remaining backlog retried next tick",
-                _DRIVE_CATCHUP_MAX_PASS_SECONDS,
+        with span("daemon.drive_catchup.pass", loop="drive source catch-up") as pass_span:
+            repository = services.get_repository()
+            execution = DriveCatchupExecution(daemon_write_coordinator())
+            parser = ParsingService(
+                repository=repository,
+                archive_root=config.archive_root,
+                config=config,
+                execution=execution,
             )
-        logger.info(
-            "daemon: Drive source catch-up complete — sources=%d raw=%d sessions=%d changed=%d errors=%d",
-            len(sources),
-            len(result.acquire_result.raw_ids),
-            result.parse_result.counts["sessions"],
-            len(session_ids),
-            result.acquire_result.errors,
-        )
-        return len(session_ids)
+            result = await parser.ingest_sources(
+                sources=sources,
+                stage="all",
+                parse_records=True,
+                max_pass_seconds=_DRIVE_CATCHUP_MAX_PASS_SECONDS,
+            )
+            session_ids = tuple(sorted(result.parse_result.processed_ids))
+            if session_ids:
+                try:
+                    await session_profile_callback(session_ids)
+                except Exception as exc:
+                    emit(
+                        "daemon.drive_catchup.session_profile_failed",
+                        level=WARNING,
+                        outcome="degraded",
+                        reason="session_profile_convergence_failed",
+                        sessions=len(session_ids),
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
+                    )
+            budget_exceeded = bool(result.parse_result.time_budget_exceeded)
+            errors = int(result.acquire_result.errors)
+            counts: dict[str, object] = {
+                "sources": len(sources),
+                "raws": len(result.acquire_result.raw_ids),
+                "sessions": int(result.parse_result.counts["sessions"]),
+                "changed": len(session_ids),
+                "errors": errors,
+                "budget_ms": round(_DRIVE_CATCHUP_MAX_PASS_SECONDS * 1000, 3),
+            }
+            if budget_exceeded:
+                pass_span.degraded("time_budget_exceeded", **counts)
+            elif errors:
+                pass_span.degraded("acquire_errors", **counts)
+            else:
+                pass_span.ok(**counts)
+            return len(session_ids)
     finally:
         await services.close()
 
@@ -638,8 +704,15 @@ async def _run_drive_source_catchup_safely(
         return await _run_drive_source_catchup_once(session_profile_callback)
     except asyncio.CancelledError:
         raise
-    except Exception:
-        logger.warning("daemon: Drive source catch-up failed", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.drive_catchup.failed",
+            level=WARNING,
+            outcome="error",
+            loop="drive source catch-up",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return 0
 
 
@@ -660,7 +733,7 @@ async def _periodic_drive_source_catchup(
     while True:
         changed = await _run_drive_source_catchup_safely(session_profile_callback)
         if changed:
-            logger.info("daemon: Drive catch-up refreshed %d session(s)", changed)
+            emit("daemon.drive_catchup.refreshed", outcome="ok", loop="drive source catch-up", changed=changed)
         await asyncio.sleep(_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS)
 
 
@@ -674,15 +747,24 @@ async def _periodic_heartbeat(*, sources: tuple[WatchSource, ...] = ()) -> None:
         if not db.exists():
             continue
         try:
-            n_sessions, n_messages, noun = await asyncio.to_thread(_heartbeat_counts, db)
-            logger.info(
-                "daemon heartbeat: %d %s, %d messages indexed",
-                n_sessions,
-                noun,
-                n_messages,
+            n_sessions, n_messages, _noun = await asyncio.to_thread(_heartbeat_counts, db)
+            emit(
+                "daemon.heartbeat.indexed",
+                outcome="ok",
+                loop="heartbeat",
+                sessions=n_sessions,
+                messages=n_messages,
             )
-        except Exception:
-            logger.warning("daemon: heartbeat query failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.heartbeat.query_failed",
+                level=WARNING,
+                outcome="error",
+                loop="heartbeat",
+                path=db,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
         await asyncio.to_thread(_log_spool_depth_if_notable, sources)
 
 
@@ -719,27 +801,41 @@ def _log_spool_depth_if_notable(sources: tuple[WatchSource, ...] = ()) -> None:
             root = None if source is None else (source.root.parent if source.root.name == "pending" else source.root)
             hook_depth = hook_spool_pending_depth(root=root, cap=_HOOK_SPOOL_DEPTH_ALERT_THRESHOLD * 4)
             if hook_depth >= _HOOK_SPOOL_DEPTH_ALERT_THRESHOLD:
-                logger.warning(
-                    "daemon heartbeat: hook spool source=%s pending depth is >= %d",
-                    "default" if source is None else source.source_id or source.name,
-                    hook_depth,
+                emit(
+                    "daemon.hook_spool.backlog",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="spool_not_draining",
+                    loop="heartbeat",
+                    source_id="default" if source is None else (source.source_id or source.name),
+                    depth=hook_depth,
+                    limit=_HOOK_SPOOL_DEPTH_ALERT_THRESHOLD,
                 )
     for harness in ("claude-code", "codex"):
         with contextlib.suppress(Exception):
             drift = hook_install_sidecar_drift(harness)
             if drift:
-                logger.warning(
-                    "daemon heartbeat: installed %s hook command(s) still point at stale sidecar "
-                    "dir(s) %s -- re-run `polylogue hooks install` to pick up the current archive root",
-                    harness,
-                    ", ".join(str(path) for path in drift),
+                emit(
+                    "daemon.hook_install.sidecar_drift",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="stale_sidecar_dir",
+                    loop="heartbeat",
+                    component=harness,
+                    files=len(drift),
+                    error_detail=", ".join(str(path) for path in drift),
                 )
     with contextlib.suppress(Exception):
         browser_capture_depth = _browser_capture_spool_pending_file_count(cap=_BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP)
         if browser_capture_depth >= _BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP:
-            logger.warning(
-                "daemon heartbeat: browser-capture spool file count is >= %d",
-                browser_capture_depth,
+            emit(
+                "daemon.browser_capture_spool.backlog",
+                level=WARNING,
+                outcome="degraded",
+                reason="spool_not_draining",
+                loop="heartbeat",
+                depth=browser_capture_depth,
+                limit=_BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP,
             )
 
 
@@ -781,8 +877,15 @@ async def _periodic_lifecycle_heartbeat(*, interval_s: float | None = None) -> N
             await daemon_write_coordinator().run_sync("daemon.lifecycle.heartbeat", lifecycle.heartbeat)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.warning("daemon: lifecycle heartbeat write failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.lifecycle_heartbeat.write_failed",
+                level=WARNING,
+                outcome="error",
+                loop="lifecycle heartbeat",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
 
 async def _periodic_db_optimize() -> None:
@@ -812,9 +915,26 @@ async def _periodic_db_optimize() -> None:
             )
             ran = sum(1 for observation in observations if observation.ran)
             errors = [observation.error for observation in observations if observation.error]
-            logger.info("daemon: DB optimize completed tiers=%d errors=%d", ran, len(errors))
-        except Exception:
-            logger.warning("daemon: DB optimize failed", exc_info=True)
+            emit(
+                "daemon.db_optimize.completed",
+                level=WARNING if errors else INFO,
+                outcome="degraded" if errors else "ok",
+                reason="tier_errors" if errors else "complete",
+                loop="db optimize",
+                tiers=ran,
+                errors=len(errors),
+                error_detail="; ".join(str(error) for error in errors) if errors else "",
+            )
+        except Exception as exc:
+            emit(
+                "daemon.db_optimize.failed",
+                level=WARNING,
+                outcome="error",
+                loop="db optimize",
+                root=root,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
 
 async def _periodic_convergence_check(
@@ -846,22 +966,41 @@ async def _periodic_convergence_check(
 async def _retry_convergence_debt_once(db: Path) -> None:
     """Run one logged derived-debt retry pass when the archive exists."""
     if not db.exists():
-        return
-    try:
-        repaired = await daemon_write_coordinator().run_sync(
-            "maintenance.convergence_debt",
-            _drain_convergence_debt_once,
-            db,
+        emit(
+            "daemon.convergence_debt.pass.skipped",
+            level=DEBUG,
+            outcome="skipped",
+            reason="index_db_absent",
+            loop="convergence debt retry",
+            path=db,
         )
+        return
+    # The span emits its terminal ``.error`` event from ``__exit__``, before
+    # this handler runs, so swallowing the failure here (the loop must keep
+    # ticking) still leaves the failure recorded rather than hidden.
+    with (
+        contextlib.suppress(Exception),
+        span("daemon.convergence_debt.pass", loop="convergence debt retry", path=db) as pass_span,
+    ):
+        try:
+            repaired = await daemon_write_coordinator().run_sync(
+                "maintenance.convergence_debt",
+                _drain_convergence_debt_once,
+                db,
+            )
+        except sqlite3.OperationalError as exc:
+            if is_transient_sqlite_lock(exc):
+                pass_span.degraded(
+                    "archive_busy",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+                return
+            raise
         if repaired:
-            logger.info("convergence: retried %d derived debt item(s)", repaired)
-    except sqlite3.OperationalError as exc:
-        if is_transient_sqlite_lock(exc):
-            logger.info("convergence: archive busy; retrying derived debt on next tick: %s", exc)
-            return
-        logger.warning("convergence: check failed", exc_info=True)
-    except Exception:
-        logger.warning("convergence: check failed", exc_info=True)
+            pass_span.ok(retried=repaired)
+        else:
+            pass_span.empty(retried=0)
 
 
 async def _periodic_raw_materialization_convergence(
@@ -882,8 +1021,15 @@ async def _periodic_raw_materialization_convergence(
                 raw_observation_owner=raw_observation_owner,
                 raw_intake_discovery=raw_intake_discovery,
             )
-        except Exception:
-            logger.warning("raw materialization: canonical whale-pass scheduling failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.raw_materialization.whale_schedule_failed",
+                level=WARNING,
+                outcome="error",
+                loop="raw materialization convergence",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
         await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
 
 
@@ -929,22 +1075,55 @@ async def _reconcile_blob_publications(
         or outcome.retained_missing
         or outcome.unresolved
     ):
-        logger.info(
-            "blob publications: classified cleared_ref=%d cleared_missing=%d "
-            "retained_ref=%d retained_missing=%d unresolved=%d",
-            outcome.cleared_referenced,
-            outcome.cleared_missing,
-            outcome.retained_referenced,
-            outcome.retained_missing,
-            outcome.unresolved,
+        emit(
+            "daemon.blob_publications.classified",
+            outcome="ok",
+            actor=actor,
+            cleared=outcome.cleared_referenced + outcome.cleared_missing,
+            retained=outcome.retained_referenced + outcome.retained_missing,
+            unresolved=outcome.unresolved,
         )
     retained = outcome.retained_referenced + outcome.retained_missing + outcome.unresolved
     if retained:
-        logger.warning(
-            "blob publications: retained %d receipt(s) for inspection or explicit abandonment",
-            retained,
+        emit(
+            "daemon.blob_publications.retained",
+            level=WARNING,
+            outcome="degraded",
+            reason="awaiting_inspection_or_abandonment",
+            actor=actor,
+            retained=retained,
         )
     return outcome
+
+
+def _emit_mapped_bytes_budget_check(check: Any) -> None:
+    """Report the SQLite mapped-bytes budget against the detected cgroup limit.
+
+    The storage helper this replaces took a prose logger and passed structured
+    keywords that the stdlib path discarded outright, so the numbers never
+    reached an operator. Emitting here keeps the same three states -- no limit
+    detected, at risk, within budget -- as distinguishable events.
+    """
+    if check.memory_max_bytes is None and check.memory_high_bytes is None:
+        emit(
+            "daemon.mmap_budget.no_cgroup_limit",
+            level=DEBUG,
+            outcome="skipped",
+            reason="no_cgroup_limit_detected",
+            bytes=check.budget_bytes,
+            limit=check.effective_memory_budget_bytes,
+        )
+        return
+    at_risk = check.at_risk_limits
+    emit(
+        "daemon.mmap_budget.checked",
+        level=WARNING if at_risk else INFO,
+        outcome="degraded" if at_risk else "ok",
+        reason=",".join(at_risk) if at_risk else "within_budget",
+        bytes=check.budget_bytes,
+        limit=check.effective_memory_budget_bytes,
+        active=check.concurrent_read_connections,
+    )
 
 
 def _raw_source_path(archive: Path, raw_id: str) -> str | None:
@@ -992,11 +1171,16 @@ async def _converge_raw_materialized_session_profiles(
         return
     try:
         await callback(session_ids)
-    except Exception:
-        logger.warning(
-            "raw materialization: lease-free session-profile convergence did not complete for raw %s",
-            raw_id,
-            exc_info=True,
+    except Exception as exc:
+        emit(
+            "daemon.raw_materialization.session_profile_incomplete",
+            level=WARNING,
+            outcome="degraded",
+            reason="lease_free_convergence_did_not_complete",
+            raw_id=raw_id,
+            sessions=len(session_ids),
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
         )
 
 
@@ -1108,8 +1292,17 @@ async def _publish_whale_receipt(
         if "unexpected keyword argument" not in str(exc):
             raise
         await publish_event(kind, payload=payload)
-    except Exception:
-        logger.warning("raw materialization: whale receipt publication deferred", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.whale_receipt.publication_deferred",
+            level=WARNING,
+            outcome="degraded",
+            reason="publication_failed_retained_in_outbox",
+            kind=kind,
+            operation_id=operation_id,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return
     await asyncio.to_thread(
         whale_outbox.acknowledge,
@@ -1160,8 +1353,17 @@ async def _drain_whale_receipt_outbox(*, root: Path | None = None) -> int:
                 str(record["kind"]),
                 payload=cast(dict[str, object], record["payload"]),
             )
-        except Exception:
-            logger.warning("raw materialization: whale receipt recovery deferred", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.whale_receipt.recovery_deferred",
+                level=WARNING,
+                outcome="degraded",
+                reason="outbox_replay_failed",
+                kind=str(record["kind"]),
+                operation_id=str(record["operation_id"]),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             continue
         await asyncio.to_thread(whale_outbox.acknowledge, record)
         delivered += 1
@@ -1226,11 +1428,25 @@ async def _emit_whale_completion_after_admission(
                 for record in whale_outbox.list_pending(root=_WHALE_RECEIPT_ROOT)
             ):
                 return
-        except Exception:
-            logger.error(
-                "raw materialization: terminal receipt attempt %d/%d failed", attempt, len(delays), exc_info=True
+        except Exception as exc:
+            emit(
+                "daemon.whale_receipt.terminal_attempt_failed",
+                level=ERROR,
+                outcome="error",
+                operation_id=receipt_id,
+                attempts=attempt,
+                limit=len(delays),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
             )
-    logger.error("raw materialization: terminal whale receipt deferred to durable outbox recovery")
+    emit(
+        "daemon.whale_receipt.terminal_deferred",
+        level=ERROR,
+        outcome="degraded",
+        reason="deferred_to_durable_outbox_recovery",
+        operation_id=receipt_id,
+        attempts=len(delays),
+    )
 
 
 async def _maybe_run_raw_materialization_whale_pass(
@@ -1408,11 +1624,14 @@ def _converge_raw_authority_frontier(config: Config, *, limit: int) -> int:
         selected_plan_ids=executable,
     )
     if report.retryable_plan_count:
-        logger.warning(
-            "raw authority: %d/%d selected frontier plans remain retryable; census=%s",
-            report.retryable_plan_count,
-            report.selected_plan_count,
-            report.census_id,
+        emit(
+            "daemon.raw_authority.plans_retryable",
+            level=WARNING,
+            outcome="degraded",
+            reason="frontier_plans_remain_retryable",
+            pending=int(report.retryable_plan_count),
+            considered=int(report.selected_plan_count),
+            operation_id=str(report.census_id),
         )
     return int(report.executed_plan_count)
 
@@ -1626,8 +1845,15 @@ async def _periodic_health_check() -> None:
             )
             if health.overall_status != "ok":
                 send_notifications(health.alerts, config=cfg.raw)
-        except Exception:
-            logger.warning("health: periodic check failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.health_check.failed",
+                level=WARNING,
+                outcome="error",
+                loop="health check",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
 
 def _acquire_pidfile(pidfile: Path) -> int:
@@ -1650,7 +1876,13 @@ def _acquire_pidfile(pidfile: Path) -> int:
 def _release_pidfile_after_writer_drain(pidfile_fd: int | None, *, writer_drained: bool) -> int | None:
     """Release daemon ownership only after every admitted writer is idle."""
     if not writer_drained:
-        logger.error("daemon: writer coordinator remains active; retaining pidfile ownership until process exit")
+        emit(
+            "daemon.pidfile.retained",
+            level=ERROR,
+            outcome="degraded",
+            reason="writer_coordinator_not_drained",
+            path=_pidfile_path,
+        )
         return pidfile_fd
     if pidfile_fd is not None:
         with contextlib.suppress(OSError):
@@ -1779,9 +2011,25 @@ async def _emit_daemon_lifecycle_event(
                 payload=event_payload,
             )
     except TimeoutError:
-        logger.warning("daemon: timed out emitting lifecycle event %s", phase)
-    except Exception:
-        logger.warning("daemon: failed to emit lifecycle event %s", phase, exc_info=True)
+        emit(
+            "daemon.lifecycle_event.timeout",
+            level=WARNING,
+            outcome="unmeasured",
+            reason="lifecycle_event_write_timed_out",
+            phase=phase,
+            state=status,
+            timeout_ms=500,
+        )
+    except Exception as exc:
+        emit(
+            "daemon.lifecycle_event.failed",
+            level=WARNING,
+            outcome="error",
+            phase=phase,
+            state=status,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
 
 
 def _retain_rebuild_exclusion_for_undrained_writer(
@@ -2022,7 +2270,7 @@ async def _run_daemon_services_under_active_writer_lease(
         browser_capture_spool_path=browser_capture_spool_path,
     )
 
-    logger.info("daemon started")
+    emit("daemon.started", outcome="ok", pid=os.getpid(), root=archive_root_path)
 
     # polylogue-e98k: log the computed SQLite mmap/cache budget against this
     # process' cgroup memory limits before anything else runs. This is the
@@ -2032,10 +2280,9 @@ async def _run_daemon_services_under_active_writer_lease(
     # hours later; now it is a one-line grep of the startup log.
     from polylogue.storage.sqlite.connection_profile import (
         check_mapped_bytes_budget_against_cgroup_limit,
-        log_mapped_bytes_budget_check,
     )
 
-    log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
+    _emit_mapped_bytes_budget_check(check_mapped_bytes_budget_against_cgroup_limit())
 
     # One stable archive ownership lock is shared with offline maintenance.
     # The pidfile below remains process metadata only and is never the
@@ -2049,10 +2296,13 @@ async def _run_daemon_services_under_active_writer_lease(
     try:
         recovered_train_paths = reconcile_durable_change_trains_on_startup(archive_root_path)
         if recovered_train_paths:
-            logger.warning(
-                "daemon: reconciled %d interrupted durable change train(s) during startup: %s",
-                len(recovered_train_paths),
-                ", ".join(str(path) for path in recovered_train_paths),
+            emit(
+                "daemon.change_train.reconciled",
+                level=WARNING,
+                outcome="degraded",
+                reason="interrupted_change_trains_recovered_at_startup",
+                files=len(recovered_train_paths),
+                error_detail=", ".join(str(path) for path in recovered_train_paths),
             )
     except BaseException:
         archive_owner.release()
@@ -2089,19 +2339,14 @@ async def _run_daemon_services_under_active_writer_lease(
     watcher_creation_blocked = durable_mismatch
     lifecycle_events_enabled = not watcher_blocked
     if watcher_blocked:
-        if durable_mismatch:
-            logger.error(
-                "daemon: schema preflight CRITICAL — %s. Refusing to start the live watcher; "
-                "HTTP/health surfaces remain available so this state is observable.",
-                schema_alert.message,
-            )
-        else:
-            logger.error(
-                "daemon: schema preflight CRITICAL (derived tier only) — %s. Live watcher "
-                "starts in acquire-only mode: raw acquisition proceeds, materialize/index "
-                "loops stay parked pending schema recovery.",
-                schema_alert.message,
-            )
+        emit(
+            "daemon.schema_preflight.critical",
+            level=ERROR,
+            outcome="refused",
+            reason="durable_tier_mismatch" if durable_mismatch else "derived_tier_mismatch",
+            state="watcher_refused" if durable_mismatch else "acquire_only",
+            error_detail=schema_alert.message,
+        )
         set_degraded(
             DegradedReason(
                 code="schema_version_mismatch",
@@ -2113,11 +2358,24 @@ async def _run_daemon_services_under_active_writer_lease(
         parked_loop_names = _SCHEMA_BLOCKED_MAINTENANCE_LOOP_NAMES
         if enable_source_catchup:
             parked_loop_names = (*parked_loop_names, _SCHEMA_BLOCKED_OPTIONAL_DRIVE_CATCHUP_LOOP_NAME)
-        logger.error(
-            "daemon: %d maintenance loop(s) parked pending schema preflight recovery: %s",
-            len(parked_loop_names),
-            ", ".join(parked_loop_names),
+        emit(
+            "daemon.maintenance_loops.parked",
+            level=ERROR,
+            outcome="refused",
+            reason="schema_version_mismatch",
+            loops=len(parked_loop_names),
         )
+        # One event per loop, not one joined string: ``error_detail`` truncates
+        # at 300 characters, which silently drops the tail of this list -- and
+        # naming exactly what is frozen is the whole point of this alert.
+        for parked_loop_name in parked_loop_names:
+            emit(
+                "daemon.maintenance_loop.parked",
+                level=ERROR,
+                outcome="refused",
+                reason="schema_version_mismatch",
+                loop=parked_loop_name,
+            )
         try:
             from polylogue.daemon.events import emit_daemon_event
 
@@ -2131,13 +2389,21 @@ async def _run_daemon_services_under_active_writer_lease(
                     "derived_only": not durable_mismatch,
                 },
             )
-        except Exception:
+        except Exception as exc:
             # daemon_events lives in the disposable ops.db tier, independent
             # of whatever tier tripped the schema mismatch above -- but this
             # is best-effort observability, not load-bearing startup work, so
             # a failure here must never block the (already-decided) degraded
             # startup path.
-            logger.warning("daemon: failed to emit maintenance_loops_parked event", exc_info=True)
+            emit(
+                "daemon.maintenance_loops.park_event_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="ops_tier_event_write_failed",
+                loops=len(parked_loop_names),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
     pidfile = archive_root_path / "daemon.pid"
     pidfile_fd: int | None = None
@@ -2178,10 +2444,12 @@ async def _run_daemon_services_under_active_writer_lease(
         # through the same parked-startup-task decision the schema preflight
         # already makes for other archive work.
         if durable_schema_mismatch:
-            logger.error(
-                "daemon: operation-recovery startup skipped — %s. Interrupted "
-                "operations remain unclassified pending schema recovery.",
-                schema_alert.message,
+            emit(
+                "daemon.operation_recovery.parked",
+                level=ERROR,
+                outcome="refused",
+                reason="durable_tier_schema_mismatch",
+                error_detail=schema_alert.message,
             )
             set_degraded(
                 DegradedReason(
@@ -2305,11 +2573,13 @@ async def _run_daemon_services_under_active_writer_lease(
     )
     _set_active_supervisor(supervisor)
     for halted in supervisor.halted_records():
-        logger.error(
-            "daemon: %s is halted (%s): %s -- it will not be scheduled",
-            halted.unit,
-            halted.reason.value,
-            halted.message,
+        emit(
+            "daemon.service.halted",
+            level=ERROR,
+            outcome="refused",
+            component=halted.unit,
+            reason=halted.reason.value,
+            error_detail=halted.message,
         )
 
     supervisor.start("lifecycle_heartbeat", _periodic_lifecycle_heartbeat)
@@ -2530,7 +2800,13 @@ async def _run_daemon_services_under_active_writer_lease(
             # segments (#1851).  A periodic merge pass amortises the cost.
             await _configure_fts_automerge()
             if not enable_source_catchup:
-                logger.info("daemon: configured source catch-up disabled for this run")
+                emit(
+                    "daemon.drive_catchup.disabled",
+                    level=DEBUG,
+                    outcome="skipped",
+                    reason="disabled_for_this_run",
+                    loop="drive source catch-up",
+                )
             catch_up_complete_gate = asyncio.Event() if enable_watch else None
             gate = catch_up_complete_gate
             periodic_services: tuple[tuple[str, Callable[[], Coroutine[Any, Any, None]]], ...] = (
@@ -2642,7 +2918,12 @@ async def _run_daemon_services_under_active_writer_lease(
 
                     async def discover_raw_intake(limit: int) -> tuple[tuple[str, int], ...]:
                         submitted = daemon_compute.submit(
-                            functools.partial(raw_intake_discovery.discover_pending_raw_ids, limit),
+                            # The compute kernel's thread pool predates every
+                            # bind, so contextvars do not reach its workers.
+                            cast(
+                                "Callable[[], tuple[tuple[str, int], ...]]",
+                                propagate(functools.partial(raw_intake_discovery.discover_pending_raw_ids, limit)),
+                            ),
                             admission_class="incremental-background",
                         )
                         return await asyncio.wrap_future(submitted.future)
@@ -2781,16 +3062,21 @@ async def _run_daemon_services_under_active_writer_lease(
             # rather than abandoned unrecorded.
             shutdown_report = await supervisor.shutdown()
             if shutdown_report.orphaned:
-                logger.warning(
-                    "daemon: %d service(s) outlived their shutdown deadline: %s",
-                    len(shutdown_report.orphaned),
-                    ", ".join(shutdown_report.orphaned),
+                emit(
+                    "daemon.shutdown.services_orphaned",
+                    level=WARNING,
+                    outcome="unmeasured",
+                    reason="outlived_shutdown_deadline",
+                    orphaned=len(shutdown_report.orphaned),
+                    error_detail=", ".join(shutdown_report.orphaned),
                 )
             if shutdown_report.failed:
-                logger.warning(
-                    "daemon: %d service(s) ended in failure: %s",
-                    len(shutdown_report.failed),
-                    ", ".join(shutdown_report.failed),
+                emit(
+                    "daemon.shutdown.services_failed",
+                    level=WARNING,
+                    outcome="error",
+                    services=len(shutdown_report.failed),
+                    error_detail=", ".join(shutdown_report.failed),
                 )
 
             if signal_termination:
@@ -2801,7 +3087,12 @@ async def _run_daemon_services_under_active_writer_lease(
                 # CursorStore recovery runs on the next daemon startup, so
                 # defer this nonessential shutdown write rather than stranding
                 # the signal path behind its coordinator-owned worker.
-                logger.info("daemon: deferring interrupted ingest recovery until next startup after signal")
+                emit(
+                    "daemon.shutdown.ingest_recovery_deferred",
+                    outcome="skipped",
+                    reason="signal_termination",
+                    phase="shutdown",
+                )
             else:
                 try:
                     async with asyncio.timeout(5.0):
@@ -2810,7 +3101,14 @@ async def _run_daemon_services_under_active_writer_lease(
                             _mark_interrupted_live_ingest_attempts_on_shutdown,
                         )
                 except TimeoutError:
-                    logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
+                    emit(
+                        "daemon.shutdown.ingest_recovery_timeout",
+                        level=WARNING,
+                        outcome="unmeasured",
+                        reason="interrupted_ingest_attempts_not_recorded",
+                        phase="shutdown",
+                        timeout_ms=5000,
+                    )
 
             if lifecycle is not None:
                 exit_kind = "clean"
@@ -2827,8 +3125,16 @@ async def _run_daemon_services_under_active_writer_lease(
                         exit_kind=exit_kind,
                         bounded=signal_termination,
                     )
-                except Exception:
-                    logger.warning("daemon: could not persist final lifecycle stop", exc_info=True)
+                except Exception as exc:
+                    emit(
+                        "daemon.shutdown.lifecycle_stop_failed",
+                        level=WARNING,
+                        outcome="error",
+                        phase="shutdown",
+                        state=exit_kind,
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
+                    )
 
             writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
                 write_coordinator,
@@ -2864,7 +3170,14 @@ async def _run_daemon_services_under_active_writer_lease(
             _daemon_lifecycle = None
             _set_active_supervisor(None)
 
-    logger.info("daemon stopped")
+    emit(
+        "daemon.stopped",
+        level=WARNING if not writer_drained else INFO,
+        outcome="ok" if writer_drained else "degraded",
+        reason="clean" if writer_drained else "writer_not_drained",
+        pid=os.getpid(),
+        held=not writer_drained,
+    )
 
 
 def _log_completed_daemon_tasks(tasks: list[asyncio.Task[None]]) -> None:
@@ -2874,12 +3187,31 @@ def _log_completed_daemon_tasks(tasks: list[asyncio.Task[None]]) -> None:
         try:
             exc = task.exception()
         except asyncio.CancelledError:
-            logger.warning("daemon: component task cancelled unexpectedly")
+            emit(
+                "daemon.component_task.cancelled",
+                level=WARNING,
+                outcome="unmeasured",
+                reason="cancelled_unexpectedly",
+                component=task.get_name(),
+            )
             continue
         if exc is None:
-            logger.warning("daemon: component task exited unexpectedly")
+            emit(
+                "daemon.component_task.exited",
+                level=WARNING,
+                outcome="degraded",
+                reason="exited_unexpectedly",
+                component=task.get_name(),
+            )
         else:
-            logger.warning("daemon: component task failed unexpectedly: %s", exc)
+            emit(
+                "daemon.component_task.failed",
+                level=WARNING,
+                outcome="error",
+                component=task.get_name(),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
 
 async def _shutdown_server_if_serving(
@@ -2897,13 +3229,32 @@ async def _shutdown_server_if_serving(
             # Cancelling the asyncio Future returned by to_thread() does not
             # stop the underlying socketserver.serve_forever thread. Continue
             # into server.shutdown() so Ctrl-C can actually drain the executor.
-            logger.debug("daemon: %s server task cancelled; shutting down server anyway", label)
+            emit(
+                "daemon.server_task.cancelled",
+                level=DEBUG,
+                outcome="skipped",
+                reason="shutting_down_server_anyway",
+                component=label,
+            )
             exc = None
         if exc is None and not task.cancelled():
-            logger.warning("daemon: %s server task exited before shutdown", label)
+            emit(
+                "daemon.server_task.exited_early",
+                level=WARNING,
+                outcome="degraded",
+                reason="exited_before_shutdown",
+                component=label,
+            )
             return
         if exc is not None:
-            logger.warning("daemon: %s server task failed before shutdown: %s", label, exc)
+            emit(
+                "daemon.server_task.failed_early",
+                level=WARNING,
+                outcome="error",
+                component=label,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return
     # ``socketserver.BaseServer.shutdown()`` blocks until ``serve_forever()`` sets
     # its internal ``__is_shut_down`` Event. ``serve_forever`` runs off the loop in
@@ -2938,9 +3289,13 @@ async def _shutdown_server_if_serving(
     try:
         await asyncio.wait_for(shutdown_done.wait(), timeout=5.0)
     except TimeoutError:
-        logger.warning(
-            "daemon: %s server shutdown did not complete within 5s; closing socket directly",
-            label,
+        emit(
+            "daemon.server_shutdown.timeout",
+            level=WARNING,
+            outcome="unmeasured",
+            reason="closing_socket_directly",
+            component=label,
+            timeout_ms=5000,
         )
 
 
