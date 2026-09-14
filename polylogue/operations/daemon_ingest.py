@@ -11,6 +11,7 @@ from time import monotonic, time
 from typing import TypeVar
 from uuid import uuid4
 
+from polylogue.logging import emit
 from polylogue.operations.audit import MachineRequestBinding
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
@@ -24,6 +25,7 @@ from polylogue.operations.machine_receipts import (
     IngestInputHistoricalReceipt,
     IngestInputPageHistoricalReceipt,
     IngestInsightPageHistoricalReceipt,
+    IngestRefusedMembershipHistorical,
     IngestTerminalSummaryHistorical,
     InsightTargetHistoricalReceipt,
 )
@@ -40,6 +42,7 @@ from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.ingest_governance import (
     CensusPublication,
+    CohortMembershipRefusalError,
     CohortPublication,
     PreparedIngestCohort,
     PreparedRawCensus,
@@ -95,6 +98,9 @@ class IngestExecution:
         self.started_mutation: StartedBoundMutation | None = None
         self.resumed = False
         self.terminalized = False
+        # polylogue-163ku: per-key cohort refusals collected while the rest of
+        # the generation continues; surfaced counted in the terminal receipt.
+        self.refused_memberships: list[CohortMembershipRefusalError] = []
         self.publisher = ArchiveBlobPublisher(context.archive_root / "source.db", context.archive_root / "blob")
 
     def stop_reason(self) -> str | None:
@@ -420,7 +426,21 @@ class IngestExecution:
                     acquired_at_ms=cohort_observed_at_ms,
                 )
 
-            prepared_cohort: PreparedIngestCohort = await self.read(prepare_cohort)
+            try:
+                prepared_cohort: PreparedIngestCohort = await self.read(prepare_cohort)
+            except CohortMembershipRefusalError as refusal:
+                # polylogue-163ku: refuse this key, not the generation. The
+                # remaining keys still publish; the receipt reports this one as
+                # incomplete and the terminal summary counts and names it.
+                emit(
+                    "ingest.membership.refused",
+                    logical_source_key=refusal.logical_source_key,
+                    raw_id=refusal.raw_id,
+                    reason=refusal.reason,
+                    outcome="refused",
+                )
+                self.refused_memberships.append(refusal)
+                continue
             try:
                 self.check_stop()
 
@@ -537,6 +557,15 @@ class IngestExecution:
                 confirmed_raw_count=len(receipt.confirmed_raw_ids),
                 unresolved_raw_count=len(receipt.unresolved_raw_ids),
                 profile_targets_observed=sum(len(part.targets) for part in profile_parts),
+                refused_membership_count=len(self.refused_memberships),
+                refused_memberships=[
+                    IngestRefusedMembershipHistorical(
+                        logical_source_key=refusal.logical_source_key,
+                        raw_id=refusal.raw_id,
+                        reason=refusal.reason[:512],
+                    )
+                    for refusal in self.refused_memberships[:256]
+                ],
             ),
         )
 

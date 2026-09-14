@@ -15,6 +15,7 @@ from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, Pars
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.ingest_governance import (
+    CohortMembershipRefusalError,
     prepare_ingest_cohort,
     prepare_raw_census,
     publish_ingest_cohort,
@@ -489,3 +490,79 @@ def test_transient_sqlite_contention_is_not_recorded_as_a_parse_failure(tmp_path
                 parse_retained_raw=busy_parse,
                 censused_at_ms=2,
             )
+
+
+def test_unparseable_selector_member_is_a_typed_per_key_refusal(tmp_path: Path) -> None:
+    """A selector member that no longer parses refuses its key, not the generation.
+
+    Anti-vacuity: ``prepare_ingest_cohort`` reaches ``_session_for_key`` for
+    every selector member, including the unconditionally-admitted
+    ``raw_revision_head_raw_id``. Before the fix that helper raised a bare
+    ``RuntimeError("... no longer parses uniquely")``, which escaped to
+    ``operations/daemon_ingest.py``'s ``except Exception: fence("refused")``
+    and cost every other logical key in the source generation. Delete the
+    ``CohortMembershipRefusalError`` raises (or the parse-boundary catch) and
+    this test fails: ``pytest.raises`` sees a plain ``RuntimeError`` /
+    ``ValueError`` that no caller can distinguish from a genuine
+    generation-level fault, and the ``reason``/``raw_id`` attributes the daemon
+    counts are absent.
+
+    It also pins message honesty: the zero-match case never established "no
+    longer parses uniquely", so the refusal must not claim it did.
+    """
+    bootstrap_archive_root(tmp_path)
+    key = "codex-session:prepared-membership"
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        first_raw, second_raw = _write_raws(archive, 2)
+        parse = _parse_from({first_raw: _session("one"), second_raw: _session("one", "two")})
+        _publish_census(archive, first_raw, parse, at_ms=1)
+        _publish_census(archive, second_raw, parse, at_ms=2)
+        published = prepare_ingest_cohort(
+            archive,
+            logical_source_key=key,
+            accepted_raw_ids=(first_raw, second_raw),
+            parser_fingerprint="prepared-test-parser",
+            parse_retained_raw=parse,
+            acquired_at_ms=3,
+        )
+        assert publish_ingest_cohort(archive, published).published
+
+        # The accepted head is now in the selector. Re-preparing with a parser
+        # that raises for it is exactly the production shape: the real
+        # ``parse_retained_raw_sessions`` raises rather than returning None.
+        def raising_for_head(archive_: ArchiveStore, raw_id: str) -> list[ParsedSession]:
+            if raw_id == second_raw:
+                raise ValueError("synthetic unparseable retained payload")
+            return parse(archive_, raw_id)
+
+        with pytest.raises(CohortMembershipRefusalError) as raised:
+            prepare_ingest_cohort(
+                archive,
+                logical_source_key=key,
+                accepted_raw_ids=(first_raw, second_raw),
+                parser_fingerprint="prepared-test-parser",
+                parse_retained_raw=raising_for_head,
+                acquired_at_ms=4,
+            )
+        assert raised.value.logical_source_key == key
+        assert raised.value.raw_id == second_raw
+        assert "synthetic unparseable retained payload" in raised.value.reason
+
+        # A member that parses but contributes nothing to this key is the same
+        # typed refusal, with a reason that does not overclaim.
+        def foreign_for_head(archive_: ArchiveStore, raw_id: str) -> list[ParsedSession]:
+            if raw_id == second_raw:
+                return [_session("elsewhere", session_id="a-different-logical-session")]
+            return parse(archive_, raw_id)
+
+        with pytest.raises(CohortMembershipRefusalError) as empty:
+            prepare_ingest_cohort(
+                archive,
+                logical_source_key=key,
+                accepted_raw_ids=(first_raw, second_raw),
+                parser_fingerprint="prepared-test-parser",
+                parse_retained_raw=foreign_for_head,
+                acquired_at_ms=5,
+            )
+        assert "none for this logical key" in empty.value.reason
+        assert "no longer parses uniquely" not in str(empty.value)

@@ -145,12 +145,26 @@ class IngestInsightPageHistoricalReceipt(_Receipt):
         return self
 
 
+class IngestRefusedMembershipHistorical(_Receipt):
+    """One logical source key whose cohort could not be prepared."""
+
+    logical_source_key: str = Field(min_length=1)
+    raw_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=512)
+
+
 class IngestTerminalSummaryHistorical(_Receipt):
     enumeration_complete: bool
     source_complete: bool
     confirmed_raw_count: int = Field(ge=0)
     unresolved_raw_count: int = Field(ge=0)
     profile_targets_observed: int = Field(ge=0)
+    # polylogue-163ku: a per-key cohort refusal no longer fences the whole
+    # source generation, so the count of refusals it *did* cost must be
+    # reported here -- a skipped key that nothing counts would be a silent
+    # degradation traded for the loud one.
+    refused_membership_count: int = Field(ge=0, default=0)
+    refused_memberships: list[IngestRefusedMembershipHistorical] = Field(default_factory=list, max_length=256)
 
 
 class IngestHistoricalReceipt(_Receipt):
@@ -174,6 +188,10 @@ class IngestHistoricalReceipt(_Receipt):
             raise ValueError("historical ingest insight pages are not contiguous")
         if self.summary.profile_targets_observed != sum(len(page.targets) for page in self.insight_pages):
             raise ValueError("historical ingest profile total does not match its pages")
+        if self.summary.refused_membership_count < len(self.summary.refused_memberships):
+            raise ValueError("historical ingest refusal count is smaller than its enumerated refusals")
+        if self.summary.refused_membership_count and self.summary.source_complete:
+            raise ValueError("historical ingest cannot be source-complete while memberships were refused")
         return self
 
 
