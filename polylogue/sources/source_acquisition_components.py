@@ -12,6 +12,7 @@ from typing import IO, TypeAlias
 import ijson
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
+from polylogue.archive.zip_admission import ZipBombError
 from polylogue.config import Source
 from polylogue.core.content_identity import payload_content_identity
 from polylogue.core.enums import Provider
@@ -675,6 +676,43 @@ def replay_zip_entry_acquisition_payloads(
         )
 
 
+def sniff_zip_provider(
+    zf: zipfile.ZipFile,
+    entries: Iterable[zipfile.ZipInfo],
+) -> Provider | None:
+    """Detect a ZIP's dominant provider from whichever member detects cleanly.
+
+    Reads only ``_DETECTION_PREFIX_SIZE`` of each JSON/JSONL member in order
+    until one yields a positive, non-unknown detection. Returns ``None`` when
+    no member detects (a genuinely mixed or non-conversation ZIP), leaving the
+    caller's ``Provider.UNKNOWN`` fallback in place.
+
+    An account export ZIP still has a real dominant provider even when the
+    caller had no provider-bearing directory to take it from; establishing it
+    once from ``conversations.json`` (or a sibling) is what lets every other
+    member's declared artifact rule apply at all.
+    """
+    for info in entries:
+        if not info.filename.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
+            continue
+        try:
+            with _decoders.open_bounded_zip_entry(zf, info) as handle:
+                prefix = handle.read(_DETECTION_PREFIX_SIZE)
+        except (zipfile.BadZipFile, OSError, ZipBombError):
+            continue
+        if not prefix:
+            continue
+        detected, _evidence = detect_provider_from_raw_bytes_evidence(
+            prefix,
+            info.filename,
+            Provider.UNKNOWN,
+            truncated_tail_ok=True,
+        )
+        if detected is not Provider.UNKNOWN:
+            return detected
+    return None
+
+
 def iter_zip_entry_raw_data(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
@@ -724,6 +762,7 @@ __all__ = [
     "iter_entry_payloads",
     "replay_zip_entry_acquisition_payloads",
     "iter_zip_entry_raw_data",
+    "sniff_zip_provider",
     "make_status_heartbeat",
     "observe_acquisition",
     "raw_data_record",

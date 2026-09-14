@@ -85,8 +85,22 @@ class ZipAdmission:
         allowed_suffixes: Collection[str] = ZIP_JSON_SUFFIXES,
         allowed_path: Callable[[str], bool] | None = None,
         on_rejected: Callable[[zipfile.ZipInfo, str], None] | None = None,
+        on_unselected: Callable[[zipfile.ZipInfo, str], None] | None = None,
     ) -> Iterable[zipfile.ZipInfo]:
-        """Yield admitted ``ZipInfo`` objects and report rejected entries."""
+        """Yield admitted ``ZipInfo`` objects and report rejected entries.
+
+        ``on_rejected`` reports a member this admission *refused*: a security
+        or resource decision about bytes the caller asked for. ``on_unselected``
+        reports the distinct case of a member this caller never asked for --
+        neither a requested suffix nor a declared artifact path. Both were
+        previously indistinguishable to a caller that needs a physical-member
+        denominator: only relevance skips took a branch that reported nothing
+        at all, so a caller enumerating a whole ZIP could exhaust normally and
+        record the result as proven-complete while members had vanished
+        (polylogue-ojxpn). They stay separate channels because a refusal is a
+        problem with the input while non-selection is ordinary for a filter
+        asking only for JSON members.
+        """
         suffixes = tuple(suffix.lower() for suffix in allowed_suffixes)
 
         def reject(info: zipfile.ZipInfo, reason: str) -> None:
@@ -119,6 +133,8 @@ class ZipAdmission:
                 reject(info, f"zip entry file size {info.file_size} exceeds limit")
                 continue
             if not lower_name.endswith(suffixes) and not (allowed_path is not None and allowed_path(name)):
+                if on_unselected is not None:
+                    on_unselected(info, "member is not a requested suffix or a declared artifact path")
                 continue
             projected_total = self._aggregate_total + info.file_size
             if projected_total > MAX_AGGREGATE_UNCOMPRESSED_SIZE:

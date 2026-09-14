@@ -15,11 +15,17 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
 from polylogue.logging import WARNING, emit
-from polylogue.sources.decoder_zip import ZipEntryValidator
+from polylogue.sources.decoder_zip import (
+    ZipEntryValidator,
+    declared_artifact_provider,
+    is_declared_artifact_path,
+    provider_detection_path,
+)
 from polylogue.sources.live.admission import ArtifactIdentity
 from polylogue.sources.origin_specs import database_member_for_filename
 from polylogue.sources.parsers.base import RawSessionData
@@ -28,6 +34,7 @@ from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
     read_plain_source_file,
+    sniff_zip_provider,
 )
 from polylogue.storage.blob_store import BlobStore
 
@@ -73,13 +80,46 @@ def iter_retained_source_records(
         return
 
     rejected: list[str] = []
+    unselected: list[str] = []
     with blob_store.open(blob_hash) as physical, zipfile.ZipFile(physical) as archive:
         entries = archive.infolist()
         ordinals = {id(entry): ordinal for ordinal, entry in enumerate(entries)}
+        # A retained physical blob carries no provider-bearing directory: the
+        # database-member binding above only resolves for a declared database
+        # export, so an account export ZIP always arrives as UNKNOWN. Recover
+        # the real provider the way the inbox route does, then let its own
+        # artifact declarations decide which members are material.
+        if provider is Provider.UNKNOWN:
+            detection_entries = [
+                info
+                for info in ZipAdmission(zip_path=logical_path).filter_entries(
+                    entries,
+                    allowed_suffixes=ZIP_JSON_SUFFIXES,
+                )
+                if provider_detection_path(info.filename)
+            ]
+            provider = sniff_zip_provider(archive, detection_entries) or Provider.UNKNOWN
+        # A genuinely mixed ZIP keeps UNKNOWN, under which no single provider's
+        # path rule can fire. Admitting any declared artifact path is what stops
+        # every ChatGPT export asset, Antigravity protobuf, brain Markdown and
+        # tool-result sidecar from being dropped while enumeration still reports
+        # itself complete (polylogue-ojxpn).
+        allowed_path = is_declared_artifact_path if provider is Provider.UNKNOWN else None
         validator = ZipEntryValidator(provider, cursor_state=None, zip_path=logical_path)
-        for entry in validator.filter_entries(entries, on_rejected=lambda _entry, reason: rejected.append(reason)):
+        for entry in validator.filter_entries(
+            entries,
+            allowed_path=allowed_path,
+            on_rejected=lambda _entry, reason: rejected.append(reason),
+            on_unselected=lambda entry, reason: unselected.append(f"{entry.filename}: {reason}"),
+        ):
             ordinal = ordinals[id(entry)]
-            context = ZipEntryReadContext(source, logical_path, entry, None, provider, blob_store)
+            # Under a residual UNKNOWN the container hint cannot name the family
+            # that owns this member, so its ``raw-only`` declaration would not
+            # fire and arbitrary binary bytes would take the JSON split route.
+            entry_provider = provider
+            if provider is Provider.UNKNOWN:
+                entry_provider = declared_artifact_provider(entry.filename) or provider
+            context = ZipEntryReadContext(source, logical_path, entry, None, entry_provider, blob_store)
             for data in iter_zip_entry_raw_data(archive, context):
                 split = data.source_index or 0
                 mode = data.addressing_mode
@@ -110,4 +150,18 @@ def iter_retained_source_records(
             path=logical_path,
             skipped=len(rejected),
             error_detail="; ".join(rejected),
+        )
+    if unselected:
+        # Non-selection is ordinary, but this route's caller records normal
+        # exhaustion as *proven-complete* enumeration. A member dropped without
+        # a denominator is indistinguishable from an input that never held it,
+        # so name it here rather than letting it vanish.
+        emit(
+            "sources.retained_zip.members_unselected",
+            level=WARNING,
+            outcome="degraded",
+            reason="member_unselected",
+            path=logical_path,
+            skipped=len(unselected),
+            error_detail="; ".join(unselected),
         )
