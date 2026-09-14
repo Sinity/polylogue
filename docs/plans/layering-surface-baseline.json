@@ -540,16 +540,6 @@
     "import": "polylogue.sources.origin_specs"
   },
   {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/shell_completion_values.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/shell_completion_values.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.archive"
-  },
-  {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/backup.py",
     "import": "polylogue.storage.backup_attestation"
