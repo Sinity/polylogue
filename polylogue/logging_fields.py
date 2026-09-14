@@ -123,7 +123,6 @@ def _fields() -> dict[str, FieldKind]:
         "derivation_key",
         "candidate_ref",
         "assertion_id",
-        "marker_id",
     )
 
     # -- classification tokens -------------------------------------------
@@ -260,7 +259,6 @@ def _fields() -> dict[str, FieldKind]:
         "wait_ms",
         "hold_ms",
         "budget_ms",
-        "interval_ms",
     )
 
     add(
