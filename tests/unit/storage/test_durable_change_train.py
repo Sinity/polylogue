@@ -3027,6 +3027,33 @@ def test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe(tm
         reconcile_durable_change_train_startup(recipient)
 
 
+def test_fresh_bootstrap_marker_grants_nothing_for_a_version_skewed_tier(tmp_path: Path) -> None:
+    """A tier standing at a different version must park, not fail startup.
+
+    A live tier whose own ``user_version`` disagrees with the marker is
+    ordinary durable schema skew -- the condition polylogue-39pdi requires the
+    daemon to survive in a degraded state. The marker simply grants that tier
+    nothing; the tiers it still corroborates keep their authority.
+
+    Anti-vacuity: removing the ``_fresh_durable_bootstrap_tier_version_skew``
+    branch from ``_assert_fresh_durable_bootstrap_is_own`` makes this raise
+    ``not this archive's own audit bootstrap evidence`` instead of returning.
+    Verified by reverting the branch, not by asserting it.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "audit.db")) as connection:
+        connection.execute("PRAGMA user_version = 1")
+        connection.commit()
+
+    manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
+    granted = durable_change_train_module._fresh_durable_bootstrap_versions(tmp_path, manifest_root)
+
+    assert ArchiveTier.AUDIT not in granted
+    assert granted[ArchiveTier.SOURCE] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+
+
 def test_fresh_bootstrap_marker_is_retired_once_it_grants_nothing(tmp_path: Path) -> None:
     """The marker is removed as soon as it stops carrying authority.
 
