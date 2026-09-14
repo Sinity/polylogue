@@ -2451,18 +2451,19 @@ def test_full_ingest_writes_archive_with_route_observability(
         "full.index.full_replace.messages",
         "full.index.full_replace.blocks",
     }.issubset(result.stage_timings_s)
-    # The full-ingest route defers the FTS rebuild to keep the writer
-    # available. #5027 removed the convergence-debt row that used to record
-    # that deferral: pending is now ``required - valid``, derived from the
-    # durable relation itself (``storage/fts/derivation.py`` enumerates every
-    # ``sessions``/``blocks`` session id), so the deferred partition is pending
-    # by construction rather than by bookkeeping. Assert the deferral is real
-    # and still rediscoverable: blocks landed, their FTS rows did not.
+    # The in-transaction FTS repair is still skipped (``defer_fts=True``), but
+    # the deferral is no longer observable at the end of this route: #5049
+    # made live full ingest honour that contract by running its own targeted
+    # ``repair_message_fts_index_sync`` over the session ids it just wrote,
+    # because nothing else did -- a freshly ingested session searched as empty
+    # until the daemon's next 60s convergence tick. Assert the repair, which
+    # is what a searchable archive depends on: blocks landed, and their FTS
+    # rows landed with them. Deleting that call zeroes ``indexed``.
     with sqlite3.connect(index_db) as conn:
         blocks = conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
         indexed = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
     assert blocks > 0
-    assert indexed == 0
+    assert indexed > 0
     with sqlite3.connect(source_db) as conn:
         raw_state = conn.execute("SELECT parsed_at_ms, parse_error FROM raw_sessions").fetchone()
         assert raw_state is not None

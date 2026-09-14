@@ -404,12 +404,21 @@ class IdentityResetActuator(_FailClosedRecovery):
             conn.close()
         suppressed = len(session_ids)
 
+        # Only ids PREPARE saw in the index reach ``delete_sessions``: that
+        # call resolves every id it is given and raises ``KeyError`` for one
+        # with no row (#5154), which would abort the apply *after* the durable
+        # suppressions were committed -- the receipt would then be lost for a
+        # tombstone that had already landed. The absent ids are exactly the
+        # ``tombstoned_without_index_row`` set the receipt names below, and
+        # deleting a row that is not there is a no-op anyway.
+        prepared_present = set(cast("list[str]", plan.context.get("present_in_index") or ()))
+        present_in_index = tuple(sid for sid in session_ids if sid in prepared_present)
         deleted = 0
-        if _index_db_path(args.archive_root).exists():
+        if present_in_index and _index_db_path(args.archive_root).exists():
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
             with ArchiveStore.open_existing(args.archive_root, read_only=False) as archive:
-                deleted = archive.delete_sessions(session_ids, write_operation=WriteOperation.RESET)
+                deleted = archive.delete_sessions(present_in_index, write_operation=WriteOperation.RESET)
 
         return MutationReceipt(
             operation=self.operation,

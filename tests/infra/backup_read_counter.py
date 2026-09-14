@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 
@@ -43,6 +44,7 @@ def backup_verification_read_counter() -> Iterator[BackupVerificationReadCounter
     counter = BackupVerificationReadCounter()
     real_sha256_file = backup_mod._sha256_file
     real_read_bytes = Path.read_bytes
+    real_open = Path.open
 
     def counted_sha256_file(path: Path) -> str:
         counter.record(f"sha256_file:{_root_name(path)}", path)
@@ -52,9 +54,19 @@ def backup_verification_read_counter() -> Iterator[BackupVerificationReadCounter
         counter.record(f"read_bytes:{_root_name(path)}", path)
         return real_read_bytes(path)
 
+    def counted_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        counter.record(f"open:{_root_name(path)}", path)
+        return real_open(path, *args, **kwargs)
+
     with (
         patch.object(backup_mod, "_sha256_file", counted_sha256_file),
         patch.object(Path, "read_bytes", counted_read_bytes),
+        # The verifier streams restored blobs rather than materializing them
+        # (#5147), so counting ``read_bytes`` alone stopped seeing the scratch
+        # proof at all. Every blob byte still enters through one of these two
+        # doors, so instrumenting both keeps the measurement complete rather
+        # than merely re-greening an assertion.
+        patch.object(Path, "open", counted_open),
     ):
         yield counter
 

@@ -65,11 +65,18 @@ def test_verified_backup_avoids_rehashing_scratch_blobs_after_validation(
 
     assert result.ok
     assert result.verified
+    # One scratch proof read per blob and one backup-side hash per blob, and
+    # nothing more. ``open:backup`` is the file handle ``_sha256_file`` takes
+    # for that same hash, not a second pass. A receipt built by rereading the
+    # scratch blobs would double ``open:scratch``; dropping the restore proof
+    # would zero it.
     assert counter.calls_by_site == {
-        "read_bytes:scratch": len(payloads),
+        "open:scratch": len(payloads),
+        "open:backup": len(payloads),
         "sha256_file:backup": len(payloads),
     }
     assert counter.bytes_by_site == {
-        "read_bytes:scratch": total_blob_bytes,
+        "open:scratch": total_blob_bytes,
+        "open:backup": total_blob_bytes,
         "sha256_file:backup": total_blob_bytes,
     }

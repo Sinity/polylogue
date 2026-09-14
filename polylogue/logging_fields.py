@@ -171,6 +171,11 @@ def _fields() -> dict[str, FieldKind]:
         "schema_name",
         # meta: used by log.field_rejected to name the offending field
         "field",
+        # comma-joined configuration key names a layer refused. Drawn from a
+        # closed set of declared setting names (never a user value), so the
+        # refusal event can say *which* keys it ignored instead of reporting
+        # only that some were.
+        "config_keys",
         "source_event",
     )
 

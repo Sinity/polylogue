@@ -208,7 +208,14 @@ def test_append_plan_resynthesizes_an_append_kind_head(tmp_path: Path) -> None:
         )
         archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=_session_meta(session_id) + first_append_delta,
+            # Literal tail bytes, exactly what the live route now retains:
+            # polylogue-u19l stopped splicing a synthetic ``session_meta``
+            # header into a Codex append blob so the stored bytes stay a real
+            # slice of the live file. The resynthesis proof reads the blob at
+            # the declared ``append_start_offset``/``append_end_offset``
+            # window, so a fixture carrying the retired header declares 124
+            # bytes of window over 185 bytes of blob and can never verify.
+            payload=first_append_delta,
             source_path=str(source),
             acquired_at_ms=2,
             revision=RawRevisionEnvelope(

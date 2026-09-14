@@ -44,6 +44,14 @@ _VALID_SHARD = re.compile(r"[0-9a-f]{2}")
 _VALID_LEAF = re.compile(r"[0-9a-f]{62}")
 _STAGING_DIRNAME = ".staging"
 _NAMESPACE_MARKER_FILENAME = ".polylogue-blob-namespace"
+#: Blob-GC's index-liveness observation, written beside the namespace marker.
+#: Declared here rather than in ``blob_gc_index_watermark`` because this module
+#: owns what may legitimately sit in the namespace root:
+#: :meth:`BlobStore.iter_namespace` reports every other entry as a critical
+#: invalid-namespace finding, so a first-party control file that this list does
+#: not name reads to an operator as blob corruption.
+INDEX_LIVENESS_WATERMARK_FILENAME = ".polylogue-index-liveness-watermark.json"
+_RESERVED_ROOT_ENTRY_NAMES = frozenset({_NAMESPACE_MARKER_FILENAME, INDEX_LIVENESS_WATERMARK_FILENAME})
 
 Heartbeat = Callable[[], None]
 
@@ -437,9 +445,10 @@ class BlobStore:
             return
 
         for shard_path in root_entries:
-            # GC owns this opaque marker. It binds durable deletion intents to
-            # this namespace across remounts and is not blob content.
-            if shard_path.name == _NAMESPACE_MARKER_FILENAME:
+            # GC owns these. The marker binds durable deletion intents to this
+            # namespace across remounts, and the watermark records the index
+            # tier's blob-owning population; neither is blob content.
+            if shard_path.name in _RESERVED_ROOT_ENTRY_NAMES:
                 continue
             try:
                 shard_mode = shard_path.stat(follow_symlinks=False).st_mode
