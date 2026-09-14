@@ -31,7 +31,7 @@ from polylogue.api import Polylogue
 from polylogue.cli.click_app import cli
 from polylogue.mcp.insight_tool_contracts import InsightListToolSpec
 from tests.infra.json_contracts import extract_json_result
-from tests.infra.storage_records import SessionBuilder
+from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
 
 def _parity_insight_types() -> list[InsightType]:
@@ -134,7 +134,10 @@ async def test_cli_mcp_and_api_insight_lists_are_identical(cli_workspace: dict[s
     _seed(db_path)
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     try:
-        await archive.rebuild_insights()
+        # ``Polylogue.rebuild_insights`` refuses in-process execution; this
+        # test needs materialized rows to compare across surfaces, not sweep
+        # authority, so it calls the materializer both sanctioned owners reach.
+        materialize_session_insights(db_path)
 
         compared: list[str] = []
         populated: list[str] = []

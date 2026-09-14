@@ -21,9 +21,10 @@ from polylogue.analysis.archive import (
 from polylogue.api import ArchiveStats
 from polylogue.archive.message.roles import Role
 from polylogue.config import Config
+from polylogue.core.errors import InsightMaintenanceRequiresDaemonError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.builders import make_conv, make_msg
-from tests.infra.storage_records import SessionBuilder
+from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
 
 def _seed(
@@ -663,7 +664,10 @@ class TestPolylogueArchiveInsights:
         )
 
         archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-        await archive.rebuild_insights()
+        # ``Polylogue.rebuild_insights`` refuses in-process execution: a sweep is
+        # a sealed machine owned by ``polylogued run``. This test reads what the
+        # materializer produced, so it calls the shared materializer directly.
+        materialize_session_insights(db_path)
         profile = await archive.get_session_profile_insight(root_id)
         profiles = await archive.list_session_profile_insights(
             SessionProfileInsightQuery(
@@ -738,10 +742,20 @@ class TestPolylogueArchiveInsights:
         assert cost_rollups[0].total_usd == pytest.approx(0.0)
 
     @pytest.mark.asyncio
-    async def test_archive_stats_health_and_rebuild_insights_are_public(
+    async def test_archive_stats_and_health_are_public_and_insights_materialize(
         self: object,
         cli_workspace: dict[str, Path],
     ) -> None:
+        """``stats`` and ``health_check`` are public reads; a sweep is not.
+
+        ``Polylogue.rebuild_insights`` deliberately refuses in-process
+        execution (:class:`InsightMaintenanceRequiresDaemonError`) and names
+        ``polylogued run`` as its sealed owner.  This test asserts both halves
+        of the current public surface: the two reads answer, the sweep refuses,
+        and the shared materializer both sanctioned owners reach still produces
+        the rows.  Anti-vacuity: weakening the refusal to a silent no-op, or
+        breaking the materializer, turns this red.
+        """
         db_path = cli_workspace["db_path"]
         builder = (
             SessionBuilder(db_path, "conv-public")
@@ -755,7 +769,11 @@ class TestPolylogueArchiveInsights:
         archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
         stats = await archive.stats()
         health = await archive.health_check()
-        counts = await archive.rebuild_insights([native_id])
+
+        with pytest.raises(InsightMaintenanceRequiresDaemonError):
+            await archive.rebuild_insights([native_id])
+
+        counts = materialize_session_insights(db_path)
 
         assert stats.session_count == 1
         assert health.summary
