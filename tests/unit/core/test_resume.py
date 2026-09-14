@@ -395,7 +395,7 @@ async def test_resume_candidates_exclude_unmatched_dead_paths_from_jaccard_union
     from polylogue.analysis.resume import find_resume_candidates
 
     repo_root = tmp_path / "repo"
-    current = repo_root / "polylogue" / "insights" / "resume.py"
+    current = repo_root / "polylogue" / "analysis" / "resume.py"
     current.parent.mkdir(parents=True)
     current.write_text("# scorer\n", encoding="utf-8")
     shared = ("polylogue/analysis/resume.py",)
@@ -431,7 +431,7 @@ def test_resume_candidates_preserve_resolvable_exact_jaccard(tmp_path: Path) -> 
     from polylogue.analysis.resume import _rank_resume_profiles
 
     repo_root = tmp_path / "repo"
-    current = repo_root / "polylogue" / "insights" / "resume.py"
+    current = repo_root / "polylogue" / "analysis" / "resume.py"
     current.parent.mkdir(parents=True)
     current.write_text("# scorer\n", encoding="utf-8")
     profile = _synthetic_ranking_profile(
