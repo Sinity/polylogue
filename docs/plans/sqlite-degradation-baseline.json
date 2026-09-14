@@ -120,7 +120,7 @@
     },
     {
       "file": "polylogue/cli/commands/status.py",
-      "digest": "0be6ee0758469bbbfc7d56710d12639c4a48af5c"
+      "digest": "226b61a3c423244dbc4ec54fb71958685ccafd56"
     },
     {
       "file": "polylogue/cli/commands/status_diagnostics.py",
