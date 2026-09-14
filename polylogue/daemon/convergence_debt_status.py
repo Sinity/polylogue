@@ -72,6 +72,92 @@ class ConvergenceDebtSummary(BaseModel):
     recent: list[ConvergenceDebtItem] = Field(default_factory=list)
 
 
+class ConvergenceDebtStageCounts(BaseModel):
+    """Aggregate-only convergence-debt counts for metric emission."""
+
+    available: bool = True
+    error: str | None = None
+    counts: list[tuple[str, str, int]] = Field(default_factory=list)
+
+
+def convergence_debt_stage_counts_info(dbf: Path, *, ops_db: Path | None = None) -> ConvergenceDebtStageCounts:
+    """Return ``(stage, status, count)`` triples without materializing rows.
+
+    ``/metrics`` needs only these aggregates, but it previously reached them
+    through :func:`convergence_debt_summary_info`, which selects every
+    convergence-debt row -- ``target_id`` and ``last_error`` strings included --
+    and discards all of it after counting. On an archive carrying a large debt
+    backlog that made an unauthenticated scrape materialize the whole ledger.
+
+    This projection keeps the property that made the delegation worth doing:
+    the closed ``{failed, deferred}`` status vocabulary and the non-NULL
+    ``stage`` requirement are still enforced, and a violation still surfaces as
+    ``available=False`` rather than silently minting an ``"unknown"`` bucket.
+    """
+    resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")
+    if not resolved_ops_db.exists():
+        return ConvergenceDebtStageCounts(
+            available=False, error=f"convergence debt database is missing: {resolved_ops_db}"
+        )
+    try:
+        conn = open_readonly_connection(resolved_ops_db, validate_schema=False)
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"
+            ).fetchone()
+            if has_table is None:
+                return ConvergenceDebtStageCounts(available=False, error="convergence debt table is unavailable")
+            rows = conn.execute(
+                """
+                SELECT stage, status, COUNT(*)
+                FROM convergence_debt
+                GROUP BY stage, status
+                ORDER BY stage, status
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        emit(
+            "daemon.convergence_debt.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="debt_stage_counts_unreadable",
+            path=resolved_ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+        return ConvergenceDebtStageCounts(available=False, error=f"convergence debt status unavailable: {exc}")
+
+    counts: list[tuple[str, str, int]] = []
+    unknown_statuses: set[str] = set()
+    for row in rows:
+        stage = row[0]
+        status = row[1]
+        if stage is None or not str(stage):
+            return ConvergenceDebtStageCounts(
+                available=False,
+                error="convergence debt status unavailable: convergence_debt contains a NULL stage",
+            )
+        if status not in _CONVERGENCE_DEBT_STATUSES:
+            unknown_statuses.add(repr(status))
+            continue
+        counts.append((str(stage), str(status), int(row[2] or 0)))
+    if unknown_statuses:
+        detail = "convergence_debt contains unknown status value(s): " + ", ".join(sorted(unknown_statuses))
+        emit(
+            "daemon.convergence_debt.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="debt_stage_counts_unreadable",
+            path=resolved_ops_db,
+            error_type="ValueError",
+            error_detail=detail,
+        )
+        return ConvergenceDebtStageCounts(available=False, error=f"convergence debt status unavailable: {detail}")
+    return ConvergenceDebtStageCounts(counts=counts)
+
+
 def convergence_debt_summary_info(dbf: Path, *, ops_db: Path | None = None) -> ConvergenceDebtSummary:
     """Return durable post-ingest convergence debt snapshots."""
     resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")

@@ -417,35 +417,27 @@ def _convergence_debt_by_stage(conn: sqlite3.Connection, *, ops_db: Path | None 
 def _ops_convergence_debt_by_stage(ops_db: Path | None) -> list[tuple[str, str, int]]:
     """Return (stage, status, count) triples from the durable ops-tier ledger.
 
-    Delegates to :func:`convergence_debt_status.convergence_debt_summary_info`
-    -- the same projection ``polylogue ops status`` and the ``/health``
-    envelope already use -- instead of re-running the ``GROUP BY stage,
-    status`` query by hand. This is NOT a pure drop-in for the query it
-    replaces: that projection validates every row's ``status`` against the
-    closed ``{failed, deferred}`` vocabulary and requires ``stage`` to be
-    non-NULL, raising internally (caught, logged, and surfaced as
-    ``available=False``) if the table ever contains something else, whereas
-    the raw SQL this replaces passed any stage/status value through
-    verbatim (coercing NULLs to the string ``"unknown"``). In the normal
-    case -- a convergence_debt table containing only failed/deferred rows
-    with a populated stage -- the two are equivalent; only already-anomalous
-    data changes behavior, and it changes toward surfacing the anomaly
-    (a warning + empty metrics) rather than silently minting an "unknown"
-    bucket.
+    Delegates to :func:`convergence_debt_status.convergence_debt_stage_counts_info`,
+    which answers this question with one ``GROUP BY stage, status`` aggregate.
+    It deliberately does NOT use ``convergence_debt_summary_info``: that
+    projection selects every convergence-debt row, ``target_id`` and
+    ``last_error`` strings included, so routing a ``/metrics`` scrape through it
+    materialized the entire ledger to produce a handful of counters.
+
+    The validation that made the summary projection worth delegating to is
+    retained: both enforce the closed ``{failed, deferred}`` status vocabulary
+    and a non-NULL ``stage``, and both surface a violation as ``available=False``
+    (caught, logged, empty metrics) rather than passing an anomalous value
+    through as an ``"unknown"`` bucket.
     """
     if ops_db is None or not ops_db.exists():
         return []
-    from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
+    from polylogue.daemon.convergence_debt_status import convergence_debt_stage_counts_info
 
-    summary = convergence_debt_summary_info(ops_db, ops_db=ops_db)
-    if not summary.available:
+    stage_counts = convergence_debt_stage_counts_info(ops_db, ops_db=ops_db)
+    if not stage_counts.available:
         return []
-    rows: list[tuple[str, str, int]] = []
-    for stage_summary in summary.stage_summaries:
-        if stage_summary.failed_count:
-            rows.append((stage_summary.stage, "failed", stage_summary.failed_count))
-        if stage_summary.deferred_count:
-            rows.append((stage_summary.stage, "deferred", stage_summary.deferred_count))
+    rows = [(stage, status, count) for stage, status, count in stage_counts.counts if count]
     rows.sort()
     return rows
 

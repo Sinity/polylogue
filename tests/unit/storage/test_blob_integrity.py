@@ -1541,3 +1541,82 @@ class TestSourcePathSurvivesAnArchiveRootMove:
         available, _resolved = blob_integrity._source_path_availability(recorded, archive_root)
 
         assert available is False
+
+
+def test_oversized_non_container_source_is_refused_by_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A grown source is refused, never read whole or hashed as a prefix.
+
+    Anti-vacuity: with the unbounded ``path.read_bytes()`` restored, the call
+    returns the full payload and ``reason is None``, so both assertions fail.
+    The fixture must exceed the ceiling, or the bounded and unbounded reads
+    agree and the test proves nothing.
+    """
+    monkeypatch.setattr(blob_integrity, "MAX_UNCOMPRESSED_SIZE", 64)
+    source = tmp_path / "grown.jsonl"
+    source.write_bytes(b"x" * 65)
+
+    payload, reason = blob_integrity._current_raw_payload_bytes(str(source), None)
+
+    assert payload is None
+    assert reason == "source_too_large"
+
+
+def test_source_at_the_ceiling_is_still_returned_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The refusal is a ceiling, not an off-by-one that drops valid sources."""
+    monkeypatch.setattr(blob_integrity, "MAX_UNCOMPRESSED_SIZE", 64)
+    source = tmp_path / "exact.jsonl"
+    source.write_bytes(b"y" * 64)
+
+    payload, reason = blob_integrity._current_raw_payload_bytes(str(source), None)
+
+    assert reason is None
+    assert payload == b"y" * 64
+
+
+def test_generation_resolved_index_scans_the_configured_blob_root(tmp_path: Path) -> None:
+    """Blob debt is scanned under ``configured_root``, not the index generation.
+
+    Anti-vacuity: with the store derived from ``db_path.parent`` again, the
+    scan looks under ``.index-generations/<gen>/blob``, which does not exist,
+    so the present blob counts missing and ``missing_referenced_blobs`` is 1
+    instead of 0. The fixture must place ``index.db`` in a generation
+    directory and reference a blob that really exists at the configured root,
+    or the two roots coincide and the test proves nothing.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    store = BlobStore(archive_root / "blob")
+    present_hash, present_size = store.write_from_bytes(b"durable blob bytes")
+
+    source_db = archive_root / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                blob_size INTEGER NOT NULL
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                raw_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                PRIMARY KEY(blob_hash, raw_id, ref_type)
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+            ("raw-present", bytes.fromhex(present_hash), present_size),
+        )
+
+    generation_dir = archive_root / ".index-generations" / "gen-1"
+    generation_dir.mkdir(parents=True, exist_ok=True)
+    index_db = generation_dir / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+
+    report = scan_blob_reference_debt(index_db, configured_root=archive_root)
+
+    assert report.total_references_seen == 1
+    assert report.missing_referenced_blobs == 0

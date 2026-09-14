@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -599,3 +600,72 @@ def test_load_thresholds_defaults_when_no_config_section(tmp_path: Path, monkeyp
 
     assert thresholds.dedup_window_s == DEFAULT_DEDUP_WINDOW_S
     assert thresholds.families == {}
+
+
+def test_metrics_debt_counts_read_aggregates_without_materializing_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/metrics`` reaches stage counts through a GROUP BY, not every row.
+
+    The assertion is on the SQL the scrape actually executes, captured with
+    SQLite's own trace callback.
+
+    Anti-vacuity: route ``_ops_convergence_debt_by_stage`` back through
+    ``convergence_debt_summary_info`` and the traced statement selects
+    ``target_id``/``last_error`` per row with no aggregate, so both the
+    ``COUNT(*)``/``GROUP BY`` assertion and the no-per-row-column assertion go
+    red. Asserting only on the returned counts would pass either way, which is
+    what made the original delegation look free.
+    """
+    import sqlite3
+
+    from polylogue.daemon.metrics import _ops_convergence_debt_by_stage
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    ops_path = tmp_path / "ops.db"
+    initialize_archive_database(ops_path, ArchiveTier.OPS)
+    with sqlite3.connect(ops_path) as conn:
+        for idx in range(4):
+            add_convergence_debt(
+                conn,
+                stage="fts",
+                target_type="session_id",
+                target_id=f"conv-{idx}",
+                status="failed",
+                attempts=1,
+                last_error="x" * 512,
+                created_at_ms=1_770_000_000_000,
+                updated_at_ms=1_770_000_000_000 + idx,
+            )
+        add_convergence_debt(
+            conn,
+            stage="derived",
+            target_type="session_id",
+            target_id="conv-deferred",
+            status="deferred",
+            attempts=1,
+            last_error="deferred",
+            created_at_ms=1_770_000_000_000,
+            updated_at_ms=1_770_000_000_000,
+        )
+
+    executed: list[str] = []
+
+    def tracing_open(path: Path, **kwargs: Any) -> sqlite3.Connection:
+        conn = open_readonly_connection(path, **kwargs)
+        conn.set_trace_callback(executed.append)
+        return conn
+
+    # The projection binds the helper at import time, so the patch has to land
+    # on its module attribute rather than on the connection-profile source.
+    monkeypatch.setattr(
+        "polylogue.daemon.convergence_debt_status.open_readonly_connection",
+        tracing_open,
+    )
+    rows = _ops_convergence_debt_by_stage(ops_path)
+
+    assert rows == [("derived", "deferred", 1), ("fts", "failed", 4)]
+    debt_reads = [sql for sql in executed if "FROM convergence_debt" in sql]
+    assert debt_reads, "the scrape must actually read convergence_debt"
+    assert all("COUNT(*)" in sql and "GROUP BY" in sql for sql in debt_reads)
+    assert not any("last_error" in sql or "target_id" in sql for sql in debt_reads)

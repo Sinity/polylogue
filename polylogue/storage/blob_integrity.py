@@ -1590,9 +1590,19 @@ def _current_raw_payload_bytes(
     if not path.exists():
         return None, "source_missing"
     try:
-        return path.read_bytes(), None
+        # The recorded blob size is not a bound on the file that is here now:
+        # a source can have grown arbitrarily since acquisition, and this
+        # fallback runs on every prefix mismatch. Read one byte past the same
+        # ceiling the container branch above applies and refuse an oversized
+        # source by name, so the caller reports a bounded refusal rather than
+        # silently hashing a truncated prefix.
+        with path.open("rb") as handle:
+            payload = handle.read(MAX_UNCOMPRESSED_SIZE + 1)
     except OSError as exc:
         return None, f"error:{exc}"
+    if len(payload) > MAX_UNCOMPRESSED_SIZE:
+        return None, "source_too_large"
+    return payload, None
 
 
 def _raw_zip_coordinate(row: dict[str, Any]) -> tuple[int, int] | None:
@@ -2365,7 +2375,14 @@ def scan_blob_reference_debt(
     """
 
     resolved_db_path = Path(db_path)
-    blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
+    # The blob root follows ``configured_root`` for exactly the reason the
+    # reference side does: a generation-resolved ``db_path`` can be
+    # ``<archive>/.index-generations/<gen>/index.db`` while the durable blobs
+    # stay at ``<archive>/blob``. Deriving the store from ``db_path`` alone
+    # pointed the scan at a directory that does not exist, so every reference
+    # counted as missing and the health check reported debt that was not there.
+    blob_root_parent = configured_root if configured_root is not None else resolved_db_path.parent
+    blob_store = store if store is not None else BlobStore(Path(blob_root_parent) / "blob")
     with closing(open_readonly_connection(resolved_db_path, immutable=immutable, validate_schema=False)) as conn:
         referenced = _referenced_blob_hashes(resolved_db_path, conn, configured_root=configured_root)
         reference_sources = _reference_source_counts(resolved_db_path, conn, configured_root=configured_root)
