@@ -188,7 +188,7 @@ The remaining work is grind, not judgement.
 **Find the legacy form:**
 
 ```sh
-grep -rn "logging.getLogger" --include="*.py" polylogue        # 19 modules
+grep -rn "logging.getLogger" --include="*.py" polylogue        # 17 modules
 grep -rn "logger\.\(debug\|info\|warning\|error\|exception\)(" --include="*.py" polylogue
 ```
 
@@ -207,6 +207,8 @@ grep -rn "logger\.\(debug\|info\|warning\|error\|exception\)(" --include="*.py" 
 6. Delete the module-level `logger`.
 
 `convergence.py` is the worked example: 14 legacy sites, zero remaining.
+The rest of `daemon/` followed it — every module except `cli.py` and `http.py`
+now emits events, which is why the baseline below has shrunk.
 
 **Nothing goes dark during the migration.** `configure_events()` installs a
 `logging.Handler` that bridges surviving stdlib records into the event stream as
@@ -232,8 +234,9 @@ baseline. The end state is a baseline containing only `polylogue/logging.py`,
 which legitimately owns the sanctioned `logging.getLogger` calls — the stdlib
 bridge's own backing logger and handler wiring.
 
-The baseline now stands at **7 matches**: `polylogue/logging.py`'s four, plus
-`polylogue/daemon/`'s three. Every other module is converted.
+The baseline now stands at **7 matches**: `polylogue/logging.py`'s four, and nothing else: the daemon conversion retired `event_bus.py`, `intake.py`
+and `supervisor.py`, the only daemon modules that acquired a stdlib logger
+directly. Every other module is converted.
 
 Two properties of the ratchet are worth knowing before you read a verdict:
 
