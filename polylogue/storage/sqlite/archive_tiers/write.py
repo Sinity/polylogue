@@ -113,6 +113,10 @@ from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
     upsert_session_tag,
     upsert_session_work_event,
 )
+from polylogue.storage.sqlite.archive_tiers.session_suppression import (
+    record_suppression_refusal,
+    session_write_is_suppressed,
+)
 from polylogue.storage.sqlite.archive_tiers.write_shard import (
     SessionShard,
     ShardSessionRows,
@@ -431,6 +435,10 @@ class ArchiveWriteOutcome:
     session_id: str
     wrote: bool
     stale_skipped: bool = False
+    #: The operator tombstoned this session (durable ``user.db`` suppression)
+    #: and the write was refused rather than resurrecting it. Counted and
+    #: logged by ``session_suppression``; never a silent drop.
+    suppression_skipped: bool = False
     # An attachment whose parser evidence does not identify one safe message
     # owner is deliberately not given a guessed attachment_refs edge. Keep
     # that decision in the production write receipt so acquisition/replay can
@@ -1096,6 +1104,19 @@ def write_parsed_session_to_archive(
     origin = origin_from_provider(session.source_name)
     native_id = _stored_session_native_id(session.provider_session_id)
     session_id = archive_session_id(origin.value, native_id)
+    # Durable non-resurrection, checked once for every write route.
+    # An identity-preserving reset keeps the raw evidence in source.db and
+    # records the operator's deletion as a suppression assertion in user.db,
+    # so a later replay/rebuild of that retained raw row would otherwise
+    # recreate the session the operator deleted. This is the shared choke
+    # point for live ingest and full replay/reindex, so the refusal lives
+    # here rather than in each replay caller. It is counted and logged --
+    # never a silent drop (see ``session_suppression``).
+    if session_write_is_suppressed(conn, session_id):
+        record_suppression_refusal(session_id, route="write_parsed_session_to_archive")
+        if write_outcome is not None:
+            write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, suppression_skipped=True))
+        return session_id
     parser_semantic_fingerprint = parser_fingerprint_for_origin(origin)
     lowering_semantic_fingerprint = lowering_fingerprint()
     # This session's own rows are about to be rewritten; drop any stale memoized

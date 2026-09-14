@@ -458,10 +458,14 @@ def _write_parsed_precedence_result(
 
     if revision_authoritative:
         write_with_reparse_receipt(force_replace=source_index >= 0 and not fresh_build)
+        # The writer refuses a session the operator tombstoned in user.db.
+        # Authoritative replay must not then claim it changed archive content:
+        # the run's receipt has to show the refusal, not a phantom write.
+        suppression_refused = bool(writer_outcomes and writer_outcomes[-1].suppression_skipped)
         return ArchiveRawParsedWriteResult(
             raw_id=raw_id,
             session_id=session_id,
-            content_changed=True,
+            content_changed=not suppression_refused,
             counts=store._write_counts(session),
             unresolved_attachment_owners=(writer_outcomes[-1].unresolved_attachment_owners if writer_outcomes else ()),
         )
