@@ -252,7 +252,16 @@
     } catch {
       return assetOutcome("invalid_request", { detail: "asset_key_invalid" });
     }
-    if (typeof request.key !== "string" || !request.key || assetUrl.protocol !== "https:") {
+    // `origin`, not `protocol`: the asset key is provider-controlled, and the
+    // URL parser resolves a backslash in a special-scheme path as a slash, so
+    // a key such as `\attacker.example/x` produces an https URL on a foreign
+    // host. Comparing the resolved origin pins every request to the asset host
+    // whatever the key spelling.
+    if (
+      typeof request.key !== "string" ||
+      !request.key ||
+      assetUrl.origin !== "https://assets.grok.com"
+    ) {
       return assetOutcome("invalid_request", { detail: "asset_key_invalid" });
     }
     const controller = new globalThis.AbortController();

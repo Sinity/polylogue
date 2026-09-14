@@ -188,3 +188,32 @@ describe("Grok bridge asset acquisition (assets.grok.com requires the grok.com s
     expect(result.outcome.http_status).toBe(403);
   });
 });
+
+describe("Grok bridge asset host pinning", () => {
+  // The asset key comes from the provider response and is therefore
+  // attacker-influenced. The URL parser resolves a backslash in a
+  // special-scheme path as a slash, so `\host/x` parses as an https URL whose
+  // host is `host`. Anti-vacuity: restore the `assetUrl.protocol !== "https:"`
+  // check and this goes green on the request actually being issued, with the
+  // credentialed fetch reaching the foreign host below.
+  it("refuses a backslash key that would resolve off assets.grok.com", async () => {
+    const fetch = vi.fn(async () => byteResponse(assetBytes));
+    const { requestAsset } = installBridge(fetch);
+
+    const result = await requestAsset({ key: "\\attacker.example/steal" });
+    expect(result.outcome.status).toBe("invalid_request");
+    expect(result.outcome.detail).toBe("asset_key_invalid");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("still accepts an ordinary provider asset key", async () => {
+    const fetch = vi.fn(async (input) => {
+      expect(new URL(String(input)).origin).toBe("https://assets.grok.com");
+      return byteResponse(assetBytes);
+    });
+    const { requestAsset } = installBridge(fetch);
+
+    const result = await requestAsset({ key: "/users/u1/asset-1/content" });
+    expect(result.outcome.status).toBe("acquired");
+  });
+});
