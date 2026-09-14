@@ -21,7 +21,6 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from unittest.mock import patch
 
 import pytest
 import yaml
@@ -38,8 +37,6 @@ from polylogue.archive.query.search_hits import (
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.query_contracts import describe_query_filters
 from polylogue.cli.query_output import (
-    _format_list,
-    _write_message_streaming,
     format_search_hit_list,
     format_summary_list,
     render_stream_transcript,
@@ -173,47 +170,6 @@ SESSION_FORMAT_CASES = (
         ("title: Example Session",),
         excluded=("messages:", "origin:"),
     ),
-)
-
-
-LIST_FORMAT_CASES = (
-    ListFormatCase(
-        "text",
-        "text",
-        None,
-        ("conv-1234567890abcdef", "claude-ai", "Example Session"),
-    ),
-    ListFormatCase(
-        "json",
-        "json",
-        None,
-        ('"origin": "claude-ai-export"', '"summary": "Synthetic summary"'),
-    ),
-    ListFormatCase(
-        "yaml",
-        "yaml",
-        None,
-        ("origin: claude-ai-export", "summary: Synthetic summary"),
-    ),
-    ListFormatCase(
-        "csv",
-        "csv",
-        None,
-        ("id,date,origin,title,messages,words,tags,summary", "conv-1234567890abcdef"),
-    ),
-    ListFormatCase(
-        "json_selected",
-        "json",
-        "id,title",
-        ('"id": "conv-1234567890abcdef"', '"title": "Example Session"'),
-    ),
-)
-
-
-STREAM_CASES = (
-    ("plaintext", "[ASSISTANT]", "Hello from assistant"),
-    ("markdown", "## Assistant", "Hello from assistant"),
-    ("json-lines", '"type": "message"', '"role": "assistant"'),
 )
 
 
@@ -409,44 +365,6 @@ class TestListFormatting:
         assert document.render("csv").splitlines()[0] == "id,provider,title,messages"
         assert document.render("text") == "conv-a  claude-ai  A (2 msgs)"
 
-    @pytest.mark.parametrize("case", LIST_FORMAT_CASES, ids=lambda case: case.name)
-    def test_format_list_contract_matrix(self, sample_session: Session, case: ListFormatCase) -> None:
-        other = _make_conv(
-            id="conv-bbbbbbbbbbbbbbbb",
-            provider="chatgpt",
-            title="Second Session",
-            messages=[_make_msg("user", "Question"), _make_msg("assistant", "Answer")],
-            updated_at=datetime(2025, 6, 16, 12, 30, tzinfo=timezone.utc),
-            summary="Second summary",
-            tags=["second"],
-        )
-        rendered = _format_list([sample_session, other], case.output_format, case.fields)
-        for token in case.expected:
-            assert token in rendered, (case.name, token)
-        if case.name == "json_selected":
-            payload = json.loads(rendered)
-            # #1618: envelope shape, not bare array.
-            assert payload["items"][0] == {"id": "conv-1234567890abcdef", "title": "Example Session"}
-            assert payload["total"] == 2
-        if case.name == "yaml":
-            payload = yaml.safe_load(rendered)
-            assert payload["items"][0]["id"] == "conv-1234567890abcdef"
-            assert payload["items"][0]["origin"] == "claude-ai-export"
-
-    @pytest.mark.parametrize("output_format", ["json", "yaml"])
-    def test_format_list_bounds_giant_titles_unlike_single_session_read(self, output_format: str) -> None:
-        """The multi-session ``find`` list path (unlike the single-session
-        ``read`` path above) intentionally bounds titles -- this is the
-        genuine list context polylogue-x7d's shared budget targets."""
-        giant_title = "needle " + ("full title content " * 20)
-        conv = _make_conv(title=giant_title)
-
-        rendered = _format_list([conv], output_format, None)
-        payload = json.loads(rendered) if output_format == "json" else yaml.safe_load(rendered)
-
-        assert payload["items"][0]["title"] != giant_title
-        assert len(payload["items"][0]["title"]) <= DEFAULT_TITLE_MAX_CHARS + 3
-
     @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
     def test_format_summary_list_contract(self, output_format: str) -> None:
         summary = SessionSummary(
@@ -517,15 +435,11 @@ class TestListFormatting:
                 retrieval_lane="dialogue",
                 match_surface="message",
             )
-            session = _make_conv(created_at=timestamp)
-
             summary_csv = format_summary_list([summary], "csv", None)
             hit_csv = format_search_hit_list([hit], "csv", None)
-            session_csv = _format_list([session], "csv", None)
 
         assert next(csv.DictReader(io.StringIO(summary_csv)))["date"] == "2025-06-01"
         assert next(csv.DictReader(io.StringIO(hit_csv)))["date"] == "2025-06-01"
-        assert next(csv.DictReader(io.StringIO(session_csv)))["date"] == "2025-06-01"
 
     @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
     def test_format_search_hit_list_contract(self, output_format: str) -> None:
@@ -778,25 +692,6 @@ class TestListFormatting:
 
 
 class TestStreamingOutput:
-    @pytest.mark.parametrize("output_format,expected_role,expected_text", STREAM_CASES)
-    def test_write_message_streaming_matrix(self, output_format: str, expected_role: str, expected_text: str) -> None:
-        message = _make_msg(
-            role="assistant",
-            text="Hello from assistant",
-            id="stream-1",
-            timestamp=datetime(2025, 1, 1, tzinfo=timezone.utc),
-        )
-        buffer = io.StringIO()
-        with patch("sys.stdout", buffer):
-            _write_message_streaming(message, output_format)
-        output = buffer.getvalue()
-        assert expected_role in output
-        assert expected_text in output
-        if output_format == "json-lines":
-            payload = json.loads(output)
-            assert payload["id"] == "stream-1"
-            assert payload["word_count"] == message.word_count
-
     @pytest.mark.parametrize(
         ("output_format", "expected_tokens"),
         [

@@ -31,7 +31,6 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.session.domain_models import Session as ArchiveSession
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.viewport.enums import ToolCategory
-from polylogue.cli import query_semantic
 from polylogue.cli.query import async_execute_query_request, project_query_results
 from polylogue.cli.query_contracts import (
     QueryAction,
@@ -3954,15 +3953,18 @@ def test_daemon_unit_fast_path_defers_session_only_modes_to_local_validation(
         )
 
 
-@pytest.mark.asyncio
-async def test_semantic_path_stats_match_substrate_and_across_actions(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Semantic action stats and the substrate keep AND-across-actions path parity.
+def test_referenced_path_matches_across_actions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``referenced_path`` is satisfied across a session's actions, not within one.
 
-    This is the live parity coverage moved from the retired query-support
-    module. It drives the production semantic stats function, its
-    session-level path predicate, and the substrate referenced-path filter.
-    A session with only one requested path must be excluded, while two actions
-    that collectively satisfy both terms must be included by both paths.
+    A session whose actions collectively name every requested path matches; one
+    that names only a subset does not. This was previously asserted as parity
+    against ``cli/query_semantic.py``'s Python re-derivation of the same
+    predicate; that module had no production consumer left once the CLI's
+    grouped-stats output moved onto the ``query.aggregate`` operation, so the
+    substrate filter is now the only owner and the only thing under test.
+
+    Anti-vacuity: widen the substrate filter to OR across the requested paths
+    and the first assertion goes red.
     """
     terms = ("foo.py", "bar.py")
     only_foo = _semantic_path_action(action_id="foo-only", message_id="message-foo", affected_path="/repo/foo.py")
@@ -3976,28 +3978,6 @@ async def test_semantic_path_stats_match_substrate_and_across_actions(monkeypatc
 
     monkeypatch.setattr("polylogue.archive.query.runtime_matching._actions_for", lambda _session: (only_foo,))
     assert matches_referenced_path(SessionQueryPlan(referenced_path=terms), session) is False
-    assert query_semantic.session_matches_referenced_path((only_foo,), terms) is False
 
     monkeypatch.setattr("polylogue.archive.query.runtime_matching._actions_for", lambda _session: (foo, bar))
     assert matches_referenced_path(SessionQueryPlan(referenced_path=terms), session) is True
-    assert query_semantic.session_matches_referenced_path((foo, bar), terms) is True
-
-    env = _make_env()
-    polylogue = MagicMock()
-    polylogue.get_actions_batch = AsyncMock(return_value={"only-foo": (only_foo,), "both-paths": (foo, bar)})
-    monkeypatch.setattr(AppEnv, "polylogue", property(lambda _env: polylogue))
-    with patch("click.echo") as echo:
-        await query_semantic.output_stats_by_semantic_ids(
-            env,
-            ["only-foo", "both-paths"],
-            "action",
-            selection=SessionQuerySpec(referenced_path=terms),
-            output_format="json",
-        )
-
-    payload = json.loads(echo.call_args.args[0])
-    assert payload["rows"] == [
-        {"group": "none", "sessions": 1, "facts": 0, "messages": 0},
-        {"group": "shell", "sessions": 1, "facts": 2, "messages": 2},
-    ]
-    assert payload["summary"] == {"group": "MATCHED", "sessions": 2, "facts": 2, "messages": 2}

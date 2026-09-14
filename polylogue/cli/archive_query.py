@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import csv
 import io
 import json
 import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
-from contextvars import ContextVar
 from dataclasses import dataclass
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, NoReturn, cast
@@ -36,8 +34,17 @@ from polylogue.archive.query.spec import (
 from polylogue.cli.lowering import aggregate_mode
 from polylogue.cli.operation_kernel import OperationRequest
 from polylogue.cli.query_contracts import QueryOutputSpec
-from polylogue.cli.query_feedback import maybe_subcommand_typo_hint
 from polylogue.cli.query_output_contracts import QueryOutputDocument
+from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, emit_empty_page, maybe_subcommand_typo_hint
+from polylogue.cli.render.rows import (
+    TIMING_ENV,
+    emit_rows,
+    emit_session_list_page,
+    emit_session_search_page,
+    project_payload,
+    stats_by_line,
+    summary_line_renderer,
+)
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.helpers import load_effective_config
 from polylogue.cli.shared.machine_errors import error_no_results
@@ -46,7 +53,6 @@ from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 from polylogue.surfaces.outcome import (
-    OUTCOME_EXIT_CODES,
     OutcomeEnvelope,
     decide_outcome,
     outcome_exit_code,
@@ -86,7 +92,6 @@ _NATIVE_REF_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]{11,}")
 # One ``session.read`` window.  A whole transcript can exceed the operation
 # result bound, so the adapter reads it as a bounded sequence of these.
 _SESSION_READ_WINDOW = 200
-_TIMING_ENV: ContextVar[AppEnv | None] = ContextVar("archive_query_timing_env", default=None)
 
 
 def _object_int(value: object) -> int:
@@ -123,7 +128,7 @@ def execute_delete_by_session_ids(
 
 def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
     """Execute the root query path."""
-    timing_token = _TIMING_ENV.set(env)
+    timing_token = TIMING_ENV.set(env)
     env.begin_timing("execute")
     try:
         output = QueryOutputSpec.from_params(request.params)
@@ -145,7 +150,7 @@ def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
         )
     finally:
         env.finish_timing("execute")
-        _TIMING_ENV.reset(timing_token)
+        TIMING_ENV.reset(timing_token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,12 +370,12 @@ def _emit_session_result(
 ) -> None:
     payload = _session_result_payload(session)
     if output_format == "json":
-        click.echo(json.dumps(_project_payload(payload, fields), indent=2, sort_keys=True))
+        click.echo(json.dumps(project_payload(payload, fields), indent=2, sort_keys=True))
         return
     if output_format == "yaml":
         import yaml
 
-        click.echo(yaml.safe_dump(_project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
+        click.echo(yaml.safe_dump(project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
         return
     if output_format == "ndjson":
         messages = payload["messages"]
@@ -736,7 +741,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             if payload.get("mode") == "query-unit-aggregate"
             else _query_unit_text_line(unit_source.unit)
         )
-        _emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields)
+        emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields)
         return
 
     if aggregate is not None:
@@ -878,7 +883,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         return
 
     if ranked:
-        _emit_daemon_search_payload(
+        emit_session_search_page(
             payload,
             query=similar_text or query or similar_session_id or "",
             limit=limit,
@@ -887,9 +892,12 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             origin=origin,
             fields=fields,
             typo_hint=typo_hint,
-            env=env,
-            compiled_spec=compiled_spec,
-            why=bool(params.get("why")),
+            # A zero-hit page still owes the operator a diagnosis and no read
+            # operation declares one yet, so the adapter offers the same
+            # clause-drop/relaxation/FTS-disagreement diagnosis the TUI, daemon
+            # and API surfaces use.  It is a callable because the renderer asks
+            # for it only when the page is empty and the operation named none.
+            diagnose_miss=lambda: _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why"))),
             source=served_by.identity,
         )
         return
@@ -907,7 +915,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         root=True,
         typo_hint=typo_hint,
     )
-    _emit_daemon_list_payload(
+    emit_session_list_page(
         payload,
         limit=limit,
         offset=page_offset,
@@ -980,121 +988,6 @@ def _submit_mutation_operation(
     return configured_mutation_operation(config, operation, payload)
 
 
-_DAEMON_LIST_ITEM_KEEP_KEYS = (
-    "id",
-    "origin",
-    "title",
-    "target_ref",
-    "anchor",
-    "actions",
-    "created_at",
-    "updated_at",
-    "message_count",
-    "tags",
-    "summary",
-    "words",
-    "repo",
-    "cwd_display",
-    "terminal_state",
-    "total_cost_usd",
-    "relative_time",
-    "flags",
-    # Projection columns the operation materialises only when the query asked
-    # for them: ``with <unit>`` attachments and the recursive-graph edges of a
-    # ``lineage:id:``-seeded page.
-    "attached_units",
-    "parent_refs",
-    "child_refs",
-    "continuation",
-)
-
-
-def _normalize_daemon_list_item(item: Mapping[str, object]) -> dict[str, object]:
-    """Reshape a daemon web-reader session row into the CLI's native list-row shape.
-
-    The daemon's ``/api/sessions`` wire contract (``_archive_summary_payload`` /
-    ``_do_list`` in ``daemon/http.py``) is the stable webui row shape —
-    ``word_count`` naming, a ``date`` convenience field, and a ``session_id``
-    duplicate of ``id``. The CLI's direct-path renderer
-    (``archive_query._summary_payload`` -> ``SessionListRowPayload``) predates
-    that contract and uses ``words`` with no ``date``/``session_id`` fields.
-    Golden parity (polylogue-20d.1) requires the two to render identically, so
-    the CLI-side proxy adapts the wire shape here rather than either surface
-    changing its stable contract.
-    """
-
-    normalized = dict(item)
-    if "words" not in normalized and "word_count" in normalized:
-        normalized["words"] = normalized.get("word_count")
-    return {
-        key: normalized[key] for key in _DAEMON_LIST_ITEM_KEEP_KEYS if key in normalized and normalized[key] is not None
-    }
-
-
-def _emit_daemon_list_payload(
-    payload: Mapping[str, object],
-    *,
-    limit: int,
-    offset: int,
-    output_format: str,
-    origin: str | None,
-    fields: str | None,
-    source: str = "daemon",
-) -> None:
-    items = [
-        _normalize_daemon_list_item(item)
-        for item in cast(list[object], payload.get("items") or [])
-        if isinstance(item, Mapping)
-    ]
-    _attach_projected_units(items, payload.get("attached_units"))
-    total = _object_int(payload.get("total") or len(items))
-    # The daemon may clamp the requested limit.  Continue from the number it
-    # actually returned, otherwise a request for 5000 against a 1000 cap can
-    # incorrectly render the first page as complete.
-    effective_limit = _object_int(payload.get("limit") or len(items) or limit)
-    next_offset = offset + len(items) if total > offset + len(items) else None
-    total_unit = payload.get("total_unit")
-    envelope: dict[str, object] = {
-        "mode": "list",
-        "origin": origin,
-        "items": items,
-        "total": total,
-        "total_unit": total_unit if isinstance(total_unit, str) else session_count_unit_label(True),
-        "limit": effective_limit,
-        "offset": offset,
-        "next_offset": next_offset,
-        "next_cursor": None,
-        "source": source,
-    }
-    daemon_outcome = payload.get("outcome")
-    envelope["outcome"] = (
-        dict(daemon_outcome) if isinstance(daemon_outcome, Mapping) else decide_outcome(matched=total).to_dict()
-    )
-    _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line_renderer(items), fields=fields)
-
-
-def _attach_projected_units(items: list[dict[str, object]], attached: object) -> None:
-    """Fold the page-level ``with <unit>`` projection back onto its rows.
-
-    The operation returns the projection once per page, keyed by unit and then
-    by session, because that is how it was fetched -- one bounded query per
-    unit rather than one per row.  The renderer reads it per row, so the join
-    happens here, and every requested unit names every row (an empty list is a
-    real answer, a missing key would look like "not projected").
-    """
-
-    if not isinstance(attached, Mapping) or not attached:
-        return
-    for item in items:
-        session_id = str(item.get("id") or "")
-        projected = {
-            str(unit): list(rows.get(session_id, ()) if isinstance(rows, Mapping) else ())
-            for unit, rows in attached.items()
-        }
-        if projected:
-            item["attached_units"] = projected
-
-
 def _daemon_preview_refs(payload: Mapping[str, object]) -> tuple[str, ...] | None:
     """Read the preview refs a daemon delete payload names, or None if it names none.
 
@@ -1108,101 +1001,6 @@ def _daemon_preview_refs(payload: Mapping[str, object]) -> tuple[str, ...] | Non
     if isinstance(ref, str) and ref:
         return (ref,)
     return None
-
-
-def _emit_daemon_search_payload(
-    payload: Mapping[str, object],
-    *,
-    query: str,
-    limit: int,
-    offset: int,
-    output_format: str,
-    origin: str | None,
-    fields: str | None,
-    typo_hint: str | None,
-    env: AppEnv | None = None,
-    compiled_spec: SessionQuerySpec | None = None,
-    why: bool = False,
-    source: str = "daemon",
-) -> None:
-    _emit_degraded_daemon_search_payload(
-        payload, query=query, output_format=output_format, fields=fields, source=source
-    )
-    hits = [dict(item) for item in cast(list[object], payload.get("hits") or []) if isinstance(item, Mapping)]
-    total = _object_int(payload.get("total") or len(hits))
-    effective_limit = _object_int(payload.get("limit") or len(hits) or limit)
-    total_unit = payload.get("total_unit")
-    envelope: dict[str, object] = {
-        "mode": "search",
-        "origin": origin,
-        "query": query,
-        "retrieval_lane": str(payload.get("retrieval_lane") or "dialogue"),
-        "items": hits,
-        "total": total,
-        "total_unit": total_unit if isinstance(total_unit, str) else session_count_unit_label(True),
-        "limit": effective_limit,
-        "offset": offset,
-        "next_offset": offset + len(hits) if total > offset + len(hits) else None,
-        # The operation mints the ranked continuation cursor itself
-        # (``build_search_envelope`` -> ``build_search_cursor``); dropping it
-        # here made ranked pages non-continuable by transport.
-        "next_cursor": payload.get("next_cursor") if isinstance(payload.get("next_cursor"), str) else None,
-        "source": source,
-    }
-    daemon_outcome = payload.get("outcome")
-    envelope["outcome"] = (
-        dict(daemon_outcome) if isinstance(daemon_outcome, Mapping) else decide_outcome(matched=total).to_dict()
-    )
-    if not hits:
-        diagnostics_payload = payload.get("diagnostics")
-        if not isinstance(diagnostics_payload, Mapping) and env is not None and compiled_spec is not None:
-            # A zero-hit page still owes the operator a diagnosis.  No read
-            # operation declares one yet, so the adapter asks the same
-            # clause-drop/relaxation/FTS-disagreement diagnosis the TUI, daemon
-            # and API surfaces use rather than dropping the explanation.
-            diagnostics_payload = _search_miss_diagnostics(env, compiled_spec, why=why)
-        _emit_no_results(
-            envelope,
-            output_format=output_format,
-            typo_hint=typo_hint,
-            diagnostics=cast("QueryMissDiagnosticsPayload | Mapping[str, object] | None", diagnostics_payload),
-        )
-    _emit_rows(envelope, hits, output_format=output_format, text_line=_hit_line, fields=fields)
-
-
-def _emit_degraded_daemon_search_payload(
-    payload: Mapping[str, object],
-    *,
-    query: str,
-    output_format: str,
-    fields: str | None,
-    source: str = "daemon",
-) -> None:
-    route_state = payload.get("route_state")
-    if not isinstance(route_state, Mapping) or route_state.get("state") != "degraded":
-        return
-    reason = str(route_state.get("reason") or "Search index unavailable.")
-    envelope: dict[str, object] = {
-        "mode": "search",
-        "query": query,
-        "retrieval_lane": str(payload.get("retrieval_lane") or "dialogue"),
-        "items": [],
-        "total": None,
-        "source": source,
-        "route_state": dict(route_state),
-        "outcome": decide_outcome(matched=0, degraded=(reason,)).to_dict(),
-    }
-    diagnostics = payload.get("diagnostics")
-    if isinstance(diagnostics, Mapping):
-        envelope["diagnostics"] = dict(diagnostics)
-    if output_format in {"json", "yaml"}:
-        _emit_rows(envelope, [], output_format=output_format, text_line=_hit_line, fields=fields)
-    elif output_format in {"ndjson", "csv"}:
-        pass
-    else:
-        click.echo(render_outcome_line(OutcomeEnvelope.model_validate(envelope["outcome"])), err=True)
-        click.echo(reason, err=True)
-    raise SystemExit(OUTCOME_EXIT_CODES["degraded"])
 
 
 def _decode_cursor(token: str | None) -> SearchCursor | None:
@@ -1429,7 +1227,7 @@ def _emit_missing_archive_empty_read(
             "next_cursor": None,
             "outcome": decide_outcome(matched=0).to_dict(),
         }
-        _emit_rows(envelope, [], output_format=output_format, text_line=_summary_line_renderer([]), fields=fields)
+        emit_rows(envelope, [], output_format=output_format, text_line=summary_line_renderer([]), fields=fields)
         return True
     return False
 
@@ -1449,7 +1247,7 @@ def _emit_stats(
     query: str,
     fields: str | None,
 ) -> None:
-    from polylogue.cli.convergence_feedback import convergence_warning_line
+    from polylogue.cli.render.outcome import convergence_warning_line
 
     convergence_warning = convergence_warning_line()
     payload = {
@@ -1463,12 +1261,12 @@ def _emit_stats(
         payload["archive_converging"] = True
         payload["convergence_warning"] = convergence_warning
     if output_format == "json":
-        click.echo(json.dumps(_project_payload(payload, fields), indent=2, sort_keys=True))
+        click.echo(json.dumps(project_payload(payload, fields), indent=2, sort_keys=True))
         return
     if output_format == "yaml":
         import yaml
 
-        click.echo(yaml.safe_dump(_project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
+        click.echo(yaml.safe_dump(project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Stats do not support --format {output_format}.")
@@ -1506,7 +1304,7 @@ def _emit_stats_by(
         "total": sum(grouped.values()),
         "outcome": decide_outcome(matched=sum(grouped.values())).to_dict(),
     }
-    _emit_rows(envelope, items, output_format=output_format, text_line=_stats_by_line, fields=fields)
+    emit_rows(envelope, items, output_format=output_format, text_line=stats_by_line, fields=fields)
 
 
 def _emit_mutation(changed: int, *, operation: MutationOperation) -> None:
@@ -1899,7 +1697,7 @@ def _emit_list_miss_if_field_syntax(
     """
     if items or (total is not None and total > 0) or not raw_query.strip():
         return
-    _emit_no_results(
+    emit_empty_page(
         _list_no_results_envelope(origin=origin, limit=limit, offset=offset, root=root),
         output_format=output_format,
         typo_hint=typo_hint,
@@ -1907,94 +1705,10 @@ def _emit_list_miss_if_field_syntax(
     )
 
 
-def _diagnostics_dict(
-    diagnostics: QueryMissDiagnosticsPayload | Mapping[str, object] | None,
-) -> dict[str, object] | None:
-    if diagnostics is None:
-        return None
-    if isinstance(diagnostics, Mapping):
-        return dict(diagnostics)
-    return diagnostics.model_dump(mode="json")
-
-
-def _print_diagnostics_lines(diagnostics: dict[str, object]) -> None:
-    """Render the ``Why this may have missed:`` block shared across query surfaces."""
-    reasons = diagnostics.get("reasons")
-    if not isinstance(reasons, list) or not reasons:
-        return
-    click.echo("Why this may have missed:")
-    for reason in reasons:
-        if not isinstance(reason, Mapping):
-            continue
-        summary = reason.get("summary")
-        if summary:
-            click.echo(f"  - {summary}")
-        detail = reason.get("detail")
-        if detail:
-            click.echo(f"    {detail}")
-
-
-def _emit_no_results(
-    envelope: dict[str, object],
-    *,
-    output_format: str,
-    typo_hint: str | None = None,
-    diagnostics: QueryMissDiagnosticsPayload | Mapping[str, object] | None = None,
-) -> NoReturn:
-    """Emit the canonical no-results response and exit with status 2.
-
-    Status 2 distinguishes "the query ran and matched nothing" from a
-    successful read with results (0) and from an error (1), so callers can
-    branch on an empty result set. Machine formats still receive a parseable
-    empty envelope; text surfaces get the human-readable message.
-
-    ``diagnostics`` (polylogue-jnj.12) carries the shared miss-diagnosis
-    envelope -- either the typed payload or an already-serialized mapping
-    forwarded verbatim from a daemon HTTP response. Machine formats embed it
-    in the empty envelope; text surfaces render a "Why this may have missed:"
-    block, verbosity controlled upstream by the caller's ``--why`` request
-    (bounded clause-drop attribution by default, full breakdown with
-    ``--why``).
-    """
-    from polylogue.cli.convergence_feedback import convergence_warning_line
-
-    convergence_warning = convergence_warning_line()
-    diagnostics_payload = _diagnostics_dict(diagnostics)
-    # Preserve the operation boundary's decision when a daemon supplied one.
-    # In particular, a degraded zero-row answer must not be translated into
-    # the local ``empty`` state merely because this adapter has no rows to
-    # render.  Local builders still decide ``empty`` when no outcome exists.
-    raw_outcome = envelope.get("outcome")
-    outcome = OutcomeEnvelope.model_validate(raw_outcome) if raw_outcome is not None else decide_outcome(matched=0)
-    empty = {**envelope, "items": [], "total": 0, "outcome": outcome.to_dict()}
-    if convergence_warning is not None:
-        empty["archive_converging"] = True
-        empty["convergence_warning"] = convergence_warning
-    if diagnostics_payload is not None:
-        empty["diagnostics"] = diagnostics_payload
-    if output_format == "json":
-        click.echo(json.dumps(empty, indent=2, sort_keys=True))
-    elif output_format == "yaml":
-        import yaml
-
-        click.echo(yaml.safe_dump(empty, sort_keys=False, allow_unicode=True), nl=False)
-    elif output_format in {"ndjson", "csv"}:
-        pass  # no rows to emit
-    else:
-        if convergence_warning is not None:
-            click.echo(convergence_warning)
-        click.echo("No sessions matched.")
-        if typo_hint is not None:
-            click.echo(typo_hint)
-        if diagnostics_payload is not None:
-            _print_diagnostics_lines(diagnostics_payload)
-    raise SystemExit(outcome_exit_code(outcome))
-
-
 def _emit_open_no_results(*, output_format: str, origin: str | None) -> NoReturn:
     if output_format == "json":
-        error_no_results("No sessions matched.").emit(exit_code=OUTCOME_EXIT_CODES["empty"])
-    _emit_no_results(
+        error_no_results("No sessions matched.").emit(exit_code=EMPTY_EXIT_CODE)
+    emit_empty_page(
         {
             "mode": "open",
             "origin": origin,
@@ -2003,51 +1717,6 @@ def _emit_open_no_results(*, output_format: str, origin: str | None) -> NoReturn
         },
         output_format=output_format,
     )
-
-
-def _emit_rows(
-    envelope: dict[str, object],
-    items: list[dict[str, object]],
-    *,
-    output_format: str,
-    text_line: Callable[[dict[str, object]], str],
-    fields: str | None,
-) -> None:
-    if "outcome" not in envelope:
-        raise ValueError("terminal row envelope missing canonical outcome")
-    outcome = OutcomeEnvelope.model_validate(envelope["outcome"])
-    env = _TIMING_ENV.get()
-    if env is not None:
-        env.finish_timing("execute")
-        env.begin_timing("render")
-    try:
-        projected_items = [_project_payload(item, fields) for item in items]
-        if output_format == "json":
-            projected_envelope = {**envelope, "items": projected_items}
-            click.echo(json.dumps(projected_envelope, indent=2, sort_keys=True))
-            return
-        if output_format == "ndjson":
-            for item in projected_items:
-                click.echo(json.dumps(item, sort_keys=True))
-            return
-        if output_format == "csv":
-            click.echo(_csv(projected_items), nl=False)
-            return
-        if output_format == "yaml":
-            import yaml
-
-            projected_envelope = {**envelope, "items": projected_items}
-            click.echo(yaml.safe_dump(projected_envelope, sort_keys=False, allow_unicode=True), nl=False)
-            return
-        if output_format not in {"markdown", "plaintext"}:
-            raise click.UsageError(f"Root query does not support --format {output_format}.")
-        outcome_line = render_outcome_line(outcome)
-        if outcome_line is not None:
-            click.echo(outcome_line)
-        click.echo("\n".join(text_line(item) for item in items))
-    finally:
-        if env is not None:
-            env.finish_timing("render")
 
 
 def _unit_source_display_name(source: QueryUnitSource) -> str:
@@ -2150,79 +1819,6 @@ def _query_unit_text_line(unit: str) -> _QueryUnitTextLine:
         return _QUERY_UNIT_TEXT_LINES[renderer]
     except KeyError as exc:
         raise click.UsageError(f"Unsupported query unit renderer: {renderer}") from exc
-
-
-def _project_payload(payload: dict[str, object], fields: str | None) -> dict[str, object]:
-    selected = _selected_fields(fields)
-    if selected is None:
-        return dict(payload)
-    return {key: value for key, value in payload.items() if key in selected}
-
-
-def _selected_fields(fields: str | None) -> frozenset[str] | None:
-    if not fields:
-        return None
-    selected = frozenset(field.strip() for field in fields.split(",") if field.strip())
-    return selected or None
-
-
-def _csv(items: list[dict[str, object]]) -> str:
-    if not items:
-        return ""
-    fields = list(items[0].keys())
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=fields)
-    writer.writeheader()
-    writer.writerows(items)
-    return buf.getvalue()
-
-
-def _summary_line_renderer(items: list[dict[str, object]]) -> Callable[[dict[str, object]], str]:
-    """Bind one identity frame to the whole rendered result set."""
-    from polylogue.rendering.identity import identity_frame
-
-    frame = identity_frame(str(item.get("id", "")) for item in items)
-
-    def render(item: dict[str, object]) -> str:
-        from polylogue.surfaces.query_rows import session_row
-
-        row = session_row(item)
-        identity = frame.display(row.id)
-        line = (
-            f"{identity:{frame.column_width}s}  {(row.date or 'unknown'):10s}  "
-            f"{row.origin:24s}  {row.title} ({row.message_count} msgs)"
-        )
-        return line + _attached_units_suffix(item)
-
-    return render
-
-
-def _attached_units_suffix(item: dict[str, object]) -> str:
-    """Render a compact ``[+unit:N]`` summary of attached projection units."""
-
-    attached = item.get("attached_units")
-    if not isinstance(attached, dict) or not attached:
-        return ""
-    parts = [f"{unit}:{len(rows)}" for unit, rows in attached.items() if isinstance(rows, list)]
-    return f"  [+{' '.join(parts)}]" if parts else ""
-
-
-def _hit_line(item: dict[str, object]) -> str:
-    session = item.get("session")
-    match = item.get("match")
-    if not isinstance(session, dict) or not isinstance(match, dict):
-        return str(item)
-    from polylogue.archive.query.search_hits import bound_search_snippet
-    from polylogue.surfaces.query_rows import session_row
-
-    row = session_row(session)
-    snippet = bound_search_snippet(match.get("snippet"))
-    line = f"{match['rank']}. {row.origin}  {row.title}  {snippet or ''}"
-    return line + _attached_units_suffix(item)
-
-
-def _stats_by_line(item: dict[str, object]) -> str:
-    return f"{item['group']}: {item['count']}"
 
 
 def _fail(message: str) -> NoReturn:

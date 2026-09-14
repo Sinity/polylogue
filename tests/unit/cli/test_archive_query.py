@@ -14,28 +14,20 @@ import pytest
 
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.archive_query import (
-    _csv,
     _csv_tokens,
     _decode_cursor,
-    _emit_daemon_search_payload,
     _emit_delete,
-    _emit_no_results,
     _emit_stats,
     _has_value,
-    _hit_line,
     _limit,
     _message_type,
     _metadata_pairs,
     _offset,
     _optional_int,
     _optional_str,
-    _project_payload,
-    _selected_fields,
     _session_summary_text,
     _session_text,
     _sort,
-    _stats_by_line,
-    _summary_line_renderer,
     _tool_tokens,
     _tuple_tokens,
     _validate_cursor_request_identity,
@@ -45,6 +37,28 @@ from polylogue.cli.operation_kernel import (
     OperationFailedError,
     OperationIndeterminateError,
     OperationUnavailableError,
+)
+from polylogue.cli.render.outcome import emit_empty_page as _emit_no_results
+from polylogue.cli.render.rows import (
+    csv_text as _csv,
+)
+from polylogue.cli.render.rows import (
+    emit_session_search_page as _emit_daemon_search_payload,
+)
+from polylogue.cli.render.rows import (
+    hit_line as _hit_line,
+)
+from polylogue.cli.render.rows import (
+    project_payload as _project_payload,
+)
+from polylogue.cli.render.rows import (
+    selected_fields as _selected_fields,
+)
+from polylogue.cli.render.rows import (
+    stats_by_line as _stats_by_line,
+)
+from polylogue.cli.render.rows import (
+    summary_line_renderer as _summary_line_renderer,
 )
 from polylogue.config import Config
 from polylogue.operations import OperationSpec, build_runtime_operation_catalog
@@ -84,7 +98,7 @@ def test_session_list_row_renders_read_time_display_label() -> None:
 def test_emit_no_results_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:
     warning = "Archive is converging: 3 index rebuild attempt(s) active; results may be partial."
 
-    with patch("polylogue.cli.convergence_feedback.convergence_warning_line", return_value=warning):
+    with patch("polylogue.cli.render.outcome.convergence_warning_line", return_value=warning):
         with pytest.raises(SystemExit) as exc_info:
             _emit_no_results({"mode": "find"}, output_format="text")
 
@@ -95,7 +109,7 @@ def test_emit_no_results_includes_convergence_warning(capsys: pytest.CaptureFixt
 def test_emit_no_results_json_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:
     warning = "Archive is converging: 3 index rebuild attempt(s) active; results may be partial."
 
-    with patch("polylogue.cli.convergence_feedback.convergence_warning_line", return_value=warning):
+    with patch("polylogue.cli.render.outcome.convergence_warning_line", return_value=warning):
         with pytest.raises(SystemExit) as exc_info:
             _emit_no_results({"mode": "find"}, output_format="json")
 
@@ -118,7 +132,7 @@ def test_emit_stats_includes_convergence_warning(capsys: pytest.CaptureFixture[s
         origins={"codex-session": 3},
     )
 
-    with patch("polylogue.cli.convergence_feedback.convergence_warning_line", return_value=warning):
+    with patch("polylogue.cli.render.outcome.convergence_warning_line", return_value=warning):
         _emit_stats(stats, output_format="plaintext", origin=None, query="", fields=None)
 
     assert capsys.readouterr().out.splitlines()[:2] == [warning, "Sessions: 3"]
@@ -135,7 +149,7 @@ def test_emit_stats_json_includes_convergence_warning(capsys: pytest.CaptureFixt
         origins={"codex-session": 3},
     )
 
-    with patch("polylogue.cli.convergence_feedback.convergence_warning_line", return_value=warning):
+    with patch("polylogue.cli.render.outcome.convergence_warning_line", return_value=warning):
         _emit_stats(stats, output_format="json", origin=None, query="", fields=None)
 
     payload = json.loads(capsys.readouterr().out)

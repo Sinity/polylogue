@@ -217,7 +217,7 @@ class TestCliTerminalOutcomes:
         assert exit_code != 0, output
 
     def test_daemon_degraded_empty_is_not_translated_to_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from polylogue.cli.archive_query import _emit_no_results
+        from polylogue.cli.render.outcome import emit_empty_page as _emit_no_results
 
         with pytest.raises(SystemExit) as exc_info:
             _emit_no_results(
