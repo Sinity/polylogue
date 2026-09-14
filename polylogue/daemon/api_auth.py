@@ -26,10 +26,8 @@ from pathlib import Path
 import click
 
 from polylogue.core.json import dumps
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 from polylogue.paths import api_auth_token_path
-
-logger = get_logger(__name__)
 
 #: Entropy (bytes, pre-base64) for an auto-minted API bearer token. Matches
 #: RECEIVER_TOKEN_ENTROPY_BYTES in polylogue.browser_capture.receiver.
@@ -87,11 +85,13 @@ def load_or_mint_api_auth_token(path: Path | None = None, *, rotate: bool = Fals
             if existing:
                 return existing
         else:
-            logger.warning(
-                "daemon_api.token_file_untrusted",
-                path=str(target),
+            emit(
+                "daemon.api_auth.token_file_untrusted",
+                level=WARNING,
+                outcome="refused",
                 action="reminting",
-                reason="existing token file is not an owner-only regular file we exclusively own",
+                reason="not_an_exclusively_owned_owner_only_file",
+                path=target,
             )
     token = secrets.token_urlsafe(API_AUTH_TOKEN_ENTROPY_BYTES)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -126,10 +126,12 @@ def resolve_api_auth_token(
     if explicit_token:
         return explicit_token
     if allow_no_auth:
-        logger.warning(
-            "daemon_api.auth_disabled",
-            reason="allow_no_auth explicitly set",
-            risk="any local process can read/write through the daemon API",
+        emit(
+            "daemon.api_auth.disabled",
+            level=WARNING,
+            outcome="degraded",
+            reason="allow_no_auth_set",
+            enabled=False,
         )
         return None
     return load_or_mint_api_auth_token(token_path)

@@ -30,10 +30,7 @@ from typing import Protocol
 
 from polylogue.daemon.health import HealthAlert, HealthSeverity
 from polylogue.daemon.notification_backends import BackendUnavailableError
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
-
+from polylogue.logging import WARNING, emit
 
 SEVERITY_TO_PRIORITY: dict[HealthSeverity, int] = {
     HealthSeverity.OK: 6,
@@ -80,10 +77,16 @@ class JournaldNotificationBackend:
                     POLYLOGUE_CHECKED_AT=alert.checked_at,
                 )
             except Exception as err:  # log and continue per-alert: one bad entry should not abort batch
-                logger.warning(
-                    "daemon.notifications.journald: send failed for %s: %s",
-                    alert.check_name,
-                    err,
+                emit(
+                    "daemon.notifications.delivery_failed",
+                    level=WARNING,
+                    outcome="error",
+                    reason="journald_send_failed",
+                    backend="journald",
+                    check_name=alert.check_name,
+                    severity=alert.severity.value,
+                    error_type=type(err).__name__,
+                    error_detail=str(err),
                 )
 
 

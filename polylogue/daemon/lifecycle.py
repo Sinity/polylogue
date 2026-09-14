@@ -20,7 +20,7 @@ from pathlib import Path
 from types import FrameType
 from typing import Any, cast
 
-from polylogue.logging import get_logger
+from polylogue.logging import ERROR, WARNING, emit
 from polylogue.paths import archive_root
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
@@ -32,8 +32,6 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
-
-logger = get_logger(__name__)
 
 DAEMON_HEARTBEAT_INTERVAL_SECONDS = 15 * 60
 # "vanished" (no stop/atexit marker, heartbeat clearly dead) at 2x the
@@ -111,8 +109,17 @@ class DaemonLifecycle:
                 signal_name=signal_name,
                 observed_at_ms=_now_ms(),
             )
-        except Exception:
-            logger.exception("daemon: could not persist terminating signal %s", signal_name)
+        except Exception as exc:
+            emit(
+                "daemon.lifecycle.signal_not_persisted",
+                level=ERROR,
+                outcome="error",
+                reason="lifecycle_signal_write_failed",
+                signal_name=signal_name,
+                run_id=self.run_id,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
     def stop(self, *, exit_kind: str, bounded: bool = False) -> None:
         """Mark the lifecycle row cleanly stopped exactly once."""
@@ -217,13 +224,29 @@ def lifecycle_status(*, now_ms: int | None = None) -> dict[str, object]:
         return {"state": "absent", "heartbeat_age_s": None, "running": False}
     try:
         conn = open_readonly_connection(ops_db_path)
-    except Exception:
-        logger.warning("daemon status lifecycle database open failed", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.lifecycle.status_unavailable",
+            level=WARNING,
+            outcome="degraded",
+            reason="ops_db_unopenable",
+            path=ops_db_path,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return {"state": "unknown", "heartbeat_age_s": None, "running": False}
     try:
         row = latest_daemon_lifecycle(conn)
-    except Exception:
-        logger.warning("daemon status lifecycle lookup failed", exc_info=True)
+    except Exception as exc:
+        emit(
+            "daemon.lifecycle.status_unavailable",
+            level=WARNING,
+            outcome="degraded",
+            reason="lifecycle_lookup_failed",
+            path=ops_db_path,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return {"state": "unknown", "heartbeat_age_s": None, "running": False}
     finally:
         conn.close()
@@ -262,7 +285,13 @@ def install_signal_handlers(lifecycle: DaemonLifecycle) -> dict[int, SignalHandl
 
     def handle_signal(signum: int, _frame: FrameType | None) -> None:
         signal_name = signal.Signals(signum).name
-        logger.error("daemon: received %s; dumping all thread stacks", signal_name)
+        emit(
+            "daemon.lifecycle.signal_received",
+            level=ERROR,
+            outcome="ok",
+            reason="dumping_thread_stacks",
+            signal_name=signal_name,
+        )
         try:
             faulthandler.dump_traceback(file=2, all_threads=True)
         except Exception as exc:

@@ -24,7 +24,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
-from polylogue.logging import get_logger
+from polylogue.logging import ERROR, WARNING, emit
 from polylogue.paths import archive_root
 
 _RECOVERY_MARKER = ".json.recovery."
@@ -32,8 +32,6 @@ _RECOVERY_HEX_LENGTH = 32
 _RENAME_NOREPLACE = 1
 _RENAMEAT2_SYSCALLS = {"x86_64": 316, "aarch64": 276}
 _LIBC = ctypes.CDLL(None, use_errno=True)
-
-logger = get_logger(__name__)
 
 
 def _rename_noreplace(src: str, dst: str, *, directory_fd: int) -> None:
@@ -380,14 +378,33 @@ def _list_pending_pinned(*, root: Path | None = None) -> list[dict[str, Any]]:
                         continue
                     metadata = entry.stat(follow_symlinks=False)
                     if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                        logger.error("whale receipt outbox contains unsafe record: %s", entry.name)
+                        emit(
+                            "daemon.whale_outbox.record_refused",
+                            level=ERROR,
+                            outcome="refused",
+                            reason="not_an_exclusively_owned_regular_file",
+                            path=entry.name,
+                        )
                         continue
                     if stat.S_IMODE(metadata.st_mode) & 0o077:
-                        logger.error("whale receipt outbox contains world-readable record: %s", entry.name)
+                        emit(
+                            "daemon.whale_outbox.record_refused",
+                            level=ERROR,
+                            outcome="refused",
+                            reason="world_accessible_mode",
+                            path=entry.name,
+                        )
                         continue
                     entries.append((entry.name, metadata))
-        except OSError:
-            logger.error("cannot enumerate whale receipt outbox", exc_info=True)
+        except OSError as exc:
+            emit(
+                "daemon.whale_outbox.enumerate_failed",
+                level=ERROR,
+                outcome="error",
+                reason="outbox_unreadable",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return []
         pending: list[dict[str, Any]] = []
         for name, metadata in sorted(entries):
@@ -402,8 +419,15 @@ def list_pending(*, root: Path | None = None) -> list[dict[str, Any]]:
     """Read pending records, failing closed if any path component is unsafe."""
     try:
         return _list_pending_pinned(root=root)
-    except OSError:
-        logger.error("cannot safely open whale receipt outbox", exc_info=True)
+    except OSError as exc:
+        emit(
+            "daemon.whale_outbox.open_refused",
+            level=ERROR,
+            outcome="refused",
+            reason="unsafe_path_component",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return []
 
 
@@ -477,8 +501,16 @@ def acknowledge(record: dict[str, Any]) -> None:
             finally:
                 if descriptor >= 0:
                     os.close(descriptor)
-    except (OSError, ValueError, TypeError):
-        logger.warning("cannot acknowledge whale receipt safely: %s", path, exc_info=True)
+    except (OSError, ValueError, TypeError) as exc:
+        emit(
+            "daemon.whale_outbox.ack_refused",
+            level=WARNING,
+            outcome="refused",
+            reason="unsafe_acknowledge_target",
+            path=path,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
 
 
 __all__ = ["acknowledge", "enqueue", "enqueue_with_identity", "list_pending"]

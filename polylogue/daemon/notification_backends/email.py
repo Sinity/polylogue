@@ -30,10 +30,7 @@ from typing import Protocol
 
 from polylogue.daemon.health import HealthAlert
 from polylogue.daemon.notification_backends import BackendConfigError, build_envelope
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
-
+from polylogue.logging import WARNING, emit
 
 EMAIL_DEFAULT_PORT = 587
 EMAIL_DEFAULT_TIMEOUT_S = 10.0
@@ -134,10 +131,14 @@ class EmailNotificationBackend:
         if not alerts:
             return
         if not self._allow_send():
-            logger.warning(
-                "daemon.notifications.email: rate limit reached (%d/hour); dropped %d alert(s)",
-                self._max_per_hour,
-                len(alerts),
+            emit(
+                "daemon.notifications.rate_limited",
+                level=WARNING,
+                outcome="refused",
+                reason="hourly_rate_limit_reached",
+                backend="email",
+                limit=self._max_per_hour,
+                dropped=len(alerts),
             )
             return
         msg = self._build_message(alerts)

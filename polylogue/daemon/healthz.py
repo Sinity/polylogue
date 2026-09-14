@@ -26,9 +26,7 @@ from http import HTTPStatus
 from typing import Protocol
 
 from polylogue.daemon.process_start import started_at_wall, uptime_seconds
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
+from polylogue.logging import ERROR, emit
 
 
 class ProbeResponder(Protocol):
@@ -166,7 +164,15 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
     except Exception as exc:
         # Probe must always answer with a structured 503 rather than
         # leak as a 500 — we genuinely want broad Exception here.
-        logger.exception("readiness probe failed")
+        emit(
+            "daemon.healthz.probe_failed",
+            level=ERROR,
+            outcome="error",
+            reason="probe_error",
+            status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         responder._send_json(
             HTTPStatus.SERVICE_UNAVAILABLE,
             {

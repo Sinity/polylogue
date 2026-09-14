@@ -27,10 +27,7 @@ from polylogue.daemon.notification_backends import (
     BackendConfigError,
     build_envelope,
 )
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
-
+from polylogue.logging import DEBUG, WARNING, emit
 
 WEBHOOK_TIMEOUT_S = 5.0
 """Per-attempt HTTP timeout for the webhook backend."""
@@ -101,19 +98,28 @@ class WebhookNotificationBackend:
                 response = self._post(body, headers)
             except httpx.HTTPError as err:
                 last_error = err
-                logger.warning(
-                    "daemon.notifications.webhook: transient error on attempt %d/%d: %s",
-                    attempt + 1,
-                    attempts,
-                    err,
+                emit(
+                    "daemon.notifications.delivery_retry",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="transport_error",
+                    backend="webhook",
+                    attempts=attempt + 1,
+                    limit=attempts,
+                    error_type=type(err).__name__,
+                    error_detail=str(err),
                 )
             else:
                 if response.status_code < 500:
                     response.raise_for_status()
-                    logger.debug(
-                        "daemon.notifications.webhook: delivered %d alert(s) (status=%d)",
-                        len(alerts),
-                        response.status_code,
+                    emit(
+                        "daemon.notifications.delivered",
+                        level=DEBUG,
+                        outcome="ok",
+                        backend="webhook",
+                        delivered=len(alerts),
+                        attempts=attempt + 1,
+                        status_code=response.status_code,
                     )
                     return
                 last_error = httpx.HTTPStatusError(
@@ -121,11 +127,15 @@ class WebhookNotificationBackend:
                     request=response.request,
                     response=response,
                 )
-                logger.warning(
-                    "daemon.notifications.webhook: server %d on attempt %d/%d",
-                    response.status_code,
-                    attempt + 1,
-                    attempts,
+                emit(
+                    "daemon.notifications.delivery_retry",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="server_error",
+                    backend="webhook",
+                    attempts=attempt + 1,
+                    limit=attempts,
+                    status_code=response.status_code,
                 )
             if attempt < attempts - 1 and backoff > 0:
                 time.sleep(backoff)
