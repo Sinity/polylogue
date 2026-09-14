@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from polylogue.archive.revision_replay import RevisionReplayPlan
+from polylogue.core.enums import IngestOutcome
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
 from polylogue.schemas.drift_sentinel import SchemaDriftObservation
 from polylogue.sinex.models import PublicationPayload
@@ -75,8 +76,9 @@ class _RawIngestOutcome:
     # Keep the worker's typed disposition intact through the batch summary so
     # the raw-state persistence boundary can retain the same evidence instead
     # of reconstructing it from free-form error text.
-    outcome_code: str = "success"
-    retryable: bool | None = False
+    # polylogue-u1ww0: unclassified, never an unearned "success" default.
+    outcome_code: str = IngestOutcome.LEGACY_UNKNOWN.value
+    retryable: bool | None = None
     evidence_ref: str | None = None
     remediation: str | None = None
     diagnostic: str | None = None

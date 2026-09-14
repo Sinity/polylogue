@@ -41,6 +41,10 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import session_evidence_timestamps
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.pipeline.ingest_outcomes import (
+    parser_defect_disposition,
+    transient_error_disposition,
+)
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
 from polylogue.pipeline.services.ingest_worker import (
     IngestRecordResult,
@@ -1637,9 +1641,23 @@ def _iter_ingest_results_chunk(
                         )
                         for future, raw_id in unfinished:
                             future.cancel()
+                            stall_error = "worker progress deadline exceeded; retryable stalled/refused result"
+                            stall_disposition = transient_error_disposition(
+                                evidence_ref="worker:progress_deadline",
+                                diagnostic=stall_error,
+                            )
                             yield IngestRecordResult(
                                 raw_id=raw_id,
-                                error="worker progress deadline exceeded; retryable stalled/refused result",
+                                error=stall_error,
+                                # polylogue-u1ww0: without an explicit
+                                # disposition this refusal inherited the
+                                # dataclass default and was persisted as a
+                                # non-retryable success.
+                                outcome_code=stall_disposition.outcome_code,
+                                retryable=stall_disposition.retryable,
+                                evidence_ref=stall_disposition.evidence_ref,
+                                remediation=stall_disposition.remediation,
+                                diagnostic=stall_disposition.diagnostic,
                             )
                         futures.clear()
                         if progress is not None:
@@ -1659,7 +1677,21 @@ def _iter_ingest_results_chunk(
                 try:
                     result = future.result()
                 except Exception as exc:
-                    result = IngestRecordResult(raw_id=raw_id, error=f"worker: {exc}")
+                    worker_disposition = parser_defect_disposition(
+                        evidence_ref=f"worker:{type(exc).__name__}",
+                        diagnostic=str(exc),
+                    )
+                    result = IngestRecordResult(
+                        raw_id=raw_id,
+                        error=f"worker: {exc}",
+                        # polylogue-u1ww0: a crashed worker is a classified
+                        # defect, not the dataclass default success.
+                        outcome_code=worker_disposition.outcome_code,
+                        retryable=worker_disposition.retryable,
+                        evidence_ref=worker_disposition.evidence_ref,
+                        remediation=worker_disposition.remediation,
+                        diagnostic=worker_disposition.diagnostic,
+                    )
                 submit_next()
                 if progress is not None:
                     progress.in_flight_raw_ids[:] = list(futures.values())
