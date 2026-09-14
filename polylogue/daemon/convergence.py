@@ -35,7 +35,7 @@ from polylogue.daemon.derivation import (
     ReplacementLike,
     converge,
 )
-from polylogue.logging import ERROR, emit, span
+from polylogue.logging import ERROR, emit, propagate, span
 
 MAX_SELECTED_BINDING_RETRIES = 1
 
@@ -182,14 +182,16 @@ class DerivationConvergenceOwner:
         # Only no-hint archive sweeps retain their own cursor across passes.
         pass_resume = resume if frame.scope is None else False
         submitted = self._compute_adapter.submit(
-            partial(
-                self._converger.converge_derivations,
-                frame,
-                budget=budget,
-                deadline_s=deadline_s,
-                domains=domains,
-                resume=pass_resume,
-                publisher=admission,
+            propagate(
+                partial(
+                    self._converger.converge_derivations,
+                    frame,
+                    budget=budget,
+                    deadline_s=deadline_s,
+                    domains=domains,
+                    resume=pass_resume,
+                    publisher=admission,
+                )
             ),
             admission_class="incremental-background",
         )
@@ -278,16 +280,18 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
         loop = asyncio.get_running_loop()
         admission = _DerivationAdmission(self._write_bridge, loop_thread_id=threading.get_ident())
         submitted = self._compute_adapter.submit(
-            partial(
-                _converge_selected_session_parts_sync,
-                frame,
-                targets=targets,
-                expected_generation=expected_generation,
-                expected_recipe=expected_recipe,
-                adapter=adapter,
-                adapter_recipe=recipe_version,
-                stop_requested=stop_requested,
-                admission=admission,
+            propagate(
+                partial(
+                    _converge_selected_session_parts_sync,
+                    frame,
+                    targets=targets,
+                    expected_generation=expected_generation,
+                    expected_recipe=expected_recipe,
+                    adapter=adapter,
+                    adapter_recipe=recipe_version,
+                    stop_requested=stop_requested,
+                    admission=admission,
+                )
             ),
             admission_class="incremental-background",
         )

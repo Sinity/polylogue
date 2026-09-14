@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from dataclasses import field as _dc_field
 from datetime import UTC, datetime
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TextIO
+from typing import TYPE_CHECKING, Any, BinaryIO, ParamSpec, Protocol, TextIO, TypeVar
 
 from polylogue.logging_fields import (
     OUTCOMES,
@@ -322,15 +322,24 @@ def bind(**fields: object) -> Iterator[None]:
         _context.reset(token)
 
 
-def propagate(function: Callable[..., object]) -> Callable[..., object]:
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def propagate(function: Callable[_P, _R]) -> Callable[_P, _R]:
     """Wrap ``function`` so it runs with the *current* correlation context.
 
     Needed for raw ``threading.Thread(target=...)`` and
     ``ThreadPoolExecutor.submit(...)``, neither of which copies contextvars.
+
+    Generic in both directions so wrapping is type-transparent: a caller that
+    awaits a typed future must not have to cast it back. An ``object``-erasing
+    signature made every wrapped ``submit`` lose its result type, which is a
+    silent invitation to skip the wrapper rather than fix the annotation.
     """
     context = contextvars.copy_context()
 
-    def runner(*args: object, **kwargs: object) -> object:
+    def runner(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         return context.run(lambda: function(*args, **kwargs))
 
     return runner
