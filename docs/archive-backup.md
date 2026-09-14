@@ -299,14 +299,21 @@ sqlite3 "$archive_root/source.db" "SELECT count(*) FROM raw_sessions;"
 flip a few bytes past the SQLite header and confirm `integrity_check` reports
 corruption, not `ok`:
 
+`user.db` is the irreplaceable tier and holds the operator's own assertions, so
+the working copy goes to a fresh owner-only directory rather than a fixed
+`/tmp` name that another local account could pre-create or read:
+
 ```bash
-cp <restored>/user.db /tmp/corrupt-test.db
-python3 -c "
-with open('/tmp/corrupt-test.db', 'r+b') as f:
+work="$(mktemp -d)"            # 0700, unique per run
+cp <restored>/user.db "$work/corrupt-test.db"
+python3 - "$work/corrupt-test.db" <<'PY'
+import sys
+with open(sys.argv[1], 'r+b') as f:
     f.seek(4096); d = f.read(64); f.seek(4096)
     f.write(bytes(b ^ 0xFF for b in d))
-"
-sqlite3 /tmp/corrupt-test.db "PRAGMA integrity_check;"   # must report errors, exit 11
+PY
+sqlite3 "$work/corrupt-test.db" "PRAGMA integrity_check;"  # must report errors, exit 11
+rm -rf "$work"
 ```
 
 2026-07-27 result: extracting `inbox/polylogue-backups/polylogue-archive-20260710T162633Z/{user,source}.db`

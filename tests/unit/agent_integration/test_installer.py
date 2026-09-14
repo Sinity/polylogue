@@ -308,3 +308,32 @@ def test_malformed_claude_session_start_shape_is_not_overwritten(tmp_path: Path)
 
     assert json.loads(settings.read_text()) == {"hooks": {"SessionStart": {"operator": "value"}}}
     assert not (home / ".claude.json").exists()
+
+
+def test_installer_created_directories_are_owner_only(tmp_path: Path) -> None:
+    """Private state and agent-client configuration is not published by default.
+
+    These directories hold the installer's state file and lock and the agent
+    clients' MCP configuration. Created under the ambient umask they are 0o755,
+    which publishes their listing, and a writable ancestor would let another
+    local account pre-create the state or lock file the installer then opens.
+
+    Anti-vacuity: drop the ``mode`` argument from the ``mkdir`` in
+    ``_ensure_parent`` and, under the 0o022 umask set below, every directory
+    reported here is 0o755.
+    """
+    import os
+    import stat
+
+    previous = os.umask(0o022)
+    try:
+        manager, home, polylogue, server = _manager(tmp_path)
+        manager.install(_options(polylogue, server))
+        created = [path for path in home.rglob("*") if path.is_dir()]
+        assert created, "the installer created no directories"
+        observed = {path: stat.S_IMODE(path.stat().st_mode) for path in created}
+    finally:
+        os.umask(previous)
+
+    published = {str(path): oct(mode) for path, mode in observed.items() if mode != 0o700}
+    assert not published, published

@@ -25,7 +25,13 @@ def legacy_browser_capture_native_id(provider: Provider | str | None, provider_s
         return provider_session_id
     synthetic_prefix = f"{provider_value}:"
     if provider_session_id.startswith(synthetic_prefix):
-        parts = provider_session_id.split(":")
+        # Only the three- and four-part shapes below are recognised, so the
+        # split is bounded at five: a provider_session_id is untrusted and has
+        # no length bound, and an unbounded split of a colon-dense value
+        # allocates one str object per character. A fifth part means the value
+        # had at least four colons, which no recognised shape has, so the
+        # bound cannot admit an input the unbounded split rejected.
+        parts = provider_session_id.split(":", 4)
         if len(parts) == 3 and parts[1] and "/" not in parts[1]:
             return parts[1]
         if provider_value == Provider.CHATGPT.value and len(parts) == 4 and parts[1] == "WEB" and parts[2]:

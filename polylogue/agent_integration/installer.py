@@ -228,7 +228,12 @@ def _ensure_parent(path: Path, created_directories: set[Path]) -> None:
             break
         current = current.parent
     for directory in reversed(missing):
-        directory.mkdir()
+        # Owner-only: these are the operator's private state and agent-client
+        # configuration directories. Creating them with the ambient umask
+        # (commonly 0o755) publishes their listing, and a group- or
+        # world-writable ancestor would let another local account pre-create
+        # the state or lock file this installer then opens.
+        directory.mkdir(mode=0o700)
         created_directories.add(directory)
 
 
