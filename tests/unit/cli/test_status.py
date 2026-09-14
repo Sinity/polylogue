@@ -849,12 +849,21 @@ class TestStatusDiagnosticIntegration:
         }
 
     def _malformed_convergence_debt_archive(self, tmp_path: Path) -> Path:
+        """A complete archive whose OPS debt ledger alone is malformed.
+
+        Every declared tier is created, including AUDIT. Omitting AUDIT makes
+        the CLI correctly report ``claim_guard.openable=false`` with
+        ``missing archive tier(s): audit``, which is a different subject from
+        the one these tests are about -- the fixture, not the product, was
+        short. ``_malformed_ingest_attempts_archive`` already creates all six.
+        """
         archive_root = tmp_path / "polylogue"
         for tier in (
             ArchiveTier.SOURCE,
             ArchiveTier.INDEX,
             ArchiveTier.EMBEDDINGS,
             ArchiveTier.USER,
+            ArchiveTier.AUDIT,
             ArchiveTier.OPS,
         ):
             initialize_archive_database(archive_root / f"{tier.value}.db", tier)
@@ -903,7 +912,22 @@ class TestStatusDiagnosticIntegration:
         assert "convergence debt status unavailable" in payload["ingest_workload"]["reason"]
         assert payload["convergence"]["available"] is False
         assert "convergence debt status unavailable" in payload["convergence"]["error"]
-        assert payload["claim_guard"]["converged"]["value"] is True
+        # The subject: a malformed OPS debt ledger must not contaminate the
+        # independent convergence claim. PR #5047 (polylogue-kjy0a) stopped
+        # reporting a guess as a verdict, so for an archive whose raw-authority
+        # frontier was never inspected the claim is *withheld* rather than
+        # asserted True -- the same shape its sibling
+        # test_status_subprocess_malformed_ingest_attempts_json_keeps_convergence_healthy
+        # already pins. What matters here is that the gap it names is the
+        # frontier, never the debt ledger.
+        # Anti-vacuity: let the debt-read failure propagate into the claim and
+        # ``signal``/``reason`` start naming convergence debt; report a guess
+        # as a verdict again and ``determinate`` goes True.
+        converged = payload["claim_guard"]["converged"]
+        assert converged["value"] is None
+        assert converged["determinate"] is False
+        assert "raw_materialization" in converged["signal"]
+        assert "convergence debt" not in converged["reason"]
 
     @pytest.mark.integration
     def test_status_subprocess_malformed_convergence_debt_human_is_explicitly_unavailable(self, tmp_path: Path) -> None:
