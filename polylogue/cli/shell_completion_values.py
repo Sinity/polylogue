@@ -1,16 +1,21 @@
 """Shell-completion helpers for archive-backed CLI values.
 
-All archive-backed completions read the ``index.db``
-through :class:`~polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore`.
-Session-id, tag, repo-name, and tool-name values come from native
-session/tag/repo/action read models; cwd-prefix has no archive source
-yet and degrades to an empty completion list.
+Archive-backed completions are one declared ``completion`` operation through
+the kernel, so a resident daemon answers a TAB press from its already-open
+snapshot instead of the shell-completion process opening the archive itself.
+Session-id, tag, repo-name and tool-name values come from native
+session/tag/repo/action read models; cwd-prefix has no archive source yet and
+degrades to an empty completion list.
+
+Completion runs on the coldest path the CLI has and must never raise into the
+shell: a missing archive, an unreachable daemon or any typed refusal falls back
+to the static grammar answer, which for these value sources is an empty list.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 import click
 from click.shell_completion import CompletionItem
@@ -37,21 +42,19 @@ from polylogue.archive.query.metadata import (
     terminal_query_sources,
 )
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
-from polylogue.archive.query.transaction import archive_read_context
 from polylogue.cli.shell_words import completion_words
 from polylogue.core.enums import MaterialOrigin
-from polylogue.paths import archive_root
 from polylogue.sources.origin_specs import public_origin_descriptions
-from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.surfaces.action_affordances import InputUnit
-
-if TYPE_CHECKING:
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-ArchiveCompletionAction = Callable[["ArchiveStore"], list[CompletionItem]]
 
 _MAX_ID_COMPLETIONS = 24
 _MAX_VALUE_COMPLETIONS = 32
+
+#: How long a TAB press may wait on a daemon before the completer gives up and
+#: renders nothing. A shell prompt that stops responding is worse than a
+#: missing completion, so this bounds the socket call rather than inheriting the
+#: operation's ordinary read deadline.
+_COMPLETION_DEADLINE_MS = 1000
 CompletionCallback = Callable[[click.Context, click.Parameter, str], list[CompletionItem]]
 
 
@@ -72,50 +75,48 @@ def _with_csv_prefix(items: list[CompletionItem], prefix: str) -> list[Completio
     return [CompletionItem(f"{prefix}{item.value}", type=item.type, help=item.help) for item in items]
 
 
-def _db_exists() -> bool:
-    return resolve_active_index_path(archive_root()).exists()
+def completion_values(source: str, incomplete: str, *, limit: int) -> list[CompletionItem]:
+    """Ask the declared ``completion`` operation for one value vocabulary.
 
-
-def _run_completion(action: ArchiveCompletionAction) -> list[CompletionItem]:
-    """Open the archive, run *action*, and return its items.
-
-    Any failure (missing/locked database, unexpected schema) degrades to an
-    empty list so completion never raises into the shell.
+    A completer runs on every TAB press and must never raise into the shell, so
+    every failure -- no archive yet, an unreachable or refusing daemon, a typed
+    operation error -- degrades to the static answer, which for an
+    archive-backed source is an empty list. The bound travels in the request:
+    the shell wants a short list quickly, not a complete one.
     """
-    index_db = resolve_active_index_path(archive_root())
-    if not index_db.exists():
-        return []
+
     try:
-        with archive_read_context(
-            index_db.parent,
-            operation="cli.completion",
-            arguments={"action": getattr(action, "__name__", "completion")},
-            page_size=_MAX_VALUE_COMPLETIONS,
-            projection="completion",
-        ) as archive:
-            return list(action(archive))
+        from polylogue.cli.operation_kernel import OperationRequest, dispatch
+        from polylogue.config import get_config
+
+        result = dispatch(
+            get_config(),
+            OperationRequest("completion", {"source": source, "incomplete": incomplete, "limit": limit}),
+            deadline_ms=_COMPLETION_DEADLINE_MS,
+        )
     except Exception:
+        # Deliberately broad. ``OperationKernelError`` is the expected failure
+        # (no archive yet, an unreachable or refusing daemon), but a completer
+        # has no channel to report anything on, and a traceback printed into a
+        # shell prompt is strictly worse than no completion.
         return []
-
-
-def _stats_by_items(group_by: str, prefix: str, *, unit: str) -> ArchiveCompletionAction:
-    """Archive completion action over ``ArchiveStore.stats_by`` group counts."""
-
-    prefix_lower = prefix.lower()
-
-    def action(archive: ArchiveStore) -> list[CompletionItem]:
-        grouped = archive.stats_by(group_by)
-        ordered = sorted(grouped.items(), key=lambda pair: (-pair[1], pair[0]))
-        items: list[CompletionItem] = []
-        for value, count in ordered:
-            if prefix_lower and not value.lower().startswith(prefix_lower):
-                continue
-            items.append(CompletionItem(value, help=f"{count} {unit}"))
-            if len(items) >= _MAX_VALUE_COMPLETIONS:
-                break
-        return items
-
-    return action
+    value = result.value if isinstance(result.value, dict) else {}
+    completions = value.get("value_completions")
+    if not isinstance(completions, Mapping):
+        return []
+    rows = completions.get("values")
+    if not isinstance(rows, list):
+        return []
+    items: list[CompletionItem] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        row_value = row.get("value")
+        if not isinstance(row_value, str) or not row_value:
+            continue
+        help_text = row.get("help")
+        items.append(CompletionItem(row_value, help=help_text if isinstance(help_text, str) else None))
+    return items
 
 
 def _trim_help(value: str, *, limit: int = 120) -> str:
@@ -418,6 +419,11 @@ def complete_origin_values(
     del ctx, param
     prefix, current = _split_csv_incomplete(incomplete)
     current_lower = current.lower()
+    # Read locally, and deliberately so: an origin is a declared vocabulary,
+    # not archive content. Routing it through the ``completion`` operation would
+    # make it depend on an openable archive -- so the one completion that is
+    # always answerable would start returning nothing on a fresh install, which
+    # is the opposite of what an archive-absent fallback is for.
     descriptions = public_origin_descriptions()
     items = [
         CompletionItem(name, help=descriptions.get(name))
@@ -483,34 +489,10 @@ def complete_session_ids(
     incomplete: str,
 ) -> list[CompletionItem]:
     del ctx, param
-    current = incomplete.strip()
-    current_lower = current.lower()
-
-    if not _db_exists():
-        return []
-
-    def _query(archive: ArchiveStore) -> list[CompletionItem]:
-        summaries = archive.list_summaries(limit=100)
-        items: list[CompletionItem] = []
-        for summary in summaries:
-            cid = str(summary.session_id)
-            title = summary.title or ""
-            source_name = summary.origin
-            display = title or cid
-            if current and not (
-                cid.startswith(current) or (":" in cid and current in cid) or (title and current_lower in title.lower())
-            ):
-                continue
-            items.append(
-                CompletionItem(
-                    cid,
-                    help=f"{source_name} \u00b7 {_trim_help(display)}",
-                )
-            )
-        items.sort(key=lambda item: item.value)
-        return items[:_MAX_ID_COMPLETIONS]
-
-    return _run_completion(_query)
+    return [
+        CompletionItem(item.value, type=item.type, help=_trim_help(item.help) if item.help else None)
+        for item in completion_values("session_id", incomplete.strip(), limit=_MAX_ID_COMPLETIONS)
+    ]
 
 
 def complete_tag_values(
@@ -520,25 +502,7 @@ def complete_tag_values(
 ) -> list[CompletionItem]:
     del ctx, param
     prefix, current = _split_csv_incomplete(incomplete)
-    current_lower = current.lower()
-
-    if not _db_exists():
-        return []
-
-    def _query(archive: ArchiveStore) -> list[CompletionItem]:
-        tags = archive.list_user_tags()
-        sorted_tags = sorted(tags.items(), key=lambda x: (-x[1], x[0]))
-        items: list[CompletionItem] = []
-        for name, cnt in sorted_tags:
-            if current_lower and not name.lower().startswith(current_lower):
-                continue
-            items.append(CompletionItem(name, help=f"{cnt} sessions"))
-            if len(items) >= _MAX_VALUE_COMPLETIONS:
-                break
-        return items
-
-    items = _run_completion(_query)
-    return _with_csv_prefix(items, prefix)
+    return _with_csv_prefix(completion_values("tag", current, limit=_MAX_VALUE_COMPLETIONS), prefix)
 
 
 def complete_repo_values(
@@ -548,11 +512,7 @@ def complete_repo_values(
 ) -> list[CompletionItem]:
     del ctx, param
     prefix, current = _split_csv_incomplete(incomplete)
-    if not _db_exists():
-        return []
-
-    items = _run_completion(_stats_by_items("repo", current, unit="sessions"))
-    return _with_csv_prefix(items, prefix)
+    return _with_csv_prefix(completion_values("repo", current, limit=_MAX_VALUE_COMPLETIONS), prefix)
 
 
 def complete_cwd_prefix_values(
@@ -574,11 +534,7 @@ def complete_tool_values(
     incomplete: str,
 ) -> list[CompletionItem]:
     del ctx, param
-    current = incomplete.strip().lower()
-    if not _db_exists():
-        return []
-
-    return _run_completion(_stats_by_items("tool", current, unit="actions"))
+    return completion_values("tool", incomplete.strip().lower(), limit=_MAX_VALUE_COMPLETIONS)
 
 
 COMPLETION_SOURCE_HANDLERS: Final[Mapping[CompletionSource, CompletionCallback]] = {

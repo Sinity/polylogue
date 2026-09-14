@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
+
+import pytest
 
 from polylogue.config import Config
 from polylogue.operations.daemon_reads import (
@@ -253,3 +255,67 @@ def test_search_projection_hydrates_storage_rows_and_describes_real_lanes() -> N
     assert hits[0].raw_score is None
     assert hits.execution.requested_lanes == ("text", "vector")
     assert hits.execution.executed_lanes == ("text", "vector")
+
+
+def test_archive_backed_completion_answers_from_the_pinned_reader(tmp_path: Path) -> None:
+    """A completion naming a source reads the operation's own archive, bounded.
+
+    The CLI's completer used to open ``index.db`` in the shell-completion
+    process. The vocabularies it read are now this operation's answer, which is
+    what lets a resident daemon serve a TAB press from its already-open
+    snapshot.
+
+    Mutation: ignore ``limit`` and the bound assertion goes red; answer ``tag``
+    from ``stats_by`` instead of the durable user tier and the tag vocabulary
+    empties on an archive with tags but no tag aggregate.
+    """
+
+    bootstrap_archive_root(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        for source in ("session_id", "tag", "repo", "tool"):
+            result = execute_read_operation(
+                "completion",
+                {"source": source, "incomplete": "", "limit": 3},
+                archive=pinned.archive,
+                serving_identity="daemon",
+            )
+            values = cast("dict[str, Any]", result["value_completions"])
+            assert values["source"] == source
+            assert len(values["values"]) <= 3
+            assert all(isinstance(row["value"], str) and row["value"] for row in values["values"])
+
+
+def test_an_undeclared_completion_source_is_refused(tmp_path: Path) -> None:
+    """A source the handler does not implement refuses instead of reading empty.
+
+    Mutation: return ``[]`` for an unknown source and a typo in a completer
+    silently produces no completions forever.
+    """
+
+    bootstrap_archive_root(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        with pytest.raises(ValueError, match="completion source is not declared"):
+            execute_read_operation(
+                "completion",
+                {"source": "not_a_source", "incomplete": ""},
+                archive=pinned.archive,
+                serving_identity="daemon",
+            )
+
+
+def test_a_grammar_completion_still_needs_no_archive() -> None:
+    """The cold path stays cold: a grammar completion opens nothing.
+
+    Mutation: make the handler read ``archive`` unconditionally and this raises,
+    because the minimal archive-shaped object the public operation seam passes
+    implements only ``stats``.
+    """
+
+    result = execute_read_operation(
+        "completion",
+        {"kind": "field", "incomplete": "orig"},
+        archive=cast(ArchiveStore, _Archive()),
+        serving_identity="daemon",
+    )
+    assert "value_completions" not in result
+    assert cast("dict[str, Any]", result["query_completions"])["kind"] == "field"
