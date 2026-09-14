@@ -4082,3 +4082,286 @@ def test_relocation_refuses_a_train_above_the_live_durable_version(
     assert audit_snapshot.user_version == target_versions[-1] - 1
     with pytest.raises(ArchiveRootRelocationError, match="unexpected audit train target"):
         relocation._durable_trains(archive_root, old_root=archive_root, snapshots=snapshots)
+
+
+def _quiesce_archive_sidecars(root: Path) -> None:
+    """Drop every SQLite sidecar, as the operator does before an offline move.
+
+    Relocation refuses to move a tier that still has a WAL beside it, so each
+    tier is checkpointed and left in rollback-journal mode; a later read-only
+    open then cannot recreate one.
+    """
+    for tier in ArchiveTier:
+        tier_path = root / f"{tier.value}.db"
+        if tier_path.is_file():
+            with closing(sqlite3.connect(tier_path)) as connection:
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                connection.execute("PRAGMA journal_mode=DELETE")
+        for suffix in ("-wal", "-shm", "-journal"):
+            sidecar = root / f"{tier.value}.db{suffix}"
+            if sidecar.exists():
+                sidecar.unlink()
+
+
+def _live_shaped_durable_archive(
+    archive_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, object]:
+    """Build one archive carrying the live archive's whole durable chain shape.
+
+    ``/realm/state/polylogue`` (measured read-only) is a single archive that
+    holds *both* halves of the relocation refusal at once:
+
+    * ``audit.db`` reached its version by **adoption** -- ``audit-adoption.json``
+      and no ``audit-0NN.json`` train manifest at or below the adopted version.
+      Migrating the tier forward then publishes exactly one train, above the
+      adopted image.
+    * ``source.db`` carries released train manifests (``source-027..030``) whose
+      targets sit **below** the source adoption floor (37), while the versions
+      above that floor each still have their own released train.
+    * ``user.db`` carries its one train above the user floor.
+
+    Reproducing that as two separate single-property fixtures is weaker
+    evidence than the criterion asks for, so this builder composes all of it
+    into one archive, through the real routes: ``adopt_missing_audit_tier`` for
+    the adoption receipt and ``execute_durable_change_train`` for every
+    manifest. Nothing here hand-writes a train manifest or a receipt.
+
+    The live slot numbers cannot be replayed literally -- a fresh archive is
+    bootstrapped at the current runtime DDL, and the shipped ``source-031..044``
+    migrations cannot be re-applied to it -- so the fixture reproduces the
+    *shape* with synthetic slots above the runtime versions and the adoption
+    floors moved to the matching relative positions.
+    """
+    from polylogue.operations.durable_change_train import (
+        acquire_durable_archive_ownership,
+        adopt_missing_audit_tier,
+        execute_durable_change_train,
+    )
+    from polylogue.storage.sqlite import migration_runner
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.migration_runner import (
+        DurableChangeRider,
+        DurableRuntimeConsumer,
+        declare_durable_change_train,
+        durable_change_train_to_payload,
+        durable_migration_claim_for_sql,
+    )
+
+    initialize_active_archive_root(archive_root)
+
+    # --- audit tier: adopted, never walked ------------------------------------
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=tmp_path / "adoption-backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:live-shape-adoption") as owner:
+        adopted_audit_version, _receipt = adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    assert adopted_audit_version == ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]
+
+    # --- the synthetic slots each durable tier will walk -----------------------
+    base_versions = {tier: ARCHIVE_VERSION_BY_TIER[tier] for tier in DURABLE_MIGRATION_ADOPTION_FLOORS}
+    # source walks four slots; the floor will later sit after the first two, so
+    # two released manifests land below it and two above -- the source-027..030
+    # (below) plus source-038..044 (above) shape in one tier.
+    slot_plan = {
+        ArchiveTier.AUDIT: (base_versions[ArchiveTier.AUDIT] + 1,),
+        ArchiveTier.SOURCE: tuple(base_versions[ArchiveTier.SOURCE] + step for step in range(1, 5)),
+        ArchiveTier.USER: (base_versions[ArchiveTier.USER] + 1,),
+    }
+
+    package_name = f"fixture_migrations_live_shape_{tmp_path.name.replace('-', '_')}"
+    package_root = tmp_path / package_name
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    real_migration_root = Path(str(migration_runner.__file__)).parent / "migrations"
+    statements_by_tier: dict[ArchiveTier, list[str]] = {}
+    for tier, slots in slot_plan.items():
+        tier_package = package_root / tier.value
+        shutil.copytree(real_migration_root / tier.value, tier_package)
+        statements: list[str] = []
+        for target_version in slots:
+            slot = f"{target_version:03d}"
+            table = f"live_shape_probe_{tier.value}_{target_version}"
+            sql = f"-- migration-safety: additive-no-backup\nCREATE TABLE {table} (id INTEGER PRIMARY KEY) STRICT;\n"
+            statements.append(sql)
+            migration_name = f"{slot}_live_shape_probe.sql"
+            (tier_package / migration_name).write_text(sql, encoding="utf-8")
+            claim = durable_migration_claim_for_sql(tier, migration_name, sql, owner_ref="owner:live-shape")
+            rider = DurableChangeRider(
+                rider_id=f"rider:live-shape:{tier.value}:{target_version}",
+                owner_ref="owner:live-shape",
+                schema_objects=(f"table:{table}",),
+                runtime_consumers=(
+                    DurableRuntimeConsumer(
+                        "bootstrap",
+                        "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_database",
+                        "proof:bootstrap",
+                        ("write",),
+                    ),
+                    DurableRuntimeConsumer(
+                        "daemon-health",
+                        "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                        "proof:daemon-health",
+                        ("read",),
+                    ),
+                ),
+                behavior_proof_refs=("proof:bootstrap", "proof:daemon-health"),
+            )
+            declared = declare_durable_change_train(
+                train_id=f"train:{tier.value}:live-shape-v{target_version}",
+                tier=tier,
+                current_version=target_version - 1,
+                target_version=target_version,
+                slot=target_version,
+                owner_ref="owner:live-shape",
+                migration=claim,
+                riders=(rider,),
+                declared_at_ms=1,
+            )
+            (tier_package / f"{slot}.train.json").write_text(
+                json.dumps(durable_change_train_to_payload(declared)), encoding="utf-8"
+            )
+        statements_by_tier[tier] = statements
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(migration_runner, "_migration_package", lambda tier: f"{package_name}.{tier.value}")
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train._migration_package",
+        lambda tier: f"{package_name}.{tier.value}",
+    )
+
+    # --- walk every tier through the real train route -------------------------
+    # Mutate the canonical mappings in place: every reader -- the migration
+    # runner, bootstrap, and the read-only connection profile's schema-skew
+    # guard -- resolves them from this one dict, so rebinding a copy in two
+    # modules would leave the rest of the runtime refusing the walked tier.
+    base_ddl = {tier: ARCHIVE_DDL_BY_TIER[tier] for tier in slot_plan}
+    applied_by_tier: dict[ArchiveTier, list[str]] = {tier: [] for tier in slot_plan}
+    for tier in (ArchiveTier.AUDIT, ArchiveTier.SOURCE, ArchiveTier.USER):
+        for target_version in slot_plan[tier]:
+            applied_by_tier[tier].append(statements_by_tier[tier][len(applied_by_tier[tier])])
+            monkeypatch.setitem(ARCHIVE_VERSION_BY_TIER, tier, target_version)
+            monkeypatch.setitem(ARCHIVE_DDL_BY_TIER, tier, "\n".join((base_ddl[tier], *applied_by_tier[tier])))
+            with acquire_durable_archive_ownership(archive_root, owner_id=f"test:live-shape:{tier.value}") as owner:
+                execution = execute_durable_change_train(
+                    archive_root,
+                    tier,
+                    backup_manifest=None,
+                    daemon_stopped_evidence_ref="proof:test-daemon-stopped",
+                    single_writer_evidence_ref="proof:archive-ownership-lock",
+                    release_archive_ownership=owner.release,
+                )
+            assert execution.manifest_path is not None
+
+    manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    bootstrap_marker = manifest_root / ".bootstrap"
+    # The live archive predates the fresh-bootstrap marker and carries none, so
+    # every tier falls back to its declared adoption floor.
+    if bootstrap_marker.exists():
+        bootstrap_marker.unlink()
+    # Place the source floor where the live floor sits: after the first two
+    # released trains, so those two manifests are history below the floor and
+    # the rest are the versions that still require their train.
+    source_floor = slot_plan[ArchiveTier.SOURCE][1]
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.SOURCE, source_floor)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.USER, base_versions[ArchiveTier.USER])
+
+    # --- assert the archive really carries the measured live shape ------------
+    def _manifest_targets(tier: ArchiveTier) -> list[int]:
+        return sorted(
+            int(path.stem.split("-")[-1])
+            for path in manifest_root.glob(f"{tier.value}-*.json")
+            if re.fullmatch(rf"{tier.value}-\d{{3,}}\.json", path.name)
+        )
+
+    assert (manifest_root / "audit-adoption.json").is_file()
+    # audit: adopted image, one train above it, nothing at or below it.
+    assert _manifest_targets(ArchiveTier.AUDIT) == [adopted_audit_version + 1]
+    # source: released manifests below the floor and above it, in one tier.
+    source_targets = _manifest_targets(ArchiveTier.SOURCE)
+    assert source_targets == list(slot_plan[ArchiveTier.SOURCE])
+    assert [target for target in source_targets if target <= source_floor] == list(slot_plan[ArchiveTier.SOURCE][:2])
+    assert [target for target in source_targets if target > source_floor] == list(slot_plan[ArchiveTier.SOURCE][2:])
+    assert _manifest_targets(ArchiveTier.USER) == [base_versions[ArchiveTier.USER] + 1]
+    for tier in slot_plan:
+        with closing(sqlite3.connect(archive_root / f"{tier.value}.db")) as connection:
+            assert connection.execute("PRAGMA user_version").fetchone() == (slot_plan[tier][-1],)
+
+    _quiesce_archive_sidecars(archive_root)
+
+    return {
+        "adopted_audit_version": adopted_audit_version,
+        "slot_plan": slot_plan,
+        "source_floor": source_floor,
+    }
+
+
+def test_live_shaped_archive_relocates_end_to_end(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live archive's whole durable shape relocates, in one archive.
+
+    This is the acceptance case for the operator's archive: an adopted audit
+    tier with no train at or below its adopted image, *and* a source tier whose
+    released train history reaches below its adoption floor, carried by one
+    archive and moved through the real ``prepare``/``apply`` relocation route.
+
+    Anti-vacuity, demonstrated by reverting each half of the fix in turn:
+
+    * computing ``chain_floor`` in ``_durable_trains`` from the raw
+      ``DURABLE_MIGRATION_ADOPTION_FLOORS[tier]`` instead of ``_chain_floor``
+      makes this red with "archive-root relocation found an unexpected audit
+      train target" -- the versions between the raw floor and the adopted image
+      have no manifest the archive was ever supposed to produce;
+    * restoring the set-equality manifest check (``set(manifests) !=
+      expected_targets``) makes this red with "... unexpected source train
+      target" -- the released trains below the source floor are history, not a
+      fault.
+
+    Both are the refusal measured against the operator's live archive.
+    """
+    old_root = workspace_env["archive_root"]
+    shape = _live_shaped_durable_archive(old_root, tmp_path, monkeypatch)
+    slot_plan: dict[ArchiveTier, tuple[int, ...]] = shape["slot_plan"]  # type: ignore[assignment]
+
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "relocation-backup", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+    planned = {(item.tier, Path(item.path).name) for item in plan.durable_trains}
+    assert planned == {
+        (tier.value, f"{tier.value}-{target:03d}.json") for tier, slots in slot_plan.items() for target in slots
+    }
+    # Planning opens every tier read-only, which can leave a WAL behind.
+    _quiesce_archive_sidecars(new_root)
+    result = apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+    assert result.state == "committed"
+
+    identity = ArchiveIdentity.resolve(new_root)
+    for item in plan.durable_trains:
+        train = load_durable_change_train_manifest(Path(item.path))
+        assert train.apply_evidence is not None
+        assert (
+            train.apply_evidence.post.archive_identity_digest
+            == hashlib.sha256(identity.tier(item.tier).stable_id.encode()).hexdigest()
+        )
