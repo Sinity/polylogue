@@ -2342,6 +2342,12 @@ def _parse_sort_stage(stage: str) -> QueryUnitSort | None:
     )
 
 
+#: Maximum number of distinct `group by` fields a pipeline may declare. See
+#: `_parse_group_stage` for how this bound is derived from the declared
+#: per-unit `aggregate_group_fields` vocabularies.
+_MAX_GROUP_FIELDS = 16
+
+
 def _parse_group_stage(stage: str) -> str | None:
     normalized = " ".join(stage.split()).lower()
     if not normalized.startswith("group by "):
@@ -2353,7 +2359,24 @@ def _parse_group_stage(stage: str) -> str | None:
     if any(not field for field in fields):
         raise ExpressionCompileError("pipeline `group by` requires a field after every comma", field="group")
     normalized_fields = tuple(f"session.{field}" if field in {"origin", "repo"} else field for field in fields)
-    return ",".join(normalized_fields)
+    # A repeated grouping field contributes nothing: the group key is a tuple of
+    # that row's value per field, so a duplicate field only copies a component
+    # that already partitions the rows identically. Deduping (order-preserving,
+    # after `origin`/`repo` normalization so `origin,session.origin` collapses
+    # too) is therefore semantics-preserving and keeps the group-key width tied
+    # to the number of distinct fields.
+    deduped = tuple(dict.fromkeys(normalized_fields))
+    # Widest real grouping vocabulary any unit declares is 8 fields
+    # (`aggregate_group_fields` in query/metadata.py: actions and delegations
+    # both declare 8). The cap sits comfortably above that so no legitimate
+    # query can reach it, while refusing an adversarial width before per-field
+    # validation walks it. Explicit refusal, never truncation.
+    if len(deduped) > _MAX_GROUP_FIELDS:
+        raise ExpressionCompileError(
+            f"pipeline `group by` accepts at most {_MAX_GROUP_FIELDS} distinct fields; got {len(deduped)}",
+            field="group",
+        )
+    return ",".join(deduped)
 
 
 def _parse_count_stage(stage: str) -> bool:

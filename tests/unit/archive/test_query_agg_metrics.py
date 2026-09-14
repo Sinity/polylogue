@@ -16,7 +16,11 @@ from typing import cast
 
 import pytest
 
-from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+from polylogue.archive.query.expression import (
+    ExpressionCompileError,
+    QueryUnitGroupStage,
+    parse_unit_source_expression,
+)
 from polylogue.archive.query.unit_results import query_unit_rows
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
@@ -177,3 +181,64 @@ def test_agg_action_error_rate_metrics_over_is_error(workspace_env: dict[str, Pa
     assert metrics["sum_is_error"] == 1.0
     assert metrics["avg_is_error"] == 0.5
     assert metrics["max_exit_code"] == 1.0
+
+
+def test_group_by_dedupes_repeated_fields_preserving_order() -> None:
+    """A repeated `group by` field collapses instead of widening the group key.
+
+    Anti-vacuity: without the order-preserving dedupe in `_parse_group_stage`,
+    `group by role,role,type,role` compiles to a four-field group, so the
+    asserted `("role", "type")` stage fields and `"role,type"` group_by are red.
+    """
+
+    source = parse_unit_source_expression("messages where role:assistant | group by role,role,type,role | count")
+    assert source is not None
+
+    assert source.group_by == "role,type"
+    group_stages = [s for s in source.pipeline_stages if isinstance(s, QueryUnitGroupStage)]
+    assert [s.fields for s in group_stages] == [("role", "type")]
+
+
+def test_group_by_dedupes_origin_alias_against_normalized_field() -> None:
+    """`origin` and `session.origin` name one field and must collapse to one.
+
+    Anti-vacuity: deduping before the `origin`/`repo` -> `session.*` rewrite (or
+    not deduping at all) leaves two group fields, so the single-field
+    `"session.origin"` assertion fails.
+    """
+
+    source = parse_unit_source_expression("messages where role:assistant | group by origin,session.origin | count")
+    assert source is not None
+
+    assert source.group_by == "session.origin"
+
+
+def test_group_by_refuses_more_distinct_fields_than_the_declared_cap() -> None:
+    """An adversarially wide `group by` is refused explicitly, never truncated.
+
+    Anti-vacuity: without the `_MAX_GROUP_FIELDS` check, 10k distinct fields
+    reach per-field validation and the raised error names an unsupported field
+    rather than the cap, so the `at most 16 distinct fields` match fails. A
+    truncating fix would raise nothing at all and fail on `pytest.raises`.
+    """
+
+    wide = ",".join(f"f{i}" for i in range(10_000))
+    with pytest.raises(ExpressionCompileError, match=r"at most 16 distinct fields; got 10000"):
+        parse_unit_source_expression(f"messages where role:assistant | group by {wide} | count")
+
+
+def test_group_by_repeated_field_flood_is_bounded_by_dedupe() -> None:
+    """10k repetitions of one real field compile to a single group field.
+
+    Anti-vacuity: without dedupe this input passes per-field validation
+    (every repetition is the supported `role`) and yields a 10k-wide group key,
+    so the `"role"` equality assertion is red.
+    """
+
+    flood = ",".join(["role"] * 10_000)
+    source = parse_unit_source_expression(f"messages where role:assistant | group by {flood} | count")
+    assert source is not None
+
+    assert source.group_by == "role"
+    group_stages = [s for s in source.pipeline_stages if isinstance(s, QueryUnitGroupStage)]
+    assert [s.fields for s in group_stages] == [("role",)]
