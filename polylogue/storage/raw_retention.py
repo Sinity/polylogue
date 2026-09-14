@@ -2222,10 +2222,34 @@ def _ops_cursor_byte_offsets_from_connection(
     schema: str = "main",
     source_paths: frozenset[str] | None = None,
 ) -> dict[str, _OpsCursorAuthority]:
-    """Read cursor authority from an operation's pinned ops handle."""
+    """Read cursor authority from an operation's pinned ops handle.
+
+    Shares :func:`_ops_cursor_byte_offsets`'s failure contract: a
+    degraded-but-readable ops tier converts to ``RawRetentionSafetyError``
+    rather than escaping as a bare driver error. The typed refusal for a
+    missing ``ingest_cursor`` table was copied across when this twin landed,
+    but the ``(OSError, sqlite3.Error)`` conversion was not -- so the sole
+    caller ``_check_cursor_ahead_of_accepted`` reads as protected (it catches
+    ``RawRetentionSafetyError``) while a locked or corrupt ops handle raises
+    straight through it.
+    """
 
     if schema not in {"main", "ops_tier"}:
         raise ValueError(f"unsupported ops cursor reader schema: {schema!r}")
+    try:
+        return _ops_cursor_byte_offsets_from_present_connection(conn, schema=schema, source_paths=source_paths)
+    except (OSError, sqlite3.Error) as exc:
+        raise RawRetentionSafetyError(f"ops tier raw cursor authority is unreadable: {exc}") from exc
+
+
+def _ops_cursor_byte_offsets_from_present_connection(
+    conn: sqlite3.Connection,
+    *,
+    schema: str,
+    source_paths: frozenset[str] | None,
+) -> dict[str, _OpsCursorAuthority]:
+    """Unguarded read body; see the wrapper for the failure contract."""
+
     has_table = conn.execute(
         f"SELECT 1 FROM {schema}.sqlite_schema WHERE type = 'table' AND name = 'ingest_cursor'"
     ).fetchone()

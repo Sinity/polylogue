@@ -25,14 +25,6 @@ SCHEMA_DRIFT_RISKY_ERROR_RATE = 0.20
 SCHEMA_DRIFT_MIN_SAMPLE = 5
 
 
-def _drift_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table') AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
 def _schema_drift_status_from_summaries(
     summaries: Iterable[SchemaDriftOriginSummary],
     *,
@@ -76,12 +68,40 @@ def schema_drift_status_from_connection(
     window_ms: int = SCHEMA_DRIFT_WINDOW_MS,
     schema: str = "ops_tier",
 ) -> dict[str, Any]:
-    """Project format drift from a supplied, already-pinned ops reader."""
+    """Project format drift from a supplied, already-pinned ops reader.
+
+    Shares :func:`schema_drift_status`'s failure contract: a degraded-but-
+    readable ops tier (SQLITE_BUSY on the pinned reader, a malformed page, a
+    column the pinned snapshot predates) resolves to
+    ``{"available": False, "reason": ...}`` rather than raising. The only
+    caller -- ``_schema_drift_status`` in
+    :mod:`polylogue.operations.daemon_status` -- invokes this unguarded, so a
+    bare driver error here fails the whole status operation instead of
+    reporting one unavailable component.
+
+    ``ValueError`` for an unsupported schema stays a raise: that is a caller
+    bug, not a tier degradation.
+    """
 
     if conn is None:
         return {"available": False, "reason": "missing_ops_tier"}
     if schema not in {"main", "ops_tier"}:
         raise ValueError(f"unsupported schema-drift reader schema: {schema!r}")
+    try:
+        return _schema_drift_status_from_connection(conn, now_ms=now_ms, window_ms=window_ms, schema=schema)
+    except (OSError, sqlite3.Error) as exc:
+        return {"available": False, "reason": str(exc)}
+
+
+def _schema_drift_status_from_connection(
+    conn: sqlite3.Connection,
+    *,
+    now_ms: int,
+    window_ms: int,
+    schema: str,
+) -> dict[str, Any]:
+    """Unguarded projection body; see the wrapper for the failure contract."""
+
     if (
         conn.execute(
             f"SELECT 1 FROM {schema}.sqlite_schema WHERE type = 'table' AND name = 'schema_drift_samples'"
@@ -107,6 +127,12 @@ def schema_drift_status(active_root: Path, *, now_ms: int, window_ms: int = SCHE
     with a sample in the window. Returns ``available: False`` when the ops
     tier or table is absent, matching ``_ops_workload_status``'s contract
     so a synthetic/mid-bootstrap archive degrades quietly.
+
+    This owns tier resolution only; the projection itself is
+    :func:`schema_drift_status_from_connection`, which also owns the shared
+    read-failure contract. The two used to carry duplicate bodies, and the
+    pinned one was landed without this one's ``sqlite3.Error`` handling --
+    delegating is what keeps them from diverging again.
     """
     ops_db = active_root / "ops.db"
     if not ops_db.exists():
@@ -116,15 +142,6 @@ def schema_drift_status(active_root: Path, *, now_ms: int, window_ms: int = SCHE
     except sqlite3.Error as exc:
         return {"available": False, "reason": str(exc)}
     try:
-        if not _drift_table_exists(conn, "schema_drift_samples"):
-            return {"available": False, "reason": "missing_schema_drift_samples"}
-        from polylogue.storage.sqlite.archive_tiers.ops_write import summarize_schema_drift_since
-
-        since_ms = now_ms - window_ms
-        summaries = summarize_schema_drift_since(conn, since_ms=since_ms)
-    except sqlite3.Error as exc:
-        return {"available": False, "reason": str(exc)}
+        return schema_drift_status_from_connection(conn, now_ms=now_ms, window_ms=window_ms, schema="main")
     finally:
         conn.close()
-
-    return _schema_drift_status_from_summaries(summaries, since_ms=since_ms, window_ms=window_ms)
