@@ -13,7 +13,12 @@ from time import monotonic, time
 from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
-from polylogue.daemon.execution import BoundedComputeAdapter, CancellationHandle, DaemonBackpressureError
+from polylogue.daemon.execution import (
+    BoundedComputeAdapter,
+    CancellationHandle,
+    DaemonBackpressureError,
+    DaemonOperationCancelled,
+)
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.logging import propagate
 from polylogue.operations.audit import (
@@ -554,6 +559,14 @@ class DaemonOperationRuntime:
                     try:
                         envelope = exchange.future.result().to_dict()
                     except BeforeAcceptanceCancelledError:
+                        envelope = self._pending_envelope(exchange, outcome="cancelled")
+                    except DaemonOperationCancelled:
+                        # The scheduler cancels a queued, pre-acceptance task by
+                        # completing its future with this error, having already
+                        # released the reservation with no work started. Without
+                        # this branch it fell into the generic handler below and
+                        # a clean cancellation was reported to the caller as
+                        # ``failed`` carrying a DaemonOperationCancelled error.
                         envelope = self._pending_envelope(exchange, outcome="cancelled")
                     except Exception as exc:
                         outcome = "indeterminate" if exchange.acceptance_started else "failed"

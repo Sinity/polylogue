@@ -108,16 +108,16 @@ async def periodic_secret_scan_sweep(
                     root,
                 )
             except sqlite3.OperationalError as exc:
-                _record_secret_scan_sweep_event(root, status="failed", error=exc)
+                await _record_secret_scan_sweep_event_coordinated(root, status="failed", error=exc)
                 if is_transient_sqlite_lock(exc):
                     sweep.skipped(reason="archive_busy", error_detail=str(exc))
                     continue
                 sweep.degraded("sweep_failed", error_type=type(exc).__name__, error_detail=str(exc))
             except Exception as exc:
-                _record_secret_scan_sweep_event(root, status="failed", error=exc)
+                await _record_secret_scan_sweep_event_coordinated(root, status="failed", error=exc)
                 sweep.degraded("sweep_failed", error_type=type(exc).__name__, error_detail=str(exc))
             else:
-                _record_secret_scan_sweep_event(
+                await _record_secret_scan_sweep_event_coordinated(
                     root,
                     status="failed" if result.errors else "completed",
                     result=result,
@@ -138,6 +138,32 @@ async def periodic_secret_scan_sweep(
                     sweep.ok(**fields)
                 else:
                     sweep.empty(**fields)
+
+
+async def _record_secret_scan_sweep_event_coordinated(
+    archive_root_path: Path,
+    *,
+    status: str,
+    result: SecretScanSweepResult | None = None,
+    error: BaseException | None = None,
+) -> None:
+    """Record the sweep outcome through the writer the module claims to use.
+
+    The scan itself runs under ``daemon_write_coordinator``, but the telemetry
+    write that follows it opened and committed ``ops.db`` directly from the
+    loop, outside the gate -- contradicting this module's own docstring and
+    contending with the coordinated writer for no reason.
+    """
+    from polylogue.daemon.write_coordinator import daemon_write_coordinator
+
+    await daemon_write_coordinator().run_sync(
+        f"{SECRET_SCAN_SWEEP_STAGE}.event",
+        _record_secret_scan_sweep_event,
+        archive_root_path,
+        status=status,
+        result=result,
+        error=error,
+    )
 
 
 def _record_secret_scan_sweep_event(
