@@ -26,7 +26,7 @@ from polylogue.storage.search.runtime import search_messages_impl
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.queries.attachment_records import search_attachment_identity_evidence_hits
 from polylogue.storage.sqlite.schema import SCHEMA_DDL
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_content_identity
 
 
 def _insert_timeless_session_with_text_block(
@@ -37,11 +37,13 @@ def _insert_timeless_session_with_text_block(
         (native_id, origin, bytes(32)),
     )
     session_id = f"{origin}:{native_id}"
+    content_identity = fixture_content_identity(text)
     conn.execute(
-        "INSERT INTO messages (session_id, position, role, content_hash) VALUES (?, 0, 'assistant', ?)",
-        (session_id, bytes(32)),
+        "INSERT INTO messages (session_id, position, role, content_hash, content_identity) "
+        "VALUES (?, 0, 'assistant', ?, ?)",
+        (session_id, bytes(32), content_identity),
     )
-    message_id = archive_message_id(session_id, None)
+    message_id = archive_message_id(session_id, None, content_identity=content_identity)
     conn.execute(
         "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
         (message_id, session_id, text),
@@ -97,11 +99,13 @@ def test_ranked_action_search_since_filter_includes_timeless_session(tmp_path: P
             ("timeless-action-search", "codex-session", bytes(32)),
         )
         session_id = "codex-session:timeless-action-search"
+        content_identity = fixture_content_identity("run pytest suite")
         conn.execute(
-            "INSERT INTO messages (session_id, position, role, content_hash) VALUES (?, 0, 'assistant', ?)",
-            (session_id, bytes(32)),
+            "INSERT INTO messages (session_id, position, role, content_hash, content_identity) "
+            "VALUES (?, 0, 'assistant', ?, ?)",
+            (session_id, bytes(32), content_identity),
         )
-        message_id = archive_message_id(session_id, None)
+        message_id = archive_message_id(session_id, None, content_identity=content_identity)
         conn.execute(
             "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, text) "
             "VALUES (?, ?, 0, 'tool_use', 'Bash', 'tool-1', 'run pytest suite')",
@@ -125,11 +129,13 @@ def test_ranked_session_search_since_filter_still_excludes_out_of_range_timestam
             ("old-search", "codex-session", bytes(32), 1_500_000_000_000),
         )
         session_id = "codex-session:old-search"
+        content_identity = fixture_content_identity("the quick fox jumps")
         conn.execute(
-            "INSERT INTO messages (session_id, position, role, content_hash) VALUES (?, 0, 'assistant', ?)",
-            (session_id, bytes(32)),
+            "INSERT INTO messages (session_id, position, role, content_hash, content_identity) "
+            "VALUES (?, 0, 'assistant', ?, ?)",
+            (session_id, bytes(32), content_identity),
         )
-        message_id = archive_message_id(session_id, None)
+        message_id = archive_message_id(session_id, None, content_identity=content_identity)
         conn.execute(
             "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
             (message_id, session_id, "the quick fox jumps"),

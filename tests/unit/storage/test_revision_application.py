@@ -107,15 +107,18 @@ def test_session_fts_proof_detects_missing_row_and_trigger_mutation() -> None:
     )
     conn.execute(
         """
-        INSERT INTO messages(session_id, position, role, material_origin, content_hash)
-        VALUES ('codex-session:session', 0, 'user', 'human_authored', ?)
+        INSERT INTO messages(session_id, position, role, material_origin, content_hash, content_identity)
+        VALUES ('codex-session:session', 0, 'user', 'human_authored', ?, '0123456789abcdef0123456789abcdef')
         """,
         (b"m" * 32,),
     )
     conn.execute(
         """
         INSERT INTO blocks(message_id, session_id, position, block_type, text)
-        VALUES ('codex-session:session:0.0', 'codex-session:session', 0, 'text', 'proof')
+        VALUES (
+            'codex-session:session:c:0123456789abcdef0123456789abcdef.0',
+            'codex-session:session', 0, 'text', 'proof'
+        )
         """
     )
     assert_session_fts_exact_sync(conn, "codex-session:session")

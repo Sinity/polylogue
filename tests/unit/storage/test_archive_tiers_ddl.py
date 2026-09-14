@@ -14,7 +14,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_content_identity
 
 _HASH = b"x" * 32
 
@@ -86,6 +86,40 @@ def test_archive_tiers_generated_ids_are_unique_not_primary_keys() -> None:
     assert ("session_id",) in unique_column_sets
 
 
+def test_a_message_with_neither_identity_is_refused_by_the_index_schema(tmp_path: Path) -> None:
+    """``message_id`` is generated, and UNIQUE admits many NULLs.
+
+    A row with no ``native_id`` and no ``content_identity`` generates a NULL
+    ``message_id``, so nothing in the schema would stop a second one -- every
+    such row would be mutually indistinguishable and unreferenceable. The
+    table-level CHECK is what refuses it. Delete that CHECK from
+    ``archive_tiers_specs`` and this insert succeeds: the test goes red.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        _apply_tier(conn, ArchiveTier.INDEX)
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)
+            """,
+            ("identity-refusal", "codex-session", _HASH),
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="native_id IS NOT NULL OR content_identity IS NOT NULL"):
+            conn.execute(
+                """
+                INSERT INTO messages (
+                    session_id, native_id, position, role, message_type, content_hash, content_identity
+                ) VALUES (?, NULL, 0, 'assistant', 'message', ?, NULL)
+                """,
+                ("codex-session:identity-refusal", _HASH),
+            )
+
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     _apply_tier(conn, ArchiveTier.INDEX)
@@ -110,27 +144,37 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
         """,
         (session["session_id"], "native-message", 0, "assistant", "message", _HASH, 1_767_225_601_000),
     )
+    # Two id-less variants of the same content: they share a content identity
+    # and are separated by ``content_occurrence``, which is what the generated
+    # column consumes -- ``variant_index`` is transcript order, not identity.
+    idless_identity = fixture_content_identity("assistant variant prose")
     conn.execute(
         """
         INSERT INTO messages (
-            session_id, native_id, position, variant_index, role, message_type, content_hash
-        ) VALUES (?, NULL, ?, ?, ?, ?, ?)
+            session_id, native_id, position, variant_index, role, message_type, content_hash,
+            content_identity, content_occurrence
+        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session["session_id"], 1, 0, "assistant", "message", _HASH),
+        (session["session_id"], 1, 0, "assistant", "message", _HASH, idless_identity, 0),
     )
     conn.execute(
         """
         INSERT INTO messages (
-            session_id, native_id, position, variant_index, role, message_type, content_hash
-        ) VALUES (?, NULL, ?, ?, ?, ?, ?)
+            session_id, native_id, position, variant_index, role, message_type, content_hash,
+            content_identity, content_occurrence
+        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session["session_id"], 1, 1, "assistant", "message", _HASH),
+        (session["session_id"], 1, 1, "assistant", "message", _HASH, idless_identity, 1),
     )
     messages = conn.execute("SELECT message_id FROM messages ORDER BY position, variant_index").fetchall()
     assert [row["message_id"] for row in messages] == [
         archive_message_id("codex-session:native-session", "native-message"),
-        archive_message_id("codex-session:native-session", None),
-        archive_message_id("codex-session:native-session", None),
+        archive_message_id(
+            "codex-session:native-session", None, content_identity=idless_identity, content_occurrence=0
+        ),
+        archive_message_id(
+            "codex-session:native-session", None, content_identity=idless_identity, content_occurrence=1
+        ),
     ]
 
     conn.execute(
