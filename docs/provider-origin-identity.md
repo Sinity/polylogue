@@ -65,10 +65,7 @@ replace archive object identity.
 ## Origin admission (`polylogue/sources/origin_specs.py`)
 
 `polylogue/sources/origin_specs.py` is the one typed admission declaration for
-every current `Origin` token (`claude-code-session`, `codex-session`,
-`gemini-cli-session`, `hermes-session`, `antigravity-session`,
-`grok-export`, `chatgpt-export`, `claude-ai-export`, `claude-design-session`,
-`aistudio-drive`, `unknown-export`): lifecycle (`executable` / `reserved` / `unsupported` /
+every current `Origin` token: lifecycle (`executable` / `reserved` / `unsupported` /
 `compatibility-only`), acquisition modes, detector tightness, parser/stream-
 parser/assembly bindings, non-injective provider-wire collision policy,
 coverage refs, fixtures, and semantic-reparse consequence. It is registered
@@ -76,7 +73,12 @@ once, checked for exact `Origin`-enum parity at import time
 (`OriginSpecRegistry.diagnostics()`), and is the single source that
 `polylogue/sources/provider_completeness.py`'s package-mode rows and this
 doc's per-origin facts should trace back to — do not hand-maintain a second
-per-origin token list elsewhere in the codebase. Two properties this doc's
+per-origin token list elsewhere in the codebase -- including in this file. The
+enumerated token list that used to sit in this paragraph was exactly such a
+copy, and it had drifted: it omitted `beads-issue`. For the current tokens read
+the `Origin` enum, or the generated table in `docs/agent-manual.md`, which is
+rendered from `origin_meanings()` and parity-checked against the enum at
+import time. Two properties this doc's
 "Current Code Invariants" below depend on are parity-checked against live
 production code rather than merely declared: `validate_dispatch_precedence`
 checks detector tightness against `sources/dispatch.py`'s actual record-shape

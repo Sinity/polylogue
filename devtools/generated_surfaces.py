@@ -11,6 +11,7 @@ from devtools import (
     render_cli_reference,
     render_devtools_reference,
     render_docs_surface,
+    render_insights_rigor,
     render_openapi,
     render_query_discovery,
     render_schema_disposition,
@@ -147,6 +148,19 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "devtools/command_catalog.py",
             "polylogue/sources/provider_completeness.py",
             "devtools/render_devtools_reference.py",
+        ),
+    ),
+    GeneratedSurface(
+        name="insights-rigor-matrix",
+        label="Insights rigor matrix",
+        description="Render the registered insight rigor contracts into docs/insights-rigor-matrix.md.",
+        command=control_plane_argv("render insights-rigor-matrix"),
+        main=render_insights_rigor.main,
+        inputs=(
+            "devtools/render_insights_rigor.py",
+            "polylogue/analysis/rigor.py",
+            "polylogue/analysis/registry.py",
+            "docs/insights-rigor-matrix.md",
         ),
     ),
     GeneratedSurface(

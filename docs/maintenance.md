@@ -648,7 +648,7 @@ polylogue ops diagnostics codex-title-census --compare /tmp/before.json /tmp/aft
 **Symptoms.** `polylogue ops diagnostics workload` reports a non-trivial
 `convergence_debt` section. `polylogue analyze` shows derived
 materialization counts (`session_profile`, `actions`,
-`work_threads`) lagging behind `sessions`.
+`threads`) lagging behind `sessions`.
 
 **Root cause.** The daemon's inline convergence loops process a
 bounded slice each cycle. If ingest outpaced the loop (initial

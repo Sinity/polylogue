@@ -14,10 +14,11 @@ ambiguous.
 ## Origin, not provider
 
 Public read surfaces are keyed by **`origin`** (the `Origin` enum in
-`polylogue/core/enums.py`): `claude-code-session`, `claude-ai-export`,
-`chatgpt-export`, `codex-session`, `gemini-cli-session`, `aistudio-drive`,
-`hermes-session`, `antigravity-session`, `grok-export`,
-`claude-design-session`, `unknown-export`. The provider-wire
+`polylogue/core/enums.py`). That enum is the sole owner of the token set; this
+file deliberately does not restate it, because the copy that used to sit here
+had already drifted (it omitted `beads-issue`). The generated table in
+`docs/agent-manual.md` renders the current tokens with their meanings. The
+provider-wire
 `Provider` enum (`chatgpt`, `claude-code`, …) is retained only at the
 parsing/schema boundary and is not the public filter token. Filter and query
 surfaces use `origin`.
