@@ -2451,7 +2451,18 @@ def test_full_ingest_writes_archive_with_route_observability(
         "full.index.full_replace.messages",
         "full.index.full_replace.blocks",
     }.issubset(result.stage_timings_s)
-    assert cursor.list_convergence_debt(limit=10)[0].stage == "fts"
+    # The full-ingest route defers the FTS rebuild to keep the writer
+    # available. #5027 removed the convergence-debt row that used to record
+    # that deferral: pending is now ``required - valid``, derived from the
+    # durable relation itself (``storage/fts/derivation.py`` enumerates every
+    # ``sessions``/``blocks`` session id), so the deferred partition is pending
+    # by construction rather than by bookkeeping. Assert the deferral is real
+    # and still rediscoverable: blocks landed, their FTS rows did not.
+    with sqlite3.connect(index_db) as conn:
+        blocks = conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
+        indexed = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+    assert blocks > 0
+    assert indexed == 0
     with sqlite3.connect(source_db) as conn:
         raw_state = conn.execute("SELECT parsed_at_ms, parse_error FROM raw_sessions").fetchone()
         assert raw_state is not None
@@ -5358,24 +5369,6 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
 
     with path.open("ab") as handle:
         handle.write(split_record[split_at:])
-    # The live full-ingest path records a deferred FTS convergence-debt row
-    # (``record_convergence_debt(stage="fts", ...)`` in batch.py) as soon as
-    # the raw-revision replay lands, then the SAME ``ingest_files`` call
-    # synchronously converges it (``_converge_paths``) and clears it again
-    # before returning -- so inspecting ``cursor.list_convergence_debt()``
-    # after the call proves nothing about whether the deferral was ever
-    # recorded. Spy directly on the persistence call itself to prove the
-    # debt row existed (recorded, not merely a code path CodeRabbit assumed
-    # ran) before this same batch's convergence consumed it.
-    recorded_debt: list[dict[str, str | None]] = []
-    original_record_convergence_debt = CursorStore.record_convergence_debt
-
-    def spy_record_convergence_debt(self: CursorStore, **kwargs: Any) -> None:
-        recorded_debt.append(dict(kwargs))
-        original_record_convergence_debt(self, **kwargs)
-
-    monkeypatch.setattr(CursorStore, "record_convergence_debt", spy_record_convergence_debt)
-
     second = asyncio.run(processor.ingest_files([path]))
 
     assert second.full_file_count == 1
@@ -5385,13 +5378,14 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
     final_cursor = cursor.get_record(path)
     assert final_cursor is not None
     assert final_cursor.failure_count == 0
-    assert any(
-        call.get("stage") == "fts" and call.get("subject_id") == "codex-session:split-record" for call in recorded_debt
-    )
-    # And, exactly because this batch's own convergence resolved it
-    # synchronously, no stale FTS debt is left behind for the daemon to
-    # retry -- proving the deferral was a real, consumed debt cycle rather
-    # than one that silently never got recorded (or one that leaks forever).
+    # This used to spy on ``CursorStore.record_convergence_debt`` to prove the
+    # full-ingest route recorded a deferred-FTS debt row. #5027 deleted that
+    # call site: pending is now ``required - valid`` derived from the durable
+    # relation itself (``storage/fts/derivation.py`` enumerates every
+    # ``sessions``/``blocks`` session id), so a deferred partition is pending by
+    # construction and the row was redundant bookkeeping. No debt is left for a
+    # daemon to retry, and the assertions below carry what actually matters --
+    # the recovered tail landed as both messages and is FTS-repairable.
     assert cursor.list_convergence_debt(limit=10) == []
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [

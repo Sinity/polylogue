@@ -188,12 +188,23 @@ async def test_sidecar_cursor_refuses_to_advance_without_source_tier_evidence(
         assert bytes_read == 0
         assert cursor.get_record(unretained) is None
         assert processor._last_cursor_write_stale is True
-        debt = [
-            entry
-            for entry in cursor.list_convergence_debt(limit=50)
-            if entry.subject_id == str(unretained) and entry.stage == "raw_parse_recovery"
-        ]
-        assert debt, "a refused cursor advance must leave retryable convergence debt"
+        # #5027 removed the ``raw_parse_recovery`` convergence-debt row this
+        # used to assert. What protects the bytes is the refusal itself: the
+        # cursor is not advanced, so the path stays unconsumed and the raw
+        # domain's required set (``storage/derived/raw.py`` enumerates every
+        # ``raw_sessions`` row) rediscovers it. Assert that retryability
+        # directly rather than the retired bookkeeping.
+        # #5027 removed the ``raw_parse_recovery`` convergence-debt row this
+        # used to assert. What protects the bytes is the refusal itself: the
+        # cursor is not advanced, so the path stays unconsumed and the raw
+        # domain's required set (``storage/derived/raw.py`` enumerates every
+        # ``raw_sessions`` row) rediscovers it. Prove that retryability
+        # end-to-end rather than asserting the retired bookkeeping: ingesting
+        # the same path again still retains it.
+        await processor.ingest_files([unretained], emit_event=False)
+        assert str(unretained) in _query_source_paths(
+            workspace_env["archive_root"], "SELECT source_path FROM raw_sessions"
+        )
 
         # Same call, same carried raw id, for the sidecar source.db does hold:
         # the check is a confirmation, not a blanket refusal.
