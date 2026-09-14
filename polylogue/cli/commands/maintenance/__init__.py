@@ -52,18 +52,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Apply additive migrations for one durable archive tier.",
     ),
     (
-        "archive-root-relocation",
-        "_archive_root_relocation",
-        "archive_root_relocation_command",
-        "Plan or apply one offline inode-preserving archive-root relocation.",
-    ),
-    (
-        "source-continuity-recovery",
-        "_source_continuity_recovery",
-        "source_continuity_recovery_command",
-        "Recover one authenticated pre-#3868 source liveness transition offline.",
-    ),
-    (
         "raw-authority-frontier",
         "_raw_identity",
         "raw_authority_frontier_command",
@@ -195,10 +183,8 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
 
 _NESTED_GROUP_COMMANDS = frozenset(
     {
-        "archive-root-relocation",
         "blob-disposition",
         "embedding-preservation",
-        "source-continuity-recovery",
     }
 )
 

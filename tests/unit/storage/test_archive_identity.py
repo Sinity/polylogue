@@ -61,7 +61,7 @@ def test_location_keeps_durable_tiers_at_configured_root_and_follows_active_poin
     assert location.shadow_index.resolved_path == configured / "index.db"
 
 
-def test_location_allows_an_internal_pointer_after_archive_root_relocation(tmp_path: Path) -> None:
+def test_location_allows_an_internal_pointer_after_a_root_move(tmp_path: Path) -> None:
     """A mover-rewritten pointer remains valid when it names the moved root."""
     old_root = tmp_path / "archive"
     _touch_tiers(old_root)
