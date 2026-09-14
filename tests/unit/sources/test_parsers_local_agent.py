@@ -934,16 +934,19 @@ def test_hermes_state_db_profile_qualifies_identity_and_retains_raw_id(tmp_path:
     second_path.parent.mkdir()
     _write_hermes_state_db(first_path)
     _write_hermes_state_db(second_path)
-    retained_path = tmp_path / "blob-store" / "retained.db"
-    retained_path.parent.mkdir()
-    with sqlite3.connect(first_path) as source, sqlite3.connect(retained_path) as retained_conn:
-        source.backup(retained_conn)
+    # Retained material is the declared logical export of the member, not a
+    # page image, and the marker is parsed against its own source path -- the
+    # pairing ``require_declared_export`` enforces (#5040/#5022). Anti-vacuity:
+    # hand ``parse_state_db_payload`` the export of ``second_path`` (or drop
+    # ``source_path``) and the retained identity stops matching ``first``.
+    retained_path = _declared_export_of(first_path, tmp_path / "blob-store")
 
     first = hermes_state.parse_state_db(first_path)[0]
     second = hermes_state.parse_state_db(second_path)[0]
     retained = hermes_state.parse_state_db_payload(
         hermes_state.marker_payload(retained_path, profile_root=first_path.parent),
         fallback_id="unused",
+        source_path=str(first_path),
     )[0]
 
     assert first.provider_session_id != second.provider_session_id
@@ -1021,10 +1024,38 @@ def test_hermes_state_db_contract_matches_parser_capability_map() -> None:
     } == hermes_state._MESSAGE_CAPABILITIES
 
 
+def _declared_export_of(source_path: Path, blob_root: Path) -> Path:
+    """Return the retained declared logical export of *source_path*.
+
+    Acquisition never retains a SQLite page image for a declared mutable
+    member; it writes the member's canonical logical export and addresses it by
+    that export's digest. Tests that exercise a marker must retain the same
+    material the production acquisition route does.
+    """
+    from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+
+    store = BlobStore(blob_root)
+    snapshot = snapshot_sqlite_to_blob(source_path, store)
+    return store.blob_path(snapshot.blob_hash)
+
+
 def test_hermes_state_db_dispatch_marker_parses_multiple_sessions(tmp_path: Path) -> None:
+    """Dispatch parses the marker production actually mints.
+
+    A Hermes state.db marker names the *retained declared logical export* of
+    its own source, never the live database: ``_hermes_sqlite_marker_payload``
+    only builds one behind ``is_declared_logical_export`` (#5040/#5022), and
+    ``require_declared_export`` re-checks the same pairing at parse time so an
+    imported document cannot steer this parser at another database.
+
+    Anti-vacuity: point ``state_db_path`` at any database that is not the
+    declared export of ``source_path`` and this parse raises ``ValueError``
+    instead of returning the two sessions asserted below.
+    """
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)
-    payload = hermes_state.marker_payload(db_path)
+    export_path = _declared_export_of(db_path, tmp_path / "blob")
+    payload = hermes_state.marker_payload(export_path, profile_root=db_path.parent)
 
     assert detect_provider(payload) is Provider.HERMES
     sessions = parse_payload("hermes", payload, "fallback", source_path=str(db_path))
