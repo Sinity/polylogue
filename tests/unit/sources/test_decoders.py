@@ -15,6 +15,9 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from polylogue.archive.raw_payload.decode import jsonl_session_artifact, scan_jsonl_session_artifact
+from polylogue.core.enums import Provider
+from polylogue.sources import decoder_zip
 from polylogue.sources.decoder_json import JsonlDecodeError
 from polylogue.sources.decoders import (
     MAX_AGGREGATE_UNCOMPRESSED_SIZE,
@@ -480,3 +483,109 @@ def test_zip_admission_does_not_promote_weak_analysis_classification() -> None:
         accepted = [info.filename for info in validator.filter_entries(zf.infolist())]
 
     assert accepted == ["session/tool-results/toolu.txt"]
+
+
+# ZIP CONTENT-PROBE CEILING
+
+
+def _zip_with_member(path: Path, name: str, payload: bytes) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, payload)
+
+
+def test_zip_json_probe_refuses_an_oversized_member_with_an_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A highly compressible JSON member cannot be read whole into memory.
+
+    Anti-vacuity: removing ``max_bytes=ZIP_PROBE_MAX_BYTES`` from the probe's
+    ``open_bounded_zip_entry`` call restores the 10 GiB archival ceiling, so
+    ``handle.read()`` allocates the whole member, no ``ZipBombError`` is raised,
+    and neither the ``sources.zip.artifact_probe_unbounded`` event nor the
+    bounded peak asserted here occurs -- the probe would instead return a
+    classification decoded from the full payload. The ceiling is lowered here
+    rather than building a genuinely multi-gigabyte fixture; the code path under
+    test is identical.
+    """
+    monkeypatch.setattr(decoder_zip, "ZIP_PROBE_MAX_BYTES", 4096)
+    captured: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        decoder_zip,
+        "emit",
+        lambda event, /, **fields: captured.append((event, dict(fields))),
+    )
+
+    archive_path = tmp_path / "crafted.zip"
+    # Well-formed JSON, far above the probe ceiling, ~1000:1 compressible --
+    # exactly what ZIP admission's ratio limit still lets through.
+    payload = b'{"title":"' + b"A" * (512 * 1024) + b'"}'
+    _zip_with_member(archive_path, "assets/blob.json", payload)
+
+    with zipfile.ZipFile(archive_path) as zf:
+        info = zf.getinfo("assets/blob.json")
+        result = decoder_zip.zip_entry_session_artifact(zf, info, provider=Provider.CHATGPT)
+
+    # The path rule stands: content evidence was never examined.
+    assert result is None
+    probe_events = [fields for event, fields in captured if event == "sources.zip.artifact_probe_unbounded"]
+    assert len(probe_events) == 1
+    # The refusal is observable and names what it declined to inspect.
+    assert probe_events[0]["entry"] == "assets/blob.json"
+    assert probe_events[0]["declared_bytes"] == len(payload)
+    assert probe_events[0]["outcome"] == "degraded"
+
+
+def test_zip_json_probe_still_classifies_a_member_under_the_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ceiling is inert for ordinary members.
+
+    Anti-vacuity: a fix that refused every member -- or that returned ``None``
+    unconditionally -- would satisfy the bound above while destroying content
+    evidence. This asserts the probe still decodes and classifies a normal
+    conversation document, so the ceiling cannot be implemented as a blanket
+    refusal.
+    """
+    captured: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        decoder_zip,
+        "emit",
+        lambda event, /, **fields: captured.append((event, dict(fields))),
+    )
+    archive_path = tmp_path / "ordinary.zip"
+    payload = json.dumps([{"title": "synthetic", "mapping": {}}]).encode("utf-8")
+    _zip_with_member(archive_path, "assets/conversations.json", payload)
+
+    with zipfile.ZipFile(archive_path) as zf:
+        info = zf.getinfo("assets/conversations.json")
+        result = decoder_zip.zip_entry_session_artifact(zf, info, provider=Provider.CHATGPT)
+
+    assert result is not None and result.parse_as_session
+    assert [event for event, _ in captured if event == "sources.zip.artifact_probe_unbounded"] == []
+
+
+def test_jsonl_session_artifact_forwards_its_record_ceiling() -> None:
+    """The classification wrapper must not drop ``max_record_bytes``.
+
+    Anti-vacuity: the wrapper previously called ``scan_jsonl_session_artifact``
+    without forwarding the bound, so every caller that wanted only the
+    classification silently got unbounded per-line reads. Reverting that
+    forwarding makes the oversized record inspectable again and the artifact
+    resolves, turning the ``is None`` assertion red.
+    """
+    oversized = (json.dumps({"title": "x" * 200_000, "mapping": {}}) + "\n").encode("utf-8")
+
+    assert (
+        jsonl_session_artifact(
+            io.BytesIO(oversized),
+            provider=Provider.CHATGPT,
+            max_record_bytes=1024,
+        )
+        is None
+    )
+    # Without the ceiling the same bytes are inspected normally, proving the
+    # input is otherwise classifiable and the bound is what changed the outcome.
+    scan = scan_jsonl_session_artifact(io.BytesIO(oversized), provider=Provider.CHATGPT)
+    assert scan.oversized_records == 0
