@@ -468,6 +468,12 @@ def open_logical_source(path: Path, *, immutable: bool = False, timeout: float =
     material is an export, while detection and title enrichment still read the
     operator's live file directly. A reconstruction is unlinked as soon as it
     is open, so the connection owns it and closing the connection releases it.
+
+    The reconstruction reuses the owner-only inode ``mkstemp`` created. Dropping
+    that inode before materializing made SQLite recreate the pathname under the
+    process umask -- mode 0644 under the usual 0022 -- publishing every row of
+    the export in the shared temporary directory for the whole materialization
+    window.
     """
     if not looks_like_logical_source_path(path):
         raise sqlite3.DatabaseError(f"not a SQLite database or logical export: {path}")
@@ -479,7 +485,6 @@ def open_logical_source(path: Path, *, immutable: bool = False, timeout: float =
     handle, name = tempfile.mkstemp(prefix=".polylogue-export.", suffix=".sqlite")
     os.close(handle)
     reconstruction = Path(name)
-    reconstruction.unlink()
     try:
         materialize_export(path, reconstruction)
         conn = sqlite3.connect(f"{reconstruction.as_uri()}?mode=ro", uri=True, timeout=timeout)
