@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import BlockType, TitleSource
+from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
 from polylogue.sources.parsers.hermes_state import parse_state_db, parse_state_db_payload
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -437,7 +438,7 @@ def test_state_db_marker_refuses_a_database_it_does_not_declare(tmp_path: Path) 
     # the guard firing and not an unrelated failure to read the file.
     assert parse_state_db(victim)
 
-    payload = {
+    payload: JSONDocument = {
         "polylogue_artifact": "hermes_state_db",
         "state_db_path": str(victim),
     }
@@ -455,7 +456,7 @@ def test_state_db_marker_without_a_source_path_is_refused(tmp_path: Path) -> Non
     """
     victim = tmp_path / "victim" / "state.db"
     _write_state_db(victim, tool_contents=[json.dumps({"output": "secret", "exit_code": 0})])
-    payload = {"polylogue_artifact": "hermes_state_db", "state_db_path": str(victim)}
+    payload: JSONDocument = {"polylogue_artifact": "hermes_state_db", "state_db_path": str(victim)}
 
     with pytest.raises(ValueError, match="declared logical export"):
         parse_state_db_payload(payload, "fallback")
