@@ -35,6 +35,8 @@ from polylogue.sources.revision_backfill import (
     uncensused_historical_revision_raw_ids,
     validate_frozen_source_authority,
 )
+from polylogue.sources.sqlite_export import logical_export_bytes
+from polylogue.sources.sqlite_snapshot import member_export_scope
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
@@ -566,7 +568,14 @@ def test_terminal_non_session_reselection_repairs_legacy_parser_receipt(tmp_path
 
 
 def _single_session_state_db_bytes(tmp_path: Path) -> bytes:
-    db_path = tmp_path / "state-source.db"
+    """The retained material for a single-session Hermes ``state.db``.
+
+    Acquisition retains the declared member's canonical logical export, not a
+    page image, and both the replay route and the historical-backfill route
+    refuse anything else -- so the fixture must be built under the member's
+    declared filename and export scope to be replayable at all.
+    """
+    db_path = tmp_path / "state.db"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
@@ -590,7 +599,7 @@ def _single_session_state_db_bytes(tmp_path: Path) -> bytes:
         conn.execute(
             "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (1, 'root', 'user', 'hi', 2.0)"
         )
-    return db_path.read_bytes()
+    return logical_export_bytes(db_path, scope=member_export_scope(db_path))
 
 
 def test_parse_one_replays_single_session_state_db_bytes_via_temp_spill(tmp_path: Path) -> None:

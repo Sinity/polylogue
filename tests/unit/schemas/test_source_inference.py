@@ -1061,8 +1061,15 @@ def test_codex_schema_retains_wire_records_without_claiming_parser_support(tmp_p
     path.write_text("\n".join(json.dumps(record) for record in records))
     classification = classify_artifact(records, provider=Provider.CODEX, source_path=path)
     assert classification.schema_eligible
-    assert not classification.parse_as_session
-    assert not is_supported_session_stream(records)
+    # #4881 ("Preserve declared Codex event fields through archive reads") moved
+    # ``inter_agent_communication_metadata`` and ``token_usage_record`` out of
+    # the schema-only set and gave them a real parse route, so the envelope
+    # generation is now genuinely parser-supported. The legacy generation still
+    # is not, and that is what this test's premise rests on: schema retention
+    # must not depend on parser support either way.
+    envelope_supported = generation == "envelope"
+    assert classification.parse_as_session is envelope_supported
+    assert is_supported_session_stream(records) is envelope_supported
     result = infer_sources((SchemaSourceInput("codex", path),), cache_path=tmp_path / "cache.sqlite", max_workers=1)
     assert result.terminal_counts == {"included": 1}
     assert result.record_count == len(records)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -28,6 +29,11 @@ from polylogue.schemas.operator.registry import RuntimeSchemaRegistryLike
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.classification import ConstructSupport, classify_schema_constructs
+from polylogue.schemas.synthetic.conservation import (
+    ConservationFinding,
+    ConservationResult,
+    ConservationVerdict,
+)
 from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticSchemaSelection
 from polylogue.schemas.synthetic.wire_formats import (
     CATALOG_ELEMENT_UNSUPPORTED_REASON,
@@ -553,6 +559,63 @@ def _wire_support_entry_index(
     return {wire_support_entry_key(entry): entry for entry in entries}
 
 
+_CONSERVATION_FINDING_RE = re.compile(
+    r"^(?P<verdict>loss|duplication|mutation) at (?P<path>.+) "
+    r"\((?P<role>[A-Za-z_]+)\): (?P<detail>.+)$",
+    re.DOTALL,
+)
+
+
+def _conservation_from_payload(raw: object) -> ConservationResult | None:
+    """Rebuild a witness's conservation result from its serialized form.
+
+    A persisted manifest that drops this field hands every deserialized
+    witness ``conservation=None``, which reads as conserved, so a real
+    conservation failure launders into a healthy witness and the round-trip
+    reaches a different unsupported decision than compile time. The findings
+    are serialized through ``ConservationFinding.describe``, so they are
+    parsed back through the same grammar rather than re-derived.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("wire_support_receipt parser_witness.conservation must be an object or null")
+    raw_findings = raw.get("findings")
+    if not isinstance(raw_findings, list) or not all(isinstance(item, str) for item in raw_findings):
+        raise ValueError("wire_support_receipt parser_witness.conservation.findings must be a list of strings")
+    findings: list[ConservationFinding] = []
+    for described in raw_findings:
+        match = _CONSERVATION_FINDING_RE.match(described)
+        if match is None:
+            raise ValueError(f"wire_support_receipt conservation finding is not parseable: {described!r}")
+        findings.append(
+            ConservationFinding(
+                path=match.group("path"),
+                role=match.group("role"),
+                verdict=cast(ConservationVerdict, match.group("verdict")),
+                detail=match.group("detail"),
+            )
+        )
+    planted_count = raw.get("planted_count")
+    if isinstance(planted_count, bool) or not isinstance(planted_count, int):
+        raise ValueError("wire_support_receipt parser_witness.conservation.planted_count must be an integer")
+    excluded = raw.get("excluded_paths")
+    if not isinstance(excluded, list) or not all(isinstance(item, str) for item in excluded):
+        raise ValueError("wire_support_receipt parser_witness.conservation.excluded_paths must be a list of strings")
+    result = ConservationResult(
+        planted_count=planted_count,
+        findings=tuple(findings),
+        excluded_paths=tuple(excluded),
+    )
+    conserved = raw.get("conserved")
+    if isinstance(conserved, bool) and conserved is not result.conserved:
+        # The serialized verdict and the serialized findings disagree; trusting
+        # either silently would be the same laundering this function exists to
+        # stop.
+        raise ValueError("wire_support_receipt conservation conserved flag contradicts its findings")
+    return result
+
+
 def _wire_support_entry_from_payload(payload: Mapping[str, object]) -> WireSupportEntry:
     def required_string(field: str) -> str:
         value = payload.get(field)
@@ -634,6 +697,8 @@ def _wire_support_entry_from_payload(payload: Mapping[str, object]) -> WireSuppo
                 artifact_evidence=string_tuple(
                     raw_witness.get("artifact_evidence"), "parser_witness.artifact_evidence"
                 ),
+                conservation=_conservation_from_payload(raw_witness.get("conservation")),
+                conservation_enforced=raw_witness.get("conservation_enforced") is True,
             )
         )
     return WireSupportEntry(

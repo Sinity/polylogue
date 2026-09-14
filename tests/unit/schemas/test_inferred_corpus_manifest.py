@@ -1353,3 +1353,52 @@ def test_live_catalog_provenance_annotations_are_not_generator_constraints() -> 
     ]
     assert not score_entries
     assert any(spec.provider == "codex" for spec in manifest.supported_specs)
+
+
+def test_persisted_wire_support_witness_round_trip_preserves_a_conservation_failure() -> None:
+    """A serialized conservation failure must survive back into the witness.
+
+    Anti-vacuity: drop ``conservation=`` (or ``conservation_enforced=``) from
+    the ``WireParserWitness`` rebuilt in
+    ``inferred_corpus._wire_support_entry_from_payload`` and this test goes
+    red, because the deserialized witness then carries ``conservation=None``,
+    reports ``conservation_conserved`` True and so reads as healthy. That is
+    exactly the laundering path by which a persisted manifest turns a real
+    conservation failure into a supported route and reaches a different
+    unsupported decision than compile time.
+
+    The failure is injected rather than harvested on purpose: the live corpus
+    is conserved, so a harvested witness would assert nothing.
+    """
+    receipt = shared_wire_support_receipt()
+    serialized = receipt.to_dict()
+    entries = serialized["entries"]
+    assert isinstance(entries, list)
+    raw_entry = next(
+        entry for entry in entries if isinstance(entry, dict) and cast(Sequence[Any], entry["parser_witnesses"])
+    )
+    raw_witness = cast(dict[str, Any], cast(Sequence[Any], raw_entry["parser_witnesses"])[0])
+    raw_witness["conservation_enforced"] = True
+    raw_witness["conservation"] = {
+        "planted_count": 3,
+        "conserved": False,
+        "findings": ["loss at $.message.content[0].content (message_body): appears 0 times, expected 1"],
+        "excluded_paths": ["$.command"],
+    }
+
+    rebuilt = inferred_corpus_module._wire_support_entry_from_payload(raw_entry)
+    witness = rebuilt.parser_witnesses[0]
+
+    assert witness.conservation_enforced is True
+    assert witness.conservation is not None
+    assert witness.conservation.conserved is False
+    assert witness.conservation.planted_count == 3
+    assert witness.conservation.excluded_paths == ("$.command",)
+    finding = witness.conservation.findings[0]
+    assert (finding.verdict, finding.path, finding.role) == (
+        "loss",
+        "$.message.content[0].content",
+        "message_body",
+    )
+    # The whole point: the failure must still make the witness unhealthy.
+    assert witness.healthy is False

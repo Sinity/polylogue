@@ -118,6 +118,63 @@ def _content_role(variants: Sequence[Mapping[str, object]]) -> str | None:
     return None
 
 
+# Claude Code's inferred ``$.message.content[]`` item schema is one merged
+# object covering every block form, and only ``content`` carries a
+# content-bearing role: ``text``, ``thinking`` and the tool-use argument are
+# parsed into blocks but are annotation-invisible. Planting by annotation
+# alone therefore builds the expected multiset from a strict subset of the
+# positions ``parsed_block_texts`` observes, and one value reaching both an
+# annotated and an unannotated position -- routine, since the record
+# generator draws bodies from small canned pools -- reports a faithful
+# parser as duplicating.
+#
+# The fix is symmetry, not suppression: this table is the planted-side mirror
+# of the block projection ``parsed_block_texts`` performs, so every block the
+# observed side counts has a planted counterpart and a dropped text or
+# thinking block is now loss rather than silence.
+_CLAUDE_CODE_BLOCK_PATH_PREFIX = "$.message.content["
+_CLAUDE_CODE_BLOCK_BODY_FIELDS: dict[str, tuple[str, ...]] = {
+    "text": ("text",),
+    "thinking": ("thinking",),
+    # ``parsed_block_texts`` reads the authored request out of
+    # ``tool_input["content"]``; this is the wire position it comes from.
+    "tool_use": ("input", "content"),
+    # ``tool_result`` bodies sit at the annotated ``content`` position and are
+    # planted by the ordinary annotation walk.
+}
+
+
+def _claude_code_block_projection(path: str, payload: object) -> tuple[PlantedValue, ...] | None:
+    """Plant exactly the body ``parsed_block_texts`` will observe for a block.
+
+    Returns ``None`` when ``payload`` is not a Claude Code content block whose
+    body is annotation-invisible, leaving the ordinary annotation walk in
+    charge.
+    """
+    if not path.startswith(_CLAUDE_CODE_BLOCK_PATH_PREFIX) or not isinstance(payload, Mapping):
+        return None
+    block_type = payload.get("type")
+    if not isinstance(block_type, str):
+        return None
+    fields = _CLAUDE_CODE_BLOCK_BODY_FIELDS.get(block_type)
+    if fields is None:
+        return None
+    cursor: object = payload
+    for field in fields:
+        if not isinstance(cursor, Mapping):
+            return ()
+        cursor = cursor.get(field)
+    if not isinstance(cursor, str) or not _normalise(cursor):
+        return ()
+    return (
+        PlantedValue(
+            path=f"{path}." + ".".join(fields),
+            role=BODY_ROLE,
+            value=_normalise(cursor),
+        ),
+    )
+
+
 def collect_planted_values(
     schema: Mapping[str, object],
     payload: object,
@@ -153,7 +210,10 @@ def collect_planted_values(
     # object or array (Claude Code content blocks are the important case).
     # Keep walking non-scalar payloads so the selected string branch is still
     # planted exactly once.
-    found: list[PlantedValue] = []
+    # Additive, not a short circuit: the projection supplies the block body the
+    # annotation cannot see, and the ordinary walk below still reaches every
+    # annotated position under this block.
+    found: list[PlantedValue] = list(_claude_code_block_projection(path, payload) or ())
     visited_keys: set[str] = set()
     walked_items = False
     for variant in variants:
@@ -165,15 +225,15 @@ def collect_planted_values(
                 visited_keys.add(key)
                 if (
                     key == "content"
-                    and path.startswith("$.message.content[")
-                    and payload.get("type") in {"thinking", "text", "tool_use"}
+                    and path.startswith(_CLAUDE_CODE_BLOCK_PATH_PREFIX)
+                    and payload.get("type") in _CLAUDE_CODE_BLOCK_BODY_FIELDS
                 ):
                     # Claude Code's historical ``content`` union covers
                     # thinking/text/tool-use records, but the parser-owned
-                    # body for this broad inferred position is the
-                    # tool-result content. Other variants are represented by
-                    # their typed fields (or are tool arguments), so planting
-                    # them here would compare unrelated projections.
+                    # body for those forms is the typed field planted by
+                    # ``_claude_code_block_projection`` above, not this broad
+                    # inferred position. Planting here would compare
+                    # unrelated projections.
                     continue
                 found.extend(
                     collect_planted_values(
