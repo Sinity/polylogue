@@ -13,6 +13,7 @@ import click
 from rich.markup import escape as rich_escape
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.errors import ArchiveTierUnavailableError
 
 
 def normalize_raw_frontier_status_payload(*args: Any, **kwargs: Any) -> Any:
@@ -245,11 +246,14 @@ def status_command(
                 daemon_url=daemon_url,
                 include_archive_readiness=exact_archive_readiness,
             )
-        except sqlite3.Error:
+        except (sqlite3.Error, ArchiveTierUnavailableError):
             # A missing active index has no snapshot to hand to the canonical
             # reader. Keep the retired direct-status aggregate out of this
             # route, but retain its bounded first-run diagnostic. Other
             # SQLite failures are an unavailable operation, not first-run.
+            # ``ArchiveTierUnavailableError`` is the typed form the read
+            # boundary now raises for an absent tier (polylogue-wwjy6); it is
+            # not a ``sqlite3.Error``, so it is named here explicitly.
             from polylogue.cli.commands.status_diagnostics import diagnose_first_run
 
             if _archive_snapshot_is_absent(observed_archive_root):

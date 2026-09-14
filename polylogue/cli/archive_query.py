@@ -43,6 +43,7 @@ from polylogue.cli.shared.helpers import load_effective_config
 from polylogue.cli.shared.machine_errors import error_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.logging import get_logger
 from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 from polylogue.surfaces.outcome import (
@@ -746,6 +747,20 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 lower_query_aggregate(request, mode=aggregate),
                 daemon_disabled=daemon_disabled,
             )
+        except ArchiveTierUnavailableError:
+            # An aggregate over an archive that does not exist yet has a
+            # correct answer -- zero -- and is the first thing a fresh install
+            # runs (polylogue-wwjy6).
+            _missing_archive_refusal(
+                params,
+                index_db_path=index_db_path,
+                output_format=output_format,
+                origin=origin,
+                query=query,
+                fields=fields,
+                typo_hint=typo_hint,
+            )
+            return
         except OperationKernelError as exc:
             _read_failure_as_usage_error(exc)
         env.record_timing("db-open", db_open_started_at)
@@ -815,6 +830,21 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             ),
             daemon_disabled=daemon_disabled,
         )
+    except ArchiveTierUnavailableError:
+        # The index tier is absent: a first-run condition, not a failed
+        # request. Browse and aggregate modes have a correct empty answer and
+        # a search names the path it looked for -- the same refusal the
+        # daemon-disabled pre-check above takes (polylogue-wwjy6).
+        _missing_archive_refusal(
+            params,
+            index_db_path=index_db_path,
+            output_format=output_format,
+            origin=origin,
+            query=query,
+            fields=fields,
+            typo_hint=typo_hint,
+        )
+        return
     except OperationKernelError as exc:
         detail = _read_failure_detail(exc)
         if session_scope_id is not None and "session not found" in detail.lower():

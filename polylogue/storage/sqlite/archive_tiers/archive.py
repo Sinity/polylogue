@@ -840,12 +840,29 @@ class ArchiveStore:
             # refusal: it names the generation and the lifecycle action the
             # operator must take. The generic open-time check would preempt it
             # with a message carrying neither.
-            self._conn = open_readonly_connection(
-                self.index_db_path,
-                timeout=read_timeout,
-                opened_main_fd=opened_index_fd,
-                validate_schema=False,
-            )
+            try:
+                self._conn = open_readonly_connection(
+                    self.index_db_path,
+                    timeout=read_timeout,
+                    opened_main_fd=opened_index_fd,
+                    validate_schema=False,
+                )
+            except sqlite3.OperationalError as exc:
+                # A read-only open of an index tier that is not there is the
+                # ordinary first-run condition, not a driver fault. SQLite's
+                # ``mode=ro`` reports it as the same opaque "unable to open
+                # database file" it uses for permissions and for a broken
+                # path, so the file check -- not the message -- decides.
+                # Leaving it raw reached the operator as "unexpected error"
+                # with no path and no remedy (polylogue-wwjy6).
+                if self.index_db_path.exists():
+                    raise
+                raise ArchiveTierUnavailableError(
+                    tier="index",
+                    path=str(self.index_db_path),
+                    reason="database file not found",
+                    guidance="run `polylogue ingest` to create the archive, or point --archive-root at an existing one",
+                ) from exc
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
             require_write_lease(f"ArchiveStore(index={self.index_db_path})", archive_root=archive_root)
