@@ -333,3 +333,27 @@ def test_stdlib_records_are_bridged_into_the_event_stream() -> None:
     bridged = [r for r in records if r["event"] == "stdlib.record"]
     assert bridged and bridged[0]["logger"] == "legacy.module"
     assert bridged[0]["error_detail"] == "old style message"
+
+
+def test_propagate_preserves_arguments_and_return_value() -> None:
+    """A wrapped callable still receives its arguments and returns its result.
+
+    The *static* half of this — that ``propagate`` is generic, so a wrapped
+    ``ThreadPoolExecutor.submit`` keeps its result type — cannot be asserted at
+    runtime, because ``ParamSpec`` erases to ``*args``/``**kwargs`` in the
+    actual signature. ``devtools gate mypy`` is what enforces it: restoring the
+    old ``Callable[..., object] -> Callable[..., object]`` fails typechecking on
+    both ``asyncio.shield`` calls in ``daemon/convergence.py``.
+
+    That signature mattered because under it the path of least resistance is to
+    drop the wrapper rather than cast at the call site — and dropping it loses
+    the correlation id silently.
+
+    Anti-vacuity for this test: have ``runner`` swallow ``kwargs`` and the
+    keyword-only argument is lost.
+    """
+
+    def typed(count: int, *, label: str) -> tuple[int, str]:
+        return count, label
+
+    assert plog.propagate(typed)(3, label="x") == (3, "x")
