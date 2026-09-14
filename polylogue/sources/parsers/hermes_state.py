@@ -199,10 +199,44 @@ def looks_like_state_db_path(path: Path, *, immutable: bool = False) -> bool:
         return False
 
 
-def parse_state_db_payload(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
+def require_declared_export(path: Path, source_path: str | None, *, field: str) -> None:
+    """Refuse a marker whose named database is not its own declared export.
+
+    A typed refusal, not a silent skip: an artifact that carries the marker and
+    then declines to be what it claims is a parse failure the ingest boundary
+    records, which is the ordinary outcome for malformed evidence.
+    """
+    from polylogue.sources.sqlite_snapshot import is_declared_logical_export
+
+    if source_path is None or not is_declared_logical_export(path, source_path):
+        raise ValueError(
+            f"Hermes marker {field} does not name the declared logical export for its own source; refusing to open it"
+        )
+
+
+def parse_state_db_payload(
+    payload: JSONDocument,
+    fallback_id: str,
+    *,
+    source_path: str | None = None,
+) -> list[ParsedSession]:
+    """Parse a ``state_db_path`` marker payload from its own declared export.
+
+    ``state_db_path`` names a local database to open, and the marker itself is
+    an ordinary JSON object that the Hermes detector recognises by shape. Any
+    imported document could therefore carry the marker and steer this read at a
+    database the operator never meant to ingest -- a confused deputy that files
+    another database's content into the archive under a false source identity.
+
+    Minting a marker already requires the path to be the declared logical
+    export for its source (``raw_payload.decode``); this is the same check on
+    the consuming side, so the two routes agree about which bytes a marker may
+    name.
+    """
     path_value = payload.get("state_db_path")
     if not isinstance(path_value, str) or not path_value:
         raise ValueError("Hermes state.db marker is missing state_db_path")
+    require_declared_export(Path(path_value), source_path, field="state_db_path")
     profile_value = payload.get("profile_root")
     profile_root = Path(profile_value) if isinstance(profile_value, str) and profile_value else None
     return parse_state_db(
@@ -1024,4 +1058,5 @@ __all__ = [
     "marker_payload",
     "parse_state_db",
     "parse_state_db_payload",
+    "require_declared_export",
 ]
