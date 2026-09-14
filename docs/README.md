@@ -111,13 +111,11 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Agent-First MCP](design/agent-first-mcp.md) | Agent-facing MCP surface doctrine. |
 | [Archive Storytelling](design/archive-storytelling.md) | Narrative and artifact design for archives. |
 | [Hermes Archival Export Contract](design/hermes-archival-export-contract.md) | Versioned Hermes session export schema, durable lifecycle-event spool, and snapshot reconciliation. |
-| [Browser Capture Redesign](design/browser-capture-redesign/README.md) | Browser-capture redesign rationale and verification artifacts. |
 | [Project Memory](design/project-memory.md) | Long-term memory model and product intent. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
 | [Analyze Projections](design/analyze-projections.md) | Named aggregate projections and their shared query execution contract. |
 | [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
 | [Physical Session Identity](design/physical-session-identity.md) | Durable identity proposal beneath lossy public origin projection. |
-| [Content, Identity, and Lineage Architecture](plans/content-identity-lineage-design.md) | Implementation architecture for content hashing, event storage, lineage, origins, and raw byte authority. |
 | [Analysis Rigor](design/analysis-rigor.md) | Rigor mechanisms for agent claims: population validity and comparative judgment. |
 | [Prefix-Blob Reclamation](design/prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes. |
 | [Derived-artifact freshness](design/derived-artifact-freshness.md) | Source-digest and verify-or-refuse law for derived state. |

@@ -362,12 +362,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Versioned Hermes session export schema, durable lifecycle-event spool, and snapshot reconciliation.",
         "design",
     ),
-    _entry(
-        "Browser Capture Redesign",
-        "design/browser-capture-redesign/README.md",
-        "Browser-capture redesign rationale and verification artifacts.",
-        "design",
-    ),
     _entry("Project Memory", "design/project-memory.md", "Long-term memory model and product intent.", "design"),
     _entry(
         "Query Set Algebra", "design/query-set-algebra.md", "Set-composition semantics over query results.", "design"
@@ -388,12 +382,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Physical Session Identity",
         "design/physical-session-identity.md",
         "Durable identity proposal beneath lossy public origin projection.",
-        "design",
-    ),
-    _entry(
-        "Content, Identity, and Lineage Architecture",
-        "plans/content-identity-lineage-design.md",
-        "Implementation architecture for content hashing, event storage, lineage, origins, and raw byte authority.",
         "design",
     ),
     _entry(

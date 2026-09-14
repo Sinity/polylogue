@@ -133,3 +133,22 @@ Archive verification is composed from domain-owned declarations. Each owner supp
 - **Constraint**: Extension is opt-in per-site; no background capture. DOM text
   is a compatibility fallback, not the fidelity target for providers such as
   ChatGPT that expose a full conversation payload to the authenticated page.
+
+### Lineage: provider-native resume versus context-assisted continuation (polylogue-a7xr.23)
+- **Chosen**: `session_links.resume` stays reserved for provider-native
+  topology. Calling a context tool, preparing a resume brief, or delivering
+  context must never create or upgrade a session link. Durable context
+  delivery stays in `user.db` (`context_deliveries`), extended by an optional
+  typed `seed_session_ref` and an append-only successor relation keyed by
+  delivery snapshot and successor session ref. A joined read model then
+  reports four distinct states: provider-native resume; context-assisted
+  continuation with a durable delivery and an explicitly associated successor;
+  provider continuation with no recorded delivery; and a delivery with no
+  resolved successor.
+- **Rejected**: mapping context assistance into resume topology. It conflates
+  how a session received context with the provider's own genealogy, and makes
+  absence of MCP telemetry look like absence of lineage.
+- **Constraint**: association requires an explicit successor ref or later
+  provider evidence naming the delivery — never tool name plus temporal
+  proximity. `ops.db` MCP call logs prove that a preparation tool ran; they are
+  disposable and cannot prove delivery or successor use.
