@@ -89,7 +89,7 @@ def _build_replace_fixture(db_path: Path, *, drop_leading_index: bool) -> tuple[
         )
         for position in range(3):
             native_id = f"m{position}"
-            message_id = archive_message_id(session_id, native_id, position=position)
+            message_id = archive_message_id(session_id, native_id)
             background_messages.append((session_id, native_id, position, "user", bytes([position]) * 32))
             background_blocks.append((message_id, session_id, 0, "text", "hi"))
             block_id = archive_block_id(message_id, position=0)

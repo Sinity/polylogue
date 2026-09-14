@@ -333,14 +333,14 @@ def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: P
     ).fetchall()
     assert [dict(row) for row in events] == [
         {
-            "source_message_id": archive_message_id(child_id, "cy", position=0),
+            "source_message_id": archive_message_id(child_id, "cy"),
             "total_input_tokens": 60,
             "total_cached_input_tokens": 10,
             "total_output_tokens": 15,
             "total_tokens": 75,
         },
         {
-            "source_message_id": archive_message_id(child_id, "cy", position=0),
+            "source_message_id": archive_message_id(child_id, "cy"),
             "total_input_tokens": 0,
             "total_cached_input_tokens": 0,
             "total_output_tokens": 0,
@@ -380,7 +380,7 @@ def test_provider_usage_baseline_follows_ancestor_branch_point(tmp_path: Path) -
     )
     ancestor_id = write_parsed_session_to_archive(conn, ancestor)
     parent_id = "codex-session:parent"
-    branch_point = archive_message_id(ancestor_id, "a1", position=0)
+    branch_point = archive_message_id(ancestor_id, "a1")
 
     baseline = _provider_usage_cumulative_baseline(conn, parent_id, branch_point)
 
@@ -509,7 +509,7 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
     assert len(link) == 1
     assert link[0]["inheritance"] == "prefix-sharing"
     assert link[0]["resolved_dst_session_id"] == parent_id
-    assert link[0]["branch_point_message_id"] == archive_message_id(parent_id, "p1", position=1)
+    assert link[0]["branch_point_message_id"] == archive_message_id(parent_id, "p1")
 
     # Only the divergent tail is stored, in its own position order.
     stored = conn.execute(
@@ -654,7 +654,7 @@ def test_prefix_inheritance_is_identical_under_every_timestamp_shape(tmp_path: P
     assert len(links) == 1
     assert links[0]["inheritance"] == "prefix-sharing"
     assert links[0]["resolved_dst_session_id"] == parent_id
-    assert links[0]["branch_point_message_id"] == archive_message_id(parent_id, "p1", position=1)
+    assert links[0]["branch_point_message_id"] == archive_message_id(parent_id, "p1")
 
     assert [
         row[0]
@@ -844,7 +844,7 @@ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
     ).fetchone()
     assert tuple(link) == (
         parent_id,
-        archive_message_id(parent_id, "p1-alt", position=0),
+        archive_message_id(parent_id, "p1-alt"),
         "prefix-sharing",
         None,
     )
@@ -927,7 +927,7 @@ def test_missing_variant_branch_point_keeps_only_owned_child_tail(tmp_path: Path
     link = conn.execute(
         "SELECT branch_point_message_id, inheritance, status FROM session_links WHERE src_session_id = ?", (child_id,)
     ).fetchone()
-    assert tuple(link) == (archive_message_id(parent_id, "p1-alt", position=0), "prefix-sharing", None)
+    assert tuple(link) == (archive_message_id(parent_id, "p1-alt"), "prefix-sharing", None)
     envelope = read_archive_session_envelope(conn, child_id)
     assert [message.blocks[0].text for message in envelope.messages] == ["child tail"]
     assert envelope.lineage_complete is False
@@ -960,7 +960,7 @@ def test_reingest_after_dangling_ancestor_does_not_fabricate_a_prefix(tmp_path: 
         ],
     )
     parent_id = write_parsed_session_to_archive(conn, parent)
-    conn.execute("DELETE FROM messages WHERE message_id = ?", (archive_message_id(root_id, "r1", position=0),))
+    conn.execute("DELETE FROM messages WHERE message_id = ?", (archive_message_id(root_id, "r1"),))
     conn.commit()
 
     child = ParsedSession(
@@ -1055,7 +1055,7 @@ def test_nested_dangling_ancestor_keeps_only_reachable_tails(tmp_path: Path) -> 
     # session, but its branch-point message disappeared.  Do not rewrite a
     # resolved edge as 'unresolved': the typed degradation belongs on the
     # composed read result while its known relation remains queryable.
-    conn.execute("DELETE FROM messages WHERE message_id = ?", (archive_message_id(root_id, "r1", position=0),))
+    conn.execute("DELETE FROM messages WHERE message_id = ?", (archive_message_id(root_id, "r1"),))
     conn.commit()
 
     envelope = read_archive_session_envelope(conn, child_id)
@@ -1235,7 +1235,7 @@ def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_pa
         ],
     )
     child_id = write_parsed_session_to_archive(conn, child)
-    stale_branch_point = archive_message_id(parent_id, "a1", position=0)
+    stale_branch_point = archive_message_id(parent_id, "a1")
     conn.execute(
         """
         UPDATE session_links
@@ -1257,7 +1257,7 @@ def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_pa
         "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
         (child_id,),
     ).fetchone()[0]
-    assert branch_point == archive_message_id(ancestor_id, "a1", position=0)
+    assert branch_point == archive_message_id(ancestor_id, "a1")
     assert [message.blocks[0].text for message in read_archive_session_envelope(conn, child_id).messages] == [
         "hello",
         "hi there",
@@ -1325,7 +1325,7 @@ def test_stale_non_materialized_msg_branch_point_repairs_to_predecessor(tmp_path
         "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
         (child_id,),
     ).fetchone()[0]
-    assert branch_point == archive_message_id(ancestor_id, "msg-10", position=0)
+    assert branch_point == archive_message_id(ancestor_id, "msg-10")
     assert [message.blocks[0].text for message in read_archive_session_envelope(conn, child_id).messages] == [
         "inherited prompt",
         "child tail",
@@ -1415,7 +1415,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
         (child_id,),
     ).fetchone()
     assert dict(event_ref) == {
-        "source_message_id": archive_message_id(parent_id, "p1", position=0),
+        "source_message_id": archive_message_id(parent_id, "p1"),
         "source_message_provider_id": "c1",
     }
 
@@ -2371,7 +2371,7 @@ def test_writer_composes_beyond_recursive_reader_depth(tmp_path: Path) -> None:
         "SELECT inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
         (leaf_id,),
     ).fetchone()
-    assert tuple(link) == ("prefix-sharing", archive_message_id(root_id, "root-0", position=0))
+    assert tuple(link) == ("prefix-sharing", archive_message_id(root_id, "root-0"))
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (leaf_id,)).fetchone()[0] == 1
 
     # Full replacement/re-ingest exercises writer alignment again rather than
@@ -2384,7 +2384,7 @@ def test_writer_composes_beyond_recursive_reader_depth(tmp_path: Path) -> None:
         "SELECT inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
         (leaf_id,),
     ).fetchone()
-    assert tuple(link) == ("prefix-sharing", archive_message_id(root_id, "root-0", position=0))
+    assert tuple(link) == ("prefix-sharing", archive_message_id(root_id, "root-0"))
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (leaf_id,)).fetchone()[0] == 1
     conn.close()
 

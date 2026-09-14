@@ -320,7 +320,7 @@ class TestFTS5CountGuard:
                 """,
                 (session_id,),
             )
-            message_id = archive_message_id(session_id, "m1", position=0)
+            message_id = archive_message_id(session_id, "m1")
             conn.execute(
                 """
                 INSERT INTO blocks (message_id, session_id, position, block_type, text)

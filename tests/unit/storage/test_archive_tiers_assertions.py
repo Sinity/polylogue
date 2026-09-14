@@ -110,7 +110,7 @@ def _insert_index_message(conn: sqlite3.Connection, session_id: str, native_id: 
         """,
         (session_id, native_id, position, Role.ASSISTANT.value, "message", bytes(32)),
     )
-    return archive_message_id(session_id, native_id, position=position)
+    return archive_message_id(session_id, native_id)
 
 
 def _recovery_candidate_session() -> Session:

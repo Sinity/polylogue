@@ -89,7 +89,7 @@ async def test_writes_new_session_and_message_rows(async_backend: SQLiteBackend)
     assert await _count(async_backend, "SELECT COUNT(*) FROM messages WHERE session_id = ?", session_id) == 1
 
 
-async def test_writer_records_identity_source_for_native_and_positional_messages(
+async def test_writer_records_identity_source_for_native_and_content_messages(
     async_backend: SQLiteBackend,
 ) -> None:
     """The write-path assignment, not the generated id shape, is authoritative."""
@@ -117,7 +117,7 @@ async def test_writer_records_identity_source_for_native_and_positional_messages
         ).fetchall()
     assert [(row["native_id"], row["identity_source"]) for row in rows] == [
         ("native-message", "native"),
-        (None, "positional"),
+        (None, "content"),
     ]
 
 
@@ -474,7 +474,7 @@ async def test_whitespace_only_native_message_id_falls_back_and_writes_blocks(as
         )
 
     assert message_row["native_id"] is None
-    assert message_row["message_id"] == f"{session_id}:p:0.0"
+    assert str(message_row["message_id"]).startswith(f"{session_id}:c:")
     assert block_count == 1
 
 
@@ -1070,3 +1070,104 @@ class TestValidationService:
         kwargs = service.repository.mark_raw_validated.await_args.kwargs
         assert kwargs["provider"] == "chatgpt"
         assert kwargs["payload_provider"] == "chatgpt"
+
+
+# ---------------------------------------------------------------------------
+# Content-derived identity for messages the provider left id-less
+# (polylogue-eqsri)
+# ---------------------------------------------------------------------------
+
+
+def _idless(text: str, role: Role = Role.USER) -> ParsedMessage:
+    """One id-less message: no provider id, so the fallback identity decides."""
+    return ParsedMessage(provider_message_id="", role=role, text=text, timestamp="2024-01-01T00:00:00Z")
+
+
+def _idless_session(provider_session_id: str, texts: list[str]) -> ParsedSession:
+    return ParsedSession(
+        source_name=Provider.UNKNOWN,
+        provider_session_id=provider_session_id,
+        title="Id-less export",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[_idless(text) for text in texts],
+        attachments=[],
+    )
+
+
+async def _message_ids_by_text(backend: SQLiteBackend, session_id: str) -> dict[str, str]:
+    async with backend.connection() as conn:
+        rows = await (
+            await conn.execute(
+                """
+                SELECT m.message_id AS message_id, b.text AS text
+                FROM messages m JOIN blocks b ON b.message_id = m.message_id
+                WHERE m.session_id = ? AND b.position = 0
+                ORDER BY m.position
+                """,
+                (session_id,),
+            )
+        ).fetchall()
+    return {str(row["text"]): str(row["message_id"]) for row in rows}
+
+
+def _local(message_id: str, session_id: str) -> str:
+    assert message_id.startswith(f"{session_id}:")
+    return message_id[len(session_id) + 1 :]
+
+
+async def test_inserted_message_does_not_renumber_later_idless_message_ids(
+    async_backend: SQLiteBackend,
+) -> None:
+    """An upstream insertion must not move an unrelated message's stored id.
+
+    This is the durable-reference property. ``user.db`` assertions key on
+    ``message_id``/``block_id``; when the fallback identity was the parser's
+    ordinal, an export that gained one message renumbered every later ``p:``
+    id and a stored reference silently re-resolved onto a *different*
+    message. No existence check can see that -- both orphan detectors in the
+    tree are existence-based -- so the identity itself has to be stable.
+
+    Anti-vacuity: restore the positional fallback (``'p:' || position || '.'
+    || variant_index`` in ``archive_tiers_specs.MESSAGES_SPEC``) and the
+    ``after`` ids for "second"/"third" shift by one, failing this assertion
+    for every message after the insertion point.
+    """
+    before = await ingest_session(_idless_session("idless-before", ["first", "second", "third"]), async_backend)
+    after = await ingest_session(
+        _idless_session("idless-after", ["first", "inserted", "second", "third"]), async_backend
+    )
+
+    before_ids = await _message_ids_by_text(async_backend, before)
+    after_ids = await _message_ids_by_text(async_backend, after)
+
+    for text in ("first", "second", "third"):
+        assert _local(before_ids[text], before) == _local(after_ids[text], after), (
+            f"{text!r} changed identity because an unrelated message was inserted"
+        )
+    assert _local(after_ids["inserted"], after) not in {_local(v, before) for v in before_ids.values()}
+    assert _local(before_ids["first"], before).startswith("c:")
+
+
+async def test_identical_idless_messages_keep_distinct_occurrence_ordinals(
+    async_backend: SQLiteBackend,
+) -> None:
+    """Byte-identical id-less messages stay distinguishable, and stay stable.
+
+    Anti-vacuity: drop ``content_occurrence`` from the generated ``message_id``
+    expression and the two identical messages collide on its UNIQUE
+    constraint, so the ingest raises instead of writing three rows.
+    """
+    duplicated = await ingest_session(_idless_session("idless-duplicates", ["same", "unique", "same"]), async_backend)
+    async with async_backend.connection() as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT message_id, content_identity, content_occurrence FROM messages "
+                "WHERE session_id = ? ORDER BY position",
+                (duplicated,),
+            )
+        ).fetchall()
+    assert len({str(row["message_id"]) for row in rows}) == 3
+    digests = [str(row["content_identity"]) for row in rows]
+    assert digests[0] == digests[2] != digests[1]
+    assert [int(row["content_occurrence"]) for row in rows] == [0, 0, 1]

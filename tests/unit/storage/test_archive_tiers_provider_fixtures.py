@@ -67,7 +67,8 @@ def test_archive_tiers_writer_materializes_drive_payload(tmp_path: Path) -> None
     assert envelope.active_leaf_message_id == message_ids[-1]
     # An id-less message takes the generated "p:<position>.<variant>" form;
     # the bare "<position>.<variant>" spelling predates that discriminator.
-    assert message_ids == [f"aistudio-drive:gem-text-only:p:{position}.0" for position in range(4)]
+    assert len(set(message_ids)) == 4
+    assert all(value.startswith("aistudio-drive:gem-text-only:c:") for value in message_ids)
     assert [message.role for message in envelope.messages] == ["user", "assistant", "user", "assistant"]
     assert [message.is_active_leaf for message in envelope.messages] == [False, False, False, True]
     assert search_archive_blocks(conn, "Paris") == [f"{message_ids[1]}:0"]

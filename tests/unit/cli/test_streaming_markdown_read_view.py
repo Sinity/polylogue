@@ -210,7 +210,7 @@ def test_stream_exact_session_markdown_reports_unreadable_index(tmp_path: Path) 
 
 def test_streaming_adapter_preserves_structural_outcome_and_exact_block_id(tmp_path: Path) -> None:
     _seed_index(tmp_path)
-    expected_block_id = archive_block_id(archive_message_id(_SESSION_ID, "m3", position=2), position=0)
+    expected_block_id = archive_block_id(archive_message_id(_SESSION_ID, "m3"), position=0)
     conn = _connect(tmp_path)
     row = conn.execute("SELECT * FROM blocks WHERE block_id = ?", (expected_block_id,)).fetchone()
     assert row is not None

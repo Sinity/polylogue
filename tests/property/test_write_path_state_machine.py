@@ -604,14 +604,14 @@ def test_grandchild_transcript_recomposes_after_intermediate_ancestor_message_de
                 (grandchild_id,),
             ).fetchone()
             assert branch_row is not None
-            assert branch_row[0] == archive_message_id("claude-code-session:cascade-child", "child-2", position=2)
+            assert branch_row[0] == archive_message_id("claude-code-session:cascade-child", "child-2")
 
             # Two hops upstream of the grandchild: delete the root parent's
             # first message, an ancestor edit that precedes every downstream
             # branch point.
             conn.execute(
                 "DELETE FROM messages WHERE message_id = ?",
-                (archive_message_id("claude-code-session:cascade-parent", "parent-0", position=0),),
+                (archive_message_id("claude-code-session:cascade-parent", "parent-0"),),
             )
             conn.commit()
         finally:

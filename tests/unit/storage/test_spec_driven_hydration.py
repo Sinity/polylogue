@@ -59,9 +59,7 @@ async def test_real_archive_write_read_hydrates_spec_fields(tmp_path: Path) -> N
     finally:
         await backend.close()
 
-    assert str(records[0].message_id) == archive_message_id(
-        "claude-code-session:spec-hydration", "native-message", position=0
-    )
+    assert str(records[0].message_id) == archive_message_id("claude-code-session:spec-hydration", "native-message")
     assert str(blocks[str(records[0].message_id)][0].block_id) == f"{records[0].message_id}:0"
     assert hydrated.stop_reason == "end_turn"
     assert hydrated.is_active_path is True

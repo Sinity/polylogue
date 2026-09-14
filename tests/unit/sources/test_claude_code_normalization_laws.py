@@ -47,13 +47,15 @@ _EXPECTED_ARCHIVE_MESSAGE_IDS = (
     "claude-code-session:claude-normalization-main:n:main-command",
     "claude-code-session:claude-normalization-main:n:main-context",
     # polylogue-slshy: these two wire records carry uuid=None -- the parser
-    # now leaves provider_message_id empty (no positional "msg-N" fallback),
-    # so the generated message_id column falls back to its own
-    # position.variant_index component (COALESCE(native_id, ...)).
-    "claude-code-session:claude-normalization-main:p:5.0",
+    # leaves provider_message_id empty (no positional "msg-N" fallback), so
+    # the generated message_id column falls back to its content-derived
+    # component (polylogue-eqsri). ``None`` here means "an id-less message,
+    # whose digest this hand-authored oracle cannot state"; the assertion
+    # below checks the tagged namespace instead of a literal.
+    None,
     "claude-code-session:claude-normalization-main:n:main-a2",
     "claude-code-session:claude-normalization-main:n:main-fg-result",
-    "claude-code-session:claude-normalization-main:p:8.0",
+    None,
 )
 _EXPECTED_MAIN_A1_BLOCK_IDS = (
     "claude-code-session:claude-normalization-main:n:main-a1:0",
@@ -269,7 +271,13 @@ def test_family_fixture_survives_acquire_parse_store_read_and_action_pairing(tmp
 
     assert session_id == _ARCHIVE_SESSION_ID
     assert envelope.session_id == _ARCHIVE_SESSION_ID
-    assert [message.message_id for message in envelope.messages] == list(_EXPECTED_ARCHIVE_MESSAGE_IDS)
+    observed_message_ids = [message.message_id for message in envelope.messages]
+    assert len(observed_message_ids) == len(_EXPECTED_ARCHIVE_MESSAGE_IDS)
+    for observed, expected in zip(observed_message_ids, _EXPECTED_ARCHIVE_MESSAGE_IDS, strict=True):
+        if expected is None:
+            assert observed.startswith(f"{_ARCHIVE_SESSION_ID}:c:")
+        else:
+            assert observed == expected
     assert [message.native_id for message in envelope.messages] == list(_EXPECTED_MAIN_NATIVE_IDS)
     assert [message.material_origin for message in envelope.messages] == [fact[3] for fact in _EXPECTED_MAIN_MESSAGES]
     assert [block.block_id for block in envelope.messages[1].blocks] == list(_EXPECTED_MAIN_A1_BLOCK_IDS)

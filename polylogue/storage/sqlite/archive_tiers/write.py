@@ -58,7 +58,13 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
-from polylogue.pipeline.ids import MessageOwnerResolution, attachment_message_owner_key, message_owner_resolution
+from polylogue.pipeline.ids import (
+    MessageContentIdentity,
+    MessageOwnerResolution,
+    attachment_message_owner_key,
+    message_content_identities,
+    message_owner_resolution,
+)
 from polylogue.sources.origin_specs import lowering_fingerprint, origin_specs, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
     ParseAccounting,
@@ -278,7 +284,7 @@ class ArchiveMessageRow:
     is_active_path: bool
     is_active_leaf: bool
     blocks: tuple[ArchiveBlockRow, ...]
-    identity_source: str = "positional"
+    identity_source: str = "content"
     message_type: str = "message"
     material_origin: str = "unknown"
     word_count: int = 0
@@ -652,6 +658,10 @@ class PreparedSessionRows:
     message_rows: tuple[tuple[object, ...], ...]
     block_rows: tuple[tuple[object, ...], ...]
     position_offset: int = 0
+    #: Per-digest content-occurrence counts already stored for this session,
+    #: the append-side analogue of ``position_offset``. Empty for a
+    #: full-replace write, where the session's rows are the only rows.
+    content_occurrence_offsets: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -870,6 +880,10 @@ def prepare_session_write(
         source_conn=source_conn,
     )
     position_offset = _next_message_position(conn, session_id) if merge_append else 0
+    content_occurrence_offsets = _stored_content_occurrences(conn, session_id) if merge_append else {}
+    content_identities = message_content_identities(
+        list(context.messages), occurrence_offsets=content_occurrence_offsets
+    )
     rows = PreparedSessionRows(
         session_id=session_id,
         session_content_hash=bytes.fromhex(_session_content_hash(normalized)),
@@ -879,6 +893,7 @@ def prepare_session_write(
                 list(context.messages),
                 position_offset=position_offset,
                 duplicate_native_ids=context.duplicate_native_ids,
+                content_identities=content_identities,
             )
         ),
         block_rows=tuple(
@@ -887,9 +902,11 @@ def prepare_session_write(
                 list(context.messages),
                 position_offset=position_offset,
                 duplicate_native_ids=context.duplicate_native_ids,
+                content_identities=content_identities,
             )
         ),
         position_offset=position_offset,
+        content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
     )
     return PreparedSessionWrite(
         session_id=session_id,
@@ -900,7 +917,12 @@ def prepare_session_write(
     )
 
 
-def prepare_session_rows(session: ParsedSession, *, position_offset: int = 0) -> PreparedSessionRows:
+def prepare_session_rows(
+    session: ParsedSession,
+    *,
+    position_offset: int = 0,
+    content_occurrence_offsets: Mapping[str, int] | None = None,
+) -> PreparedSessionRows:
     """Build ``PreparedSessionRows`` for ``session``'s full-replace write.
 
     Pure function: normalizes messages exactly as ``write_parsed_session_to_
@@ -921,11 +943,20 @@ def prepare_session_rows(session: ParsedSession, *, position_offset: int = 0) ->
     session_id = archive_session_id(origin.value, session.provider_session_id)
     messages = _derive_tool_outcomes(_normalized_messages(session.messages), session.session_events, origin=origin)
     duplicate_native_ids = _duplicate_message_native_ids(messages)
+    content_identities = message_content_identities(messages, occurrence_offsets=content_occurrence_offsets)
     message_rows = _build_message_rows(
-        session_id, messages, position_offset=position_offset, duplicate_native_ids=duplicate_native_ids
+        session_id,
+        messages,
+        position_offset=position_offset,
+        duplicate_native_ids=duplicate_native_ids,
+        content_identities=content_identities,
     )
     block_rows = _build_block_rows(
-        session_id, messages, position_offset=position_offset, duplicate_native_ids=duplicate_native_ids
+        session_id,
+        messages,
+        position_offset=position_offset,
+        duplicate_native_ids=duplicate_native_ids,
+        content_identities=content_identities,
     )
     return PreparedSessionRows(
         session_id=session_id,
@@ -933,6 +964,7 @@ def prepare_session_rows(session: ParsedSession, *, position_offset: int = 0) ->
         message_rows=tuple(message_rows),
         block_rows=tuple(block_rows),
         position_offset=position_offset,
+        content_occurrence_offsets=tuple(sorted((content_occurrence_offsets or {}).items())),
     )
 
 
@@ -1153,11 +1185,20 @@ def write_parsed_session_to_archive(
     branch_point_content_address = context.branch_point_content_address
     lineage_inheritance = context.lineage_inheritance
     inherited_source_message_ids = dict(context.inherited_source_message_ids)
+    # polylogue-eqsri: one resolution of the batch's content-derived fallback
+    # identities, shared by every row builder and every id-recomputing helper
+    # below, so they cannot disagree with the ``messages.message_id``
+    # generated column or with each other.
+    content_identities = message_content_identities(
+        messages,
+        occurrence_offsets=_stored_content_occurrences(conn, session_id) if merge_append else None,
+    )
     active_leaf_message_id = _active_leaf_message_id(
         session_id,
         messages,
         session.active_leaf_message_provider_id,
         duplicate_native_ids=duplicate_message_native_ids,
+        content_identities=content_identities,
     )
     session_content_hash = input_content_hash
     # polylogue-623q: only reuse rows prepared off this thread when NONE of
@@ -1317,7 +1358,7 @@ def write_parsed_session_to_archive(
                     session_id,
                     messages,
                     session.active_leaf_message_provider_id,
-                    position_offset=position_offset,
+                    content_identities=content_identities,
                     duplicate_native_ids=duplicate_message_native_ids,
                 )
                 conn.execute(
@@ -1325,8 +1366,17 @@ def write_parsed_session_to_archive(
                     (active_leaf_message_id, session_id),
                 )
                 add_timing("index.merge_prepare", t0)
+                # The append frontier has two coordinates now: the next
+                # position, and the per-digest occurrence counts the stored
+                # rows already consumed. Prepared rows pinned against either
+                # stale value would generate ids that collide with, or skip
+                # past, what is stored (polylogue-eqsri).
+                stored_content_occurrences = tuple(sorted(_stored_content_occurrences(conn, session_id).items()))
                 if prepared_write is not None:
-                    if prepared_write.rows.position_offset != position_offset:
+                    if (
+                        prepared_write.rows.position_offset != position_offset
+                        or prepared_write.rows.content_occurrence_offsets != stored_content_occurrences
+                    ):
                         raise PreparedSessionWriteRefusedError(
                             "prepared replay append lowering no longer matches its pinned frontier"
                         )
@@ -1335,6 +1385,7 @@ def write_parsed_session_to_archive(
                     isinstance(prepared, PreparedSessionRows)
                     and prepared.session_content_hash == session_content_hash
                     and prepared.position_offset == position_offset
+                    and prepared.content_occurrence_offsets == stored_content_occurrences
                 ):
                     prepared_rows_to_use = prepared
                 elif prepared_required:
@@ -1357,6 +1408,7 @@ def write_parsed_session_to_archive(
                     bulk_build=bulk_build,
                     defer_fts_rebuild=defer_fts_rebuild,
                     prepared=prepared_rows_to_use,
+                    content_identities=content_identities,
                 )
                 _refresh_stable_branch_point_witnesses(conn, session_id)
                 add_timing("index.full_replace", t0)
@@ -1373,6 +1425,7 @@ def write_parsed_session_to_archive(
                         if isinstance(prepared_rows_to_use, PreparedSessionRows)
                         else None
                     ),
+                    content_identities=content_identities,
                 )
                 add_timing("index.messages", t0)
                 t0 = time.perf_counter()
@@ -1387,6 +1440,7 @@ def write_parsed_session_to_archive(
                         if isinstance(prepared_rows_to_use, PreparedSessionRows)
                         else None
                     ),
+                    content_identities=content_identities,
                 )
                 add_timing("index.blocks", t0)
                 t0 = time.perf_counter()
@@ -1399,6 +1453,7 @@ def write_parsed_session_to_archive(
                     messages,
                     position_offset=position_offset,
                     duplicate_native_ids=duplicate_message_native_ids,
+                    content_identities=content_identities,
                 )
                 add_timing("index.file_edits", t0)
                 t0 = time.perf_counter()
@@ -1413,6 +1468,7 @@ def write_parsed_session_to_archive(
                     position_offset=position_offset,
                     duplicate_native_ids=duplicate_message_native_ids,
                     replace_session=False,
+                    content_identities=content_identities,
                 )
                 add_timing("index.web_constructs", t0)
             t0 = time.perf_counter()
@@ -1443,6 +1499,7 @@ def write_parsed_session_to_archive(
                 duplicate_native_ids=duplicate_message_native_ids,
                 refresh_attachment_ids=stale_attachment_ids - carried_forward_attachment_ids,
                 preacquired_blobs=preacquired_attachment_blobs,
+                content_identities=content_identities,
             )
             add_timing("index.attachments", t0)
             t0 = time.perf_counter()
@@ -1452,6 +1509,7 @@ def write_parsed_session_to_archive(
                 messages,
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
+                content_identities=content_identities,
             )
             add_timing("index.paste_spans", t0)
             if projection_carry_forward is not None:
@@ -1472,6 +1530,7 @@ def write_parsed_session_to_archive(
                 messages,
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
+                content_identities=content_identities,
             )
             add_timing("index.parent_links", t0)
             t0 = time.perf_counter()
@@ -1505,6 +1564,7 @@ def write_parsed_session_to_archive(
                 provider_usage_baseline=provider_usage_baseline,
                 inherited_source_message_ids=inherited_source_message_ids,
                 ambiguous_source_provider_ids=event_duplicate_message_native_ids,
+                content_identities=content_identities,
             )
             add_timing("index.session_events", t0)
             if projection_carry_forward is not None:
@@ -2318,6 +2378,7 @@ def _build_message_rows(
     session_id: str,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> list[tuple[object, ...]]:
@@ -2367,7 +2428,10 @@ def _build_message_rows(
             else _timestamp_ms(message.timestamp),
             "stop_reason": _enum_value(message.stop_reason),
         }
-        values["identity_source"] = "native" if values["native_id"] is not None else "positional"
+        content_identity, content_occurrence = content_identities[fallback_position]
+        values["content_identity"] = content_identity
+        values["content_occurrence"] = content_occurrence
+        values["identity_source"] = "native" if values["native_id"] is not None else "content"
         rows.append(archive_tiers_specs.MESSAGES_SPEC.extract_tuple(values))
     return rows
 
@@ -2386,6 +2450,7 @@ def _write_messages(
     session_id: str,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     rows: list[tuple[object, ...]] | None = None,
@@ -2413,6 +2478,7 @@ def _write_messages(
             messages,
             position_offset=position_offset,
             duplicate_native_ids=duplicate_native_ids,
+            content_identities=content_identities,
         )
     conn.executemany(_messages_insert_sql(), rows)
 
@@ -2560,6 +2626,7 @@ def _build_block_rows(
     session_id: str,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> list[tuple[object, ...]]:
@@ -2574,7 +2641,7 @@ def _build_block_rows(
             session_id,
             message,
             fallback_position,
-            position_offset=position_offset,
+            content_identities=content_identities,
             duplicate_native_ids=duplicate_native_ids,
         )
         blocks = _message_blocks(message)
@@ -2644,6 +2711,7 @@ def _write_blocks(
     session_id: str,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     rows: list[tuple[object, ...]] | None = None,
@@ -2666,6 +2734,7 @@ def _write_blocks(
             messages,
             position_offset=position_offset,
             duplicate_native_ids=duplicate_native_ids,
+            content_identities=content_identities,
         )
     conn.executemany(_blocks_insert_sql(), rows)
 
@@ -2730,6 +2799,7 @@ def _build_file_edit_rows(
     session_id: str,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> list[tuple[object, ...]]:
@@ -2750,7 +2820,7 @@ def _build_file_edit_rows(
             session_id,
             message,
             fallback_position,
-            position_offset=position_offset,
+            content_identities=content_identities,
             duplicate_native_ids=duplicate_native_ids,
         )
         for position, block in enumerate(_message_blocks(message)):
@@ -2763,7 +2833,7 @@ def _build_file_edit_rows(
             session_id,
             message,
             fallback_position,
-            position_offset=position_offset,
+            content_identities=content_identities,
             duplicate_native_ids=duplicate_native_ids,
         )
         for block in _message_blocks(message):
@@ -2796,6 +2866,7 @@ def _write_file_edits(
     session_id: str,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
@@ -2804,6 +2875,7 @@ def _write_file_edits(
         messages,
         position_offset=position_offset,
         duplicate_native_ids=duplicate_native_ids,
+        content_identities=content_identities,
     )
     if rows:
         conn.executemany(
@@ -2851,6 +2923,7 @@ def _write_web_constructs(
     session: ParsedSession,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     replace_session: bool = True,
@@ -2868,7 +2941,7 @@ def _write_web_constructs(
             session_id,
             message,
             fallback_position,
-            position_offset=position_offset,
+            content_identities=content_identities,
             duplicate_native_ids=duplicate_native_ids,
         )
         blocks = _message_blocks(message)
@@ -3682,9 +3755,9 @@ def _union_with_existing_rows(
         row = tuple(row_list)
         merged_message_rows.append(row)
         if isinstance(key, str):
-            merged_message_ids[key] = archive_message_id(
-                session_id, key, position=new_pos, variant_index=cast(int, row_list[variant_idx] or 0)
-            )
+            # ``key`` is a native id here (the splice keys messages by it), so
+            # this takes the ``n:`` branch and never needs a content identity.
+            merged_message_ids[key] = archive_message_id(session_id, key)
 
     live_message_ids = frozenset(merged_message_ids.values())
 
@@ -3789,13 +3862,9 @@ def _union_with_existing_rows(
     # --- Capture sidecar projection rows for restoration after the incoming
     # rebuild (PR review P1 write.py:2433) ---
     message_id_remap: dict[str, str | None] = {}
-    for nid, old_row in existing_by_native_id.items():
-        old_message_id = archive_message_id(
-            session_id,
-            nid,
-            position=cast(int, old_row[position_idx]),
-            variant_index=cast(int, old_row[variant_idx] or 0),
-        )
+    for nid in existing_by_native_id:
+        # Keyed by native id, so the ``n:`` branch applies unchanged.
+        old_message_id = archive_message_id(session_id, nid)
         message_id_remap[old_message_id] = merged_message_ids.get(nid)
     carry_forward = _ProjectionCarryForward(
         captured=_capture_session_projection_rows(conn, session_id),
@@ -3812,6 +3881,7 @@ def _replace_full_session_messages_and_blocks(
     session: ParsedSession,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     duplicate_native_ids: frozenset[str],
     raw_id: str | None = None,
     existing_raw_id: str | None = None,
@@ -3920,12 +3990,16 @@ def _replace_full_session_messages_and_blocks(
         unioned_message_rows = (
             list(tuple_rows.message_rows)
             if tuple_rows is not None
-            else _build_message_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
+            else _build_message_rows(
+                session_id, messages, duplicate_native_ids=duplicate_native_ids, content_identities=content_identities
+            )
         )
         unioned_block_rows = (
             list(tuple_rows.block_rows)
             if tuple_rows is not None
-            else _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
+            else _build_block_rows(
+                session_id, messages, duplicate_native_ids=duplicate_native_ids, content_identities=content_identities
+            )
         )
         carry_forward = None
     else:
@@ -3934,10 +4008,14 @@ def _replace_full_session_messages_and_blocks(
             session_id,
             list(tuple_rows.message_rows)
             if tuple_rows is not None
-            else _build_message_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids),
+            else _build_message_rows(
+                session_id, messages, duplicate_native_ids=duplicate_native_ids, content_identities=content_identities
+            ),
             list(tuple_rows.block_rows)
             if tuple_rows is not None
-            else _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids),
+            else _build_block_rows(
+                session_id, messages, duplicate_native_ids=duplicate_native_ids, content_identities=content_identities
+            ),
             raw_id=raw_id,
             existing_raw_id=existing_raw_id,
             force_replace=force_replace,
@@ -4005,6 +4083,7 @@ def _replace_full_session_messages_and_blocks(
                 messages,
                 duplicate_native_ids=duplicate_native_ids,
                 rows=unioned_message_rows,
+                content_identities=content_identities,
             )
             add_timing("messages", t0)
             t0 = time.perf_counter()
@@ -4014,6 +4093,7 @@ def _replace_full_session_messages_and_blocks(
                 messages,
                 duplicate_native_ids=duplicate_native_ids,
                 rows=unioned_block_rows,
+                content_identities=content_identities,
             )
             add_timing("blocks", t0)
         t0 = time.perf_counter()
@@ -4022,6 +4102,7 @@ def _replace_full_session_messages_and_blocks(
             session_id,
             messages,
             duplicate_native_ids=duplicate_native_ids,
+            content_identities=content_identities,
         )
         add_timing("file_edits", t0)
         t0 = time.perf_counter()
@@ -4034,6 +4115,7 @@ def _replace_full_session_messages_and_blocks(
             session,
             messages,
             duplicate_native_ids=duplicate_native_ids,
+            content_identities=content_identities,
         )
         add_timing("web_constructs", t0)
         replacement_complete = True
@@ -4114,6 +4196,7 @@ def _attachment_message_id_maps(
     session_id: str,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] | None = None,
 ) -> tuple[MessageOwnerResolution, dict[str, str], dict[str, ParsedMessage]]:
@@ -4139,7 +4222,7 @@ def _attachment_message_id_maps(
             session_id,
             message,
             fallback_position,
-            position_offset=position_offset,
+            content_identities=content_identities,
             duplicate_native_ids=duplicates,
         )
         by_owner_key[owner_key] = message_id
@@ -4156,12 +4239,33 @@ def _next_message_position(conn: sqlite3.Connection, session_id: str) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
+def _stored_content_occurrences(conn: sqlite3.Connection, session_id: str) -> dict[str, int]:
+    """Return per-digest content-occurrence counts already stored for a session.
+
+    The append-side analogue of ``_next_message_position``: an appended
+    message whose declared semantics match one already written continues that
+    digest's numbering instead of restarting at zero and colliding with the
+    stored row's ``message_id``.
+    """
+    rows = conn.execute(
+        """
+        SELECT content_identity, COUNT(*)
+        FROM messages
+        WHERE session_id = ? AND content_identity IS NOT NULL
+        GROUP BY content_identity
+        """,
+        (session_id,),
+    ).fetchall()
+    return {str(row[0]): int(row[1]) for row in rows}
+
+
 def _write_attachments(
     conn: sqlite3.Connection,
     session_id: str,
     messages: list[ParsedMessage],
     attachments: Iterable[ParsedAttachment],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     refresh_attachment_ids: set[str] | None = None,
@@ -4173,6 +4277,7 @@ def _write_attachments(
         messages,
         position_offset=position_offset,
         duplicate_native_ids=duplicate_native_ids,
+        content_identities=content_identities,
     )
     attachment_positions: dict[int, int] = {}
     resolved_message_ids: dict[int, str] = {}
@@ -4378,6 +4483,7 @@ def _write_paste_spans(
     session_id: str,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
@@ -4388,7 +4494,7 @@ def _write_paste_spans(
             session_id,
             message,
             fallback_position,
-            position_offset=position_offset,
+            content_identities=content_identities,
             duplicate_native_ids=duplicate_native_ids,
         )
         text = message.text or ""
@@ -4427,6 +4533,7 @@ def _write_parent_links(
     session_id: str,
     messages: list[ParsedMessage],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
@@ -4435,7 +4542,7 @@ def _write_parent_links(
             session_id,
             message,
             fallback_position,
-            position_offset=position_offset,
+            content_identities=content_identities,
             duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
@@ -4446,7 +4553,7 @@ def _write_parent_links(
             session_id,
             message,
             fallback_position,
-            position_offset=position_offset,
+            content_identities=content_identities,
             duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
@@ -4472,7 +4579,7 @@ def _write_parent_links(
                     session_id,
                     message,
                     fallback_position,
-                    position_offset=position_offset,
+                    content_identities=content_identities,
                     duplicate_native_ids=duplicate_native_ids,
                 ),
             ),
@@ -4901,7 +5008,7 @@ def _bind_asserted_branch_point(
     """
     if not parent_session_id or not native_id or not native_id.strip():
         return None
-    candidate = archive_message_id(parent_session_id, native_id.strip(), position=0)
+    candidate = archive_message_id(parent_session_id, native_id.strip())
     row = conn.execute("SELECT 1 FROM messages WHERE message_id = ? LIMIT 1", (candidate,)).fetchone()
     return candidate if row is not None else None
 
@@ -5803,6 +5910,7 @@ def _write_session_events(
     messages: list[ParsedMessage],
     events: Iterable[ParsedSessionEvent],
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     event_position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
@@ -5815,7 +5923,7 @@ def _write_session_events(
             session_id,
             message,
             fallback_position,
-            position_offset=position_offset,
+            content_identities=content_identities,
             duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
@@ -5851,7 +5959,7 @@ def _write_session_events(
                             session_id,
                             message,
                             fallback_position,
-                            position_offset=position_offset,
+                            content_identities=content_identities,
                             duplicate_native_ids=duplicate_native_ids,
                         )
                         break
@@ -8671,6 +8779,7 @@ def _active_leaf_message_id(
     messages: list[ParsedMessage],
     explicit_native_id: str | None,
     *,
+    content_identities: tuple[MessageContentIdentity, ...],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> str | None:
@@ -8686,7 +8795,7 @@ def _active_leaf_message_id(
                     session_id,
                     message,
                     fallback_position,
-                    position_offset=position_offset,
+                    content_identities=content_identities,
                     duplicate_native_ids=duplicate_native_ids,
                 )
         if matching_messages:
@@ -8695,7 +8804,7 @@ def _active_leaf_message_id(
                 session_id,
                 message,
                 fallback_position,
-                position_offset=position_offset,
+                content_identities=content_identities,
                 duplicate_native_ids=duplicate_native_ids,
             )
     for fallback_position, message in enumerate(messages):
@@ -8704,7 +8813,7 @@ def _active_leaf_message_id(
                 session_id,
                 message,
                 fallback_position,
-                position_offset=position_offset,
+                content_identities=content_identities,
                 duplicate_native_ids=duplicate_native_ids,
             )
     return (
@@ -8712,7 +8821,7 @@ def _active_leaf_message_id(
             session_id,
             messages[-1],
             len(messages) - 1,
-            position_offset=position_offset,
+            content_identities=content_identities,
             duplicate_native_ids=duplicate_native_ids,
         )
         if messages
@@ -8725,16 +8834,23 @@ def _message_id(
     message: ParsedMessage,
     fallback_position: int,
     *,
-    position_offset: int = 0,
+    content_identities: tuple[MessageContentIdentity, ...],
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> str:
-    position = position_offset + (message.position if message.position is not None else 0)
-    variant_index = message.variant_index if message.variant_index is not None else 0
+    """Resolve one parsed message's stored ``message_id``.
+
+    ``content_identities`` is the batch's resolved fallback identities, index-
+    aligned with the same ``messages`` list ``fallback_position`` indexes, and
+    is required: a positional fallback derived here would disagree with the
+    ``messages.message_id`` generated column and would carry the renumbering
+    defect the content identity exists to remove (polylogue-eqsri).
+    """
+    content_identity, content_occurrence = content_identities[fallback_position]
     return archive_message_id(
         session_id,
         _stored_message_native_id(message, duplicate_native_ids),
-        position=position if message.position is not None else position_offset + fallback_position,
-        variant_index=variant_index,
+        content_identity=content_identity,
+        content_occurrence=content_occurrence,
     )
 
 

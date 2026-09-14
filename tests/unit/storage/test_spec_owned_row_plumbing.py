@@ -108,6 +108,8 @@ def test_an_added_column_reaches_write_read_and_domain_from_one_declaration() ->
         {
             "session_id": "claude-code-session:added-column",
             "native_id": "native-message",
+            "content_identity": None,
+            "content_occurrence": 0,
             "identity_source": "native",
             "position": 0,
             "role": Role.ASSISTANT.value,

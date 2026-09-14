@@ -154,7 +154,7 @@ def test_branch_point_reaches_session_links_when_parent_is_already_stored(tmp_pa
     link = _link(conn, child_id)
     assert link["dst_native_id"] == _PARENT_NATIVE_ID
     assert link["resolved_dst_session_id"] == parent_id
-    assert link["branch_point_message_id"] == archive_message_id(parent_id, _BRANCH_POINT_UUID, position=0)
+    assert link["branch_point_message_id"] == archive_message_id(parent_id, _BRANCH_POINT_UUID)
     # Parser-asserted, at full confidence: the provider stated this edge.
     assert link["method"]
     assert link["confidence"] == 1.0
@@ -187,7 +187,7 @@ def test_branch_point_binds_when_the_parent_arrives_after_the_child(tmp_path: Pa
 
     link = _link(conn, child_id)
     assert link["resolved_dst_session_id"] == parent_id
-    assert link["branch_point_message_id"] == archive_message_id(parent_id, _BRANCH_POINT_UUID, position=0)
+    assert link["branch_point_message_id"] == archive_message_id(parent_id, _BRANCH_POINT_UUID)
     assert link["inheritance"] == "prefix-sharing"
 
     envelope = read_archive_session_envelope(conn, child_id)

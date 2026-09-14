@@ -407,6 +407,60 @@ def _message_semantic_payload(message: ParsedMessage) -> dict[str, JSONValue]:
     return _message_payload(message, _HASHED_FIELDS["ParsedMessage"])
 
 
+#: Hex characters retained from the message semantic digest when it stands in
+#: for an absent provider id. The value only has to distinguish messages
+#: *within one session*, so 128 bits is an enormous margin; keeping it short
+#: bounds the length of ``message_id`` and of every ``block_id`` built on it.
+MESSAGE_CONTENT_IDENTITY_HEX_CHARS = 32
+
+#: One message's content-derived fallback identity: the semantic digest plus
+#: the occurrence ordinal that separates two messages whose declared semantic
+#: fields are byte-identical.
+MessageContentIdentity: TypeAlias = tuple[str, int]
+
+
+def message_content_identity(message: ParsedMessage) -> str:
+    """Digest one message's declared semantic fields into a stable anchor.
+
+    This is the identity used when a provider supplies no message id. It is
+    computed from ``_HASHED_FIELDS["ParsedMessage"]`` -- the partition that
+    already declares, exhaustively, which parser fields are content and which
+    are parser-only coordinates or independently-owned measurements. Position,
+    variant index, branch index, path markers, usage and timing are all on the
+    excluded side, which is exactly the property this identity needs: a
+    message that is inserted, removed or reordered *elsewhere* in the export
+    must not change the identity of this one (polylogue-eqsri).
+    """
+    return hash_payload(_message_semantic_payload(message))[:MESSAGE_CONTENT_IDENTITY_HEX_CHARS]
+
+
+def message_content_identities(
+    messages: list[ParsedMessage],
+    *,
+    occurrence_offsets: Mapping[str, int] | None = None,
+) -> tuple[MessageContentIdentity, ...]:
+    """Resolve the content-derived fallback identity for one message batch.
+
+    Two messages in one session can carry byte-identical declared semantics.
+    They are separated by their occurrence ordinal *among messages sharing
+    that digest* -- not by their transcript position, so inserting or removing
+    an unrelated message leaves every other message's ordinal untouched.
+
+    ``occurrence_offsets`` carries the per-digest counts already stored for
+    this session, so an append continues the session's numbering instead of
+    restarting it and colliding with a row already written.
+    """
+    counts: Counter[str] = Counter()
+    if occurrence_offsets:
+        counts.update(dict(occurrence_offsets))
+    identities: list[MessageContentIdentity] = []
+    for message in messages:
+        digest = message_content_identity(message)
+        identities.append((digest, counts[digest]))
+        counts[digest] += 1
+    return tuple(identities)
+
+
 def _message_comparison_payload(message: ParsedMessage) -> dict[str, JSONValue]:
     """Build the owner-safe payload used to compare id-less messages.
 

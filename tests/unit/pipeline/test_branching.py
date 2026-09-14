@@ -251,12 +251,12 @@ class TestBranchDomainViews:
         assert branching is not None
         bid = ids["branching"]
         assert [message.id for message in branching.mainline_messages()] == [
-            archive_message_id(bid, "q1", position=0),
-            archive_message_id(bid, "a1", position=1),
+            archive_message_id(bid, "q1"),
+            archive_message_id(bid, "a1"),
         ]
         branches = list(branching.iter_branches())
         assert len(branches) == 1
-        assert branches[0][0] == archive_message_id(bid, "q1", position=0)
+        assert branches[0][0] == archive_message_id(bid, "q1")
         assert [message.branch_index for message in branches[0][1]] == [0, 1]
         assert [message.is_branch for message in branches[0][1]] == [False, True]
         # is_active_path (not branch_index) is what selected a1: it is the

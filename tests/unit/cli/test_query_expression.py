@@ -89,7 +89,7 @@ from tests.infra.query_field_laws import (
 
 
 def _mid(session_id: str, native_id: str, *, position: int = 0) -> str:
-    return archive_message_id(session_id, native_id, position=position)
+    return archive_message_id(session_id, native_id)
 
 
 def _bid(session_id: str, native_id: str, *, message_position: int = 0, block_position: int = 0) -> str:

@@ -25,7 +25,7 @@ from hypothesis import strategies as st
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
-from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import message_content_identities, session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.write import (
     _duplicate_message_native_ids,
@@ -97,11 +97,13 @@ def test_db_generated_message_id_matches_python_identity_law(native_ids: list[st
         assert len(rows) == len(messages)
 
         duplicate_native_ids = _duplicate_message_native_ids(messages)
+        content_identities = message_content_identities(list(messages))
         for fallback_position, message in enumerate(messages):
             expected = _message_id(
                 session_id,
                 message,
                 fallback_position,
+                content_identities=content_identities,
                 duplicate_native_ids=duplicate_native_ids,
             )
             actual = rows[fallback_position]["message_id"]

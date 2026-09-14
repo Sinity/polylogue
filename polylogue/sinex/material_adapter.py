@@ -29,6 +29,7 @@ from polylogue.core.enums import (
     SessionKind,
     ToolOutcome,
 )
+from polylogue.core.identity_law import split_message_local_id
 from polylogue.core.json import JSONValue
 from polylogue.core.web_urls import native_id_from_session_id
 from polylogue.material_protocol.v1 import (
@@ -46,6 +47,7 @@ from polylogue.material_protocol.v1 import (
     verify_revision,
 )
 from polylogue.material_protocol.v1.canonical import canonical_bytes
+from polylogue.pipeline.ids import message_content_identities
 from polylogue.sinex.models import PublicationPayload
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -445,6 +447,9 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
 
     fidelity_gaps: list[FidelityGapInput] = []
     messages: list[MessageInput] = []
+    # Same resolution the writer performs, so a material export states the
+    # identity the archive stores rather than a parallel positional one.
+    content_identities = message_content_identities(list(raw_messages))
     for index, message in enumerate(raw_messages):
         position = message.position if message.position is not None else index
         native_message_id = message.provider_message_id
@@ -490,6 +495,8 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
                 position=position,
                 role=message.role,
                 text=message.text,
+                content_identity=content_identities[index][0],
+                content_occurrence=content_identities[index][1],
                 variant_index=message.variant_index or 0,
                 message_type=message.message_type,
                 material_origin=message.material_origin,
@@ -584,12 +591,17 @@ def session_material_from_session(session: Session) -> SessionMaterial:
                 dropped_block_gaps.append(_dropped_block_gap(session.id, index, block_position, raw_block))
             else:
                 blocks.append(block)
+        # This path reads a hydrated archive tree, not a parsed one, so the
+        # identity is restated from the stored id rather than re-derived.
+        stored_native_id, stored_content_identity, stored_content_occurrence = split_message_local_id(message.id)
         messages.append(
             MessageInput(
-                native_id=None,
+                native_id=stored_native_id,
                 position=index,
                 role=message.role,
                 text=message.text,
+                content_identity=stored_content_identity,
+                content_occurrence=stored_content_occurrence,
                 message_type=message.message_type,
                 material_origin=message.material_origin,
                 occurred_at_ms=_timestamp_ms(message.timestamp),

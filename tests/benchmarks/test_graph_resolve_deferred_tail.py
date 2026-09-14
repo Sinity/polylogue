@@ -82,7 +82,7 @@ def _build_deferred_tail_fixture(db_path: Path, *, n_children: int) -> tuple[sql
     parent_blocks = []
     for position in range(_PARENT_MESSAGES):
         native_id = f"m{position}"
-        message_id = archive_message_id(parent_session_id, native_id, position=position)
+        message_id = archive_message_id(parent_session_id, native_id)
         role = "user" if position % 2 == 0 else "assistant"
         parent_messages.append((parent_session_id, native_id, position, role, b"x" * 32))
         parent_blocks.append((message_id, parent_session_id, 0, "text", f"text-{position}"))
@@ -108,7 +108,7 @@ def _build_deferred_tail_fixture(db_path: Path, *, n_children: int) -> tuple[sql
         child_events = []
         for position in range(total_child_messages):
             native_id = f"m{position}"
-            message_id = archive_message_id(child_session_id, native_id, position=position)
+            message_id = archive_message_id(child_session_id, native_id)
             role = "user" if position % 2 == 0 else "assistant"
             # Shared-prefix positions reuse the parent's exact text so the
             # composed-signature comparison walks the full shared prefix;

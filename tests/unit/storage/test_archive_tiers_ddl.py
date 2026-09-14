@@ -128,9 +128,9 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
     )
     messages = conn.execute("SELECT message_id FROM messages ORDER BY position, variant_index").fetchall()
     assert [row["message_id"] for row in messages] == [
-        archive_message_id("codex-session:native-session", "native-message", position=0),
-        archive_message_id("codex-session:native-session", None, position=1, variant_index=0),
-        archive_message_id("codex-session:native-session", None, position=1, variant_index=1),
+        archive_message_id("codex-session:native-session", "native-message"),
+        archive_message_id("codex-session:native-session", None),
+        archive_message_id("codex-session:native-session", None),
     ]
 
     conn.execute(
@@ -202,9 +202,9 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
         (session["session_id"],),
     ).fetchall()
     assert [row["block_id"] for row in blocks] == [
-        archive_message_id("codex-session:native-session", "native-message", position=0) + ":0",
-        archive_message_id("codex-session:native-session", "native-message", position=0) + ":1",
-        archive_message_id("codex-session:native-session", "native-message", position=0) + ":2",
+        archive_message_id("codex-session:native-session", "native-message") + ":0",
+        archive_message_id("codex-session:native-session", "native-message") + ":1",
+        archive_message_id("codex-session:native-session", "native-message") + ":2",
     ]
     assert blocks[1]["tool_command"] == "pytest -q"
     assert blocks[1]["tool_path"] == "tests"
@@ -230,9 +230,7 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
         WHERE f.text MATCH 'needle'
         """
     ).fetchone()
-    assert (
-        fts_row["block_id"] == archive_message_id("codex-session:native-session", "native-message", position=0) + ":0"
-    )
+    assert fts_row["block_id"] == archive_message_id("codex-session:native-session", "native-message") + ":0"
 
 
 def test_agent_action_and_delegation_views_are_indexed_projections(tmp_path: Path) -> None:

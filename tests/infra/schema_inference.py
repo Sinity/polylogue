@@ -50,15 +50,15 @@ def seed_schema_inference_archive(root: Path) -> Path:
         )
         conn.execute(
             """
-            INSERT INTO messages(session_id, position, role, material_origin, content_hash)
-            VALUES ('codex-session:session', 0, 'user', 'human_authored', ?)
+            INSERT INTO messages(session_id, position, role, material_origin, content_hash, content_identity)
+            VALUES ('codex-session:session', 0, 'user', 'human_authored', ?, '0123456789abcdef0123456789abcdef')
             """,
             (b"n" * 32,),
         )
         conn.execute(
             """
             INSERT INTO blocks(message_id, session_id, position, block_type, text)
-            VALUES ('codex-session:session:0.0', 'codex-session:session', 0, 'text', 'hello')
+            VALUES ('codex-session:session:c:0123456789abcdef0123456789abcdef.0', 'codex-session:session', 0, 'text', 'hello')
             """
         )
         analyze_planner_stats_tables(conn)

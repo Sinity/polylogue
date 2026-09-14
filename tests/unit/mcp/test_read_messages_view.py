@@ -101,7 +101,7 @@ async def test_read_messages_matches_python_api_positional_order(
     finally:
         await archive.close()
 
-    expected = [archive_message_id(session_id, f"message-{position}", position=position) for position in range(6)]
+    expected = [archive_message_id(session_id, f"message-{position}") for position in range(6)]
     payload = json.loads(raw)
     assert total == len(expected)
     assert [str(message.id) for message in api_messages] == expected

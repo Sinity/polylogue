@@ -996,7 +996,7 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
         batch = load_sync_batch(conn, [_sid("conv-blocks", "codex-session")])
 
     assert [str(block.message_id) for block in batch.blocks] == [
-        archive_message_id(_sid("conv-blocks", "codex-session"), "msg-2", position=1)
+        archive_message_id(_sid("conv-blocks", "codex-session"), "msg-2")
     ]
 
 
@@ -1043,7 +1043,7 @@ def test_session_profile_owner_lowers_declared_markers_to_user_assertions(tmp_pa
 
     assert row is not None
     assert tuple(row[:3]) == ("finding", "candidate", "agent")
-    message_id = archive_message_id(session_id, "msg-1", position=0)
+    message_id = archive_message_id(session_id, "msg-1")
     assert row[3] == f"message:{message_id}"
     assert "block:" in row[4]
     assert row[5] == "the production route reached the marker scanner"

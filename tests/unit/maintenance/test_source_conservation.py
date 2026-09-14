@@ -136,7 +136,7 @@ def _insert_session(conn: sqlite3.Connection, *, origin: str, native_id: str, ra
         INSERT INTO blocks(message_id, session_id, position, block_type, text)
         VALUES (?, ?, 0, 'text', 'hello world')
         """,
-        (f"{session_id}:p:0.0", session_id),
+        (f"{session_id}:c:0123456789abcdef0123456789abcdef.0", session_id),
     )
     return session_id
 
