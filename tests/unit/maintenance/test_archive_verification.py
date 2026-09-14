@@ -273,8 +273,8 @@ def _seed_coherent_archive(root: Path) -> None:
         )
         index_conn.execute(
             """
-            INSERT INTO messages(session_id, position, role, material_origin, content_hash)
-            VALUES ('codex-session:session', 0, 'user', 'human_authored', ?)
+            INSERT INTO messages(session_id, position, role, material_origin, content_hash, content_identity)
+            VALUES ('codex-session:session', 0, 'user', 'human_authored', ?, '0123456789abcdef0123456789abcdef')
             """,
             (b"m" * 32,),
         )

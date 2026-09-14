@@ -126,8 +126,8 @@ def _insert_session(conn: sqlite3.Connection, *, origin: str, native_id: str, ra
     session_id = f"{origin}:{native_id}"
     conn.execute(
         """
-        INSERT INTO messages(session_id, position, role, material_origin, content_hash)
-        VALUES (?, 0, 'user', 'human_authored', ?)
+        INSERT INTO messages(session_id, position, role, material_origin, content_hash, content_identity)
+        VALUES (?, 0, 'user', 'human_authored', ?, '0123456789abcdef0123456789abcdef')
         """,
         (session_id, b"m" * 32),
     )
