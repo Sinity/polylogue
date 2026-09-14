@@ -582,8 +582,18 @@ def _hermes_sqlite_marker_payload(
     same versioned structural contract as actual parsing.
     """
     from polylogue.sources.parsers import hermes_state, hermes_verification
+    from polylogue.sources.sqlite_snapshot import is_declared_logical_export
 
-    profile_root = Path(source_path).parent if source_path is not None else None
+    if source_path is None or not is_declared_logical_export(path, source_path):
+        # A mutable SQLite source is not its own bytes. Acquisition retains the
+        # declared member's canonical logical export, and the replay route
+        # (``sources.revision_backfill._parse_one``) refuses anything else. If
+        # ingest admitted a historical page image here the two routes would
+        # disagree and a reindex would mint a second source authority for
+        # content the archive already holds under its logical revision.
+        return None
+
+    profile_root = Path(source_path).parent
     if hermes_state.looks_like_state_db_path(path, immutable=immutable):
         return hermes_state.marker_payload(path, profile_root=profile_root, immutable=immutable)
     if hermes_verification.looks_like_verification_evidence_db_path(path, immutable=immutable):

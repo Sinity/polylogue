@@ -36,6 +36,8 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.revision_backfill import _parse_one
+from polylogue.sources.sqlite_export import logical_export_bytes
+from polylogue.sources.sqlite_snapshot import member_export_scope
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -110,6 +112,32 @@ def _write_verification_evidence_db(path: Path) -> None:
         conn.commit()
 
 
+def _retained_bytes(db_path: Path) -> bytes:
+    """The material acquisition actually retains for a declared member.
+
+    A mutable SQLite source is not its own bytes: ``snapshot_sqlite_to_blob``
+    retains the declared member's canonical logical export, and that export's
+    blob hash is the member's logical revision. Building the fixture through
+    the same call keeps this parity check on the material both routes will
+    really be handed, instead of a page image neither route may admit.
+    """
+    return logical_export_bytes(db_path, scope=member_export_scope(db_path))
+
+
+def _retained_blob(db_path: Path) -> tuple[bytes, Path]:
+    """Retain the declared export beside the fixture and return it with its path.
+
+    The replay route is handed the retained blob's path, never the live
+    database's: ``payload_path`` is the on-disk blob ``parse_retained_raw_sessions``
+    resolved, and pointing it back at the mutable source would check a page
+    image the archive never retained.
+    """
+    content = _retained_bytes(db_path)
+    blob_path = db_path.with_name(f"{db_path.name}.retained-export")
+    blob_path.write_bytes(content)
+    return content, blob_path
+
+
 def _record(store: BlobStore, content: bytes, *, source_path: str) -> RawSessionRecord:
     raw_id, blob_size = store.write_from_bytes(content)
     return RawSessionRecord(
@@ -137,7 +165,7 @@ def test_verification_evidence_db_parses_identically_through_ingest_and_rebuild_
     profile_dir.mkdir(parents=True)
     db_path = profile_dir / "verification_evidence.db"
     _write_verification_evidence_db(db_path)
-    content = db_path.read_bytes()
+    content, retained_path = _retained_blob(db_path)
 
     # Rebuild route: the same _parse_one the backfill/census/replay machinery
     # calls (parse_retained_raw_sessions -> _parse_one; census_parse_worker -> _parse_one).
@@ -145,7 +173,7 @@ def test_verification_evidence_db_parses_identically_through_ingest_and_rebuild_
         Provider.HERMES,
         content,
         str(db_path),
-        payload_path=db_path,
+        payload_path=retained_path,
         archive_root=tmp_path,
     )
     rebuild_ids = {session.provider_session_id for session in rebuild_sessions}
@@ -226,13 +254,13 @@ def test_state_db_still_parses_identically_through_both_routes(blob_store: BlobS
     db_path = profile_dir / "state.db"
     _write_hermes_state_db(db_path)
 
-    content = db_path.read_bytes()
+    content, retained_path = _retained_blob(db_path)
 
     rebuild_sessions = _parse_one(
         Provider.HERMES,
         content,
         str(db_path),
-        payload_path=db_path,
+        payload_path=retained_path,
         archive_root=tmp_path,
     )
     rebuild_ids = {session.provider_session_id.split("@", 1)[0] for session in rebuild_sessions}
@@ -255,12 +283,16 @@ def test_ingest_record_keeps_wal_sqlite_blob_namespace_pristine(blob_store: Blob
     ``ingest_record`` path must carry the immutable marker through both the
     structural probe and final Hermes parser, leaving ``verify_all`` with one
     canonical blob and no invalid namespace entries.
+
+    Anti-vacuity: drop ``sqlite_immutable`` from the retained-blob decode call
+    in ``pipeline/services/ingest_worker.py`` and ``verify_all`` reports the
+    ``-wal``/``-shm`` entries this asserts are absent.
     """
     profile_dir = tmp_path / ".hermes"
     profile_dir.mkdir(parents=True)
     db_path = profile_dir / "state.db"
     _write_hermes_state_db(db_path, wal_mode=True)
-    record = _record(blob_store, db_path.read_bytes(), source_path=str(db_path))
+    record = _record(blob_store, _retained_bytes(db_path), source_path=str(db_path))
 
     result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
     verified = blob_store.verify_all()
@@ -270,3 +302,36 @@ def test_ingest_record_keeps_wal_sqlite_blob_namespace_pristine(blob_store: Blob
     assert verified.passed
     assert verified.checked == 1
     assert verified.failures == ()
+
+
+def test_ingest_refuses_a_hermes_page_image_the_replay_route_refuses(blob_store: BlobStore, tmp_path: Path) -> None:
+    """Both routes refuse a historical SQLite page image for a declared member.
+
+    A page image cannot be proven against the live database and re-snapshots on
+    every commit, so it is not the retained material for ``state.db``. The
+    replay route raises; ingest must not quietly admit the same bytes as a
+    Hermes session, or a reindex would mint a second source authority.
+
+    Anti-vacuity: remove the ``is_declared_logical_export`` gate from
+    ``_hermes_sqlite_marker_payload`` and ingest parses this page image into one
+    session while the replay route still refuses it.
+    """
+    profile_dir = tmp_path / ".hermes"
+    profile_dir.mkdir(parents=True)
+    db_path = profile_dir / "state.db"
+    _write_hermes_state_db(db_path)
+    page_image = db_path.read_bytes()
+
+    with pytest.raises(RuntimeError, match="not the declared logical export"):
+        _parse_one(
+            Provider.HERMES,
+            page_image,
+            str(db_path),
+            payload_path=db_path,
+            archive_root=tmp_path,
+        )
+
+    record = _record(blob_store, page_image, source_path=str(db_path))
+    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
+
+    assert not [payload.parsed_session for payload in result.sessions]
