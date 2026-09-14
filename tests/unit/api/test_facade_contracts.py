@@ -27,7 +27,6 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-import logging
 import shutil
 import sqlite3
 from collections.abc import Iterable
@@ -61,6 +60,7 @@ from polylogue.core.refs import (
     delegation_edge_object_id,
     delegation_subtree_object_id,
 )
+from polylogue.logging import capture
 from polylogue.operations.bindings import OperationBinding
 from polylogue.sources.parsers.base import (
     ParsedContentBlock,
@@ -1560,16 +1560,33 @@ async def test_correlate_claude_agent_dispatches_resolves_via_the_facade(tmp_pat
         await archive.close()
 
 
+def _unreadable_events(records: list[dict[str, object]], route: str) -> list[dict[str, object]]:
+    """The ``archive.read.unreadable`` events this seam emitted, by route token.
+
+    Anti-vacuity: if the production path stopped emitting the event -- or
+    emitted it in the not-yet-initialized case too -- the count assertions
+    below go wrong in opposite directions, so neither silence nor
+    over-reporting can pass.
+    """
+
+    return [
+        record
+        for record in records
+        if record.get("event") == "archive.read.unreadable" and record.get("route") == route
+    ]
+
+
 async def test_correlate_hermes_context_deliveries_distinguishes_corruption_from_absence(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
 ) -> None:
     """Review fix: 'archive not initialized' and 'archive present but corrupt' both
     return an empty tuple (unchanged, backward-compatible contract) but must not be
-    silently indistinguishable -- only the corruption case logs a warning."""
+    silently indistinguishable -- only the corruption case emits an event."""
 
     archive = _archive(tmp_path)
+    route = "hermes_context_deliveries"
     try:
-        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+        with capture() as records:
             # Not-yet-initialized case: no user.db at all for a *different* fresh root.
             never_initialized = Polylogue(archive_root=tmp_path / "never-initialized", db_path=tmp_path / "unused.db")
             try:
@@ -1577,31 +1594,33 @@ async def test_correlate_hermes_context_deliveries_distinguishes_corruption_from
                 assert absent == ()
             finally:
                 await never_initialized.close()
-        assert "hermes_context_deliveries read failed" not in caplog.text
-        caplog.clear()
+        assert _unreadable_events(records, route) == []
 
         # Present-but-corrupt case: source.db exists but is not a valid sqlite file
         # (the correlation's first read touches source.db unconditionally, before
         # it ever reaches user.db, so this is the tier whose corruption reproduces
         # the finding).
         (tmp_path / "source.db").write_bytes(b"not a sqlite file")
-        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+        with capture() as records:
             corrupted = await archive.correlate_hermes_context_deliveries("hermes-conv-1")
         assert corrupted == ()
-        assert "hermes_context_deliveries read failed" in caplog.text
+        emitted = _unreadable_events(records, route)
+        assert len(emitted) == 1
+        assert emitted[0]["outcome"] == "degraded"
+        assert emitted[0]["reason"] == "archive_present_but_unreadable"
     finally:
         await archive.close()
 
 
 async def test_reconcile_hermes_session_lifecycle_distinguishes_corruption_from_absence(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
 ) -> None:
     """Same review fix as the context-delivery correlation, for the lifecycle reconciliation seam."""
 
     archive = _archive(tmp_path)
-    read_failed = "hermes_session_lifecycle reconciliation (hermes_session_native_id=hermes-conv-1) read failed"
+    route = "hermes_session_lifecycle_reconciliation"
     try:
-        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+        with capture() as records:
             never_initialized = Polylogue(
                 archive_root=tmp_path / "never-initialized-2", db_path=tmp_path / "unused2.db"
             )
@@ -1610,16 +1629,18 @@ async def test_reconcile_hermes_session_lifecycle_distinguishes_corruption_from_
                 assert absent is None
             finally:
                 await never_initialized.close()
-        assert read_failed not in caplog.text
-        caplog.clear()
+        assert _unreadable_events(records, route) == []
 
         # Present-but-corrupt case: source.db exists but is not a valid sqlite file
         # (the reconciliation's first read touches source.db unconditionally).
         (tmp_path / "source.db").write_bytes(b"not a sqlite file")
-        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+        with capture() as records:
             corrupted = await archive.reconcile_hermes_session_lifecycle("hermes-conv-1")
         assert corrupted is None
-        assert read_failed in caplog.text
+        emitted = _unreadable_events(records, route)
+        assert len(emitted) == 1
+        assert emitted[0]["outcome"] == "degraded"
+        assert emitted[0]["reason"] == "archive_present_but_unreadable"
     finally:
         await archive.close()
 
