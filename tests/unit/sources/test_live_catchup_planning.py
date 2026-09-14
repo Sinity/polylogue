@@ -352,8 +352,9 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
 
     async def fake_flush(
         paths: list[Path], session_ids: list[str], _timings: dict[str, float], *, whole_archive: bool
-    ) -> None:
+    ) -> bool:
         convergence_batches.append((tuple(paths), tuple(session_ids), whole_archive))
+        return True
 
     watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
     watcher._flush_catch_up_convergence = fake_flush  # type: ignore[assignment,method-assign]
@@ -1297,3 +1298,140 @@ def test_catch_up_scan_rejects_a_file_symlink_escaping_the_watch_root(tmp_path: 
     candidates = watcher._scan_catch_up_candidates([inbox])
 
     assert [candidate.path for candidate in candidates] == [inside]
+
+
+def _commit_catch_up_cursor(cursor: CursorStore, path: Path, *, source_name: str = "test") -> None:
+    """Record the cursor a completed catch-up chunk would have committed."""
+    stat = path.stat()
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    cursor.set(
+        path,
+        stat.st_size,
+        byte_offset=stat.st_size,
+        last_complete_newline=stat.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint=digest,
+        tail_hash=encode_cursor_hash_authority(digest, digest, ctime_ns=stat.st_ctime_ns),
+        source_name=source_name,
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+
+@pytest.mark.asyncio
+async def test_interrupted_catch_up_still_owes_its_whole_archive_stages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-5llcz: the archive-wide stages survive an interrupted cycle.
+
+    A chunked catch-up defers every ``whole_archive`` stage to one final
+    flush. An interrupt landing after the last chunk's cursor commit but
+    before that flush used to lose the obligation entirely: the next start
+    replanned, found every file cursored, returned at ``not plan.needed``,
+    and reported a converged archive whose archive-wide projections were
+    never built. The pledge is the durable evidence that they are still owed.
+
+    Anti-vacuity: delete the pledge consult in the ``not plan.needed``
+    short-circuit, or the pledge write placed before the first chunk, and the
+    second start performs no ``whole_archive=True`` flush at all.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    files = [root / f"session-{index}.jsonl" for index in range(4)]
+    for index, path in enumerate(files):
+        path.write_text(f'{{"role":"user","content":"{index}"}}\n')
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    cursor_db = tmp_path / "cursor.sqlite"
+    monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_FILES", 1)
+    monkeypatch.setattr(live_watcher, "_CATCH_UP_CONVERGENCE_MAX_FILES", 1)
+
+    first = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="test", root=root),),
+        cursor=CursorStore(cursor_db),
+    )
+    first_flushes: list[bool] = []
+
+    async def interrupted_ingest(paths: list[Path], **_kwargs: Any) -> Any:
+        for path in paths:
+            _commit_catch_up_cursor(first._cursor, path)
+        if files[-1] in paths:
+            # The kill lands here: the last chunk's cursor is durable, the
+            # final whole-archive flush has not run and never will.
+            first._stop.set()
+        return _stub_metrics(len(paths), paths)
+
+    async def first_flush(
+        paths: list[Path],
+        session_ids: list[str],
+        _timings: dict[str, float],
+        *,
+        whole_archive: bool,
+    ) -> bool:
+        first_flushes.append(whole_archive)
+        return True
+
+    monkeypatch.setattr(first, "_ingest_files", interrupted_ingest)
+    monkeypatch.setattr(first, "_flush_catch_up_convergence", first_flush)
+    await first._catch_up([root])
+
+    assert True not in first_flushes, "the interrupt must land before the archive-wide flush"
+
+    second = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="test", root=root),),
+        cursor=CursorStore(cursor_db),
+    )
+    second_flushes: list[tuple[tuple[Path, ...], bool]] = []
+    second_ingests: list[list[Path]] = []
+
+    async def unexpected_ingest(paths: list[Path], **_kwargs: Any) -> Any:
+        second_ingests.append(list(paths))
+        return _stub_metrics(len(paths), paths)
+
+    async def second_flush(
+        paths: list[Path],
+        session_ids: list[str],
+        _timings: dict[str, float],
+        *,
+        whole_archive: bool,
+    ) -> bool:
+        second_flushes.append((tuple(paths), whole_archive))
+        return True
+
+    monkeypatch.setattr(second, "_ingest_files", unexpected_ingest)
+    monkeypatch.setattr(second, "_flush_catch_up_convergence", second_flush)
+    await second._catch_up([root])
+
+    # Every file is cursored, so the restart has no ingest work at all --
+    # this is exactly the state in which the defect reported "converged".
+    assert second_ingests == []
+    assert [whole_archive for _paths, whole_archive in second_flushes] == [True]
+    assert second_flushes[0][0][0] in files
+
+    # The obligation is discharged, not repeated forever.
+    assert second._cursor.open_whole_archive_convergence_pledges() == ()
+
+    third = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="test", root=root),),
+        cursor=CursorStore(cursor_db),
+    )
+    third_flushes: list[bool] = []
+
+    async def third_flush(
+        paths: list[Path],
+        session_ids: list[str],
+        _timings: dict[str, float],
+        *,
+        whole_archive: bool,
+    ) -> bool:
+        third_flushes.append(whole_archive)
+        return True
+
+    monkeypatch.setattr(third, "_ingest_files", unexpected_ingest)
+    monkeypatch.setattr(third, "_flush_catch_up_convergence", third_flush)
+    await third._catch_up([root])
+    assert third_flushes == []

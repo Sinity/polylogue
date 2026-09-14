@@ -34,7 +34,7 @@ from polylogue.core.source_halts import halted_sources, source_halt
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.write_hold import WriteHoldBudgetError
-from polylogue.logging import get_logger
+from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.sources.hooks import (
     HookSpoolSourceSpec,
     drain_hook_event_spool,
@@ -61,7 +61,12 @@ from polylogue.sources.live.batch_support import (
     tail_hash_from_path,
 )
 from polylogue.sources.live.convergence_debt import debt_by_path
-from polylogue.sources.live.cursor import CursorObservationRebase, CursorRecord, CursorStore
+from polylogue.sources.live.cursor import (
+    CursorObservationRebase,
+    CursorRecord,
+    CursorStore,
+    WholeArchiveConvergencePledge,
+)
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.parse_prefetch import LiveParseStage
@@ -757,6 +762,9 @@ class LiveWatcher:
     async def _catch_up(self, roots: list[Path]) -> None:
         candidates = self._scan_catch_up_candidates(roots)
         if not candidates:
+            # A quiescent archive still redeems an interrupted cycle's pledge:
+            # the owed archive-wide stages are not conditional on new bytes.
+            await self._redeem_whole_archive_pledges(())
             await self._drain_hook_spools()
             return
 
@@ -803,8 +811,25 @@ class LiveWatcher:
         plan = plan_holder[0]
         await self._publish_source_halts()
         if not plan.needed:
+            # Every file is cursored, so this start has no ingest to do. That
+            # is exactly the state an interrupted cycle leaves behind, and the
+            # pledge is the only evidence that its archive-wide stages never
+            # ran -- consult it before concluding the archive is converged.
+            await self._redeem_whole_archive_pledges(tuple(candidate.path for candidate in plan.candidates))
             return
+        inherited_pledges = tuple(pledge.pledge_id for pledge in self._open_whole_archive_pledges())
         operation_id = f"watcher-catch-up:{uuid.uuid4()}"
+        pledge_anchor = next(iter(plan.needed))
+        # Pledge before the first chunk commits a cursor. Any interrupt from
+        # here until the final flush completes -- SIGKILL, OOM, reboot, a
+        # degraded short-circuit, or a graceful stop -- leaves this row
+        # behind; without it the next start sees only cursored files.
+        await self._run_writer_sync(
+            "watcher.catch_up.pledge",
+            self._cursor.pledge_whole_archive_convergence,
+            pledge_id=operation_id,
+            anchor_path=pledge_anchor,
+        )
         cycle_started = time.perf_counter()
         await self._emit_catch_up_cycle(
             operation_id=operation_id,
@@ -1002,23 +1027,28 @@ class LiveWatcher:
                     halted_mid_run=halted_mid_run,
                 )
                 return
+            final_paths: Sequence[Path]
             if deferred_convergence_paths:
-                await self._flush_catch_up_convergence(
-                    deferred_convergence_paths,
-                    deferred_session_ids,
-                    stage_timings_s,
-                    whole_archive=True,
-                )
+                final_paths = deferred_convergence_paths
             elif whole_archive_anchor is not None:
                 # A full-size final derived batch may have flushed just before
                 # the last source chunk. Run the archive-wide stages once
                 # without reopening a broad source scope.
-                await self._flush_catch_up_convergence(
-                    [whole_archive_anchor],
-                    (),
-                    stage_timings_s,
-                    whole_archive=True,
-                )
+                final_paths = [whole_archive_anchor]
+            else:
+                # Nothing reached a derived flush this cycle. The archive-wide
+                # stages are still owed -- to this cycle's pledge and to any
+                # it inherited -- so run them against the pledged anchor
+                # rather than releasing an unkept pledge.
+                final_paths = [pledge_anchor]
+            flushed = await self._flush_catch_up_convergence(
+                final_paths,
+                deferred_session_ids if deferred_convergence_paths else (),
+                stage_timings_s,
+                whole_archive=True,
+            )
+            if flushed:
+                await self._release_whole_archive_pledges((*inherited_pledges, operation_id))
             backlog_end = max(0, len(plan.candidates) - plan.skipped_file_count - ingested)
             await self._emit_catch_up_cycle(
                 operation_id=operation_id,
@@ -1091,16 +1121,20 @@ class LiveWatcher:
         stage_timings_s: dict[str, float],
         *,
         whole_archive: bool,
-    ) -> None:
-        """Converge one bounded set of already-committed catch-up subjects."""
+    ) -> bool:
+        """Converge one bounded set of already-committed catch-up subjects.
+
+        Returns whether the pass actually ran. A caller holding a
+        whole-archive pledge may only release it on ``True``.
+        """
         reason = degraded_reason()
         if reason is not None and reason.derived_only:
             # Source-only admission cannot resolve derived subjects or clear
             # their retry evidence while the index generation is unavailable.
-            return
+            return False
         unique_paths = tuple(dict.fromkeys(paths))
         if not unique_paths:
-            return
+            return False
         unique_session_ids = tuple(dict.fromkeys(session_ids))
 
         async def converge() -> None:
@@ -1122,6 +1156,70 @@ class LiveWatcher:
         # the writer admission that made the generic FTS pass and debt writes.
         await self._converge_embeddings_off_writer(unique_paths)
         await self._converge_session_profiles_off_writer(unique_session_ids)
+        return True
+
+    def _open_whole_archive_pledges(self) -> tuple[WholeArchiveConvergencePledge, ...]:
+        """Return catch-up pledges whose archive-wide flush never completed."""
+        try:
+            return self._cursor.open_whole_archive_convergence_pledges()
+        except sqlite3.OperationalError as exc:
+            if not _is_retryable_lock_error(exc):
+                raise
+            emit(
+                "live.catch_up.pledge.read_deferred",
+                level=WARNING,
+                outcome="degraded",
+                reason="sqlite_lock",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            return ()
+
+    async def _release_whole_archive_pledges(self, pledge_ids: Sequence[str]) -> None:
+        if not pledge_ids:
+            return
+        await self._run_writer_sync(
+            "watcher.catch_up.pledge_release",
+            self._cursor.release_whole_archive_convergence_pledges,
+            tuple(pledge_ids),
+        )
+
+    async def _redeem_whole_archive_pledges(self, fallback_paths: Sequence[Path]) -> None:
+        """Run the archive-wide stages a previous interrupted cycle still owes.
+
+        The pledge outlives the process, so this is reached on an ordinary
+        start with no ingest work at all -- the state in which the old code
+        reported a converged archive whose archive-wide projections were
+        never built.
+        """
+        if self._stop.is_set():
+            return
+        pledges = self._open_whole_archive_pledges()
+        if not pledges:
+            return
+        anchor = next(
+            (pledge.anchor_path for pledge in pledges if pledge.anchor_path.exists()),
+            None,
+        )
+        if anchor is None:
+            anchor = next((path for path in fallback_paths if path.exists()), None)
+        if anchor is None:
+            anchor = pledges[0].anchor_path
+        emit(
+            "live.catch_up.pledge.redeeming",
+            level=INFO,
+            outcome="ok",
+            pledge_count=len(pledges),
+            path=anchor,
+        )
+        flushed = await self._flush_catch_up_convergence(
+            [anchor],
+            (),
+            {},
+            whole_archive=True,
+        )
+        if flushed:
+            await self._release_whole_archive_pledges(tuple(pledge.pledge_id for pledge in pledges))
 
     def _hook_sources(self) -> tuple[WatchSource, ...]:
         """Return the declared hook topology, preserving configured order.

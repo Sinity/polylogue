@@ -155,6 +155,15 @@ class LiveConvergenceDebt:
     last_error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class WholeArchiveConvergencePledge:
+    """An owed archive-wide convergence flush from a chunked catch-up cycle."""
+
+    pledge_id: str
+    anchor_path: Path
+    created_at: str
+
+
 def _required_int(value: object) -> int:
     if isinstance(value, int):
         return value
@@ -1668,6 +1677,62 @@ class CursorStore:
             for row in rows
         ]
 
+    def pledge_whole_archive_convergence(self, *, pledge_id: str, anchor_path: Path) -> None:
+        """Record that a catch-up cycle owes one archive-wide convergence flush.
+
+        Written before the cycle ingests its first chunk and deleted only
+        after the flush completes, so every interrupt inside that window --
+        SIGKILL, OOM, reboot, or a graceful stop that returns early -- leaves
+        the obligation behind instead of an archive that reports converged
+        with the archive-wide projections never built.
+        """
+        now_ms = _required_epoch_ms(datetime.now(UTC).isoformat())
+        with self._connect_ops() as conn:
+            conn.execute(
+                """
+                INSERT INTO whole_archive_convergence_pledge
+                    (pledge_id, anchor_path, created_at_ms, updated_at_ms)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(pledge_id) DO UPDATE SET
+                    anchor_path = excluded.anchor_path,
+                    updated_at_ms = excluded.updated_at_ms
+                """,
+                (pledge_id, str(anchor_path), now_ms, now_ms),
+            )
+            conn.commit()
+
+    def open_whole_archive_convergence_pledges(self) -> tuple[WholeArchiveConvergencePledge, ...]:
+        """Return every catch-up pledge whose archive-wide flush never ran."""
+        with self._connect_ops() as conn:
+            rows = conn.execute(
+                """
+                SELECT pledge_id, anchor_path, created_at_ms
+                FROM whole_archive_convergence_pledge
+                ORDER BY created_at_ms ASC, pledge_id ASC
+                """
+            ).fetchall()
+        return tuple(
+            WholeArchiveConvergencePledge(
+                pledge_id=str(row[0]),
+                anchor_path=Path(str(row[1])),
+                created_at=_iso_from_epoch_ms(row[2]),
+            )
+            for row in rows
+        )
+
+    def release_whole_archive_convergence_pledges(self, pledge_ids: Iterable[str]) -> None:
+        """Delete pledges whose archive-wide flush has now completed."""
+        targets = tuple(dict.fromkeys(pledge_ids))
+        if not targets:
+            return
+        placeholders = ",".join("?" for _ in targets)
+        with self._connect_ops() as conn:
+            conn.execute(
+                f"DELETE FROM whole_archive_convergence_pledge WHERE pledge_id IN ({placeholders})",
+                targets,
+            )
+            conn.commit()
+
 
 __all__ = [
     "CursorObservationRebase",
@@ -1675,4 +1740,5 @@ __all__ = [
     "CursorStore",
     "LiveConvergenceDebt",
     "LiveIngestAttempt",
+    "WholeArchiveConvergencePledge",
 ]
