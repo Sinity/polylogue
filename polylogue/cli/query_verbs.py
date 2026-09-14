@@ -1792,7 +1792,7 @@ def delete_verb(
                 candidates=tuple(probe_ids[:AMBIGUITY_CANDIDATE_LIMIT]),
                 next_actions=(
                     NextAction("Preview every matched session", "polylogue find <QUERY> then delete --dry-run --all"),
-                    NextAction("Preview one session", "polylogue find id:<REF> then delete --dry-run"),
+                    NextAction("Preview one session", "polylogue find id:'<REF>' then delete --dry-run"),
                 ),
             )
         session_ids = resolve_session_ids_for_verb(env, request)

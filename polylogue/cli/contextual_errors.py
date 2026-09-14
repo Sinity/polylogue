@@ -12,6 +12,7 @@ names at least one thing to do.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import ClassVar
@@ -22,6 +23,39 @@ import click
 #: Bounded because the refusal is read by a human or parsed by one consumer,
 #: not because the selection is bounded.
 AMBIGUITY_CANDIDATE_LIMIT = 10
+
+
+def display_ref(ref: str) -> str:
+    """Render an archive-derived ref with control characters made visible.
+
+    A session ref carries the provider's own native id verbatim
+    (``session_id = origin || ':' || native_id``), and no import path
+    restricts what bytes a provider may put there. An id carrying ESC or CR
+    can repaint or rewrite the surrounding terminal line, so a refusal
+    listing candidates would be spoofable by the very export it is refusing
+    to disambiguate. Escaping is visible rather than silent: the operator
+    sees ``\\x1b`` and knows the ref is not the plain text it resembles.
+    """
+    return "".join(
+        character if character.isprintable() or character == " " else f"\\x{ord(character):02x}" for character in ref
+    )
+
+
+def ref_command_argument(ref: str) -> str:
+    """Quote *ref* as one shell word for a command the operator may paste.
+
+    The next action of a refusal is deliberately copy-pasteable, which makes
+    any provider-controlled text inside it a shell-injection vector: an
+    imported conversation id of ``innocent; touch /tmp/pwned #`` otherwise
+    renders as ``polylogue find id:innocent; touch /tmp/pwned # then delete``
+    and runs the injected command as the archive owner on paste.
+
+    Control characters are escaped before quoting, so a ref that cannot be
+    displayed honestly also cannot be pasted as if it were intact -- the
+    command shown is then explicitly not the literal ref, which is the
+    correct signal, not a silently mangled one.
+    """
+    return shlex.quote(f"id:{display_ref(ref)}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +107,7 @@ class AmbiguousSelectionError(ContextualCliError):
     """
 
     default_next_actions: ClassVar[tuple[NextAction, ...]] = (
-        NextAction("Select one candidate by ref", "polylogue find id:<REF> then <VERB>"),
+        NextAction("Select one candidate by ref", "polylogue find id:'<REF>' then <VERB>"),
     )
 
     def __init__(
@@ -93,7 +127,7 @@ class AmbiguousSelectionError(ContextualCliError):
         lines = [self.message]
         if self.candidates:
             lines.append("Candidates:" if not self.bounded else f"First {len(self.candidates)} candidates:")
-            lines.extend(f"  {ref}" for ref in self.candidates)
+            lines.extend(f"  {display_ref(ref)}" for ref in self.candidates)
         lines.append("Next:")
         lines.extend(action.render() for action in self.next_actions)
         return "\n".join(lines)
@@ -101,9 +135,9 @@ class AmbiguousSelectionError(ContextualCliError):
 
 def ambiguous_selection_actions(operation: str, first_candidate: str | None) -> tuple[NextAction, ...]:
     """Return the next actions for an ambiguous *operation*, ref-specific."""
-    ref = first_candidate or "<REF>"
+    argument = ref_command_argument(first_candidate) if first_candidate else "id:'<REF>'"
     return (
-        NextAction(f"Run {operation} against one session", f"polylogue find id:{ref} then {operation}"),
+        NextAction(f"Run {operation} against one session", f"polylogue find {argument} then {operation}"),
         NextAction("Pick one interactively", "polylogue select"),
     )
 
@@ -115,4 +149,6 @@ __all__ = [
     "EmptySelectionError",
     "NextAction",
     "ambiguous_selection_actions",
+    "display_ref",
+    "ref_command_argument",
 ]
