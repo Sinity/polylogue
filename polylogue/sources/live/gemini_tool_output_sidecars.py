@@ -52,6 +52,7 @@ from pathlib import Path
 
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.logging import WARNING, emit
 from polylogue.sources.live.tool_result_sidecars import SidecarDebt, SidecarJoinResult, SidecarMatch
 from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope
 
@@ -78,10 +79,35 @@ def resolve_tool_outputs_dir(source_path: str | Path | None, session_id: str | N
     Snapshots live at ``<project>/chats/session-*.json``; sidecars at
     ``<project>/tool-outputs/session-<sessionId>/``. Returns ``None`` when
     either coordinate is missing -- there is no directory to derive.
+
+    ``session_id`` is untrusted export content. It names exactly one directory
+    component under ``tool-outputs/``, so a value carrying a path separator or
+    a ``.``/``..`` traversal component names a directory this source does not
+    own. That is refused (``None`` plus a logged refusal), never resolved --
+    an escaping value would read sidecar bytes from outside the snapshot's own
+    project tree into the archive.
     """
     if not source_path or not session_id:
         return None
-    return Path(source_path).parent.parent / "tool-outputs" / f"session-{session_id}"
+    directory_name = f"session-{session_id}"
+    if not _is_single_path_component(directory_name):
+        emit(
+            "sources.gemini.tool_output_dir_refused",
+            level=WARNING,
+            reason="session_id_not_a_path_component",
+            source_path=str(source_path),
+        )
+        return None
+    return Path(source_path).parent.parent / "tool-outputs" / directory_name
+
+
+def _is_single_path_component(name: str) -> bool:
+    """True when ``name`` names one ordinary directory entry and nothing else."""
+    if not name or name in {".", ".."}:
+        return False
+    if "/" in name or "\\" in name or "\x00" in name:
+        return False
+    return Path(name).name == name
 
 
 def _iter_tool_calls(payload: JSONDocument) -> list[JSONDocument]:
