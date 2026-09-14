@@ -100,8 +100,15 @@ def _assert_excision_policy(
     source_path: str,
     policy_snapshot: ExcisionPolicySnapshot | None,
 ) -> None:
-    if policy_snapshot is not None:
-        policy_snapshot.assert_admissible(blob_hash, source_path=source_path)
+    if policy_snapshot is None or policy_snapshot.allows(blob_hash):
+        return
+    # Both acquire-time excision gates must refuse in the same vocabulary. The
+    # policy snapshot resolves the durable excision set before the write, so it
+    # fires first and its bare ``ExcisionPolicyError`` used to escape the batch
+    # orchestrators, which catch only ``ContentExcisedError`` -- one excised
+    # file then rolled back and aborted the whole reingest batch instead of
+    # being skipped and counted. Raise the class those callers handle.
+    raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
 
 
 def record_excised_blob_hash(
