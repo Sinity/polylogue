@@ -200,7 +200,7 @@ confirmation rules.
 }
 ```
 
-See [docs/mcp-integration.md](docs/mcp-integration.md).
+See [docs/mcp-reference.md](docs/mcp-reference.md).
 
 ### HTTP and Python
 
@@ -227,7 +227,7 @@ Start with the task-oriented guides below. The complete documentation map is in 
 | [Code Navigation](docs/code-navigation.md) | Find the owning package, runtime path, and verification for a code change. |
 | [Search & Query](docs/search.md) | Search syntax, filters, action queries, ranking, and output formats. |
 | [CLI Reference](docs/cli-reference.md) | Commands and options generated from the current CLI. |
-| [MCP Integration](docs/mcp-integration.md) | Configure an MCP client to read or write the archive. |
+| [MCP Reference](docs/mcp-reference.md) | Configure an MCP client and read the current tool and capability contract. |
 | [Configuration](docs/configuration.md) | Paths, environment variables, and runtime settings. |
 | [Security](docs/security.md) | Local trust boundaries, authentication, and privacy controls. |
 | [Developer Tools](docs/devtools.md) | Repository commands and validation checks. |

@@ -485,4 +485,4 @@ output.
 
 ---
 
-**See also:** [CLI Reference](cli-reference.md) · [MCP Integration](mcp-integration.md) · [Data Model](data-model.md)
+**See also:** [CLI Reference](cli-reference.md) · [MCP Reference](mcp-reference.md) · [Data Model](data-model.md)

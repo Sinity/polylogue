@@ -106,7 +106,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry("CLI Reference", "cli-reference.md", "Generated command reference from live help output.", "reference"),
     _entry("MCP Reference", "mcp-reference.md", "MCP tools, capability opt-ins, and client setup.", "reference"),
     _entry("Library API", "library-api.md", "Async archive API, filters, and query patterns.", "reference"),
-    _entry("MCP Integration", "mcp-integration.md", "Model Context Protocol server setup and usage.", "reference"),
     _entry(
         "Session Orchestration Evidence",
         "orchestration-evidence.md",
@@ -367,21 +366,9 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Query Set Algebra", "design/query-set-algebra.md", "Set-composition semantics over query results.", "design"
     ),
     _entry(
-        "Analyze Projections",
-        "design/analyze-projections.md",
-        "Named aggregate projections and their shared query execution contract.",
-        "design",
-    ),
-    _entry(
         "Session Lineage Model",
         "design/session-lineage-model.md",
         "Fork, resume, compaction, and composition semantics.",
-        "design",
-    ),
-    _entry(
-        "Physical Session Identity",
-        "design/physical-session-identity.md",
-        "Durable identity proposal beneath lossy public origin projection.",
         "design",
     ),
     _entry(
@@ -406,24 +393,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Convergence Simplification Inventory",
         "design/convergence-simplification-inventory.md",
         "Deletion/collapse inventory for the daemon convergence redesign (polylogue-m6tp).",
-        "design",
-    ),
-    _entry(
-        "Convergence Law Deletion Ledger",
-        "convergence-laws-deletion-ledger.md",
-        "Deletion candidates and exact four-law, production-seam mutation conditions for convergence machinery.",
-        "design",
-    ),
-    _entry(
-        "GitHub Merge Queue Evaluation",
-        "design/merge-queue-evaluation.md",
-        "Evidence-based decision on whether GitHub merge queue can replace the local harvest merge train.",
-        "design",
-    ),
-    _entry(
-        "CLI Operation Kernel Deletion Ledger",
-        "plans/cli-operation-kernel-deletion-ledger.md",
-        "Transport ownership and LOC accounting for the CLI operation-kernel migration.",
         "design",
     ),
     _entry(
@@ -478,7 +447,7 @@ README_DOC_TITLES: tuple[str, ...] = (
     "Code Navigation",
     "Search & Query",
     "CLI Reference",
-    "MCP Integration",
+    "MCP Reference",
     "Configuration",
     "Security",
     "Developer Tools",
