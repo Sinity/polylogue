@@ -6,7 +6,7 @@ import contextlib
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import click
 
@@ -17,6 +17,9 @@ from polylogue.storage.archive_readiness import (
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+if TYPE_CHECKING:
+    from polylogue.storage.archive_identity import ArchiveTierName
 
 
 @click.command("paths")
@@ -56,7 +59,10 @@ def paths_command(output_format: str) -> None:
     # hand-written copy this replaces had already dropped ``audit``, so an
     # archive with no ``audit.db`` reported ``archive_complete`` and could never
     # raise the ``missing_backup_required_tier:audit`` blocker.
-    tier_paths = {name: location.active_tier(name).resolved_path for name in archive_layout.ARCHIVE_TIER_ORDER}
+    tier_paths = {
+        name: location.active_tier(cast("ArchiveTierName", name)).resolved_path
+        for name in archive_layout.ARCHIVE_TIER_ORDER
+    }
     tier_versions = _tier_version_status(tier_paths)
     present_tiers = [name for name, path in tier_paths.items() if path.exists()]
     missing_tiers = [name for name, path in tier_paths.items() if not path.exists()]
