@@ -141,8 +141,23 @@ def test_materializer_replaces_archive_projection_and_tracks_delegation_freshnes
 
 
 def test_convergence_stage_reports_probe_and_materialization_failures_as_pending_work(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A failed probe assumes work; a failed materialization reports degraded.
+
+    PRs #5072/#5073 retired prose logging: ``polylogue.logging.emit`` writes
+    structured events to its own sinks and never touches stdlib logging, so
+    ``caplog.text`` is empty by construction. Per CLAUDE.md this asserts the
+    stable event token and its declared fields, not a sentence.
+
+    Anti-vacuity: make ``check``'s ``except`` return False (or drop the
+    ``emit``) and the probe half goes red on the return value or the missing
+    ``daemon.stage.check_failed`` record; swallow the materialization
+    exception into a success and the ``degraded``/``materialization_failed``
+    terminal event disappears.
+    """
+    from polylogue.logging import capture
+
     _seed_delegation(tmp_path)
     stage = make_delegation_work_evidence_stage(tmp_path / "index.db")
 
@@ -153,9 +168,12 @@ def test_convergence_stage_reports_probe_and_materialization_failures_as_pending
         "polylogue.analysis.delegation_work_evidence_materializer.delegation_work_evidence_materialization_needed",
         fail_probe,
     )
-    with caplog.at_level("WARNING"):
+    with capture() as records:
         assert stage.check(tmp_path / "source.jsonl") is True
-    assert "delegation work-evidence freshness probe failed" in caplog.text
+    probe_failures = [record for record in records if record["event"] == "daemon.stage.check_failed"]
+    assert [
+        (record["stage"], record["outcome"], record["reason"], record["error_type"]) for record in probe_failures
+    ] == [("delegation_work_evidence", "degraded", "probe_failed_assuming_work", "OperationalError")]
 
     def fail_materialization(_archive_root: Path) -> int:
         raise sqlite3.OperationalError("database is locked")
@@ -164,6 +182,9 @@ def test_convergence_stage_reports_probe_and_materialization_failures_as_pending
         "polylogue.analysis.delegation_work_evidence_materializer.materialize_delegation_work_evidence_archive",
         fail_materialization,
     )
-    with caplog.at_level("WARNING"):
+    with capture() as records:
         assert stage.execute(tmp_path / "source.jsonl") is False
-    assert "delegation work-evidence materialization failed" in caplog.text
+    terminal = [record for record in records if record["event"] == "daemon.stage.execute.degraded"]
+    assert [(record["stage"], record["outcome"], record["reason"], record["error_type"]) for record in terminal] == [
+        ("delegation_work_evidence", "degraded", "materialization_failed", "OperationalError")
+    ]

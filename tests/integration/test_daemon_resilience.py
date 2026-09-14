@@ -375,7 +375,18 @@ def test_sigterm_read_only_daemon_records_forensics(
     assert row[:2] == ("SIGTERM", "signal")
     assert isinstance(row[2], int)
     log_text = daemon_log.read_text(encoding="utf-8", errors="replace")
-    assert "received SIGTERM; dumping all thread stacks" in log_text
+    # PRs #5072/#5073 retired the prose sentence this used to grep for.
+    # ``install_signal_handlers`` now emits the stable structured token
+    # ``daemon.lifecycle.signal_received``, rendered to the daemon's stream in
+    # either the console or the JSON form, so match the token and the signal
+    # it names rather than a sentence.
+    #
+    # Anti-vacuity: drop the ``emit`` from ``install_signal_handlers`` and no
+    # line carries the token; drop the ``faulthandler.dump_traceback`` and the
+    # stack dump disappears.
+    signal_lines = [line for line in log_text.splitlines() if "daemon.lifecycle.signal_received" in line]
+    assert signal_lines, log_text
+    assert any("SIGTERM" in line for line in signal_lines), signal_lines
     assert "Current thread" in log_text
 
 
