@@ -10,7 +10,6 @@ claimed (``file_acquisition_unclaimed``) while never descending into a
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -78,9 +77,7 @@ def test_sweep_unclaimed_files_logs_unrecognized_file_and_skips_git(
     (git_dir / "config").write_text("[core]\n")
 
     logged: list[dict[str, object]] = []
-    mock_logger = MagicMock()
-    mock_logger.warning.side_effect = lambda event, **kw: logged.append({"event": event, **kw})
-    monkeypatch.setattr(acquisition_log, "logger", mock_logger)
+    monkeypatch.setattr(acquisition_log, "emit", lambda event, **kw: logged.append({"event": event, **kw}))
 
     def is_claimed(path: Path) -> tuple[bool, str]:
         if path.name == "known.jsonl":
@@ -132,9 +129,7 @@ def test_default_file_claim_check_reports_empty_file(tmp_path: Path) -> None:
 
 def test_log_file_acquisition_decision_emits_evidence_and_timings(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
-    mock_logger = MagicMock()
-    mock_logger.info.side_effect = lambda event, **kw: captured.update({"event": event, **kw})
-    monkeypatch.setattr(acquisition_log, "logger", mock_logger)
+    monkeypatch.setattr(acquisition_log, "emit", lambda event, **kw: captured.update({"event": event, **kw}))
 
     timings = AcquisitionStageTimings()
     with timings.stage("detect"):
@@ -162,9 +157,7 @@ def test_log_file_acquisition_decision_emits_evidence_and_timings(monkeypatch: p
 
 def test_log_file_acquisition_decision_normalizes_unrecognized_origin(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
-    mock_logger = MagicMock()
-    mock_logger.info.side_effect = lambda event, **kw: captured.update({"event": event, **kw})
-    monkeypatch.setattr(acquisition_log, "logger", mock_logger)
+    monkeypatch.setattr(acquisition_log, "emit", lambda event, **kw: captured.update({"event": event, **kw}))
 
     for origin in (None, "UNKNOWN", "unknown"):
         log_file_acquisition_decision(
@@ -179,9 +172,7 @@ def test_log_file_acquisition_decision_normalizes_unrecognized_origin(monkeypatc
 
 def test_log_unclaimed_file_emits_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
-    mock_logger = MagicMock()
-    mock_logger.warning.side_effect = lambda event, **kw: captured.update({"event": event, **kw})
-    monkeypatch.setattr(acquisition_log, "logger", mock_logger)
+    monkeypatch.setattr(acquisition_log, "emit", lambda event, **kw: captured.update({"event": event, **kw}))
 
     log_unclaimed_file(
         path="/watched/root/c.dat",
@@ -194,3 +185,18 @@ def test_log_unclaimed_file_emits_reason(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured["event"] == "file_acquisition_unclaimed"
     assert captured["reason"] == "suffix not in watched set"
     assert captured["source_name"] == "inbox"
+
+
+def test_acquisition_records_do_not_bind_a_logger_at_import() -> None:
+    """The audit fields must survive a late ``configure_logging()``.
+
+    The daemon imports this module (through ``LiveWatcher``) before it
+    configures logging, so a module-level ``get_logger`` binding is captured as
+    the stdlib adapter for the process's whole life -- and that adapter
+    forwards only standard logging keywords, dropping ``path``, ``size``,
+    ``origin``, ``evidence``, ``stage_timings_ms`` and ``reason``.
+
+    Anti-vacuity: restore ``logger = get_logger(__name__)`` at module scope and
+    route these two records through it, and this assertion goes red.
+    """
+    assert not hasattr(acquisition_log, "logger")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ from polylogue.core.enums import (
     ToolResultUnknownReason,
 )
 from polylogue.core.timestamps import format_timestamp
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction, detect_micro_compaction
 from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
 
@@ -1138,6 +1139,13 @@ def _accumulate_delegation_progress(
 
 
 def _safe_float(value: object) -> float:
+    """Parse a provider numeric field, leaving a non-finite value non-finite.
+
+    A ``"Infinity"``/``"NaN"`` string decodes to a non-finite float here on
+    purpose: ``ParsedSession.non_negative_optional_float`` refuses it at the
+    model boundary, which is where the refusal is visible. Substituting 0.0
+    here would instead report an unmeasured cost as a real one.
+    """
     try:
         return float(str(value))
     except (TypeError, ValueError):
@@ -1146,8 +1154,23 @@ def _safe_float(value: object) -> float:
 
 def _safe_int(value: object) -> int:
     try:
-        return int(float(str(value)))
+        parsed = float(str(value))
     except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(parsed):
+        # ``int(float("inf"))`` raises ``OverflowError``, which is not a
+        # ``ValueError`` -- it escaped this helper and refused the whole
+        # session rather than the one bad field.
+        emit(
+            "sources.claude_code.non_finite_numeric_refused",
+            level=WARNING,
+            field="int",
+            value=str(value)[:64],
+        )
+        return 0
+    try:
+        return int(parsed)
+    except (OverflowError, ValueError):
         return 0
 
 

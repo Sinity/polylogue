@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+from rich.markup import escape as rich_escape
 
 from polylogue.cli.shared.types import AppEnv
 
@@ -873,7 +874,11 @@ def _render_schema_drift_status(env: AppEnv, drift: dict[str, Any]) -> None:
         severity = str(item.get("severity") or "ok")
         color = "red" if severity == "error" else "yellow"
         examples = item.get("example_native_ids") or []
-        example_text = f" e.g. {', '.join(str(x) for x in examples[:3])}" if examples else ""
+        # These examples carry raw source paths, and a ZIP member name is
+        # import content. Unescaped, ``[/red]`` or ``[link=...]`` inside one
+        # closes or retargets this line's own markup, so a crafted member name
+        # rewrites operator-facing status output.
+        example_text = f" e.g. {', '.join(rich_escape(str(x)) for x in examples[:3])}" if examples else ""
         env.ui.console.print(
             f"    [{color}]origin {origin}: {risky_rate:.0%} of {total} records since {since_date} "
             f"carry unseen shapes[/{color}]{example_text}"

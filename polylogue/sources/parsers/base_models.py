@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Literal
 
@@ -621,8 +622,19 @@ class ParsedSession(BaseModel):
     @field_validator("reported_cost_usd")
     @classmethod
     def non_negative_optional_float(cls, value: float | None) -> float | None:
-        if value is not None and value < 0:
+        if value is None:
+            return value
+        if value < 0:
             raise ValueError("reported_cost_usd cannot be negative")
+        if not math.isfinite(value):
+            # ``"Infinity"``/``"1e309"``/``"NaN"`` are valid JSON strings that
+            # ``float()`` accepts, and a provider field carrying one reaches
+            # here unchanged. A non-finite reported cost is not a measurement:
+            # ``inf`` and ``nan`` are absorbing, so admitting one poisons every
+            # total it is summed into and no reader can tell it from a real
+            # figure. Refusing the session is the observable outcome; silently
+            # substituting 0.0 would report an unmeasured cost as a real one.
+            raise ValueError("reported_cost_usd must be finite")
         return value
 
     @model_validator(mode="after")

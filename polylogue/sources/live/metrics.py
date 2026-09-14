@@ -170,6 +170,12 @@ class LiveBatchMetrics:
             "skipped_file_count": self.skipped_file_count,
             "succeeded_file_count": self.succeeded_file_count,
             "failed_file_count": self.failed_file_count,
+            # A refused file is a counted outcome of this batch, not an
+            # absence. Omitting these two left every consumer -- persisted
+            # events, daemon status, the CLI -- reading an exclusion as if
+            # nothing had been offered.
+            "excluded_file_count": self.excluded_file_count,
+            "excluded_reasons": dict(self.excluded_reasons),
             "source_group_count": self.source_group_count,
             "input_bytes": self.input_bytes,
             "ingested_bytes": self.ingested_bytes,
