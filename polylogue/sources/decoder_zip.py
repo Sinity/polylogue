@@ -152,16 +152,46 @@ def zip_entry_session_artifact(
     provider: Provider,
 ) -> ArtifactClassification | None:
     """Decode a member before applying a terminal artifact path rule."""
-    from polylogue.archive.raw_payload.decode import JSONL_RECORD_INSPECTION_BYTES, jsonl_session_artifact
+    from polylogue.archive.raw_payload.decode import (
+        JSONL_RECORD_INSPECTION_BYTES,
+        scan_jsonl_session_artifact,
+    )
 
     lower_name = info.filename.lower()
     if lower_name.endswith((".jsonl", ".jsonl.txt", ".ndjson")):
         with open_bounded_zip_entry(zf, info) as handle:
-            return jsonl_session_artifact(
+            scan = scan_jsonl_session_artifact(
                 handle,
                 provider=provider,
                 max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
             )
+        if scan.artifact is None:
+            return None
+        if scan.sample:
+            return scan.artifact
+        # Unresolved evidence, not positive evidence. ``scan`` reaches here
+        # only through its oversized-record retention branch: no record was
+        # small enough to inspect, so it synthesised a parse-as-session
+        # classification for the streaming-parser providers. That retention
+        # rule is for a raw whose *only* classifier is a weak path heuristic;
+        # this caller asks a narrower question -- may decoded content override
+        # an OriginSpec-declared terminal artifact rule -- and an inspection
+        # that read nothing has not answered it. Overriding here reclassifies
+        # the member as a session, which the positive-conversational-evidence
+        # refusal (polylogue-9ykn) then drops entirely, losing the bytes the
+        # artifact rule would have retained. Same posture as the ZIP probe
+        # ceiling above: the path rule stands and the skipped inspection is
+        # named rather than silently reclassifying the member.
+        emit(
+            "sources.zip.artifact_probe_unbounded",
+            level=WARNING,
+            outcome="degraded",
+            reason="record_size_exceeded",
+            entry=info.filename,
+            declared_bytes=info.file_size,
+            probe_ceiling_bytes=JSONL_RECORD_INSPECTION_BYTES,
+        )
+        return None
     if not lower_name.endswith(".json"):
         return None
     try:

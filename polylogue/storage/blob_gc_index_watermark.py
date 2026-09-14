@@ -40,11 +40,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.storage.blob_liveness import index_tier_blob_population
+from polylogue.storage.blob_store import INDEX_LIVENESS_WATERMARK_FILENAME
 
 #: Lives in the blob namespace root, beside ``.polylogue-blob-namespace``.
 #: ``_candidate_blobs`` only walks two-hex shard directories, so a dotfile here
-#: is never mistaken for a blob.
-WATERMARK_FILENAME = ".polylogue-index-liveness-watermark.json"
+#: is never mistaken for a blob. The name itself is owned by ``blob_store``,
+#: which decides what may sit in that root: ``BlobStore.iter_namespace``
+#: reports every unnamed entry as a critical invalid-namespace finding, so the
+#: two must not be able to drift apart.
+WATERMARK_FILENAME = INDEX_LIVENESS_WATERMARK_FILENAME
 
 _FORMAT = "polylogue.index-liveness-watermark.v1"
 

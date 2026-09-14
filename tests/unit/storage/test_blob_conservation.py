@@ -325,34 +325,43 @@ async def test_blob_conservation_flags_orphan_blobs_and_dangling_references(
 
 
 @pytest.mark.asyncio
-async def test_declared_devtools_route_runs_the_real_seeded_check(
-    workspace_env: dict[str, Path], capsys: pytest.CaptureFixture[str]
+async def test_declared_operator_route_runs_the_real_seeded_check(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The CommandSpec route must execute the storage check, not a stub.
+    """The declared operator command must execute the storage check, not a stub.
 
-    This invokes the exact operator surface (including its nested ``verify``
-    dispatch) against a production-ingested synthetic archive.  The direct
-    function tests above cover individual fault terms; this catches a broken
-    catalog/dispatcher registration or an entrypoint that silently succeeds.
+    This invokes the exact operator surface against a production-ingested
+    synthetic archive. The direct function tests above cover individual fault
+    terms; this catches a broken command registration or an entrypoint that
+    silently succeeds.
+
+    The surface used to be ``devtools verify blob-conservation``. #5097 deleted
+    that alias as a dormant second entry point into the same product module,
+    leaving ``polylogue ops maintenance blob-conservation`` as the one declared
+    route -- so this now exercises that one. Anti-vacuity: unregistering the
+    command, or pointing it at a stub that does not read the archive, makes
+    this red (an unregistered name exits 2 with usage output and never
+    produces the payload asserted below).
     """
     await _seed_archive(workspace_env)
     clone = _clone(workspace_env, "clone-devtools")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(clone))
 
-    from devtools import __main__ as devtools_main
+    from click.testing import CliRunner
 
-    assert (
-        devtools_main.main(
-            [
-                "verify",
-                "blob-conservation",
-                "--archive-root",
-                str(clone),
-                "--json",
-            ]
-        )
-        == 0
+    from polylogue.cli.click_app import cli
+
+    result = CliRunner().invoke(
+        cli,
+        ["ops", "maintenance", "blob-conservation", "--output-format", "json"],
+        catch_exceptions=False,
     )
-    payload = json.loads(capsys.readouterr().out)
+
+    assert result.exit_code == 0, result.output
+    # The root CLI prints an "Archive root: ..." banner ahead of the command's
+    # own output, so the JSON body starts at the first brace.
+    assert "Archive root:" in result.output
+    payload = json.loads(result.output[result.output.index("{") :])
     assert payload["ok"] is True
     assert payload["referenced_blobs"] == payload["present_blobs"] == 1
 

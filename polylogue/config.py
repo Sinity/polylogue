@@ -1916,7 +1916,10 @@ def _apply_toml_layer(
                 WARNING,
                 outcome="degraded",
                 reason="discovered_config_layer",
-                keys=rejected,
+                # A registered field is coerced to a scalar on emit, so a list
+                # here would reach the log as ``<list>``: the event would name
+                # a refusal without naming what was refused.
+                config_keys=",".join(rejected),
                 layer=layer_name,
                 path=str(path),
             )

@@ -485,7 +485,11 @@ class TestDiscoveredConfigCannotOpenCapabilityBoundary:
         assert [(record["outcome"], record["path"]) for record in refusals] == [
             ("degraded", str(hostile / "polylogue.toml"))
         ]
-        assert refusals[0]["keys"] == ["mcp_judge_enabled", "mcp_maintenance_enabled", "mcp_write_enabled"]
+        # The refused key names must survive the structured-log field
+        # allowlist, so they travel as one registered comma-joined token
+        # (``config_keys``) rather than an unregistered list that ``emit``
+        # drops outright.
+        assert refusals[0]["config_keys"] == "mcp_judge_enabled,mcp_maintenance_enabled,mcp_write_enabled"
 
     def test_non_capability_keys_from_a_discovered_project_toml_still_apply(
         self,
