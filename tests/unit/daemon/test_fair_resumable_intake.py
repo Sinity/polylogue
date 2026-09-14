@@ -11,9 +11,12 @@ one of them red.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+import os
+import random
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -94,6 +97,112 @@ def test_bounded_source_paths_prunes_ignored_subtrees_and_keeps_nested_sources(t
     first_page = _bounded_source_paths(source, (source,), limit=1, after=None)
     assert first_page == [accepted]
     assert _bounded_source_paths(source, (source,), limit=8, after=str(accepted)) == []
+
+
+ADVERSARIAL_RELATIVE_PATHS = (
+    "s1.json",
+    "s2.json",
+    "s9.json",
+    "s10.json",
+    "s100.json",
+    "s007.json",
+    "S2.json",
+    "\u00e9t\u00e9.json",
+    "\u0161ok.json",
+    "a.json",
+    "a/b.json",
+    "a/a.json",
+    "a-b.json",
+    "a/deeper/z.json",
+    "ab.json",
+)
+
+
+class _ScandirHandle:
+    """Iterable, closeable stand-in for a ``ScandirIterator``."""
+
+    def __init__(self, entries: list[os.DirEntry[str]]) -> None:
+        self._entries = iter(entries)
+
+    def __iter__(self) -> Iterator[os.DirEntry[str]]:
+        return self._entries
+
+    def __enter__(self) -> _ScandirHandle:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+class _ShuffledScandir:
+    """A ``scandir`` whose per-directory order is an arbitrary permutation."""
+
+    def __init__(self, real: Callable[[Path], Any], seed: int) -> None:
+        self._real = real
+        self._rng = random.Random(seed)
+
+    def __call__(self, directory: Path) -> _ScandirHandle:
+        with self._real(directory) as handle:
+            entries = list(handle)
+        self._rng.shuffle(entries)
+        return _ScandirHandle(entries)
+
+
+def _seed_adversarial_root(root: Path) -> set[Path]:
+    written: set[Path] = set()
+    for relative in ADVERSARIAL_RELATIVE_PATHS:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative)
+        written.add(path)
+    return written
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3, 4, 5, 6, 7])
+@pytest.mark.parametrize("page", [1, 2, 3])
+def test_bounded_walk_ingests_every_file_under_any_scandir_order(tmp_path: Path, seed: int, page: int) -> None:
+    """Any ``scandir`` permutation must still yield every file on disk.
+
+    The producer's emission order and the resume cursor's comparison key are
+    the same order, so a cursor set from a partially consumed page can never
+    sort above a file that page never emitted.
+
+    Anti-vacuity: restoring the previous ``os.scandir``-ordered BFS walk (or
+    dropping the trailing-separator directory key, which emits ``a/b.json``
+    before ``a.json``) leaves files on disk unreachable and turns this red.
+    """
+    on_disk = _seed_adversarial_root(tmp_path)
+    source = WatchSource(name="test", root=tmp_path, suffixes=(".json",))
+    # Injected rather than patched onto ``os``: a global ``scandir`` patch
+    # also rewires importlib's finder and corrupts unrelated parallel tests.
+    scandir = _ShuffledScandir(os.scandir, seed)
+
+    ingested: set[Path] = set()
+    after: str | None = None
+    for _ in range(len(ADVERSARIAL_RELATIVE_PATHS) + 4):
+        discovered = _bounded_source_paths(source, (source,), limit=page, after=after, scandir=scandir)
+        if not discovered:
+            break
+        # The dispatcher admits only a prefix of a page; the cursor advances
+        # in ``acknowledge`` over exactly those consumed items.
+        consumed = discovered[: max(1, page - 1)]
+        ingested.update(consumed)
+        for path in consumed:
+            position = str(path)
+            if after is None or position > after:
+                after = position
+    assert ingested == on_disk
+
+
+def test_bounded_walk_emits_exact_lexicographic_path_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Emission order equals sorted path strings, files before their sibling dirs."""
+    on_disk = _seed_adversarial_root(tmp_path)
+    source = WatchSource(name="test", root=tmp_path, suffixes=(".json",))
+    scandir = _ShuffledScandir(os.scandir, 11)
+
+    emitted = _bounded_source_paths(source, (source,), limit=len(on_disk) + 5, after=None, scandir=scandir)
+    assert emitted == sorted(on_disk, key=str)
+    assert str(tmp_path / "a.json") < str(tmp_path / "a" / "b.json")
 
 
 def test_raw_discovery_uses_canonical_adapter_and_returns_payload_costs(
