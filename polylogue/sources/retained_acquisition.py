@@ -10,7 +10,6 @@ of its input.
 from __future__ import annotations
 
 import json
-import logging
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -19,6 +18,7 @@ from pathlib import Path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
+from polylogue.logging import WARNING, emit
 from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.live.admission import ArtifactIdentity
 from polylogue.sources.origin_specs import database_member_for_filename
@@ -30,8 +30,6 @@ from polylogue.sources.source_acquisition_components import (
     read_plain_source_file,
 )
 from polylogue.storage.blob_store import BlobStore
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,9 +102,11 @@ def iter_retained_source_records(
                     split,
                 )
     if rejected:
-        logger.warning(
-            "Retained ZIP enumeration skipped %d refused member(s) of %s: %s",
-            len(rejected),
-            logical_path,
-            "; ".join(rejected),
+        emit(
+            "source.zip.members_refused",
+            level=WARNING,
+            outcome="degraded",
+            path=str(logical_path),
+            skipped=len(rejected),
+            error_detail="; ".join(rejected),
         )
