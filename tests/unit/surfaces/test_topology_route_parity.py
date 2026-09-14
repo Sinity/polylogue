@@ -13,6 +13,7 @@ assertion alone.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -21,6 +22,7 @@ from polylogue.analysis.topology import (
     TOPOLOGY_GAP_EXCLUDED_EDGE,
     TOPOLOGY_GAP_TRUNCATED,
     TOPOLOGY_GAP_UNRESOLVED_PARENT,
+    SessionTopology,
 )
 from polylogue.api import Polylogue
 from polylogue.daemon.topology_http import build_topology_envelope
@@ -49,12 +51,29 @@ def _seed_chain(db_path: Path, width: int = 4) -> None:
         ).branch_type("subagent").add_message(role="assistant", text=f"child {index}").save()
 
 
-async def _topology(db_path: Path, archive_root: Path, session_id: str, **kwargs: object):
+async def _topology(db_path: Path, archive_root: Path, session_id: str, **kwargs: int) -> SessionTopology | None:
     polylogue = Polylogue(archive_root=archive_root, db_path=db_path)
     try:
-        return await polylogue.get_session_topology(session_id, **kwargs)  # type: ignore[arg-type]
+        return await polylogue.get_session_topology(session_id, **kwargs)
     finally:
         await polylogue.close()
+
+
+def _rows(envelope: dict[str, object], key: str) -> list[dict[str, object]]:
+    """Read a list-of-dict section out of an untyped public envelope."""
+
+    return cast("list[dict[str, object]]", envelope[key])
+
+
+def _outcome(envelope: dict[str, object]) -> dict[str, object]:
+    return cast("dict[str, object]", envelope["outcome"])
+
+
+def _gaps(outcome: dict[str, object]) -> list[str]:
+    """The named gaps recorded on a terminal outcome."""
+
+    detail = cast("dict[str, object]", outcome["detail"])
+    return [str(reason) for reason in cast("list[object]", detail["gaps"])]
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +105,8 @@ async def test_cli_mcp_and_http_serialize_one_topology_envelope(workspace_env: d
     assert set(mcp_payload) == set(canonical)
     for key in ("target_id", "root_id", "generation_id", "outcome", "nodes_complete", "edges_complete"):
         assert mcp_payload[key] == canonical[key], key
-    assert [edge["child_id"] for edge in mcp_payload["edges"]] == [
-        edge["child_id"]
-        for edge in canonical["edges"]  # type: ignore[index]
+    assert [edge["child_id"] for edge in _rows(mcp_payload, "edges")] == [
+        edge["child_id"] for edge in _rows(canonical, "edges")
     ]
 
     # HTTP adds reader affordances but drops no canonical key and re-decides
@@ -136,12 +154,12 @@ async def test_every_canonical_edge_field_reaches_every_surface(workspace_env: d
         "resolved_at_ms",
         "evidence",
     }
-    canonical_edges = topology_public_envelope(topology, session_id=target)["edges"]
+    canonical_edges = _rows(topology_public_envelope(topology, session_id=target), "edges")
     assert canonical_edges, "fixture must produce at least one edge"
-    for edge in canonical_edges:  # type: ignore[union-attr]
+    for edge in canonical_edges:
         assert required.issubset(set(edge)), required - set(edge)
 
-    mcp_edges = session_topology_payload(topology, session_id=target).model_dump(mode="json")["edges"]
+    mcp_edges = _rows(session_topology_payload(topology, session_id=target).model_dump(mode="json"), "edges")
     for edge in mcp_edges:
         assert required.issubset(set(edge)), required - set(edge)
 
@@ -161,10 +179,10 @@ async def test_public_topology_envelope_names_no_provider(workspace_env: dict[st
     assert topology is not None
     envelope = topology_public_envelope(topology, session_id=target)
 
-    for node in envelope["nodes"]:  # type: ignore[union-attr]
+    for node in _rows(envelope, "nodes"):
         assert "origin" in node
         assert "provider" not in node
-    for edge in envelope["edges"]:  # type: ignore[union-attr]
+    for edge in _rows(envelope, "edges"):
         assert "dst_origin" in edge
         assert not any(key.endswith("provider") for key in edge), edge
 
@@ -187,8 +205,7 @@ async def test_complete_topology_reports_ok(workspace_env: dict[str, Path]) -> N
     topology = await _topology(db_path, workspace_env["archive_root"], _native("solo"))
     assert topology is not None
     assert topology.degraded_gaps() == ()
-    outcome = topology_public_envelope(topology)["outcome"]
-    assert outcome["state"] == "ok"  # type: ignore[index]
+    assert _outcome(topology_public_envelope(topology))["state"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -212,10 +229,10 @@ async def test_unresolved_parent_is_degraded_not_empty(workspace_env: dict[str, 
     assert TOPOLOGY_GAP_EXCLUDED_EDGE in gaps
 
     envelope = topology_public_envelope(topology)
-    outcome = envelope["outcome"]
-    assert outcome["state"] == "degraded"  # type: ignore[index]
-    assert outcome["reason"] != TOPOLOGY_EMPTY_REASON  # type: ignore[index]
-    assert TOPOLOGY_GAP_UNRESOLVED_PARENT in outcome["detail"]["gaps"]  # type: ignore[index]
+    outcome = _outcome(envelope)
+    assert outcome["state"] == "degraded"
+    assert outcome["reason"] != TOPOLOGY_EMPTY_REASON
+    assert TOPOLOGY_GAP_UNRESOLVED_PARENT in _gaps(outcome)
 
     # Every surface reports the same degraded state.
     assert session_topology_payload(topology, session_id=_native("orphan")).outcome.state == "degraded"
@@ -240,7 +257,7 @@ async def test_truncated_page_is_degraded_and_never_complete(workspace_env: dict
     if envelope["nodes_complete"]:
         pytest.skip("engine returned a complete page; bounding is exercised below")
     assert TOPOLOGY_GAP_TRUNCATED in topology.degraded_gaps()
-    assert envelope["outcome"]["state"] == "degraded"  # type: ignore[index]
+    assert _outcome(envelope)["state"] == "degraded"
     assert envelope["continuation"] is not None
 
 
@@ -258,20 +275,21 @@ async def test_surface_bounding_reports_truncation_as_degraded(workspace_env: di
     topology = await _topology(db_path, workspace_env["archive_root"], _native("root"))
     assert topology is not None
     canonical = topology_public_envelope(topology)
-    assert len(canonical["nodes"]) > 1  # type: ignore[arg-type]
+    assert len(_rows(canonical, "nodes")) > 1
 
     bounded = bound_topology_envelope(canonical, node_limit=1)
-    assert len(bounded["nodes"]) == 1  # type: ignore[arg-type]
+    assert len(_rows(bounded, "nodes")) == 1
     assert bounded["nodes_complete"] is False
     assert bounded["edges_complete"] is False
-    assert bounded["outcome"]["state"] == "degraded"  # type: ignore[index]
-    assert TOPOLOGY_GAP_TRUNCATED in bounded["outcome"]["detail"]["gaps"]  # type: ignore[index]
+    bounded_outcome = _outcome(bounded)
+    assert bounded_outcome["state"] == "degraded"
+    assert TOPOLOGY_GAP_TRUNCATED in _gaps(bounded_outcome)
     assert bounded["continuation"] == "node-offset:1"
 
     # The HTTP framing of the same bound agrees.
     http_payload = build_topology_envelope(topology, node_limit=1)
     assert http_payload["nodes_complete"] is False
-    assert http_payload["outcome"]["state"] == "degraded"  # type: ignore[index]
+    assert _outcome(http_payload)["state"] == "degraded"
 
 
 def test_cycle_topology_is_degraded(workspace_env: dict[str, Path]) -> None:
@@ -281,7 +299,7 @@ def test_cycle_topology_is_degraded(workspace_env: dict[str, Path]) -> None:
     would let a contradictory archive slice report a clean ``ok``.
     """
 
-    from polylogue.analysis.topology import SessionTopology, TopologyNode
+    from polylogue.analysis.topology import TopologyNode
     from polylogue.core.types import SessionId
 
     topology = SessionTopology(
@@ -292,4 +310,4 @@ def test_cycle_topology_is_degraded(workspace_env: dict[str, Path]) -> None:
         cycle_detected=True,
     )
     assert TOPOLOGY_GAP_CYCLE in topology.degraded_gaps()
-    assert topology_public_envelope(topology)["outcome"]["state"] == "degraded"  # type: ignore[index]
+    assert _outcome(topology_public_envelope(topology))["state"] == "degraded"
