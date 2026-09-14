@@ -206,8 +206,14 @@ def test_status_command_renders_canonical_daemon_operation_result() -> None:
     assert payload["status_snapshot"]["state"] == "fresh"
 
 
-def test_status_command_reports_operation_unavailable_as_live_daemon_snapshot() -> None:
-    """A canonical transport failure remains an unavailable live-daemon result."""
+def test_status_command_reports_operation_unavailable_without_claiming_liveness() -> None:
+    """A canonical transport failure never publishes a running daemon.
+
+    Anti-vacuity: restoring the refusal-to-``True`` mapping in
+    ``_show_daemon_status_unavailable_json`` (or the ``daemon_reachable = True``
+    it used to record) turns this red. A read that failed observed no liveness
+    at all, so ``daemon_liveness`` must be False (polylogue-2d8oq).
+    """
     env = _make_app_env()
     config = SimpleNamespace(archive_root=Path("/tmp/status-test"))
     with (
@@ -225,7 +231,7 @@ def test_status_command_reports_operation_unavailable_as_live_daemon_snapshot() 
 
     assert result.exit_code == 1
     payload = json.loads(_combined_calls(env))
-    assert payload["daemon_liveness"] is True
+    assert payload["daemon_liveness"] is False
     assert payload["status_snapshot"]["state"] == "unavailable"
 
 
@@ -253,7 +259,9 @@ def test_status_command_does_not_misclassify_sqlite_failure_with_snapshot(
     assert result.exit_code == 1
     payload = json.loads(_combined_calls(env))
     assert "diagnostic" not in payload
-    assert payload["daemon_liveness"] is True
+    # An unrelated SQLite failure is still a failed read: it proves nothing
+    # about the daemon and must not be published as liveness (polylogue-2d8oq).
+    assert payload["daemon_liveness"] is False
     assert payload["status_snapshot"]["state"] == "unavailable"
 
 
