@@ -145,7 +145,12 @@ def reject_duplicated_transcript(payload: dict[str, object]) -> None:
 
 def timestamp_ms(value: str) -> int:
     try:
-        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC).timestamp() * 1000)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        # Naive means UTC here too; ``astimezone`` alone would read it in the
+        # producing host's local zone.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return int(parsed.astimezone(UTC).timestamp() * 1000)
     except ValueError as exc:
         raise HookSpoolRecordError(f"invalid hook timestamp: {value!r}") from exc
 

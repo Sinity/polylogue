@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 
 import aiosqlite
 
@@ -109,7 +109,16 @@ def _iso_to_ms(value: str) -> int:
     try:
         return int(value)
     except ValueError:
-        return int(datetime.fromisoformat(value).timestamp() * 1000)
+        parsed = datetime.fromisoformat(value)
+        # A naive timestamp is UTC, matching every other coercion in the tree
+        # (core.timestamps.parse_timestamp / parse_archive_datetime,
+        # sources.live.cursor._epoch_ms, sinex.material_adapter._timestamp_ms).
+        # Without this, .timestamp() resolves the value in the host's local
+        # zone, so the same hook record stores an observed_at_ms that shifts
+        # with the server's offset and with DST.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return int(parsed.timestamp() * 1000)
 
 
 def artifact_observation_params(record: ArtifactObservationRecord) -> tuple[object, ...]:
