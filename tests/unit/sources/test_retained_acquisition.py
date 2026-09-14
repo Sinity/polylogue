@@ -115,3 +115,36 @@ def test_retained_plain_input_does_not_reopen_deleted_acquisition_path(tmp_path:
     assert record.data.source_path == str(original)
     assert record.data.blob_hash == blob_hash
     assert store.read_all(blob_hash) == payload
+
+
+def _write_zip_with_pathological_member(path: Path) -> None:
+    """One highly compressible member sits between two ordinary members."""
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("first.jsonl", b'{"retained":"first"}\n')
+        # ~4 MiB of a single repeated byte deflates far past the ratio ceiling.
+        archive.writestr("bomb.jsonl", b"a" * (4 * 1024 * 1024))
+        archive.writestr("third.jsonl", b'{"retained":"third"}\n')
+
+
+def test_one_rejected_zip_member_does_not_abort_its_whole_input(tmp_path: Path) -> None:
+    original = tmp_path / "synthetic-export.zip"
+    _write_zip_with_pathological_member(original)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, blob_size = store.write_from_path(original)
+
+    records = list(
+        iter_retained_source_records(
+            source_path=str(original),
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            blob_store=store,
+        )
+    )
+
+    # The admitted members keep their central-directory ordinals, and the
+    # generator exhausts normally so its caller can close the source item.
+    assert [record.entry_ordinal for record in records] == [0, 2]
+    assert [store.read_all(record.data.blob_hash or "") for record in records] == [
+        b'{"retained":"first"}\n',
+        b'{"retained":"third"}\n',
+    ]

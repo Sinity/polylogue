@@ -1,13 +1,16 @@
 """Enumerate accepted physical inputs without reopening acquisition paths.
 
 The caller owns compute admission and blob publication. Normal exhaustion is
-the only enumeration-complete signal; a rejected member raises even when an
-earlier member has already yielded retained raw evidence.
+the only enumeration-complete signal. A member refused by ZIP admission was
+never ingested by ordinary acquisition either, so it is skipped and logged
+rather than raised: one pathological member must not cost every other member
+of its input.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -27,6 +30,8 @@ from polylogue.sources.source_acquisition_components import (
     read_plain_source_file,
 )
 from polylogue.storage.blob_store import BlobStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,4 +104,9 @@ def iter_retained_source_records(
                     split,
                 )
     if rejected:
-        raise ValueError(f"retained ZIP enumeration rejected {len(rejected)} member(s): {rejected[0]}")
+        logger.warning(
+            "Retained ZIP enumeration skipped %d refused member(s) of %s: %s",
+            len(rejected),
+            logical_path,
+            "; ".join(rejected),
+        )
