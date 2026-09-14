@@ -199,6 +199,7 @@ from polylogue.sources.sqlite_snapshot import (
 )
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ActiveByteRevisionChainError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -3788,6 +3789,18 @@ class LiveBatchProcessor:
                         exc,
                         exc_info=True,
                     )
+            # Honour the ``defer_fts`` contract. Both deferred write paths above
+            # (``apply_raw_revision_replay`` and
+            # ``apply_raw_membership_classification``) pass ``defer_fts=True``,
+            # which skips the in-transaction FTS repair on the explicit promise
+            # that "an authoritative raw-revision replay ... owns one targeted
+            # repair and exactness proof after its writes" (see
+            # ``archive_tiers/write.py``). Live ingest never performed that
+            # repair, so a just-ingested session was absent from FTS until the
+            # daemon's periodic convergence happened to run -- a 60s tick, which
+            # is why a freshly ingested 50k-message session searched as empty.
+            if result.session_ids:
+                repair_message_fts_index_sync(archive._conn, list(dict.fromkeys(result.session_ids)))
         # The loop checks before each later record, but a one-record pass has
         # no such boundary. Make the final record obey the same hard bound.
         check_write_hold_budget("archive_write_complete")
