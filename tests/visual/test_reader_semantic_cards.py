@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import cast
+from urllib.parse import quote
 
 import jsonschema
 import pytest
@@ -155,38 +156,48 @@ def test_semantic_card_web_json_contract(_semantic_card_session: tuple[str, dict
 
 
 def test_semantic_card_web_dom_shape_contract(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+    """Pin the served semantic-card DOM against the typed WebUI renderer.
+
+    This is the DOM-level half of the contract the JSON-envelope tests above
+    pin at the data level: it proves the session read route actually delegates
+    to ``polylogue/daemon/webui.py``'s ``_render_semantic_card`` rather than
+    re-deriving tool semantics from raw ``has_tool_use`` flags.
+
+    Anti-vacuity: it goes red if the session read route stops rendering cards
+    (the page falls back to ``_render_message_flow_fallback_body``), or if the
+    card wrapper, header, outcome, or field class names move without this
+    contract moving with them.
+    """
+    seed_reader_semantic_cards(reader_workspace)
     with running_reader_server(reader_workspace) as (_, base_url):
-        # The interpolated shell this test reads answers on the workspace
-        # routes; the root serves the typed WebUI.
-        status, content_type, body = get_text(base_url, "/w/stack")
+        status, content_type, body = get_text(base_url, f"/sessions/{quote(READER_SEM1, safe='')}")
 
     assert status == 200
     assert "text/html" in content_type
-    assert_no_private_paths(body, context="reader shell HTML")
+    assert_no_private_paths(body, context="reader session read HTML")
 
-    # The shared-registry backend is wired in: the web reader delegates to
-    # the card renderer when a message carries cards, and suppresses a
-    # message fully absorbed into another message's card, rather than
-    # re-deriving tool semantics from raw ``has_tool_use`` flags alone.
+    # Structural wiring emitted by ``_render_semantic_card`` /
+    # ``_render_semantic_outcome`` in polylogue/daemon/webui.py.
     for phrase in (
-        "_polySemanticEntriesForMessage",
-        "semantic_card_suppressed",
-        "_polySemanticEntriesHtml",
-        "_polySemanticSessionEntriesHtml",
-        'class="sem-card sem-card-',
-        "sem-card-header",
-        "sem-card-fields",
-        "_polySemCardOutcomeHtml",
-        "sem-diff",
-        "diff-add",
-        "diff-del",
+        "data-card-kind=",
+        "card__header",
+        "card__kind",
+        "card__title",
+        "card__field",
+        "card__outcome",
+        "data-outcome-state=",
     ):
         assert phrase in body, f"semantic card wiring missing {phrase!r}"
+
+    # The seeded session covers three card kinds; each must reach the DOM as
+    # its own typed card rather than a generic fallback.
+    for kind in ("shell", "file_edit", "task"):
+        assert f'data-card-kind="{kind}"' in body, f"semantic card kind missing {kind!r}"
 
     write_evidence_manifest(
         tmp_path / "reader-semantic-cards-evidence.json",
         artifact_id="polylogue.local_reader.semantic_cards",
-        route="/",
+        route="/sessions/{id}",
         fixture_id="reader-visual-synthetic-v1",
         checks={
             "status": status,
