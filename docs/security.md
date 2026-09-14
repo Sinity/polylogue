@@ -274,6 +274,25 @@ every dependent — is excised together so no composed read is left broken.
 `plan_session_excision`/`--dry-run` surfaces the dependent session ids up
 front so this is never a surprise at apply time.
 
+**Hook evidence.** A session's `raw_hook_events` rows are durable and
+session-addressable by `(origin, session_native_id)` but carry no
+`raw_sessions` row, so no raw target reaches them. Excision resolves them
+separately and deletes each through `delete_source_hook_event` (event row,
+carriers and owned `hook_payload` blob ref together), marking every blob
+hash they owned excised. Any hook event still readable after the commit is
+reported as `ExcisionReceipt.retained_hook_events`, which makes
+`ExcisionReceipt.complete` false and appends an `INCOMPLETE:` clause to the
+CLI's success line — a privacy operation never reports unqualified success
+over content that survived it.
+
+**Fact-tier evidence.** Artifacts admitted `parse_policy='fact'` mint no
+`sessions` row. Claude Code TODO plan snapshots
+(`todos/<session-uuid>[-agent-<uuid>].json`) are linked to their session
+only by the identity in their own filename; excision resolves them from that
+declared identity and seeds them into the revision closure, so every
+retained revision of the plan file is excised with the session. A fact kind
+whose identity is not session-derived is deliberately not matched.
+
 **Attachments referenced from elsewhere.** `attachment_refs.session_id`/
 `message_id` carry `ON DELETE CASCADE` to `sessions`/`messages`, so deleting
 the excised session's row already removes only its own attachment
