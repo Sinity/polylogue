@@ -57,7 +57,7 @@ from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import (
     MessageContentIdentity,
     MessageOwnerResolution,
@@ -8494,6 +8494,18 @@ def _session_provider_values(conn: sqlite3.Connection, session_id: str) -> set[s
     return values
 
 
+#: A dispatch sidecar is a small metadata document. The raw row is selected
+#: without requiring a successful parse or a current revision, and ZIP
+#: admission permits a member up to 10 GiB, so the writer must not agree to
+#: read whatever the row points at.
+_SIDECAR_DISPATCH_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _escape_like(value: str) -> str:
+    """Escape SQL LIKE wildcards so a provider-derived value matches literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _sidecar_dispatch_tool_ids(
     source_conn: sqlite3.Connection | None,
     *,
@@ -8522,17 +8534,52 @@ def _sidecar_dispatch_tool_ids(
     store = get_blob_store()
     for stem in sorted(stems):
         rows = source_conn.execute(
-            "SELECT source_path, blob_hash FROM raw_sessions WHERE origin = ? AND source_path LIKE ?",
-            (origin, f"%/subagents/{stem}.meta.json"),
+            # The stem is provider-derived, so its LIKE wildcards must be
+            # escaped: an unescaped `_` matches any character and an
+            # unescaped `%` matches anything at all, pulling a sibling
+            # session's sidecar into this parent's dispatch resolution. More
+            # than one tool id is read as a dispatch-identity contradiction,
+            # so the stray match does not mis-bind the edge -- it refuses a
+            # correct one.
+            "SELECT source_path, blob_hash, blob_size FROM raw_sessions "
+            "WHERE origin = ? AND source_path LIKE ? ESCAPE '\\'",
+            (origin, f"%/subagents/{_escape_like(stem)}.meta.json"),
         ).fetchall()
-        for source_path, blob_hash in rows:
+        for source_path, blob_hash, blob_size in rows:
             parts = str(source_path).replace("\\", "/").split("/")
             if len(parts) < 3 or parts[-3] not in parent_values:
+                continue
+            # This runs in the synchronous writer, not a parsing worker, and
+            # the row is selected without requiring a successful parse or a
+            # size bound -- ZIP admission alone permits a 10 GiB member. Read
+            # only what a sidecar can plausibly be, and say so when refusing.
+            if blob_size is not None and int(blob_size) > _SIDECAR_DISPATCH_MAX_BYTES:
+                emit(
+                    "storage.dispatch_sidecar.refused",
+                    level=WARNING,
+                    outcome="refused",
+                    reason="sidecar_over_size_bound",
+                    source_path=source_path,
+                    blob_size=int(blob_size),
+                    max_bytes=_SIDECAR_DISPATCH_MAX_BYTES,
+                )
                 continue
             try:
                 payload = store.read_all(bytes(blob_hash).hex())
                 artifact = parse_claude_orchestration_artifact(str(source_path), payload)
-            except (OSError, ValueError):
+            # RecursionError is a RuntimeError, not a ValueError: a deeply
+            # nested sidecar would otherwise escape this handler and abort the
+            # whole session write, and because the raw row persists it would
+            # abort it again on every later replay of the same lineage.
+            except (OSError, ValueError, RecursionError) as exc:
+                emit(
+                    "storage.dispatch_sidecar.refused",
+                    level=WARNING,
+                    outcome="refused",
+                    reason="sidecar_unreadable",
+                    source_path=source_path,
+                    error_type=type(exc).__name__,
+                )
                 continue
             if artifact is None:
                 continue
