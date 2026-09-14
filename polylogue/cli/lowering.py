@@ -197,20 +197,27 @@ def lower_query_aggregate(request: RootModeRequest, *, mode: str) -> OperationRe
 def lower_session_read(
     ref: str,
     *,
+    kind: str = "transcript",
     limit: int | None = None,
     offset: int = 0,
     projection: Mapping[str, object] | None = None,
     continuation: str | None = None,
 ) -> OperationRequest:
-    """Lower one bounded transcript window onto ``session.read``.
+    """Lower one bounded read for an exact reference onto ``session.read``.
 
     A continuation supersedes the window coordinates it was minted from, so
     passing both is a caller error rather than a silently ignored argument.
+    Evidence kinds are answered whole and take no window at all; passing one
+    is a caller error for the same reason.
     """
 
     if continuation is not None and (limit is not None or offset):
         raise click.UsageError("A transcript continuation already carries its window coordinates.")
+    if kind != "transcript" and (limit is not None or offset or continuation is not None):
+        raise click.UsageError(f"A {kind} read is answered whole and takes no window coordinates.")
     payload: dict[str, object] = {"ref": ref}
+    if kind != "transcript":
+        payload["kind"] = kind
     if limit is not None:
         payload["limit"] = limit
     if offset:

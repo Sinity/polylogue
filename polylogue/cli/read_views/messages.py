@@ -226,39 +226,56 @@ def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvo
 
 
 def run_read_hooks(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
-    """Route hooks view to the per-session hook-event summary renderer."""
+    """Render the per-session hook-event summary from ``session.read``.
 
-    from polylogue.cli.messages import run_hooks
+    The hook read model is a per-session evidence relation with no query-grammar
+    unit of its own, so design D3 classifies this view as a ``session.read``
+    projection.  The view lowers and dispatches; it never opens an archive and
+    never branches on whether a daemon is present -- which executor answers is
+    the kernel's decision, recorded in the result's own authority.
+    """
+
+    from polylogue.cli.lowering import lower_session_read
+    from polylogue.cli.operation_kernel import (
+        OperationEnvelopeError,
+        OperationFailedError,
+        OperationUnavailableError,
+        dispatch,
+    )
 
     assert invocation.session_id is not None
     output_format = invocation.output_format or "json"
+    config = cast(Config, request.params.get("_config"))
+
+    try:
+        result = dispatch(config, lower_session_read(invocation.session_id, kind="hooks"))
+    except (OperationFailedError, OperationUnavailableError) as exc:
+        # A refusal names itself and exits non-zero; it must never render as an
+        # empty summary that reads "this session recorded no hook events".
+        # Classed exactly as the transcript path classes its refusals.
+        detail = str(getattr(exc, "detail", None) or exc)
+        if isinstance(exc, OperationUnavailableError) or exc.code in {"daemon_required", "result_too_large"}:
+            raise click.ClickException(detail) from exc
+        raise click.UsageError(detail) from exc
+    if not isinstance(result.value, dict):
+        raise OperationEnvelopeError("session.read returned a non-object result")
+    evidence = result.value.get("evidence")
+    if not isinstance(evidence, dict):
+        raise OperationEnvelopeError("session.read hooks result carries no evidence body")
+
+    if output_format == "json":
+        # Machine output is rendered as raw bytes so Rich markup never rewrites
+        # JSON and read-view delivery can capture file/clipboard targets.
+        content = json.dumps(evidence, indent=2) + "\n"
+    else:
+        import yaml
+
+        content = yaml.dump(evidence) + "\n"
 
     if invocation.destination in ("file", "clipboard", "stdout"):
-        buf = io.StringIO()
-
-        def _captured_echo_hooks(message: object = None, **_kwargs: object) -> None:
-            buf.write(str(message or "") + "\n")
-
-        _orig_echo = click.echo
-        click.echo = _captured_echo_hooks  # type: ignore[assignment]
-        try:
-            run_hooks(
-                env,
-                request,
-                session_id=invocation.session_id,
-                output_format=output_format,
-            )
-        finally:
-            click.echo = _orig_echo
-        deliver_content(env, buf.getvalue(), destination=invocation.destination, out_path=invocation.out_path)
+        deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
         return
-
-    run_hooks(
-        env,
-        request,
-        session_id=invocation.session_id,
-        output_format=output_format,
-    )
+    click.echo(content, nl=False)
 
 
 __all__ = [
