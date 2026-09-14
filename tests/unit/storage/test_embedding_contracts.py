@@ -275,19 +275,19 @@ def _assert_none_embedded(stats: EmbeddingStatsSnapshot, _conn: sqlite3.Connecti
 def _assert_all_pending(stats: EmbeddingStatsSnapshot, _conn: sqlite3.Connection) -> None:
     assert stats.embedded_sessions == 0
     assert stats.embedded_messages == 0
-    assert stats.pending_sessions >= 1
+    assert stats.pending_sessions is not None and stats.pending_sessions >= 1
     assert stats.pending_messages >= 1
 
 
 def _assert_partially_embedded(stats: EmbeddingStatsSnapshot, _conn: sqlite3.Connection) -> None:
-    assert stats.embedded_sessions >= 1
-    assert stats.pending_sessions >= 1
+    assert stats.embedded_sessions is not None and stats.embedded_sessions >= 1
+    assert stats.pending_sessions is not None and stats.pending_sessions >= 1
 
 
 def _assert_fully_embedded(stats: EmbeddingStatsSnapshot, _conn: sqlite3.Connection) -> None:
     assert stats.embedded_sessions == 2
     assert stats.pending_sessions == 0
-    assert stats.embedded_messages > 0
+    assert stats.embedded_messages is not None and stats.embedded_messages > 0
     # Pending derived from total sessions: when all are embedded, pending == 0
     # even though total_sessions count = 2 (they're tracked by sessions table)
 
@@ -1509,15 +1509,23 @@ class TestEmbeddingStatsLockedConnection:
             read_embedding_stats_sync(conn, include_retrieval_bands=False)
         conn.close()
 
-    def test_missing_vec_module_treated_as_optional(self) -> None:
+    def test_missing_vec_module_is_unmeasurable_not_zero(self) -> None:
+        """An unloadable vec0 module leaves coverage unknown, not empty.
+
+        Anti-vacuity: restoring ``"no such module: vec0"`` to
+        ``is_missing_table_error`` makes every count 0 again and each assertion
+        below fails with ``assert 0 is None``.
+        """
+
         conn = sqlite3.connect(":memory:", factory=_VeclessConnection)
         try:
             stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
         finally:
             conn.close()
-        assert stats.embedded_sessions == 0
-        assert stats.embedded_messages == 0
-        assert stats.pending_sessions == 0
+        assert stats.embedded_sessions is None
+        assert stats.embedded_messages is None
+        assert stats.pending_sessions is None
+        assert stats.coverage_measurable is False
 
 
 def _write_archive_session(archive_root: Path, *, native_id: str, embeddable: bool) -> str:

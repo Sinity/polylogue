@@ -166,7 +166,16 @@ def test_read_embedding_stats_sync_propagates_non_missing_operational_errors() -
     conn.close()
 
 
-def test_read_embedding_stats_sync_treats_missing_vec_module_as_optional() -> None:
+def test_read_embedding_stats_sync_reports_missing_vec_module_as_unmeasurable() -> None:
+    """An unloadable vec0 extension is *cannot tell*, never a measured zero.
+
+    Anti-vacuity: restoring ``"no such module: vec0"`` to
+    ``is_missing_table_error`` (or dropping the ``EmbeddingCoverageUnmeasurableError``
+    branch in ``read_embedding_stats_sync``) makes the counts 0 again and every
+    assertion below fails. ``embeddings.db`` is re-purchased from a paid
+    provider, so a false zero prescribes a full paid re-embed of intact vectors.
+    """
+
     class VeclessConnection(sqlite3.Connection):
         def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:
             del parameters
@@ -180,9 +189,40 @@ def test_read_embedding_stats_sync_treats_missing_vec_module_as_optional() -> No
     finally:
         conn.close()
 
-    assert stats.embedded_sessions == 0
-    assert stats.embedded_messages == 0
-    assert stats.pending_sessions == 0
+    assert stats.embedded_sessions is None
+    assert stats.embedded_messages is None
+    assert stats.pending_sessions is None
+    assert stats.coverage_measurable is False
+    assert "no such module: vec0" in (stats.coverage_unmeasurable_reason or "")
+
+
+def test_archive_stats_never_renders_unmeasurable_coverage_as_none_status() -> None:
+    """The published ArchiveStats readiness must say ``unknown``, not ``none``.
+
+    Anti-vacuity: reverting ``embedding_readiness_status`` to test
+    ``embedded_messages <= 0`` raises TypeError on ``None``, and restoring the
+    old int-zero default makes the status ``none`` -- the value that prescribes
+    a paid backfill.
+    """
+
+    from polylogue.archive.stats import ArchiveStats
+
+    stats = ArchiveStats(
+        total_sessions=10,
+        total_messages=100,
+        embedded_sessions=None,
+        embedded_messages=None,
+        pending_embedding_sessions=None,
+        embedding_coverage_unmeasurable_reason="no such module: vec0",
+    )
+
+    assert stats.embedding_readiness_status == "unknown"
+    assert stats.retrieval_ready is None
+    assert stats.embedding_coverage is None
+    payload = stats.to_dict()
+    assert payload["embedding_coverage_percent"] is None
+    assert payload["embedding_coverage_measurable"] is False
+    assert payload["embedded_messages"] is None
 
 
 def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_exist(

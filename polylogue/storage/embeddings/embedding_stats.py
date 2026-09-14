@@ -25,6 +25,7 @@ from polylogue.storage.embeddings.sql import (
     TOTAL_MESSAGES_SQL,
 )
 from polylogue.storage.embeddings.support import (
+    EmbeddingCoverageUnmeasurableError,
     StatsRow,
     build_retrieval_bands_from_status,
     embedded_message_count_async,
@@ -285,6 +286,18 @@ def _snapshot(
     )
 
 
+def _unmeasurable_snapshot(reason: str) -> EmbeddingStatsSnapshot:
+    """Coverage counts stay ``None`` -- an unknown must not become a number."""
+
+    return EmbeddingStatsSnapshot(
+        embedded_sessions=None,
+        embedded_messages=None,
+        pending_sessions=None,
+        total_estimated_cost_usd=None,
+        coverage_unmeasurable_reason=reason,
+    )
+
+
 def _retrieval_bands_sync(
     conn: sqlite3.Connection,
     parts: _EmbeddingStatsParts,
@@ -331,18 +344,19 @@ def read_embedding_stats_sync(
     include_retrieval_bands: bool = True,
     detail: bool = True,
 ) -> EmbeddingStatsSnapshot:
-    """Read embedding stats from a sync SQLite connection."""
-    parts = _base_parts_sync(conn, detail=detail)
-    if parts.sessions_exist:
-        parts = _with_total_sessions(parts, _total_sessions_sync(conn))
-    return _snapshot(
-        parts,
-        retrieval_bands=_retrieval_bands_sync(
-            conn,
-            parts,
-            include_retrieval_bands=include_retrieval_bands,
-        ),
-    )
+    """Read embedding stats from a sync SQLite connection.
+
+    An inspection that cannot run (the ``vec0`` extension would not load)
+    yields ``None`` counts plus a retained reason, never zeros.
+    """
+    try:
+        parts = _base_parts_sync(conn, detail=detail)
+        if parts.sessions_exist:
+            parts = _with_total_sessions(parts, _total_sessions_sync(conn))
+        bands = _retrieval_bands_sync(conn, parts, include_retrieval_bands=include_retrieval_bands)
+    except EmbeddingCoverageUnmeasurableError as exc:
+        return _unmeasurable_snapshot(exc.reason)
+    return _snapshot(parts, retrieval_bands=bands)
 
 
 async def read_embedding_stats_async(
@@ -351,18 +365,15 @@ async def read_embedding_stats_async(
     include_retrieval_bands: bool = True,
     detail: bool = True,
 ) -> EmbeddingStatsSnapshot:
-    """Read embedding stats from an async SQLite connection."""
-    parts = await _base_parts_async(conn, detail=detail)
-    if parts.sessions_exist:
-        parts = _with_total_sessions(parts, await _total_sessions_async(conn))
-    return _snapshot(
-        parts,
-        retrieval_bands=await _retrieval_bands_async(
-            conn,
-            parts,
-            include_retrieval_bands=include_retrieval_bands,
-        ),
-    )
+    """Read embedding stats from an async SQLite connection (see sync twin)."""
+    try:
+        parts = await _base_parts_async(conn, detail=detail)
+        if parts.sessions_exist:
+            parts = _with_total_sessions(parts, await _total_sessions_async(conn))
+        bands = await _retrieval_bands_async(conn, parts, include_retrieval_bands=include_retrieval_bands)
+    except EmbeddingCoverageUnmeasurableError as exc:
+        return _unmeasurable_snapshot(exc.reason)
+    return _snapshot(parts, retrieval_bands=bands)
 
 
 __all__ = [

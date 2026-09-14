@@ -498,10 +498,12 @@ def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int, total_s
 
 def _message_coverage_percent(
     *,
-    embedded_messages: int,
+    embedded_messages: int | None,
     candidate_prose_messages: int | None,
     candidate_prose_messages_exact: bool,
 ) -> float | None:
+    if embedded_messages is None:
+        return None
     if candidate_prose_messages is None or not candidate_prose_messages_exact:
         return None
     if candidate_prose_messages <= 0:
@@ -675,12 +677,16 @@ def _embedding_status(
 
 
 def _freshness_status(status: str, stats: EmbeddingStatsSnapshot) -> str:
+    if stats.embedded_messages is None:
+        return status
     if stats.embedded_messages > 0 and (stats.stale_messages > 0 or stats.messages_missing_provenance > 0):
         return "stale"
     return status
 
 
 def _retrieval_ready(stats: EmbeddingStatsSnapshot) -> bool:
+    if stats.embedded_messages is None:
+        return False
     return stats.embedded_messages > stats.stale_messages
 
 
@@ -816,11 +822,22 @@ def _payload_from_stats(
     blocked_sessions: int = 0,
     coverage_unmeasurable_reason: str | None = None,
 ) -> EmbeddingStatusPayload:
+    # The snapshot carries its own unmeasurable verdict (the fast route builds
+    # no probe), so an unloadable sqlite-vec reaches this boundary as ``None``
+    # counts rather than as an explicit argument. Honour either channel.
+    coverage_unmeasurable_reason = coverage_unmeasurable_reason or stats.coverage_unmeasurable_reason
     measurable = coverage_unmeasurable_reason is None
     embedded_sessions = stats.embedded_sessions
     pending_sessions = stats.pending_sessions
-    eligible_sessions = embedded_sessions + pending_sessions + blocked_sessions
+    eligible_sessions = (
+        None
+        if embedded_sessions is None or pending_sessions is None
+        else embedded_sessions + pending_sessions + blocked_sessions
+    )
     if measurable:
+        # ``measurable`` is exactly the condition under which the snapshot
+        # carries counts; narrow for the type checker.
+        assert embedded_sessions is not None and pending_sessions is not None and eligible_sessions is not None
         status = _embedding_status(
             total_sessions=total_sessions,
             embedded_sessions=embedded_sessions,
@@ -867,8 +884,8 @@ def _payload_from_stats(
         "embedding_coverage_percent": (
             round(
                 _coverage_percent(
-                    embedded_sessions=embedded_sessions,
-                    eligible_sessions=eligible_sessions,
+                    embedded_sessions=embedded_sessions or 0,
+                    eligible_sessions=eligible_sessions or 0,
                     total_sessions=total_sessions,
                 ),
                 1,
@@ -902,8 +919,8 @@ def _payload_from_stats(
             config_enabled=settings.config_enabled,
             has_voyage_api_key=settings.has_voyage_api_key,
             total_sessions=total_sessions,
-            embedded_sessions=embedded_sessions,
-            pending_sessions=pending_sessions,
+            embedded_sessions=embedded_sessions or 0,
+            pending_sessions=pending_sessions or 0,
             retrieval_ready=retrieval_ready,
             stale_messages=stats.stale_messages,
             failure_count=stats.failure_count,
