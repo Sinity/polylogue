@@ -20,7 +20,6 @@ as it goes, then copies to the store — peak memory is one chunk.
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 import re
 import stat
@@ -32,8 +31,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import IO, BinaryIO
-
-logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB
 

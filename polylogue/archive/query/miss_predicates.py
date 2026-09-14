@@ -44,18 +44,17 @@ Scope limits (kept explicit rather than silently approximate):
 
 from __future__ import annotations
 
-import logging
 from dataclasses import MISSING, dataclass, fields, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS, QueryFieldDescriptor
 from polylogue.archive.query.miss_types import QueryMissReason
+from polylogue.logging import WARNING, emit
 
 if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.config import Config
 
-logger = logging.getLogger(__name__)
 
 #: Hard cap on clause-drop COUNT probes per miss diagnosis. Bounded so a
 #: pathological many-filter query cannot turn "explain the miss" into a
@@ -148,13 +147,28 @@ async def probe_predicate_zeroing(
         try:
             default_value = _spec_field_default(spec_cls, descriptor.spec_attr)
         except AttributeError:
-            logger.warning("probe_predicate_zeroing: no static default for field=%s", descriptor.name)
+            emit(
+                "query.miss_predicates.probe_skipped",
+                level=WARNING,
+                outcome="skipped",
+                phase="predicate_zeroing",
+                reason="no_static_default",
+                field=descriptor.name,
+            )
             continue
         candidate = _replace_spec_fields(selection, {descriptor.spec_attr: default_value})
         try:
             count = await candidate.count(config)
-        except Exception:
-            logger.exception("probe_predicate_zeroing: count probe failed for field=%s", descriptor.name)
+        except Exception as exc:
+            emit(
+                "query.miss_predicates.probe_failed",
+                level=WARNING,
+                outcome="unmeasured",
+                phase="predicate_zeroing",
+                field=descriptor.name,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             continue
         if count <= 0:
             continue
@@ -206,8 +220,16 @@ async def _date_relaxation_reason(
     relaxed = _replace_spec_fields(selection, overrides)
     try:
         summaries = await relaxed.list_summaries(config)
-    except Exception:
-        logger.exception("_date_relaxation_reason: probe failed for field=%s", field)
+    except Exception as exc:
+        emit(
+            "query.miss_predicates.probe_failed",
+            level=WARNING,
+            outcome="unmeasured",
+            phase="date_relaxation",
+            field=field,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         summaries = []
     boundary = summaries[0].updated_at if summaries else None
     if boundary is None:
@@ -275,8 +297,15 @@ async def probe_fts_structured_disagreement(
     try:
         fts_only_count = await fts_only.count(config)
         structured_only_count = await structured_only.count(config)
-    except Exception:
-        logger.exception("probe_fts_structured_disagreement: probe failed")
+    except Exception as exc:
+        emit(
+            "query.miss_predicates.probe_failed",
+            level=WARNING,
+            outcome="unmeasured",
+            phase="fts_vs_structured",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
     if fts_only_count > 0 and structured_only_count > 0:
         return QueryMissReason(

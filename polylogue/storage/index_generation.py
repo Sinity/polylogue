@@ -5,7 +5,6 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
-import logging
 import os
 import re
 import shutil
@@ -23,6 +22,7 @@ from types import TracebackType
 from typing import Any, cast
 
 from polylogue.archive.session_revision_membership import MembershipDecision
+from polylogue.logging import WARNING, emit
 from polylogue.storage.archive_identity import (
     ACTIVE_POINTER_FILENAME,
     GENERATIONS_DIRNAME,
@@ -33,8 +33,6 @@ from polylogue.storage.archive_identity import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
-
-logger = logging.getLogger(__name__)
 
 _LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
 _LOCK_HOST_PATTERN = re.compile(r"host=(\S+)")
@@ -830,11 +828,16 @@ class IndexGenerationStore:
                 operation_id=transaction.operation_id,
                 candidate_root=self.generations_root / transaction.generation_id,
             )
-        except (OSError, RuntimeError):
-            logger.warning(
-                "candidate capacity observation failed for operation %s",
-                transaction.operation_id,
-                exc_info=True,
+        except (OSError, RuntimeError) as exc:
+            emit(
+                "storage.index_generation.capacity_observation_failed",
+                level=WARNING,
+                outcome="unmeasured",
+                reason="capacity_probe_failed",
+                operation_id=transaction.operation_id,
+                generation_id=transaction.generation_id,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
             )
 
     def checkpoint_transaction(
@@ -1198,8 +1201,16 @@ class IndexGenerationStore:
         # history without durable evidence of the retention boundary.
         try:
             self._collect_superseded_generations(promoted)
-        except OSError:
-            logger.warning("index generation retention collection failed after promotion", exc_info=True)
+        except OSError as exc:
+            emit(
+                "storage.index_generation.retention_collection_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="retention_collection_failed",
+                phase="promotion",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
         return promoted
 
     def _validate_retention_ownership(self) -> None:
@@ -1371,7 +1382,12 @@ class IndexGenerationStore:
         self._write_retention_receipt(completed)
         self._prune_retention_receipts(current_generation_id=completed.promoted_generation_id)
         if reclaimed:
-            logger.info("reclaimed %d superseded index generation(s): %s", len(reclaimed), ", ".join(reclaimed))
+            emit(
+                "storage.index_generation.superseded_reclaimed",
+                outcome="ok",
+                generation_id=completed.promoted_generation_id,
+                reclaimed=len(reclaimed),
+            )
         return completed
 
     def load_retention_receipt(self, promoted_generation_id: str) -> GenerationRetentionReceipt:
@@ -1494,8 +1510,16 @@ class IndexGenerationStore:
         self._write(recovered)
         try:
             self._collect_superseded_generations(recovered)
-        except OSError:
-            logger.warning("index generation retention collection failed after recovered promotion", exc_info=True)
+        except OSError as exc:
+            emit(
+                "storage.index_generation.retention_collection_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="retention_collection_failed",
+                phase="recovered_promotion",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
         return recovered
 
     def discard_if_inactive(self, generation: IndexGeneration) -> bool:

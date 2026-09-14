@@ -20,7 +20,6 @@ entry here, not re-reasoning the whole choke point's ordering by hand.
 
 from __future__ import annotations
 
-import logging
 import sqlite3
 import threading
 import time
@@ -31,8 +30,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from polylogue.archive.write_gateway import WriteOperation, WriteResult, write_operation_policy_for
-
-logger = logging.getLogger(__name__)
+from polylogue.logging import ERROR, WARNING, emit
 
 WriteEffectPhase = Literal["in-transaction", "post-commit", "async-deferred"]
 """When a ``WriteEffect`` runs relative to the commit boundary.
@@ -122,7 +120,15 @@ class DeferredEffectQueue:
         try:
             effect.run(ctx)
         except Exception as exc:
-            logger.exception("deferred_write_effect_failed effect=%s key=%s", effect.name, key)
+            emit(
+                "archive.write_effect.failed",
+                level=ERROR,
+                outcome="error",
+                effect=effect.name,
+                phase=effect.phase,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             with self._lock:
                 self._pending.discard(key)
                 self._receipts[key] = WriteEffectReceipt(
@@ -248,7 +254,15 @@ def _run_registered_effects(
             try:
                 scheduler(effect, ctx)
             except Exception as exc:
-                logger.exception("deferred_write_effect_enqueue_failed effect=%s", effect.name)
+                emit(
+                    "archive.write_effect.enqueue_failed",
+                    level=ERROR,
+                    outcome="error",
+                    effect=effect.name,
+                    phase=effect.phase,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
                 receipts.append(WriteEffectReceipt(effect.name, effect.phase, "failed", retryable=True, error=str(exc)))
             else:
                 receipts.append(WriteEffectReceipt(effect.name, effect.phase, "enqueued", retryable=True))
@@ -256,13 +270,17 @@ def _run_registered_effects(
         started_at = time.perf_counter()
         try:
             effect.run(ctx)
-        except Exception:
+        except Exception as exc:
             if effect.failure_policy == "log-and-continue":
-                logger.exception(
-                    "write_effect_failed effect=%s phase=%s operation=%s",
-                    effect.name,
-                    effect.phase,
-                    ctx.op.value,
+                emit(
+                    "archive.write_effect.failed",
+                    level=ERROR,
+                    outcome="error",
+                    effect=effect.name,
+                    phase=effect.phase,
+                    operation=ctx.op.value,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
                 )
                 continue
             raise
@@ -340,15 +358,24 @@ def commit_archive_write_effects(
     total_effect_elapsed_s = time.perf_counter() - t0
 
     if total_effect_elapsed_s >= 1.0:
-        effect_breakdown = " ".join(f"{name}_s={elapsed:.3f}" for name, elapsed in timings.items())
-        logger.info(
-            "slow_archive_write_effects operation=%s sessions=%d %s commit_s=%.3f total_s=%.3f",
-            op.value,
-            len(sorted_ids),
-            effect_breakdown,
-            commit_elapsed_s,
-            total_effect_elapsed_s,
+        emit(
+            "archive.write_effects.slow",
+            level=WARNING,
+            outcome="degraded",
+            reason="effects_exceeded_one_second",
+            operation=op.value,
+            sessions=len(sorted_ids),
+            elapsed_ms=round(commit_elapsed_s * 1000, 3),
+            duration_ms=round(total_effect_elapsed_s * 1000, 3),
         )
+        for effect_name, elapsed in timings.items():
+            emit(
+                "archive.write_effect.timing",
+                level=WARNING,
+                effect=effect_name,
+                operation=op.value,
+                duration_ms=round(elapsed * 1000, 3),
+            )
 
     return WriteResult(
         operation_id=str(uuid4()),

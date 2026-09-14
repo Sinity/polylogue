@@ -5,7 +5,6 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
-import logging
 import os
 import re
 import sqlite3
@@ -21,6 +20,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Final, cast, get_args, get_origin, get_type_hints
 
+from polylogue.logging import WARNING, emit
 from polylogue.storage.backup_attestation import (
     VERIFICATION_RECEIPT_FORMAT,
     BackupAttestationError,
@@ -31,8 +31,6 @@ from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
-
-_LOGGER = logging.getLogger(__name__)
 
 DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
 _MIGRATION_NAME_RE = re.compile(r"^(?P<version>\d{3,})_[a-z0-9_]+\.sql$")
@@ -2906,8 +2904,15 @@ def _revalidate_backup_authorization(conn: sqlite3.Connection, train: DurableCha
 def _safe_user_version(conn: sqlite3.Connection) -> int | None:
     try:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-    except sqlite3.Error:
-        _LOGGER.warning("unable to read durable tier PRAGMA user_version", exc_info=True)
+    except sqlite3.Error as exc:
+        emit(
+            "storage.migration.user_version_unreadable",
+            level=WARNING,
+            outcome="unmeasured",
+            reason="pragma_read_failed",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
 
 

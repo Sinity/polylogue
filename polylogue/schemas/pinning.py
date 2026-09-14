@@ -18,15 +18,13 @@ Usage::
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document, json_document_list
-
-logger = logging.getLogger(__name__)
+from polylogue.logging import WARNING, emit
 
 PinAction: TypeAlias = Literal["confirm", "reject"]
 PinnableRole: TypeAlias = Literal[
@@ -164,7 +162,16 @@ def load_pins(provider: Provider | str) -> PinSet:
         pin_set.provider = str(provider)
         return pin_set
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        logger.warning("Failed to load pins from %s: %s", path, exc)
+        emit(
+            "schemas.pins.load_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="unreadable_pin_file",
+            provider=str(provider),
+            path=path,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return PinSet(provider=str(provider))
 
 

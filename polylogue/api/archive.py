@@ -5,7 +5,6 @@ from __future__ import annotations
 import builtins
 import hashlib
 import json
-import logging
 import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
@@ -67,6 +66,7 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
+from polylogue.logging import WARNING, emit
 from polylogue.storage.derived.session.records import SessionProfileRecord
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import SessionRecordQuery
@@ -306,9 +306,6 @@ _NOISY_REPO_LABELS = {
     "tmp",
     "var",
 }
-
-
-logger = logging.getLogger(__name__)
 
 
 class SessionNotFoundError(PolylogueError):
@@ -1432,14 +1429,17 @@ def _archive_correlate_hermes_context_deliveries(
                 user_conn.close()
         finally:
             source_conn.close()
-    except (sqlite3.Error, ValueError):
-        logger.warning(
-            "hermes_context_deliveries read failed (archive present but unreadable): "
-            "hermes_session_native_id=%s source_db=%s user_db=%s",
-            hermes_session_native_id,
-            source_db,
-            user_db,
-            exc_info=True,
+    except (sqlite3.Error, ValueError) as exc:
+        emit(
+            "archive.read.unreadable",
+            level=WARNING,
+            outcome="degraded",
+            route="hermes_context_deliveries",
+            reason="archive_present_but_unreadable",
+            session_id=hermes_session_native_id,
+            db_path=source_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
         )
         return ()
 
@@ -1543,22 +1543,28 @@ def _read_source_and_index(
             read_frame(index_db, timeout_class="background-read") as index_frame,
         ):
             return work(source_frame.connection, index_frame.connection)
-    except (ReadFrameExpiredError, StaleContinuationError):
-        logger.warning(
-            "%s read exceeded its declared frame: source_db=%s index_db=%s",
-            seam,
-            source_db,
-            index_db,
-            exc_info=True,
+    except (ReadFrameExpiredError, StaleContinuationError) as exc:
+        emit(
+            "archive.read.frame_expired",
+            level=WARNING,
+            outcome="degraded",
+            route=seam,
+            reason="declared_frame_exceeded",
+            db_path=index_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
         )
         return None
-    except sqlite3.Error:
-        logger.warning(
-            "%s read failed (archive present but unreadable): source_db=%s index_db=%s",
-            seam,
-            source_db,
-            index_db,
-            exc_info=True,
+    except sqlite3.Error as exc:
+        emit(
+            "archive.read.unreadable",
+            level=WARNING,
+            outcome="degraded",
+            route=seam,
+            reason="archive_present_but_unreadable",
+            db_path=index_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
         )
         return None
 
@@ -1587,7 +1593,7 @@ def _archive_reconcile_hermes_session_lifecycle(
             index_conn,
             hermes_session_native_id=hermes_session_native_id,
         ),
-        seam=f"hermes_session_lifecycle reconciliation (hermes_session_native_id={hermes_session_native_id})",
+        seam="hermes_session_lifecycle_reconciliation",
     )
 
 
@@ -1602,7 +1608,7 @@ def _archive_correlate_claude_agent_dispatches(config: Config) -> ClaudeAgentDis
 
     from polylogue.context.claude_agent_dispatch_correlation import correlate_claude_agent_dispatches
 
-    return _read_source_and_index(config, correlate_claude_agent_dispatches, seam="claude agent-dispatch correlation")
+    return _read_source_and_index(config, correlate_claude_agent_dispatches, seam="claude_agent_dispatch_correlation")
 
 
 def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconciliation | None:
@@ -1626,8 +1632,17 @@ def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconc
             return reconcile_codex_spawn_edges(index_conn)
         finally:
             index_conn.close()
-    except sqlite3.Error:
-        logger.warning("codex_spawn_edge reconciliation is unavailable", exc_info=True)
+    except sqlite3.Error as exc:
+        emit(
+            "archive.read.unreadable",
+            level=WARNING,
+            outcome="degraded",
+            route="codex_spawn_edge_reconciliation",
+            reason="archive_present_but_unreadable",
+            db_path=index_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
 
 
@@ -2934,12 +2949,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         dropped = matched - cap if truncated else 0
         analyzed_ids = session_ids[:cap]
         if truncated:
-            logger.warning(
-                "postmortem_bundle truncated: matched=%d cap=%d dropped=%d dropped_preview=%s",
-                matched,
-                cap,
-                dropped,
-                session_ids[cap : cap + 5],
+            emit(
+                "archive.postmortem_bundle.truncated",
+                level=WARNING,
+                outcome="degraded",
+                reason="match_cap_exceeded",
+                considered=matched,
+                limit=cap,
+                skipped=dropped,
             )
 
         profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)
@@ -3008,12 +3025,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         matched = len(session_ids)
         analyzed_ids = session_ids[:cap]
         if matched > cap:
-            logger.warning(
-                "pathology_report truncated: matched=%d cap=%d dropped=%d dropped_preview=%s",
-                matched,
-                cap,
-                matched - cap,
-                session_ids[cap : cap + 5],
+            emit(
+                "archive.pathology_report.truncated",
+                level=WARNING,
+                outcome="degraded",
+                reason="match_cap_exceeded",
+                considered=matched,
+                limit=cap,
+                skipped=matched - cap,
             )
         projections = []
         for sid in analyzed_ids:
@@ -3078,12 +3097,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         dropped = matched - cap if truncated else 0
         analyzed_ids = session_ids[:cap]
         if truncated:
-            logger.warning(
-                "portfolio_bundle truncated: matched=%d cap=%d dropped=%d dropped_preview=%s",
-                matched,
-                cap,
-                dropped,
-                session_ids[cap : cap + 5],
+            emit(
+                "archive.portfolio_bundle.truncated",
+                level=WARNING,
+                outcome="degraded",
+                reason="match_cap_exceeded",
+                considered=matched,
+                limit=cap,
+                skipped=dropped,
             )
 
         profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)

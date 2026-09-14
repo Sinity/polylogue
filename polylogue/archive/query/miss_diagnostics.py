@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -10,9 +9,8 @@ from typing import TYPE_CHECKING, cast
 from polylogue.archive.query.miss_types import QueryMissDiagnostics, QueryMissReason, Severity
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.enums import Origin
+from polylogue.logging import WARNING, emit
 from polylogue.readiness import VerifyStatus, get_readiness
-
-logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.archive.query.source_freshness import NamedSourceFreshness
@@ -32,8 +30,16 @@ async def _call_optional(repository: object, method_name: str, *args: object, **
         return None
     try:
         return await method(*args, **kwargs)
-    except Exception:
-        logger.exception("_call_optional: repository method `%s` failed", method_name)
+    except Exception as exc:
+        emit(
+            "query.miss_diagnostics.probe_failed",
+            level=WARNING,
+            outcome="unmeasured",
+            phase="repository_call",
+            method=method_name,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
 
 
@@ -92,15 +98,29 @@ def _readiness_index_reason(config: Config | None, selection: SessionQuerySpec) 
         return None
     try:
         plan = selection.to_plan()
-    except Exception:
-        logger.exception("_readiness_index_reason: selection.to_plan() failed")
+    except Exception as exc:
+        emit(
+            "query.miss_diagnostics.probe_failed",
+            level=WARNING,
+            outcome="unmeasured",
+            phase="readiness_plan",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
     if not plan.fts_terms:
         return None
     try:
         report = get_readiness(config, probe_only=True)
-    except Exception:
-        logger.exception("_readiness_index_reason: get_readiness() failed")
+    except Exception as exc:
+        emit(
+            "query.miss_diagnostics.probe_failed",
+            level=WARNING,
+            outcome="unmeasured",
+            phase="readiness_probe",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
     index_check = next((check for check in report.checks if check.name == "index"), None)
     if index_check is None or index_check.status is VerifyStatus.OK:
@@ -215,8 +235,15 @@ async def _predicate_attribution_reasons(
 
     try:
         probe_result = await probe_predicate_zeroing(selection, config)
-    except Exception:
-        logger.exception("_predicate_attribution_reasons: clause-drop probe failed")
+    except Exception as exc:
+        emit(
+            "query.miss_diagnostics.probe_failed",
+            level=WARNING,
+            outcome="unmeasured",
+            phase="clause_drop",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return []
     reasons = list(probe_result.reasons)
     if not full:
@@ -229,12 +256,26 @@ async def _predicate_attribution_reasons(
                 culprit_fields=probe_result.culprit_fields,
             )
         )
-    except Exception:
-        logger.exception("_predicate_attribution_reasons: date relaxation probe failed")
+    except Exception as exc:
+        emit(
+            "query.miss_diagnostics.probe_failed",
+            level=WARNING,
+            outcome="unmeasured",
+            phase="date_relaxation",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
     try:
         fts_reason = await probe_fts_structured_disagreement(selection, config)
-    except Exception:
-        logger.exception("_predicate_attribution_reasons: fts-vs-structured probe failed")
+    except Exception as exc:
+        emit(
+            "query.miss_diagnostics.probe_failed",
+            level=WARNING,
+            outcome="unmeasured",
+            phase="fts_vs_structured",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         fts_reason = None
     if fts_reason is not None:
         reasons.append(fts_reason)

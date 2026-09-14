@@ -25,7 +25,6 @@ to be rebuilt to satisfy the contract.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from polylogue.api.contracts.assertions import assert_implements
@@ -36,6 +35,7 @@ from polylogue.api.contracts.read_surface import (
     SessionTagsSurface,
 )
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.logging import WARNING, emit
 from polylogue.surfaces.outcome import decide_outcome
 from polylogue.surfaces.payloads import (
     QueryMissDiagnosticsPayload,
@@ -46,8 +46,6 @@ from polylogue.surfaces.payloads import (
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.operations import ArchiveStats
-
-logger = logging.getLogger(__name__)
 
 
 class TUIReadSurface:
@@ -77,8 +75,15 @@ class TUIReadSurface:
         if not sessions:
             try:
                 miss = await facade.diagnose_query_miss(spec)
-            except Exception:
-                logger.warning("query-miss diagnosis failed for %s", spec.describe(), exc_info=True)
+            except Exception as exc:
+                emit(
+                    "api.query_miss.diagnosis_failed",
+                    level=WARNING,
+                    outcome="unmeasured",
+                    reason="diagnosis_raised",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
                 miss = None
                 gaps.append("miss_diagnosis_unavailable")
             if miss is not None:

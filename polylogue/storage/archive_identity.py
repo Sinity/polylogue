@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import logging
 import os
 import socket
 import stat
@@ -16,9 +15,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal
 
+from polylogue.logging import WARNING, emit
 from polylogue.version import VERSION_INFO
-
-logger = logging.getLogger(__name__)
 
 _LOCAL_ARCHIVE_OWNERS_LOCK = threading.RLock()
 _LOCAL_ARCHIVE_OWNERS: dict[tuple[int, int], tuple[int, int, int, str]] = {}
@@ -68,12 +66,13 @@ def resolve_active_index_path(archive_root: Path) -> Path:
     """
     location = ArchiveLocation.resolve(archive_root)
     if location.shadow_index is not None:
-        logger.warning(
-            "stale conventional index path %s diverges from the active generation %s "
-            "(likely an interrupted rebuild promotion that never replaced the conventional "
-            "path with a symlink); resolving to the active pointer target instead of the stale file",
-            location.shadow_index.resolved_path,
-            location.active_index.resolved_path,
+        emit(
+            "storage.archive_identity.stale_conventional_index",
+            level=WARNING,
+            outcome="degraded",
+            reason="shadow_index_diverges_from_active_pointer",
+            path=location.shadow_index.resolved_path,
+            db_path=location.active_index.resolved_path,
         )
     return location.active_index_path
 
@@ -663,10 +662,13 @@ def _acquire_ownership_lock_fd(path: Path, *, owner: str, dir_fd: int | None = N
             os.close(fd)
             suffix = f" (pid={holder_pid})" if holder_pid is not None else ""
             raise ArchiveOwnershipError(f"archive location already owned: {path}{suffix}") from exc
-        logger.warning(
-            "reclaiming stale archive ownership lock %s: recorded holder pid=%d is no longer running",
-            path,
-            holder_pid,
+        emit(
+            "storage.archive_identity.stale_lock_reclaimed",
+            level=WARNING,
+            outcome="degraded",
+            reason="recorded_holder_not_running",
+            path=path,
+            pid=holder_pid,
         )
         for _ in range(_STALE_RECLAIM_ATTEMPTS):
             try:

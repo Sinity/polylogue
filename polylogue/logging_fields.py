@@ -118,6 +118,7 @@ def _fields() -> dict[str, FieldKind]:
         "member_id",
         "cursor_id",
         "tool_id",
+        "generation_id",
         "branch_point_message_id",
     )
 
@@ -144,6 +145,8 @@ def _fields() -> dict[str, FieldKind]:
         "phase",
         "backend",
         "logger",
+        "effect",
+        "operation",
         "thread",
         "method",
         "route",
@@ -180,6 +183,7 @@ def _fields() -> dict[str, FieldKind]:
         "attempts",
         "errors",
         "warnings",
+        "reclaimed",
         "debt",
         "backlog",
         "position",

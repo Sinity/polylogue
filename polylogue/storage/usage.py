@@ -8,7 +8,6 @@ rollups.  It is an audit surface, not a billing estimator.
 from __future__ import annotations
 
 import json
-import logging
 import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
@@ -51,9 +50,8 @@ from polylogue.core.evidence_value import (
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
+from polylogue.logging import WARNING, emit
 from polylogue.storage.introspection import table_exists as _table_exists
-
-logger = logging.getLogger(__name__)
 
 UsageReportDetail = Literal["headline", "full"]
 
@@ -1063,11 +1061,16 @@ def _resolve_subscription_tier_setting(archive_root: Path) -> str | None:
         if envelope is None or not isinstance(envelope.value, str):
             return None
         return envelope.value
-    except sqlite3.Error:
-        logger.warning(
-            "subscription_tier user setting read failed (falling back to the pro default): user_db=%s",
-            user_db,
-            exc_info=True,
+    except sqlite3.Error as exc:
+        emit(
+            "storage.usage.subscription_tier_unreadable",
+            level=WARNING,
+            outcome="degraded",
+            reason="falling_back_to_pro_default",
+            tier="user",
+            db_path=user_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
         )
         return None
 
