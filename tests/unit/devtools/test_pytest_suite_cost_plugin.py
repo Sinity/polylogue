@@ -26,7 +26,7 @@ def test_receipt_records_tier_construction_and_write_bytes(tmp_path: Path) -> No
     receipts = tmp_path / "receipts"
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    recorder = suite_cost.SuiteCostRecorder(receipts, "gw0", scratch)
+    recorder = suite_cost.SuiteCostRecorder(receipts, "gw0", scratch, sample_scratch=True)
 
     initialize_active_archive_root(scratch / "archive")
     recorder.note_test()
@@ -39,6 +39,47 @@ def test_receipt_records_tier_construction_and_write_bytes(tmp_path: Path) -> No
     assert sum(payload["tier_init"].values()) >= 6
     assert payload["io"]["wchar"] > 0
     assert payload["peak_scratch_apparent_bytes"] > 0
+
+
+def test_scratch_tree_walk_is_off_unless_asked_for(tmp_path: Path) -> None:
+    """The always-on receipt stays O(1) per test.
+
+    Anti-vacuity: restoring an unconditional ``sample_storage`` -- the walk that
+    costs O(tests^2/cadence) because pytest keeps a directory per test under the
+    basetemp -- puts the peak keys back into the default payload and reddens
+    this. The tier tally and the io counters must survive that, or the receipt
+    has lost the two numbers the storage budget is stated in.
+    """
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (scratch / "payload.bin").write_bytes(b"x" * 4096)
+    recorder = suite_cost.SuiteCostRecorder(tmp_path / "receipts", "gw0", scratch)
+    recorder.note_test()
+    recorder.sample_storage()
+
+    payload = recorder.payload()
+    assert "peak_scratch_apparent_bytes" not in payload
+    assert "peak_scratch_allocated_bytes" not in payload
+    assert "tier_init" in payload
+    assert payload["io"]["wchar"] > 0
+
+
+def test_tree_walk_stops_at_its_entry_budget(tmp_path: Path) -> None:
+    """One walk is bounded, so an opted-in sample cannot dominate the run.
+
+    Anti-vacuity: dropping the budget check makes the walk visit both files and
+    report ``truncated`` as False, reddening the first two assertions.
+    """
+    for index in range(6):
+        (tmp_path / f"file-{index}.bin").write_bytes(b"x" * 512)
+
+    apparent, _allocated, truncated = suite_cost._tree_bytes(tmp_path, budget=2)
+    assert truncated is True
+    assert apparent < 6 * 512
+
+    whole, _allocated, complete = suite_cost._tree_bytes(tmp_path)
+    assert complete is False
+    assert whole == 6 * 512
 
 
 def test_aggregate_uses_controller_elapsed_without_summing_parallel_peaks(tmp_path: Path) -> None:
