@@ -310,12 +310,51 @@ def _resolved_scope_spec(spec: SessionQuerySpec, *, archive: ArchiveStore) -> Se
     return spec if resolved == scope else dataclass_replace(spec, session_id=resolved)
 
 
+#: The row vocabulary ``cli.query`` reports, declared here because this is
+#: where the row is built. It used to be declared a second time on the client
+#: (``archive_query._DAEMON_LIST_ITEM_KEEP_KEYS`` plus
+#: ``_normalize_daemon_list_item``), which made the operation row and the CLI
+#: row two shapes bridged by a translation step. The operation row is now the
+#: CLI row: the renderer prints what it is handed.
+#:
+#: ``SessionListEnvelope`` carries three further fields -- ``title_source``,
+#: ``title_ref`` and ``cost_provenance`` -- that describe how the row's title
+#: and cost were derived rather than what the session is. They belong to the
+#: reader surfaces that render provenance affordances, not to a terminal row,
+#: and no CLI format has ever printed them.
+_SESSION_LIST_ROW_FIELDS = (
+    "id",
+    "origin",
+    "title",
+    "target_ref",
+    "anchor",
+    "actions",
+    "created_at",
+    "updated_at",
+    "message_count",
+    "tags",
+    "summary",
+    "words",
+    "repo",
+    "cwd_display",
+    "terminal_state",
+    "total_cost_usd",
+    "relative_time",
+    "flags",
+    # Projection columns the operation materialises only when the query asked
+    # for them: the recursive-graph edges of a ``lineage:id:``-seeded page.
+    "parent_refs",
+    "child_refs",
+    "continuation",
+)
+
+
 def _session_list_row(summary: ArchiveSessionSummary) -> dict[str, object]:
     """Render one archive summary as the canonical CLI session-list row.
 
     Two properties are load-bearing, and the CLI's own direct branch
-    (``archive_query._summary_payload``, which builds the very same
-    ``SessionListRowPayload``) establishes both:
+    (``archive_query._summary_payload``, which built the very same
+    ``SessionListRowPayload``) established both:
 
     * ``exclude_none`` -- the compact document.  Emitting explicit nulls here
       made one query render two different documents by transport.
@@ -348,7 +387,7 @@ def _session_list_row(summary: ArchiveSessionSummary) -> dict[str, object]:
     # is what resolves the two. Reporting the null instead would make an
     # unknown outcome indistinguishable from an absent field.
     row["terminal_state"] = session_row(domain, message_count=summary.message_count).outcome
-    return row
+    return {key: row[key] for key in _SESSION_LIST_ROW_FIELDS if row.get(key) is not None}
 
 
 def _search_payload(

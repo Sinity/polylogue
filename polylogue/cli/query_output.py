@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import webbrowser
 from collections.abc import Sequence
@@ -20,29 +19,14 @@ import click
 
 from polylogue.archive.query.search_hits import bound_display_title, bound_search_snippet
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputSpec
-from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_output_contracts import QueryOutputDocument, StructuredRowsDocument
-from polylogue.cli.query_semantic import (
-    SemanticStatsSlice,
-    action_matches_dimension_filters,
-    filtered_actions,
-    normalized_tool_name,
-    output_stats_by_semantic_ids,
-    output_stats_by_semantic_query,
-    output_stats_by_semantic_summaries,
-)
-from polylogue.cli.query_stats import (
-    emit_structured_stats,
-    output_stats_sql,
-)
+from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, emit_no_results
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.localtime import format_local_datetime
 from polylogue.logging import get_logger
 from polylogue.operations.authority import authority_for_config
-from polylogue.rendering.formatting import format_session
 from polylogue.rendering.identity import IdentityFrame, identity_frame
 from polylogue.surfaces.authority import AuthorityEnvelope
-from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
 from polylogue.surfaces.payloads import (
     SearchCursor,
     SessionSearchHitPayload,
@@ -208,97 +192,6 @@ def _stream_date_parts(display_date: object | None) -> tuple[str | None, str | N
 # ---------------------------------------------------------------------------
 
 
-def format_list(
-    results: list[Session],
-    output_format: str,
-    fields: str | None,
-) -> str:
-    """Format a list of sessions for output.
-
-    #1618: JSON and YAML emit a paginated envelope
-    (``{"items": [...], "total": N, "limit": N, "offset": 0}``) instead
-    of a bare array so the shape matches the MCP
-    ``list_sessions`` tool. ``next_offset`` is omitted because
-    the CLI doesn't paginate today (it returns the full match set);
-    when CLI pagination lands it will populate the same field MCP
-    already does. Bare-array consumers must read ``.items``.
-    """
-    from polylogue.rendering.formatting import _conv_to_dict
-
-    if output_format == "json":
-        items = [_conv_to_dict(c, fields) for c in results]
-        envelope = {"items": items, "total": len(items), "limit": len(items), "offset": 0}
-        return json.dumps(envelope, indent=2)
-    if output_format == "yaml":
-        import yaml
-
-        items = [_conv_to_dict(c, fields) for c in results]
-        envelope = {"items": items, "total": len(items), "limit": len(items), "offset": 0}
-        return str(yaml.dump(envelope, default_flow_style=False, allow_unicode=True, sort_keys=False))
-    if output_format == "csv":
-        return sessions_to_csv(results)
-
-    frame = identity_frame(str(conv.id) for conv in results)
-    return "\n".join(_session_list_line(conv, frame) for conv in results)
-
-
-def render_session_rich(env: AppEnv, conv: Session) -> None:
-    """Render a session with Rich role colors and thinking block styling."""
-    from rich import box
-    from rich.markdown import Markdown
-    from rich.panel import Panel
-    from rich.text import Text
-
-    from polylogue.ui.theme import THINKING_STYLE, provider_color, role_color
-
-    console = env.ui.console
-    title = conv.display_title or conv.id
-    pc = provider_color(str(conv.origin))
-    header = Text()
-    header.append(title, style="bold")
-    if conv.display_date:
-        header.append(f"  {format_local_datetime(conv.display_date)}", style="dim")
-    header.append(f"  [{pc.hex}]{str(conv.origin)}[/{pc.hex}]")
-    console.print(header)
-    console.print()
-
-    for msg in conv.messages:
-        if not msg.text:
-            continue
-        role = msg.role or "unknown"
-        rc = role_color(role)
-        is_thinking = msg.is_thinking
-        if is_thinking:
-            content = Text(msg.text[:500], style=THINKING_STYLE["rich_style"])
-            if len(msg.text) > 500:
-                content.append(f"\n... ({len(msg.text):,} chars)", style="dim")
-            panel = Panel(
-                content,
-                title=f"{THINKING_STYLE['icon']} Thinking",
-                title_align="left",
-                border_style=THINKING_STYLE["border_color"],
-                box=box.SIMPLE,
-                padding=(0, 1),
-            )
-            console.print(panel)
-            continue
-        try:
-            md = Markdown(msg.text)
-            panel = Panel(
-                md,
-                title=f"[{rc.label}]{role.capitalize()}[/{rc.label}]",
-                title_align="left",
-                border_style=rc.hex,
-                box=box.ROUNDED,
-                padding=(0, 1),
-            )
-            console.print(panel)
-        except Exception:
-            logger.exception("render_session_rich: Panel rendering failed for role %s", role)
-            console.print(f"[{rc.label}]{role.capitalize()}:[/{rc.label}] {msg.text[:200]}")
-        console.print()
-
-
 # ---------------------------------------------------------------------------
 # Delivery and external-output helpers (from query_output_delivery.py)
 # ---------------------------------------------------------------------------
@@ -313,9 +206,9 @@ def deliver_query_output(
         if destination.kind == "stdout":
             click.echo(document.content)
         elif destination.kind == "browser":
-            _open_in_browser(env, document.content, document.output_format, document.session)
+            open_in_browser(env, document.content, document.output_format, document.session)
         elif destination.kind == "clipboard":
-            _copy_to_clipboard(env, document.content)
+            copy_to_clipboard(env, document.content)
         else:
             assert destination.path is not None
             path = destination.path
@@ -433,7 +326,13 @@ def open_result(
 # ---------------------------------------------------------------------------
 
 
-def summary_to_dict(summary: SessionSummary, message_count: int) -> JSONDocument:
+def _summary_to_dict(summary: SessionSummary, message_count: int) -> JSONDocument:
+    """Project one summary onto the summary-list row this module renders.
+
+    Private to ``format_summary_list``: it was exported under its public name
+    with no caller outside this module, which is why the S4 census read it as
+    dead. The projection is real, the export was not.
+    """
     payload = session_list_envelope_from_summary(
         summary,
         message_count=message_count,
@@ -453,7 +352,7 @@ def format_summary_list(
     message_counts = message_counts or {}
     frame = identity_frame(str(summary.id) for summary in summaries)
     document = StructuredRowsDocument(
-        rows=tuple(summary_to_dict(summary, message_counts.get(str(summary.id), 0)) for summary in summaries),
+        rows=tuple(_summary_to_dict(summary, message_counts.get(str(summary.id), 0)) for summary in summaries),
         csv_headers=("id", "date", "origin", "title", "messages", "tags", "summary"),
         csv_rows=tuple(
             (
@@ -785,33 +684,6 @@ async def output_summary_list(
     env.ui.console.print(table)
 
 
-def sessions_to_csv(results: list[Session]) -> str:
-    """Convert hydrated sessions to CSV."""
-    import csv
-    import io
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["id", "date", "origin", "title", "messages", "words", "tags", "summary"])
-
-    for conv in results:
-        tags_str = ",".join(conv.tags) if conv.tags else ""
-        writer.writerow(
-            [
-                str(conv.id),
-                _canonical_date(conv.display_date),
-                str(conv.origin),
-                _single_line(conv.display_title or ""),
-                len(conv.messages),
-                sum(message.word_count for message in conv.messages),
-                tags_str,
-                conv.summary or "",
-            ]
-        )
-
-    return output.getvalue()
-
-
 # ---------------------------------------------------------------------------
 # Streaming output (from query_stream_output.py)
 # ---------------------------------------------------------------------------
@@ -926,21 +798,13 @@ def render_stream_transcript(
     return "".join(parts), emitted
 
 
-def write_message_streaming(message: Message | MessageRecord, output_format: str) -> None:
-    """Write a single streamed message to stdout."""
-    chunk = render_stream_message(message, output_format)
-    if chunk:
-        sys.stdout.write(chunk)
-        sys.stdout.flush()
-
-
 def no_results(
     env: AppEnv,
     output: QueryOutputSpec,
     *,
     selection: SessionQuerySpec | None = None,
     diagnostics: QueryMissDiagnostics | None = None,
-    exit_code: int | None = OUTCOME_EXIT_CODES["empty"],
+    exit_code: int | None = EMPTY_EXIT_CODE,
 ) -> None:
     """Emit the canonical no-results contract for output surfaces."""
     emit_no_results(
@@ -950,44 +814,6 @@ def no_results(
         output_format=output.output_format,
         exit_code=exit_code,
     )
-
-
-# ---------------------------------------------------------------------------
-# Main output dispatch (from original query_output.py)
-# ---------------------------------------------------------------------------
-
-
-def output_results(
-    env: AppEnv,
-    results: list[Session],
-    output: QueryOutputSpec,
-    *,
-    selection: SessionQuerySpec | None = None,
-    diagnostics: QueryMissDiagnostics | None = None,
-) -> None:
-    """Output query results."""
-    if not results:
-        no_results(env, output, selection=selection, diagnostics=diagnostics)
-
-    if len(results) == 1 and not output.list_mode:
-        conv = results[0]
-        if output.output_format == "markdown" and output.destination_labels() == ("stdout",) and not env.ui.plain:
-            _render_session_rich(env, conv)
-            return
-        content = format_session(conv, output.output_format, output.fields)
-        _send_output(env, content, output.destinations, output.output_format, conv)
-        return
-
-    content = _format_list(results, output.output_format, output.fields)
-    _send_output(env, content, output.destinations, output.output_format, None)
-
-
-# Internal aliases used within this module and by tests
-_write_message_streaming = write_message_streaming
-_copy_to_clipboard = copy_to_clipboard
-_open_in_browser = open_in_browser
-_format_list = format_list
-_render_session_rich = render_session_rich
 
 
 def _send_output(
@@ -1010,32 +836,17 @@ def _send_output(
 
 
 __all__ = [
-    "SemanticStatsSlice",
-    "action_matches_dimension_filters",
-    "sessions_to_csv",
     "copy_to_clipboard",
     "deliver_query_output",
-    "emit_structured_stats",
-    "filtered_actions",
-    "format_list",
     "format_search_hit_list",
     "format_summary_list",
-    "normalized_tool_name",
     "open_in_browser",
     "open_result",
-    "output_results",
     "format_search_envelope",
     "output_search_hits",
-    "output_stats_by_semantic_ids",
-    "output_stats_by_semantic_query",
-    "output_stats_by_semantic_summaries",
-    "output_stats_sql",
     "output_summary_list",
-    "render_session_rich",
     "render_stream_footer",
     "render_stream_header",
     "render_stream_message",
     "render_stream_transcript",
-    "summary_to_dict",
-    "write_message_streaming",
 ]
