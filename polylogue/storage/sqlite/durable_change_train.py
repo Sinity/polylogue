@@ -662,13 +662,30 @@ def _fresh_durable_bootstrap_tier_is_own(
     return proven is not None and proven >= version
 
 
+def _fresh_durable_bootstrap_tier_version_skew(archive_root: Path, tier: ArchiveTier, version: int) -> bool:
+    """Report whether a live tier simply stands at a different version.
+
+    A tier whose own ``user_version`` disagrees with the marker is neither
+    corroboration nor proof of a transplanted marker: it is ordinary durable
+    schema skew, which the startup mismatch gate already owns by leaving the
+    daemon degraded. Treating it as tampering turns that designed park back
+    into the startup crash polylogue-39pdi fixed.
+    """
+    tier_path = archive_root / f"{tier.value}.db"
+    if not tier_path.is_file():
+        return False
+    with _open_existing_tier(tier_path) as connection:
+        live_version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
+    return live_version != version
+
+
 def _assert_fresh_durable_bootstrap_is_own(
     archive_root: Path,
     manifest_root: Path,
     versions: dict[ArchiveTier, int],
     *,
     legacy_identity_digest: object = None,
-) -> None:
+) -> set[ArchiveTier]:
     """Refuse a bootstrap marker this archive's own durable content denies.
 
     ``legacy_identity_digest`` is the path-and-inode seal markers written by
@@ -681,15 +698,23 @@ def _assert_fresh_durable_bootstrap_is_own(
         from polylogue.storage.archive_identity import ArchiveIdentity
 
         if legacy_identity_digest == _durable_identity_digest(ArchiveIdentity.resolve(archive_root)):
-            return
+            return set()
+    ungranted: set[ArchiveTier] = set()
     for tier, version in versions.items():
         if version <= DURABLE_MIGRATION_ADOPTION_FLOORS[tier]:
             # The marker grants nothing above the adoption floor for this tier.
             continue
-        if not _fresh_durable_bootstrap_tier_is_own(archive_root, manifest_root, tier, version):
-            raise DurableChangeTrainError(
-                f"fresh durable bootstrap marker is not this archive's own {tier.value} bootstrap evidence"
-            )
+        if _fresh_durable_bootstrap_tier_is_own(archive_root, manifest_root, tier, version):
+            continue
+        if _fresh_durable_bootstrap_tier_version_skew(archive_root, tier, version):
+            # Skew, not transplantation: grant this tier nothing and let the
+            # ordinary mismatch path decide, rather than failing startup.
+            ungranted.add(tier)
+            continue
+        raise DurableChangeTrainError(
+            f"fresh durable bootstrap marker is not this archive's own {tier.value} bootstrap evidence"
+        )
+    return ungranted
 
 
 def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> dict[ArchiveTier, int]:
@@ -719,13 +744,13 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
         if not isinstance(raw_version, int) or raw_version < 0:
             raise DurableChangeTrainError(f"fresh durable bootstrap marker version is invalid: {marker_path}")
         versions[tier] = raw_version
-    _assert_fresh_durable_bootstrap_is_own(
+    ungranted = _assert_fresh_durable_bootstrap_is_own(
         archive_root,
         marker_root,
         versions,
         legacy_identity_digest=payload.get("durable_identity_digest"),
     )
-    return versions
+    return {tier: version for tier, version in versions.items() if tier not in ungranted}
 
 
 def _load_fresh_durable_bootstrap_marker(archive_root: Path) -> tuple[Path, dict[str, object]] | None:
