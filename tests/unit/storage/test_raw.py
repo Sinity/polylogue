@@ -75,7 +75,7 @@ class TestRawSessionStorage:
             )
             admitted = await cursor.fetchone()
             assert admitted is not None
-            assert admitted[0].startswith("pending:")
+            assert admitted[0].startswith("pending-raw:")
             assert admitted[1] == "full"
             assert admitted[2] is not None
             assert admitted[3] == 0
