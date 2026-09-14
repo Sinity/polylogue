@@ -5,7 +5,9 @@ from __future__ import annotations
 import errno
 import http.client
 import json
+import os
 import socket
+import struct
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
@@ -22,6 +24,7 @@ from polylogue.operations.daemon_errors import (
     DaemonOperationRejected,
     DaemonOperationRejectedError,
     DaemonResponseError,
+    DaemonSocketOwnershipError,
 )
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_OUTCOMES,
@@ -35,6 +38,38 @@ from polylogue.operations.daemon_protocol import (
 )
 
 
+def _reject_foreign_peer(sock: socket.socket, socket_path: Path) -> None:
+    """Refuse a socket served by another user before any credential is sent.
+
+    The daemon's socket path is predictable and its fallback locations sit
+    under a shared temporary directory, so another local user can bind a
+    replacement at the same name. This client sends ``Authorization: Bearer
+    <machine token>`` on its first request, with no prior exchange that could
+    establish who is listening -- so whoever answers receives the bearer. The
+    kernel's ``SO_PEERCRED`` is the one answer that cannot be spoofed: it is
+    filled in by the kernel at ``connect`` time, not by the peer, and it is
+    read before a single header goes out.
+
+    This mirrors ``polylogue.daemon.uds._peer_principal``, which is the same
+    check in the other direction.
+    """
+
+    peercred = getattr(socket, "SO_PEERCRED", None)
+    if peercred is None:  # pragma: no cover - non-Linux platforms
+        return
+    try:
+        credentials = sock.getsockopt(socket.SOL_SOCKET, peercred, struct.calcsize("3i"))
+        _pid, uid, _gid = struct.unpack("3i", credentials)
+    except (OSError, struct.error) as exc:
+        raise DaemonSocketOwnershipError(
+            f"peer credentials are unavailable for {socket_path}; refusing to send the machine bearer"
+        ) from exc
+    if uid != os.geteuid():
+        raise DaemonSocketOwnershipError(
+            f"{socket_path} is served by uid {uid}, not {os.geteuid()}; refusing to send the machine bearer"
+        )
+
+
 class _UnixHTTPConnection(http.client.HTTPConnection):
     def __init__(self, socket_path: Path, timeout: float | None) -> None:
         super().__init__("localhost", timeout=timeout)
@@ -45,6 +80,12 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
         self.sock.connect(str(self.socket_path))
+        try:
+            _reject_foreign_peer(self.sock, self.socket_path)
+        except DaemonSocketOwnershipError:
+            self.sock.close()
+            self.sock = None
+            raise
         self.connected = True
 
 
@@ -161,6 +202,10 @@ class DaemonClient:
                 self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
                 self.last_status = response.status
                 return response.status, decoded if isinstance(decoded, dict) else None
+        except DaemonSocketOwnershipError:
+            # A hard refusal, never a transport hiccup: the bearer was withheld
+            # and no fallback may paper over an impostor on the socket path.
+            raise
         except KeyboardInterrupt as exc:
             if mutation and connection.connected:
                 raise DaemonMutationIndeterminateError(
@@ -530,4 +575,5 @@ __all__ = [
     "DaemonOperationRejected",
     "DaemonOperationRejectedError",
     "DaemonResponseError",
+    "DaemonSocketOwnershipError",
 ]
