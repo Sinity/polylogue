@@ -89,8 +89,12 @@ class SqliteDegradationPolicy(BaseModel):
 
     Absence and degradation are classified once at the storage seam
     (``polylogue.storage.tier_access``) and carried as
-    ``polylogue.core.evidence``. ``baseline`` records the per-file count of
-    sites still improvising their own policy; it may shrink, never grow.
+    ``polylogue.core.evidence``. ``baseline`` anchors each site still
+    improvising its own policy by ``(file, sha1 of the normalized handler
+    source)``; the anchor set may shrink, never grow. Anchors rather than
+    per-file counts, because counts measured against two different bases sum on
+    merge: two separately green branches adding one handler each to the same
+    file would redden master.
     """
 
     model_config = ConfigDict(extra="forbid")
