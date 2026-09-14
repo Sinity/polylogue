@@ -2259,45 +2259,14 @@ def capture_durable_database_evidence(
     )
 
 
-def _archive_identity_continuity_matches(
-    actual_digest: str,
-    expected_digest: str,
-    archive_root: Path,
-    tier: ArchiveTier,
-) -> bool:
-    if actual_digest == expected_digest:
-        return True
-    from polylogue.storage.archive_identity import ArchiveIdentity
-
-    identity = ArchiveIdentity.resolve(archive_root.resolve())
-    legacy_digest = identity.authority_identity_digest
-    tier_identity = identity.tier(tier.value).stable_id
-    durable_digest = hashlib.sha256(tier_identity.encode("utf-8")).hexdigest()
-    # Manifests written before the durable-tier identity split contain the
-    # old full-archive digest. Admit that legacy evidence only when the
-    # current archive still has the same legacy identity and the newly
-    # captured evidence proves the durable identity is unchanged.
-    return expected_digest == legacy_digest and actual_digest == durable_digest
-
-
 def _assert_durable_database_continuity(
     actual: DurableDatabaseEvidence,
     expected: DurableDatabaseEvidence,
     *,
     label: str,
-    archive_root: Path | None = None,
-    connection: sqlite3.Connection | None = None,
 ) -> None:
     """Require the live durable file to retain its authenticated evidence."""
     identity_continuous = actual.archive_identity_digest == expected.archive_identity_digest
-    if not identity_continuous and (archive_root is not None or connection is not None):
-        resolved_archive_root = archive_root or _connection_main_path(cast(sqlite3.Connection, connection)).parent
-        identity_continuous = _archive_identity_continuity_matches(
-            actual.archive_identity_digest,
-            expected.archive_identity_digest,
-            resolved_archive_root,
-            actual.tier,
-        )
     if (
         actual.quick_check != expected.quick_check
         or actual.quick_check != ("ok",)
@@ -3042,7 +3011,6 @@ def recover_durable_change_train(
             capture_durable_database_evidence(conn, train.tier),
             pre,
             label="rolled-back recovery",
-            connection=conn,
         )
         updated = replace(
             train,

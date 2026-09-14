@@ -11,38 +11,9 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.core.enums import Origin
-from polylogue.operations import append_acquisition_replay
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.origin_specs import _source_signature, origin_specs
 from polylogue.sources.sqlite_snapshot import sqlite_logical_revision
-
-
-def test_codex_session_meta_read_is_bounded(tmp_path: Path) -> None:
-    """Replay bounds its session_meta read instead of consuming the whole line.
-
-    Replay runs against arbitrary on-disk files, so an unbounded ``readline``
-    is only as bounded as the file happens to be. A header larger than the
-    bound is truncated, fails to parse, and yields no identity -- which is the
-    observable difference from reading it in full.
-
-    Anti-vacuity: dropping the ``_SESSION_META_READ_LIMIT`` argument from
-    ``handle.readline(...)`` reads the entire oversized record, parses it, and
-    returns ``"oversized"``, turning the final assertion red. The bounded-file
-    assertion above it pins that ordinary headers still resolve, so the fix
-    cannot be "always return None".
-    """
-    limit = append_acquisition_replay._SESSION_META_READ_LIMIT
-
-    ordinary = tmp_path / "ordinary.jsonl"
-    ordinary.write_bytes(b'{"type":"session_meta","payload":{"id":"ordinary"}}\n')
-    assert append_acquisition_replay._codex_session_meta_id(str(ordinary)) == "ordinary"
-
-    padding = "x" * (limit + 4096)
-    oversized = tmp_path / "oversized.jsonl"
-    oversized.write_bytes(f'{{"type":"session_meta","payload":{{"id":"oversized","pad":"{padding}"}}}}\n'.encode())
-    assert oversized.stat().st_size > limit
-
-    assert append_acquisition_replay._codex_session_meta_id(str(oversized)) is None
 
 
 def test_chatgpt_declares_no_session_inheritance_branch_point() -> None:

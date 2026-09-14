@@ -45,7 +45,6 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableMigrationClaim,
     DurableRuntimeConsumerResult,
     MigrationResult,
-    _archive_identity_continuity_matches,
     _assert_durable_database_continuity,
     _canonical_json_sha256,
     _require_nonempty,
@@ -1542,7 +1541,7 @@ def _refresh_released_source_train_continuity_locked(
     legacy-authority-digest compatibility path may rewrite that historical
     identity field while preserving the migration evidence.
     """
-    from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation, OwnedArchiveLocation
+    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 
     archive_root = archive_root.resolve()
     mutation_receipt = mutation_receipt.resolve()
@@ -1624,7 +1623,6 @@ def _refresh_released_source_train_continuity_locked(
                     current,
                     retained_current,
                     label="source continuity retained refresh",
-                    archive_root=archive_root,
                 )
             except DurableChangeTrainError:
                 pass
@@ -1667,27 +1665,16 @@ def _refresh_released_source_train_continuity_locked(
                 pre_mutation_evidence,
                 baseline,
                 label="source continuity pre-mutation",
-                archive_root=archive_root,
             )
         except DurableChangeTrainError as exc:
             raise DurableSourceContinuitySemanticError(
                 "source continuity refresh pre-state contains unreceipted content drift"
             ) from exc
-        if not _archive_identity_continuity_matches(
-            pre_mutation_evidence.archive_identity_digest,
-            train.apply_evidence.post.archive_identity_digest,
-            archive_root,
-            ArchiveTier.SOURCE,
-        ):
+        if pre_mutation_evidence.archive_identity_digest != train.apply_evidence.post.archive_identity_digest:
             raise DurableSourceContinuitySemanticError(
                 "source continuity refresh pre-state has the wrong archive identity"
             )
-        if not _archive_identity_continuity_matches(
-            current.archive_identity_digest,
-            train.apply_evidence.post.archive_identity_digest,
-            archive_root,
-            ArchiveTier.SOURCE,
-        ):
+        if current.archive_identity_digest != train.apply_evidence.post.archive_identity_digest:
             raise DurableSourceContinuitySemanticError("source continuity refresh changed archive identity")
         if pre_mutation_evidence.quick_check != ("ok",) or current.quick_check != ("ok",):
             raise DurableSourceContinuitySemanticError(
@@ -1700,18 +1687,6 @@ def _refresh_released_source_train_continuity_locked(
             else None
         )
         retained_apply_evidence = train.apply_evidence
-        legacy_archive_identity_digest = ArchiveIdentity.resolve(archive_root).authority_identity_digest
-        if (
-            retained_apply_evidence.post.archive_identity_digest == legacy_archive_identity_digest
-            and current.archive_identity_digest != retained_apply_evidence.post.archive_identity_digest
-        ):
-            retained_apply_evidence = replace(
-                retained_apply_evidence,
-                post=replace(
-                    retained_apply_evidence.post,
-                    archive_identity_digest=current.archive_identity_digest,
-                ),
-            )
         if _SOURCE_CONTINUITY_REFRESH_INTENT_REF in train.proof_refs:
             raise DurableChangeTrainError("source continuity refresh train retains an unfinished receipt intent")
         references_without_receipt = _migration_runner._append_proof_refs(
@@ -2802,7 +2777,7 @@ def _verify_persisted_live_tier_continuity(
             f"{train.tier.value} durable tier continuity proof failed; refusing startup initialization/release"
         )
     try:
-        _assert_durable_database_continuity(actual, expected, label=train.tier.value, connection=conn)
+        _assert_durable_database_continuity(actual, expected, label=train.tier.value)
     except DurableChangeTrainError as exc:
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier continuity proof failed; refusing startup initialization/release"
@@ -2880,7 +2855,6 @@ def _verify_released_train_live_tier(
                 actual,
                 train.source_continuity_evidence,
                 label="source continuity refresh",
-                connection=conn,
             )
         else:
             _verify_persisted_live_tier_continuity(conn, train, actual=actual)
@@ -2894,12 +2868,7 @@ def _verify_released_train_live_tier(
         # manifest digest, leaving that receipt authority unauthenticated.
         _validate_source_continuity_refresh_receipt(archive_root, train)
         expected_identity = train.source_continuity_evidence.archive_identity_digest
-    if not _archive_identity_continuity_matches(
-        actual.archive_identity_digest,
-        expected_identity,
-        archive_root,
-        train.tier,
-    ):
+    if actual.archive_identity_digest != expected_identity:
         raise DurableChangeTrainError(
             f"{train.tier.value} durable tier immutable archive identity differs from historical train "
             f"v{train.target_version} after later train advancement"
