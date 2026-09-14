@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import threading
 from contextlib import closing
 from pathlib import Path
 
@@ -282,3 +283,93 @@ def test_the_cached_write_connection_is_refused_without_a_lease(tmp_path: Path) 
         with pytest.raises(UnleasedWriteError):
             with cached_write_connection(tmp_path / "cached.db"):
                 pass
+
+
+def test_an_over_budget_hold_does_not_displace_its_own_failure() -> None:
+    """A failing over-budget hold reports its own error, not the budget breach.
+
+    Determinism: ``max_hold_seconds=0.0`` puts the hold over budget on every
+    run without a sleep, since ``held_seconds`` is strictly positive by the
+    time release is reached. No timing window is raced.
+
+    Anti-vacuity: raising ``WriteHoldExceededError`` from the release
+    ``finally`` -- the previous behavior -- turns this red. That masking is not
+    cosmetic: ``_publication_commit_known`` in ``daemon/convergence.py``
+    recovers a partial-write fact by ``isinstance`` on the raised exception, so
+    a displaced error makes a committed index replacement with an unlowered
+    marker report as an ordinary failure carrying no committed fact.
+    """
+
+    class PartialWriteError(RuntimeError):
+        def __init__(self) -> None:
+            super().__init__("index committed, marker lowering failed")
+            self.index_family_committed = True
+
+    with pytest.raises(PartialWriteError) as caught:
+        with write_lease("test.failing_slow_writer", max_hold_seconds=0.0):
+            raise PartialWriteError
+
+    # The typed fact an ``except`` clause needs survives the over-budget release.
+    assert caught.value.index_family_committed is True
+
+
+def test_a_failing_over_budget_hold_still_releases_the_lease() -> None:
+    """The contextvar is restored on the failing path, not only the clean one.
+
+    Deterministic for the same reason as above; a leaked lease would let the
+    next unrelated caller in this context open a write connection unleased.
+    """
+
+    class BoomError(RuntimeError):
+        pass
+
+    with pytest.raises(BoomError):
+        with write_lease("test.failing_slow_writer", max_hold_seconds=0.0):
+            raise BoomError
+
+    assert current_write_lease() is None
+
+
+def test_an_unbound_thread_that_inherits_the_lease_is_still_refused() -> None:
+    """A spawned thread must not write on a lease it merely inherited.
+
+    This interpreter is a free-threading (no-GIL) CPython build, and on it a
+    new ``threading.Thread`` starts from a *copy* of the creating thread's
+    context rather than an empty one. So a thread spawned while the daemon
+    holds the write lease observes that lease in ``_ACTIVE`` -- the
+    ContextVar does not isolate it. What actually keeps the single-writer
+    boundary is the bound-thread check: the inherited lease names the owner's
+    thread id, and an unbound thread is refused.
+
+    Determinism: no sleeps. The worker is joined before the assertion, so the
+    result is observed after the thread has certainly finished, and the lease
+    is held for the whole join. Nothing races.
+
+    Anti-vacuity: deleting the ``bound_thread_ids`` check in
+    ``require_write_lease`` turns this green-to-red -- the inherited lease
+    would authorize an arbitrary thread to open a durable write connection
+    while the daemon believes it is the sole writer. It is red today only by
+    that check, not by contextvar isolation.
+    """
+    observed: dict[str, object] = {}
+
+    def worker() -> None:
+        observed["inherited_lease"] = current_write_lease()
+        try:
+            require_write_lease("worker durable write")
+        except UnleasedWriteError as exc:
+            observed["outcome"] = f"refused: {exc}"
+        else:
+            observed["outcome"] = "allowed"
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+        thread = threading.Thread(target=worker, name="inheriting-worker")
+        thread.start()
+        thread.join()
+
+    # The inheritance itself is real: the guard, not isolation, is the defense.
+    assert observed["inherited_lease"] is lease
+    assert str(observed["outcome"]).startswith("refused: ")
+    assert "unauthorized thread" in str(observed["outcome"])
+    # The worker must not have smuggled itself into the owner's bound set.
+    assert lease.bound_thread_ids == {lease.owner_thread_id}

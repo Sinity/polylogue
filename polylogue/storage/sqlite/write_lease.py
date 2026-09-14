@@ -21,6 +21,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.logging import get_logger
+
 __all__ = [
     "UnleasedWriteError",
     "WriteHoldExceededError",
@@ -32,6 +34,8 @@ __all__ = [
     "write_lease",
     "write_lease_enforced",
 ]
+
+logger = get_logger(__name__)
 
 
 class UnleasedWriteError(RuntimeError):
@@ -48,6 +52,10 @@ class WriteHoldExceededError(RuntimeError):
     hold's own writer in an undefined state. Its purpose is to make an
     over-budget hold a typed failure the caller must handle rather than a
     longer wait every other writer silently absorbs.
+
+    Raised only when the hold exits cleanly. A hold that is already failing
+    reports its own exception, which is the stronger signal and may carry
+    typed partial-write facts; the budget breach is logged instead.
     """
 
     code = "write_hold_exceeded"
@@ -206,7 +214,30 @@ def write_lease(
     token = _ACTIVE.set(lease)
     try:
         yield lease
-    finally:
+    except BaseException:
+        # The hold budget never displaces the hold's own failure. Raising from
+        # the ``finally`` below would replace an in-flight exception with this
+        # timing complaint, demoting it to ``__context__`` where no ``except``
+        # clause matches it. That is worst precisely under contention -- the
+        # only condition that puts a hold over budget -- and it erases typed
+        # partial-write facts: ``SessionProfileMarkerLoweringError`` carries
+        # ``index_family_committed``, which ``_publication_commit_known``
+        # recovers by ``isinstance``, so masking it reports a committed index
+        # replacement with an unlowered marker as an ordinary failure and
+        # drops the committed fact the operator needs. An over-budget hold is
+        # still reported: the caller's own error is the stronger signal, and
+        # the budget breach is logged rather than raised.
+        if lease.over_budget:
+            logger.warning(
+                "writer %s held the lease %.3fs against a declared %.3fs budget "
+                "while failing; reporting the hold's own error",
+                actor,
+                lease.held_seconds,
+                lease.max_hold_seconds,
+            )
+        _ACTIVE.reset(token)
+        raise
+    else:
         _ACTIVE.reset(token)
         if lease.over_budget:
             raise WriteHoldExceededError(

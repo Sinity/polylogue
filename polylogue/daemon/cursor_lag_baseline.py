@@ -44,6 +44,7 @@ from pathlib import Path
 
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.stats import percentile
+from polylogue.core.write_lease import write_lease
 from polylogue.daemon.cursor_lag_status import CursorLagItem, CursorLagSummary
 from polylogue.logging import get_logger
 from polylogue.sources.live._lag_sample_ddl import _LAG_SAMPLE_DDL, _LAG_SAMPLE_INDEX_DDL
@@ -232,8 +233,29 @@ def _record_archive_cursor_lag_samples(
     if not rows:
         return 0
     ops_db.parent.mkdir(parents=True, exist_ok=True)
+    # Taken under an explicit lease because two of this module's three callers
+    # reach it without one. The daemon arms
+    # ``arm_write_lease_enforcement(process_wide=True)`` for its whole
+    # lifetime; only ``daemon/cli.py``'s periodic health check runs under the
+    # write coordinator. ``daemon/status.py``'s ``health`` status component
+    # runs on a plain collector thread (refreshed every 10s) and
+    # ``daemon/http.py``'s ``/health`` handler runs on a request thread --
+    # neither context holds a lease, so ``require_write_lease`` refused the
+    # connection with ``UnleasedWriteError``, which ``daemon/health.py``
+    # swallows to a warning. The rolling baseline then accrued only from the
+    # periodic loop while every other tick logged noise, and it did so most
+    # under the contention that makes stuck cursors worth sampling.
+    #
+    # The lease is an in-process, re-entrant ContextVar authority, not a
+    # contended resource, so taking it here cannot block a status collector and
+    # does not weaken the single-writer boundary: the bounded 0.1s connection
+    # timeout below remains what limits real SQLite contention, and the
+    # coordinator-held caller re-enters the lease it already owns.
     try:
-        with closing(open_initialized_tier_connection(ops_db, ArchiveTier.OPS, timeout=0.1)) as conn:
+        with (
+            write_lease("daemon.cursor_lag.sample", archive_root=ops_db.parent),
+            closing(open_initialized_tier_connection(ops_db, ArchiveTier.OPS, timeout=0.1)) as conn,
+        ):
             for family, source_path, max_lag_s, stuck_file_count, p50_s, p95_s in rows:
                 record_archive_cursor_lag_sample(
                     conn,
@@ -263,7 +285,10 @@ def _gc_archive_cursor_lag_samples(
         return 0
     cutoff_ms = _epoch_ms((now or datetime.now(UTC)) - timedelta(days=retention_days))
     try:
-        with closing(open_initialized_tier_connection(ops_db, ArchiveTier.OPS, timeout=0.1)) as conn:
+        with (
+            write_lease("daemon.cursor_lag.gc", archive_root=ops_db.parent),
+            closing(open_initialized_tier_connection(ops_db, ArchiveTier.OPS, timeout=0.1)) as conn,
+        ):
             cur = conn.execute("DELETE FROM cursor_lag_samples WHERE sampled_at_ms < ?", (cutoff_ms,))
             conn.commit()
             return cur.rowcount or 0
