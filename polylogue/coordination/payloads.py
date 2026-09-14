@@ -126,8 +126,14 @@ class CoordinationSessionTreeEdgePayload(SurfacePayloadModel):
     child_id: str
     parent_id: str | None = None
     parent_native_id: str | None = None
+    #: Declared ``session_links.link_type``. Orthogonal to ``resolved``: an
+    #: unresolved subagent edge keeps ``kind="subagent"``.
     kind: str
     resolved: bool = True
+    #: Whether traversal may follow this edge. Quarantined, cyclic and
+    #: conflicting-parent edges stay visible here but are never composed.
+    composable: bool = True
+    composability_reason: str | None = None
 
 
 class CoordinationSessionTreePayload(SurfacePayloadModel):
@@ -136,6 +142,14 @@ class CoordinationSessionTreePayload(SurfacePayloadModel):
     nodes: tuple[CoordinationSessionTreeNodePayload, ...] = ()
     edges: tuple[CoordinationSessionTreeEdgePayload, ...] = ()
     cycle_detected: bool = False
+    conflicting_parent_detected: bool = False
+    #: False when the bound trimmed nodes/edges out of this projection. A
+    #: truncated tree must never report as complete.
+    nodes_complete: bool = True
+    edges_complete: bool = True
+    truncated_node_count: int = 0
+    truncated_edge_count: int = 0
+    generation_id: str = "session-links-v1"
     provenance: CoordinationProvenancePayload
 
 
