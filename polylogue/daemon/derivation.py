@@ -47,9 +47,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Protocol
 
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
+from polylogue.logging import WARNING, emit
 
 __all__ = [
     "DEFAULT_PAGE",
@@ -699,7 +697,16 @@ class _Pass:
         try:
             statuses = _coerce_statuses(dict(upstream.inspect(self.frame, (binding.key,))))
         except Exception as exc:
-            logger.warning("derivation: prerequisite inspection failed for %s: %s", binding, exc, exc_info=True)
+            emit(
+                "daemon.derivation.prerequisite_inspect_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="prerequisite_unreadable",
+                domain=binding.domain,
+                derivation_key=str(binding),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             return f"prerequisite {binding} could not be inspected: {exc}"
         status = statuses.get(binding.key, KeyStatus.MISSING)
         if status is not KeyStatus.VALID:
@@ -736,7 +743,16 @@ class _Pass:
                 self.record(KeyOutcome(key=derivation_key, outcome=Outcome.PENDING, reason=PendingReason.QUIET))
                 return
         except Exception as exc:
-            logger.warning("derivation %s: quiet policy failed for %s: %s", adapter.domain, key, exc)
+            emit(
+                "daemon.derivation.key_failed",
+                level=WARNING,
+                outcome="error",
+                phase="quiet",
+                domain=adapter.domain,
+                derivation_key=key,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self.record(KeyOutcome(key=derivation_key, outcome=Outcome.FAILED, error=f"quiet: {exc}"))
             return
 
@@ -745,7 +761,16 @@ class _Pass:
         try:
             replacement = adapter.compute(self.frame, key)
         except Exception as exc:
-            logger.warning("derivation %s: compute failed for %s: %s", adapter.domain, key, exc, exc_info=True)
+            emit(
+                "daemon.derivation.key_failed",
+                level=WARNING,
+                outcome="error",
+                phase="compute",
+                domain=adapter.domain,
+                derivation_key=key,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self.record(
                 KeyOutcome(
                     key=derivation_key,
@@ -762,7 +787,16 @@ class _Pass:
         try:
             accepted = self.publisher(adapter.domain, _publish) if self.publisher is not None else _publish()
         except Exception as exc:
-            logger.warning("derivation %s: publish failed for %s: %s", adapter.domain, key, exc, exc_info=True)
+            emit(
+                "daemon.derivation.key_failed",
+                level=WARNING,
+                outcome="error",
+                phase="publish",
+                domain=adapter.domain,
+                derivation_key=key,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self.record(
                 KeyOutcome(
                     key=derivation_key,
@@ -793,7 +827,16 @@ class _Pass:
         try:
             after = _coerce_statuses(dict(adapter.inspect(self.frame, (key,)))).get(key, KeyStatus.MISSING)
         except Exception as exc:
-            logger.warning("derivation %s: post-publication inspection failed for %s: %s", adapter.domain, key, exc)
+            emit(
+                "daemon.derivation.key_failed",
+                level=WARNING,
+                outcome="error",
+                phase="reinspect",
+                domain=adapter.domain,
+                derivation_key=key,
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             self.record(
                 KeyOutcome(
                     key=derivation_key,
@@ -848,7 +891,16 @@ class _Pass:
             try:
                 page = self.fetch(adapter, position, limit)
             except Exception as exc:
-                logger.warning("derivation %s: discovery failed: %s", domain, exc, exc_info=True)
+                emit(
+                    "daemon.derivation.discovery_failed",
+                    level=WARNING,
+                    outcome="error",
+                    phase="discover",
+                    domain=domain,
+                    reason="output_relation_unreadable",
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
                 self.record(
                     KeyOutcome(key=DerivationKey(domain, "*"), outcome=Outcome.FAILED, error=f"discover: {exc}")
                 )
@@ -864,7 +916,17 @@ class _Pass:
                 try:
                     statuses = _coerce_statuses(dict(adapter.inspect(self.frame, keys)))
                 except Exception as exc:
-                    logger.warning("derivation %s: inspection failed: %s", domain, exc, exc_info=True)
+                    emit(
+                        "daemon.derivation.bulk_inspect_failed",
+                        level=WARNING,
+                        outcome="degraded",
+                        phase="inspect",
+                        domain=domain,
+                        reason="retrying_keys_individually",
+                        considered=len(keys),
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
+                    )
                     # A bulk inspection can fail because one key is poison.
                     # Its page is already bounded, so retry each key to keep
                     # that failure in its own dependency closure instead of
@@ -876,8 +938,15 @@ class _Pass:
                                 key, KeyStatus.MISSING
                             )
                         except Exception as key_exc:
-                            logger.warning(
-                                "derivation %s: inspection failed for %s: %s", domain, key, key_exc, exc_info=True
+                            emit(
+                                "daemon.derivation.key_failed",
+                                level=WARNING,
+                                outcome="error",
+                                phase="inspect",
+                                domain=domain,
+                                derivation_key=key,
+                                error_type=type(key_exc).__name__,
+                                error_detail=str(key_exc),
                             )
                             self.record(
                                 KeyOutcome(

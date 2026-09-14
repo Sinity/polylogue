@@ -31,9 +31,7 @@ from polylogue.core.write_lease import (
     delegate_write_lease,
     write_lease,
 )
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
+from polylogue.logging import ERROR, INFO, WARNING, emit
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -421,22 +419,20 @@ class DaemonWriteCoordinator:
                     hold_over_budget=over_budget,
                 )
             )
-            if over_budget:
-                logger.warning(
-                    "daemon writer held the gate past its budget actor=%s hold_s=%.3f budget_s=%.3f queued=%d; "
-                    "a writer that is not on this gate gives up at its busy timeout, so this hold can starve one",
-                    request.actor,
-                    hold_seconds,
-                    budget_s,
-                    len(self._queued),
-                )
-            logger.info(
-                "daemon writer released actor=%s wait_s=%.6f hold_s=%.6f outcome=%s queued=%d",
-                request.actor,
-                wait_seconds,
-                hold_seconds,
-                outcome,
-                len(self._queued),
+            # One event per release, its level decided by the budget: a hold
+            # that can starve an off-gate writer must not read like every
+            # other release in a long log.
+            emit(
+                "daemon.writer.released",
+                level=WARNING if over_budget else INFO,
+                outcome="degraded" if over_budget else "ok",
+                reason="hold_over_budget" if over_budget else "within_budget",
+                actor=request.actor,
+                status=outcome,
+                wait_ms=round(wait_seconds * 1000, 3),
+                hold_ms=round(hold_seconds * 1000, 3),
+                budget_ms=round(budget_s * 1000, 3),
+                queued=len(self._queued),
             )
 
     async def run_sync(self, actor: str, function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
@@ -532,7 +528,13 @@ class DaemonWriteCoordinator:
                     try:
                         on_complete(done)
                     except BaseException:
-                        logger.error("daemon writer completion callback failed actor=%s", actor, exc_info=True)
+                        emit(
+                            "daemon.writer.completion_callback_failed",
+                            level=ERROR,
+                            outcome="error",
+                            reason="completion_callback_raised",
+                            actor=actor,
+                        )
                 if not self._executions:
                     self._idle.set()
                 return
@@ -545,11 +547,25 @@ class DaemonWriteCoordinator:
                 # daemon-lifetime counter reflects every such event, not only
                 # the ordinary "task.exception() returned non-None" path.
                 record_failure()
-                logger.warning("detached daemon writer failed actor=%s", actor, exc_info=True)
+                emit(
+                    "daemon.writer.detached_failed",
+                    level=WARNING,
+                    outcome="error",
+                    reason="exception_retrieval_failed",
+                    actor=actor,
+                )
             else:
                 if exception is not None:
                     record_failure()
-                    logger.warning("detached daemon writer failed actor=%s: %s", actor, exception)
+                    emit(
+                        "daemon.writer.detached_failed",
+                        level=WARNING,
+                        outcome="error",
+                        reason="writer_raised",
+                        actor=actor,
+                        error_type=type(exception).__name__,
+                        error_detail=str(exception),
+                    )
             if on_complete is not None and (request is None or request.acquired):
                 try:
                     on_complete(done)
@@ -557,7 +573,13 @@ class DaemonWriteCoordinator:
                     # Completion publication must never interfere with writer
                     # lifecycle accounting. Callers that need durable retry
                     # should enqueue a coordinator-managed task.
-                    logger.error("daemon writer completion callback failed actor=%s", actor, exc_info=True)
+                    emit(
+                        "daemon.writer.completion_callback_failed",
+                        level=ERROR,
+                        outcome="error",
+                        reason="completion_callback_raised",
+                        actor=actor,
+                    )
             if not self._executions:
                 self._idle.set()
 
@@ -586,8 +608,15 @@ class DaemonWriteCoordinator:
             return
         try:
             self._observer(event)
-        except Exception:
-            logger.warning("daemon writer telemetry observer failed", exc_info=True)
+        except Exception as exc:
+            emit(
+                "daemon.writer.telemetry_observer_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="observer_raised",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
 
     def _publish_telemetry(self) -> None:
         snapshot = self.snapshot()
@@ -648,19 +677,17 @@ async def _run_in_daemon_thread(
                 result.set_result(value)
 
         if loop.is_closed():
-            if error is None:
-                logger.warning(
-                    "daemon writer thread %s finished after its event loop already closed; "
-                    "the awaiting result future was abandoned",
-                    thread_name,
-                )
-            else:
-                logger.warning(
-                    "daemon writer thread %s finished after its event loop already closed; "
-                    "the awaiting result future was abandoned",
-                    thread_name,
-                    exc_info=(type(error), error, error.__traceback__),
-                )
+            # The result future is abandoned either way; the error lane keeps
+            # the original failure attached instead of dropping it.
+            emit(
+                "daemon.writer.result_abandoned",
+                level=WARNING,
+                outcome="error",
+                reason="event_loop_closed",
+                thread=thread_name,
+                error_type=type(error).__name__ if error is not None else None,
+                error_detail=str(error) if error is not None else None,
+            )
 
     threading.Thread(target=worker, name=thread_name, daemon=True).start()
     return await asyncio.wrap_future(result, loop=loop)
@@ -727,7 +754,14 @@ class DaemonWriteThreadBridge:
                 future.result(timeout=self._timeout)
             except TimeoutError:
                 future.cancel()
-                logger.warning("timed out releasing daemon write gate actor=%s", actor)
+                emit(
+                    "daemon.writer.release_timed_out",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="release_timeout",
+                    actor=actor,
+                    timeout_ms=round(self._timeout * 1000, 3),
+                )
 
     @property
     def owner_loop(self) -> asyncio.AbstractEventLoop:

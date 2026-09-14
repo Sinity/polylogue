@@ -95,7 +95,7 @@ from pathlib import Path
 from typing import Protocol, TypedDict
 
 from polylogue.daemon.process_start import uptime_seconds
-from polylogue.logging import get_logger
+from polylogue.logging import ERROR, WARNING, emit
 from polylogue.storage import archive_layout
 from polylogue.storage.archive_layout import (
     ARCHIVE_ACTIVE_TIER_ROLES,
@@ -104,8 +104,6 @@ from polylogue.storage.archive_layout import (
 )
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
-
-logger = get_logger(__name__)
 
 # Derived from the canonical tier specs so the expected schema version per tier
 # can never drift from ARCHIVE_VERSION_BY_TIER. (tier, filename, expected_version,
@@ -235,7 +233,16 @@ def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table: st
     try:
         return _table_exists(conn, table, schema=schema_name)
     except sqlite3.Error as exc:
-        logger.warning("metrics: attached-table probe failed for %s.%s: %s", schema_name, table, exc, exc_info=True)
+        emit(
+            "daemon.metrics.probe_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="attached_table_unreadable",
+            schema_name=schema_name,
+            table_name=table,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return False
 
 
@@ -301,7 +308,15 @@ def _ops_attempt_counts(ops_db: Path) -> dict[str, int] | None:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("metrics: ops attempt-counts query failed for %s: %s", ops_db, exc, exc_info=True)
+        emit(
+            "daemon.metrics.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="attempt_counts_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
     if not rows:
         return None
@@ -368,7 +383,15 @@ def _ops_recent_attempt_durations(ops_db: Path, *, limit: int = 50) -> list[floa
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("metrics: ops attempt-durations query failed for %s: %s", ops_db, exc, exc_info=True)
+        emit(
+            "daemon.metrics.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="attempt_durations_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return []
     return [max(0.0, (int(row[1]) - int(row[0])) / 1000.0) for row in rows if row[0] is not None and row[1] is not None]
 
@@ -535,7 +558,15 @@ def _ops_latest_ingest_memory(ops_db: Path) -> list[tuple[str, float]]:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("metrics: ops latest-ingest-memory query failed for %s: %s", ops_db, exc, exc_info=True)
+        emit(
+            "daemon.metrics.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="ingest_memory_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return []
     if row is None:
         return []
@@ -660,7 +691,15 @@ def _ops_storage_route_counts(ops_db: Path) -> dict[str, int] | None:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("metrics: ops storage-route-counts query failed for %s: %s", ops_db, exc, exc_info=True)
+        emit(
+            "daemon.metrics.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="storage_route_counts_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
 
 
@@ -862,7 +901,15 @@ def _archive_latest_embedding_run_state(ops_db: Path | None) -> ArchiveEmbedding
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("metrics: archive latest-embedding-run query failed for %s: %s", ops_db, exc, exc_info=True)
+        emit(
+            "daemon.metrics.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="latest_embedding_run_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
     if not runs:
         return None
@@ -1429,7 +1476,14 @@ def _emit_hook_flow_metrics(lines: list[str], configured_root: Path) -> None:
         # statuses=() reads identically to "no hooks configured" on the
         # emitted gauges. Log so a hook_statuses() bug doesn't masquerade as
         # a clean hook-flow dashboard.
-        logger.warning("metrics: hook-flow status query failed: %s", exc, exc_info=True)
+        emit(
+            "daemon.metrics.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="hook_flow_statuses_unreadable",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         statuses = ()
     healthy_samples: list[tuple[dict[str, str] | None, float | int]] = []
     state_samples: list[tuple[dict[str, str] | None, float | int]] = []
@@ -1612,7 +1666,15 @@ def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("metrics: ops throughput query failed for %s: %s", ops_db, exc, exc_info=True)
+        emit(
+            "daemon.metrics.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="throughput_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return False
 
     if row is None:
@@ -1730,7 +1792,15 @@ def _emit_db_space_metrics(lines: list[str], db: Path) -> None:
         finally:
             space_conn.close()
     except Exception as exc:
-        logger.warning("metrics: db-space query failed for %s: %s", db, exc, exc_info=True)
+        emit(
+            "daemon.metrics.query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="db_space_unreadable",
+            path=db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
 
 
 def _emit_archive_storage_metrics(lines: list[str], db: Path, *, configured_root: Path) -> None:
@@ -1976,7 +2046,15 @@ def _archive_user_version(path: Path) -> int:
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        logger.warning("metrics: archive user_version probe failed for %s: %s", path, exc, exc_info=True)
+        emit(
+            "daemon.metrics.probe_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="user_version_unreadable",
+            path=path,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return 0
 
 
@@ -1999,7 +2077,15 @@ def _emit_raw_record_metrics(lines: list[str], conn: sqlite3.Connection, *, db_p
                 finally:
                     source_conn.close()
             except sqlite3.Error as exc:
-                logger.warning("metrics: source.db raw-record probe failed for %s: %s", source_db, exc, exc_info=True)
+                emit(
+                    "daemon.metrics.probe_failed",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="raw_record_probe_unreadable",
+                    path=source_db,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
     if not _table_exists(conn, "raw_sessions"):
         _emit_metric(
             lines, name="polylogue_raw_records_total", help_text="Total raw records.", metric_type="gauge", samples=[]
@@ -2061,7 +2147,14 @@ def handle_metrics(responder: MetricsResponder, db: Path) -> None:
     try:
         body = format_metrics(db)
     except Exception as exc:
-        logger.exception("metrics collection failed")
+        emit(
+            "daemon.metrics.collection_failed",
+            level=ERROR,
+            outcome="degraded",
+            reason="metrics_collection_failed",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         body = (
             "# HELP polylogue_daemon_metrics_collection_error Metrics collection failed.\n"
             "# TYPE polylogue_daemon_metrics_collection_error gauge\n"
