@@ -7,9 +7,19 @@ Session-id, tag, repo-name and tool-name values come from native
 session/tag/repo/action read models; cwd-prefix has no archive source yet and
 degrades to an empty completion list.
 
-Completion runs on the coldest path the CLI has and must never raise into the
-shell: a missing archive, an unreachable daemon or any typed refusal falls back
-to the static grammar answer, which for these value sources is an empty list.
+The daemon answers or nobody does. Completion runs on the coldest path the CLI
+has, and executing the read locally means building the execution graph and
+opening the archive for one keystroke -- measured in seconds, which is not a
+completion. So the archive-backed sources dispatch ``daemon_only`` and a
+missing daemon becomes a displayed refusal naming how to start it, not a
+silently empty list that reads as "no matches".
+
+Declared vocabularies are answered here and never leave the process: an origin
+is a declaration, not archive content, so ``--origin`` completes on a fresh
+install with no daemon and no archive.
+
+Completion must never raise into the shell: every other failure degrades to an
+empty list.
 """
 
 from __future__ import annotations
@@ -42,6 +52,7 @@ from polylogue.archive.query.metadata import (
     terminal_query_sources,
 )
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
+from polylogue.cli.shell_completion_classes import MESSAGE_COMPLETION_TYPE, completion_message
 from polylogue.cli.shell_words import completion_words
 from polylogue.core.enums import MaterialOrigin
 from polylogue.sources.origin_specs import public_origin_descriptions
@@ -55,6 +66,13 @@ _MAX_VALUE_COMPLETIONS = 32
 #: missing completion, so this bounds the socket call rather than inheriting the
 #: operation's ordinary read deadline.
 _COMPLETION_DEADLINE_MS = 1000
+
+#: Shown, not inserted, when an archive-backed completion has no daemon to ask.
+#: It names the remedy because "unsupported without a daemon" and "broken" look
+#: identical from a shell prompt otherwise.
+DAEMON_REQUIRED_COMPLETION_MESSAGE = (
+    "polylogue: no daemon — archive-backed completion needs `polylogued run` (systemctl --user start polylogued)"
+)
 CompletionCallback = Callable[[click.Context, click.Parameter, str], list[CompletionItem]]
 
 
@@ -72,33 +90,50 @@ def _split_csv_incomplete(incomplete: str) -> tuple[str, str]:
 def _with_csv_prefix(items: list[CompletionItem], prefix: str) -> list[CompletionItem]:
     if not prefix:
         return items
-    return [CompletionItem(f"{prefix}{item.value}", type=item.type, help=item.help) for item in items]
+    return [
+        # A message is displayed, never inserted, so carrying the CSV prefix
+        # into it would render the diagnosis as a candidate value.
+        item
+        if item.type == MESSAGE_COMPLETION_TYPE
+        else CompletionItem(f"{prefix}{item.value}", type=item.type, help=item.help)
+        for item in items
+    ]
 
 
 def completion_values(source: str, incomplete: str, *, limit: int) -> list[CompletionItem]:
     """Ask the declared ``completion`` operation for one value vocabulary.
 
-    A completer runs on every TAB press and must never raise into the shell, so
-    every failure -- no archive yet, an unreachable or refusing daemon, a typed
-    operation error -- degrades to the static answer, which for an
-    archive-backed source is an empty list. The bound travels in the request:
-    the shell wants a short list quickly, not a complete one.
+    The resident daemon answers from its open snapshot or nothing does: the
+    dispatch is ``daemon_only`` precisely so that a TAB press can never fall
+    through to the local reader, which would open the archive and take seconds.
+    A missing daemon returns one displayed :func:`completion_message` instead,
+    because a bare empty list reads as "the archive has no matching values".
+
+    Every other failure degrades to an empty list: a completer has no channel
+    to report on, and a traceback printed into a shell prompt is strictly worse
+    than no completion. The bound travels in the request -- the shell wants a
+    short list quickly, not a complete one.
     """
 
     try:
-        from polylogue.cli.operation_kernel import OperationRequest, dispatch
+        from polylogue.cli.operation_kernel import OperationRequest, OperationUnavailableError, dispatch
         from polylogue.config import get_config
+    except Exception:
+        return []
 
+    try:
         result = dispatch(
             get_config(),
             OperationRequest("completion", {"source": source, "incomplete": incomplete, "limit": limit}),
             deadline_ms=_COMPLETION_DEADLINE_MS,
+            daemon_only=True,
         )
+    except OperationUnavailableError:
+        return [completion_message(DAEMON_REQUIRED_COMPLETION_MESSAGE)]
     except Exception:
-        # Deliberately broad. ``OperationKernelError`` is the expected failure
-        # (no archive yet, an unreachable or refusing daemon), but a completer
-        # has no channel to report anything on, and a traceback printed into a
-        # shell prompt is strictly worse than no completion.
+        # Deliberately broad: see the docstring. Any other typed refusal or
+        # transport failure is rendered as no completion rather than a
+        # traceback in the prompt.
         return []
     value = result.value if isinstance(result.value, dict) else {}
     completions = value.get("value_completions")
@@ -560,6 +595,8 @@ def complete_query_source(source: CompletionSource) -> CompletionCallback:
 
 __all__ = [
     "COMPLETION_SOURCE_HANDLERS",
+    "DAEMON_REQUIRED_COMPLETION_MESSAGE",
+    "completion_values",
     "complete_action_sequence_values",
     "complete_action_values",
     "complete_query_actions",

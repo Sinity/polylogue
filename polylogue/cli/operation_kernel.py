@@ -270,6 +270,7 @@ def dispatch(
     request: OperationRequest,
     *,
     daemon_disabled: bool = False,
+    daemon_only: bool = False,
     archive_root: Any = None,
     deadline_ms: int | None = None,
     read_control: Any = None,
@@ -288,16 +289,31 @@ def dispatch(
     the root.  ``deadline_ms`` overrides the operation's declared deadline for the socket
     call and ``read_control`` carries the caller's cancellation/deadline state
     into a direct read; all three are passed through rather than reinterpreted.
+
+    ``daemon_only`` refuses the local fallback instead of taking it, raising
+    :class:`OperationUnavailableError` when no socket answers. It exists for
+    callers whose latency budget the direct reader cannot meet -- shell
+    completion runs on a keystroke, and executing the read locally means
+    building the execution graph and opening the archive for a TAB press. Such
+    a caller wants the typed "no daemon" refusal, not a correct answer seconds
+    later.
     """
     spec = request.spec
     operation = request.operation
     payload = dict(request.payload)
-    from polylogue.operations.operation_context import operation_archive_root
+    if archive_root is not None:
+        root = archive_root
+    else:
+        # Imported here, and from the addressing module rather than
+        # ``operation_context``: resolving *where* to read must not pull in the
+        # machinery for actually reading. A daemon-only dispatch may never open
+        # an archive at all.
+        from polylogue.operations.archive_root import operation_archive_root
 
-    root = archive_root if archive_root is not None else operation_archive_root(config)
+        root = operation_archive_root(config)
 
     if daemon_disabled:
-        if not spec.direct_allowed:
+        if daemon_only or not spec.direct_allowed:
             raise OperationUnavailableError(f"daemon is unavailable for operation: {operation}")
         envelope = _execute_directly(config, operation, payload, archive_root=root, read_control=read_control)
         return OperationKernel(lambda _request: envelope).execute(request)
@@ -322,7 +338,7 @@ def dispatch(
         return OperationKernel(_ask_daemon).execute(request)
     except OperationUnavailableError:
         # No socket answered.  Fall through to the local reader.
-        if not spec.direct_allowed:
+        if daemon_only or not spec.direct_allowed:
             raise
 
     # Deliberately executed OUTSIDE the kernel.  The kernel's catch-all maps any
