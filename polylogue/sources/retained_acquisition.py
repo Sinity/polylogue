@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission
+from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, BoundedMemberReport, ZipAdmission
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
@@ -79,8 +79,11 @@ def iter_retained_source_records(
         yield RetainedRawRecord('["physical-file-v1",0]', data)
         return
 
-    rejected: list[str] = []
-    unselected: list[str] = []
+    # Both channels are driven by attacker-controlled central-directory
+    # metadata, so they count exactly under a bounded detail sample rather than
+    # accumulating one string per member (and then joining them all).
+    rejected = BoundedMemberReport()
+    unselected = BoundedMemberReport()
     with blob_store.open(blob_hash) as physical, zipfile.ZipFile(physical) as archive:
         entries = archive.infolist()
         ordinals = {id(entry): ordinal for ordinal, entry in enumerate(entries)}
@@ -109,8 +112,8 @@ def iter_retained_source_records(
         for entry in validator.filter_entries(
             entries,
             allowed_path=allowed_path,
-            on_rejected=lambda _entry, reason: rejected.append(reason),
-            on_unselected=lambda entry, reason: unselected.append(f"{entry.filename}: {reason}"),
+            on_rejected=lambda _entry, reason: rejected.record(reason),
+            on_unselected=lambda entry, reason: unselected.record(f"{entry.filename}: {reason}"),
         ):
             ordinal = ordinals[id(entry)]
             # Under a residual UNKNOWN the container hint cannot name the family
@@ -148,8 +151,8 @@ def iter_retained_source_records(
             outcome="degraded",
             reason="member_refused",
             path=logical_path,
-            skipped=len(rejected),
-            error_detail="; ".join(rejected),
+            skipped=rejected.count,
+            error_detail=rejected.detail(),
         )
     if unselected:
         # Non-selection is ordinary, but this route's caller records normal
@@ -162,6 +165,6 @@ def iter_retained_source_records(
             outcome="degraded",
             reason="member_unselected",
             path=logical_path,
-            skipped=len(unselected),
-            error_detail="; ".join(unselected),
+            skipped=unselected.count,
+            error_detail=unselected.detail(),
         )
