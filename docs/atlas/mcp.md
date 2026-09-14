@@ -2,41 +2,43 @@
 
 ## Area boundary
 
-The live MCP surface is a twelve-tool operation algebra. Six read tools are always available; six privileged tools appear only under independent capability flags (`polylogue/mcp/declarations/registry.py:65-239`; `polylogue/mcp/declarations/models.py:11-40`).
+The live MCP surface is a twelve-tool operation algebra. Six read tools are always available; six privileged tools appear only under independent capability flags (`polylogue/mcp/declarations/registry.py:70-274`; `polylogue/mcp/declarations/models.py:11-40`).
 
 ## Tool inventory
 
 | Tool | Gate | Role |
 | --- | --- | --- |
-| `query` | read/default | Execute terminal query pages and projections (`polylogue/mcp/declarations/registry.py:65-79`) |
-| `read` | read/default | Read a stable archive URI or ref through a declared view (`polylogue/mcp/declarations/registry.py:80-93`) |
-| `get` | read/default | Resolve one exact object identity (`polylogue/mcp/declarations/registry.py:94-107`) |
-| `explain` | read/default | Explain grammar, capabilities, refs, semantics, or recovery (`polylogue/mcp/declarations/registry.py:108-121`) |
-| `context` | read/default | Compile bounded policy-gated context with receipts (`polylogue/mcp/declarations/registry.py:122-135`) |
-| `status` | read/default | Report archive authority and readiness (`polylogue/mcp/declarations/registry.py:136-149`) |
-| `write` | `write` | Dispatch declared mutations (`polylogue/mcp/declarations/registry.py:150-166`) |
-| `record_work_event` | `write` | Append a typed live-agent event (`polylogue/mcp/declarations/registry.py:167-180`) |
-| `emit_decision` | `write` | Append a decision event with evidence references (`polylogue/mcp/declarations/registry.py:181-194`) |
-| `judge` | `judge` | Decide assertion candidates (`polylogue/mcp/declarations/registry.py:195-208`) |
-| `run` | `write` | Execute saved query or recipe refs (`polylogue/mcp/declarations/registry.py:209-222`) |
-| `maintenance` | `maintenance` | Rebuild derived indexes and inspect or adjudicate operation recovery (`polylogue/mcp/declarations/registry.py:223-238`) |
+| `query` | read/default | Execute terminal query pages and projections; also carries the discriminated `session_operation` request (`polylogue/mcp/declarations/registry.py:71-91`) |
+| `read` | read/default | Read a stable archive URI or ref through a declared view (`polylogue/mcp/declarations/registry.py:92-112`) |
+| `get` | read/default | Resolve one exact object identity (`polylogue/mcp/declarations/registry.py:113-127`) |
+| `explain` | read/default | Explain grammar, capabilities, refs, semantics, or recovery (`polylogue/mcp/declarations/registry.py:128-143`) |
+| `context` | read/default | Compile bounded policy-gated context with receipts (`polylogue/mcp/declarations/registry.py:144-158`) |
+| `status` | read/default | Report archive authority and readiness (`polylogue/mcp/declarations/registry.py:159-175`) |
+| `write` | `write` | Dispatch declared mutations; the named destructive operations fail closed without `confirm=true` (`polylogue/mcp/declarations/registry.py:176-193`) |
+| `record_work_event` | `write` | Append a typed live-agent event (`polylogue/mcp/declarations/registry.py:194-208`) |
+| `emit_decision` | `write` | Append a decision event with evidence references (`polylogue/mcp/declarations/registry.py:209-223`) |
+| `judge` | `judge` | Decide assertion candidates (`polylogue/mcp/declarations/registry.py:224-238`) |
+| `run` | `write` | Execute saved query or recipe refs (`polylogue/mcp/declarations/registry.py:239-255`) |
+| `maintenance` | `maintenance` | Rebuild derived insights and inspect or adjudicate operation recovery (`polylogue/mcp/declarations/registry.py:256-273`) |
 
-`write`, `judge`, and `maintenance` are independent booleans, not a role ladder. `run` shares the `write` gate (`polylogue/mcp/declarations/models.py:16-40`; `tests/unit/mcp/test_tool_declarations.py:26-41`).
+`write`, `judge`, and `maintenance` are independent booleans, not a role ladder. `run`, `record_work_event`, and `emit_decision` all share the `write` gate, so enabling `write` exposes four tools beyond the read baseline (`polylogue/mcp/declarations/models.py:16-40`; `tests/unit/mcp/test_tool_declarations.py:27-49`).
+
+`record_work_event` and `emit_decision` carry `target_visible=False`, which removes them from the *target* transaction algebra (`TARGET_DEFAULT_READ_ALGEBRA`/`PRIVILEGED_ALGEBRA`) while leaving them fully live and registered. Do not read a target-algebra projection as the live tool count (`polylogue/mcp/declarations/registry.py:386-397`).
 
 ## Declaration and discovery path
 
-1. `_CUTOVER_TOOL_ROWS` declares each name, discovery text, registrar, capability, verb, result semantics, schema source, example, output kind, and operation owner (`polylogue/mcp/declarations/registry.py:65-239`).
-2. `_cutover_declaration` lowers each row into the shared declaration kernel, including handler binding, output contract, and discovery completeness edge (`polylogue/mcp/declarations/registry.py:242-292`).
-3. Import-time registry validation rejects duplicate or incomplete declarations (`polylogue/mcp/declarations/registry.py:295-309`).
-4. `build_server` wraps MCPServer in `DeclaredToolRegistrar`, registers handlers, then requires exact capability-visible parity before adding resources and prompts (`polylogue/mcp/server.py:55-97`).
-5. The registrar rejects undeclared handlers, capability violations, wrong implementation modules, discovery-text drift, duplicates, missing handlers, and extras (`polylogue/mcp/declarations/adapter.py:47-84`; `polylogue/mcp/declarations/adapter.py:97-149`).
+1. `_CUTOVER_TOOL_ROWS` declares each name, discovery text, registrar, capability, verb, result semantics, schema source, example, output kind, and operation owner (`polylogue/mcp/declarations/registry.py:70-274`).
+2. `_cutover_declaration` lowers each row into the shared declaration kernel, including handler binding, output contract, and the discovery completeness edge to `tests.infra.mcp.EXPECTED_TOOL_NAMES` (`polylogue/mcp/declarations/registry.py:277-339`).
+3. Import-time registry validation rejects duplicate names and incomplete declarations, raising at module import (`polylogue/mcp/declarations/registry.py:342-355`).
+4. `build_server` wraps MCPServer in `DeclaredToolRegistrar`, registers handlers, then calls `finalize()` to require exact capability-visible parity before adding resources and prompts (`polylogue/mcp/server.py:48-90`).
+5. The registrar rejects undeclared handlers, capability violations, wrong implementation modules, discovery-text drift, and duplicates at registration, then missing handlers and extras at `finalize()` (`polylogue/mcp/declarations/adapter.py:47-105`; `polylogue/mcp/declarations/adapter.py:107-149`).
 
 ## `EXPECTED_TOOL_NAMES`
 
-- Production-visible names come from `declared_tool_names(capabilities)`, which filters declarations through capability checks (`polylogue/mcp/declarations/registry.py:325-335`).
-- Test infrastructure derives `EXPECTED_TOOL_NAMES` from the all-capabilities declaration set rather than maintaining a second copied list (`tests/infra/mcp.py:21-30`).
-- The six-name read baseline remains frozen independently, so deleting both a handler and its declaration cannot self-authorize a public surface contraction (`tests/infra/mcp.py:19-30`; `tests/unit/mcp/test_tool_declarations.py:18-23`).
-- Every registered tool must also appear in `TOOL_CONTRACT`, and stale classifications fail (`tests/unit/mcp/test_envelope_contracts.py:96-124`).
+- Production-visible names come from `declared_tool_names(capabilities)`, which filters declarations through capability checks (`polylogue/mcp/declarations/registry.py:372-384`).
+- Test infrastructure derives `EXPECTED_TOOL_NAMES` from the all-capabilities declaration set rather than maintaining a second copied list (`tests/infra/mcp.py:25-30`).
+- The six-name read baseline remains frozen independently, so deleting both a handler and its declaration cannot self-authorize a public surface contraction (`tests/infra/mcp.py:20`; `tests/unit/mcp/test_tool_declarations.py:19-24`).
+- Every registered tool must also appear in `TOOL_CONTRACT`, and stale classifications fail (`tests/unit/mcp/test_envelope_contracts.py:85-113`).
 
 ## Operation to contract flow
 
@@ -48,5 +50,31 @@ execution; the MCP and machine CLI are adapters. Other MCP operations retain
 the tool-level contracts above. See [session operations](../session-operations.md) for paging,
 original-source fallback, and clock semantics.
 
+Public filters in these contracts are `origin`-typed (`polylogue/core/enums.py:86`);
+`RawOrigin` is a separate narrow literal for raw-source reads. No MCP request
+field takes a `Provider` (`polylogue/operations/session_contracts.py:9-16`).
 
-verified: d471ced3c4140831f710d4e01d16644ed2ce69c5 2026-09-11
+## Insight projections
+
+MCP insight projections still bypass `analysis/registry.py`, so a descriptor
+added to the insight registry does not automatically reach MCP. Check the MCP
+projection explicitly when adding or renaming an insight.
+
+## DISCREPANCIES
+
+The generated agent manual and the `agent_integration` spec describe a
+"ten-tool MCP surface" and omit `record_work_event`/`emit_decision`, which are
+live registered tools under the `write` capability
+(`devtools/render_agent_manual.py:125`; `polylogue/agent_integration/spec.py:5`;
+`polylogue/mcp/declarations/registry.py:1-6`; `tests/infra/mcp.py:22`). The
+declaration-derived count is twelve (`polylogue/mcp/declarations/registry.py:372-384`).
+
+The same manual states that "a legacy `confirm=true` boolean is not the
+canonical gate" and prescribes a `maintenance` preview/dry-run mode
+(`devtools/render_agent_manual.py:232-234`). The live handler takes exactly
+five arguments and gates on `confirm: bool = False`; there is no preview or
+dry-run operation (`polylogue/mcp/server_cutover.py:2672-2678`;
+`polylogue/mcp/declarations/registry.py:256-273`). These manual strings are
+hand-written, not generated from the declarations.
+
+verified: 7a5160fd8b5a7c2a65c2149710713e8f8a4d6485 2026-09-14
