@@ -7,6 +7,7 @@ import http.client
 import json
 import socket
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from time import perf_counter
@@ -89,12 +90,39 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
 class DaemonClient:
     """Transport adapter for the daemon's existing AF_UNIX HTTP routes."""
 
-    def __init__(self, socket_path: Path, *, timeout_s: float | None = 0.1, auth_token: str | None = None) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        *,
+        timeout_s: float | None = 0.1,
+        auth_token: str | None | Callable[[], str | None] = None,
+    ) -> None:
+        """Bind the transport; ``auth_token`` may be a thunk resolved after connect.
+
+        The bearer token is a *credential for a daemon that answered*, not a
+        precondition for having a transport object. Resolving it eagerly made
+        every CLI read mint and persist a token into the archive root even
+        when no daemon was listening -- a pure read writing to the thing it
+        reads, and an outright failure on a read-only archive root. Passing a
+        callable defers that cost to the moment a connection is established.
+        """
         self.socket_path = socket_path
         self.timeout_s = timeout_s
-        self.auth_token = auth_token
+        self._auth_token = auth_token
         self.last_elapsed_ms: int | None = None
         self.last_status: int | None = None
+
+    @property
+    def auth_token(self) -> str | None:
+        """Resolve the configured token, memoizing a thunk's first answer."""
+        if callable(self._auth_token):
+            self._auth_token = self._auth_token()
+        return self._auth_token
+
+    @auth_token.setter
+    def auth_token(self, value: str | None | Callable[[], str | None]) -> None:
+        """Allow callers to override the credential, thunk or resolved alike."""
+        self._auth_token = value
 
     def request_json(
         self,
@@ -142,9 +170,13 @@ class DaemonClient:
         raw = json.dumps(body, separators=(",", ":")).encode() if body is not None else None
         started_at = perf_counter()
         try:
+            # Connect before resolving credentials: an absent socket must cost
+            # nothing, least of all a write into the archive root.
+            connection.connect()
             headers = {"Host": "127.0.0.1", "Content-Type": "application/json"}
-            if self.auth_token:
-                headers["Authorization"] = f"Bearer {self.auth_token}"
+            token = self.auth_token
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             connection.request(method, path, body=raw, headers=headers)
             with connection.getresponse() as response:
                 lengths = response.headers.get_all("Content-Length", [])

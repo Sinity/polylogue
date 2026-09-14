@@ -290,7 +290,7 @@ def _bare_tty_daemon_rows(config: Config) -> list[SelectSessionRow] | None:
 
     client = DaemonClient(
         daemon_socket_path(config.archive_root),
-        auth_token=resolve_api_auth_token(
+        auth_token=lambda: resolve_api_auth_token(
             getattr(config, "api_auth_token", None),
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
         ),
