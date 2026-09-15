@@ -2323,39 +2323,50 @@ class ArchiveStore:
     def session_lineage_edges(self, session_ids: Sequence[str]) -> dict[str, tuple[str | None, tuple[str, ...]]]:
         """Return ``(parent_session_id, child_session_ids)`` per requested id.
 
-        Reuses the same ``sessions.parent_session_id`` column the
-        ``lineage:id:`` predicate already filters sessions by (shared
-        ``root_session_id``) to materialize the direct parent/child edges for
-        one already-selected page of a lineage family, rather than performing
-        a second unbounded recursive graph traversal (#z9gh.3). Only direct
-        (one-hop) edges are returned; children outside ``session_ids`` are
-        still discovered (the child query is unscoped by the input set), but
-        parents outside ``session_ids`` are reported by id only, not hydrated.
+        Only direct (one-hop) *canonical* edges are returned: each edge is a
+        resolved, composing ``session_links`` row, never a projection of the
+        ``sessions.parent_session_id`` accelerator column (#z9gh.3 used that
+        column; the canonical relation is the edge authority). Children outside
+        ``session_ids`` are still discovered (the reverse lookup is unscoped by
+        the input set), but parents outside ``session_ids`` are reported by id
+        only, not hydrated. A child carrying contradictory composable parents
+        reports no parent -- a conflicting edge is not traversed.
         """
         if not session_ids:
             return {}
         ids = tuple(dict.fromkeys(session_ids))
         placeholders = ",".join("?" for _ in ids)
-        parent_rows = self._conn.execute(
-            f"SELECT session_id, parent_session_id FROM sessions WHERE session_id IN ({placeholders})",
-            ids,
+        rows = self._conn.execute(
+            f"""
+            SELECT src_session_id, resolved_dst_session_id
+            FROM session_links
+            WHERE resolved_dst_session_id IS NOT NULL
+              AND {topology_status_composes_sql()}
+              AND (src_session_id IN ({placeholders}) OR resolved_dst_session_id IN ({placeholders}))
+            ORDER BY src_session_id
+            """,
+            ids + ids,
         ).fetchall()
+        parent_candidates: dict[str, set[str]] = {}
+        children_by_parent: dict[str, set[str]] = {}
+        for row in rows:
+            child = str(row["src_session_id"])
+            parent = str(row["resolved_dst_session_id"])
+            parent_candidates.setdefault(child, set()).add(parent)
+            children_by_parent.setdefault(parent, set()).add(child)
+        conflicted = {child for child, parents in parent_candidates.items() if len(parents) > 1}
         parent_by_id: dict[str, str | None] = {
-            str(row["session_id"]): (str(row["parent_session_id"]) if row["parent_session_id"] else None)
-            for row in parent_rows
+            child: (next(iter(parents)) if child not in conflicted else None)
+            for child, parents in parent_candidates.items()
         }
-        child_rows = self._conn.execute(
-            f"SELECT session_id, parent_session_id FROM sessions WHERE parent_session_id IN ({placeholders})",
-            ids,
-        ).fetchall()
-        children_by_parent: dict[str, list[str]] = {}
-        for row in child_rows:
-            parent_id = str(row["parent_session_id"])
-            children_by_parent.setdefault(parent_id, []).append(str(row["session_id"]))
+        children_by_parent = {
+            parent: {child for child in children if child not in conflicted}
+            for parent, children in children_by_parent.items()
+        }
         return {
             session_id: (
                 parent_by_id.get(session_id),
-                tuple(children_by_parent.get(session_id, ())),
+                tuple(sorted(children_by_parent.get(session_id, set()))),
             )
             for session_id in ids
         }

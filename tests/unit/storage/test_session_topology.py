@@ -310,3 +310,90 @@ async def test_topology_edges_are_complete_session_links_projections_not_session
     assert edge.method == "provider-evidence"
     assert edge.confidence == 0.75
     assert edge.evidence == [{"source": "fixture"}]
+
+
+@pytest.mark.asyncio
+async def test_session_tree_is_owned_by_session_links_not_the_parent_column(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The rooted tree follows canonical links, never the accelerator columns.
+
+    Anti-vacuity: restoring either parent-column walk (the archive tier's
+    ``_root_session_id_for_tree`` + ``root_session_id`` scan, or the repository
+    tree mixin's ``parent_session_id`` loop) makes the second half red -- the
+    child would still appear in the root's tree after its canonical edge is
+    gone.
+    """
+
+    db_path = db_setup(workspace_env)
+    _seed_lineage(db_path)
+    child = _native("continuation")
+    root = _native("root")
+
+    # The accelerator columns are deliberately wrong; the canonical rows stand.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE sessions SET parent_session_id = NULL, root_session_id = NULL WHERE session_id = ?",
+            (child,),
+        )
+        conn.commit()
+
+    polylogue = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        tree_ids = {str(session.id) for session in await polylogue.get_session_tree(child)}
+    finally:
+        await polylogue.close()
+    assert {root, child} <= tree_ids
+
+    # Now the reverse: the accelerator says "child of root", the canonical
+    # relation says nothing. No edge may be synthesized.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM session_links WHERE src_session_id = ?", (child,))
+        conn.execute(
+            "UPDATE sessions SET parent_session_id = ?, root_session_id = ? WHERE session_id = ?",
+            (root, root, child),
+        )
+        conn.commit()
+
+    polylogue = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        root_tree_ids = {str(session.id) for session in await polylogue.get_session_tree(root)}
+    finally:
+        await polylogue.close()
+    assert child not in root_tree_ids
+
+
+def test_lineage_edges_are_owned_by_session_links_not_the_parent_column(
+    workspace_env: dict[str, Path],
+) -> None:
+    """``session_lineage_edges`` reports canonical edges only.
+
+    Anti-vacuity: reverting to the ``sessions.parent_session_id`` pair of
+    queries makes this red -- the deleted canonical edge would still be
+    reported from the stale accelerator column.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    db_path = db_setup(workspace_env)
+    _seed_lineage(db_path)
+    child = _native("continuation")
+    root = _native("root")
+
+    with ArchiveStore(workspace_env["archive_root"]) as archive:
+        edges = archive.session_lineage_edges([root, child])
+    assert edges[child][0] == root
+    assert child in edges[root][1]
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM session_links WHERE src_session_id = ?", (child,))
+        conn.execute(
+            "UPDATE sessions SET parent_session_id = ?, root_session_id = ? WHERE session_id = ?",
+            (root, root, child),
+        )
+        conn.commit()
+
+    with ArchiveStore(workspace_env["archive_root"]) as archive:
+        edges = archive.session_lineage_edges([root, child])
+    assert edges[child][0] is None
+    assert child not in edges[root][1]
