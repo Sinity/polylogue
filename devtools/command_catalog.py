@@ -197,6 +197,27 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify cli-acceptance",
+        "verification",
+        "Render, lint and measure the public CLI acceptance surface.",
+        "devtools.cli_acceptance",
+        json_flag=True,
+        flags=(
+            ("--skip-benchmarks", "Skip the latency lane instead of running the SLO benchmarks."),
+            ("--include-lab", "Include the lab-tier latency rows (cold start, warm status, concurrent reads)."),
+        ),
+        use_when=(
+            "Demonstrate CLI usability, accessibility and latency in one run: the gallery of rendered "
+            "output, its accessibility lint, the typed-termination scenarios, and the declared "
+            "latency budgets."
+        ),
+        examples=(
+            "devtools verify cli-acceptance --skip-benchmarks",
+            "devtools verify cli-acceptance --gallery-out .cache/cli-gallery.md --skip-benchmarks",
+            "devtools verify cli-acceptance --include-lab --json",
+        ),
+    ),
+    CommandSpec(
         "gate",
         "verification",
         "Run one named invariant check.",
