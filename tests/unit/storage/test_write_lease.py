@@ -256,6 +256,10 @@ def test_every_write_mode_factory_in_storage_routes_through_the_lease() -> None:
             "open_isolated_write_connection",
         },
         "polylogue/storage/sqlite/connection.py": {"_get_cached_connection"},
+        "polylogue/storage/sqlite/audit_leaf.py": {
+            "open_verified_audit_connection",
+            "open_verified_sqlite_write_connection",
+        },
     }
 
     repo_root = _Path(__file__).resolve().parents[3]
