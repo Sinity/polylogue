@@ -16,177 +16,13 @@ from __future__ import annotations
 import click
 
 from polylogue.cli.click_command_registration import _LazyCommand, _NestedLazyGroup
+from polylogue.maintenance.declarations import MAINTENANCE_COMMAND_DECLARATIONS
 
-# (cli name, submodule, attribute, short_help)
-_COMMANDS: tuple[tuple[str, str, str, str], ...] = (
-    (
-        "beads-origin-census",
-        "_beads_origin_census",
-        "beads_origin_census_command",
-        "Read-only census and exact plan for retired Beads-origin evidence.",
-    ),
-    ("archive-plan", "_archive_plan", "archive_plan_command", "Inspect readiness for the archive file set."),
-    (
-        "backup-plan",
-        "_backup_plan",
-        "backup_plan_command",
-        "Inspect archive backup boundaries without copying data.",
-    ),
-    (
-        "assertion-export",
-        "_assertion_export",
-        "assertion_export_command",
-        "Export the durable assertion substrate from user.db.",
-    ),
-    ("archive-read", "_archive_read", "archive_read_command", "Read index sessions from the archive."),
-    (
-        "archive-init",
-        "_archive_plan",
-        "archive_init_command",
-        "Initialize the archive file set after explicit confirmation.",
-    ),
-    (
-        "migrate-tier",
-        "_migrate_tier",
-        "migrate_tier_command",
-        "Apply additive migrations for one durable archive tier.",
-    ),
-    (
-        "raw-authority-frontier",
-        "_raw_identity",
-        "raw_authority_frontier_command",
-        "Inspect and record the raw-authority frontier; plan application is daemon-owned.",
-    ),
-    (
-        "raw-authority-census",
-        "_raw_identity",
-        "raw_authority_census_command",
-        "Read a bounded page from a durable raw-authority census ledger.",
-    ),
-    (
-        "raw-authority-detail",
-        "_raw_identity",
-        "raw_authority_detail_command",
-        "Read a bounded chunk of a complete raw-authority ledger record.",
-    ),
-    (
-        "raw-authority-blockers",
-        "_raw_identity",
-        "raw_authority_blockers_command",
-        "List unresolved raw-authority blockers (frontier-judgment vs stale-plan). Read-only.",
-    ),
-    (
-        "raw-authority-blocker-resolve",
-        "_raw_identity",
-        "raw_authority_blocker_resolve_command",
-        "Resolve one stale-plan blocker against current source evidence.",
-    ),
-    (
-        "operation-recovery",
-        "_operation_recovery",
-        "operation_recovery_command",
-        "Inspect or adjudicate bounded interrupted-operation recovery evidence.",
-    ),
-    ("blob-gc", "_blob_gc", "blob_gc_command", "Preview lease-safe blob garbage collection. Read-only."),
-    (
-        "blob-publications",
-        "_blob_publications",
-        "blob_publications_command",
-        "Inspect publication receipts or explicitly abandon selected debt.",
-    ),
-    (
-        "blob-reference-debt",
-        "_blob_integrity",
-        "blob_reference_debt_command",
-        "Classify missing referenced blobs without mutating the archive.",
-    ),
-    (
-        "blob-reference-liveness",
-        "_blob_integrity",
-        "blob_reference_liveness_command",
-        "Classify source-tier orphan refs; apply only with backup and receipt.",
-    ),
-    (
-        "blob-conservation",
-        "_blob_conservation",
-        "blob_conservation_command",
-        "Verify both directions of blob/reference conservation without mutation.",
-    ),
-    (
-        "blob-reference-recovery-plan",
-        "_blob_integrity",
-        "blob_reference_recovery_plan_command",
-        "Plan recovery for raw-backed missing blobs without mutating archive state.",
-    ),
-    (
-        "blob-reference-replace-from-source-preview",
-        "_blob_integrity",
-        "blob_reference_replace_from_source_preview_command",
-        "Preview raw-backed blob-reference replacement without mutating the archive.",
-    ),
-    (
-        "blob-reference-replace-from-source",
-        "_blob_integrity",
-        "blob_reference_replace_from_source_command",
-        "Replace raw-backed missing blob refs with current source-derived bytes.",
-    ),
-    (
-        "blob-reference-prune-orphans-preview",
-        "_blob_integrity",
-        "blob_reference_prune_orphans_preview_command",
-        "Preview orphan blob_refs pruning without mutating the archive.",
-    ),
-    (
-        "blob-reference-prune-orphans",
-        "_blob_integrity",
-        "blob_reference_prune_orphans_command",
-        "Quarantine and prune missing blob_refs that no longer have raw rows.",
-    ),
-    (
-        "embedding-orphan-reconcile",
-        "_embeddings",
-        "embedding_orphan_reconcile_command",
-        "Inspect (default) or reconcile embeddings.db rows orphaned by an index rebuild.",
-    ),
-    ("gc-history", "_blob_gc", "gc_history_command", "Show recent blob-GC passes recorded in ``gc_generations``."),
-    (
-        "gc-recover",
-        "_blob_gc",
-        "gc_recover_command",
-        "Inspect or explicitly abandon a blocked pending blob-GC generation without unlinking blobs.",
-    ),
-    (
-        "verify-archive",
-        "_verify_archive",
-        "verify_archive_command",
-        "Prove the archive is coherent after a rebuild, restore, or promotion. Read-only.",
-    ),
-    (
-        "blob-residue-compare",
-        "_blob_residue_compare",
-        "blob_residue_compare_command",
-        "Compare present blob-residue candidates through the production parse route.",
-    ),
-    (
-        "blob-disposition",
-        "_blob_disposition",
-        "blob_disposition_group",
-        "Compile or consume the physical blob namespace disposition plan.",
-    ),
-    (
-        "embedding-preservation",
-        "_embedding_preservation",
-        "embedding_preservation_group",
-        "Preserve, restore, prove, and discard embedding vectors across a rebuild.",
-    ),
-)
-
-_NESTED_GROUP_COMMANDS = frozenset(
-    {
-        "blob-disposition",
-        "embedding-preservation",
-    }
-)
+# The command table is *derived*, never transcribed: every name, submodule,
+# handler attribute, short help, and nested-group flag comes from
+# ``polylogue/maintenance/declarations.py``, whose kernel records are resolved
+# against the live checkout by ``devtools gate declaration-bindings``. Adding a
+# maintenance command means adding one declaration, not editing this file.
 
 
 @click.group("maintenance")
@@ -209,17 +45,17 @@ def maintenance_group(ctx: click.Context) -> None:
         print_archive_root_provenance(env)
 
 
-for _cli_name, _submodule, _attr, _short_help in _COMMANDS:
-    _command_type = _NestedLazyGroup if _cli_name in _NESTED_GROUP_COMMANDS else _LazyCommand
+for _declaration in MAINTENANCE_COMMAND_DECLARATIONS:
+    _command_type = _NestedLazyGroup if _declaration.nested_group else _LazyCommand
     maintenance_group.add_command(
         _command_type(
-            _cli_name,
-            f"polylogue.cli.commands.maintenance.{_submodule}",
-            _attr,
-            short_help=_short_help,
+            _declaration.cli_name,
+            _declaration.module,
+            _declaration.attribute,
+            short_help=_declaration.short_help,
         )
     )
 
-del _cli_name, _submodule, _attr, _short_help
+del _declaration
 
 __all__ = ["maintenance_group"]
