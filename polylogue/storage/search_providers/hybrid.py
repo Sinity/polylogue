@@ -10,12 +10,6 @@ classes, which existed only in their own tests. Killed the unproven classes
 :func:`reciprocal_rank_fusion` — the one piece of this module production code
 actually imports (directly from here, and via
 ``polylogue.storage.search_providers.reciprocal_rank_fusion``).
-
-See ``polylogue.storage.search_providers.hybrid_sessions`` for the companion
-session-resolution SQL helpers, which are also kept — not because anything
-calls them today, but because they are the target for the still-open dedup
-fix (session resolution is currently reimplemented inline in
-``archive_execution.py`` rather than reusing this module's helper).
 """
 
 from __future__ import annotations
