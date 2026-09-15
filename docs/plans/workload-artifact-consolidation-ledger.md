@@ -68,8 +68,8 @@ Fan-in counts repository modules importing the module; `fan-out` counts its
 
 | candidate | finding | disposition | owner |
 | --- | --- | --- | --- |
-| `archive_scenarios.py` — `ArchiveScenario.seed`, `seed_archive_scenarios`, `seed_workspace_scenarios` | True direct-index seeder: writes through `SessionBuilder` + `ArchiveStore` with no manifest | **Deferred retirement.** A genuine duplicate under the "direct-index seeders" clause, but 25 importing modules make the migration broad and test-file-wide. Not retired here. | `polylogue-1xc.14.1` follow-up leaf |
-| `whale_fixtures.py` — `acquire_codex_revision_chain`, `copy_sqlite_database` | Drives real `AcquisitionService`; clones via `archive_templates` but publishes no manifest | **Deferred.** Scale-outlier artifacts are cacheable and should carry a manifest, but the builder deliberately uses the production acquisition seam; wrapping it is a design change, not a deletion. | follow-up leaf |
+| `archive_scenarios.py` — `ArchiveScenario.seed`, `seed_archive_scenarios`, `seed_workspace_scenarios` | Originally recorded as a "true direct-index seeder" | **Refuted — see the retirement pass.** `seed` writes no SQL of its own; it delegates to `SessionBuilder` and `ArchiveStore.add_user_tags`, and the "25 importers" count is fan-in on two pure helpers. | itself |
+| `whale_fixtures.py` — `acquire_codex_revision_chain`, `copy_sqlite_database` | Drives real `AcquisitionService`; clones via `archive_templates` but publishes no manifest | **Refused with a reason — see the retirement pass.** Wrapping a builder that deliberately uses the production acquisition seam is a design change, not a deletion. | itself |
 | `query_corpus.py` — `build_query_corpus` | Successor to the retired `pathology_zoo`; writes via `live_ingest.write_index_session` | **Keep.** Not a duplicate: it materializes into a caller-supplied root through the production writer seam and caches nothing, so there is no artifact identity to own. Its pathology vocabulary is law-owned (`query_contract.REQUIRED_PATHOLOGIES`). | `query_contract.py` |
 | `corpus_program.py` | Opens `SQLiteBackend`/`ArchiveStore` directly | **Keep.** Explicitly delegates effects to production acquisition, parsing, convergence and hook seams; owns no cached artifact. | itself |
 | `live_ingest.py` | Raw `sqlite3` connections into `index.db` | **Not a duplicate.** This is the single test seam onto `write_parsed_session_to_archive`, the production choke point. Retiring it would create duplication, not remove it. | itself |
@@ -79,9 +79,10 @@ Fan-in counts repository modules importing the module; `fan-out` counts its
 | `source_composer.py` | Matched on `session_count` | **Not a duplicate.** Composes in-memory arrangements and writes no database; `session_count` is a bundle-shape parameter, not a scale tier. | itself |
 | `integration_profile._SCALE_MINIMUM_MESSAGES` | `smoke`/`representative`/`archive-shaped`/`stress` minimums | **Keep.** Tier-naming residue used only as a validation gate over `CorpusSpec`s that materialize through `build_seeded_archive`. Not an alternate construction route. | itself |
 
-No code was retired under this ledger. Every candidate is either a deliberate
-production seam, a shared primitive, an oracle, or a migration too broad to
-perform inside a census.
+Every candidate in this table is a deliberate production seam, a shared
+primitive, or an oracle; none of them is a duplicate to retire. The code that
+*was* retired came from a separate orphan census, recorded under "Retirement
+pass" below.
 
 ## Criterion status
 
@@ -161,7 +162,7 @@ to make a number fall.
 measurement error. Sixteen modules were added in that window, and the bulk of
 the growth is the query-law family — `query_census`, `query_contract`,
 `query_corpus`, `query_differential`, `query_field_laws`,
-`surface_differential`, roughly 4,180 lines — which belongs to a different
+`surface_differential`, 4,280 lines — which belongs to a different
 campaign and is law-owned material AC5 requires to live beside its laws.
 
 The denominator this bead can move is the workload substrate and its
