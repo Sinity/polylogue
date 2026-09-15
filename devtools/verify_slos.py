@@ -4,26 +4,31 @@ Reads the SLO catalog from docs/plans/slo-catalog.yaml, runs the
 referenced benchmark tests with pytest-benchmark, then compares the
 measured p50 and p95 latencies against the declared targets.
 
+The benchmark run goes through the managed pytest harness, so it is reachable
+from an agent job, where bare pytest is refused.
+
 Exits 0 when all required SLOs have benchmark results and pass their targets.
-Exits 1 when any required surface violates its declared SLO or has no
-benchmark result. Informational surfaces without benchmark results are reported
-without blocking.
+Exits 1 when any required surface violates its declared SLO, has no benchmark
+result, or when the benchmark run itself never produced measurements — that
+last case is reported as a refused run, never as missing surfaces.
+Informational surfaces without benchmark results are reported without blocking.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
-import subprocess
+import shutil
 import sys
-import tempfile
 import time
 from pathlib import Path
 
 from devtools import repo_root as _get_root
 from devtools.benchmark_results import parse_pytest_benchmark_stats
+from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
 from polylogue.core.json import JSONDocument
 from polylogue.scenarios import (
     MeasurementScope,
@@ -149,55 +154,102 @@ def _surface_tier(surface_name: str, config: dict[str, object]) -> tuple[str | N
     return None, f"{surface_name}: invalid tier {raw_tier!r}; expected one of {sorted(SLO_TIERS)!r}"
 
 
-def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
-    """Run pytest-benchmark on the given test node IDs and return stats.
+class BenchmarkRunUnavailableError(RuntimeError):
+    """The benchmark run never produced measurements, for a reason that is not absence.
 
-    Returns a dict mapping full test name → {p50, p95, mean, ...}.
+    A refused or failed launch is not the same fact as "this surface has no
+    benchmark". Reporting it as missing surfaces reads as an uninstrumented
+    catalog when the truth is that nothing was measured at all.
+    """
+
+
+#: Where the SLO benchmark run keeps its JSON and pytest trees: inside the
+#: checkout's disposable scratch, not the host's small /tmp tmpfs.
+BENCHMARK_SCRATCH = Path(".cache/verify/slo-benchmarks")
+
+_LOG_TAIL_LINES = 40
+
+
+def _log_tail(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-_LOG_TAIL_LINES:])
+
+
+def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
+    """Run the catalog's benchmark tests and return their stats.
+
+    The run goes through the managed pytest harness
+    (:func:`devtools.pytest_slot.run_pytest`), the same route ``devtools test``
+    uses. Bare pytest is refused inside agent jobs, so a dispatched worker
+    could never reach this lane; the harness queues the run as the declared
+    ``pytest_focused`` operation in the host's single-slot pytest pool, which
+    both satisfies the guard and gives the measurement an exclusive pytest
+    slot instead of an ad-hoc subprocess beside other jobs.
+
+    Raises :class:`BenchmarkRunUnavailableError` when the run could not be launched
+    or produced no measurement file.
     """
     if not test_ids:
         return {}
 
-    with tempfile.TemporaryDirectory(prefix="verify-slos-") as tmpdir:
-        json_path = Path(tmpdir) / "benchmark.json"
-        pytest_basetemp = Path(tmpdir) / "pytest"
+    scratch = ROOT / BENCHMARK_SCRATCH / f"run-{os.getpid()}-{time.time_ns():x}"
+    scratch.mkdir(parents=True, exist_ok=True)
+    json_path = scratch / "benchmark.json"
+    log_path = scratch / "benchmark.log"
+    pytest_basetemp = scratch / "pytest"
 
-        cmd = [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--override-ini=addopts=-ra",
-            "-n",
-            "0",
-            "-p",
-            "no:randomly",
-            # The repository default excludes benchmark-marked tests so the
-            # ordinary test loop stays fast. This command explicitly runs the
-            # benchmark tier it is responsible for measuring.
-            "-m",
-            "benchmark",
-            f"--basetemp={pytest_basetemp}",
-            "--benchmark-enable",
-            f"--benchmark-json={json_path}",
-            *sorted(test_ids),
-        ]
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--override-ini=addopts=-ra",
+        "-n",
+        "0",
+        "-p",
+        "no:randomly",
+        # The repository default excludes benchmark-marked tests so the
+        # ordinary test loop stays fast. This command explicitly runs the
+        # benchmark tier it is responsible for measuring.
+        "-m",
+        "benchmark",
+        f"--basetemp={pytest_basetemp}",
+        "--benchmark-enable",
+        f"--benchmark-json={json_path}",
+        *sorted(test_ids),
+    ]
 
-        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=dict(os.environ))
+    with open(log_path, "wb") as log:
+        try:
+            outcome = run_pytest(command, cwd=str(ROOT), env=dict(os.environ), root=ROOT, stdout=log)
+        except PytestSlotUnavailableError as exc:
+            raise BenchmarkRunUnavailableError(f"the managed pytest harness would not start the run: {exc}") from exc
 
-        if not json_path.exists() or json_path.stat().st_size == 0:
-            print("verify-slos: no benchmark results produced", file=sys.stderr)
-            if result.returncode != 0:
-                print(result.stderr, file=sys.stderr)
-            return {}
+    if outcome.log_path is not None and outcome.log_path.exists():
+        # The queued run captured its own log; the local handle stayed empty.
+        log_path = outcome.log_path
 
-        if result.returncode != 0:
-            print("verify-slos: benchmark run exited non-zero", file=sys.stderr)
-            print(result.stdout, file=sys.stderr)
-            print(result.stderr, file=sys.stderr)
-            # Still try to read the JSON — pytest-benchmark writes it even on
-            # test failures.
+    if not json_path.exists() or json_path.stat().st_size == 0:
+        # Kept, not cleaned: the evidence for why nothing was measured is here.
+        raise BenchmarkRunUnavailableError(
+            f"the benchmark run wrote no measurement file (pytest slot {outcome.slot}, "
+            f"exit {outcome.returncode}); evidence kept under {scratch}; last output:\n{_log_tail(log_path)}"
+        )
 
-        payload = json.loads(json_path.read_text())
+    if outcome.returncode != 0:
+        print(
+            f"verify-slos: benchmark run exited {outcome.returncode}; scoring the measurements it did write",
+            file=sys.stderr,
+        )
+        print(_log_tail(log_path), file=sys.stderr)
+        # pytest-benchmark writes the JSON even on test failures.
+
+    payload = json.loads(json_path.read_text())
+    with contextlib.suppress(OSError):
+        shutil.rmtree(scratch, ignore_errors=True)
 
     stats: dict[str, dict[str, float]] = {}
     for entry in parse_pytest_benchmark_stats(payload):
@@ -298,7 +350,13 @@ def main(argv: list[str] | None = None) -> int:
 
     # 3. Run benchmarks
     benchmark_started = time.monotonic()
-    benchmark_stats = _run_benchmarks(test_ids) if not args.skip_benchmarks else {}
+    benchmark_error: str | None = None
+    benchmark_stats: dict[str, dict[str, float]] = {}
+    if not args.skip_benchmarks:
+        try:
+            benchmark_stats = _run_benchmarks(test_ids)
+        except BenchmarkRunUnavailableError as exc:
+            benchmark_error = str(exc)
     benchmark_wall_ms = (time.monotonic() - benchmark_started) * 1_000
 
     # 4. Check each surface against its SLO
@@ -307,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
     missing_required: list[dict[str, object]] = []
     passed: list[dict[str, object]] = []
     uncovered_informational: list[dict[str, object]] = []
+    unmeasured: list[dict[str, object]] = []
     skipped_tier: list[dict[str, object]] = []
 
     for surface_name, config in surfaces.items():
@@ -348,14 +407,23 @@ def main(argv: list[str] | None = None) -> int:
 
         stats = benchmark_stats.get(benchmark_test)
         if stats is None:
+            # A run that never happened is not the same fact as a surface with
+            # no benchmark: only the second is "missing".
+            reason = (
+                "the benchmark run did not execute"
+                if benchmark_error is not None
+                else "no benchmark result for this test"
+            )
             missing_result: dict[str, object] = {
                 "surface": surface_name,
                 "gate": gate,
                 "tier": tier,
                 "benchmark_test": benchmark_test,
-                "reason": "no benchmark result for this test",
+                "reason": reason,
             }
-            if gate == "required":
+            if benchmark_error is not None:
+                unmeasured.append(missing_result)
+            elif gate == "required":
                 missing_required.append(missing_result)
             else:
                 uncovered_informational.append(missing_result)
@@ -391,7 +459,7 @@ def main(argv: list[str] | None = None) -> int:
             violations.append(result)
 
     # 5. Report
-    blocking = bool(catalog_errors or violations or missing_required)
+    blocking = bool(catalog_errors or violations or missing_required or benchmark_error)
     workload_receipt = _slo_workload_receipt(
         catalog_text=catalog_text,
         active_tiers=active_tiers,
@@ -402,12 +470,14 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(
             {
                 "blocking": blocking,
+                "benchmark_error": benchmark_error,
                 "active_tiers": sorted(active_tiers) if active_tiers is not None else None,
                 "catalog_errors": catalog_errors,
                 "violations": violations,
                 "missing_required": missing_required,
                 "passed": passed,
                 "uncovered_informational": uncovered_informational,
+                "unmeasured": unmeasured,
                 "skipped_tier": skipped_tier,
                 "workload_receipt": workload_receipt,
             },
@@ -416,6 +486,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         sys.stdout.write("\n")
     else:
+        if benchmark_error is not None:
+            print("BENCHMARKS DID NOT RUN:")
+            for line in benchmark_error.splitlines():
+                print(f"  {line}")
+            print()
+
         if catalog_errors:
             print(f"CATALOG ERROR ({len(catalog_errors)} entries):")
             for error in catalog_errors:
@@ -453,6 +529,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Uncovered informational ({len(uncovered_informational)} surfaces):")
             for u in uncovered_informational:
                 print(f"  {u['surface']}: {u['reason']}")
+            print()
+
+        if unmeasured:
+            print(f"Unmeasured — the run never produced results ({len(unmeasured)} surfaces):")
+            for entry in unmeasured:
+                print(f"  {entry['surface']} [gate={entry['gate']}]: {entry['benchmark_test']}")
             print()
 
         if skipped_tier:
