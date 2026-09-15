@@ -30,10 +30,6 @@ from polylogue.operations.raw_authority_verdict_cache import (
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.introspection import table_exists as _table_exists
-from polylogue.storage.source_sessions import (
-    session_ids_for_source_path,
-    session_ids_for_source_paths,
-)
 from polylogue.storage.sqlite.connection_profile import (
     open_daemon_connection,
     open_readonly_connection,
@@ -583,17 +579,6 @@ def _make_attachment_bytes_stage(db_path: Path, *, archive_root: Path) -> Conver
 # ── Helpers ────────────────────────────────────────────────────────
 
 
-def _session_ids_for_source_path(conn: sqlite3.Connection, path: Path) -> list[str]:
-    return session_ids_for_source_path(conn, path)
-
-
-def _session_ids_for_source_paths(
-    conn: sqlite3.Connection,
-    paths: Sequence[Path],
-) -> dict[Path, list[str]]:
-    return session_ids_for_source_paths(conn, paths)
-
-
 def _source_path_is_hot_for_insights(path: Path, *, now: float | None = None) -> bool:
     try:
         stat = path.stat()
@@ -658,12 +643,6 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
             error_detail=str(exc),
         )
         return None
-
-
-def _schema_archive_session_ids_for_source_path(
-    conn: sqlite3.Connection, path: Path, *, archive_root: Path | None = None
-) -> list[str]:
-    return _schema_archive_session_ids_for_source_paths(conn, [path], archive_root=archive_root).get(path, [])
 
 
 def _schema_archive_session_ids_for_source_paths(

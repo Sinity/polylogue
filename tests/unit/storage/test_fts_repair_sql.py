@@ -420,7 +420,6 @@ def test_replace_fts_triggers_still_replaces_definitions(test_conn: sqlite3.Conn
 def _triggers_present(conn: sqlite3.Connection) -> bool:
     names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
     return bool(names & set(FTS_TRIGGER_NAMES))
-||||||| parent of 772db1d6e (refactor: Retire the duplicate session FTS repair module)
 
 
 def test_write_path_partition_convergence_replaces_identity_drift(test_conn: sqlite3.Connection) -> None:
