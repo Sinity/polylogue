@@ -60,6 +60,15 @@ async def periodic_blob_gc_check(*, catch_up_complete: asyncio.Event | None = No
             else:
                 if result is None:
                     pass_span.skipped(reason="gc_not_applicable")
+                elif result.blocked_reason is not None:
+                    # A refused pass is never an empty one: the counts are the
+                    # work already done before the refusal, not a clean sweep.
+                    pass_span.degraded(
+                        "gc_blocked",
+                        error_detail=result.blocked_reason,
+                        removed=result.deleted_count,
+                        bytes=result.reclaimed_bytes,
+                    )
                 elif result.deleted_count:
                     pass_span.ok(removed=result.deleted_count, bytes=result.reclaimed_bytes)
                 else:

@@ -80,8 +80,24 @@ from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 
-def _emit_gc_refusal(reason: str | None, *, phase: str) -> None:
-    """One refusal event. ``reason`` is operator prose, so it rides quarantined."""
+def _emit_gc_refusal(
+    reason: str | None,
+    *,
+    phase: str,
+    deleted: int | None = None,
+    reclaimed_bytes: int | None = None,
+) -> None:
+    """One refusal event. ``reason`` is operator prose, so it rides quarantined.
+
+    A refusal raised after the locked execution window has already unlinked
+    members carries ``deleted``/``reclaimed_bytes``, so a partial pass is
+    reported as partial instead of reading as a pass that ran to completion.
+    """
+    counts: dict[str, object] = {}
+    if deleted is not None:
+        counts["reclaimed"] = deleted
+    if reclaimed_bytes is not None:
+        counts["bytes"] = reclaimed_bytes
     emit(
         "storage.blob_gc.refused",
         level=ERROR,
@@ -89,6 +105,7 @@ def _emit_gc_refusal(reason: str | None, *, phase: str) -> None:
         reason="gc_blocked",
         phase=phase,
         error_detail=reason,
+        **counts,
     )
 
 
@@ -759,11 +776,13 @@ def _execute_gc_generation_members(
     namespace_blocker = _generation_namespace_matches(control_db_path, generation_id, blob_root)
     if namespace_blocker is not None:
         report.blocked_reason = namespace_blocker
+        _emit_gc_refusal(report.blocked_reason, phase="execute", deleted=0, reclaimed_bytes=0)
         return 0, 0
     try:
         namespace_identity = _blob_namespace_identity(blob_root)
     except _BlobNamespaceUnavailableError as exc:
         report.blocked_reason = str(exc)
+        _emit_gc_refusal(report.blocked_reason, phase="execute", deleted=0, reclaimed_bytes=0)
         return 0, 0
     with closing(_readonly(control_db_path)) as history:
         members = [
@@ -788,6 +807,9 @@ def _execute_gc_generation_members(
         preflight = inspect_blob_liveness(source_conn, "", index_conn=recheck_index, require_index=True)
         if preflight.state is LivenessState.BLOCKED:
             report.blocked_reason = "; ".join(preflight.blockers)
+            _emit_gc_refusal(
+                report.blocked_reason, phase="execute", deleted=deleted_now, reclaimed_bytes=reclaimed_bytes_now
+            )
             return deleted_now, reclaimed_bytes_now
         index_authority_blocker = index_liveness_authority_blocker(
             blob_root=blob_root,
@@ -798,6 +820,9 @@ def _execute_gc_generation_members(
             legacy_hook_stage = prepare_match_stage(source_conn)
         except Exception as exc:
             report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
+            _emit_gc_refusal(
+                report.blocked_reason, phase="execute", deleted=deleted_now, reclaimed_bytes=reclaimed_bytes_now
+            )
             return deleted_now, reclaimed_bytes_now
         try:
             with _open_blob_namespace(blob_root, namespace_identity=namespace_identity) as namespace:
@@ -814,6 +839,12 @@ def _execute_gc_generation_members(
                     )
                     if protection.blockers:
                         report.blocked_reason = "; ".join(protection.blockers)
+                        _emit_gc_refusal(
+                            report.blocked_reason,
+                            phase="final_recheck",
+                            deleted=deleted_now,
+                            reclaimed_bytes=reclaimed_bytes_now,
+                        )
                         return deleted_now, reclaimed_bytes_now
                     if protection.is_live:
                         _commit_gc_member_outcome(
@@ -899,6 +930,9 @@ def _execute_gc_generation_members(
                         reclaimed_bytes_now += observed.size_bytes
         except _BlobNamespaceUnavailableError as exc:
             report.blocked_reason = str(exc)
+            _emit_gc_refusal(
+                report.blocked_reason, phase="unlink", deleted=deleted_now, reclaimed_bytes=reclaimed_bytes_now
+            )
             return deleted_now, reclaimed_bytes_now
     except Exception:
         if source_conn.in_transaction:
