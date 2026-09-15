@@ -110,6 +110,32 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "schema new",
+        "schema",
+        "Scaffold a typed declaration, adapter stub, contract skeleton, and landing plan.",
+        "devtools.scaffold",
+        json_flag=True,
+        flags=(
+            ("--list", "List the declared scaffold families."),
+            ("--dry-run", "Print the plan without writing any file."),
+            ("--reuse-family", "Join an existing declaration family instead of starting a new one."),
+            ("--justification", "Record why a new family or durable object is needed."),
+            ("--validate", "Report actionable diagnostics for the family's live owning registry."),
+        ),
+        use_when=(
+            "Adding an MCP tool, daemon route, or other declaration-backed extension: the scaffold asks the five "
+            "compatibility questions, refuses an unjustified new family or durable object, and generates a "
+            "compiling declaration plus the exact steps and generated-surface commands needed to land it."
+        ),
+        examples=(
+            "devtools schema new --list",
+            "devtools schema new mcp-tool recall --identity mcp-tool:recall --lifecycle registered-handler-retained "
+            "--authority mcp-capability:read --access-result-shape query:exhaustive_page:envelope "
+            "--durability transport-adapter --dry-run",
+            "devtools schema new --validate mcp-tool",
+        ),
+    ),
+    CommandSpec(
         "cache gc",
         "core",
         "Preview or apply age-gated GC for the shared seeded-archive fixture cache.",

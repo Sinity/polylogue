@@ -116,6 +116,14 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
+        "declaration-bindings",
+        "Resolve every declared handler, owner path, output, and example in the live declaration registries.",
+        "module",
+        ("devtools.verify_declaration_bindings",),
+        label="gate declaration-bindings",
+        in_quick=True,
+    ),
+    Gate(
         "doc-commands",
         "Validate executable documentation examples against live command inventories.",
         "module",

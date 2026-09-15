@@ -91,6 +91,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema explain` | Explain a committed package element schema with evidence and annotations. |
 | `devtools schema generate` | Generate provider schema packages and optional evidence clusters. |
 | `devtools schema list` | List committed schema packages, versions, and evidence manifests. |
+| `devtools schema new` | Scaffold a typed declaration, adapter stub, contract skeleton, and landing plan. |
 | `devtools schema parser-diff` | List observed provider wire keys that no parser references. |
 | `devtools schema promote` | Promote a schema evidence cluster into a registered package version. |
 
