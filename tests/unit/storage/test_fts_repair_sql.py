@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Callable
 
 import pytest
 
 from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
 from polylogue.storage.fts.fts_lifecycle import (
+    FTS_TRIGGER_NAMES,
     delete_excess_message_rows_batched_sync,
     insert_missing_message_rows_batched_sync,
     rebuild_fts_index_sync,
     repair_message_fts_index_sync,
+    replace_fts_triggers_sync,
     reset_message_fts_index_sync,
     restore_fts_triggers_sync,
 )
@@ -357,3 +360,58 @@ def test_message_fts_reset_drops_orphan_docsize_rows(test_conn: sqlite3.Connecti
 
     assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
     assert FtsDerivationAdapter().inspect_partition(test_conn, GLOBAL_PARTITION).valid
+
+
+def _dropped_trigger_statements(conn: sqlite3.Connection, call: Callable[[sqlite3.Connection], None]) -> list[str]:
+    traced: list[str] = []
+    conn.set_trace_callback(traced.append)
+    try:
+        call(conn)
+    finally:
+        conn.set_trace_callback(None)
+    return [stmt for stmt in traced if "DROP TRIGGER" in stmt.upper()]
+
+
+def test_restore_fts_triggers_never_drops_first(test_conn: sqlite3.Connection) -> None:
+    """The recovery path must not open a dropped-trigger window (polylogue-u66s3).
+
+    Trigger DDL runs in autocommit, so a DROP that precedes the CREATEs is
+    durable: a process death in between leaves index.db permanently without
+    FTS triggers and every later block write unindexed.
+
+    Anti-vacuity: reintroduce ``suspend_fts_triggers_sync(conn)`` (or any other
+    ``DROP TRIGGER``) inside ``restore_fts_triggers_sync`` and this goes red.
+    """
+    restore_fts_triggers_sync(test_conn)
+    present_before = {
+        row[0] for row in test_conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()
+    }
+    assert set(FTS_TRIGGER_NAMES) & present_before
+
+    dropped = _dropped_trigger_statements(test_conn, restore_fts_triggers_sync)
+
+    assert dropped == [], f"restore path issued DROP TRIGGER: {dropped}"
+    present_after = {
+        row[0] for row in test_conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()
+    }
+    assert present_before <= present_after
+
+
+def test_replace_fts_triggers_still_replaces_definitions(test_conn: sqlite3.Connection) -> None:
+    """The explicit rebuild path keeps its drop-and-recreate semantics.
+
+    Anti-vacuity: delete the ``suspend_fts_triggers_sync`` call from
+    ``replace_fts_triggers_sync`` and this goes red, proving the split did not
+    silently downgrade the rebuild caller.
+    """
+    restore_fts_triggers_sync(test_conn)
+
+    dropped = _dropped_trigger_statements(test_conn, replace_fts_triggers_sync)
+
+    assert dropped, "replace path issued no DROP TRIGGER"
+    assert _triggers_present(test_conn)
+
+
+def _triggers_present(conn: sqlite3.Connection) -> bool:
+    names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
+    return bool(names & set(FTS_TRIGGER_NAMES))
