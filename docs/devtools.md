@@ -90,6 +90,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
 | `devtools schema compare` | Compare two committed schema package versions for a provider. |
 | `devtools schema explain` | Explain a committed package element schema with evidence and annotations. |
+| `devtools schema frontier` | Declare, record and check the schema-source frontier. |
 | `devtools schema generate` | Generate provider schema packages and optional evidence clusters. |
 | `devtools schema list` | List committed schema packages, versions, and evidence manifests. |
 | `devtools schema new` | Scaffold a typed declaration, adapter stub, contract skeleton, and landing plan. |
