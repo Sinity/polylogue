@@ -146,6 +146,36 @@ async def invoke_surface_async(
     return result
 
 
+def _empty_transcript_window() -> object:
+    """An empty, already-complete transcript window for facade mocks."""
+
+    from polylogue.archive.query.transaction import QueryTransactionRequest
+    from polylogue.operations.transcript_window import (
+        TRANSCRIPT_WINDOW_ORDER,
+        TRANSCRIPT_WINDOW_PROJECTION,
+        TranscriptWindow,
+    )
+
+    return TranscriptWindow(
+        rows=[],
+        total=0,
+        limit=50,
+        offset=0,
+        next_offset=None,
+        continuation=None,
+        lineage_complete=True,
+        lineage_truncation_reason=None,
+        transaction=QueryTransactionRequest(
+            operation="sessions.read",
+            arguments={"ref": "session:mock"},
+            page_size=50,
+            offset=0,
+            projection=TRANSCRIPT_WINDOW_PROJECTION,
+            stable_order=TRANSCRIPT_WINDOW_ORDER,
+        ),
+    )
+
+
 def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
     """Create a Polylogue facade mock matching the current MCP tool surface.
 
@@ -187,6 +217,9 @@ def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
     poly.explain_query_expression = AsyncMock(return_value={})
     poly.query_completions = AsyncMock(return_value={})
     poly.get_messages_paginated = AsyncMock(return_value=([], 0))
+    # The transcript window is answered by one bound route (polylogue-ijbwq);
+    # a mocked facade must stub the route, not only the storage read beneath it.
+    poly.read_transcript_window = AsyncMock(return_value=_empty_transcript_window())
     poly.get_session = AsyncMock(return_value=None)
     poly.get_session_profile_insight = AsyncMock(return_value=None)
     poly.resume_brief = AsyncMock(return_value=None)
