@@ -830,28 +830,21 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
             _codex_session_meta(parent_id, timestamp="2026-07-04T10:00:00Z"),
             _codex_message("parent-u0", "user", "2026-07-04T10:00:01Z", [_input_text(base_user)]),
             _codex_message("parent-a1", "assistant", "2026-07-04T10:00:02Z", [_output_text(base_assistant)]),
+            # No parent-side dispatch block here, deliberately. Codex declares
+            # parent_dispatch structurally-absent ("Codex wire carries no
+            # parent-dispatch identity", sources/origin_specs.py): a spawned
+            # Codex subagent is linked child-side only, through
+            # `source.subagent.thread_spawn.parent_thread_id` on the child's own
+            # session_meta. The delegation therefore exists as `edge_only`, and
+            # a Claude-Code-shaped Task tool_use minted into a Codex file would
+            # be fabricated capability -- see
+            # tests/unit/pipeline/test_delegation_provider_fixtures.py
+            # ::test_codex_subagent_spawn_resolves_edge_only_through_real_parser.
             _codex_message(
                 "parent-a2",
                 "assistant",
                 "2026-07-04T10:00:03Z",
-                [
-                    _output_text("Delegating a topology check to a focused subagent."),
-                    {
-                        "type": "tool_use",
-                        "id": "task-demo-lineage",
-                        "name": "Task",
-                        "input": {
-                            "subagent_type": "Explore",
-                            "prompt": "Inspect the demo lineage child and report caveats.",
-                            "child_session_id": "codex-session:demo-lineage-subagent",
-                        },
-                    },
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "task-demo-lineage",
-                        "content": "Subagent completed. Session: codex-session:demo-lineage-subagent",
-                    },
-                ],
+                [_output_text("Delegating a topology check to a focused subagent.")],
             ),
         ),
     )
@@ -934,7 +927,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
                 "subagent-a0",
                 "assistant",
                 "2026-07-04T10:02:01Z",
-                [_output_text("Subagent report: lineage fixture has a parent, a fork, and a resolved child link.")],
+                [_output_text("Subagent report: lineage fixture has a parent, a fork, and a child-side link.")],
             ),
         ),
     )
