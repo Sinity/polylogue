@@ -172,7 +172,7 @@
       ],
       "queries": [
         {
-          "expression": "sessions where semantic:\"preview-bound confirmation\"",
+          "expression": "sessions where semantic:\"confirmation gate binding\"",
           "purpose": "Semantic prior-art retrieval.",
           "source_test": "tests/unit/cli/test_query_expression.py::test_boolean_semantic_predicate_lowers",
           "surface": "session"
@@ -192,7 +192,7 @@
       "steps": [
         {
           "arguments": {
-            "expression": "sessions where semantic:\"preview-bound confirmation\"",
+            "expression": "sessions where semantic:\"confirmation gate binding\"",
             "subject": "query"
           },
           "capture": null,
@@ -201,7 +201,7 @@
         },
         {
           "arguments": {
-            "expression": "sessions where semantic:\"preview-bound confirmation\"",
+            "expression": "sessions where semantic:\"confirmation gate binding\"",
             "limit": 20,
             "projection": "session-summary"
           },

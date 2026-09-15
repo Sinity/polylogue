@@ -216,7 +216,7 @@ The same parser in `polylogue/archive/query/expression.py` owns these examples. 
 - `actions where action:file_edit AND path:polylogue/archive` — Action-row lookup.
 - `observed-events where kind:tool_finished AND handler:shell | group by status | count` — Terminal aggregate with declared group field.
 - `files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20` — File-touch history with deterministic ordering and limit.
-- `sessions where semantic:"preview-bound confirmation"` — Semantic prior-art retrieval.
+- `sessions where semantic:"confirmation gate binding"` — Semantic prior-art retrieval.
 - `sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01` — Provider cohort for a cost audit.
 - `sessions where repo:polylogue AND NOT tag:complete` — Likely unfinished work for session resumption.
 - `actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20` — Recent failed effects for resumption or forensics.
@@ -240,11 +240,11 @@ The server's configured capabilities are a hard upper bound. A prompt, resource,
 | _(none; default)_ | the six default tools | Read, explain, status, and bounded context only. |
 | `write` | `write`, `run` | Declaration-owned reversible mutations and governed saved-query/recipe execution. A recipe inherits the authority of every nested operation. |
 | `judge` | `judge` | Candidate judgment with preserved provenance and explicit conflict handling. Independent of `write`. |
-| `maintenance` | `maintenance` | Preview/status/reconcile and administrative execution. Independent of `write`/`judge`. |
+| `maintenance` | `maintenance` | Insight rebuild and recovery inspection/adjudication. Independent of `write`/`judge`. |
 
-Reversible writes require the declared capability and a receipt. Destructive `maintenance` execution requires the governed confirmation required by the selected operation; changing a bound target or authority must return an explicit stale/rejected result before mutation. A legacy `confirm=true` boolean is not the canonical gate.
+Reversible writes require the declared capability and a receipt. Full-effect `maintenance` execution requires the confirmation its declaration states; changing a bound target or authority must return an explicit stale/rejected result before mutation.
 
-Canonical maintenance flow: call `maintenance` with the declared operation in preview/dry-run mode; inspect the receipt and target disclosure; then execute only with the governed confirmation required by that operation.
+Canonical maintenance flow: `maintenance` accepts exactly these declared operations: `rebuild_insights`, `recovery_status`, `recovery_adjudicate`. Inspect state with `recovery_status`, which mutates nothing; then execute `rebuild_insights`, `recovery_adjudicate` by passing `confirm=true`, which is the gate itself and the only one — they fail closed without it. There is no preview or dry-run operation to call first.
 
 ## Continuity recipes
 
@@ -272,8 +272,8 @@ Reconstruct a failure from parser-valid row evidence, exact objects, surrounding
 
 Combine semantic retrieval with file-touch history, then inspect exact prior rationale and outcomes.
 
-1. `{"arguments":{"expression":"sessions where semantic:\"preview-bound confirmation\"","subject":"query"},"name":"explain"}` — Verify semantic lowering and any readiness dependency.
-2. `{"arguments":{"expression":"sessions where semantic:\"preview-bound confirmation\"","limit":20,"projection":"session-summary"},"name":"query"}` — Find conceptually related sessions even when vocabulary differs. Capture `semantic_result_ref`.
+1. `{"arguments":{"expression":"sessions where semantic:\"confirmation gate binding\"","subject":"query"},"name":"explain"}` — Verify semantic lowering and any readiness dependency.
+2. `{"arguments":{"expression":"sessions where semantic:\"confirmation gate binding\"","limit":20,"projection":"session-summary"},"name":"query"}` — Find conceptually related sessions even when vocabulary differs. Capture `semantic_result_ref`.
 3. `{"arguments":{"expression":"files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20","limit":20,"projection":"file-evidence"},"name":"query"}` — Find concrete edits under the relevant subsystem. Capture `file_result_ref`.
 4. `{"arguments":{"limit":20,"ref":"result:0123456789abcdef01234567","view":"ranked-evidence"},"name":"read"}` — Read the retained result set rather than rerunning a changed query.
 5. `{"arguments":{"projection":"evidence","ref":"message:codex-session:demo-lineage-fork:fork-a3"},"name":"get"}` — Resolve the exact message containing the rationale selected from the result set.
@@ -309,7 +309,7 @@ The beads-06 installer architecture is retained: managed native MCP entries, ful
 - Semantic retrieval unavailable: report readiness and fall back to exact field/text/file queries rather than pretending semantic coverage.
 - Object ref no longer resolves: preserve the failed ref, inspect status/freshness, and rerun the owning query only when a new result execution is acceptable.
 - Unauthorized mutation: do not seek authority through prompts or recipes; report the required capability and operation gate.
-- Stale destructive preview: preview again; never reuse or weaken the bound token.
+- Refused full-effect maintenance: it failed closed because the declared confirmation was absent; re-issue the same operation with the declared confirmation rather than seeking another route.
 
 ## CLI installer commands
 

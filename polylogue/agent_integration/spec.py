@@ -60,6 +60,24 @@ class ToolArgument:
     kind: ArgumentKind
     required_initial: bool
     description: str
+    #: Declared vocabulary for enum-typed arguments, resolved against the live
+    #: handler's ``Literal`` annotation by the generated-contract gate.  Empty
+    #: for free-form arguments.
+    enum_values: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmationGate:
+    """The single declared description of a tool's confirmation gate.
+
+    The manual renders its maintenance prose from this object, so the gate is
+    described exactly once.  ``argument`` must exist on the live handler and
+    ``operations`` must be a subset of the live operation vocabulary.
+    """
+
+    argument: str
+    operations: tuple[str, ...]
+    inspection_operations: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +107,8 @@ class ToolContract:
     supports_continuation: bool
     emits_result_ref: bool
     schema_status: SchemaStatus = TARGET_SCHEMA_STATUS
+    #: Present only for tools whose execution is confirmation-gated.
+    confirmation: ConfirmationGate | None = None
 
     @property
     def argument_names(self) -> frozenset[str]:
@@ -160,8 +180,14 @@ def _args(**values: JSONValue) -> Arguments:
     return tuple(values.items())
 
 
-def _arg(name: str, kind: ArgumentKind, required: bool, description: str) -> ToolArgument:
-    return ToolArgument(name, kind, required, description)
+def _arg(
+    name: str,
+    kind: ArgumentKind,
+    required: bool,
+    description: str,
+    enum_values: tuple[str, ...] = (),
+) -> ToolArgument:
+    return ToolArgument(name, kind, required, description, enum_values)
 
 
 def _example(id: str, title: str, result_note: str, **arguments: JSONValue) -> ToolExample:
@@ -214,6 +240,7 @@ def _contract(
     examples: tuple[ToolExample, ...],
     supports_continuation: bool,
     emits_result_ref: bool,
+    confirmation: ConfirmationGate | None = None,
 ) -> ToolContract:
     return ToolContract(
         name=name,
@@ -225,6 +252,7 @@ def _contract(
         examples=examples,
         supports_continuation=supports_continuation,
         emits_result_ref=emits_result_ref,
+        confirmation=confirmation,
     )
 
 
@@ -238,6 +266,16 @@ _WRITE_SOURCES = _sources("write")
 _JUDGE_SOURCES = _sources("judge")
 _RUN_SOURCES = _sources("run")
 _MAINTENANCE_SOURCES = _sources("maintenance")
+
+#: The live ``maintenance`` operation vocabulary and its one confirmation gate.
+#: ``test_manual_contract`` resolves both against the registered MCP handler, so
+#: an operation the handler does not declare cannot reach the manual's prose.
+_MAINTENANCE_OPERATIONS: tuple[str, ...] = ("rebuild_insights", "recovery_status", "recovery_adjudicate")
+_MAINTENANCE_CONFIRMATION = ConfirmationGate(
+    argument="confirm",
+    operations=("rebuild_insights", "recovery_adjudicate"),
+    inspection_operations=("recovery_status",),
+)
 
 TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
@@ -295,6 +333,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             _arg("ref", "string", True, "Stable object, evidence, result-set, or URI reference."),
             _arg("view", "string", False, "Declared projection/view for the referenced object."),
             _arg("limit", "integer", False, "Page size for collection-like or recursive reads."),
+            _arg("offset", "integer", False, "Offset into collection-like reads that use decimal offset pagination."),
             _arg("continuation", "string", False, "Opaque token from the preceding read response; send alone."),
         ),
         examples=(
@@ -502,7 +541,8 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "operation",
                 "string",
                 True,
-                "One of rebuild_insights, recovery_status, recovery_adjudicate.",
+                "The declared maintenance operation.",
+                _MAINTENANCE_OPERATIONS,
             ),
             _arg("operation_id", "string", False, "Exact operation identity to adjudicate."),
             _arg("target_outcomes", "object", False, "Observed target outcomes for adjudication."),
@@ -511,7 +551,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "confirm",
                 "boolean",
                 False,
-                "Explicit confirmation; rebuild_insights and recovery_adjudicate fail closed without it.",
+                "Explicit confirmation required by the full-effect operations.",
             ),
         ),
         examples=(
@@ -524,6 +564,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         ),
         supports_continuation=False,
         emits_result_ref=False,
+        confirmation=_MAINTENANCE_CONFIRMATION,
     ),
 )
 
@@ -582,7 +623,7 @@ QUERY_EXAMPLES: tuple[CheckedQuery, ...] = (
         "tests/unit/cli/test_query_expression.py file-source coverage",
     ),
     CheckedQuery(
-        'sessions where semantic:"preview-bound confirmation"',
+        'sessions where semantic:"confirmation gate binding"',
         "session",
         "Semantic prior-art retrieval.",
         "tests/unit/cli/test_query_expression.py::test_boolean_semantic_predicate_lowers",
@@ -726,13 +767,13 @@ RECIPES: tuple[Recipe, ...] = (
         steps=(
             RecipeStep(
                 "explain",
-                _args(subject="query", expression='sessions where semantic:"preview-bound confirmation"'),
+                _args(subject="query", expression='sessions where semantic:"confirmation gate binding"'),
                 "Verify semantic lowering and any readiness dependency.",
             ),
             RecipeStep(
                 "query",
                 _args(
-                    expression='sessions where semantic:"preview-bound confirmation"',
+                    expression='sessions where semantic:"confirmation gate binding"',
                     limit=20,
                     projection="session-summary",
                 ),
@@ -761,7 +802,7 @@ RECIPES: tuple[Recipe, ...] = (
             ),
         ),
         queries=(
-            _checked('sessions where semantic:"preview-bound confirmation"'),
+            _checked('sessions where semantic:"confirmation gate binding"'),
             _checked("files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20"),
         ),
         resources=("polylogue://query/{id}", "polylogue://result-set/{id}", "polylogue://message/{id}"),
@@ -957,6 +998,7 @@ __all__ = [
     "AgentClient",
     "CapabilityFamily",
     "CheckedQuery",
+    "ConfirmationGate",
     "ClientDelivery",
     "GuidanceMode",
     "OriginMeaning",

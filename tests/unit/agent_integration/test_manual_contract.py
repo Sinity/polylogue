@@ -148,3 +148,83 @@ def test_generated_contract_arguments_match_the_live_mcp_signatures() -> None:
             )
 
     assert not problems, problems
+
+
+def _live_maintenance_signature() -> tuple[frozenset[str], frozenset[str]]:
+    """Return the live ``maintenance`` operation vocabulary and parameter names."""
+    import inspect
+    import typing
+
+    from polylogue.mcp.declarations import MCPCapabilities
+    from polylogue.mcp.server import build_server
+
+    server = build_server(capabilities=MCPCapabilities(write=True, judge=True, maintenance=True))
+    fn = server._tool_manager._tools["maintenance"].fn
+    signature = inspect.signature(fn)
+    hints = typing.get_type_hints(fn)
+    operations = frozenset(typing.get_args(hints["operation"]))
+    assert operations, "maintenance operation annotation is not a Literal vocabulary"
+    return operations, frozenset(signature.parameters)
+
+
+def test_declared_confirmation_gate_matches_the_live_maintenance_handler() -> None:
+    """The one declared gate must be the handler's actual gate.
+
+    Anti-vacuity: adding, renaming, or removing a ``maintenance`` operation
+    literal, or renaming/removing the ``confirm`` parameter, without updating
+    ``_MAINTENANCE_CONFIRMATION`` in ``agent_integration/spec.py`` makes this
+    red. Verified by adding a ``preview`` literal to the live handler.
+    """
+    operations, parameters = _live_maintenance_signature()
+    contract = TOOL_CONTRACT_BY_NAME["maintenance"]
+    gate = contract.confirmation
+
+    assert gate is not None
+    assert gate.argument in parameters
+    assert not set(gate.operations) & set(gate.inspection_operations)
+    assert frozenset((*gate.operations, *gate.inspection_operations)) == operations
+
+    operation_argument = next(argument for argument in contract.arguments if argument.name == "operation")
+    assert frozenset(operation_argument.enum_values) == operations
+
+
+def test_manual_gate_prose_resolves_against_the_live_handler() -> None:
+    """The manual must describe the maintenance gate exactly once, from the declaration.
+
+    The manual used to instruct callers to "call maintenance with the declared
+    operation in preview/dry-run mode" and to call ``confirm=true`` a "legacy"
+    boolean that "is not the canonical gate", while the handler has no preview
+    or dry-run operation and gates precisely on ``confirm``. An agent following
+    that prose was refused.
+
+    Anti-vacuity: red if the manual reintroduces preview/dry-run flow prose,
+    names a maintenance operation the live handler does not declare, calls the
+    live gate legacy, or stops rendering the gate sentence from the declared
+    ``ConfirmationGate``. Verified by restoring the two original prose lines.
+    """
+    import re
+
+    from devtools.render_agent_manual import _maintenance_gate_sentence, render_standing_manual
+
+    operations, parameters = _live_maintenance_signature()
+    gate = TOOL_CONTRACT_BY_NAME["maintenance"].confirmation
+    assert gate is not None
+    manual = render_standing_manual()
+    sentence = _maintenance_gate_sentence()
+
+    assert sentence in manual
+    for operation in operations:
+        assert f"`{operation}`" in sentence
+    assert f"`{gate.argument}=true`" in sentence
+
+    # Every backticked token in the gate sentence must be a live operation, a
+    # live parameter, or the confirmation assignment itself.
+    resolvable = {*operations, *parameters, f"{gate.argument}=true", "maintenance"}
+    assert set(re.findall(r"`([^`]+)`", sentence)) <= resolvable
+
+    # Flow vocabulary the handler does not implement may appear only inside the
+    # generated sentence's own denial, and nowhere else in the manual.
+    for word in ("preview", "dry-run", "dry_run", "legacy"):
+        assert manual.count(word) == sentence.count(word), (
+            f"{word!r} appears in manual prose outside the generated gate sentence"
+        )

@@ -86,6 +86,7 @@ Arguments:
 | `ref` | `string` | yes | Stable object, evidence, result-set, or URI reference. |
 | `view` | `string` | no | Declared projection/view for the referenced object. |
 | `limit` | `integer` | no | Page size for collection-like or recursive reads. |
+| `offset` | `integer` | no | Offset into collection-like reads that use decimal offset pagination. |
 | `continuation` | `string` | no | Opaque token from the preceding read response; send alone. |
 
 Example — Read a session chronicle:
@@ -370,11 +371,11 @@ Arguments:
 
 | Name | Kind | Required initially | Meaning |
 |---|---|---:|---|
-| `operation` | `string` | yes | One of rebuild_insights, recovery_status, recovery_adjudicate. |
+| `operation` | `string` | yes | The declared maintenance operation. |
 | `operation_id` | `string` | no | Exact operation identity to adjudicate. |
 | `target_outcomes` | `object` | no | Observed target outcomes for adjudication. |
 | `reason` | `string` | no | Operator reason. |
-| `confirm` | `boolean` | no | Explicit confirmation; rebuild_insights and recovery_adjudicate fail closed without it. |
+| `confirm` | `boolean` | no | Explicit confirmation required by the full-effect operations. |
 
 Example — Inspect unreconciled operation recovery:
 
@@ -430,7 +431,7 @@ The token decodes to offset 20 and `result:0123456789abcdef01234567`; the verifi
   - surface: `terminal`
   - purpose: File-touch history with deterministic ordering and limit.
   - source evidence: `tests/unit/cli/test_query_expression.py file-source coverage`
-- `sessions where semantic:"preview-bound confirmation"`
+- `sessions where semantic:"confirmation gate binding"`
   - surface: `session`
   - purpose: Semantic prior-art retrieval.
   - source evidence: `tests/unit/cli/test_query_expression.py::test_boolean_semantic_predicate_lowers`
@@ -604,7 +605,7 @@ Combine semantic retrieval with file-touch history, then inspect exact prior rat
 ```json
 {
   "arguments": {
-    "expression": "sessions where semantic:\"preview-bound confirmation\"",
+    "expression": "sessions where semantic:\"confirmation gate binding\"",
     "subject": "query"
   },
   "name": "explain"
@@ -616,7 +617,7 @@ Combine semantic retrieval with file-touch history, then inspect exact prior rat
 ```json
 {
   "arguments": {
-    "expression": "sessions where semantic:\"preview-bound confirmation\"",
+    "expression": "sessions where semantic:\"confirmation gate binding\"",
     "limit": 20,
     "projection": "session-summary"
   },
@@ -826,7 +827,7 @@ The Home Manager module remains separate from daemon lifecycle. Enabling agent i
 
 1. Keep every generated argument contract equal to the registered MCPServer input signatures, including optionality and capability gates.
 2. Run `devtools gate agent-integration --require-live` after declaration changes.
-3. Confirm t46.9’s preview receipt and confirmation token field names, binding rules, stale response, and receipt schema; do not preserve the compatibility boolean as canonical guidance.
+3. Keep the declared `ConfirmationGate` equal to the live handler's operation vocabulary and confirmation argument; the manual's gate prose is rendered from it and from nowhere else.
 4. Run `devtools gate agent-integration --require-live`; it must see the capability-scoped target tools and exact MCPServer signature parity.
 5. Run `devtools render agent-manual` after declaration changes and commit all packaged assets and docs mirrors.
 6. Run `devtools render all --check`, focused agent-integration/MCP tests, topology verification, and package build checks.

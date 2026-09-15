@@ -111,6 +111,41 @@ def _render_tool_calls(tool_names: Iterable[str]) -> list[str]:
     return lines
 
 
+def _maintenance_gate_sentence() -> str:
+    """Render the maintenance gate from the one declared ConfirmationGate.
+
+    The gate is described exactly once, in
+    ``polylogue.agent_integration.spec``, and
+    ``test_manual_contract.test_manual_gate_prose_resolves_against_the_live_handler``
+    resolves the rendered operation names and gate argument against the
+    registered MCP handler.  Prose cannot invent an operation or a gate the
+    handler does not have.
+    """
+
+    contract = TOOL_CONTRACT_BY_NAME["maintenance"]
+    gate = contract.confirmation
+    if gate is None:  # pragma: no cover - the declaration owns this
+        raise RuntimeError("maintenance contract lost its declared confirmation gate")
+    operations = ", ".join(f"`{name}`" for name in _operation_vocabulary(contract))
+    inspect_ops = ", ".join(f"`{name}`" for name in gate.inspection_operations)
+    gated = ", ".join(f"`{name}`" for name in gate.operations)
+    return (
+        f"Canonical maintenance flow: `maintenance` accepts exactly these declared operations: {operations}. "
+        f"Inspect state with {inspect_ops}, which mutates nothing; then execute {gated} by passing "
+        f"`{gate.argument}=true`, which is the gate itself and the only one — they fail closed without it. "
+        "There is no preview or dry-run operation to call first."
+    )
+
+
+def _operation_vocabulary(contract: object) -> tuple[str, ...]:
+    """Return the declared enum vocabulary of a contract's ``operation`` argument."""
+
+    for argument in contract.arguments:  # type: ignore[attr-defined]
+        if argument.name == "operation":
+            return tuple(argument.enum_values)
+    return ()
+
+
 def render_standing_manual() -> str:
     """Render the complete cache-stable standing manual from typed declarations."""
 
@@ -227,11 +262,11 @@ def render_standing_manual() -> str:
             "| _(none; default)_ | the six default tools | Read, explain, status, and bounded context only. |",
             "| `write` | `write`, `run` | Declaration-owned reversible mutations and governed saved-query/recipe execution. A recipe inherits the authority of every nested operation. |",
             "| `judge` | `judge` | Candidate judgment with preserved provenance and explicit conflict handling. Independent of `write`. |",
-            "| `maintenance` | `maintenance` | Preview/status/reconcile and administrative execution. Independent of `write`/`judge`. |",
+            "| `maintenance` | `maintenance` | Insight rebuild and recovery inspection/adjudication. Independent of `write`/`judge`. |",
             "",
-            "Reversible writes require the declared capability and a receipt. Destructive `maintenance` execution requires the governed confirmation required by the selected operation; changing a bound target or authority must return an explicit stale/rejected result before mutation. A legacy `confirm=true` boolean is not the canonical gate.",
+            "Reversible writes require the declared capability and a receipt. Full-effect `maintenance` execution requires the confirmation its declaration states; changing a bound target or authority must return an explicit stale/rejected result before mutation.",
             "",
-            "Canonical maintenance flow: call `maintenance` with the declared operation in preview/dry-run mode; inspect the receipt and target disclosure; then execute only with the governed confirmation required by that operation.",
+            _maintenance_gate_sentence(),
             "",
             "## Continuity recipes",
             "",
@@ -271,7 +306,7 @@ def render_standing_manual() -> str:
             "- Semantic retrieval unavailable: report readiness and fall back to exact field/text/file queries rather than pretending semantic coverage.",
             "- Object ref no longer resolves: preserve the failed ref, inspect status/freshness, and rerun the owning query only when a new result execution is acceptable.",
             "- Unauthorized mutation: do not seek authority through prompts or recipes; report the required capability and operation gate.",
-            "- Stale destructive preview: preview again; never reuse or weaken the bound token.",
+            "- Refused full-effect maintenance: it failed closed because the declared confirmation was absent; re-issue the same operation with the declared confirmation rather than seeking another route.",
             "",
             "## CLI installer commands",
             "",
@@ -421,7 +456,7 @@ def render_deep_reference() -> str:
             "",
             "1. Keep every generated argument contract equal to the registered MCPServer input signatures, including optionality and capability gates.",
             "2. Run `devtools gate agent-integration --require-live` after declaration changes.",
-            "3. Confirm t46.9’s preview receipt and confirmation token field names, binding rules, stale response, and receipt schema; do not preserve the compatibility boolean as canonical guidance.",
+            "3. Keep the declared `ConfirmationGate` equal to the live handler's operation vocabulary and confirmation argument; the manual's gate prose is rendered from it and from nowhere else.",
             "4. Run `devtools gate agent-integration --require-live`; it must see the capability-scoped target tools and exact MCPServer signature parity.",
             "5. Run `devtools render agent-manual` after declaration changes and commit all packaged assets and docs mirrors.",
             "6. Run `devtools render all --check`, focused agent-integration/MCP tests, topology verification, and package build checks.",
