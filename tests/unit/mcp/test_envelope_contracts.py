@@ -16,6 +16,7 @@ should support pagination". The author owns that decision.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -238,6 +239,64 @@ def read_server() -> MCPServerUnderTest:
     return cast(MCPServerUnderTest, build_server())
 
 
+def _seed_archive(archive_root: Path) -> str:
+    """Write one session into a fresh archive at ``archive_root``; return its id."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(archive_root) as archive:
+        return write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id="native-contract",
+                title="Native contract probe",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="needle contract evidence",
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle contract evidence")],
+                    )
+                ],
+            ),
+        )
+
+
+@pytest.fixture
+def seeded_read_server(tmp_path: Path) -> Iterator[MCPServerUnderTest]:
+    """Read-role server whose runtime scope is a real, seeded archive.
+
+    ``read_server`` builds a server with no archive at all, so any resource that
+    opens the index tier refuses with ``archive_tier_unavailable`` before it
+    reaches whatever the test meant to exercise. Tests that force an error
+    *inside* a resource need the tier to be present, which means installing the
+    seeded archive as the actual runtime service scope — patching a config
+    getter alone does not reach the cached facade.
+    """
+    from polylogue.config import Config
+    from polylogue.mcp import server_support
+    from polylogue.mcp.server import build_server
+    from polylogue.services import RuntimeServices
+
+    archive_root = tmp_path / "archive"
+    _seed_archive(archive_root)
+    # ``build_server`` is what installs the runtime service scope, so it has to
+    # run before the scope can be read back and swapped.
+    server = cast(MCPServerUnderTest, build_server())
+    services = RuntimeServices(
+        config=Config(archive_root=archive_root, render_root=tmp_path / "render", sources=[]),
+    )
+    original_services = server_support._get_runtime_services()
+    server_support._set_runtime_services(services)
+    try:
+        yield server
+    finally:
+        server_support._set_runtime_services(original_services)
+
+
 def _assert_structured_error(payload: str, *, expected_code: str | None = None) -> None:
     """Assert payload is a structured MCPErrorPayload with the canonical
     ``status``/``message`` core (#1818) plus the MCP ``is_error`` flag and code."""
@@ -374,7 +433,7 @@ class TestResourceErrorEnvelopes:
     declared ``code``.
     """
 
-    def test_stats_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+    def test_stats_resource_internal_error(self, seeded_read_server: MCPServerUnderTest) -> None:
         # The archive stats resource calls ``ArchiveStore.stats()``. Force that to
         # raise so the resource's structured ``internal_error`` envelope path is
         # exercised.
@@ -385,10 +444,10 @@ class TestResourceErrorEnvelopes:
         with _patch.object(ArchiveStore, "stats", side_effect=RuntimeError("boom")):
             from tests.infra.mcp import invoke_surface
 
-            result = invoke_surface(_resource(read_server, "polylogue://stats"))
+            result = invoke_surface(_resource(seeded_read_server, "polylogue://stats"))
         _assert_structured_error(result, expected_code="internal_error")
 
-    def test_sessions_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+    def test_sessions_resource_internal_error(self, seeded_read_server: MCPServerUnderTest) -> None:
         # The native sessions resource builds its payload via
         # ``archive_session_list_payload``. Force that to raise so the
         # structured ``internal_error`` envelope path is exercised.
@@ -400,21 +459,17 @@ class TestResourceErrorEnvelopes:
         ):
             from tests.infra.mcp import invoke_surface
 
-            result = invoke_surface(_resource(read_server, "polylogue://sessions"))
+            result = invoke_surface(_resource(seeded_read_server, "polylogue://sessions"))
         _assert_structured_error(result, expected_code="internal_error")
 
-    def test_session_resource_not_found(self, read_server: MCPServerUnderTest) -> None:
-        from unittest.mock import AsyncMock as _AsyncMock
-        from unittest.mock import MagicMock as _MagicMock
-        from unittest.mock import patch as _patch
+    def test_session_resource_not_found(self, seeded_read_server: MCPServerUnderTest) -> None:
+        # A present index tier that does not hold the requested session. The
+        # resource resolves the token itself, so no patching is needed -- and
+        # none would help: the old ``_get_polylogue`` patch here was inert
+        # because this resource never calls it.
+        from tests.infra.mcp import invoke_surface
 
-        with _patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = _MagicMock()
-            mock_poly.get_session_summary = _AsyncMock(return_value=None)
-            mock_get_polylogue.return_value = mock_poly
-            from tests.infra.mcp import invoke_surface
-
-            result = invoke_surface(_resource(read_server, "polylogue://session/{conv_id}"), conv_id="missing")
+        result = invoke_surface(_resource(seeded_read_server, "polylogue://session/{conv_id}"), conv_id="missing")
         _assert_structured_error(result, expected_code="not_found")
 
     def test_tags_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
@@ -427,18 +482,11 @@ class TestResourceErrorEnvelopes:
             result = invoke_surface(_resource(read_server, "polylogue://tags"))
         _assert_structured_error(result, expected_code="internal_error")
 
-    def test_messages_resource_not_found(self, read_server: MCPServerUnderTest) -> None:
-        from unittest.mock import AsyncMock as _AsyncMock
-        from unittest.mock import MagicMock as _MagicMock
-        from unittest.mock import patch as _patch
+    def test_messages_resource_not_found(self, seeded_read_server: MCPServerUnderTest) -> None:
+        # As above: present tier, unresolvable session token.
+        from tests.infra.mcp import invoke_surface
 
-        with _patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
-            mock_poly = _MagicMock()
-            mock_poly.get_session_summary = _AsyncMock(return_value=None)
-            mock_get_polylogue.return_value = mock_poly
-            from tests.infra.mcp import invoke_surface
-
-            result = invoke_surface(_resource(read_server, "polylogue://messages/{conv_id}"), conv_id="missing")
+        result = invoke_surface(_resource(seeded_read_server, "polylogue://messages/{conv_id}"), conv_id="missing")
         _assert_structured_error(result, expected_code="not_found")
 
     def test_session_tree_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
@@ -455,7 +503,7 @@ class TestResourceErrorEnvelopes:
             result = invoke_surface(_resource(read_server, "polylogue://session-tree/{conv_id}"), conv_id="x")
         _assert_structured_error(result, expected_code="internal_error")
 
-    def test_origin_recent_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
+    def test_origin_recent_resource_internal_error(self, seeded_read_server: MCPServerUnderTest) -> None:
         # The origin/recent resource also builds its payload via
         # ``archive_session_list_payload``; force that to raise.
         from unittest.mock import patch as _patch
@@ -466,8 +514,26 @@ class TestResourceErrorEnvelopes:
         ):
             from tests.infra.mcp import invoke_surface
 
-            result = invoke_surface(_resource(read_server, "polylogue://origin/{name}/recent"), name="chatgpt-export")
+            result = invoke_surface(
+                _resource(seeded_read_server, "polylogue://origin/{name}/recent"), name="chatgpt-export"
+            )
         _assert_structured_error(result, expected_code="internal_error")
+
+    def test_resource_on_an_absent_index_tier_is_typed_not_internal(self, read_server: MCPServerUnderTest) -> None:
+        """#5162: a first run with no archive is a typed refusal, not a surprise.
+
+        ``read_server`` deliberately has no archive. Before #5162 the absent
+        index tier surfaced as a bare ``sqlite3.OperationalError`` and reached
+        the generic handler as ``internal_error``; it is now
+        ``archive_tier_unavailable``. Anti-vacuity: drop the
+        ``ArchiveTierUnavailableError`` branch in
+        ``server_support._exception_to_error_json`` and this returns to
+        ``internal_error``.
+        """
+        from tests.infra.mcp import invoke_surface
+
+        result = invoke_surface(_resource(read_server, "polylogue://sessions"))
+        _assert_structured_error(result, expected_code="archive_tier_unavailable")
 
     def test_readiness_resource_internal_error(self, read_server: MCPServerUnderTest) -> None:
         from unittest.mock import patch as _patch
@@ -494,30 +560,7 @@ class TestNativeReadSurfaceHonorsContract:
     assert it returns the classified envelope / single-object / stats-map shape.
     """
 
-    @staticmethod
-    def _seed(archive_root: Path) -> str:
-        from polylogue.archive.message.roles import Role
-        from polylogue.core.enums import BlockType, Provider
-        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore(archive_root) as archive:
-            return write_index_session(
-                archive,
-                ParsedSession(
-                    source_name=Provider.CHATGPT,
-                    provider_session_id="native-contract",
-                    title="Native contract probe",
-                    messages=[
-                        ParsedMessage(
-                            provider_message_id="m1",
-                            role=Role.USER,
-                            text="needle contract evidence",
-                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle contract evidence")],
-                        )
-                    ],
-                ),
-            )
+    _seed = staticmethod(_seed_archive)
 
     @pytest.mark.parametrize(
         ("tool_name", "kwargs"),
