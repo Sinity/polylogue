@@ -2,8 +2,10 @@
 
 This module owns typed capabilities, checked queries, recipes, client delivery
 declarations, and rendered package assets. Its contracts are derived from the
-live ten-tool MCP declaration algebra and checked against registered MCPServer
-signatures.
+live MCP declaration algebra and checked against registered MCPServer
+signatures. ``polylogue.mcp.declarations.declared_tool_names`` is the sole
+authority for which tools exist; this module restates neither the names nor
+their count.
 """
 
 from __future__ import annotations
@@ -14,17 +16,19 @@ from typing import Literal, TypeAlias
 from polylogue.core.enums import Origin
 from polylogue.declarations import JSONValue
 from polylogue.mcp.declarations import (
+    MCP_TOOL_DECLARATIONS,
     PRIVILEGED_ALGEBRA,
     TARGET_DEFAULT_READ_ALGEBRA,
     TARGET_PROMPTS,
     TARGET_RESOURCES,
     MCPCapabilityFlag,
     MCPResultSemantics,
+    MCPToolDeclaration,
     MCPTransactionDeclaration,
 )
 from polylogue.sources.origin_specs import public_origin_meanings
 
-ASSET_VERSION = "2026-08-26.10tool-r01"
+ASSET_VERSION = "2026-09-15.declared-tools-r01"
 AgentClient = Literal["claude-code", "codex", "gemini", "hermes"]
 GuidanceMode = Literal["full", "mcp-only", "off"]
 QuerySurface = Literal["session", "terminal"]
@@ -37,6 +41,10 @@ GUIDANCE_MODES: tuple[GuidanceMode, ...] = ("full", "mcp-only", "off")
 DEFAULT_READ_TOOLS: tuple[str, ...] = tuple(item.name for item in TARGET_DEFAULT_READ_ALGEBRA)
 PRIVILEGED_TOOLS: tuple[str, ...] = tuple(item.name for item in PRIVILEGED_ALGEBRA)
 ALL_TARGET_TOOLS: tuple[str, ...] = (*DEFAULT_READ_TOOLS, *PRIVILEGED_TOOLS)
+#: Every declared MCP tool in declaration order, including the ones outside the
+#: target transaction algebra. This is the manual's tool surface; its length is
+#: the only tool count anything should render.
+ALL_DECLARED_TOOLS: tuple[str, ...] = tuple(declaration.name for declaration in MCP_TOOL_DECLARATIONS)
 CONTINUATION_SENTINEL = "$continuation"
 
 Arguments: TypeAlias = tuple[tuple[str, JSONValue], ...]
@@ -198,8 +206,13 @@ def _target_declaration_index() -> dict[str, MCPTransactionDeclaration]:
     return {item.name: item for item in (*TARGET_DEFAULT_READ_ALGEBRA, *PRIVILEGED_ALGEBRA)}
 
 
+def _declaration_index() -> dict[str, MCPToolDeclaration]:
+    """Index every declared tool, target-visible or not."""
+    return {declaration.name: declaration for declaration in MCP_TOOL_DECLARATIONS}
+
+
 def _sources(*names: str, optional: tuple[str, ...] = ()) -> tuple[str, ...]:
-    index = _target_declaration_index()
+    index = _declaration_index()
     selected: list[str] = []
     for name in names:
         if name not in index:
@@ -210,7 +223,7 @@ def _sources(*names: str, optional: tuple[str, ...] = ()) -> tuple[str, ...]:
 
 
 def _semantics(source_names: tuple[str, ...]) -> tuple[MCPResultSemantics, ...]:
-    index = _target_declaration_index()
+    index = _declaration_index()
     result: list[MCPResultSemantics] = []
     for source_name in source_names:
         declaration = index[source_name]
@@ -222,7 +235,7 @@ def _semantics(source_names: tuple[str, ...]) -> tuple[MCPResultSemantics, ...]:
 
 
 def _required_capability(source_names: tuple[str, ...]) -> MCPCapabilityFlag | None:
-    index = _target_declaration_index()
+    index = _declaration_index()
     capabilities = {index[name].required_capability for name in source_names}
     if len(capabilities) != 1:
         raise RuntimeError(
@@ -263,6 +276,8 @@ _EXPLAIN_SOURCES = _sources("explain")
 _CONTEXT_SOURCES = _sources("context")
 _STATUS_SOURCES = _sources("status")
 _WRITE_SOURCES = _sources("write")
+_RECORD_WORK_EVENT_SOURCES = _sources("record_work_event")
+_EMIT_DECISION_SOURCES = _sources("emit_decision")
 _JUDGE_SOURCES = _sources("judge")
 _RUN_SOURCES = _sources("run")
 _MAINTENANCE_SOURCES = _sources("maintenance")
@@ -486,6 +501,65 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         emits_result_ref=False,
     ),
     _contract(
+        name="record_work_event",
+        source_names=_RECORD_WORK_EVENT_SOURCES,
+        purpose="Record one typed live-agent work event against a session so later sessions can retrieve it as evidence.",
+        arguments=(
+            _arg("session_id", "string", True, "Session the event belongs to."),
+            _arg("event_id", "string", True, "Caller-chosen idempotent event identity."),
+            _arg(
+                "event_type",
+                "string",
+                True,
+                "The declared work-event type.",
+                ("tool_run", "subagent_spawn", "decision", "artifact_change"),
+            ),
+            _arg("summary", "string", True, "One-line description of what happened."),
+            _arg("payload", "object", False, "Structured event detail."),
+            _arg("timestamp", "string", False, "Event time; defaults to the ingest clock."),
+        ),
+        examples=(
+            _example(
+                "record-tool-run",
+                "Record a tool run as retrievable evidence",
+                "A mutation receipt; re-sending the same event_id is idempotent rather than a second event.",
+                session_id="codex-session:demo-lineage-fork",
+                event_id="evt-tool-run-1",
+                event_type="tool_run",
+                summary="Ran the focused agent-integration selection.",
+            ),
+        ),
+        supports_continuation=False,
+        emits_result_ref=False,
+    ),
+    _contract(
+        name="emit_decision",
+        source_names=_EMIT_DECISION_SOURCES,
+        purpose="Record a typed decision with its evidence references, using the shared work-event vocabulary.",
+        arguments=(
+            _arg("session_id", "string", True, "Session the decision belongs to."),
+            _arg("event_id", "string", True, "Caller-chosen idempotent event identity."),
+            _arg("decision", "string", True, "The decision reached."),
+            _arg("summary", "string", True, "Why the decision was reached."),
+            _arg("evidence_refs", "array", False, "Stable refs the decision rests on."),
+            _arg("timestamp", "string", False, "Decision time; defaults to the ingest clock."),
+        ),
+        examples=(
+            _example(
+                "emit-decision-with-evidence",
+                "Record a decision against the evidence it rests on",
+                "A mutation receipt binding the decision to the cited refs; cite refs rather than restating their content.",
+                session_id="codex-session:demo-lineage-fork",
+                event_id="evt-decision-1",
+                decision="keep",
+                summary="The declaration, not the prose, is the intended contract.",
+                evidence_refs=["polylogue://session/codex-session:demo-lineage-fork"],
+            ),
+        ),
+        supports_continuation=False,
+        emits_result_ref=False,
+    ),
+    _contract(
         name="judge",
         source_names=_JUDGE_SOURCES,
         purpose="Accept, reject, defer, or supersede an assertion candidate while preserving candidate and judgment provenance.",
@@ -569,8 +643,12 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
 )
 
 TOOL_CONTRACT_BY_NAME: dict[str, ToolContract] = {contract.name: contract for contract in TOOL_CONTRACTS}
-if tuple(TOOL_CONTRACT_BY_NAME) != ALL_TARGET_TOOLS:
-    raise RuntimeError("agent tool contracts must remain in default-read then privileged order")
+if tuple(TOOL_CONTRACT_BY_NAME) != ALL_DECLARED_TOOLS:
+    raise RuntimeError(
+        "agent tool contracts must cover every declared MCP tool, in declaration order; "
+        f"missing={sorted(set(ALL_DECLARED_TOOLS) - set(TOOL_CONTRACT_BY_NAME))} "
+        f"unexpected={sorted(set(TOOL_CONTRACT_BY_NAME) - set(ALL_DECLARED_TOOLS))}"
+    )
 
 CAPABILITY_FAMILIES: tuple[CapabilityFamily, ...] = (
     CapabilityFamily("authority", "Archive identity, source coverage, freshness, and readiness", None, "status"),
@@ -871,7 +949,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install a SessionStart hook whose additionalContext is the complete generated standing manual.",
         "Install the generated deep reference as an owned local file.",
         "Hook ownership, idempotent merge, capability/env selection, drift detection, and lossless uninstall are unchanged.",
-        "Only the generated content, target manifest, ten-tool vocabulary, continuation recipe, and cache digest change.",
+        "Only the generated content, target manifest, declared tool vocabulary, continuation recipe, and cache digest change.",
     ),
     ClientDelivery(
         "codex",
@@ -879,7 +957,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install a marked managed block in the effective global AGENTS.override.md or AGENTS.md without overwriting operator text.",
         "Install the generated deep reference beside the managed guidance.",
         "Override precedence detection, marker ownership, idempotency, and lossless uninstall are unchanged.",
-        "The managed block is regenerated from the ten-tool declarations; no retired tool-name list remains.",
+        "The managed block is regenerated from the live declarations; no retired tool-name list remains.",
     ),
     ClientDelivery(
         "gemini",
@@ -887,7 +965,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install a marked managed block in GEMINI.md as persistent instruction.",
         "Install the generated deep reference as an owned local file.",
         "JSON merge ownership, marker ownership, idempotency, and lossless uninstall are unchanged.",
-        "The persistent instruction and target manifest use the ten-tool contract.",
+        "The persistent instruction and target manifest use the declared tool contract.",
     ),
     ClientDelivery(
         "hermes",
@@ -895,7 +973,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install the complete generated manual inside the owned productivity/polylogue SKILL.md.",
         "Include the generated deep reference in the owned skill directory.",
         "YAML merge ownership, skill ownership, idempotency, and lossless uninstall are unchanged.",
-        "The skill body, recipes, capability opt-ins, and cache digest are regenerated for the ten-tool surface.",
+        "The skill body, recipes, capability opt-ins, and cache digest are regenerated for the declared tool surface.",
     ),
 )
 
@@ -979,6 +1057,7 @@ def integration_spec_payload() -> dict[str, object]:
 
 
 __all__ = [
+    "ALL_DECLARED_TOOLS",
     "ALL_TARGET_TOOLS",
     "ASSET_VERSION",
     "CAPABILITY_FAMILIES",

@@ -1,5 +1,5 @@
 {
-  "content_version": "2026-08-26.10tool-r01",
+  "content_version": "2026-09-15.declared-tools-r01",
   "default_read_tools": [
     "query",
     "read",
@@ -598,6 +598,158 @@
       "schema_status": "live-verified",
       "source_declarations": [
         "write"
+      ],
+      "supports_continuation": false
+    },
+    {
+      "arguments": [
+        {
+          "description": "Session the event belongs to.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "session_id",
+          "required_initial": true
+        },
+        {
+          "description": "Caller-chosen idempotent event identity.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "event_id",
+          "required_initial": true
+        },
+        {
+          "description": "The declared work-event type.",
+          "enum_values": [
+            "tool_run",
+            "subagent_spawn",
+            "decision",
+            "artifact_change"
+          ],
+          "kind": "string",
+          "name": "event_type",
+          "required_initial": true
+        },
+        {
+          "description": "One-line description of what happened.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "summary",
+          "required_initial": true
+        },
+        {
+          "description": "Structured event detail.",
+          "enum_values": [],
+          "kind": "object",
+          "name": "payload",
+          "required_initial": false
+        },
+        {
+          "description": "Event time; defaults to the ingest clock.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "timestamp",
+          "required_initial": false
+        }
+      ],
+      "confirmation": null,
+      "emits_result_ref": false,
+      "examples": [
+        {
+          "arguments": {
+            "event_id": "evt-tool-run-1",
+            "event_type": "tool_run",
+            "session_id": "codex-session:demo-lineage-fork",
+            "summary": "Ran the focused agent-integration selection."
+          },
+          "id": "record-tool-run",
+          "result_note": "A mutation receipt; re-sending the same event_id is idempotent rather than a second event.",
+          "title": "Record a tool run as retrievable evidence"
+        }
+      ],
+      "name": "record_work_event",
+      "purpose": "Record one typed live-agent work event against a session so later sessions can retrieve it as evidence.",
+      "required_capability": "write",
+      "result_semantics": [
+        "mutation"
+      ],
+      "schema_status": "live-verified",
+      "source_declarations": [
+        "record_work_event"
+      ],
+      "supports_continuation": false
+    },
+    {
+      "arguments": [
+        {
+          "description": "Session the decision belongs to.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "session_id",
+          "required_initial": true
+        },
+        {
+          "description": "Caller-chosen idempotent event identity.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "event_id",
+          "required_initial": true
+        },
+        {
+          "description": "The decision reached.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "decision",
+          "required_initial": true
+        },
+        {
+          "description": "Why the decision was reached.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "summary",
+          "required_initial": true
+        },
+        {
+          "description": "Stable refs the decision rests on.",
+          "enum_values": [],
+          "kind": "array",
+          "name": "evidence_refs",
+          "required_initial": false
+        },
+        {
+          "description": "Decision time; defaults to the ingest clock.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "timestamp",
+          "required_initial": false
+        }
+      ],
+      "confirmation": null,
+      "emits_result_ref": false,
+      "examples": [
+        {
+          "arguments": {
+            "decision": "keep",
+            "event_id": "evt-decision-1",
+            "evidence_refs": [
+              "polylogue://session/codex-session:demo-lineage-fork"
+            ],
+            "session_id": "codex-session:demo-lineage-fork",
+            "summary": "The declaration, not the prose, is the intended contract."
+          },
+          "id": "emit-decision-with-evidence",
+          "result_note": "A mutation receipt binding the decision to the cited refs; cite refs rather than restating their content.",
+          "title": "Record a decision against the evidence it rests on"
+        }
+      ],
+      "name": "emit_decision",
+      "purpose": "Record a typed decision with its evidence references, using the shared work-event vocabulary.",
+      "required_capability": "write",
+      "result_semantics": [
+        "mutation"
+      ],
+      "schema_status": "live-verified",
+      "source_declarations": [
+        "emit_decision"
       ],
       "supports_continuation": false
     },

@@ -1,8 +1,12 @@
 """Executable MCP tool algebra inventory and equivalence ownership.
 
-Every live tool appears exactly once: the ten-tool cutover surface
-(``query``/``read``/``get``/``explain``/``context``/``status`` plus the
-privileged ``write``/``judge``/``run``/``maintenance`` transactions).
+Every live tool appears exactly once. ``declared_tool_names`` is the authority
+for how many there are and what they are called; nothing restates that count.
+
+Not every live tool is in the *target* transaction algebra:
+``record_work_event`` and ``emit_decision`` carry ``target_visible=False``, so
+they have no target transaction while remaining fully registered, write-gated
+tools. "Outside the target algebra" is not "not a tool".
 """
 
 from __future__ import annotations
@@ -324,6 +328,7 @@ def _cutover_declaration(row: _ToolRow) -> MCPToolDeclaration:
         description=row.description,
         required_capability=row.required_capability,
         registration=MCPHandlerBinding(module=row.module, symbol=row.name, registrar=row.registrar),
+        result_semantics=row.target_result_semantics or (row.result_semantics,),
         transaction=(
             MCPTransactionDeclaration(
                 name=row.name,
@@ -372,9 +377,10 @@ _ALL_CAPABILITIES_ENABLED = MCPCapabilities(write=True, judge=True, maintenance=
 def declared_tool_names(capabilities: MCPCapabilities = _ALL_CAPABILITIES_ENABLED) -> frozenset[str]:
     """Return the tool names visible under ``capabilities``.
 
-    Default is every capability enabled (the full twelve-tool surface), used by
-    inventory/discovery tooling that wants the complete declared set rather
-    than one server's resolved config.
+    Default is every capability enabled: the complete declared set, used by
+    inventory/discovery tooling that wants every tool rather than one
+    server's resolved config. This function is the only authority for how
+    many tools there are; no docstring, manual, or comment restates it.
     """
     return frozenset(
         declaration.name

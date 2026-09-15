@@ -13,6 +13,7 @@ if sys.path[0] != _REPO_ROOT:
     sys.path.insert(0, _REPO_ROOT)
 
 from polylogue.agent_integration.spec import (  # noqa: E402
+    ALL_DECLARED_TOOLS,
     ALL_TARGET_TOOLS,
     ASSET_VERSION,
     CAPABILITY_FAMILIES,
@@ -111,6 +112,37 @@ def _render_tool_calls(tool_names: Iterable[str]) -> list[str]:
     return lines
 
 
+_NUMBER_WORDS = (
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+)
+
+
+def _count_word(count: int) -> str:
+    """Spell a small count. Never a literal in prose -- always derived."""
+
+    return _NUMBER_WORDS[count] if count < len(_NUMBER_WORDS) else str(count)
+
+
 def _maintenance_gate_sentence() -> str:
     """Render the maintenance gate from the one declared ConfirmationGate.
 
@@ -157,7 +189,12 @@ def render_standing_manual() -> str:
         "",
         "Polylogue is the local evidence system for prior AI work. Use it whenever the task depends on what was tried, decided, changed, observed, paid for, or left unfinished. Do not wait for the operator to say “search the archive.” First establish archive authority, then retrieve evidence, then cite stable refs. Do not use Polylogue for facts that the current repository or live system can answer more directly.",
         "",
-        "This manual targets the ten-tool MCP surface: `query`, `read`, `get`, `explain`, `context`, `status`, `write`, `judge`, `run`, and `maintenance`. Names and argument contracts are generated from the live declarations and checked against registered MCPServer signatures.",
+        (
+            f"This manual targets the complete declared MCP surface: {_count_word(len(ALL_DECLARED_TOOLS))} tools, "
+            f"of which {_count_word(len(DEFAULT_READ_TOOLS))} are available by default and the rest require a "
+            "capability opt-in. Names, counts, and argument contracts are generated from the live declarations and "
+            "checked against registered MCPServer signatures."
+        ),
         "",
         "## Cold-start decision route",
         "",
@@ -181,13 +218,15 @@ def render_standing_manual() -> str:
             "",
             "Coverage is not implied by token existence. `status` must report whether the requested origins are configured, ingested, fresh, converged, and suitable for the requested evidence type. State missing or stale coverage in the answer.",
             "",
-            "## The ten tools",
+            f"## The {_count_word(len(ALL_DECLARED_TOOLS))} tools",
+            "",
+            "Every declared tool is listed. A tool requiring a capability is registered only when that capability is enabled; the list does not change per configuration, the availability does.",
             "",
             "| Tool | Use it for | Required capability | Result semantics |",
             "|---|---|---|---|",
         ]
     )
-    for name in DEFAULT_READ_TOOLS:
+    for name in ALL_DECLARED_TOOLS:
         contract = TOOL_CONTRACT_BY_NAME[name]
         lines.append(
             f"| `{name}` | {contract.purpose} | `{contract.required_capability or 'read'}` | "
@@ -259,8 +298,8 @@ def render_standing_manual() -> str:
             "",
             "| Capability | Added transactions | Authority |",
             "|---|---|---|",
-            "| _(none; default)_ | the six default tools | Read, explain, status, and bounded context only. |",
-            "| `write` | `write`, `run` | Declaration-owned reversible mutations and governed saved-query/recipe execution. A recipe inherits the authority of every nested operation. |",
+            f"| _(none; default)_ | the {_count_word(len(DEFAULT_READ_TOOLS))} default tools | Read, explain, status, and bounded context only. |",
+            "| `write` | `write`, `record_work_event`, `emit_decision`, `run` | Declaration-owned reversible mutations, typed live-agent work events and decisions, and governed saved-query/recipe execution. A recipe inherits the authority of every nested operation. |",
             "| `judge` | `judge` | Candidate judgment with preserved provenance and explicit conflict handling. Independent of `write`. |",
             "| `maintenance` | `maintenance` | Insight rebuild and recovery inspection/adjudication. Independent of `write`/`judge`. |",
             "",
@@ -313,7 +352,7 @@ def render_standing_manual() -> str:
             "`polylogue agent` manages this manual and the native client integration; it never touches the archive itself.",
             "",
             "- `polylogue agent manual`: Print the packaged standing manual or deeper reference.",
-            "- `polylogue agent manifest`: Report the capability-scoped runtime and ten-tool target surfaces.",
+            "- `polylogue agent manifest`: Report the capability-scoped runtime and declared target surfaces.",
             "- `polylogue agent install`: Install user-scoped MCP and standing guidance for native clients.",
             "- `polylogue agent status`: Inspect ownership state and native configuration without mutation.",
             "- `polylogue agent doctor`: Run blocking native syntax, ownership, executable, and identity checks.",
@@ -340,7 +379,7 @@ def render_deep_reference() -> str:
         "",
         "## Adjudication boundary",
         "",
-        "The architecture is the `polylogue.agent_integration` system: typed spec, packaged generated assets, native installer, capability-scoped manifest, CLI, Home Manager module, and verification lanes. The ten-tool declaration algebra is the source of truth for names, arguments, roles, and result semantics.",
+        "The architecture is the `polylogue.agent_integration` system: typed spec, packaged generated assets, native installer, capability-scoped manifest, CLI, Home Manager module, and verification lanes. The MCP declaration registry is the source of truth for names, counts, arguments, roles, and result semantics. `declared_tool_names` is the only authority for how many tools exist; `record_work_event` and `emit_decision` are live write-gated tools that carry no target transaction, which is not the same as not existing.",
         "",
         "## Target transaction declarations",
         "",
@@ -473,12 +512,13 @@ def _static_manifest() -> dict[str, object]:
     return {
         "schema_version": 2,
         "content_version": ASSET_VERSION,
-        "description": "Static ten-tool target manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` reports the capability-scoped declaration surface.",
+        "description": "Static declared-tool manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` reports the capability-scoped declaration surface.",
         "clients": list(CLIENTS),
         "mcp_capability_flags": ["write", "judge", "maintenance"],
         "default_read_tools": list(DEFAULT_READ_TOOLS),
         "privileged_tools": list(PRIVILEGED_TOOLS),
         "target_tools": list(ALL_TARGET_TOOLS),
+        "declared_tools": list(ALL_DECLARED_TOOLS),
         "resources": [item.uri_template for item in TARGET_RESOURCES],
         "manual_resources": [
             "polylogue://agent/manual",

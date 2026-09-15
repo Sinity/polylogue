@@ -59,12 +59,21 @@ def test_manual_contains_tool_continuation_role_and_origin_contract() -> None:
     manual = read_agent_asset("standing-manual.md")
 
     assert "## Cold-start decision route" in manual
-    assert "## The ten tools" in manual
+    from devtools.render_agent_manual import _count_word
+    from polylogue.mcp.declarations import declared_tool_names
+
+    # The tool count is derived, never restated: the manual must spell exactly
+    # the number of declared tools, and no stale literal count may survive.
+    spelled = _count_word(len(declared_tool_names()))
+    assert f"## The {spelled} tools" in manual
+    assert f"{spelled} tools" in manual
+    assert "ten-tool" not in manual
     assert "same tool with **only** the returned opaque token" in manual
     assert "Never cite a continuation token" in manual
     assert "strict command floor" in manual
-    assert "preview-bound confirmation" in manual
-    assert "ten-tool" in manual
+    assert "confirmation gate binding" in manual
+    for name in declared_tool_names():
+        assert f"| `{name}` |" in manual
     for name in DEFAULT_READ_TOOLS:
         assert f"### `{name}`" in manual
     for origin in ORIGIN_MEANINGS:

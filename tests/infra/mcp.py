@@ -14,7 +14,7 @@ from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATIONS, TARGET_PR
 
 MCP_TOOL_NAME_BASELINE = frozenset({"query", "read", "get", "explain", "context", "status"})
 
-#: Every privileged dispatcher enabled -- the full ten-tool surface. There is
+#: Every privileged dispatcher enabled -- the full declared tool surface. There is
 #: no role ladder (polylogue-800m): write/judge/maintenance are independent
 #: config opt-ins, so this constant exists purely for tests that want the
 #: complete declared set rather than one server's resolved config.

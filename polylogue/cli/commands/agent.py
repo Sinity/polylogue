@@ -84,7 +84,7 @@ def manual_command(kind: str, output_format: str) -> None:
 @click.option("--enable-maintenance", is_flag=True, help="Report the surface with maintenance capability enabled.")
 @click.option("-f", "--format", "output_format", type=_FORMAT, default="json", show_default=True)
 def manifest_command(enable_write: bool, enable_judge: bool, enable_maintenance: bool, output_format: str) -> None:
-    """Report the capability-scoped runtime and ten-tool target surfaces.
+    """Report the capability-scoped runtime and declared target surfaces.
 
     Read-only by default (no flags). These flags describe the manifest to
     report, not a launch argument -- the live MCP server itself resolves
