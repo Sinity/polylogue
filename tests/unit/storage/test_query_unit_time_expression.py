@@ -97,10 +97,22 @@ def test_get_session_tree_does_not_epoch_collide_timeless_sibling(tmp_path: Path
             "UPDATE sessions SET parent_session_id = ?, root_session_id = ? WHERE session_id = ?",
             (root, root, timeless_sibling),
         )
+        # The rooted tree is projected from canonical ``session_links``; the
+        # accelerator columns above never synthesize an edge, so the child is
+        # only in the tree because this canonical row exists.
+        conn.execute(
+            "INSERT INTO session_links (src_session_id, dst_origin, dst_native_id, link_type, "
+            "resolved_dst_session_id, method, confidence, observed_at_ms) "
+            "VALUES (?, ?, ?, 'continuation', ?, 'native-reference', 1.0, 0)",
+            (timeless_sibling, _TIMELESS_ORIGIN, "tree-root", root),
+        )
         conn.commit()
 
         tree = facade.get_session_tree(root)
 
+    # Anti-vacuity: reverting the tree read to ``ORDER BY COALESCE(sort_key_ms,
+    # created_at_ms, updated_at_ms)`` over ``root_session_id`` -- or dropping the
+    # timeless sibling because its ordering key is NULL -- makes this red.
     assert {envelope.session_id for envelope in tree} == {root, timeless_sibling}
 
 

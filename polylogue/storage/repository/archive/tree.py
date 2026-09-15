@@ -1,11 +1,20 @@
-"""Parent/child/root tree reads for the repository."""
+"""Canonical session-topology reads for the repository.
+
+Parent, child, root and rooted-tree answers are projected from
+``session_links`` through the one graph engine
+(``derive_session_topology_async``). The ``sessions.parent_session_id`` /
+``sessions.root_session_id`` columns are write-side accelerators: they may
+speed a lookup, but they never synthesize an edge here and never stand in for
+an edge's provenance (composability, status, inheritance, method, evidence).
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.analysis.topology import SessionTopology
 from polylogue.archive.session.domain_models import Session
-from polylogue.storage.query_models import SessionRecordQuery
+from polylogue.storage.derived.topology.derivation import derive_session_topology_async
 from polylogue.storage.runtime import SessionRecord
 
 if TYPE_CHECKING:
@@ -25,52 +34,57 @@ class RepositoryArchiveTreeMixin:
             ordered_ids: list[str] | None = None,
         ) -> list[Session]: ...
 
+    async def _topology(self, session_id: str) -> SessionTopology | None:
+        return await derive_session_topology_async(self.queries, session_id)
+
     async def get_parent(self, session_id: str) -> Session | None:
-        conv_record = await self.queries.get_session(session_id)
-        if conv_record and conv_record.parent_session_id:
-            return await self.get(str(conv_record.parent_session_id))
+        topology = await self._topology(session_id)
+        if topology is None:
+            return None
+        for edge in topology.edges:
+            if edge.composable and str(edge.child_id) == session_id and edge.parent_id is not None:
+                return await self.get(str(edge.parent_id))
         return None
 
     async def get_children(self, session_id: str) -> list[Session]:
-        child_records = await self.queries.list_sessions(SessionRecordQuery(parent_id=session_id))
-        if not child_records:
+        topology = await self._topology(session_id)
+        if topology is None:
             return []
-        return await self._hydrate_sessions(child_records)
-
-    async def _get_root_record(self, session_id: str) -> SessionRecord:
-        current = await self.queries.get_session(session_id)
-        if not current:
-            raise ValueError(f"Session {session_id} not found")
-
-        while current.parent_session_id:
-            parent = await self.queries.get_session(str(current.parent_session_id))
-            if not parent:
-                break
-            current = parent
-        return current
+        child_ids = sorted(
+            {
+                str(edge.child_id)
+                for edge in topology.edges
+                if edge.composable and edge.parent_id is not None and str(edge.parent_id) == session_id
+            }
+        )
+        children: list[Session] = []
+        for child_id in child_ids:
+            child = await self.get(child_id)
+            if child is not None:
+                children.append(child)
+        return children
 
     async def get_root(self, session_id: str) -> Session:
-        root_record = await self._get_root_record(session_id)
-        root = await self.get(root_record.session_id)
+        topology = await self._topology(session_id)
+        if topology is None:
+            raise ValueError(f"Session {session_id} not found")
+        root = await self.get(str(topology.root_id))
         if root is None:
             raise ValueError(f"Session {session_id} not found")
         return root
 
     async def get_session_tree(self, session_id: str) -> list[Session]:
-        root_record = await self._get_root_record(session_id)
-
-        tree_records: list[SessionRecord] = []
-        queue: list[SessionRecord] = [root_record]
-
-        while queue:
-            current = queue.pop(0)
-            tree_records.append(current)
-            children = await self.queries.list_sessions(SessionRecordQuery(parent_id=current.session_id))
-            queue.extend(children)
-
+        topology = await self._topology(session_id)
+        if topology is None:
+            return []
+        records: list[SessionRecord] = []
+        for node in topology.nodes:
+            record = await self.queries.get_session(str(node.session_id))
+            if record is not None:
+                records.append(record)
         return await self._hydrate_sessions(
-            tree_records,
-            ordered_ids=[record.session_id for record in tree_records],
+            records,
+            ordered_ids=[record.session_id for record in records],
         )
 
 
