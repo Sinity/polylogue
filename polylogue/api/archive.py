@@ -945,6 +945,107 @@ def _archive_count_sessions_for_spec(archive: Any, spec: SessionQuerySpec) -> in
     return int(archive.count_sessions(**query_kwargs))
 
 
+def build_facets_response(
+    *,
+    global_buckets: Any,
+    scoped_buckets: Any,
+    scoped_to_query: bool,
+    include_deferred: bool,
+    elapsed_s: float | None,
+    include_idf: bool,
+    post_filter_gap: str | None = None,
+) -> FacetsResponse:
+    """Assemble the one canonical facets envelope.
+
+    Every surface that answers facets builds it here. The daemon read
+    operation used to restate this assembly over the same buckets, and the
+    restatement drifted: it dropped ``availability``, ``deadline_s``,
+    ``elapsed_s``, ``stale_age_s`` and ``family_status`` entirely, hard-coded
+    ``budget_exceeded``/``cost_class``, carried its own divergent family lists,
+    and classified no gaps. Adding those keys back by hand would only restart
+    the drift, so there is now one assembly and two callers.
+    """
+
+    from polylogue.analysis.projection_contracts import facets_availability
+    from polylogue.archive.query.facets import compute_idf
+    from polylogue.surfaces.outcome import decide_outcome
+    from polylogue.surfaces.payloads import FacetBucketsPayload, FacetsResponse
+
+    def _payload(b: Any) -> FacetBucketsPayload:
+        return FacetBucketsPayload(
+            origins=dict(b.origins),
+            tags=dict(b.tags),
+            repos=dict(b.repos),
+            role_counts=dict(b.role_counts),
+            material_origins=dict(b.material_origins),
+            message_types=dict(b.message_types),
+            action_types=dict(b.action_types),
+            has_flags=dict(b.has_flags),
+            omitted=dict(b.omitted),
+            total_sessions=b.total_sessions,
+            total_messages=b.total_messages,
+        )
+
+    def _family_status_payload(family: str, *, state: str, reason: str | None = None) -> dict[str, object]:
+        return {
+            "state": state,
+            "reason": reason,
+            "stale": False,
+            **_FACET_FAMILY_METADATA.get(family, {}),
+        }
+
+    availability = facets_availability(include_deferred=include_deferred, elapsed_s=elapsed_s)
+    active = scoped_buckets if scoped_to_query else global_buckets
+    complete_families = _FACET_COMPLETE_FAMILIES if include_deferred else _FACET_CORE_FAMILIES
+    deferred_families = {} if include_deferred else dict.fromkeys(_FACET_DEFERRED_FAMILIES, "deferred_by_default")
+    # A projection that missed its budget or lost a prerequisite is a named
+    # gap: without it, zero facet rows at live scale reads identically to a
+    # genuinely empty archive. Deferral is declared scope, not a gap.
+    facet_gaps: list[str] = []
+    if availability.state != "ready":
+        facet_gaps.append(f"facets_{availability.state}")
+    if post_filter_gap is not None:
+        facet_gaps.append(post_filter_gap)
+    return FacetsResponse.model_validate(
+        {
+            "outcome": decide_outcome(matched=active.total_sessions, degraded=facet_gaps),
+            "scoped_to_query": scoped_to_query,
+            "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "stale": False,
+            "stale_age_s": None,
+            "budget_exceeded": availability.budget_exceeded,
+            "cost_class": availability.cost_class,
+            "deadline_s": availability.deadline_s,
+            "elapsed_s": availability.elapsed_s,
+            "availability": availability,
+            "complete_families": complete_families,
+            "deferred_families": deferred_families,
+            "family_errors": {},
+            "family_status": {
+                **{family: _family_status_payload(family, state="complete") for family in complete_families},
+                **{
+                    family: _family_status_payload(family, state="deferred", reason=reason)
+                    for family, reason in deferred_families.items()
+                },
+            },
+            "origins": dict(active.origins),
+            "tags": dict(active.tags),
+            "repos": dict(active.repos),
+            "role_counts": dict(active.role_counts),
+            "material_origins": dict(active.material_origins),
+            "message_types": dict(active.message_types),
+            "action_types": dict(active.action_types),
+            "has_flags": dict(active.has_flags),
+            "omitted_facet_counts": dict(active.omitted),
+            "total_sessions": active.total_sessions,
+            "total_messages": active.total_messages,
+            "scoped": _payload(scoped_buckets),
+            "global": _payload(global_buckets),
+            "idf": compute_idf(global_buckets) if include_idf else {},
+        }
+    )
+
+
 def _archive_facet_buckets(
     archive: Any,
     spec: SessionQuerySpec | None,
@@ -6014,17 +6115,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """
         import time
 
-        from polylogue.analysis.projection_contracts import facets_availability
         from polylogue.archive.query.facets import (
             FacetBuckets as _FacetBuckets,
         )
-        from polylogue.archive.query.facets import (
-            compute_idf,
-        )
-        from polylogue.surfaces.outcome import decide_outcome
         from polylogue.surfaces.payloads import (
             FacetBucketsPayload,
-            FacetsResponse,
         )
 
         def _payload(b: _FacetBuckets) -> FacetBucketsPayload:
@@ -6076,57 +6171,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             projection="facets",
             workload_class="scan",
         )
-        elapsed_s = time.perf_counter() - started_at
-        availability = facets_availability(include_deferred=include_deferred, elapsed_s=elapsed_s)
-        idf_map = compute_idf(global_buckets) if include_idf else {}
-        active = scoped_buckets if scoped_to_query else global_buckets
-        complete_families = _FACET_COMPLETE_FAMILIES if include_deferred else _FACET_CORE_FAMILIES
-        deferred_families = {} if include_deferred else dict.fromkeys(_FACET_DEFERRED_FAMILIES, "deferred_by_default")
-        # A projection that missed its budget or lost a prerequisite is a named
-        # gap: without it, zero facet rows at live scale reads identically to a
-        # genuinely empty archive. Deferral is declared scope, not a gap.
-        facet_gaps: list[str] = []
-        if availability.state != "ready":
-            facet_gaps.append(f"facets_{availability.state}")
-        if post_filter_gap is not None:
-            facet_gaps.append(post_filter_gap)
-        return FacetsResponse.model_validate(
-            {
-                "outcome": decide_outcome(matched=active.total_sessions, degraded=facet_gaps),
-                "scoped_to_query": scoped_to_query,
-                "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                "stale": False,
-                "stale_age_s": None,
-                "budget_exceeded": availability.budget_exceeded,
-                "cost_class": availability.cost_class,
-                "deadline_s": availability.deadline_s,
-                "elapsed_s": availability.elapsed_s,
-                "availability": availability,
-                "complete_families": complete_families,
-                "deferred_families": deferred_families,
-                "family_errors": {},
-                "family_status": {
-                    **{family: _family_status_payload(family, state="complete") for family in complete_families},
-                    **{
-                        family: _family_status_payload(family, state="deferred", reason=reason)
-                        for family, reason in deferred_families.items()
-                    },
-                },
-                "origins": dict(active.origins),
-                "tags": dict(active.tags),
-                "repos": dict(active.repos),
-                "role_counts": dict(active.role_counts),
-                "material_origins": dict(active.material_origins),
-                "message_types": dict(active.message_types),
-                "action_types": dict(active.action_types),
-                "has_flags": dict(active.has_flags),
-                "omitted_facet_counts": dict(active.omitted),
-                "total_sessions": active.total_sessions,
-                "total_messages": active.total_messages,
-                "scoped": _payload(scoped_buckets),
-                "global": _payload(global_buckets),
-                "idf": idf_map,
-            }
+        return build_facets_response(
+            global_buckets=global_buckets,
+            scoped_buckets=scoped_buckets,
+            scoped_to_query=scoped_to_query,
+            include_deferred=include_deferred,
+            elapsed_s=time.perf_counter() - started_at,
+            include_idf=include_idf,
+            post_filter_gap=post_filter_gap,
         )
 
     async def health_check(self) -> ReadinessReport:
