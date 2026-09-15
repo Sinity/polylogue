@@ -11,6 +11,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT
+from polylogue.storage.sqlite.write_lease import require_write_lease
+
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 
@@ -428,8 +431,9 @@ class VerifiedAuditLeaf:
 def open_verified_audit_connection(path: Path) -> Iterator[sqlite3.Connection]:
     """Open one writable audit connection pinned to an owned leaf descriptor."""
 
+    require_write_lease(f"open_verified_audit_connection({path})", archive_root=path.parent)
     with VerifiedAuditLeaf(path.parent, filename=path.name, lock_writer=True) as leaf:
-        connection = sqlite3.connect(leaf.sqlite_uri(), uri=True)
+        connection = sqlite3.connect(leaf.sqlite_uri(), uri=True, timeout=DB_TIMEOUT)
         try:
             leaf.prepare_writable_sqlite(connection)
             leaf.install_transaction_guard(connection)
@@ -458,8 +462,9 @@ def open_verified_sqlite_read_connection(path: Path) -> Iterator[sqlite3.Connect
 def open_verified_sqlite_write_connection(path: Path) -> Iterator[sqlite3.Connection]:
     """Open an existing writable SQLite leaf through a no-follow descriptor."""
 
+    require_write_lease(f"open_verified_sqlite_write_connection({path})", archive_root=path.parent)
     with VerifiedAuditLeaf(path.parent, filename=path.name) as leaf:
-        connection = sqlite3.connect(leaf.sqlite_uri(), uri=True)
+        connection = sqlite3.connect(leaf.sqlite_uri(), uri=True, timeout=DB_TIMEOUT)
         try:
             leaf.assert_unchanged()
             yield connection

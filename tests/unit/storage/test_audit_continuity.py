@@ -430,3 +430,62 @@ def test_precontinuity_binding_rejects_a_substituted_genesis_audit_image(tmp_pat
         AuditContinuityCoordinator(tmp_path).bind_precontinuity_audit(
             mutation_id=f"precontinuity-audit:{expected}", now_ms=1, audit_semantic_sha256=expected
         )
+
+
+def test_continuity_mutation_is_refused_without_the_write_lease(tmp_path: Path) -> None:
+    """A durable source.db continuity write outside the lease is refused.
+
+    polylogue-xh6cz: ``_open_source_write_connection`` reached
+    ``open_verified_sqlite_write_connection`` with neither the lease nor the
+    flock, so ``BEGIN IMMEDIATE`` + ``UPDATE audit_continuity_control`` against
+    the durable raw-bytes tier was an unserialized in-process writer.
+
+    Anti-vacuity: delete the ``require_write_lease`` call from
+    ``open_verified_sqlite_write_connection`` and this passes -- the
+    unserialized writer commits.
+    """
+    from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement
+
+    initialize_active_archive_root(tmp_path)
+    with arm_write_lease_enforcement():
+        with pytest.raises(UnleasedWriteError, match="write lease"):
+            AuditContinuityCoordinator(tmp_path).execute(_mutation(1), _apply)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute("SELECT committed_generation FROM audit_continuity_control").fetchone() == (0,)
+
+
+def test_audit_leaf_write_is_refused_without_the_write_lease(tmp_path: Path) -> None:
+    """The audit.db leaf factory is on the same gate as the source.db one.
+
+    Anti-vacuity: drop ``require_write_lease`` from
+    ``open_verified_audit_connection`` and the unleased writer opens.
+    """
+    from polylogue.storage.sqlite.audit_leaf import open_verified_audit_connection
+    from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement
+
+    initialize_active_archive_root(tmp_path)
+    with arm_write_lease_enforcement():
+        with pytest.raises(UnleasedWriteError, match="write lease"):
+            with open_verified_audit_connection(tmp_path / "audit.db"):
+                pass
+
+
+def test_continuity_mutation_commits_under_a_held_lease(tmp_path: Path) -> None:
+    """The gate serializes the route; it does not close it.
+
+    The whole prepare/promote sequence nests inside one held lease, and
+    ``require_write_lease`` only asserts -- it never re-acquires -- so the
+    repeated write-connection opens inside a single mutation cannot deadlock.
+
+    Anti-vacuity: make ``require_write_lease`` acquire rather than assert and
+    this hangs or raises instead of committing generation 1.
+    """
+    from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, write_lease
+
+    initialize_active_archive_root(tmp_path)
+    with arm_write_lease_enforcement(), write_lease("test.audit.continuity", archive_root=tmp_path):
+        AuditContinuityCoordinator(tmp_path).execute(_mutation(1), _apply)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute(
+            "SELECT committed_generation, pending_mutation_id FROM audit_continuity_control"
+        ).fetchone() == (1, None)
