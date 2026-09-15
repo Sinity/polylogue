@@ -303,7 +303,6 @@
           httpx
           h2
           rich
-          textual
           jinja2
           markdown-it-py
           pygments

@@ -24,7 +24,6 @@ Usage: polylogue [OPTIONS] [COMMAND] [ARGS]...
   Product roles:
       Search/read/action:   find QUERY then read|select|mark|analyze|delete|continue; facets
       Setup/demo/evidence:  config, init, import, demo, tutorial, manual
-      Reader/TUI:           dashboard --status, dashboard
       Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
 
   Query mode (default):
@@ -193,10 +192,8 @@ Commands:
     and onboarding checks; `manual` renders the full offline CLI reference.
 
   Reader and local UI:
-    agents     Inspect agent coordination state.
-    dashboard  Launch the terminal dashboard TUI.
-    `agents` exposes JSON-first coordination views for agent loops;
-    `dashboard` launches the terminal TUI.
+    agents  Inspect agent coordination state.
+    `agents` exposes JSON-first coordination views for agent loops.
 
   Operations and maintenance:
     status  Show daemon and archive status.
@@ -728,21 +725,6 @@ Usage: polylogue config paths [OPTIONS]
 Options:
   -f, --format [text|json]  Output format.
   --help                    Show this message and exit.
-```
-
-## Dashboard
-
-```text
-Usage: polylogue dashboard [OPTIONS]
-
-  Launch the terminal dashboard TUI with explicit runtime evidence.
-
-Options:
-  --status              Print dashboard launch/readiness evidence without
-                        starting the TUI.
-  --format [text|json]  Output format for --status and launch evidence.
-                        [default: text]
-  --help                Show this message and exit.
 ```
 
 ## Tutorial
