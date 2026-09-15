@@ -85,6 +85,7 @@ checkout = "default"
 pool = "pytest-heavy"
 result = "pytest"
 cache = "tree+environment"
+schedule = "*-*-* 03:00"
 timeout_seconds = 14400
 
 [operations.dev_loop_proof]
