@@ -17,13 +17,37 @@ import argparse
 import json
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root as _get_root
-from polylogue.declarations import DeclarationRegistryProtocol
+from polylogue.declarations import DeclarationRegistryProtocol, Diagnostic
 from polylogue.declarations.diagnostics import diagnose_registry, format_diagnostic
 
 ROOT = _get_root()
+
+
+@dataclass(frozen=True, slots=True)
+class _RegistryEntry:
+    """One live declaration registry and how much of it is enforced.
+
+    ``structural`` says whether the registry's domain has already declared the
+    examples and completeness edges ``validate_declaration`` requires. Every
+    registry is enforced fully today. The structural check reads the
+    declaration only, so it cannot tell a real request shape from an invented
+    one; the daemon-route examples are additionally replayed against the
+    production handlers by ``TestDeclaredRouteExamples`` in
+    ``tests/unit/daemon/test_web_reader.py``.
+
+    ``domain`` is the family's own validation hook, for bindings the shared
+    kernel cannot resolve (a ``spec_attr``, an ``ArchiveStore`` executor
+    method). Domain-specific validation stays with the domain; only its
+    reporting shape is shared.
+    """
+
+    factory: Callable[[], DeclarationRegistryProtocol]
+    structural: bool
+    domain: Callable[[], tuple[Diagnostic, ...]] | None = None
 
 
 def _mcp() -> DeclarationRegistryProtocol:
@@ -38,28 +62,54 @@ def _daemon() -> DeclarationRegistryProtocol:
     return DAEMON_ROUTE_REGISTRY
 
 
-#: ``structural`` says whether the registry's domain has already declared the
-#: examples and completeness edges ``validate_declaration`` requires. Both
-#: registries are enforced fully. The structural check reads the declaration
-#: only, so it cannot tell a real request shape from an invented one; the
-#: daemon-route examples are additionally replayed against the production
-#: handlers by ``TestDeclaredRouteExamples`` in
-#: ``tests/unit/daemon/test_web_reader.py``.
-REGISTRIES: dict[str, tuple[Callable[[], DeclarationRegistryProtocol], bool]] = {
-    "mcp": (_mcp, True),
-    "daemon-route": (_daemon, True),
+def _query() -> DeclarationRegistryProtocol:
+    from polylogue.archive.query.declarations import QUERY_KERNEL_REGISTRY
+
+    return QUERY_KERNEL_REGISTRY
+
+
+def _marker() -> DeclarationRegistryProtocol:
+    from polylogue.markers.declarations import MARKER_KERNEL_REGISTRY
+
+    return MARKER_KERNEL_REGISTRY
+
+
+def _maintenance() -> DeclarationRegistryProtocol:
+    from polylogue.maintenance.declarations import MAINTENANCE_KERNEL_REGISTRY
+
+    return MAINTENANCE_KERNEL_REGISTRY
+
+
+def _query_domain_diagnostics() -> tuple[Diagnostic, ...]:
+    """Resolve the query family's own domain bindings."""
+
+    from polylogue.archive.query.declarations import query_binding_diagnostics
+
+    return query_binding_diagnostics()
+
+
+REGISTRIES: dict[str, _RegistryEntry] = {
+    "mcp": _RegistryEntry(_mcp, structural=True),
+    "daemon-route": _RegistryEntry(_daemon, structural=True),
+    "query": _RegistryEntry(_query, structural=True, domain=_query_domain_diagnostics),
+    "marker": _RegistryEntry(_marker, structural=True),
+    "maintenance": _RegistryEntry(_maintenance, structural=True),
 }
 
 
 def run(*, root: Path = ROOT) -> dict[str, tuple[str, ...]]:
     """Return actionable diagnostic lines per registry, deterministically."""
 
-    return {
-        name: tuple(
-            format_diagnostic(item) for item in diagnose_registry(factory(), root=root, include_structural=structural)
+    report: dict[str, tuple[str, ...]] = {}
+    for name, entry in sorted(REGISTRIES.items()):
+        diagnostics = list(diagnose_registry(entry.factory(), root=root, include_structural=entry.structural))
+        if entry.domain is not None:
+            diagnostics.extend(entry.domain())
+        report[name] = tuple(
+            format_diagnostic(item)
+            for item in sorted(diagnostics, key=lambda item: (item.declaration_id, item.code, item.message))
         )
-        for name, (factory, structural) in sorted(REGISTRIES.items())
-    }
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
