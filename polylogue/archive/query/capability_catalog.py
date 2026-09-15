@@ -11,8 +11,7 @@ import json
 from collections.abc import Mapping
 from hashlib import sha256
 
-from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS
-from polylogue.archive.query.metadata import query_unit_descriptors
+from polylogue.archive.query.declarations import QUERY_CAPABILITY_DECLARATIONS
 from polylogue.sources.origin_specs import origin_specs
 
 MAX_CAPABILITY_PAGE = 25
@@ -24,67 +23,15 @@ def _snapshot_id(stats: Mapping[str, object] | None) -> str:
 
 
 def _declaration_rows() -> tuple[dict[str, object], ...]:
-    rows: list[dict[str, object]] = []
-    for field in sorted(QUERY_FIELD_DESCRIPTORS, key=lambda item: (item.stable_order, item.name)):
-        rows.append(
-            {
-                "declaration_id": f"query.field.{field.name}",
-                "kind": "field",
-                "name": field.name,
-                "meaning": field.name.replace("_", " "),
-                "authority": field.authority,
-                "applicability": field.applicability,
-                "projection": list(field.projections),
-                "binding": {
-                    "spec": field.spec_attr,
-                    "plan": field.plan_attr,
-                    "storage": field.storage_names,
-                    "mcp": field.mcp_names,
-                    "api": field.api_names,
-                },
-                "operators": list(field.operators),
-                "value_type": field.value_type,
-                "cardinality": field.cardinality,
-                "cost": {
-                    "shape": field.cost_shape,
-                    "pushdown": field.pushdown,
-                    "stats_join": field.requires_stats_join,
-                    "post_filter": field.requires_post_filter,
-                    "content_loading": field.requires_content_loading,
-                },
-                "stable_order": field.stable_order,
-                "examples": list(field.examples),
-            }
-        )
-    for descriptor in query_unit_descriptors(terminal_supported=True):
-        rows.append(
-            {
-                "declaration_id": f"query.unit.{descriptor.unit}",
-                "kind": "unit",
-                "name": descriptor.unit,
-                "meaning": descriptor.description,
-                "authority": "derived",
-                "applicability": "unit",
-                "projection": ["dsl", "mcp", "api"],
-                "binding": {
-                    "source": descriptor.plural_source,
-                    "singular_source": descriptor.singular_source,
-                    "lowerer": descriptor.lowerer_kind,
-                    "sql": descriptor.sql_query_method,
-                    "runtime": descriptor.runtime_query_method,
-                },
-                "operators": ["where", "exists"] if descriptor.exists_supported else ["where"],
-                "value_type": "record",
-                "cardinality": "many",
-                "cost": {
-                    "shape": "indexed" if descriptor.lowerer_kind == "sql" else "post_filter",
-                    "pushdown": descriptor.lowerer_kind == "sql",
-                },
-                "stable_order": 10000 + len(rows),
-                "examples": [descriptor.terminal_example or descriptor.example],
-            }
-        )
-    return tuple(rows)
+    """Return the served rows straight from the executable query declarations.
+
+    The rows are *derived*, never re-assembled here: adding a query field or a
+    terminal unit adds a declaration in
+    :mod:`polylogue.archive.query.declarations`, and this route serves it with
+    no second edit. Identity (``declaration_id``) has exactly one owner.
+    """
+
+    return tuple(dict(declaration.payload) for declaration in QUERY_CAPABILITY_DECLARATIONS)
 
 
 def _stat_int(stats: Mapping[str, object], key: str) -> int | None:
