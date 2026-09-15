@@ -60,6 +60,14 @@ class LiveIngestAttemptState(BaseModel):
 
 
 class LiveIngestAttemptSummary(BaseModel):
+    # ``available`` separates a measured "no running attempt" from an attempt
+    # table that could not be read at all (polylogue-bu47u).  Without it every
+    # consumer of ``running_count`` treats an unreadable ledger as proof that
+    # no writer is active, which is exactly the refusal-rendered-as-a-positive
+    # -claim shape.  The direct status path already carries the same
+    # distinction as ``ingest_workload.available``.
+    available: bool = True
+    unavailable_reason: str | None = None
     running_count: int = 0
     stale_running_count: int = 0
     slow_running_count: int = 0

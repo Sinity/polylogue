@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.fts_status import fts_readiness_info
@@ -96,3 +98,33 @@ def test_genuinely_empty_archive_reports_coverage_as_unmeasured_exact(tmp_path: 
     assert fts["message_indexable_count"] == 0
     assert fts["message_indexed_count"] == 0
     assert fts["coverage_pct"] is None
+
+
+def test_unreadable_archive_index_reports_nothing_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-bu47u: a failed readiness query certifies nothing.
+
+    ``session_work_events_ready`` used to return ``True`` from inside the
+    ``except sqlite3.Error`` handler while every sibling key returned the
+    not-ready value -- a positive readiness claim emitted by an error path.
+
+    Anti-vacuity: restore ``"session_work_events_ready": True`` (or the
+    fabricated ``coverage_pct: 0.0``) in that handler and this fails.
+    """
+    from polylogue.daemon import fts_status
+
+    index = tmp_path / "index.db"
+    initialize_archive_database(index, ArchiveTier.INDEX)
+
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise sqlite3.Error("simulated readiness query failure")
+
+    monkeypatch.setattr(fts_status, "open_readonly_connection", explode)
+
+    payload = fts_status._archive_readiness_info(index, exact=False)
+
+    assert payload is not None
+    assert payload["messages_ready"] is False
+    assert payload["session_work_events_ready"] is False
+    assert payload["invariant_ready"] is False
+    assert payload["coverage_pct"] is None
+    assert payload["coverage_exact"] is False

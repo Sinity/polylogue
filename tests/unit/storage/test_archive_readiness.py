@@ -1413,3 +1413,33 @@ def test_converged_archive_reports_its_real_materialization_counts(tmp_path: Pat
     assert snapshot["archive_session_count"] == 1
     assert snapshot["join_gap_count"] == 0
     assert snapshot["total"] == 0
+
+
+def test_archive_sessions_surface_is_computed_not_asserted(tmp_path: Path) -> None:
+    """polylogue-bu47u: the sessions surface published ``ready=True`` unconditionally.
+
+    Every sibling surface derives ``ready`` from its blockers; this one was a
+    literal, so an index tier whose ``messages`` relation is gone still
+    certified the surface while reporting a fabricated ``message_count`` of 0.
+
+    Anti-vacuity: restore ``surface(ready=True, blockers=[])`` for
+    ``archive_sessions`` (or drop the relation-presence counts that feed it)
+    and this fails; the healthy assertion below fails if the blockers are
+    raised unconditionally instead.
+    """
+
+    initialize_active_archive_root(tmp_path)
+
+    healthy = archive_readiness_status(tmp_path)
+    assert healthy["surfaces"]["archive_sessions"]["ready"] is True
+    assert healthy["surfaces"]["archive_sessions"]["blockers"] == []
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("DROP TABLE IF EXISTS messages_fts")
+        conn.execute("DROP TABLE messages")
+
+    blocked = archive_readiness_status(tmp_path)
+    sessions = blocked["surfaces"]["archive_sessions"]
+    assert sessions["ready"] is False
+    assert sessions["blockers"] == ["messages_relation_missing"]
+    assert sessions["evidence"]["messages_table_present"] is False

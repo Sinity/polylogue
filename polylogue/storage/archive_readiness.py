@@ -1656,7 +1656,9 @@ def _archive_readiness_counts(
     source_conn: sqlite3.Connection | None,
     source_check_available: bool,
 ) -> dict[str, Any]:
-    session_count = _fast_count(conn, "SELECT COUNT(*) FROM sessions")
+    sessions_table_present = _table_exists(conn, "sessions")
+    messages_table_present = _table_exists(conn, "messages")
+    session_count = _fast_count(conn, "SELECT COUNT(*) FROM sessions") if sessions_table_present else 0
     raw_link_count = (
         _fast_count(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
         if _column_exists(conn, "sessions", "raw_id")
@@ -1699,6 +1701,12 @@ def _archive_readiness_counts(
         ]
     insight_status = session_insight_status_sync(conn, verify_freshness=True)
     return {
+        # Relation presence is the evidence that separates a measured empty
+        # archive from one whose session/message relations could not be read
+        # at all; without it the sessions surface reported ready=True either
+        # way (polylogue-bu47u).
+        "sessions_table_present": sessions_table_present,
+        "messages_table_present": messages_table_present,
         "session_count": session_count,
         "raw_link_count": raw_link_count,
         "missing_raw_session_count": missing_raw_session_count,
@@ -1767,6 +1775,16 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
     else:
         raw_ready = True
 
+    # The sessions surface published a literal ``ready=True`` whatever the
+    # counts said, so a missing sessions/messages relation -- which yields a
+    # fabricated zero here -- still certified the surface (polylogue-bu47u).
+    # Compute it from blockers like every sibling surface.
+    session_blockers: list[str] = []
+    if not bool(counts.get("sessions_table_present", True)):
+        session_blockers.append("sessions_relation_missing")
+    if not bool(counts.get("messages_table_present", True)):
+        session_blockers.append("messages_relation_missing")
+
     search_blockers = ["messages_fts_row_mismatch"] if count("text_block_count") != count("messages_fts_count") else []
     profile_blockers: list[str] = []
     if count("missing_profile_row_count"):
@@ -1805,9 +1823,14 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
 
     return {
         "archive_sessions": surface(
-            ready=True,
-            blockers=[],
-            evidence={"session_count": count("session_count"), "message_count": count("message_count")},
+            ready=not session_blockers,
+            blockers=session_blockers,
+            evidence={
+                "session_count": count("session_count"),
+                "message_count": count("message_count"),
+                "sessions_table_present": bool(counts.get("sessions_table_present", True)),
+                "messages_table_present": bool(counts.get("messages_table_present", True)),
+            },
         ),
         "raw_artifacts": surface(
             ready=raw_ready,
