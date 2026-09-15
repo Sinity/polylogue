@@ -3687,3 +3687,72 @@ def _get_json_ex(base_url: str, path: str) -> tuple[int, dict[str, object]]:
             return e.code, json.loads(body)
         except (json.JSONDecodeError, ValueError):
             return e.code, {}
+
+
+class TestDeclaredRouteExamples:
+    """Every declared daemon-route example must be accepted by its live handler.
+
+    ``devtools gate declaration-bindings`` enforces that each ``RouteSpec``
+    declares an example, but a gate only reads the declaration -- it cannot
+    tell a real request shape from an invented one. This class closes that
+    gap: it replays every declared ``ExampleSpec`` against the production
+    handler on a seeded archive and requires HTTP 200 plus the marker field
+    of the declared response contract.
+
+    Anti-vacuity: rename a declared example argument (``view`` -> ``mode``),
+    give it a value the handler rejects (``view=unsupported``,
+    ``format=csv``), or point the example at a filter the query grammar does
+    not parse, and these assertions go red -- while the structural gate alone
+    would stay green over the same fabricated declaration.
+    """
+
+    @staticmethod
+    def _example_paths(declaration: object) -> list[tuple[str, str]]:
+        from urllib.parse import urlencode
+
+        spec = cast(Any, declaration)
+        paths: list[tuple[str, str]] = []
+        for example in spec.kernel.examples:
+            path = spec.path.replace(":id", quote(C1, safe=""))
+            query = urlencode([(key, str(value)) for key, value in example.arguments])
+            paths.append((example.name, f"{path}?{query}" if query else path))
+        return paths
+
+    def test_every_declared_route_example_is_accepted_by_its_handler(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.daemon.route_contracts import DAEMON_ROUTE_DECLARATIONS
+
+        # A route with no example would make this vacuous, so require one.
+        assert all(declaration.kernel.examples for declaration in DAEMON_ROUTE_DECLARATIONS)
+
+        markers = {
+            "/api/sessions": "items",
+            "/api/status": "ok",
+            "/api/query-units": "items",
+            "/api/sessions/:id/read": "view",
+        }
+        with _running_server(workspace_env) as (_, base_url):
+            for declaration in DAEMON_ROUTE_DECLARATIONS:
+                for name, path in self._example_paths(declaration):
+                    status, payload = _get_json_ex(base_url, path)
+                    assert status == 200, (declaration.kernel.declaration_id, name, path, payload)
+                    assert markers[declaration.path] in payload, (
+                        declaration.kernel.declaration_id,
+                        name,
+                        sorted(payload),
+                    )
+
+    @pytest.mark.parametrize(
+        "broken_path",
+        [
+            "/api/sessions/:id/read?view=unsupported&format=json",
+            "/api/sessions/:id/read?view=messages&format=csv",
+            "/api/query-units?continuation=not-a-token",
+        ],
+    )
+    def test_a_fabricated_example_argument_is_refused(self, workspace_env: dict[str, Path], broken_path: str) -> None:
+        """The anti-vacuity condition for the class above, made explicit."""
+
+        request_path = broken_path.replace(":id", quote(C1, safe=""))
+        with _running_server(workspace_env) as (_, base_url):
+            status, _ = _get_json_ex(base_url, request_path)
+        assert status == 400

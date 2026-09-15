@@ -39,14 +39,15 @@ def _daemon() -> DeclarationRegistryProtocol:
 
 
 #: ``structural`` says whether the registry's domain has already declared the
-#: examples and completeness edges ``validate_declaration`` requires. The
-#: daemon route declarations are resolution-only today: their examples and
-#: consumer edges land with their own migration slice (see
-#: ``polylogue/daemon/route_contracts.py``), so enforcing structure here would
-#: be red at head and prove nothing. Resolution is enforced for every registry.
+#: examples and completeness edges ``validate_declaration`` requires. Both
+#: registries are enforced fully. The structural check reads the declaration
+#: only, so it cannot tell a real request shape from an invented one; the
+#: daemon-route examples are additionally replayed against the production
+#: handlers by ``TestDeclaredRouteExamples`` in
+#: ``tests/unit/daemon/test_web_reader.py``.
 REGISTRIES: dict[str, tuple[Callable[[], DeclarationRegistryProtocol], bool]] = {
     "mcp": (_mcp, True),
-    "daemon-route": (_daemon, False),
+    "daemon-route": (_daemon, True),
 }
 
 
