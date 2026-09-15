@@ -1,11 +1,11 @@
-"""Real-route compilation tests for the six-tool-era generated manual."""
+"""Real-route compilation tests for the declaration-generated agent manual."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
 from polylogue.agent_integration.spec import (
-    ALL_TARGET_TOOLS,
+    ALL_DECLARED_TOOLS,
     DEFAULT_READ_TOOLS,
     ORIGIN_MEANINGS,
     QUERY_EXAMPLES,
@@ -32,9 +32,13 @@ def _assert_call_compiles(tool: str, arguments: Mapping[str, object]) -> None:
 
 def test_typed_examples_and_recipes_resolve_against_target_declarations() -> None:
     """Mutation: deleting a declaration mapping or renaming a manual argument makes compilation fail."""
-    declarations = {item.name for item in (*TARGET_DEFAULT_READ_ALGEBRA, *PRIVILEGED_ALGEBRA)}
+    from polylogue.mcp.declarations import MCP_TOOL_DECLARATION_BY_NAME
 
-    assert tuple(contract.name for contract in TOOL_CONTRACTS) == ALL_TARGET_TOOLS
+    declarations = set(MCP_TOOL_DECLARATION_BY_NAME)
+    target_declarations = {item.name for item in (*TARGET_DEFAULT_READ_ALGEBRA, *PRIVILEGED_ALGEBRA)}
+    assert target_declarations <= declarations
+
+    assert tuple(contract.name for contract in TOOL_CONTRACTS) == ALL_DECLARED_TOOLS
     for contract in TOOL_CONTRACTS:
         assert set(contract.source_declarations) <= declarations
         assert contract.supports_continuation is ("continuation" in contract.argument_names)
@@ -148,3 +152,146 @@ def test_generated_contract_arguments_match_the_live_mcp_signatures() -> None:
             )
 
     assert not problems, problems
+
+
+def _live_maintenance_signature() -> tuple[frozenset[str], frozenset[str]]:
+    """Return the live ``maintenance`` operation vocabulary and parameter names."""
+    import inspect
+    import typing
+
+    from polylogue.mcp.declarations import MCPCapabilities
+    from polylogue.mcp.server import build_server
+
+    server = build_server(capabilities=MCPCapabilities(write=True, judge=True, maintenance=True))
+    fn = server._tool_manager._tools["maintenance"].fn
+    signature = inspect.signature(fn)
+    hints = typing.get_type_hints(fn)
+    operations = frozenset(typing.get_args(hints["operation"]))
+    assert operations, "maintenance operation annotation is not a Literal vocabulary"
+    return operations, frozenset(signature.parameters)
+
+
+def test_declared_confirmation_gate_matches_the_live_maintenance_handler() -> None:
+    """The one declared gate must be the handler's actual gate.
+
+    Anti-vacuity: adding, renaming, or removing a ``maintenance`` operation
+    literal, or renaming/removing the ``confirm`` parameter, without updating
+    ``_MAINTENANCE_CONFIRMATION`` in ``agent_integration/spec.py`` makes this
+    red. Verified by adding a ``preview`` literal to the live handler.
+    """
+    operations, parameters = _live_maintenance_signature()
+    contract = TOOL_CONTRACT_BY_NAME["maintenance"]
+    gate = contract.confirmation
+
+    assert gate is not None
+    assert gate.argument in parameters
+    assert not set(gate.operations) & set(gate.inspection_operations)
+    assert frozenset((*gate.operations, *gate.inspection_operations)) == operations
+
+    operation_argument = next(argument for argument in contract.arguments if argument.name == "operation")
+    assert frozenset(operation_argument.enum_values) == operations
+
+
+def test_manual_gate_prose_resolves_against_the_live_handler() -> None:
+    """The manual must describe the maintenance gate exactly once, from the declaration.
+
+    The manual used to instruct callers to "call maintenance with the declared
+    operation in preview/dry-run mode" and to call ``confirm=true`` a "legacy"
+    boolean that "is not the canonical gate", while the handler has no preview
+    or dry-run operation and gates precisely on ``confirm``. An agent following
+    that prose was refused.
+
+    Anti-vacuity: red if the manual reintroduces preview/dry-run flow prose,
+    names a maintenance operation the live handler does not declare, calls the
+    live gate legacy, or stops rendering the gate sentence from the declared
+    ``ConfirmationGate``. Verified by restoring the two original prose lines.
+    """
+    import re
+
+    from devtools.render_agent_manual import _maintenance_gate_sentence, render_standing_manual
+
+    operations, parameters = _live_maintenance_signature()
+    gate = TOOL_CONTRACT_BY_NAME["maintenance"].confirmation
+    assert gate is not None
+    manual = render_standing_manual()
+    sentence = _maintenance_gate_sentence()
+
+    assert sentence in manual
+    for operation in operations:
+        assert f"`{operation}`" in sentence
+    assert f"`{gate.argument}=true`" in sentence
+
+    # Every backticked token in the gate sentence must be a live operation, a
+    # live parameter, or the confirmation assignment itself.
+    resolvable = {*operations, *parameters, f"{gate.argument}=true", "maintenance"}
+    assert set(re.findall(r"`([^`]+)`", sentence)) <= resolvable
+
+    # Flow vocabulary the handler does not implement may appear only inside the
+    # generated sentence's own denial, and nowhere else in the manual.
+    for word in ("preview", "dry-run", "dry_run", "legacy"):
+        assert manual.count(word) == sentence.count(word), (
+            f"{word!r} appears in manual prose outside the generated gate sentence"
+        )
+
+
+def test_rendered_manual_enumerates_exactly_the_declared_tool_surface() -> None:
+    """The manual's tool table must equal declared_tool_names(ALL_CAPABILITIES).
+
+    The manual claimed a "ten-tool surface" in five places while the registry
+    declared twelve, so the standing manual injected into agent sessions told
+    agents that ``record_work_event`` and ``emit_decision`` -- live, registered,
+    write-gated handlers -- did not exist. The count is now derived; nothing
+    restates it.
+
+    Anti-vacuity: adding a tool row to
+    ``polylogue/mcp/declarations/registry.py`` makes this red until the manual
+    renders it, and the rendered count word changes with it. Verified by adding
+    a thirteenth declaration row and re-rendering.
+    """
+    import re
+
+    from devtools.render_agent_manual import render_standing_manual
+    from polylogue.mcp.declarations import declared_tool_names
+
+    declared = declared_tool_names()
+    manual = render_standing_manual()
+
+    heading = re.search(r"^## The (\S+) tools$", manual, re.MULTILINE)
+    assert heading is not None, "the manual no longer enumerates its tool surface"
+    table = manual.split(heading.group(0), 1)[1].split("\n## ", 1)[0]
+    enumerated = tuple(re.findall(r"^\| `([a-z_]+)` \|", table, re.MULTILINE))
+
+    assert frozenset(enumerated) == declared
+    assert len(enumerated) == len(declared)
+    assert enumerated == ALL_DECLARED_TOOLS
+
+    # The spelled count and the surface sentence are derived from the same set.
+    from devtools.render_agent_manual import _count_word
+
+    assert heading.group(1) == _count_word(len(declared))
+    assert f"{_count_word(len(declared))} tools" in manual
+
+    # No stale literal count survives anywhere in the manual.
+    for stale in ("ten-tool", "ten tools", "six-tool", "six tools"):
+        assert stale not in manual
+
+
+def test_non_target_tools_are_declared_tools_with_manual_contracts() -> None:
+    """``target_visible=False`` must not read as "not a tool".
+
+    Anti-vacuity: dropping either write-gated event tool from ``TOOL_CONTRACTS``
+    makes the spec's declaration-order invariant raise at import; giving either
+    one a target transaction makes the target-algebra assertion below red.
+    """
+    from polylogue.mcp.declarations import MCP_TOOL_DECLARATION_BY_NAME, declared_tool_names
+
+    event_tools = ("record_work_event", "emit_decision")
+    target_names = {item.name for item in (*TARGET_DEFAULT_READ_ALGEBRA, *PRIVILEGED_ALGEBRA)}
+
+    for name in event_tools:
+        declaration = MCP_TOOL_DECLARATION_BY_NAME[name]
+        assert declaration.transaction is None
+        assert name not in target_names
+        assert name in declared_tool_names()
+        assert name in TOOL_CONTRACT_BY_NAME
+        assert TOOL_CONTRACT_BY_NAME[name].required_capability == "write"

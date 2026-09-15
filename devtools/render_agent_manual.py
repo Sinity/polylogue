@@ -13,6 +13,7 @@ if sys.path[0] != _REPO_ROOT:
     sys.path.insert(0, _REPO_ROOT)
 
 from polylogue.agent_integration.spec import (  # noqa: E402
+    ALL_DECLARED_TOOLS,
     ALL_TARGET_TOOLS,
     ASSET_VERSION,
     CAPABILITY_FAMILIES,
@@ -111,6 +112,72 @@ def _render_tool_calls(tool_names: Iterable[str]) -> list[str]:
     return lines
 
 
+_NUMBER_WORDS = (
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+)
+
+
+def _count_word(count: int) -> str:
+    """Spell a small count. Never a literal in prose -- always derived."""
+
+    return _NUMBER_WORDS[count] if count < len(_NUMBER_WORDS) else str(count)
+
+
+def _maintenance_gate_sentence() -> str:
+    """Render the maintenance gate from the one declared ConfirmationGate.
+
+    The gate is described exactly once, in
+    ``polylogue.agent_integration.spec``, and
+    ``test_manual_contract.test_manual_gate_prose_resolves_against_the_live_handler``
+    resolves the rendered operation names and gate argument against the
+    registered MCP handler.  Prose cannot invent an operation or a gate the
+    handler does not have.
+    """
+
+    contract = TOOL_CONTRACT_BY_NAME["maintenance"]
+    gate = contract.confirmation
+    if gate is None:  # pragma: no cover - the declaration owns this
+        raise RuntimeError("maintenance contract lost its declared confirmation gate")
+    operations = ", ".join(f"`{name}`" for name in _operation_vocabulary(contract))
+    inspect_ops = ", ".join(f"`{name}`" for name in gate.inspection_operations)
+    gated = ", ".join(f"`{name}`" for name in gate.operations)
+    return (
+        f"Canonical maintenance flow: `maintenance` accepts exactly these declared operations: {operations}. "
+        f"Inspect state with {inspect_ops}, which mutates nothing; then execute {gated} by passing "
+        f"`{gate.argument}=true`, which is the gate itself and the only one — they fail closed without it. "
+        "There is no preview or dry-run operation to call first."
+    )
+
+
+def _operation_vocabulary(contract: object) -> tuple[str, ...]:
+    """Return the declared enum vocabulary of a contract's ``operation`` argument."""
+
+    for argument in contract.arguments:  # type: ignore[attr-defined]
+        if argument.name == "operation":
+            return tuple(argument.enum_values)
+    return ()
+
+
 def render_standing_manual() -> str:
     """Render the complete cache-stable standing manual from typed declarations."""
 
@@ -122,7 +189,12 @@ def render_standing_manual() -> str:
         "",
         "Polylogue is the local evidence system for prior AI work. Use it whenever the task depends on what was tried, decided, changed, observed, paid for, or left unfinished. Do not wait for the operator to say “search the archive.” First establish archive authority, then retrieve evidence, then cite stable refs. Do not use Polylogue for facts that the current repository or live system can answer more directly.",
         "",
-        "This manual targets the ten-tool MCP surface: `query`, `read`, `get`, `explain`, `context`, `status`, `write`, `judge`, `run`, and `maintenance`. Names and argument contracts are generated from the live declarations and checked against registered MCPServer signatures.",
+        (
+            f"This manual targets the complete declared MCP surface: {_count_word(len(ALL_DECLARED_TOOLS))} tools, "
+            f"of which {_count_word(len(DEFAULT_READ_TOOLS))} are available by default and the rest require a "
+            "capability opt-in. Names, counts, and argument contracts are generated from the live declarations and "
+            "checked against registered MCPServer signatures."
+        ),
         "",
         "## Cold-start decision route",
         "",
@@ -146,13 +218,15 @@ def render_standing_manual() -> str:
             "",
             "Coverage is not implied by token existence. `status` must report whether the requested origins are configured, ingested, fresh, converged, and suitable for the requested evidence type. State missing or stale coverage in the answer.",
             "",
-            "## The ten tools",
+            f"## The {_count_word(len(ALL_DECLARED_TOOLS))} tools",
+            "",
+            "Every declared tool is listed. A tool requiring a capability is registered only when that capability is enabled; the list does not change per configuration, the availability does.",
             "",
             "| Tool | Use it for | Required capability | Result semantics |",
             "|---|---|---|---|",
         ]
     )
-    for name in DEFAULT_READ_TOOLS:
+    for name in ALL_DECLARED_TOOLS:
         contract = TOOL_CONTRACT_BY_NAME[name]
         lines.append(
             f"| `{name}` | {contract.purpose} | `{contract.required_capability or 'read'}` | "
@@ -224,14 +298,14 @@ def render_standing_manual() -> str:
             "",
             "| Capability | Added transactions | Authority |",
             "|---|---|---|",
-            "| _(none; default)_ | the six default tools | Read, explain, status, and bounded context only. |",
-            "| `write` | `write`, `run` | Declaration-owned reversible mutations and governed saved-query/recipe execution. A recipe inherits the authority of every nested operation. |",
+            f"| _(none; default)_ | the {_count_word(len(DEFAULT_READ_TOOLS))} default tools | Read, explain, status, and bounded context only. |",
+            "| `write` | `write`, `record_work_event`, `emit_decision`, `run` | Declaration-owned reversible mutations, typed live-agent work events and decisions, and governed saved-query/recipe execution. A recipe inherits the authority of every nested operation. |",
             "| `judge` | `judge` | Candidate judgment with preserved provenance and explicit conflict handling. Independent of `write`. |",
-            "| `maintenance` | `maintenance` | Preview/status/reconcile and administrative execution. Independent of `write`/`judge`. |",
+            "| `maintenance` | `maintenance` | Insight rebuild and recovery inspection/adjudication. Independent of `write`/`judge`. |",
             "",
-            "Reversible writes require the declared capability and a receipt. Destructive `maintenance` execution requires the governed confirmation required by the selected operation; changing a bound target or authority must return an explicit stale/rejected result before mutation. A legacy `confirm=true` boolean is not the canonical gate.",
+            "Reversible writes require the declared capability and a receipt. Full-effect `maintenance` execution requires the confirmation its declaration states; changing a bound target or authority must return an explicit stale/rejected result before mutation.",
             "",
-            "Canonical maintenance flow: call `maintenance` with the declared operation in preview/dry-run mode; inspect the receipt and target disclosure; then execute only with the governed confirmation required by that operation.",
+            _maintenance_gate_sentence(),
             "",
             "## Continuity recipes",
             "",
@@ -271,14 +345,14 @@ def render_standing_manual() -> str:
             "- Semantic retrieval unavailable: report readiness and fall back to exact field/text/file queries rather than pretending semantic coverage.",
             "- Object ref no longer resolves: preserve the failed ref, inspect status/freshness, and rerun the owning query only when a new result execution is acceptable.",
             "- Unauthorized mutation: do not seek authority through prompts or recipes; report the required capability and operation gate.",
-            "- Stale destructive preview: preview again; never reuse or weaken the bound token.",
+            "- Refused full-effect maintenance: it failed closed because the declared confirmation was absent; re-issue the same operation with the declared confirmation rather than seeking another route.",
             "",
             "## CLI installer commands",
             "",
             "`polylogue agent` manages this manual and the native client integration; it never touches the archive itself.",
             "",
             "- `polylogue agent manual`: Print the packaged standing manual or deeper reference.",
-            "- `polylogue agent manifest`: Report the capability-scoped runtime and ten-tool target surfaces.",
+            "- `polylogue agent manifest`: Report the capability-scoped runtime and declared target surfaces.",
             "- `polylogue agent install`: Install user-scoped MCP and standing guidance for native clients.",
             "- `polylogue agent status`: Inspect ownership state and native configuration without mutation.",
             "- `polylogue agent doctor`: Run blocking native syntax, ownership, executable, and identity checks.",
@@ -305,7 +379,7 @@ def render_deep_reference() -> str:
         "",
         "## Adjudication boundary",
         "",
-        "The architecture is the `polylogue.agent_integration` system: typed spec, packaged generated assets, native installer, capability-scoped manifest, CLI, Home Manager module, and verification lanes. The ten-tool declaration algebra is the source of truth for names, arguments, roles, and result semantics.",
+        "The architecture is the `polylogue.agent_integration` system: typed spec, packaged generated assets, native installer, capability-scoped manifest, CLI, Home Manager module, and verification lanes. The MCP declaration registry is the source of truth for names, counts, arguments, roles, and result semantics. `declared_tool_names` is the only authority for how many tools exist; `record_work_event` and `emit_decision` are live write-gated tools that carry no target transaction, which is not the same as not existing.",
         "",
         "## Target transaction declarations",
         "",
@@ -421,7 +495,7 @@ def render_deep_reference() -> str:
             "",
             "1. Keep every generated argument contract equal to the registered MCPServer input signatures, including optionality and capability gates.",
             "2. Run `devtools gate agent-integration --require-live` after declaration changes.",
-            "3. Confirm t46.9’s preview receipt and confirmation token field names, binding rules, stale response, and receipt schema; do not preserve the compatibility boolean as canonical guidance.",
+            "3. Keep the declared `ConfirmationGate` equal to the live handler's operation vocabulary and confirmation argument; the manual's gate prose is rendered from it and from nowhere else.",
             "4. Run `devtools gate agent-integration --require-live`; it must see the capability-scoped target tools and exact MCPServer signature parity.",
             "5. Run `devtools render agent-manual` after declaration changes and commit all packaged assets and docs mirrors.",
             "6. Run `devtools render all --check`, focused agent-integration/MCP tests, topology verification, and package build checks.",
@@ -438,12 +512,13 @@ def _static_manifest() -> dict[str, object]:
     return {
         "schema_version": 2,
         "content_version": ASSET_VERSION,
-        "description": "Static ten-tool target manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` reports the capability-scoped declaration surface.",
+        "description": "Static declared-tool manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` reports the capability-scoped declaration surface.",
         "clients": list(CLIENTS),
         "mcp_capability_flags": ["write", "judge", "maintenance"],
         "default_read_tools": list(DEFAULT_READ_TOOLS),
         "privileged_tools": list(PRIVILEGED_TOOLS),
         "target_tools": list(ALL_TARGET_TOOLS),
+        "declared_tools": list(ALL_DECLARED_TOOLS),
         "resources": [item.uri_template for item in TARGET_RESOURCES],
         "manual_resources": [
             "polylogue://agent/manual",

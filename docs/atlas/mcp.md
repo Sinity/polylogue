@@ -62,27 +62,15 @@ projection explicitly when adding or renaming an insight.
 
 ## DISCREPANCIES
 
-The generated agent manual and the `agent_integration` spec describe a
-"ten-tool MCP surface" and omit `record_work_event`/`emit_decision`, which are
-live registered tools under the `write` capability
-(`devtools/render_agent_manual.py:125`; `polylogue/agent_integration/spec.py:5`;
-`polylogue/mcp/declarations/registry.py:1-6`; `tests/infra/mcp.py:20`). The
-declaration-derived count is twelve (`polylogue/mcp/declarations/registry.py:372-384`).
+None recorded for the agent manual. The tool count and the `maintenance`
+confirmation gate are both derived: `declared_tool_names` is the sole authority
+for the tool surface (`polylogue/mcp/declarations/registry.py:377-388`) and the
+manual renders its list and spelled count from it, while the gate is declared
+once as a `ConfirmationGate` on the maintenance contract
+(`polylogue/agent_integration/spec.py:289-293`) and rendered from there
+(`devtools/render_agent_manual.py:146-170`).
 
-The same manual states that "a legacy `confirm=true` boolean is not the
-canonical gate" and prescribes a `maintenance` preview/dry-run mode
-(`devtools/render_agent_manual.py:232-234`). The live handler takes exactly
-five arguments and gates on `confirm: bool = False`; there is no preview or
-dry-run operation (`polylogue/mcp/server_cutover.py:2672-2678`;
-`polylogue/mcp/declarations/registry.py:256-273`). These manual strings are
-hand-written, not generated from the declarations.
-
-The two halves of that manual now contradict each other in one document.
-`agent_integration/spec.py` was corrected to the three live operations and
-declares `operation` as "One of rebuild_insights, recovery_status,
-recovery_adjudicate" (`polylogue/agent_integration/spec.py:499-517`), while the
-hand-written prose rendered alongside it still summarises `maintenance` as
-"Preview/status/reconcile" and prescribes `operation="preview"` with a dry-run
-mode (`devtools/render_agent_manual.py:230`; `devtools/render_agent_manual.py:234`).
-Correcting the typed contract without the prose narrowed the defect; it did not
-close it.
+`record_work_event` and `emit_decision` carry `target_visible=False`, so they
+have no target transaction while remaining live write-gated tools
+(`polylogue/mcp/declarations/registry.py:199-227`). Outside the target algebra
+is not the same as not a tool; the manual lists them.

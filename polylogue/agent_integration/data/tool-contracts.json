@@ -1,5 +1,5 @@
 {
-  "content_version": "2026-08-26.10tool-r01",
+  "content_version": "2026-09-15.declared-tools-r01",
   "default_read_tools": [
     "query",
     "read",
@@ -20,95 +20,111 @@
       "arguments": [
         {
           "description": "Parser-owned DSL expression; omit when resuming with continuation.",
+          "enum_values": [],
           "kind": "string",
           "name": "expression",
           "required_initial": false
         },
         {
           "description": "Requested page size, subject to server and transport bounds.",
+          "enum_values": [],
           "kind": "integer",
           "name": "limit",
           "required_initial": false
         },
         {
           "description": "Declared result projection such as session-summary or cost-rollup.",
+          "enum_values": [],
           "kind": "string",
           "name": "projection",
           "required_initial": false
         },
         {
           "description": "Declared session operation; required by the session-operations projection.",
+          "enum_values": [],
           "kind": "string",
           "name": "session_operation",
           "required_initial": false
         },
         {
           "description": "Opaque token from the preceding response; send alone.",
+          "enum_values": [],
           "kind": "string",
           "name": "continuation",
           "required_initial": false
         },
         {
           "description": "Offset for projections that use decimal offset pagination.",
+          "enum_values": [],
           "kind": "integer",
           "name": "offset",
           "required_initial": false
         },
         {
           "description": "Public origin filter.",
+          "enum_values": [],
           "kind": "string",
           "name": "origin",
           "required_initial": false
         },
         {
           "description": "Tag filter.",
+          "enum_values": [],
           "kind": "string",
           "name": "tag",
           "required_initial": false
         },
         {
           "description": "Repository filter.",
+          "enum_values": [],
           "kind": "string",
           "name": "repo",
           "required_initial": false
         },
         {
           "description": "Lower time bound.",
+          "enum_values": [],
           "kind": "string",
           "name": "since",
           "required_initial": false
         },
         {
           "description": "Upper time bound.",
+          "enum_values": [],
           "kind": "string",
           "name": "until",
           "required_initial": false
         },
         {
           "description": "Declared sort for session projections.",
+          "enum_values": [],
           "kind": "string",
           "name": "sort",
           "required_initial": false
         },
         {
           "description": "Minimum message count.",
+          "enum_values": [],
           "kind": "integer",
           "name": "min_messages",
           "required_initial": false
         },
         {
           "description": "Maximum message count.",
+          "enum_values": [],
           "kind": "integer",
           "name": "max_messages",
           "required_initial": false
         },
         {
           "description": "Minimum authored word count.",
+          "enum_values": [],
           "kind": "integer",
           "name": "min_words",
           "required_initial": false
         }
       ],
+      "confirmation": null,
       "emits_result_ref": true,
       "examples": [
         {
@@ -151,29 +167,41 @@
       "arguments": [
         {
           "description": "Stable object, evidence, result-set, or URI reference.",
+          "enum_values": [],
           "kind": "string",
           "name": "ref",
           "required_initial": true
         },
         {
           "description": "Declared projection/view for the referenced object.",
+          "enum_values": [],
           "kind": "string",
           "name": "view",
           "required_initial": false
         },
         {
           "description": "Page size for collection-like or recursive reads.",
+          "enum_values": [],
           "kind": "integer",
           "name": "limit",
           "required_initial": false
         },
         {
+          "description": "Offset into collection-like reads that use decimal offset pagination.",
+          "enum_values": [],
+          "kind": "integer",
+          "name": "offset",
+          "required_initial": false
+        },
+        {
           "description": "Opaque token from the preceding read response; send alone.",
+          "enum_values": [],
           "kind": "string",
           "name": "continuation",
           "required_initial": false
         }
       ],
+      "confirmation": null,
       "emits_result_ref": true,
       "examples": [
         {
@@ -205,17 +233,20 @@
       "arguments": [
         {
           "description": "One exact object/evidence/URI reference.",
+          "enum_values": [],
           "kind": "string",
           "name": "ref",
           "required_initial": true
         },
         {
           "description": "Optional declared projection of that exact object.",
+          "enum_values": [],
           "kind": "string",
           "name": "projection",
           "required_initial": false
         }
       ],
+      "confirmation": null,
       "emits_result_ref": false,
       "examples": [
         {
@@ -244,41 +275,48 @@
       "arguments": [
         {
           "description": "Declared explanation subject: query, field, value, ref, capability, result, or recovery.",
+          "enum_values": [],
           "kind": "string",
           "name": "subject",
           "required_initial": true
         },
         {
           "description": "Query expression to parse and lower when subject=query.",
+          "enum_values": [],
           "kind": "string",
           "name": "expression",
           "required_initial": false
         },
         {
           "description": "Object/ref whose authority or addressing needs explanation.",
+          "enum_values": [],
           "kind": "string",
           "name": "ref",
           "required_initial": false
         },
         {
           "description": "Offset into paged explanation results.",
+          "enum_values": [],
           "kind": "integer",
           "name": "offset",
           "required_initial": false
         },
         {
           "description": "Optional explanation search text.",
+          "enum_values": [],
           "kind": "string",
           "name": "search",
           "required_initial": false
         },
         {
           "description": "Maximum explanation rows.",
+          "enum_values": [],
           "kind": "integer",
           "name": "limit",
           "required_initial": false
         }
       ],
+      "confirmation": null,
       "emits_result_ref": false,
       "examples": [
         {
@@ -307,77 +345,90 @@
       "arguments": [
         {
           "description": "Context intent such as resume, postmortem, prior-art, or coordination.",
+          "enum_values": [],
           "kind": "string",
           "name": "intent",
           "required_initial": true
         },
         {
           "description": "Parser-owned cohort expression that constrains source material.",
+          "enum_values": [],
           "kind": "string",
           "name": "query",
           "required_initial": false
         },
         {
           "description": "Upper bound for compiled context, not a claim-completeness limit.",
+          "enum_values": [],
           "kind": "integer",
           "name": "budget_tokens",
           "required_initial": false
         },
         {
           "description": "Existing result set to compile without rerunning discovery.",
+          "enum_values": [],
           "kind": "string",
           "name": "result_ref",
           "required_initial": false
         },
         {
           "description": "Repository path used for project context.",
+          "enum_values": [],
           "kind": "string",
           "name": "repo_path",
           "required_initial": false
         },
         {
           "description": "Working directory used for project context.",
+          "enum_values": [],
           "kind": "string",
           "name": "cwd",
           "required_initial": false
         },
         {
           "description": "Recently touched files used for continuity.",
+          "enum_values": [],
           "kind": "array",
           "name": "recent_files",
           "required_initial": false
         },
         {
           "description": "Current agent session identity.",
+          "enum_values": [],
           "kind": "string",
           "name": "session_id",
           "required_initial": false
         },
         {
           "description": "Bound on related context candidates.",
+          "enum_values": [],
           "kind": "integer",
           "name": "limit",
           "required_initial": false
         },
         {
           "description": "Offset into ranked candidates for decimal offset pagination.",
+          "enum_values": [],
           "kind": "integer",
           "name": "offset",
           "required_initial": false
         },
         {
           "description": "Recipient identity for delivery receipts.",
+          "enum_values": [],
           "kind": "string",
           "name": "recipient_ref",
           "required_initial": false
         },
         {
           "description": "Assertion identity to include in context.",
+          "enum_values": [],
           "kind": "string",
           "name": "assertion_ref",
           "required_initial": false
         }
       ],
+      "confirmation": null,
       "emits_result_ref": true,
       "examples": [
         {
@@ -407,23 +458,27 @@
       "arguments": [
         {
           "description": "Status domain such as archive, sources, embeddings, coordination, or operation.",
+          "enum_values": [],
           "kind": "string",
           "name": "scope",
           "required_initial": true
         },
         {
           "description": "Named status facets requested from that scope.",
+          "enum_values": [],
           "kind": "array",
           "name": "include",
           "required_initial": false
         },
         {
           "description": "Specific operation/receipt/object ref for status lookup.",
+          "enum_values": [],
           "kind": "string",
           "name": "ref",
           "required_initial": false
         }
       ],
+      "confirmation": null,
       "emits_result_ref": false,
       "examples": [
         {
@@ -458,59 +513,69 @@
       "arguments": [
         {
           "description": "Declared reversible write operation.",
+          "enum_values": [],
           "kind": "string",
           "name": "operation",
           "required_initial": true
         },
         {
           "description": "Exact mutation session target.",
+          "enum_values": [],
           "kind": "string",
           "name": "session_id",
           "required_initial": false
         },
         {
           "description": "Batch mutation session targets.",
+          "enum_values": [],
           "kind": "array",
           "name": "session_ids",
           "required_initial": false
         },
         {
           "description": "Tag value for tag operations.",
+          "enum_values": [],
           "kind": "string",
           "name": "tag",
           "required_initial": false
         },
         {
           "description": "Tag values for bulk operations.",
+          "enum_values": [],
           "kind": "array",
           "name": "tags",
           "required_initial": false
         },
         {
           "description": "Metadata or annotation key.",
+          "enum_values": [],
           "kind": "string",
           "name": "key",
           "required_initial": false
         },
         {
           "description": "Scalar operation value.",
+          "enum_values": [],
           "kind": "string",
           "name": "value",
           "required_initial": false
         },
         {
           "description": "Explicit confirmation for governed deletion.",
+          "enum_values": [],
           "kind": "boolean",
           "name": "confirm",
           "required_initial": false
         },
         {
           "description": "Structured operation fields.",
+          "enum_values": [],
           "kind": "object",
           "name": "fields",
           "required_initial": false
         }
       ],
+      "confirmation": null,
       "emits_result_ref": false,
       "examples": [
         {
@@ -539,54 +604,215 @@
     {
       "arguments": [
         {
+          "description": "Session the event belongs to.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "session_id",
+          "required_initial": true
+        },
+        {
+          "description": "Caller-chosen idempotent event identity.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "event_id",
+          "required_initial": true
+        },
+        {
+          "description": "The declared work-event type.",
+          "enum_values": [
+            "tool_run",
+            "subagent_spawn",
+            "decision",
+            "artifact_change"
+          ],
+          "kind": "string",
+          "name": "event_type",
+          "required_initial": true
+        },
+        {
+          "description": "One-line description of what happened.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "summary",
+          "required_initial": true
+        },
+        {
+          "description": "Structured event detail.",
+          "enum_values": [],
+          "kind": "object",
+          "name": "payload",
+          "required_initial": false
+        },
+        {
+          "description": "Event time; defaults to the ingest clock.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "timestamp",
+          "required_initial": false
+        }
+      ],
+      "confirmation": null,
+      "emits_result_ref": false,
+      "examples": [
+        {
+          "arguments": {
+            "event_id": "evt-tool-run-1",
+            "event_type": "tool_run",
+            "session_id": "codex-session:demo-lineage-fork",
+            "summary": "Ran the focused agent-integration selection."
+          },
+          "id": "record-tool-run",
+          "result_note": "A mutation receipt; re-sending the same event_id is idempotent rather than a second event.",
+          "title": "Record a tool run as retrievable evidence"
+        }
+      ],
+      "name": "record_work_event",
+      "purpose": "Record one typed live-agent work event against a session so later sessions can retrieve it as evidence.",
+      "required_capability": "write",
+      "result_semantics": [
+        "mutation"
+      ],
+      "schema_status": "live-verified",
+      "source_declarations": [
+        "record_work_event"
+      ],
+      "supports_continuation": false
+    },
+    {
+      "arguments": [
+        {
+          "description": "Session the decision belongs to.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "session_id",
+          "required_initial": true
+        },
+        {
+          "description": "Caller-chosen idempotent event identity.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "event_id",
+          "required_initial": true
+        },
+        {
+          "description": "The decision reached.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "decision",
+          "required_initial": true
+        },
+        {
+          "description": "Why the decision was reached.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "summary",
+          "required_initial": true
+        },
+        {
+          "description": "Stable refs the decision rests on.",
+          "enum_values": [],
+          "kind": "array",
+          "name": "evidence_refs",
+          "required_initial": false
+        },
+        {
+          "description": "Decision time; defaults to the ingest clock.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "timestamp",
+          "required_initial": false
+        }
+      ],
+      "confirmation": null,
+      "emits_result_ref": false,
+      "examples": [
+        {
+          "arguments": {
+            "decision": "keep",
+            "event_id": "evt-decision-1",
+            "evidence_refs": [
+              "polylogue://session/codex-session:demo-lineage-fork"
+            ],
+            "session_id": "codex-session:demo-lineage-fork",
+            "summary": "The declaration, not the prose, is the intended contract."
+          },
+          "id": "emit-decision-with-evidence",
+          "result_note": "A mutation receipt binding the decision to the cited refs; cite refs rather than restating their content.",
+          "title": "Record a decision against the evidence it rests on"
+        }
+      ],
+      "name": "emit_decision",
+      "purpose": "Record a typed decision with its evidence references, using the shared work-event vocabulary.",
+      "required_capability": "write",
+      "result_semantics": [
+        "mutation"
+      ],
+      "schema_status": "live-verified",
+      "source_declarations": [
+        "emit_decision"
+      ],
+      "supports_continuation": false
+    },
+    {
+      "arguments": [
+        {
           "description": "Batch of assertion candidates and decisions.",
+          "enum_values": [],
           "kind": "array",
           "name": "items",
           "required_initial": false
         },
         {
           "description": "Exact assertion-candidate identity.",
+          "enum_values": [],
           "kind": "string",
           "name": "candidate_ref",
           "required_initial": false
         },
         {
           "description": "Declared judgment decision.",
+          "enum_values": [],
           "kind": "string",
           "name": "decision",
           "required_initial": false
         },
         {
           "description": "Evidence-grounded judgment rationale.",
+          "enum_values": [],
           "kind": "string",
           "name": "reason",
           "required_initial": false
         },
         {
           "description": "Whether to inject accepted judgment context.",
+          "enum_values": [],
           "kind": "boolean",
           "name": "inject",
           "required_initial": false
         },
         {
           "description": "Replacement assertion kind.",
+          "enum_values": [],
           "kind": "string",
           "name": "replacement_kind",
           "required_initial": false
         },
         {
           "description": "Replacement assertion body.",
+          "enum_values": [],
           "kind": "string",
           "name": "replacement_body_text",
           "required_initial": false
         },
         {
           "description": "Structured replacement assertion value.",
+          "enum_values": [],
           "kind": "object",
           "name": "replacement_value",
           "required_initial": false
         }
       ],
+      "confirmation": null,
       "emits_result_ref": false,
       "examples": [
         {
@@ -616,17 +842,20 @@
       "arguments": [
         {
           "description": "Saved-query or recipe ref.",
+          "enum_values": [],
           "kind": "string",
           "name": "ref",
           "required_initial": true
         },
         {
           "description": "Bound on saved-query results.",
+          "enum_values": [],
           "kind": "integer",
           "name": "limit",
           "required_initial": false
         }
       ],
+      "confirmation": null,
       "emits_result_ref": true,
       "examples": [
         {
@@ -655,36 +884,55 @@
     {
       "arguments": [
         {
-          "description": "One of rebuild_insights, recovery_status, recovery_adjudicate.",
+          "description": "The declared maintenance operation.",
+          "enum_values": [
+            "rebuild_insights",
+            "recovery_status",
+            "recovery_adjudicate"
+          ],
           "kind": "string",
           "name": "operation",
           "required_initial": true
         },
         {
           "description": "Exact operation identity to adjudicate.",
+          "enum_values": [],
           "kind": "string",
           "name": "operation_id",
           "required_initial": false
         },
         {
           "description": "Observed target outcomes for adjudication.",
+          "enum_values": [],
           "kind": "object",
           "name": "target_outcomes",
           "required_initial": false
         },
         {
           "description": "Operator reason.",
+          "enum_values": [],
           "kind": "string",
           "name": "reason",
           "required_initial": false
         },
         {
-          "description": "Explicit confirmation; rebuild_insights and recovery_adjudicate fail closed without it.",
+          "description": "Explicit confirmation required by the full-effect operations.",
+          "enum_values": [],
           "kind": "boolean",
           "name": "confirm",
           "required_initial": false
         }
       ],
+      "confirmation": {
+        "argument": "confirm",
+        "inspection_operations": [
+          "recovery_status"
+        ],
+        "operations": [
+          "rebuild_insights",
+          "recovery_adjudicate"
+        ]
+      },
       "emits_result_ref": false,
       "examples": [
         {

@@ -102,6 +102,11 @@ class MCPToolDeclaration:
     description: str
     required_capability: MCPCapabilityFlag | None
     registration: MCPHandlerBinding
+    #: Declared result semantics. Present for every live tool, including the
+    #: ones with no target transaction, so read models can describe the whole
+    #: tool surface without conflating "outside the target algebra" with
+    #: "not a tool".
+    result_semantics: tuple[MCPResultSemantics, ...] = ()
     transaction: MCPTransactionDeclaration | None = None
 
     @property

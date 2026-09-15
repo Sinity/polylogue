@@ -13,7 +13,21 @@
     "gemini",
     "hermes"
   ],
-  "content_version": "2026-08-26.10tool-r01",
+  "content_version": "2026-09-15.declared-tools-r01",
+  "declared_tools": [
+    "query",
+    "read",
+    "get",
+    "explain",
+    "context",
+    "status",
+    "write",
+    "record_work_event",
+    "emit_decision",
+    "judge",
+    "run",
+    "maintenance"
+  ],
   "default_read_tools": [
     "query",
     "read",
@@ -22,7 +36,7 @@
     "context",
     "status"
   ],
-  "description": "Static ten-tool target manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` reports the capability-scoped declaration surface.",
+  "description": "Static declared-tool manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` reports the capability-scoped declaration surface.",
   "manual_resources": [
     "polylogue://agent/manual",
     "polylogue://agent/reference",

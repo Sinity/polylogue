@@ -2,8 +2,10 @@
 
 This module owns typed capabilities, checked queries, recipes, client delivery
 declarations, and rendered package assets. Its contracts are derived from the
-live ten-tool MCP declaration algebra and checked against registered MCPServer
-signatures.
+live MCP declaration algebra and checked against registered MCPServer
+signatures. ``polylogue.mcp.declarations.declared_tool_names`` is the sole
+authority for which tools exist; this module restates neither the names nor
+their count.
 """
 
 from __future__ import annotations
@@ -14,17 +16,19 @@ from typing import Literal, TypeAlias
 from polylogue.core.enums import Origin
 from polylogue.declarations import JSONValue
 from polylogue.mcp.declarations import (
+    MCP_TOOL_DECLARATIONS,
     PRIVILEGED_ALGEBRA,
     TARGET_DEFAULT_READ_ALGEBRA,
     TARGET_PROMPTS,
     TARGET_RESOURCES,
     MCPCapabilityFlag,
     MCPResultSemantics,
+    MCPToolDeclaration,
     MCPTransactionDeclaration,
 )
 from polylogue.sources.origin_specs import public_origin_meanings
 
-ASSET_VERSION = "2026-08-26.10tool-r01"
+ASSET_VERSION = "2026-09-15.declared-tools-r01"
 AgentClient = Literal["claude-code", "codex", "gemini", "hermes"]
 GuidanceMode = Literal["full", "mcp-only", "off"]
 QuerySurface = Literal["session", "terminal"]
@@ -37,6 +41,10 @@ GUIDANCE_MODES: tuple[GuidanceMode, ...] = ("full", "mcp-only", "off")
 DEFAULT_READ_TOOLS: tuple[str, ...] = tuple(item.name for item in TARGET_DEFAULT_READ_ALGEBRA)
 PRIVILEGED_TOOLS: tuple[str, ...] = tuple(item.name for item in PRIVILEGED_ALGEBRA)
 ALL_TARGET_TOOLS: tuple[str, ...] = (*DEFAULT_READ_TOOLS, *PRIVILEGED_TOOLS)
+#: Every declared MCP tool in declaration order, including the ones outside the
+#: target transaction algebra. This is the manual's tool surface; its length is
+#: the only tool count anything should render.
+ALL_DECLARED_TOOLS: tuple[str, ...] = tuple(declaration.name for declaration in MCP_TOOL_DECLARATIONS)
 CONTINUATION_SENTINEL = "$continuation"
 
 Arguments: TypeAlias = tuple[tuple[str, JSONValue], ...]
@@ -60,6 +68,24 @@ class ToolArgument:
     kind: ArgumentKind
     required_initial: bool
     description: str
+    #: Declared vocabulary for enum-typed arguments, resolved against the live
+    #: handler's ``Literal`` annotation by the generated-contract gate.  Empty
+    #: for free-form arguments.
+    enum_values: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmationGate:
+    """The single declared description of a tool's confirmation gate.
+
+    The manual renders its maintenance prose from this object, so the gate is
+    described exactly once.  ``argument`` must exist on the live handler and
+    ``operations`` must be a subset of the live operation vocabulary.
+    """
+
+    argument: str
+    operations: tuple[str, ...]
+    inspection_operations: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +115,8 @@ class ToolContract:
     supports_continuation: bool
     emits_result_ref: bool
     schema_status: SchemaStatus = TARGET_SCHEMA_STATUS
+    #: Present only for tools whose execution is confirmation-gated.
+    confirmation: ConfirmationGate | None = None
 
     @property
     def argument_names(self) -> frozenset[str]:
@@ -160,8 +188,14 @@ def _args(**values: JSONValue) -> Arguments:
     return tuple(values.items())
 
 
-def _arg(name: str, kind: ArgumentKind, required: bool, description: str) -> ToolArgument:
-    return ToolArgument(name, kind, required, description)
+def _arg(
+    name: str,
+    kind: ArgumentKind,
+    required: bool,
+    description: str,
+    enum_values: tuple[str, ...] = (),
+) -> ToolArgument:
+    return ToolArgument(name, kind, required, description, enum_values)
 
 
 def _example(id: str, title: str, result_note: str, **arguments: JSONValue) -> ToolExample:
@@ -172,8 +206,13 @@ def _target_declaration_index() -> dict[str, MCPTransactionDeclaration]:
     return {item.name: item for item in (*TARGET_DEFAULT_READ_ALGEBRA, *PRIVILEGED_ALGEBRA)}
 
 
+def _declaration_index() -> dict[str, MCPToolDeclaration]:
+    """Index every declared tool, target-visible or not."""
+    return {declaration.name: declaration for declaration in MCP_TOOL_DECLARATIONS}
+
+
 def _sources(*names: str, optional: tuple[str, ...] = ()) -> tuple[str, ...]:
-    index = _target_declaration_index()
+    index = _declaration_index()
     selected: list[str] = []
     for name in names:
         if name not in index:
@@ -184,7 +223,7 @@ def _sources(*names: str, optional: tuple[str, ...] = ()) -> tuple[str, ...]:
 
 
 def _semantics(source_names: tuple[str, ...]) -> tuple[MCPResultSemantics, ...]:
-    index = _target_declaration_index()
+    index = _declaration_index()
     result: list[MCPResultSemantics] = []
     for source_name in source_names:
         declaration = index[source_name]
@@ -196,7 +235,7 @@ def _semantics(source_names: tuple[str, ...]) -> tuple[MCPResultSemantics, ...]:
 
 
 def _required_capability(source_names: tuple[str, ...]) -> MCPCapabilityFlag | None:
-    index = _target_declaration_index()
+    index = _declaration_index()
     capabilities = {index[name].required_capability for name in source_names}
     if len(capabilities) != 1:
         raise RuntimeError(
@@ -214,6 +253,7 @@ def _contract(
     examples: tuple[ToolExample, ...],
     supports_continuation: bool,
     emits_result_ref: bool,
+    confirmation: ConfirmationGate | None = None,
 ) -> ToolContract:
     return ToolContract(
         name=name,
@@ -225,6 +265,7 @@ def _contract(
         examples=examples,
         supports_continuation=supports_continuation,
         emits_result_ref=emits_result_ref,
+        confirmation=confirmation,
     )
 
 
@@ -235,9 +276,21 @@ _EXPLAIN_SOURCES = _sources("explain")
 _CONTEXT_SOURCES = _sources("context")
 _STATUS_SOURCES = _sources("status")
 _WRITE_SOURCES = _sources("write")
+_RECORD_WORK_EVENT_SOURCES = _sources("record_work_event")
+_EMIT_DECISION_SOURCES = _sources("emit_decision")
 _JUDGE_SOURCES = _sources("judge")
 _RUN_SOURCES = _sources("run")
 _MAINTENANCE_SOURCES = _sources("maintenance")
+
+#: The live ``maintenance`` operation vocabulary and its one confirmation gate.
+#: ``test_manual_contract`` resolves both against the registered MCP handler, so
+#: an operation the handler does not declare cannot reach the manual's prose.
+_MAINTENANCE_OPERATIONS: tuple[str, ...] = ("rebuild_insights", "recovery_status", "recovery_adjudicate")
+_MAINTENANCE_CONFIRMATION = ConfirmationGate(
+    argument="confirm",
+    operations=("rebuild_insights", "recovery_adjudicate"),
+    inspection_operations=("recovery_status",),
+)
 
 TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
@@ -295,6 +348,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             _arg("ref", "string", True, "Stable object, evidence, result-set, or URI reference."),
             _arg("view", "string", False, "Declared projection/view for the referenced object."),
             _arg("limit", "integer", False, "Page size for collection-like or recursive reads."),
+            _arg("offset", "integer", False, "Offset into collection-like reads that use decimal offset pagination."),
             _arg("continuation", "string", False, "Opaque token from the preceding read response; send alone."),
         ),
         examples=(
@@ -447,6 +501,65 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         emits_result_ref=False,
     ),
     _contract(
+        name="record_work_event",
+        source_names=_RECORD_WORK_EVENT_SOURCES,
+        purpose="Record one typed live-agent work event against a session so later sessions can retrieve it as evidence.",
+        arguments=(
+            _arg("session_id", "string", True, "Session the event belongs to."),
+            _arg("event_id", "string", True, "Caller-chosen idempotent event identity."),
+            _arg(
+                "event_type",
+                "string",
+                True,
+                "The declared work-event type.",
+                ("tool_run", "subagent_spawn", "decision", "artifact_change"),
+            ),
+            _arg("summary", "string", True, "One-line description of what happened."),
+            _arg("payload", "object", False, "Structured event detail."),
+            _arg("timestamp", "string", False, "Event time; defaults to the ingest clock."),
+        ),
+        examples=(
+            _example(
+                "record-tool-run",
+                "Record a tool run as retrievable evidence",
+                "A mutation receipt; re-sending the same event_id is idempotent rather than a second event.",
+                session_id="codex-session:demo-lineage-fork",
+                event_id="evt-tool-run-1",
+                event_type="tool_run",
+                summary="Ran the focused agent-integration selection.",
+            ),
+        ),
+        supports_continuation=False,
+        emits_result_ref=False,
+    ),
+    _contract(
+        name="emit_decision",
+        source_names=_EMIT_DECISION_SOURCES,
+        purpose="Record a typed decision with its evidence references, using the shared work-event vocabulary.",
+        arguments=(
+            _arg("session_id", "string", True, "Session the decision belongs to."),
+            _arg("event_id", "string", True, "Caller-chosen idempotent event identity."),
+            _arg("decision", "string", True, "The decision reached."),
+            _arg("summary", "string", True, "Why the decision was reached."),
+            _arg("evidence_refs", "array", False, "Stable refs the decision rests on."),
+            _arg("timestamp", "string", False, "Decision time; defaults to the ingest clock."),
+        ),
+        examples=(
+            _example(
+                "emit-decision-with-evidence",
+                "Record a decision against the evidence it rests on",
+                "A mutation receipt binding the decision to the cited refs; cite refs rather than restating their content.",
+                session_id="codex-session:demo-lineage-fork",
+                event_id="evt-decision-1",
+                decision="keep",
+                summary="The declaration, not the prose, is the intended contract.",
+                evidence_refs=["polylogue://session/codex-session:demo-lineage-fork"],
+            ),
+        ),
+        supports_continuation=False,
+        emits_result_ref=False,
+    ),
+    _contract(
         name="judge",
         source_names=_JUDGE_SOURCES,
         purpose="Accept, reject, defer, or supersede an assertion candidate while preserving candidate and judgment provenance.",
@@ -502,7 +615,8 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "operation",
                 "string",
                 True,
-                "One of rebuild_insights, recovery_status, recovery_adjudicate.",
+                "The declared maintenance operation.",
+                _MAINTENANCE_OPERATIONS,
             ),
             _arg("operation_id", "string", False, "Exact operation identity to adjudicate."),
             _arg("target_outcomes", "object", False, "Observed target outcomes for adjudication."),
@@ -511,7 +625,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "confirm",
                 "boolean",
                 False,
-                "Explicit confirmation; rebuild_insights and recovery_adjudicate fail closed without it.",
+                "Explicit confirmation required by the full-effect operations.",
             ),
         ),
         examples=(
@@ -524,12 +638,17 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         ),
         supports_continuation=False,
         emits_result_ref=False,
+        confirmation=_MAINTENANCE_CONFIRMATION,
     ),
 )
 
 TOOL_CONTRACT_BY_NAME: dict[str, ToolContract] = {contract.name: contract for contract in TOOL_CONTRACTS}
-if tuple(TOOL_CONTRACT_BY_NAME) != ALL_TARGET_TOOLS:
-    raise RuntimeError("agent tool contracts must remain in default-read then privileged order")
+if tuple(TOOL_CONTRACT_BY_NAME) != ALL_DECLARED_TOOLS:
+    raise RuntimeError(
+        "agent tool contracts must cover every declared MCP tool, in declaration order; "
+        f"missing={sorted(set(ALL_DECLARED_TOOLS) - set(TOOL_CONTRACT_BY_NAME))} "
+        f"unexpected={sorted(set(TOOL_CONTRACT_BY_NAME) - set(ALL_DECLARED_TOOLS))}"
+    )
 
 CAPABILITY_FAMILIES: tuple[CapabilityFamily, ...] = (
     CapabilityFamily("authority", "Archive identity, source coverage, freshness, and readiness", None, "status"),
@@ -582,7 +701,7 @@ QUERY_EXAMPLES: tuple[CheckedQuery, ...] = (
         "tests/unit/cli/test_query_expression.py file-source coverage",
     ),
     CheckedQuery(
-        'sessions where semantic:"preview-bound confirmation"',
+        'sessions where semantic:"confirmation gate binding"',
         "session",
         "Semantic prior-art retrieval.",
         "tests/unit/cli/test_query_expression.py::test_boolean_semantic_predicate_lowers",
@@ -726,13 +845,13 @@ RECIPES: tuple[Recipe, ...] = (
         steps=(
             RecipeStep(
                 "explain",
-                _args(subject="query", expression='sessions where semantic:"preview-bound confirmation"'),
+                _args(subject="query", expression='sessions where semantic:"confirmation gate binding"'),
                 "Verify semantic lowering and any readiness dependency.",
             ),
             RecipeStep(
                 "query",
                 _args(
-                    expression='sessions where semantic:"preview-bound confirmation"',
+                    expression='sessions where semantic:"confirmation gate binding"',
                     limit=20,
                     projection="session-summary",
                 ),
@@ -761,7 +880,7 @@ RECIPES: tuple[Recipe, ...] = (
             ),
         ),
         queries=(
-            _checked('sessions where semantic:"preview-bound confirmation"'),
+            _checked('sessions where semantic:"confirmation gate binding"'),
             _checked("files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20"),
         ),
         resources=("polylogue://query/{id}", "polylogue://result-set/{id}", "polylogue://message/{id}"),
@@ -830,7 +949,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install a SessionStart hook whose additionalContext is the complete generated standing manual.",
         "Install the generated deep reference as an owned local file.",
         "Hook ownership, idempotent merge, capability/env selection, drift detection, and lossless uninstall are unchanged.",
-        "Only the generated content, target manifest, ten-tool vocabulary, continuation recipe, and cache digest change.",
+        "Only the generated content, target manifest, declared tool vocabulary, continuation recipe, and cache digest change.",
     ),
     ClientDelivery(
         "codex",
@@ -838,7 +957,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install a marked managed block in the effective global AGENTS.override.md or AGENTS.md without overwriting operator text.",
         "Install the generated deep reference beside the managed guidance.",
         "Override precedence detection, marker ownership, idempotency, and lossless uninstall are unchanged.",
-        "The managed block is regenerated from the ten-tool declarations; no retired tool-name list remains.",
+        "The managed block is regenerated from the live declarations; no retired tool-name list remains.",
     ),
     ClientDelivery(
         "gemini",
@@ -846,7 +965,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install a marked managed block in GEMINI.md as persistent instruction.",
         "Install the generated deep reference as an owned local file.",
         "JSON merge ownership, marker ownership, idempotency, and lossless uninstall are unchanged.",
-        "The persistent instruction and target manifest use the ten-tool contract.",
+        "The persistent instruction and target manifest use the declared tool contract.",
     ),
     ClientDelivery(
         "hermes",
@@ -854,7 +973,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install the complete generated manual inside the owned productivity/polylogue SKILL.md.",
         "Include the generated deep reference in the owned skill directory.",
         "YAML merge ownership, skill ownership, idempotency, and lossless uninstall are unchanged.",
-        "The skill body, recipes, capability opt-ins, and cache digest are regenerated for the ten-tool surface.",
+        "The skill body, recipes, capability opt-ins, and cache digest are regenerated for the declared tool surface.",
     ),
 )
 
@@ -938,6 +1057,7 @@ def integration_spec_payload() -> dict[str, object]:
 
 
 __all__ = [
+    "ALL_DECLARED_TOOLS",
     "ALL_TARGET_TOOLS",
     "ASSET_VERSION",
     "CAPABILITY_FAMILIES",
@@ -957,6 +1077,7 @@ __all__ = [
     "AgentClient",
     "CapabilityFamily",
     "CheckedQuery",
+    "ConfirmationGate",
     "ClientDelivery",
     "GuidanceMode",
     "OriginMeaning",
