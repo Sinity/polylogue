@@ -225,19 +225,46 @@ def restore_message_fts_triggers_sync(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
 
 
-def restore_fts_triggers_sync(conn: sqlite3.Connection) -> None:
-    """Re-create FTS triggers after bulk insert."""
-    suspend_fts_triggers_sync(conn)
+def _create_fts_triggers_sync(conn: sqlite3.Connection) -> None:
+    """Issue the ``CREATE TRIGGER IF NOT EXISTS`` DDL for existing surfaces."""
     for ddl in _fts_trigger_ddl_for_existing_surfaces_sync(conn):
         conn.executescript(ddl) if ";" in ddl else conn.execute(ddl)
+
+
+def restore_fts_triggers_sync(conn: sqlite3.Connection) -> None:
+    """Re-create FTS triggers after an interrupted or completed bulk insert.
+
+    This is the recovery form and it must never drop first.  The DDL is
+    ``CREATE TRIGGER IF NOT EXISTS``, so a leading ``DROP`` adds nothing but a
+    durable trigger-less window: DDL runs in autocommit, so a process death
+    between the drop and the creates leaves ``index.db`` permanently without
+    FTS triggers and every later block write silently unindexed
+    (polylogue-u66s3).
+
+    Callers that genuinely need trigger *definitions* replaced use
+    ``replace_fts_triggers_sync``.
+    """
+    _create_fts_triggers_sync(conn)
+
+
+def replace_fts_triggers_sync(conn: sqlite3.Connection) -> None:
+    """Drop and re-create every FTS trigger definition.
+
+    The explicit rebuild path: use it only where stale trigger *bodies* must be
+    replaced and the caller owns the resulting window.  Recovery paths use
+    ``restore_fts_triggers_sync`` instead.
+    """
+    suspend_fts_triggers_sync(conn)
+    _create_fts_triggers_sync(conn)
 
 
 def ensure_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     """Create missing FTS triggers without dropping existing triggers.
 
     Steady-state archive writes must not create a dropped-trigger window.
-    ``restore_fts_triggers_sync`` remains the explicit recovery/rebuild path
-    for replacing trigger definitions and repairing global FTS state.
+    ``replace_fts_triggers_sync`` remains the explicit rebuild path for
+    replacing trigger definitions; ``restore_fts_triggers_sync`` is the
+    no-drop recovery path.
 
     Fast-path: when all expected triggers are already present, return
     immediately without issuing any ``executescript()`` calls.  Each
@@ -490,7 +517,7 @@ def reconcile_message_fts_rows_once_sync(conn: sqlite3.Connection) -> tuple[int,
 
 def rebuild_session_insight_fts_sync(conn: sqlite3.Connection) -> None:
     """Rebuild only the durable session-insight FTS projections."""
-    restore_fts_triggers_sync(conn)
+    replace_fts_triggers_sync(conn)
     _rebuild_session_work_events_fts_sync(conn)
 
 
@@ -888,6 +915,7 @@ __all__ = [
     "reset_message_fts_index_sync",
     "replace_fts_rows_for_messages_sync",
     "restore_message_fts_triggers_sync",
+    "replace_fts_triggers_sync",
     "restore_fts_triggers_sync",
     "session_work_events_fts_invariant_sync",
     "suspend_message_fts_triggers_sync",
