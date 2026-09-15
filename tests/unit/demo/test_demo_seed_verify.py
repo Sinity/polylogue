@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -69,10 +68,17 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
     assert verify.problems == ()
 
     with ArchiveStore.open_existing(archive_root) as archive:
+        # Codex declares parent_dispatch structurally-absent, so a Codex
+        # subagent spawn is linked child-side only and the delegation is
+        # `edge_only` -- never `resolved`. Asserting `resolved` here would
+        # require the fixture to mint a Claude-Code-shaped Task dispatch into a
+        # Codex file, i.e. fabricated capability. Anti-vacuity: re-introducing
+        # such a dispatch block, or widening the resolved branch of the
+        # delegations view to accept a child-side edge, turns this red.
         delegation_rows = query_unit_envelope(
             archive,
             query_unit_request(
-                expression="delegations where parent:demo-lineage-parent AND mapping_state:resolved",
+                expression="delegations where parent:demo-lineage-parent",
                 limit=10,
             ),
         )
@@ -80,21 +86,17 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
         delegation = delegation_item.model_dump(mode="json")
         assert delegation["parent_session_id"] == "codex-session:demo-lineage-parent"
         assert delegation["child_session_id"] == "codex-session:demo-lineage-subagent"
-        assert delegation["mapping_state"] == "resolved"
-        assert delegation["evidence_basis"] == "action"
-        assert delegation["instruction_preview"] == "Inspect the demo lineage child and report caveats."
-        expected_instruction = "Inspect the demo lineage child and report caveats."
-        assert delegation["instruction_sha256"] == hashlib.sha256(expected_instruction.encode()).hexdigest()
-        assert delegation["instruction_truncated"] is False
-        instruction_block_id = delegation["instruction_tool_use_block_id"]
-        assert isinstance(instruction_block_id, str)
-        card = archive.get_delegation_card(instruction_tool_use_block_id=instruction_block_id)
-        assert card is not None
-        assert card.instruction == expected_instruction
-        assert card.dispatch_result == "Subagent completed. Session: codex-session:demo-lineage-subagent"
-        assert card.child_excerpt == (
-            "Subagent report: lineage fixture has a parent, a fork, and a resolved child link."
+        assert delegation["mapping_state"] == "edge_only"
+        assert delegation["instruction_tool_use_block_id"] is None
+
+        resolved_rows = query_unit_envelope(
+            archive,
+            query_unit_request(
+                expression="delegations where parent:demo-lineage-parent AND mapping_state:resolved",
+                limit=10,
+            ),
         )
+        assert resolved_rows.items == ()
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         conn.execute("ATTACH DATABASE ? AS source", (str(archive_root / "source.db"),))
