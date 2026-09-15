@@ -15,6 +15,7 @@ domain models rather than plans:
 | [Analysis rigor](analysis-rigor.md) | Rigor mechanisms for agent claims: population-validity (metric hashes, pre-registration, holdouts) + comparative judgment (Bradley-Terry rankings, agent judges, cascades) (polylogue-rxdo.9) |
 | [Query set algebra](query-set-algebra.md) | Set-composition semantics over query results (polylogue-fnm.13) |
 | [Agent-first MCP](agent-first-mcp.md) | MCP surface doctrine (polylogue-t46.8, polylogue-rsad) |
+| [Transcript-window responsibility](transcript-window-responsibility.md) | Who executes the one-session message window on each public surface, and the two owners that remain (polylogue-vclez) |
 | [Project memory](project-memory.md) · [Second brain](second-brain.md) · [Time machine](time-machine.md) · [Archive storytelling](archive-storytelling.md) · [Whole product](whole-product.md) | Vision statements for future planning |
 | [Query-action workflows](../product/workflows.md) | Standing selection, cardinality, and executable-evidence guide |
 | [Incident 14:32 proof world](incident-1432-proof-world.md) | Shared deterministic adversarial corpus for the still-open proof-world work (polylogue-212.11) |
