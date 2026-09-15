@@ -3010,3 +3010,180 @@ def test_terminal_failure_carrier_survives_ordinary_reclassification(tmp_path: P
         ).fetchone()
     assert kind == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
     assert parse_as_session == 0
+
+
+def _headless_ambiguous_cohort(
+    archive: ArchiveStore,
+) -> tuple[MembershipClassification, dict[str, ParsedSession]]:
+    """Seed a cohort whose members all stay ambiguous (an incomplete cohort)."""
+
+    def session_with(text: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="session",
+            messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text=text)],
+        )
+
+    branch_a = session_with("alpha")
+    branch_b = session_with("beta")
+
+    def add_member(raw_id: str, session: ParsedSession) -> MembershipRevision:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=raw_id.encode(),
+            source_path=f"{raw_id}.jsonl",
+            acquired_at_ms=1,
+            raw_id=raw_id,
+        )
+        archive.replace_raw_membership_census(
+            raw_id,
+            [session],
+            parser_fingerprint="test-parser",
+            censused_at_ms=1,
+        )
+        return MembershipRevision(raw_id, session_revision_projection(session))
+
+    members = [
+        add_member("branch-a", branch_a),
+        add_member("branch-a-dup", branch_a),
+        add_member("branch-b", branch_b),
+    ]
+    classification = classify_membership_revisions(members, existing_accepted_raw_id="branch-a")
+    assert classification.accepted_raw_ids == ()
+    session_by_raw = {"branch-a": branch_a, "branch-a-dup": branch_a, "branch-b": branch_b}
+    return classification, session_by_raw
+
+
+def _membership_authority(conn: sqlite3.Connection) -> list[tuple[str, str | None, str | None]]:
+    return conn.execute(
+        """
+        SELECT raw_id, decision, revision_authority
+        FROM raw_session_memberships
+        WHERE logical_source_key = 'codex-session:session'
+        ORDER BY raw_id
+        """
+    ).fetchall()
+
+
+def test_incomplete_cohort_correction_does_not_commit_batched_source_authority(tmp_path: Path) -> None:
+    """The incomplete-cohort correction must not commit the caller's batch.
+
+    Production dependency: ``apply_raw_membership_classification`` with
+    ``manage_transaction=False`` -- the batched membership decisions stay
+    uncommitted until the index head write lands, and the incomplete-cohort
+    parse-state correction runs in a SAVEPOINT inside that same transaction
+    (polylogue-upua6).
+
+    Anti-vacuity: restoring the pre-fix ``with conn:`` around the correction
+    commits the whole open implicit transaction, so ``in_transaction`` is
+    already False here and the ``rollback()`` below no longer restores the
+    undecided memberships -- the decided rows stay durably written.
+    """
+    bootstrap_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        classification, session_by_raw = _headless_ambiguous_cohort(archive)
+        source_conn = archive._ensure_source_conn()
+        source_conn.commit()
+        assert not source_conn.in_transaction
+        undecided = _membership_authority(source_conn)
+        assert all(decision is None for _raw, decision, _authority in undecided)
+
+        archive.apply_raw_membership_classification(
+            "codex-session:session",
+            classification,
+            session_by_raw,
+            {raw_id: session_revision_projection(s) for raw_id, s in session_by_raw.items()},
+            acquired_at_ms=1,
+            manage_transaction=False,
+        )
+
+        # The batch is still open: nothing on this path committed it.
+        assert source_conn.in_transaction
+        assert _membership_authority(source_conn) == [
+            ("branch-a", "ambiguous", "quarantined"),
+            ("branch-a-dup", "ambiguous", "quarantined"),
+            ("branch-b", "ambiguous", "quarantined"),
+        ]
+        # The correction itself is visible inside the same transaction.
+        assert source_conn.execute(
+            "SELECT count(*) FROM raw_sessions"
+            " WHERE parsed_at_ms IS NOT NULL"
+            " AND raw_id IN ('branch-a', 'branch-a-dup', 'branch-b')"
+        ).fetchone() == (0,)
+
+        # Aborting the batch must take the durable authority with it.
+        source_conn.rollback()
+        assert _membership_authority(source_conn) == undecided
+
+
+def test_incomplete_cohort_correction_failure_keeps_the_batch_open(tmp_path: Path) -> None:
+    """A failed correction rolls back to its savepoint, not to the batch.
+
+    Production dependency: the SAVEPOINT failure path in
+    ``apply_raw_membership_classification`` (polylogue-upua6).
+
+    Anti-vacuity: with a pre-fix ``with conn:`` correction the batch is
+    committed before the trigger aborts, so the ``rollback()`` below no longer
+    restores the undecided memberships; dropping the failure path's
+    ``ROLLBACK TO SAVEPOINT``/``RELEASE`` pair instead leaves that savepoint
+    frame open, and the ``no such savepoint`` assertion below goes red.
+    """
+    bootstrap_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        classification, session_by_raw = _headless_ambiguous_cohort(archive)
+        source_conn = archive._ensure_source_conn()
+        source_conn.execute(
+            """
+            CREATE TEMP TRIGGER reject_incomplete_cohort_correction
+            BEFORE UPDATE OF parsed_at_ms ON raw_sessions
+            WHEN NEW.parsed_at_ms IS NULL
+            BEGIN
+                SELECT RAISE(ABORT, 'correction refused');
+            END
+            """
+        )
+        source_conn.commit()
+        assert not source_conn.in_transaction
+        undecided = _membership_authority(source_conn)
+        assert all(decision is None for _raw, decision, _authority in undecided)
+
+        # Watch the savepoint the failing correction opens, so the unwind
+        # itself is observable and not merely inferred from row state.
+        savepoints: list[str] = []
+        source_conn.set_trace_callback(
+            lambda statement: (
+                savepoints.append(statement.split()[-1]) if statement.strip().upper().startswith("SAVEPOINT ") else None
+            )
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="correction refused"):
+            archive.apply_raw_membership_classification(
+                "codex-session:session",
+                classification,
+                session_by_raw,
+                {raw_id: session_revision_projection(s) for raw_id, s in session_by_raw.items()},
+                acquired_at_ms=1,
+                manage_transaction=False,
+            )
+
+        source_conn.set_trace_callback(None)
+        # Released on the way out: the failed correction left no savepoint
+        # frame behind for a later RELEASE/ROLLBACK TO to land on by accident.
+        assert savepoints, "the batched correction must open a savepoint"
+        with pytest.raises(sqlite3.OperationalError, match="no such savepoint"):
+            source_conn.execute(f"RELEASE SAVEPOINT {savepoints[-1]}")
+
+        # The caller's transaction survived the failed correction, and the
+        # savepoint stack unwound: a plain rollback still discards everything.
+        assert source_conn.in_transaction
+        assert _membership_authority(source_conn) == [
+            ("branch-a", "ambiguous", "quarantined"),
+            ("branch-a-dup", "ambiguous", "quarantined"),
+            ("branch-b", "ambiguous", "quarantined"),
+        ]
+        source_conn.rollback()
+        assert not source_conn.in_transaction
+        assert _membership_authority(source_conn) == undecided
+        source_conn.execute("DROP TRIGGER temp.reject_incomplete_cohort_correction")

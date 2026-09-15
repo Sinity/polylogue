@@ -97,6 +97,7 @@ question makes it impossible to pass the wrong answer.)
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import sqlite3
 import time
@@ -3367,6 +3368,11 @@ def require_frozen_membership_authority(
             )
 
 
+# Unique per correction so a repeated or nested entry can never release or
+# roll back to an outer savepoint that merely shares its name.
+_INCOMPLETE_COHORT_CORRECTION_SAVEPOINTS = itertools.count()
+
+
 def apply_raw_membership_classification(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
@@ -3395,7 +3401,10 @@ def apply_raw_membership_classification(
     source.db parse-state marker into the caller's open
     transaction/pending-state instead of committing them immediately
     (polylogue-oikv) -- see ``apply_raw_revision_replay`` for the shared
-    batch-commit invariant this mirrors.
+    batch-commit invariant this mirrors.  The incomplete-cohort parse-state
+    correction is batched too, as a SAVEPOINT inside the caller's transaction
+    (polylogue-upua6), so no branch of this function commits durable source
+    authority ahead of the index write.
 
     ``bulk_fts`` mirrors ``apply_raw_revision_replay``'s guard-gated bulk
     FTS mode (polylogue-crd8); default ``False``. ``bulk_build`` mirrors
@@ -3762,13 +3771,35 @@ def apply_raw_membership_classification(
         else:
             # Incomplete cohort: this raw is not yet finalized (a sibling
             # member is still undecided), so this is a correction, not a
-            # terminal marker -- always commits immediately regardless of
-            # batching, matching prior behavior.
-            with conn:
-                conn.execute(
-                    "UPDATE raw_sessions SET parsed_at_ms = NULL, parse_error = NULL WHERE raw_id = ?",
-                    (raw_id,),
-                )
+            # terminal marker.
+            #
+            # polylogue-upua6: under batching the membership
+            # ``revision_authority`` updates above ran in ``nullcontext()`` and
+            # are deliberately still uncommitted, pending the index head write.
+            # ``with conn:`` on this same connection at the default isolation
+            # level commits the whole open implicit transaction, so it would
+            # publish durable source authority for decisions whose index rows
+            # can still roll back -- the headless-but-authoritative shape this
+            # function's contract forbids.  The correction is therefore scoped
+            # to a SAVEPOINT inside the caller's transaction: atomic on its own
+            # failure path, and committed only when the caller commits.  When
+            # this call owns the transaction there is nothing pending to carry,
+            # and the correction commits immediately as before.
+            correction = "UPDATE raw_sessions SET parsed_at_ms = NULL, parse_error = NULL WHERE raw_id = ?"
+            if manage_transaction:
+                with conn:
+                    conn.execute(correction, (raw_id,))
+            else:
+                savepoint = f"incomplete_cohort_correction_{next(_INCOMPLETE_COHORT_CORRECTION_SAVEPOINTS)}"
+                conn.execute(f"SAVEPOINT {savepoint}")
+                try:
+                    conn.execute(correction, (raw_id,))
+                except BaseException:
+                    conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    raise
+                else:
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
     return session_id
 
 
