@@ -117,6 +117,17 @@ SESSION_INPUT_PROJECTION_COLUMNS: tuple[str, ...] = (
     "stop_reason",
     "is_active_path",
     "content_hash",
+    # The content-derived inputs of ``message_id`` for an id-less message.
+    # ``content_hash`` does not stand in for them: its field set is strictly
+    # narrower, omitting ``is_aborted_mid_stream``, ``parent_message_provider_id``,
+    # ``paste_spans`` and ``timestamp``, all of which ``content_identity``
+    # hashes. Move one of those on an id-less message and ``message_id`` moves
+    # while every other projected column holds still -- and the derived
+    # profile outputs embed ``message_id``.
+    "content_identity",
+    # Offset-continued on append, so a re-ingest ordering change renumbers it
+    # without touching any other projected value.
+    "content_occurrence",
 )
 
 # ``load_sync_batch`` hydrates these attachment values directly.  They live in
@@ -237,7 +248,7 @@ SESSION_ROW_EXCLUDED_COLUMNS: Mapping[str, str] = {
 #: either is carried by that hash or is a coordinate the projection already
 #: scopes and orders by.
 SESSION_INPUT_EXCLUDED_COLUMNS: Mapping[str, str] = {
-    "message_id": "generated from session_id, position, variant_index and native_id, all already bound",
+    "message_id": "generated from native_id, or from content_identity and content_occurrence, all projected",
     "session_id": "the partition key: the projection selects on it and groups by it",
     "native_id": "identity input to message_id, not a value the profile reads",
     "identity_source": "records which identity path fired, not what the message says",
