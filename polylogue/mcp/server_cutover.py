@@ -1042,15 +1042,28 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         ref: str,
         view: str | None = None,
         limit: int | None = None,
+        offset: int | None = None,
         continuation: str | None = None,
     ) -> str:
-        """Read a stable URI or public ref through an explicitly named view."""
-        if continuation is not None and view != "topology":
+        """Read a stable URI or public ref through an explicitly named view.
+
+        ``offset`` windows the row-bearing views (``messages``) exactly as the
+        CLI ``--offset`` and the HTTP ``?offset=`` parameter do, so the same
+        transcript window is expressible on every public surface rather than
+        only the first page here.  The ``messages`` view continues by decimal
+        offset (``continuation="message-offset:<n>"``), matching the
+        ``topology`` view's existing ``node-offset:`` form; the surfaces share
+        one offset vocabulary rather than one surface inventing a token the
+        others cannot mint.
+        """
+        if continuation is not None and view not in ("topology", "messages"):
             return hooks.error_json(
                 "read continuations are not implemented for this view; use query for exhaustive rows",
                 code="invalid_continuation",
                 tool="read",
             )
+        if offset is not None and offset < 0:
+            return hooks.error_json("offset must not be negative", code="invalid_argument", tool="read")
         # ``limit`` is applied to list-shaped read payloads below.
 
         normalized = _object_ref(ref)
@@ -1059,7 +1072,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         async def run() -> str:
             if view == "topology":
                 topology_session_id = normalized.removeprefix("session:")
-                node_offset = 0
+                node_offset = offset or 0
                 if continuation is not None:
                     token = continuation.removeprefix("node-offset:")
                     if not token.isdecimal():
@@ -1083,10 +1096,18 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     message_row_envelope_from_domain,
                 )
 
+                window_offset = offset or 0
+                if continuation is not None:
+                    token = continuation.removeprefix("message-offset:")
+                    if not token.isdecimal():
+                        return hooks.error_json(
+                            "invalid messages continuation", code="invalid_continuation", tool="read"
+                        )
+                    window_offset = int(token)
                 messages, total, completeness = await hooks.get_polylogue().get_messages_paginated(
                     session_id or normalized,
                     limit=hooks.clamp_limit(limit),
-                    offset=0,
+                    offset=window_offset,
                 )
                 return hooks.json_payload(
                     SessionMessagesResponsePayload(
@@ -1097,7 +1118,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         ),
                         total=total,
                         limit=hooks.clamp_limit(limit),
-                        offset=0,
+                        offset=window_offset,
                         lineage_complete=completeness.complete,
                         lineage_truncation_reason=completeness.truncation_reason,
                         authority=authority_for_config(
