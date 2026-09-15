@@ -4158,11 +4158,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                           COALESCE(SUM(outcome = 'failed'), 0),
                           COALESCE(SUM(outcome = 'unknown'), 0)
                    FROM (
-                     SELECT CASE
-                       WHEN exit_code IS NOT NULL AND exit_code <> 0 THEN 'failed'
-                       WHEN exit_code = 0 THEN 'ok'
-                       WHEN is_error = 1 THEN 'failed'
-                       WHEN is_error = 0 THEN 'ok'
+                     -- ``result_state`` is the canonical structural outcome
+                     -- computed once by the ``actions`` view; never re-derive
+                     -- it from the legacy ``exit_code``/``is_error`` compat
+                     -- pair, which reports a distrusted
+                     -- ``tool_outcome='unknown'`` as success.
+                     SELECT CASE result_state
+                       WHEN 'outcome_success' THEN 'ok'
+                       WHEN 'outcome_error' THEN 'failed'
                        ELSE 'unknown'
                      END AS outcome
                      FROM actions WHERE message_id IN (SELECT value FROM json_each(?))
