@@ -403,3 +403,66 @@ def test_blob_publication_reconciliation_reads_attachment_refs_from_active_index
     assert outcome.scanned == 1
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+
+
+def test_periodic_blob_gc_reports_a_blocked_pass_as_degraded_not_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A refused GC pass must never reach the log as an empty or clean one.
+
+    polylogue-n9t0p: the loop read only ``deleted_count``, so a pass that
+    refused inside the locked execution window rendered as ``ok`` (partial
+    deletions) or ``empty`` (none). Anti-vacuity: dropping the
+    ``blocked_reason`` branch from ``periodic_blob_gc_check`` makes this span
+    terminal ``ok`` with ``removed=1`` and no reason, and the assertions below
+    go red.
+    """
+    from polylogue.logging import capture
+
+    db_path = tmp_path / "source.db"
+    _make_source_db(db_path)
+    blocked = blob_gc.BlobGCResult(str(db_path), str(tmp_path / "blob"), False, 1)
+    blocked.deleted_count = 1
+    blocked.reclaimed_bytes = 17
+    blocked.blocked_reason = "forced locked-window refusal"
+
+    first_run = asyncio.Event()
+
+    class BlockedCoordinator:
+        async def run_sync(self, actor: str, callback: Any, *args: Any, **kwargs: Any) -> Any:
+            first_run.set()
+            return blocked
+
+    monkeypatch.setattr(blob_gc_periodic, "BLOB_GC_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("polylogue.paths.source_db_path", lambda: db_path)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.daemon.write_coordinator.daemon_write_coordinator", lambda: BlockedCoordinator())
+
+    async def run() -> None:
+        task = asyncio.create_task(blob_gc_periodic.periodic_blob_gc_check())
+        try:
+            await asyncio.wait_for(first_run.wait(), timeout=2.0)
+            await asyncio.sleep(0)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    with capture() as records:
+        asyncio.run(run())
+
+    terminals = [
+        record
+        for record in records
+        if str(record.get("event", "")).startswith("daemon.blob_gc.pass.")
+        and record.get("outcome") is not None
+        and record.get("event") != "daemon.blob_gc.pass.start"
+    ]
+    assert terminals, "the periodic pass emitted no terminal outcome"
+    terminal = terminals[-1]
+    assert terminal["outcome"] == "degraded"
+    assert terminal["reason"] == "gc_blocked"
+    assert terminal["error_detail"] == "forced locked-window refusal"
+    assert terminal["removed"] == 1
+    assert terminal["bytes"] == 17

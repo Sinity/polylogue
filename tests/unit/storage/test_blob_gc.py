@@ -8,11 +8,17 @@ Verifies two historical GC regressions stay fixed:
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import sys
+import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import polylogue.storage.blob_gc as blob_gc
+from polylogue.logging import capture
 from polylogue.storage.blob_gc import (
     _candidate_blobs,
     read_gc_history,
@@ -20,10 +26,11 @@ from polylogue.storage.blob_gc import (
     run_blob_gc_report,
     unlink_unreferenced_blob_hashes_under_exclusion,
 )
-from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
+from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import bootstrap_archive_root
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -974,3 +981,196 @@ def test_run_blob_gc_still_collects_orphans_against_an_index_that_never_held_blo
     assert second.deleted_count == 1
     assert store.exists(referenced_hash)
     assert not store.exists(second_orphan)
+
+
+# ---------------------------------------------------------------------------
+# polylogue-n9t0p -- every refusal inside the locked execution window emits
+# ---------------------------------------------------------------------------
+
+
+def _backdate_blob(store: BlobStore, blob_hash: str) -> None:
+    path = store.blob_path(blob_hash)
+    old = time.time() - 3600
+    os.utime(path, (old, old))
+
+
+def _pending_generation(tmp_path: Path, payloads: list[bytes], monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Leave one pending GC generation whose members are all still unlinked.
+
+    Uses the production fault seam ``_final_gc_member_liveness``: a crash after
+    durable member intent is exactly the state a restart resumes through
+    ``_execute_gc_generation_members``, the locked window under test.
+    """
+    bootstrap_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    hashes = []
+    for payload in payloads:
+        blob_hash, _ = store.write_from_bytes(payload)
+        _backdate_blob(store, blob_hash)
+        hashes.append(blob_hash)
+
+    def crash_after_intent(*_args: Any, **_kwargs: Any) -> tuple[BlobLiveness, BlobLiveness]:
+        raise RuntimeError("leave GC intent pending")
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_after_intent)
+    with pytest.raises(RuntimeError, match="leave GC intent pending"):
+        blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root, max_batch=len(payloads))
+    monkeypatch.undo()
+    return hashes
+
+
+def _refusals(records: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [record for record in records if record.get("event") == "storage.blob_gc.refused"]
+
+
+def _blocked_liveness(reason: str) -> BlobLiveness:
+    return BlobLiveness(state=LivenessState.BLOCKED, blockers=(reason,))
+
+
+@pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
+@pytest.mark.parametrize(
+    ("fault", "needle"),
+    [
+        ("generation_namespace", "forced namespace mismatch"),
+        ("namespace_identity", "forced namespace unavailable"),
+        ("window_preflight", "forced window preflight blocker"),
+        ("legacy_hook_stage", "forced rekey matcher failure"),
+    ],
+)
+def test_locked_window_refusals_emit_a_refused_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str, needle: str
+) -> None:
+    """Each pre-unlink refusal inside the locked window emits, never returns silently.
+
+    Anti-vacuity: deleting the ``_emit_gc_refusal`` call at the matching return
+    site leaves ``report.blocked_reason`` set with an empty refusal stream, and
+    that parameter case goes red. A refusal that emitted nothing is
+    indistinguishable from a pass that ran and reclaimed nothing -- the defect
+    this test pins.
+    """
+    _pending_generation(tmp_path, [b"n9t0p locked-window member"], monkeypatch)
+    store = BlobStore(tmp_path / "blob")
+
+    if fault == "generation_namespace":
+        monkeypatch.setattr(blob_gc, "_generation_namespace_matches", lambda *_a, **_k: needle)
+    elif fault == "namespace_identity":
+        real_identity = blob_gc._blob_namespace_identity
+
+        def failing_identity(*args: Any, **kwargs: Any) -> Any:
+            # Only the locked window's own identity read is the site under
+            # test; the earlier namespace-match check has its own refusal.
+            if sys._getframe(1).f_code.co_name == "_execute_gc_generation_members":
+                raise blob_gc._BlobNamespaceUnavailableError(needle)
+            return real_identity(*args, **kwargs)
+
+        monkeypatch.setattr(blob_gc, "_blob_namespace_identity", failing_identity)
+    elif fault == "window_preflight":
+        real_liveness = blob_gc.inspect_blob_liveness
+
+        def blocked_preflight(conn: Any, blob_hash: str, **kwargs: Any) -> BlobLiveness:
+            if blob_hash == "":
+                return _blocked_liveness(needle)
+            return real_liveness(conn, blob_hash, **kwargs)
+
+        monkeypatch.setattr(blob_gc, "inspect_blob_liveness", blocked_preflight)
+    else:
+
+        def failing_stage(*_a: Any, **_k: Any) -> Any:
+            raise RuntimeError(needle)
+
+        monkeypatch.setattr(blob_gc, "prepare_match_stage", failing_stage)
+
+    with capture() as records:
+        report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root, max_batch=1)
+
+    assert report.blocked_reason is not None and needle in report.blocked_reason
+    assert report.deleted_count == 0
+    matching = [record for record in _refusals(records) if needle in str(record.get("error_detail"))]
+    assert matching, "a locked-window refusal emitted nothing"
+    assert matching[0]["outcome"] == "refused"
+    assert matching[0]["phase"] == "execute"
+    assert matching[0]["reclaimed"] == 0
+    assert matching[0]["bytes"] == 0
+
+
+@pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
+def test_final_recheck_blocker_after_a_deletion_reports_the_partial_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blocker in the final locked recheck reports the deletions already made.
+
+    Anti-vacuity: without the emit at the ``protection.blockers`` return inside
+    the member loop, the stream carries no refusal at all and a reader sees
+    only a GC that unlinked one blob -- an aborted pass rendered as a clean
+    one. Dropping the counts from that emit turns the ``reclaimed``/``bytes``
+    assertions red.
+    """
+    hashes = _pending_generation(tmp_path, [b"n9t0p member one", b"n9t0p member two"], monkeypatch)
+    store = BlobStore(tmp_path / "blob")
+    ordered = sorted(hashes)
+    real_final = blob_gc._final_gc_member_liveness
+    seen: list[str] = []
+
+    def block_the_second_member(
+        source_conn: Any, index_conn: Any, blob_hash: str, **kwargs: Any
+    ) -> tuple[BlobLiveness, BlobLiveness]:
+        seen.append(blob_hash)
+        if len(seen) >= 2:
+            return _blocked_liveness("forced recheck blocker"), BlobLiveness(state=LivenessState.UNREFERENCED)
+        return real_final(source_conn, index_conn, blob_hash, **kwargs)
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", block_the_second_member)
+
+    with capture() as records:
+        report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root, max_batch=2)
+
+    assert report.deleted_count == 1, "the first member must be unlinked before the blocker"
+    assert not store.exists(ordered[0])
+    assert store.exists(ordered[1])
+    assert report.blocked_reason == "forced recheck blocker"
+
+    matching = [record for record in _refusals(records) if "forced recheck blocker" in str(record.get("error_detail"))]
+    assert matching, "a blocker in the final locked recheck emitted nothing after a real deletion"
+    assert matching[0]["outcome"] == "refused"
+    assert matching[0]["phase"] == "final_recheck"
+    assert matching[0]["reclaimed"] == report.deleted_count == 1
+    assert matching[0]["bytes"] == report.reclaimed_bytes > 0
+
+
+@pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
+def test_namespace_loss_during_the_unlink_pass_reports_the_partial_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Losing the blob namespace mid-unlink emits a refusal carrying the partial work.
+
+    Anti-vacuity: removing the emit at the ``_BlobNamespaceUnavailableError``
+    handler around the member loop leaves an empty refusal stream while one
+    blob is already gone.
+    """
+    hashes = _pending_generation(tmp_path, [b"n9t0p unlink one", b"n9t0p unlink two"], monkeypatch)
+    store = BlobStore(tmp_path / "blob")
+    ordered = sorted(hashes)
+    real_unlink = blob_gc._unlink_observed_gc_member
+    calls = {"n": 0}
+
+    def lose_namespace_on_second(observed: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise blob_gc._BlobNamespaceUnavailableError("forced namespace loss mid-unlink")
+        real_unlink(observed)
+
+    monkeypatch.setattr(blob_gc, "_unlink_observed_gc_member", lose_namespace_on_second)
+
+    with capture() as records:
+        report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root, max_batch=2)
+
+    assert report.deleted_count == 1
+    assert not store.exists(ordered[0])
+    assert report.blocked_reason == "forced namespace loss mid-unlink"
+
+    matching = [record for record in _refusals(records) if "forced namespace loss" in str(record.get("error_detail"))]
+    assert matching, "a namespace loss during the unlink pass emitted nothing"
+    assert matching[0]["outcome"] == "refused"
+    assert matching[0]["phase"] == "unlink"
+    assert matching[0]["reclaimed"] == 1
+    assert matching[0]["bytes"] == report.reclaimed_bytes > 0
