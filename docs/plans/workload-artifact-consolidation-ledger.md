@@ -135,12 +135,12 @@ built: the saving is a removed latent unwarmed build, not a measured one.
 
 ### Before / after
 
-Both commits are on this branch; `before` is `d790d33e8`.
+Measured against `origin/master` at `b8375e111`, which this branch is rebased onto.
 
 | denominator | before | after | delta |
 | --- | ---: | ---: | ---: |
 | `tests/infra` `*.py` files | 106 | 105 | −1 |
-| `tests/infra` LOC | 34,085 | 33,883 | −202 |
+| `tests/infra` LOC | 34,084 | 33,882 | −202 |
 | `tests/infra` top-level defs | 1,126 | 1,118 | −8 |
 | `workload_artifacts.py` + `workload_declarations.py` | 3,701 | 3,701 | 0 |
 | modules with raw `INSERT INTO sessions/messages/blocks` | 2 | 1 | −1 |
@@ -157,8 +157,8 @@ to make a number fall.
 
 ### Why the aggregate rose, and what the honest denominator is
 
-`tests/infra` grew 28,486 → 34,085 between 2026-09-05 (`1a53a1f61`) and
-`d790d33e8`. Attributing that to workload-artifact consolidation is a
+`tests/infra` grew 28,486 → 34,084 between 2026-09-05 (`1a53a1f61`) and
+`b8375e111`. Attributing that to workload-artifact consolidation is a
 measurement error. Sixteen modules were added in that window, and the bulk of
 the growth is the query-law family — `query_census`, `query_contract`,
 `query_corpus`, `query_differential`, `query_field_laws`,
