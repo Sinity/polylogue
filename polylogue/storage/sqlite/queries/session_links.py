@@ -22,6 +22,16 @@ from __future__ import annotations
 
 import aiosqlite
 
+SESSION_LINK_COLUMNS = """src_session_id, dst_origin, dst_native_id, link_type,
+               resolved_dst_session_id, branch_point_message_id, inheritance,
+               status, parent_tool_use_block_id, method, confidence,
+               evidence_json, observed_at_ms, resolved_at_ms"""
+"""The canonical projection column set shared by every topology read.
+
+A sync reader (the archive tier's rooted tree) and the async readers must select
+the same columns, or one surface silently loses provenance the other keeps.
+"""
+
 
 async def list_session_links_for_session(
     conn: aiosqlite.Connection,
@@ -32,11 +42,8 @@ async def list_session_links_for_session(
     bounded = "" if limit is None else " LIMIT ?"
     params: tuple[object, ...] = (session_id,) if limit is None else (session_id, limit)
     cursor = await conn.execute(
-        """
-        SELECT src_session_id, dst_origin, dst_native_id, link_type,
-               resolved_dst_session_id, branch_point_message_id, inheritance,
-               status, parent_tool_use_block_id, method, confidence,
-               evidence_json, observed_at_ms, resolved_at_ms
+        f"""
+        SELECT {SESSION_LINK_COLUMNS}
          FROM session_links
          WHERE src_session_id = ?
          ORDER BY link_type, dst_origin, dst_native_id
@@ -57,11 +64,8 @@ async def list_session_links_to_session(
     """Bounded stable reverse lookup for canonical topology BFS."""
 
     cursor = await conn.execute(
-        """
-        SELECT src_session_id, dst_origin, dst_native_id, link_type,
-               resolved_dst_session_id, branch_point_message_id, inheritance,
-               status, parent_tool_use_block_id, method, confidence,
-               evidence_json, observed_at_ms, resolved_at_ms
+        f"""
+        SELECT {SESSION_LINK_COLUMNS}
           FROM session_links
          WHERE resolved_dst_session_id = ?
          ORDER BY src_session_id, dst_origin, dst_native_id, link_type
@@ -76,11 +80,8 @@ async def list_session_links(conn: aiosqlite.Connection) -> list[dict[str, objec
     """Return canonical topology assertions in stable natural-key order."""
 
     cursor = await conn.execute(
-        """
-        SELECT src_session_id, dst_origin, dst_native_id, link_type,
-               resolved_dst_session_id, branch_point_message_id, inheritance,
-               status, parent_tool_use_block_id, method, confidence,
-               evidence_json, observed_at_ms, resolved_at_ms
+        f"""
+        SELECT {SESSION_LINK_COLUMNS}
           FROM session_links
          ORDER BY src_session_id, dst_origin, dst_native_id, link_type
         """
@@ -92,4 +93,5 @@ __all__ = [
     "list_session_links_for_session",
     "list_session_links",
     "list_session_links_to_session",
+    "SESSION_LINK_COLUMNS",
 ]

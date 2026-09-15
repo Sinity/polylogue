@@ -137,6 +137,10 @@ from polylogue.storage.blob_store import Heartbeat, PreparedBlob
 from polylogue.storage.derived.session.records import SessionProfileRecord
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.derived.session.status import session_insight_status_sync
+from polylogue.storage.derived.topology.derivation import (
+    TopologyNodeInput,
+    compose_session_topology,
+)
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     delete_session_identity_rows_sql,
@@ -331,6 +335,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection,
     write_connection_pragma_statements,
 )
+from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.write_lease import require_write_lease
@@ -2356,49 +2361,88 @@ class ArchiveStore:
         }
 
     def get_session_tree(self, session_id: str) -> list[ArchiveSessionEnvelope]:
-        """Return the rooted archive session tree containing ``session_id``."""
+        """Return the rooted archive session tree containing ``session_id``.
+
+        The tree is projected from canonical ``session_links`` rows through the
+        one graph engine (:func:`compose_session_topology`); the
+        ``sessions.parent_session_id`` / ``sessions.root_session_id`` columns are
+        write-side accelerators and are deliberately not read here. A session
+        whose parent reference never resolved into a canonical link is its own
+        root -- an edge is never synthesized from the accelerator column.
+        """
         try:
             resolved_session_id = self.resolve_session_id(session_id)
         except KeyError:
             return []
-        root_session_id = self._root_session_id_for_tree(resolved_session_id)
-        rows = self._conn.execute(
-            """
-            SELECT session_id
-            FROM sessions
-            WHERE session_id = ?
-               OR root_session_id = ?
-            ORDER BY
-                CASE WHEN session_id = ? THEN 0 ELSE 1 END,
-                COALESCE(sort_key_ms, created_at_ms, updated_at_ms),
-                session_id
-            """,
-            (root_session_id, root_session_id, root_session_id),
-        ).fetchall()
-        return [read_archive_session_envelope(self._conn, str(row["session_id"])) for row in rows]
+        nodes, links = self._topology_closure(resolved_session_id)
+        composed = compose_session_topology(resolved_session_id, nodes, links)
+        if composed is None:
+            return []
+        return [read_archive_session_envelope(self._conn, str(node.session_id)) for node in composed.nodes]
 
-    def _root_session_id_for_tree(self, session_id: str) -> str:
+    def _topology_node_input(self, session_id: str) -> TopologyNodeInput | None:
         row = self._conn.execute(
-            "SELECT root_session_id, parent_session_id FROM sessions WHERE session_id = ?",
+            "SELECT session_id, origin, title FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         if row is None:
-            raise KeyError(session_id)
-        if row["root_session_id"]:
-            return str(row["root_session_id"])
+            return None
+        return TopologyNodeInput(
+            session_id=str(row["session_id"]),
+            origin=str(row["origin"]),
+            title=str(row["title"]) if row["title"] is not None else None,
+        )
 
-        current_id = session_id
-        seen: set[str] = set()
-        while current_id not in seen:
-            seen.add(current_id)
-            parent_row = self._conn.execute(
-                "SELECT parent_session_id FROM sessions WHERE session_id = ?",
-                (current_id,),
-            ).fetchone()
-            if parent_row is None or not parent_row["parent_session_id"]:
-                return current_id
-            current_id = str(parent_row["parent_session_id"])
-        return session_id
+    def _incident_session_links(self, session_id: str) -> list[dict[str, object]]:
+        """Return every canonical link row incident to one session, both directions."""
+        outbound = self._conn.execute(
+            f"SELECT {_SESSION_LINK_COLUMNS} FROM session_links WHERE src_session_id = ?"
+            " ORDER BY link_type, dst_origin, dst_native_id",
+            (session_id,),
+        ).fetchall()
+        inbound = self._conn.execute(
+            f"SELECT {_SESSION_LINK_COLUMNS} FROM session_links WHERE resolved_dst_session_id = ?"
+            " ORDER BY src_session_id, dst_origin, dst_native_id, link_type",
+            (session_id,),
+        ).fetchall()
+        return [dict(row) for row in outbound] + [dict(row) for row in inbound]
+
+    def _topology_closure(self, session_id: str) -> tuple[list[TopologyNodeInput], list[dict[str, object]]]:
+        """Collect the link-connected neighbourhood of one session.
+
+        Expansion follows canonical link endpoints in both directions so the
+        engine -- not this fetch loop -- decides which edges compose. Fetching a
+        node the engine later excludes is harmless; omitting one would make a
+        resolved edge look out of scope.
+        """
+        nodes: dict[str, TopologyNodeInput] = {}
+        links: list[dict[str, object]] = []
+        seen_links: set[tuple[object, ...]] = set()
+        pending: list[str] = [session_id]
+        visited: set[str] = set()
+        while pending:
+            current = pending.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            node = self._topology_node_input(current)
+            if node is None:
+                continue
+            nodes[current] = node
+            for link in self._incident_session_links(current):
+                key = (
+                    link.get("src_session_id"),
+                    link.get("dst_origin"),
+                    link.get("dst_native_id"),
+                    link.get("link_type"),
+                )
+                if key not in seen_links:
+                    seen_links.add(key)
+                    links.append(link)
+                for endpoint in (link.get("src_session_id"), link.get("resolved_dst_session_id")):
+                    if isinstance(endpoint, str) and endpoint and endpoint not in visited:
+                        pending.append(endpoint)
+        return list(nodes.values()), links
 
     def raw_artifacts_for_session(
         self,
