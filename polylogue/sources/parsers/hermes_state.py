@@ -56,6 +56,42 @@ _REQUIRED_MESSAGE_COLUMNS = frozenset(
 _HERMES_SIGNATURE_SESSION_COLUMNS = frozenset({"source", "model_config", "parent_session_id"})
 _HERMES_SIGNATURE_MESSAGE_COLUMNS = frozenset({"tool_calls", "observed", "active", "compacted"})
 
+# Declared bounds on Hermes compression-continuation recomposition
+# (polylogue-g4g60). A continuation child is stored as its divergent tail and
+# read back as parent-prefix + tail, so a chain of N links retains a prefix per
+# link: composed message count grows with the square of the chain length while
+# the source file grows linearly. A ~2 MB state.db of 400 chained sessions
+# composed to 1.6M messages and 5.2 GB RSS, killing the ingest process instead
+# of recording a parse failure.
+#
+# `HERMES_MAX_CONTINUATION_DEPTH` bounds one lineage chain;
+# `HERMES_MAX_COMPOSED_MESSAGES` bounds the aggregate composition across one
+# parsed file, which is the term that actually governs peak memory. Both are
+# checked before the composition they bound allocates.
+HERMES_MAX_CONTINUATION_DEPTH = 128
+HERMES_MAX_COMPOSED_MESSAGES = 250_000
+
+
+class HermesLineageBoundError(ValueError):
+    """A Hermes continuation chain exceeded a declared recomposition bound.
+
+    A permanent typed refusal, not a degradation: the artifact is recorded as a
+    parse failure at the ingest boundary with the exact count and limit. The
+    alternative -- composing a shortened prefix -- would write a session that
+    reads as a complete recomposition and is not.
+    """
+
+    def __init__(self, *, bound: str, session_id: str, observed: int, limit: int) -> None:
+        self.bound = bound
+        self.session_id = session_id
+        self.observed = observed
+        self.limit = limit
+        super().__init__(
+            f"Hermes continuation hydration refused at session {session_id!r}: "
+            f"{bound} {observed} exceeds the declared limit of {limit}"
+        )
+
+
 _SESSION_CAPABILITIES: dict[str, frozenset[str]] = {
     "model": frozenset({"model", "model_config", "system_prompt"}),
     "lineage": frozenset({"parent_session_id", "end_reason"}),
@@ -889,39 +925,131 @@ def _branch_type(row: sqlite3.Row, parent_row: sqlite3.Row | None) -> BranchType
     return None
 
 
+def _composed_active_leaf_position(messages: list[ParsedMessage]) -> int | None:
+    """Position of the trailing active-path message, or None when there is none."""
+    for position in range(len(messages) - 1, -1, -1):
+        if messages[position].is_active_path:
+            return position
+    return None
+
+
+def _compose_continuation_messages(
+    parent_messages: list[ParsedMessage],
+    child_messages: list[ParsedMessage],
+) -> list[ParsedMessage]:
+    """Rebase ``parent_messages + child_messages`` onto one contiguous position run.
+
+    One shallow copy per composed message. The copy re-stamps only the two
+    fields recomposition owns -- ``position`` and ``is_active_leaf`` -- and
+    shares every block object with the message it was composed from: the parse
+    path never mutates a ``ParsedMessage`` or a ``ParsedContentBlock`` in place
+    (``tool_outcomes`` and ``_mark_active_leaf`` both rebuild), so a deep copy
+    duplicated an immutable-by-construction subtree once per link. ``blocks``
+    itself is re-listed so an appending caller cannot reach a sibling session's
+    list through the alias.
+    """
+    combined = [*parent_messages, *child_messages]
+    leaf_position = _composed_active_leaf_position(combined)
+    return [
+        message.model_copy(
+            update={
+                "position": position,
+                "is_active_leaf": position == leaf_position,
+                "blocks": list(message.blocks),
+            }
+        )
+        for position, message in enumerate(combined)
+    ]
+
+
 def _hydrate_compression_continuations(sessions: list[ParsedSession]) -> list[ParsedSession]:
-    """Recompose tail-only Hermes compression children for lineage normalization."""
+    """Recompose tail-only Hermes compression children for lineage normalization.
+
+    Recomposition is inherently superlinear: every child of a compression chain
+    is returned carrying its whole parent prefix, so a chain of N links holding
+    M messages each retains M*N*(N+1)/2 composed messages. The retention, not
+    the copying, is the dominant term, so the bound -- not the copy strategy --
+    is what keeps a ~2 MB ``state.db`` from composing into gigabytes
+    (polylogue-g4g60).
+
+    Both bounds are declared module constants and both refuse with
+    :class:`HermesLineageBoundError`, naming the observed count and the
+    limit. A chain past a bound is never silently shortened: a hydration that
+    truncated a prefix would hand the archive a session that reads as complete
+    and is not.
+
+    Traversal is iterative, so a deep chain refuses on the declared depth bound
+    rather than on ``RecursionError``.
+    """
     by_id = {session.provider_session_id: session for session in sessions}
     hydrated: dict[str, ParsedSession] = {}
+    depths: dict[str, int] = {}
+    composed_lengths: dict[str, int] = {}
     visiting: set[str] = set()
+    total_composed = 0
 
-    def hydrate(session: ParsedSession) -> ParsedSession:
-        session_id = session.provider_session_id
-        if session_id in hydrated:
-            return hydrated[session_id]
+    def is_continuation_child(session: ParsedSession) -> bool:
         parent_id = session.parent_session_provider_id
-        if (
-            session.branch_type is not BranchType.CONTINUATION
-            or parent_id is None
-            or parent_id not in by_id
-            or session_id in visiting
-        ):
-            hydrated[session_id] = session
-            return session
+        return session.branch_type is BranchType.CONTINUATION and parent_id is not None and parent_id in by_id
 
-        visiting.add(session_id)
-        parent = hydrate(by_id[parent_id])
-        visiting.remove(session_id)
-        combined = [*parent.messages, *session.messages]
-        rebased = [
-            message.model_copy(deep=True, update={"position": position, "is_active_leaf": False})
-            for position, message in enumerate(combined)
-        ]
-        result = session.model_copy(update={"messages": _mark_active_leaf(rebased)})
-        hydrated[session_id] = result
-        return result
+    for root in sessions:
+        # Explicit stack rather than recursion: the chain length is attacker-
+        # controlled input, and a RecursionError is neither the declared bound
+        # nor a refusal the ingest boundary can explain.
+        stack = [root]
+        while stack:
+            session = stack[-1]
+            session_id = session.provider_session_id
+            if session_id in hydrated:
+                stack.pop()
+                continue
+            if not is_continuation_child(session) or session_id in visiting:
+                # A parent reached again while it is still being hydrated is a
+                # cycle in the declared lineage; it resolves to itself, which
+                # breaks the cycle without inventing a prefix.
+                hydrated[session_id] = session
+                depths[session_id] = 0
+                composed_lengths[session_id] = len(session.messages)
+                visiting.discard(session_id)
+                stack.pop()
+                continue
+            parent = by_id[cast(str, session.parent_session_provider_id)]
+            parent_id = parent.provider_session_id
+            if parent_id not in hydrated:
+                visiting.add(session_id)
+                stack.append(parent)
+                continue
+            visiting.discard(session_id)
 
-    return [hydrate(session) for session in sessions]
+            depth = depths[parent_id] + 1
+            composed_length = composed_lengths[parent_id] + len(session.messages)
+            if depth > HERMES_MAX_CONTINUATION_DEPTH:
+                raise HermesLineageBoundError(
+                    bound="continuation_depth",
+                    session_id=session_id,
+                    observed=depth,
+                    limit=HERMES_MAX_CONTINUATION_DEPTH,
+                )
+            if total_composed + composed_length > HERMES_MAX_COMPOSED_MESSAGES:
+                raise HermesLineageBoundError(
+                    bound="composed_messages",
+                    session_id=session_id,
+                    observed=total_composed + composed_length,
+                    limit=HERMES_MAX_COMPOSED_MESSAGES,
+                )
+
+            # Checked before the composition allocates, so the refusal costs the
+            # bound, not the blow-up it refuses.
+            result = session.model_copy(
+                update={"messages": _compose_continuation_messages(hydrated[parent_id].messages, session.messages)}
+            )
+            hydrated[session_id] = result
+            depths[session_id] = depth
+            composed_lengths[session_id] = composed_length
+            total_composed += composed_length
+            stack.pop()
+
+    return [hydrated[session.provider_session_id] for session in sessions]
 
 
 def _reported_cost(row: sqlite3.Row) -> float | None:
