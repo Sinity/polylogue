@@ -10,7 +10,7 @@ from typing import Final
 
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-SOURCE_SCHEMA_VERSION = 45
+SOURCE_SCHEMA_VERSION = 46
 
 # ddl-lifecycle-waiver: benign CREATE TABLE source_generations vocabulary membership moves to typed write validation; structural checks remain in DDL.
 # These objects may remain in a migrated historical source tier. Fresh source
@@ -507,10 +507,19 @@ CREATE TABLE IF NOT EXISTS raw_authority_census_post_plans (
     UNIQUE(census_id, ordinal)
 ) STRICT;
 
+-- v46 (polylogue-5dzj9): the blocker is durable frontier AUTHORIZATION and
+-- survives the fresh start, but its two former parents (raw_authority_plans /
+-- raw_authority_censuses) are per-pass bookkeeping the 2026-09-15 ruling on
+-- polylogue-6kur retires.  A blocker is therefore keyed on the plan's own
+-- content address (``plan_input_digest``) instead of the plan row's surrogate
+-- id, and the census it was first observed in is a non-FK breadcrumb
+-- (``observed_pass_id``).  Nothing is lost: ``expected_json`` is the full
+-- ``RawReplayPlan.to_dict()`` snapshot, so every reader that used to join
+-- raw_authority_plans for the authority witness reads it from the blocker row.
 CREATE TABLE IF NOT EXISTS raw_authority_blockers (
     blocker_id          TEXT PRIMARY KEY,
-    plan_id             TEXT NOT NULL REFERENCES raw_authority_plans(plan_id),
-    census_id           TEXT NOT NULL REFERENCES raw_authority_censuses(census_id),
+    plan_input_digest   TEXT NOT NULL CHECK(length(plan_input_digest) = 64),
+    observed_pass_id    TEXT,
     reason              TEXT NOT NULL,
     expected_json       TEXT NOT NULL CHECK(json_valid(expected_json)),
     observed_json       TEXT NOT NULL CHECK(json_valid(observed_json)),
@@ -521,7 +530,7 @@ CREATE TABLE IF NOT EXISTS raw_authority_blockers (
 ) STRICT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_authority_blockers_open_plan
-ON raw_authority_blockers(plan_id)
+ON raw_authority_blockers(plan_input_digest)
 WHERE resolved_at_ms IS NULL;
 
 -- v22 (polylogue-tfzw0): 'hook_payload' is a distinct ref_type from

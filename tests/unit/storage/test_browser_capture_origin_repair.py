@@ -870,7 +870,7 @@ def test_unified_frontier_conflict_requires_typed_judgment_then_replans_same_evi
     assert conflict.executable is False
     with sqlite3.connect(tmp_path / "source.db") as source:
         blocker_id, observed_json = source.execute(
-            "SELECT blocker_id, observed_json FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+            "SELECT blocker_id, observed_json FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ? AND resolved_at_ms IS NULL",
             (conflict.plan_id,),
         ).fetchone()
     assertion_id = json.loads(observed_json)["judgment_assertion_id"]
@@ -911,7 +911,7 @@ def test_unified_frontier_conflict_requires_typed_judgment_then_replans_same_evi
     assert successor.actuator is RawAuthorityActuator.RESOLVE_CONFLICT
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute(
-            "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+            "SELECT COUNT(*) FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ? AND resolved_at_ms IS NULL",
             (conflict.plan_id,),
         ).fetchone() == (0,)
 
@@ -992,7 +992,7 @@ def test_inspect_conflicts_membership_precondition_evidence(tmp_path: Path) -> N
     assert unresolved.executable is False
     with sqlite3.connect(tmp_path / "source.db") as source:
         observed = source.execute(
-            "SELECT observed_json FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+            "SELECT observed_json FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ? AND resolved_at_ms IS NULL",
             (unresolved.plan_id,),
         ).fetchone()
     assert observed is not None

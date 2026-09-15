@@ -218,10 +218,10 @@ def test_unified_frontier_census_prioritizes_missing_bytes_over_safe_actuation(t
     with sqlite3.connect(tmp_path / "source.db") as conn:
         obligation = conn.execute(
             """
-            SELECT b.reason, b.resolved_at_ms, p.authority_witness_json
+            SELECT b.reason, b.resolved_at_ms,
+                   json_extract(b.expected_json, '$.authority_witness')
             FROM raw_authority_blockers AS b
-            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
-            WHERE b.plan_id = ?
+            WHERE json_extract(b.expected_json, '$.plan_id') = ?
             """,
             (missing.plan_id,),
         ).fetchone()
@@ -253,7 +253,7 @@ def test_unified_frontier_census_prioritizes_missing_bytes_over_safe_actuation(t
     )
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute(
-            "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+            "SELECT COUNT(*) FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ? AND resolved_at_ms IS NULL",
             (missing.plan_id,),
         ).fetchone() == (0,)
 

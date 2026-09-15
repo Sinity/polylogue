@@ -9,6 +9,7 @@ with real source files under ``tmp_path``; no ambient data is read.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import sqlite3
 import zipfile
@@ -699,11 +700,18 @@ def _insert_authority_blocker(
     conn.execute(
         """
         INSERT INTO raw_authority_blockers(
-            blocker_id, plan_id, census_id, reason, expected_json, observed_json,
+            blocker_id, plan_input_digest, observed_pass_id, reason, expected_json, observed_json,
             created_at_ms, resolved_at_ms, resolution
-        ) VALUES (?, 'plan-1', 'census-1', ?, ?, '{}', 100, ?, ?)
+        ) VALUES (?, ?, 'census-1', ?, ?, '{}', 100, ?, ?)
         """,
-        (blocker_id, reason, expected, 200 if resolved else None, "done" if resolved else None),
+        (
+            blocker_id,
+            hashlib.sha256(blocker_id.encode("utf-8")).hexdigest(),
+            reason,
+            expected,
+            200 if resolved else None,
+            "done" if resolved else None,
+        ),
     )
 
 

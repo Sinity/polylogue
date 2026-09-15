@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -2780,12 +2781,12 @@ def test_source_tier_v44_migration_045_drops_artifact_census_without_losing_reta
     )
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SOURCE_DDL)
-        reset_source_fixture_to_version(conn, SOURCE_SCHEMA_VERSION - 1)
+        reset_source_fixture_to_version(conn, 44)
         # The artifact-census objects are already absent from SOURCE_DDL (they
         # are listed in RETIRED_SOURCE_SCHEMA_OBJECTS), so a v44 archive that
         # still carries them must be reconstructed from migration 031 itself.
         conn.executescript(_V31_ARTIFACT_CENSUS_DDL)
-        conn.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION - 1}")
+        conn.execute("PRAGMA user_version = 44")
         conn.execute(
             """
             INSERT INTO raw_sessions (
@@ -2875,8 +2876,10 @@ def test_source_tier_v44_migration_045_drops_artifact_census_without_losing_reta
     with sqlite3.connect(db_path) as migrated:
         migrated.execute("PRAGMA foreign_keys = ON")
         result = migrate_archive_tier(migrated, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.from_version == SOURCE_SCHEMA_VERSION - 1
-        assert result.applied_versions == (SOURCE_SCHEMA_VERSION,)
+        assert result.from_version == 44
+        # Pinned to the historical slot this test owns: 046 (polylogue-5dzj9)
+        # re-keys the retained blocker and rides the same chain.
+        assert result.applied_versions == (45, 46)
 
         # Every retired artifact-census object is gone.
         assert _present_schema_objects(migrated) == set()
@@ -2888,9 +2891,9 @@ def test_source_tier_v44_migration_045_drops_artifact_census_without_losing_reta
         assert migrated.execute(
             "SELECT raw_id, logical_source_key, verdict FROM raw_authority_verdicts"
         ).fetchall() == [("v44-raw", "codex-session:v44", "full")]
-        assert migrated.execute("SELECT blocker_id, plan_id, census_id FROM raw_authority_blockers").fetchall() == [
-            ("v44-blocker", "v44-plan", "v44-census")
-        ]
+        assert migrated.execute(
+            "SELECT blocker_id, plan_input_digest, observed_pass_id FROM raw_authority_blockers"
+        ).fetchall() == [("v44-blocker", "d" * 64, "v44-census")]
         assert migrated.execute("SELECT raw_id FROM raw_sessions").fetchall() == [("v44-raw",)]
         assert migrated.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -2902,6 +2905,166 @@ def test_source_tier_v44_migration_045_drops_artifact_census_without_losing_reta
                 SOURCE_SCHEMA_VERSION,
                 migrated_connection=migrated,
                 fresh_connection=fresh,
-                evidence_ref="test:source-v45:artifact-census-drop-parity",
+                evidence_ref="test:source-v46:artifact-census-drop-parity",
             )
         assert parity.matches, parity
+
+
+def test_source_tier_v45_migration_046_rekeys_blockers_off_both_retired_parents(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    """polylogue-5dzj9: a blocker survives v46 with its authority intact and stays
+    resolvable after BOTH former parents are gone.
+
+    Anti-vacuity, each independently red:
+
+    * Delete the ``COALESCE(p.input_digest, ...)`` backfill from
+      ``046_rekey_raw_authority_blockers.sql`` (select NULL, or omit the
+      column) and the NOT NULL ``plan_input_digest`` rejects the row: the
+      migration raises and every assertion below is unreachable.
+    * Keep the old ``plan_id``/``census_id`` REFERENCES clauses instead of
+      rebuilding the table and ``PRAGMA foreign_key_list`` is non-empty, and
+      the post-drop ``foreign_key_check`` reports the dangling parents.
+    * Restore any reader's ``JOIN raw_authority_plans`` and the final
+      list/describe/resolve block raises ``no such table`` once the parents
+      are dropped.
+    """
+    from polylogue.storage.raw_authority import (
+        describe_raw_authority_blocker,
+        list_unresolved_raw_authority_blockers,
+        resolve_raw_authority_blocker,
+    )
+
+    archive_root = workspace_env["archive_root"]
+    db_path = archive_root / "source.db"
+    db_path.unlink(missing_ok=True)
+    digest = "a1" * 32
+    plan_snapshot = {
+        "plan_id": f"raw-replay:{digest}",
+        "input_digest": digest,
+        "input_raw_ids": ["v45-raw"],
+        "logical_keys": ["codex-session:v45"],
+        # A frontier witness with no judgment assertion: resolution is
+        # admitted from the blocker's own snapshot, which is exactly the
+        # authority this migration must preserve.
+        "authority_witness": {"schema": "polylogue.raw-authority-frontier-plan.v1"},
+        "source_preconditions": {},
+        "index_preconditions": {},
+    }
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SOURCE_DDL)
+        reset_source_fixture_to_version(conn, 45)
+        conn.execute("PRAGMA user_version = 45")
+        conn.execute(
+            """
+            INSERT INTO raw_authority_censuses (
+                census_id, sequence_no, scope_json, residual_json, parser_fingerprint,
+                mode, lifecycle_status, quiescent, inventory_digest, residual_digest,
+                plan_count, executable_plan_count, residual_plan_count, created_at_ms
+            ) VALUES ('v45-census', 1, '{}', '{}', 'fingerprint-v45', 'census', 'planned',
+                      1, ?, ?, 0, 0, 0, 1)
+            """,
+            ("a" * 64, "b" * 64),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_plans (
+                plan_id, input_digest, input_raw_ids_json, logical_keys_json,
+                authority_witness_json, source_preconditions_json,
+                index_preconditions_json, created_at_ms
+            ) VALUES (?, ?, '["v45-raw"]', '["codex-session:v45"]', ?, '{}', '{}', 1)
+            """,
+            (plan_snapshot["plan_id"], digest, json.dumps(plan_snapshot["authority_witness"])),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_blockers (
+                blocker_id, plan_id, census_id, reason, expected_json, observed_json, created_at_ms
+            ) VALUES ('v45-blocker', ?, 'v45-census', 'fixture obligation', ?, '{}', 1)
+            """,
+            (plan_snapshot["plan_id"], json.dumps(plan_snapshot)),
+        )
+        conn.commit()
+
+    manifest = _verified_backup_manifest(tmp_path / "source-v45-backup")
+    with sqlite3.connect(db_path) as migrated:
+        migrated.execute("PRAGMA foreign_keys = ON")
+        result = migrate_archive_tier(migrated, ArchiveTier.SOURCE, backup_manifest=manifest)
+        assert result.from_version == 45
+        assert result.applied_versions == (46,)
+
+        assert migrated.execute(
+            "SELECT blocker_id, plan_input_digest, observed_pass_id, reason, expected_json FROM raw_authority_blockers"
+        ).fetchall() == [
+            ("v45-blocker", digest, "v45-census", "fixture obligation", json.dumps(plan_snapshot)),
+        ]
+        # The blocker no longer references either retired parent at all.
+        assert migrated.execute("PRAGMA foreign_key_list(raw_authority_blockers)").fetchall() == []
+        assert {row[1] for row in migrated.execute("PRAGMA table_info(raw_authority_blockers)")} == {
+            "blocker_id",
+            "plan_input_digest",
+            "observed_pass_id",
+            "reason",
+            "expected_json",
+            "observed_json",
+            "created_at_ms",
+            "resolved_at_ms",
+            "resolution",
+        }
+        # The open-blocker uniqueness invariant survives, re-expressed.
+        assert (
+            migrated.execute("SELECT sql FROM sqlite_master WHERE name = 'idx_raw_authority_blockers_open_plan'")
+            .fetchone()[0]
+            .count("plan_input_digest")
+            == 1
+        )
+        assert migrated.execute("PRAGMA foreign_key_check").fetchall() == []
+
+        with sqlite3.connect(":memory:") as fresh:
+            fresh.executescript(SOURCE_DDL)
+            fresh.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+            parity = migration_runner.prove_durable_fresh_ddl_parity(
+                ArchiveTier.SOURCE,
+                SOURCE_SCHEMA_VERSION,
+                migrated_connection=migrated,
+                fresh_connection=fresh,
+                evidence_ref="test:source-v46:blocker-rekey-parity",
+            )
+        assert parity.matches, parity
+
+    # THE POINT: drop both retired parents and the blocker is still whole,
+    # still discoverable, and still resolvable.
+    with sqlite3.connect(db_path) as amputated:
+        amputated.executescript(
+            """
+            DROP TABLE raw_authority_census_post_plans;
+            DROP TABLE raw_authority_census_plans;
+            DROP TABLE raw_authority_censuses;
+            DROP TABLE raw_authority_plans;
+            """
+        )
+        amputated.commit()
+        assert amputated.execute("PRAGMA foreign_key_check").fetchall() == []
+
+    described = describe_raw_authority_blocker(archive_root, "v45-blocker")
+    assert described is not None
+    assert described["plan_id"] == plan_snapshot["plan_id"]
+    assert described["kind"] == "frontier_obligation"
+
+    listed = list_unresolved_raw_authority_blockers(archive_root)
+    listed_blockers = listed["blockers"]
+    assert isinstance(listed_blockers, list)
+    assert [cast(dict[str, object], entry)["blocker_id"] for entry in listed_blockers] == ["v45-blocker"]
+
+    summary = resolve_raw_authority_blocker(
+        archive_root, "v45-blocker", resolution="operator acknowledged current evidence"
+    )
+    assert summary["superseded_plan_id"] == plan_snapshot["plan_id"]
+    assert cast(dict[str, object], summary["current_plan"])["input_digest"] == digest
+    with sqlite3.connect(db_path) as resolved:
+        assert (
+            resolved.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NOT NULL").fetchone()[
+                0
+            ]
+            == 1
+        )

@@ -1112,6 +1112,7 @@ def _seed_raw_authority_blocker(
             raw_id=raw_id,
         )
     witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
+    input_digest = hashlib.sha256(plan_id.encode("utf-8")).hexdigest()
     observed_json = json.dumps({"judgment_assertion_id": judgment_assertion_id}) if judgment_assertion_id else "{}"
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -1139,15 +1140,36 @@ def _seed_raw_authority_blocker(
                 created_at_ms
             ) VALUES (?, ?, ?, '[]', ?, '{}', '{}', 1000)
             """,
-            (plan_id, "e" * 64, json.dumps([raw_id]), json.dumps({"schema": witness_schema})),
+            (plan_id, input_digest, json.dumps([raw_id]), json.dumps({"schema": witness_schema})),
         )
+        # polylogue-5dzj9: the blocker is keyed on the plan's content address
+        # and carries the plan snapshot itself -- that snapshot, not a join
+        # into raw_authority_plans, is what every reader now resolves against.
         conn.execute(
             """
             INSERT INTO raw_authority_blockers (
-                blocker_id, plan_id, census_id, reason, expected_json, observed_json, created_at_ms
-            ) VALUES (?, ?, ?, ?, '{}', ?, 1000)
+                blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
+                observed_json, created_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, 1000)
             """,
-            (blocker_id, plan_id, census_id, reason, observed_json),
+            (
+                blocker_id,
+                input_digest,
+                census_id,
+                reason,
+                json.dumps(
+                    {
+                        "plan_id": plan_id,
+                        "input_digest": input_digest,
+                        "input_raw_ids": [raw_id],
+                        "logical_keys": [],
+                        "authority_witness": {"schema": witness_schema},
+                        "source_preconditions": {},
+                        "index_preconditions": {},
+                    }
+                ),
+                observed_json,
+            ),
         )
         conn.commit()
 
