@@ -103,3 +103,69 @@ def test_status_identity_probe_names_stale_derived_tier(tmp_path: Path) -> None:
         connection.execute("INSERT INTO schema_identity VALUES ('index', 'stale-identity')")
 
     assert _derived_identity_mismatches({"index": index, "ops": tmp_path / "ops.db"}) == ["index"]
+
+
+def test_derived_tier_refusal_reaches_daemon_status_and_readiness(tmp_path: Path) -> None:
+    """polylogue-b5l AC2: a refused derived tier is visible in status, not only the log.
+
+    ``schema_refusal_status_component`` had no caller anywhere, so a rebuilding
+    derived tier reached the read path's typed refusal and nothing else. The
+    ops tier is the reachable case: it is attached without identity validation,
+    so status observes the skew instead of failing to open.
+
+    Anti-vacuity: drop the ``_derived_tier_refusals`` wiring from
+    ``produce_direct_status`` (or let it report the tier as merely
+    version-mismatched) and the ``derived:ops`` component, the
+    ``derived_degradation`` evidence, and the false ``ok`` all disappear.
+    """
+
+    from polylogue.operations.daemon_status import produce_direct_status
+    from polylogue.operations.operation_context import open_operation_read
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "ops.db") as connection:
+        expected = str(connection.execute("SELECT identity FROM schema_identity WHERE tier = 'ops'").fetchone()[0])
+        connection.execute("UPDATE schema_identity SET identity = 'stale-identity' WHERE tier = 'ops'")
+
+    with open_operation_read(tmp_path) as pinned:
+        payload = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000)
+
+    degradation = payload["derived_degradation"]
+    assert isinstance(degradation, list) and len(degradation) == 1
+    details = degradation[0]
+    assert details["code"] == "schema_skew"
+    assert details["affected_tier"] == "ops"
+    assert details["expected_identity"] == expected
+    assert details["actual_identity"] == "stale-identity"
+    assert details["route"] == "daemon_convergence"
+    # The refusal never fabricates progress it could not measure.
+    assert details["completion_estimate"]["state"] == "unknown"
+
+    components = payload["component_readiness"]
+    assert isinstance(components, dict)
+    component = components["derived:ops"]
+    assert component["state"] == "degraded"
+    assert component["repair_hint"] == "daemon convergence"
+    assert payload["ok"] is False
+
+
+def test_healthy_derived_tiers_report_no_refusal(tmp_path: Path) -> None:
+    """The refusal branch must stay silent on an intact archive.
+
+    Anti-vacuity: report every tier as refused and this fails, proving the test
+    above does not pass for a blanket reason.
+    """
+
+    from polylogue.operations.daemon_status import produce_direct_status
+    from polylogue.operations.operation_context import open_operation_read
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        payload = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000)
+
+    assert payload["derived_degradation"] == []
+    components = payload["component_readiness"]
+    assert isinstance(components, dict)
+    assert not [name for name in components if name.startswith("derived:")]

@@ -224,3 +224,31 @@ def test_embedding_status_preserves_supplied_key_without_guessing_missing_settin
     assert embeddings["config_enabled"] is None
     assert embeddings["daemon_stage_enabled"] is None
     assert embeddings["monthly_cost_cap_usd"] is None
+
+
+def test_active_archive_root_match_is_compared_not_asserted(tmp_path: Path) -> None:
+    """polylogue-bu47u: the direct payload hardcoded ``True`` for this comparison.
+
+    The honest comparison already existed in ``cli/commands/paths.py``; the
+    status producer published a literal instead, so an active index served from
+    somewhere other than the configured root still reported as matching.
+
+    Anti-vacuity: restore ``"active_archive_root_matches_configured": True``
+    and the redirected case below stays True, so this fails. The first
+    assertion fails if the comparison is inverted or always False.
+    """
+
+    bootstrap_archive_root(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        matching = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000)
+        assert matching["active_archive_root_matches_configured"] is True
+        assert matching["active_archive_root"] == str(tmp_path)
+
+        # The store's own declared active index moves to a promoted generation
+        # directory inside the same configured root.
+        pinned.archive.index_db_path = tmp_path / "generations" / "g2" / "index.db"
+        redirected = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000)
+
+    assert redirected["active_archive_root_matches_configured"] is False
+    assert redirected["active_archive_root"] == str(tmp_path / "generations" / "g2")
+    assert redirected["archive_root"] == str(tmp_path)

@@ -67,6 +67,14 @@ def produce_direct_status(
     from polylogue.storage.archive_readiness import archive_readiness_status_from_connections
 
     index_conn = _required_index_connection(archive)
+    # The pinned snapshot names both roots: the configured archive root and the
+    # directory the served index actually lives in.  Hardcoding the match made
+    # a redirected/shadow active index report as the configured one
+    # (polylogue-bu47u); this is the same comparison
+    # ``cli/commands/paths.py`` publishes, computed from the snapshot alone so
+    # this producer still resolves nothing.
+    configured_root = Path(archive.archive_root)
+    active_root = Path(archive.index_db_path).parent
     source_conn = _source_connection(archive)
     ops_conn = _attached_connection(index_conn, "ops_tier")
     archive_stats = archive.stats().to_dict()
@@ -136,6 +144,11 @@ def produce_direct_status(
         component_from_raw_materialization_readiness=component_from_raw_materialization_readiness,
         component_from_raw_frontier_integrity=component_from_raw_frontier_integrity,
     )
+    derived_refusals = _derived_tier_refusals(tiers)
+    for refusal in derived_refusals:
+        component = refusal["component"]
+        assert isinstance(component, dict)
+        components[str(component["component"])] = component
     missing_tiers = [name for name, info in tiers.items() if not info["exists"]]
     mismatched_tiers = [
         name
@@ -182,6 +195,20 @@ def produce_direct_status(
             determinate=search_component.get("state") != "unknown",
         ),
     ]
+    for refusal in derived_refusals:
+        details = refusal["details"]
+        assert isinstance(details, dict)
+        derived_domains.append(
+            DerivedDomainReadiness(
+                domain=f"derived_schema:{details['tier']}",
+                ready=False,
+                summary=(
+                    f"{details['tier']} derived tier is rebuilding ({details['code']}); "
+                    "reads are refused until daemon convergence re-establishes the stamped identity"
+                ),
+                determinate=True,
+            )
+        )
     if embedding_status.get("config_enabled") is True:
         derived_domains.append(
             DerivedDomainReadiness(
@@ -212,9 +239,9 @@ def produce_direct_status(
     payload: dict[str, object] = {
         "ok": _status_ok(components, raw_failures),
         "daemon_liveness": False,
-        "archive_root": str(archive.archive_root),
-        "active_archive_root": str(archive.archive_root),
-        "active_archive_root_matches_configured": True,
+        "archive_root": str(configured_root),
+        "active_archive_root": str(active_root),
+        "active_archive_root_matches_configured": _same_directory(configured_root, active_root),
         "db_exists": "index" not in archive.operation_degraded_components,
         "active_db_path": str(archive.index_db_path),
         "config_exists": config is not None,
@@ -238,10 +265,60 @@ def produce_direct_status(
         "next_action": "runtime diagnostics not observed from pinned archive",
         "diagnostic": {"kind": "not_observed", "reason": "CLI first-run diagnostics excluded from pinned status"},
         "archive_stats": archive_stats,
+        # A derived tier the runtime refuses to serve must be visible in status
+        # and readiness, not only in the read path's typed error
+        # (polylogue-b5l AC2).  Empty list = no refusal observed on this
+        # snapshot; it is never omitted.
+        "derived_degradation": [refusal["details"] for refusal in derived_refusals],
     }
     payload.update(archive_stats)
     payload.update(raw_failures)
     return normalize_raw_frontier_status_payload(payload, snapshot_state="pinned")
+
+
+def _same_directory(left: Path, right: Path) -> bool:
+    """Compare two directories by resolved path, tolerating an unresolvable one."""
+
+    resolved_left, resolved_right = left, right
+    with suppress(OSError):
+        resolved_left = left.resolve()
+    with suppress(OSError):
+        resolved_right = right.resolve()
+    return resolved_left == resolved_right
+
+
+def _derived_tier_refusals(tiers: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
+    """Project every refused derived tier into status/readiness evidence.
+
+    ``daemon/derived_degradation`` already owns the refusal vocabulary for the
+    read path.  Status re-derives the same typed error from the pinned tier
+    inventory so one refusal cannot be described two ways.
+    """
+
+    from polylogue.core.errors import SchemaRefusalError, SchemaSkewError, SchemaVersionMismatchError
+    from polylogue.daemon.derived_degradation import schema_refusal_details, schema_refusal_status_component
+
+    refusals: list[dict[str, object]] = []
+    for name in ("index", "ops"):
+        info = tiers.get(name)
+        if not isinstance(info, Mapping) or not info.get("exists"):
+            continue
+        identity_status = info.get("identity_status")
+        exc: SchemaRefusalError | None = None
+        if isinstance(identity_status, Mapping) and identity_status.get("status") not in (None, "ok"):
+            exc = SchemaSkewError(name, identity_status.get("expected"), identity_status.get("actual"))
+        elif info.get("version_status") == "mismatch":
+            exc = SchemaVersionMismatchError(
+                f"{name} tier schema version cannot be served by this runtime",
+                current_version=int(info.get("user_version") or 0),
+                expected_version=int(info.get("expected_user_version") or 0),
+            )
+        if exc is None:
+            continue
+        exc.tier = name  # type: ignore[attr-defined]
+        details = schema_refusal_details(exc)
+        refusals.append({"details": details, "component": schema_refusal_status_component(details)})
+    return refusals
 
 
 def produce_operation_status(
