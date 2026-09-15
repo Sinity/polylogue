@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from devtools import verify_slos
+from devtools.pytest_slot import SlotOutcome
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CATALOG_PATH = REPO_ROOT / "docs" / "plans" / "slo-catalog.yaml"
@@ -42,39 +43,100 @@ INTERACTIVE_SURFACES = (
 )
 
 
-def test_benchmark_runner_uses_private_basetemp_despite_inherited_tmpfs(
+def test_benchmark_runner_goes_through_the_managed_pytest_harness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The SLO lane must reach pytest through the harness, not a bare subprocess.
+
+    Anti-vacuity: restore the ``subprocess.run`` launch and no ``run_pytest``
+    call is recorded, so the stub never writes the measurement file and
+    ``_run_benchmarks`` raises instead of returning stats. That bare launch is
+    exactly what ``refuse_bare_pytest`` rejects inside an agent job.
+    """
     inherited_env = {
         "POLYLOGUE_VERIFY_RUN_ID": "verify-run-123",
         "POLYLOGUE_PYTEST_RUN_ID": "verify-run-123",
-        "POLYLOGUE_PYTEST_TMPFS": "1",
-        "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
-        "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/dev/shm/inherited-benchmark",
+        "AGENTCTL_PRINCIPAL": "agent-control",
     }
     monkeypatch.setattr(os, "environ", inherited_env)
-    captured: dict[str, object] = {}
     captured_command: list[str] = []
+    captured_root: list[Path] = []
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run_pytest(
+        command: list[str], *, cwd: str, env: dict[str, str], root: Path, stdout: object = None
+    ) -> SlotOutcome:
         captured_command.extend(command)
-        captured["env"] = kwargs["env"]
-        basetemp = Path(next(argument.split("=", 1)[1] for argument in command if argument.startswith("--basetemp=")))
-        assert basetemp.parent.is_dir()
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        captured_root.append(root)
+        json_path = Path(next(a.split("=", 1)[1] for a in command if a.startswith("--benchmark-json=")))
+        json_path.write_text(json.dumps({"benchmarks": []}), encoding="utf-8")
+        return SlotOutcome(returncode=0, slot="agentctl job 1")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    def forbidden_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the SLO lane must not launch pytest itself")
+
+    monkeypatch.setattr(subprocess, "run", forbidden_run)
+    monkeypatch.setattr(verify_slos, "run_pytest", fake_run_pytest)
 
     assert verify_slos._run_benchmarks({"tests/benchmarks/test_reader_api.py::test_bench_reader_status"}) == {}
-    assert captured["env"] == {
-        "POLYLOGUE_VERIFY_RUN_ID": "verify-run-123",
-        "POLYLOGUE_PYTEST_RUN_ID": "verify-run-123",
-        "POLYLOGUE_PYTEST_TMPFS": "1",
-        "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
-        "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/dev/shm/inherited-benchmark",
-    }
-    assert any(argument.startswith("--basetemp=") for argument in captured_command)
+    assert captured_root == [verify_slos.ROOT]
+    basetemp = Path(next(a.split("=", 1)[1] for a in captured_command if a.startswith("--basetemp=")))
+    assert verify_slos.BENCHMARK_SCRATCH.as_posix() in basetemp.as_posix()
     assert any(captured_command[index : index + 2] == ["-m", "benchmark"] for index in range(len(captured_command) - 1))
+
+
+def test_refused_benchmark_launch_is_not_reported_as_missing_surfaces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run the harness refused must read as a refusal, not as absent benchmarks.
+
+    Anti-vacuity: route the refusal back into ``missing_required`` /
+    ``uncovered_informational`` and this fails — the payload would name two
+    missing surfaces and carry no ``benchmark_error``.
+    """
+    catalog = _write_slo_catalog(
+        tmp_path,
+        """
+surfaces:
+  reader:
+    description: "Reader endpoint"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader"
+    p50_ms: 100
+    p95_ms: 200
+    gate: "required"
+  cli_status_cold:
+    description: "Cold CLI status"
+    benchmark_test: "tests/benchmarks/test_cli_cold.py::test_bench_cold"
+    p50_ms: 500
+    p95_ms: 800
+    gate: "informational"
+""",
+    )
+
+    def refuse(_ids: set[str]) -> dict[str, dict[str, float]]:
+        raise verify_slos.BenchmarkRunUnavailableError("the managed pytest harness would not start the run: no slot")
+
+    monkeypatch.setattr(verify_slos, "_run_benchmarks", refuse)
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc != 0
+    assert payload["blocking"] is True
+    assert "would not start the run" in payload["benchmark_error"]
+    assert payload["missing_required"] == []
+    assert payload["uncovered_informational"] == []
+    assert {entry["surface"] for entry in payload["unmeasured"]} == {"reader", "cli_status_cold"}
+    assert all(entry["reason"] == "the benchmark run did not execute" for entry in payload["unmeasured"])
+
+    plain = io.StringIO()
+    with redirect_stdout(plain):
+        verify_slos.main(["--yaml", str(catalog)])
+    text = plain.getvalue()
+    assert "BENCHMARKS DID NOT RUN:" in text
+    assert "MISSING REQUIRED" not in text
 
 
 def test_catalog_exists_and_covers_required_surfaces() -> None:
