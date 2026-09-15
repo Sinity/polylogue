@@ -11,6 +11,9 @@ substrate" half of the rigor program (docs/design/analysis-rigor.md):
 - :mod:`uncertainty` -- exactness-gated interval rendering; bootstrap CIs
   apply only to sampled/estimated results, never to exact enumeration
   (rxdo.9.8).
+- :mod:`outcome_coverage` -- coverage-gated tool-outcome aggregates; a bare
+  success-rate scalar is refused below a declared coverage floor and the
+  aggregate reports ``degraded`` with the gap named (polylogue-cuxz.4 AC4).
 - :mod:`alert_budget` -- standing-query alert cooldown/magnitude-floor/
   budget policy, the multiple-looks guard for rxdo.5 (rxdo.9.5).
 - :mod:`evidence_ancestry` -- read-side evidence-graph ancestry walker:
@@ -29,6 +32,12 @@ wires up -- each such module says so explicitly in its docstring.
 
 from __future__ import annotations
 
+from polylogue.analysis.measurement.outcome_coverage import (
+    COVERAGE_BELOW_FLOOR,
+    TOOL_OUTCOME_COVERAGE_FLOOR,
+    ToolOutcomeAggregate,
+    build_tool_outcome_aggregate,
+)
 from polylogue.analysis.measurement.registry import (
     MeasurePlan,
     MeasureRegistry,
@@ -38,4 +47,15 @@ from polylogue.analysis.measurement.registry import (
     compose_measure,
 )
 
-__all__ = ["MeasurePlan", "MeasureRegistry", "MeasureResult", "MeasureSpec", "MeasureValidityError", "compose_measure"]
+__all__ = [
+    "COVERAGE_BELOW_FLOOR",
+    "TOOL_OUTCOME_COVERAGE_FLOOR",
+    "MeasurePlan",
+    "MeasureRegistry",
+    "MeasureResult",
+    "MeasureSpec",
+    "MeasureValidityError",
+    "ToolOutcomeAggregate",
+    "build_tool_outcome_aggregate",
+    "compose_measure",
+]
