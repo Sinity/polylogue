@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from io import StringIO
 from pathlib import Path
 from typing import cast
@@ -473,18 +474,63 @@ def test_import_contract_guard_rejects_missing_source_path(tmp_path: Path) -> No
     assert "does not exist" in result.output.lower() or "no such" in result.output.lower()
 
 
+def _supported_import_payload() -> dict[str, object]:
+    """A minimal ChatGPT-shaped export that import admissibility accepts."""
+    return {
+        "id": "contract-guard-fixture",
+        "conversation_id": "contract-guard-fixture",
+        "title": "Contract guard fixture",
+        "create_time": 1704067200.0,
+        "current_node": "root",
+        "mapping": {
+            "root": {
+                "id": "root",
+                "message": {
+                    "id": "root-message",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hello"]},
+                },
+                "children": [],
+            }
+        },
+    }
+
+
 def test_import_contract_guard_requires_daemon_acceptance(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
-    """`daemon_accepts_schedule` refuses to claim success on unreachable daemon."""
+    """`daemon_accepts_schedule` refuses to claim success on unreachable daemon.
+
+    The source must be admissible. ``import`` runs the local
+    ``import_source_admissibility`` preflight *before* it submits the declared
+    ``ingest`` operation, so a placeholder ``{}`` is refused by that earlier
+    guard and never reaches the daemon-acceptance guard under test here.
+
+    The assertion is on the typed terminal outcome (the ``error`` exit code)
+    and on the absence of any archived session, not on the refusal prose:
+    per CLAUDE.md a test does not pin natural-language wording.
+
+    Anti-vacuity: restore a CLI-side local ingest fallback, or let the command
+    claim success when no daemon answered, and the exit code becomes 0 --
+    verified by reverting, see the PR.
+    """
     _assert_contract_declares_guard(("import",), "daemon_accepts_schedule")
 
+    from polylogue.operations.import_operations import import_source_admissibility
+    from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
+
     source = tmp_path / "session.json"
-    source.write_text("{}", encoding="utf-8")
+    source.write_text(json.dumps(_supported_import_payload()), encoding="utf-8")
+    assert import_source_admissibility(source).admissible, "fixture must reach the daemon guard"
 
     result = CliRunner().invoke(cli, ["import", str(source), "--daemon-url", "http://127.0.0.1:9"])
 
-    assert result.exit_code != 0
-    assert "Could not reach daemon" in result.output
-    assert "polylogued run" in result.output
+    assert result.exit_code == OUTCOME_EXIT_CODES["error"], result.output
+
+    archived = sqlite3.connect(workspace_env["archive_root"] / "index.db")
+    try:
+        (session_count,) = archived.execute("SELECT count(*) FROM sessions").fetchone()
+    finally:
+        archived.close()
+    assert session_count == 0, "the refused import must not have been written by the CLI"
 
 
 def test_config_contract_guard_redacts_secret_values(tmp_path: Path, monkeypatch: object) -> None:

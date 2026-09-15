@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 from typing import cast
 
+import pytest
 from click.testing import CliRunner
 
 from polylogue.api import Polylogue
@@ -16,6 +17,7 @@ from polylogue.cli import cli
 from polylogue.cli.commands.note import MAX_NOTE_STDIN_BYTES
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.surfaces.payloads import AssertionCandidateReviewListPayload, PublicRefResolutionPayload
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -202,15 +204,29 @@ def test_terminal_note_is_visible_to_the_real_pending_candidate_reader(cli_works
 
 
 def test_terminal_note_idempotency_survives_root_judgment_canary_route(
-    cli_workspace: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Production CLI capture -> root judge -> replay preserves one lifecycle.
+
+    ``judge`` lowers its review to the declared ``mutation.judgment.record``
+    operation and the daemon is the only writer (CLI operation authority,
+    S10/S11), so a canary that wants to observe what the judgment *does* has
+    to supply the daemon the command requires. ``cli_daemon_archive`` runs a
+    real operation runtime behind the socket the CLI probes; the refusal when
+    no daemon answers is pinned separately in
+    ``tests/unit/cli/test_cli_operation_authority.py``.
 
     Anti-vacuity: random capture ids, overwriting a terminal candidate on
     replay, bypassing root ``judge``, or omitting the promotion evidence and
     context policy makes this test fail.
     """
 
+    with cli_daemon_archive(tmp_path / "archive", monkeypatch, home=tmp_path / "home") as stack:
+        _canary_lifecycle({"archive_root": stack.archive_root, "db_path": stack.archive_root / "index.db"})
+
+
+def _canary_lifecycle(cli_workspace: dict[str, Path]) -> None:
     session = SessionBuilder(cli_workspace["db_path"], "terminal-note-canary").provider("codex")
     session.save()
     session_ref = f"session:{session.native_session_id()}"

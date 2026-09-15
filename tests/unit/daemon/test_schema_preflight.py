@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -202,10 +203,60 @@ def test_schema_dedup_window_is_one_minute() -> None:
 
 
 class _StubCursor:
-    """Minimal cursor double for LiveBatchProcessor.ingest_files."""
+    """Minimal cursor double for LiveBatchProcessor.ingest_files.
+
+    ``ops_write_scope`` mirrors the real
+    :meth:`polylogue.sources.live.cursor.CursorStore.ops_write_scope`
+    contract (#5169) rather than being a no-op: it is thread-local, it
+    re-enters by depth, and it flushes whatever was buffered on *every* exit
+    path, including an exception. A no-op double would silently accept a
+    regression that drops the scope-exit flush, which is the one behaviour the
+    real scope exists to guarantee.
+    """
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
+        self._ops_scope = threading.local()
+        self.completed_scopes = 0
+        self.flushed_stage_events: list[str] = []
+
+    @contextmanager
+    def ops_write_scope(self) -> Iterator[None]:
+        state = self._ops_scope
+        if getattr(state, "depth", 0):
+            state.depth += 1
+            try:
+                yield
+            finally:
+                state.depth -= 1
+            return
+        state.depth = 1
+        state.thread = threading.get_ident()
+        state.pending = []
+        try:
+            yield
+        finally:
+            assert state.thread == threading.get_ident(), "ops scope left on a different thread"
+            pending = state.pending
+            state.pending = []
+            state.depth = 0
+            self.flushed_stage_events.extend(pending)
+            self.completed_scopes += 1
+
+    def record_ingest_stage_event(self, attempt_id: str, *, phase: str, **kwargs: object) -> None:
+        state = self._ops_scope
+        if getattr(state, "depth", 0):
+            state.pending.append(phase)
+        else:
+            self.flushed_stage_events.append(phase)
+
+    def assert_scopes_balanced(self, *, at_least: int = 1) -> None:
+        """Every entered scope was left, on its own thread, having flushed."""
+        assert getattr(self._ops_scope, "depth", 0) == 0, "ops write scope was left open"
+        assert not getattr(self._ops_scope, "pending", []), "buffered stage events were never flushed"
+        assert self.completed_scopes >= at_least, (
+            f"expected at least {at_least} completed ops write scope(s), saw {self.completed_scopes}"
+        )
 
     def begin_ingest_attempt(self, **kwargs: object) -> str:
         return "attempt-stub"
@@ -269,6 +320,7 @@ async def test_ingest_files_short_circuits_when_degraded(tmp_path: Path) -> None
     assert metrics.succeeded_file_count == 0
     assert metrics.failed_file_count == 0
     assert metrics.skipped_file_count == len(files)
+    cursor.assert_scopes_balanced()
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +427,9 @@ async def test_ingest_files_short_circuits_under_burst_after_degraded(
     # full-parse path because the degraded gate fired first.
     assert total_read == 0
     assert db_path.stat().st_size == db_size_before
+    # Each batch is one bounded ops.db write scope, entered and left inside
+    # the batch: five batches, five completed scopes, none carried across.
+    cursor.assert_scopes_balanced(at_least=5)
 
 
 @pytest.mark.asyncio
@@ -423,6 +478,9 @@ async def test_live_batch_marks_structural_database_error_degraded(
     assert second.source_payload_read_bytes == 0
     assert second.full_file_count == 0
     assert second.skipped_file_count == 1
+    # The first batch left its scope through a raised DatabaseError; the
+    # stub's flush-on-every-exit-path assertion holds for both batches.
+    cursor.assert_scopes_balanced(at_least=2)
 
 
 def test_schema_version_health_tolerates_missing_disposable_tier(
