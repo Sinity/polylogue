@@ -4,9 +4,11 @@ name: Verify
 # green PR check there does not mean tests ran; this job runs `devtools verify`
 # on the workstation runner, where pytest goes through the host's single
 # `pytest` pueue slot automatically.
-# On demand only. Candidates land on the quick gate; the corpus runs once per
-# landing wave and nightly through agentctl's verify_all, which owns the host
-# pytest pool. A push trigger queued one host pytest run per merge.
+# On demand only. Candidates land on the quick gate; the scheduled corpus run is
+# agentctl's `verify_all`, which declares `schedule = "*-*-* 03:00"` in
+# .agentctl/project.toml and owns the host pytest pool on the master checkout.
+# This workflow is the manual route to the same evidence. A push trigger queued
+# one host pytest run per merge.
 on:
   workflow_dispatch:
 
