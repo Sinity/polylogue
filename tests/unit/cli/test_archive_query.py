@@ -1256,7 +1256,7 @@ class TestDaemonSearchEnvelopeHonestPagination:
         def _capture(envelope: dict[str, object], *args: object, **kwargs: object) -> None:
             captured.update(envelope)
 
-        with patch("polylogue.cli.archive_query._emit_rows", _capture):
+        with patch("polylogue.cli.render.rows.emit_rows", _capture):
             _emit_daemon_search_payload(
                 payload,
                 query="sqlite",
