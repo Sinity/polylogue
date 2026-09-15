@@ -1,10 +1,12 @@
 {
   "artifact_counts": {
-    "session_document": 2818
+    "export_asset": 465,
+    "export_asset_index": 2368,
+    "session_document": 2810
   },
   "cluster_count": 0,
   "clusters": [],
-  "default_version": "v3",
-  "generated_at": "2026-09-08T18:49:11.876182+00:00",
+  "default_version": "v4",
+  "generated_at": "2026-09-15T21:33:27.371398+00:00",
   "provider": "chatgpt"
 }

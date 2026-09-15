@@ -7,6 +7,12 @@
       "reason": "provider has no executable persisted schema element"
     },
     {
+      "decision": "unsupported",
+      "origin": "antigravity-session",
+      "provider": "antigravity",
+      "reason": "provider has no executable persisted schema element"
+    },
+    {
       "decision": "nonrepresentable",
       "origin": "chatgpt-export",
       "provider": "chatgpt",
@@ -22,6 +28,12 @@
       "decision": "nonrepresentable",
       "origin": "claude-code-session",
       "provider": "claude-code",
+      "reason": "provider has no executable persisted schema element"
+    },
+    {
+      "decision": "unsupported",
+      "origin": "claude-design-session",
+      "provider": "claude-design",
       "reason": "provider has no executable persisted schema element"
     },
     {
@@ -45,37 +57,47 @@
   ],
   "input_manifests": [
     {
-      "digest": "abca2298e0cf0dcc3b70b812d8205cee5197bae2518f777843ccae56f959bb71",
+      "digest": "de3b447d22e2014f7e65301adc39617ee8ee22b038ee7cb25594a1aa6ef4b4a0",
+      "provider": "antigravity",
+      "unavailable_reason": null
+    },
+    {
+      "digest": "bbf4f38203d481c7da8e4a25fdf58c564a070e400e042d83fa22316fb9f7adc4",
       "provider": "chatgpt",
       "unavailable_reason": null
     },
     {
-      "digest": "b11dd29a64e3e68d9823cb49ab7b102ac96ca06b90fe6efafa0274b5c25b0a68",
+      "digest": "0cefc38f7e7c71c23b1c53c5020bd47f107d61b5542e3b239759b3804113090d",
       "provider": "claude-ai",
       "unavailable_reason": null
     },
     {
-      "digest": "45a25dea6ecada8a3f143929601d827197ca71b29574eaa85286bd755dd07328",
+      "digest": "5188df462b7265712c565e6bb1d9848d44ebad24995d2a6882145190dd81be9a",
       "provider": "claude-code",
       "unavailable_reason": null
     },
     {
-      "digest": "3867497171b0dfa95958cdd87d5c16dd8b19cd3df2f41285e495d2d7349220ce",
+      "digest": "1ed3e1e0c6adf1e9a6a0b8e54efad354b734a5c8e765c1073eaf82cbbd6aec59",
+      "provider": "claude-design",
+      "unavailable_reason": null
+    },
+    {
+      "digest": "dcccac34ed7056eb5167d7bb1990d9d944dcac649f3087eed283f969832e0c91",
       "provider": "codex",
       "unavailable_reason": null
     },
     {
-      "digest": "c533fff1c64a9efbe5fc0b9081007c4bfc1e4d4b5524d6eb981057460c4d9614",
+      "digest": "666504342e97832bbaabc388ac378d168b6658eaca40b4ea79a0f98b020824c1",
       "provider": "gemini",
       "unavailable_reason": null
     },
     {
-      "digest": "3b2e572b3ae9064118826ab20532a27b6356bc84e57e35171b968c5a60b3069b",
+      "digest": "9580b8a1143e000400ae3aa72f18b6021de9b1a9debf0e14699a690821b19dd2",
       "provider": "gemini-cli",
       "unavailable_reason": null
     },
     {
-      "digest": "c8c3090905a219754f23db59a05435f80b5d7ab72934ea10ddfa9d0b54ae9d61",
+      "digest": "45671ce25bff2b0bd70dc19256313e27017eca73e4064d6dcdd0cf93ee3b752f",
       "provider": "hermes",
       "unavailable_reason": null
     }
@@ -84,118 +106,246 @@
     {
       "element_hashes": [
         {
-          "content_hash": "ead07e6d17e9e9bfaa236dc70b47e8aa41694eebd80379181ce7f8b6ee887874",
+          "content_hash": "2710e9d2d4bdc407dee2da348a7df8869b6e6c0c00fe048c017c48ca837ae3e7",
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "16bc88014361b640a1fa1070520f1ea24a3f8fb2c570ae35775d2cef8340dc5c",
+      "package_hash": "6529f5708e8c149706656cebb30a9c11293231a296b91e08e998b754e37f6fee",
+      "package_version": "v1",
+      "provider": "antigravity",
+      "version_hash": "c96e233e4c883b90b3ee790fce6c5371190931af7d1ad23285086150cf7e3805"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "41f6dbef45f3a0578edbae0773f5dda916da050bc63bce1bf314a134c76c4476",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "a306324a17e4242a8b80555c609fdd13aada8ec46c119035715d58d69e6e1104",
+      "package_version": "v2",
+      "provider": "antigravity",
+      "version_hash": "50e30666ca99c5499a533e21320ae34c953d9547aef3d06bc92ca205b6b0b0e2"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "b07dc99fddd9029f81a5cb082f8b9ae2a84af2ca7adb6cf8d3da2655a6e96c4f",
+          "element_kind": "agent_sidecar_meta"
+        }
+      ],
+      "package_hash": "55a9d382d8e808b83edb6a49beb1dc7e47df753fa83e878e21f52a1013e49ede",
+      "package_version": "v3",
+      "provider": "antigravity",
+      "version_hash": "a759582192a08cd6b574d6699efcb2091dfe025af0bd6f8ecfeb8b5a1905974f"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "3016d8d8d135da31b14ec9287281a168e7fe0f53c79fdf448c17830698db32ce",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "fad7f060c6ca45a01e34347976a52901e835f8125749af230459a0bef7d9594b",
       "package_version": "v1",
       "provider": "chatgpt",
-      "version_hash": "2bdc175470dc7bd684f558af92100140032117710401a6ff12a00de72781edf4"
+      "version_hash": "8f01e09159a340d05c56a2393c4cd2645dbc17bfcaf184ee51fdcf2e72125a48"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "2adcefc9b66105aed1482ded1aa0ddbc5ecaea25f705d420cf32a45892f277a2",
+          "content_hash": "62ab10f99edbc957cdee9509d7b341c240e83053e2484b28e66b94767387b6b0",
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "d12c9805512df46a15fdb84275f03fcf405a2cc27d4c0df9284470f9e47dde3e",
+      "package_hash": "36c9f1c4df46bde6835f7792035dbbc4e90fd1b98b19bc1b04936a59110c81e5",
       "package_version": "v2",
       "provider": "chatgpt",
-      "version_hash": "fdbf3d78df47bea70ddf3b8c70e551a8419fdbace8d5cfe4912d86cf42d52759"
+      "version_hash": "47f07fbcb0472d8251913a7c2c616105c844398ca173788b2ce2daae7cb30e9f"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "f3c3d8d95a712c10916be93da673ac735cb211f508e6150d607594a9a608ca36",
+          "content_hash": "053ef17e5dd44b3544984bec4470df7cbbde612da4b4c40cd06323c7a668fe16",
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "6a65f290904eae0994f0dabc9b85ef730204e94c2737f72593a6a29a6d22083c",
+      "package_hash": "37eff1b16c9790ce2099b20f6586c3f83a38dc9e1de774b24c016f258a9ad60f",
       "package_version": "v3",
       "provider": "chatgpt",
-      "version_hash": "eb7f5373c2985b846846bcbc9da00ba90bd9c6dfcd079b0bb921eed190e05f33"
+      "version_hash": "1bcda722e29c5f91845a2deb5655d8c78d0f241ae7cbe94f845330eab7a35324"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "f4509ab3678a4acb5eeb7e9db2088332f10cac157edd56713d2580d0e9b0415f",
+          "content_hash": "085e430d921e2a6bdabd42d59a271703cbfcc6e6eb2b3987318009ac7c5350ae",
+          "element_kind": "export_asset"
+        },
+        {
+          "content_hash": "ee3ac533081870aa47ef335fe6c604216312879df4c0698dc2cef9ffda616e2a",
+          "element_kind": "export_asset_index"
+        },
+        {
+          "content_hash": "d9f904ab5c8f82e84a89d00bd35176eb70bd481d1d06cf312c58f579d4ca1f30",
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "b0ac9bfb37953a29958786c040e8283c0614f3213d9cae449e3cd043defc6f56",
+      "package_hash": "c15392ad7b9044553d118406a09ec6244b1824c2981a2c933ab442e405f802a2",
+      "package_version": "v4",
+      "provider": "chatgpt",
+      "version_hash": "6481a39eb7b1ad41c6008e13efa5780111d2930f13eea78c132a7de684bf107b"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "3f768a212cb15e25ccf4e13b9215a381f50c4a16044fd7e80a0eb5fbe3488a57",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "adb60ce8d5c1753b03e61addbe0649e0044d205370113e6fe771aebeaed20f8b",
       "package_version": "v1",
       "provider": "claude-ai",
-      "version_hash": "91c62bb4b676e0ebde63b87e8fa9c0162527f7314ea00a35ad2808d77af6f21d"
+      "version_hash": "42d8a368ef71026b8b772bbaf783ca6100b0c2c03cba410dcf9a053978638f0a"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "3c4735f1e17111c99d2c5f518c6b6bf880e3ca2815d86b6020fd3ee78196af88",
+          "content_hash": "5efefe2b0c7a632452aa6b934cfeac8dad4a6c5517d19f3d601e50d6e75daf3b",
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "f4585fffd9865c38ab9302ba1b5ba0088fd2a5c5bab082d08775eb8cbc81fc3c",
+      "package_hash": "2825782e3d6fa41db6b97ad99c54455a0de1632f3b9eb91ed41d7707a732c395",
       "package_version": "v2",
       "provider": "claude-ai",
-      "version_hash": "367d1583ceb5eef91a1f589048642479d596f40c6ca7d0ca620ec357a915ede0"
+      "version_hash": "4d843023cd317917b45be8cb4882e1f88b1f61932c9dec70741b7f3162a46c67"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "4b1abcc4d7720c7dac6b4d04baf72529619dbb475d2d6df9d28351449f365692",
+          "content_hash": "5896bbfb2205f6be70e46148943d9850b952b85e61ea59ff603b6ddee95acbe2",
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "7e9b806faf29a8ca25225bb5928a65e6effd0f0996de6c59e70d644987a8da8a",
+      "package_hash": "a52645e270736306a5f61756f2dba69ad467e9e11d2686e6ea64f1394560723e",
       "package_version": "v3",
       "provider": "claude-ai",
-      "version_hash": "ed71968aa5e6620698edf4cc213af08d5944c9cb0759f8fa3487e1a96810c5eb"
+      "version_hash": "11fea952a1adfbbb836b5c4fe9e520d46dfcbc6c575b05d5a3cbc16efd0f3f5f"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "d0e74337e330f9f2b7eb8e63fd604ced3f3cfca86c1ea3b40689aec2051d0cec",
+          "content_hash": "39bc84dbf7adcbc47d97ecc650494c5e862a3b80895c37ab417151c53a33c304",
           "element_kind": "session_record_stream"
         }
       ],
-      "package_hash": "b60e533d15098310d245af2d50c51f576d88a12a66342371f26bcb6c821bbd40",
+      "package_hash": "57d07a59f05bb8ef01254bc836b7f0e754e71167c875b4aa38e6c8129d5745b7",
       "package_version": "v1",
       "provider": "claude-code",
-      "version_hash": "4321971c28b5ee72929df43506071eddcb1c5df9f575e2494179a580643861bc"
+      "version_hash": "da8e75f87048a5f202915ac75ddb824550f56c0409c992285bcded9648a0dfd7"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "9c9a9645250f16f4168f8cc9539832203bfbeb566e6ea7a33908629e3d91c1f6",
+          "content_hash": "8313683df2a897702401a2181bfd09faeffe94e9f54c49ff62c3accec0f29e7a",
           "element_kind": "agent_transcript"
         },
         {
-          "content_hash": "edf0fa31f66b857d905f4a59c7da603017280d4ed61aed71866793816bdf248d",
+          "content_hash": "00b3aecba877eab576a92269baf02b6e64189f2f7204f861f1e3e7c0ddefce7a",
           "element_kind": "coordinator_session_stream"
         },
         {
-          "content_hash": "5577bcd059878b4f8f68683ee413842d76c071537e5ab5a89e80bca096fb47e8",
+          "content_hash": "85b6c029a18fa2d1723fff6f60c3b996fced7f443a4f3ccc837eb44c60e209a3",
           "element_kind": "session_record_stream"
         }
       ],
-      "package_hash": "201a1ae4e215ffc02bc6c8ff80454388183e43239cb744469e7d23781733cca7",
+      "package_hash": "321631404bdd46ba87e45508a116291f25aa7e9aece5874a378eecff25a0d830",
       "package_version": "v2",
       "provider": "claude-code",
-      "version_hash": "4b91d88621020fef3c6b9c385820d48a7fae40df14edcb97e3a4264f8fd32335"
+      "version_hash": "a99d131f6bb329b2c230cdb8810d5c1e4ab2611f13212dfd57ec2b2ca274dea7"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "9b082eebce888e0dc8e453aad2d35da900fb321a747c042f7ddab440f5246cb5",
+          "content_hash": "74707c547e00d1b7e9925a67e2733337fe0e2e278f7982cfc5fc76f0b2217cc9",
+          "element_kind": "agent_sidecar_meta"
+        },
+        {
+          "content_hash": "2b8f979f7afa3b578ce2af3f2c3c1ec50ce88e5c6e18ed5edc8cbfe4f69436e7",
+          "element_kind": "agent_transcript"
+        },
+        {
+          "content_hash": "aa008e6d4ab1ca859a29b87c92af741603fdd0704087c9713b972c733a260b66",
+          "element_kind": "coordinator_session_stream"
+        },
+        {
+          "content_hash": "b6d8ae87bd5b9988e7bd912b29141ab5f320cfe4f18e7555b3c2703c6b1e1049",
+          "element_kind": "session_index"
+        },
+        {
+          "content_hash": "be867dbfe6c3e5a71f269647bfbe9dd017cee97e359dc2be425f8574c892c60e",
+          "element_kind": "session_record_stream"
+        },
+        {
+          "content_hash": "1a6d533e0b4a3d3fca30a377964e063b953b667995ea49be7e75a7847841a4c0",
+          "element_kind": "workflow_journal"
+        },
+        {
+          "content_hash": "64b51445dac3b434a8d37ae39e733ad74bba3d0e8c6a1218c9555670a4fde28f",
+          "element_kind": "workflow_run_snapshot"
+        }
+      ],
+      "package_hash": "1041f4b2df1d2f33380e7519ead39eade919301738438c18f97eead20faeea02",
+      "package_version": "v3",
+      "provider": "claude-code",
+      "version_hash": "be74b060a7beb27210dded7b48642298ee8041ae0fc7fd3955eda2dc9a105edd"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "7ac5c0a7139842a19308ac16809944a0faa9244427a4355ff1f905c925388bbf",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "dfee3562a91df7080123e18b214f4b102a08f4d9db566796a56c2f6d3dbbbe26",
+      "package_version": "v1",
+      "provider": "claude-design",
+      "version_hash": "f0c7c3cb4a617b5aa6e67a6976015ae7ebd787d069c99fc41e8d91fc6792bbf1"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "0e7096d2285c1b8b2b4e69f938f72eb534840676fc6a30e21fe46e89453e7290",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "082fda1db5cbe7a66efd01c4ba129e3b5cfc4b136321071e47c4ad6e0fe31043",
+      "package_version": "v2",
+      "provider": "claude-design",
+      "version_hash": "fa2e7e398e68cae5ce113368b7fbf149b194c2a7afd530340a6bc0e4c01380f8"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "98e24f4b212e53a4413a1d56a536ce46f66a45d03c20e006548c294b3b309a01",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "9802d7e987843d4bfb7576fccb7e88ad61a9a91e2aaca0e3e3d0dea82ff861ba",
+      "package_version": "v3",
+      "provider": "claude-design",
+      "version_hash": "7455857b57c6ca9ad48749e3936c206dbb867da83bcd6209c92aa62979289d07"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "b864690cc46f0cc15dc7e2ce926651695ef72ec09e0d3b0e19e7192f6b08d906",
           "element_kind": "session_record_stream"
         }
       ],
-      "package_hash": "54ae765b8355221247bdd3503d31a03cc15fcb8435dfa483ea3173e3ffed8034",
+      "package_hash": "636ce174b209d5eedb0a7e80853cb3d1e58008ec652c4503bb08ce99ec97ce2f",
       "package_version": "v1",
       "provider": "codex",
-      "version_hash": "1b59a72f23acc4838950a9453b52efb493eccbbc99bc55b7cb6001c30572c992"
+      "version_hash": "a6ca2589cf4ea6eaa8bf66147588110efbd422a9441eb81ad99169cff08c3837"
     },
     {
       "element_hashes": [
@@ -204,127 +354,183 @@
           "element_kind": "session_record_stream"
         }
       ],
-      "package_hash": "07e95e72fe680a2ac5b663c317201123f784fbfcaa19055ed8ed865ff2b089b7",
+      "package_hash": "ac152b7295af6ae25c899cb62658be0ec524e7478c75f2e57c01730f87eed04b",
       "package_version": "v2",
       "provider": "codex",
-      "version_hash": "3ee658944df30138a342cb2b5a9d37683d52dd1b3790b076e256882e9d4434b3"
+      "version_hash": "29b67dd25262a2e9bb70a0bc2236a6e4db9f126877b4321335442bfa319d2f59"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "a15e1b1dce4401a70fe3d40c10e72f482c8168ebbc01eac9b81353c63ee785ac",
-          "element_kind": "session_document"
-        }
-      ],
-      "package_hash": "428dbd57acd6a4cfdc0cf5b5e3f5d358febca6168a966fe8066fc41c8dba719d",
-      "package_version": "v1",
-      "provider": "gemini",
-      "version_hash": "29a486831d6b8c6cef3e0c922144d9accf51da7ef70b1432f6cb4a07368a97cd"
-    },
-    {
-      "element_hashes": [
-        {
-          "content_hash": "444aacc30c7b8ed7c7e8cd61113a95d04a2b9682dda1ddd47c71a3719a2c4d13",
-          "element_kind": "session_document"
-        }
-      ],
-      "package_hash": "f0478f55e37fc5846e2cb46ad21916457c54d5d3a0946520f65ddea3be45a63a",
-      "package_version": "v2",
-      "provider": "gemini",
-      "version_hash": "d67d5a217c30b007a075b0c5e70cd431d4517b84c05c2597b259729b0cbeff7f"
-    },
-    {
-      "element_hashes": [
-        {
-          "content_hash": "cbc1fddad2a65ec040287e14a18205a333a4341c10e2065321bb1409d3928696",
-          "element_kind": "session_document"
-        }
-      ],
-      "package_hash": "17149ae7de8fa23501ccf59243a1ee5a49caaab6029f303cf9ada8c6e984154b",
-      "package_version": "v3",
-      "provider": "gemini",
-      "version_hash": "d7d2b55ce4d5f1cfbc8d0b58038367439769631409b2cdd4a736e25f9d7e2752"
-    },
-    {
-      "element_hashes": [
-        {
-          "content_hash": "36add298fd380f620df18e84d1748f5e219530a8a496ec3d0ccbab63f267f88b",
-          "element_kind": "session_document"
-        }
-      ],
-      "package_hash": "9eb1d76fb894d67662502dbc3a54e9f5179dc91eb72a353b0934dcc2f5abd772",
-      "package_version": "v1",
-      "provider": "gemini-cli",
-      "version_hash": "bf8ad7015b920b9f93c946440d882f0aab253855f8cd838d4c22b54f85964b5f"
-    },
-    {
-      "element_hashes": [
-        {
-          "content_hash": "26327bd9cd0814cee8b6211bf6b8ae69f92f637bdd591038d50f2f294c39f4e3",
-          "element_kind": "session_document"
-        }
-      ],
-      "package_hash": "82bd016bce4e4a9c8ab4d9c1ede7f30a4b071886797a3891bd0cbcad5c190fb5",
-      "package_version": "v2",
-      "provider": "gemini-cli",
-      "version_hash": "d66196d979cc454651bd04138af5a17e40480aea708a16040710d798ee1025cf"
-    },
-    {
-      "element_hashes": [
-        {
-          "content_hash": "5165d64ea68c22124ee2cf909298d92537f33075a82a6433e6e42243545ee8ef",
-          "element_kind": "session_document"
-        },
-        {
-          "content_hash": "daab0a31189812b49d4f40126e77a702319837a18929ad24ac20e48251e7b183",
+          "content_hash": "d225219ca4d7af7caaa4e4f33190fb093aa3d1081a797739ea452477877ed322",
           "element_kind": "session_record_stream"
         }
       ],
-      "package_hash": "bb7e219a436483e43f325e3821ed0e78dd47778e4def05dde42a4e9d8e7e0f0f",
+      "package_hash": "fc81420362415772e3012a63e1b1595f585ffff164b2a7e82bb3a8b50fcfe406",
+      "package_version": "v3",
+      "provider": "codex",
+      "version_hash": "88bdf5e3a1c58b962b704bbbfaf16aec9acde5778b947f234fc024ace94f88d5"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "55a37a65db6ceb37dcfd433dae4dd09a3e47dd6cff8e28b395c517bd733581fa",
+          "element_kind": "session_record_stream"
+        }
+      ],
+      "package_hash": "524d39822d32bffe4d3dc234d9f7a15b431b06cfa6a4682f92924ea73fc29e12",
+      "package_version": "v4",
+      "provider": "codex",
+      "version_hash": "bf0cd6d2b8a3e5b83a71dbcff178a6d28dca0d152493df1724aafc1ac9cffe97"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "59e089987caf64b4666c6fdd70095db5326631bdad04d77a83fcdf0ba36513a8",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "b812f2c428590e9e2f8b4c4c930152769f8f03a01e7f01e8d36e2c1abda986a7",
+      "package_version": "v1",
+      "provider": "gemini",
+      "version_hash": "c612f5c56f33100c87e7614232f06d3d0815d9df1e1168afeefae9cae87808b6"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "8a7c8dd16839b0b4cf46fdae1773520e3ff8b1fc898a86270eb22e7379412d34",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "3ae1fb006c8177d22c1ecfb8fe9ed43476968be8c1239edec98fbf6b3959d04a",
+      "package_version": "v2",
+      "provider": "gemini",
+      "version_hash": "82a0b1740f8bcc55c3bf63db4cc5c9bfa213cbaacec5915fbd3a24564b278752"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "2d4de51bd62b55ebd13bb5e346f8f8de9068c3564943eeafb906a7ff3619a24e",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "1d5fc4264543897e0e8f4e2c68058820669553adb3d0155785d9a27860c3325a",
+      "package_version": "v3",
+      "provider": "gemini",
+      "version_hash": "46ebec14df74fc6c80fb6505d6d64b58b15f3d34f03f9377ea54127eb182583e"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "d2d81a441a1339c6f31c184652c31813e58b90be81fc200c14164d5db3fdfe98",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "a3b587fe9de9af0db65042dbaeddae27f3a2cfd036065bdedba46c0802bbf769",
+      "package_version": "v1",
+      "provider": "gemini-cli",
+      "version_hash": "964994457bb2e247dabcab4a51be073c4c8ae6767a9f346dcf25a339e3f8e1f9"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "7146583aec77e91248a7a71df837a62ea06faf2241e8f2d6848e0f9bdcf3df8e",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "4dd1ed2d6ee95f7267f241716995ae3d500020182302c1fa2b5264f76f15ef18",
+      "package_version": "v2",
+      "provider": "gemini-cli",
+      "version_hash": "e525ed4ce2d9b05d460d90f71e90a4f24f59170fe753c46a6fb15141e6351518"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "b18687c2b2e21dc63a0e7010ad01017b52acd7b46d755a1e8343af92dc87a22a",
+          "element_kind": "session_document"
+        },
+        {
+          "content_hash": "de780d6f29a6177182d31903954c97184f569c25c261d4fb9cf9fa2aa715d936",
+          "element_kind": "session_index"
+        },
+        {
+          "content_hash": "abb6213230b1963493d7a58bcf96a01454b14405c7d8c60b36d451f739fe3ad2",
+          "element_kind": "session_record_stream"
+        }
+      ],
+      "package_hash": "c1e1591bb7265806966857d1ba9600d08b215afd6a3f7b7f23b9a457b63d51b5",
       "package_version": "v3",
       "provider": "gemini-cli",
-      "version_hash": "664f39ce74cb43999f10b2682c8dc053e7b89e991cff2df9c81d175a4836f1f0"
+      "version_hash": "f31141fa663046629796f725cd21988926814f8b727e0939fd0cdfcb016cb17a"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "7aef81f7ac41544dea397ba679929d2810ce9d1fc17e4a1059c25091b73e4aec",
+          "content_hash": "a337bbd9528fcbdd47baaf8b3fe0094fe8c166ee0e864ba5dc01a1ecc13dcab7",
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "0e1d25d08a9fe98cbd7c71357f9a6d24b9239e7111ddc4bbd51bd356b5b8db3d",
+      "package_hash": "3a4b82ff9d933ab32f6e0a22abd7f295619df2e5d07b64123593db71f35d3df9",
       "package_version": "v1",
       "provider": "hermes",
-      "version_hash": "0bf7876b1472bb6aec54ed534184199bc0101b917cceed0b21d419154196e26a"
+      "version_hash": "3e634899be6c4ccba6dea19fb76758f9f993ebe79686d9ed84093e66680f8de2"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "87fcb7d1cece105a5a84972131c7a09298ac0b2c676e81cf2fd671eab27755ce",
+          "content_hash": "b014b32592c6964a371c725788f6bd183927ed4d0c759817eb3167c5a61d6d2a",
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "6ffee9a4c03f0355e92938fd72ad0c7dc8a774dccfd4f7e8b9dcfd14849e3011",
+      "package_hash": "ae865af052b14d2694efbbd3a22165c1bb7ea0a421c1d2b48df84984c18874d6",
       "package_version": "v2",
       "provider": "hermes",
-      "version_hash": "e7ceea2d4d41235f30a5342058ca0253949603dc2d7bdf07e30658523dfc16aa"
+      "version_hash": "6238bdb237b878be58594060e5521e04778d393da57e218d013ff055a3e1ad9e"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "b95c41091d3ed189382b48a0522471d9d184b1e61f03a612531d08be8bcd8869",
+          "content_hash": "819d40da445b839998b0b617279fa51b31903ce0ccf9852023364eb3d6d88c52",
+          "element_kind": "database_schema"
+        },
+        {
+          "content_hash": "aeaec323619856538bd7794f4eaf637547ba7bebae5fa07a1086260b568bfd6f",
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "65dce6ddb4190be79003b007cb50a9306b2cd2b2b85ee90f369309da184f5c2c",
+      "package_hash": "38384a3dfbc9057edb51c632dd41cc7a85bcd8eb3f43bc3741a359455b639b61",
       "package_version": "v3",
       "provider": "hermes",
-      "version_hash": "38a7df88bf7d539995c7c735f9e280e12771b362a2e3af8cc7cee3034c6e106e"
+      "version_hash": "8fb3e4ec852721b22e725e4ae0f009c2e2d9860df858d8fc9cffb3492c4fb142"
     }
   ],
-  "receipt_digest": "4a9eca9268e2eb5c7bf1a7d27c45046ce27298d17824dcde00595f0bbcf40850",
+  "receipt_digest": "cabf200906f6b6364c855fb19ad417b54af98c85c7a7cbed83f7dba5d3ada578",
   "schema": "polylogue.schema-inference-handoff.v1",
   "unsupported_decisions": [
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v1",
+      "provider": "antigravity",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v2",
+      "provider": "antigravity",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "agent_sidecar_meta",
+      "package_version": "v3",
+      "provider": "antigravity",
+      "reason": "provider_without_wire_format"
+    },
     {
       "decision": "nonrepresentable",
       "details": [
@@ -369,8 +575,10 @@
         "x-polylogue-format",
         "x-polylogue-mutually-exclusive",
         "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
         "x-polylogue-string-lengths"
       ],
       "element_kind": "session_document",
@@ -381,8 +589,59 @@
     {
       "decision": "nonrepresentable",
       "details": [
-        "required",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "export_asset",
+      "package_version": "v4",
+      "provider": "chatgpt",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "export_asset_index",
+      "package_version": "v4",
+      "provider": "chatgpt",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "required",
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-format",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v4",
+      "provider": "chatgpt",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "required",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
         "x-polylogue-string-lengths"
       ],
       "element_kind": "session_document",
@@ -395,7 +654,9 @@
       "details": [
         "x-polylogue-dynamic-keys",
         "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
         "x-polylogue-string-lengths"
       ],
       "element_kind": "session_document",
@@ -408,7 +669,9 @@
       "details": [
         "required",
         "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
         "x-polylogue-string-lengths"
       ],
       "element_kind": "session_document",
@@ -437,8 +700,10 @@
         "x-polylogue-foreign-keys",
         "x-polylogue-mutually-exclusive",
         "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
         "x-polylogue-string-lengths"
       ],
       "element_kind": "agent_transcript",
@@ -453,8 +718,10 @@
         "x-polylogue-foreign-keys",
         "x-polylogue-mutually-exclusive",
         "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
         "x-polylogue-string-lengths"
       ],
       "element_kind": "coordinator_session_stream",
@@ -466,12 +733,137 @@
       "decision": "nonrepresentable",
       "details": [
         "x-polylogue-dynamic-keys",
-        "x-polylogue-observed-distribution"
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_record_stream",
       "package_version": "v2",
       "provider": "claude-code",
       "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "agent_sidecar_meta",
+      "package_version": "v3",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "agent_transcript",
+      "package_version": "v3",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "coordinator_session_stream",
+      "package_version": "v3",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "session_index",
+      "package_version": "v3",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "session_record_stream",
+      "package_version": "v3",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "workflow_journal",
+      "package_version": "v3",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "workflow_run_snapshot",
+      "package_version": "v3",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v1",
+      "provider": "claude-design",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v2",
+      "provider": "claude-design",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v3",
+      "provider": "claude-design",
+      "reason": "provider_without_wire_format"
     },
     {
       "decision": "nonrepresentable",
@@ -492,7 +884,45 @@
     {
       "decision": "nonrepresentable",
       "details": [
-        "x-polylogue-semantic-role"
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "session_record_stream",
+      "package_version": "v3",
+      "provider": "codex",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "session_record_stream",
+      "package_version": "v4",
+      "provider": "codex",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_document",
       "package_version": "v1",
@@ -503,7 +933,9 @@
       "decision": "nonrepresentable",
       "details": [
         "x-polylogue-observed-distribution",
-        "x-polylogue-semantic-role"
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_document",
       "package_version": "v2",
@@ -515,7 +947,9 @@
       "details": [
         "required",
         "x-polylogue-observed-distribution",
-        "x-polylogue-semantic-role"
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_document",
       "package_version": "v3",
@@ -542,6 +976,14 @@
       "decision": "unsupported",
       "details": [],
       "element_kind": "session_document",
+      "package_version": "v3",
+      "provider": "gemini-cli",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_index",
       "package_version": "v3",
       "provider": "gemini-cli",
       "reason": "provider_without_wire_format"
@@ -567,6 +1009,14 @@
       "details": [],
       "element_kind": "session_document",
       "package_version": "v2",
+      "provider": "hermes",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "database_schema",
+      "package_version": "v3",
       "provider": "hermes",
       "reason": "provider_without_wire_format"
     },

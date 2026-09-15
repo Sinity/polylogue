@@ -535,6 +535,8 @@
         "30bf1be3e5e1e98cf9f412f7a1894f76c3f8994a82d1355fe6708255f84948af",
         "31056f4d5683e196046ce4cf875dd6be3a5541129f68e7411bedff91266f017b"
       ],
+      "publication_omitted_structure_witness_count": 0,
+      "source_evidence_unretained_shape_observation_lower_bound": 0,
       "profile_family_ids": [],
       "profile_tokens": [],
       "observed_artifact_count": 2818,
@@ -543,5 +545,5 @@
   ],
   "orphan_adjunct_counts": {},
   "workload_profile_file": null,
-  "observation_status": "current"
+  "observation_status": "historical"
 }

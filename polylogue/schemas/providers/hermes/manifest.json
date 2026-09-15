@@ -1,10 +1,11 @@
 {
   "artifact_counts": {
+    "database_schema": 2,
     "session_document": 159
   },
   "cluster_count": 0,
   "clusters": [],
   "default_version": "v3",
-  "generated_at": "2026-09-08T18:47:54.421670+00:00",
+  "generated_at": "2026-09-15T20:27:55.745608+00:00",
   "provider": "hermes"
 }

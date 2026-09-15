@@ -1,6 +1,6 @@
 {
   "provider": "gemini",
-  "generated_at": "2026-09-08T18:46:54.516277+00:00",
+  "generated_at": "2026-09-15T20:22:50.812772+00:00",
   "latest_version": "v3",
   "default_version": "v3",
   "recommended_version": "v3",
@@ -44,6 +44,8 @@
             "c0d7abc602b54366",
             "eb0ef7b1d082d855"
           ],
+          "publication_omitted_structure_witness_count": 0,
+          "source_evidence_unretained_shape_observation_lower_bound": 0,
           "profile_family_ids": [],
           "profile_tokens": [
             "anchor:chunkedPrompt",
@@ -114,6 +116,8 @@
             "c0d7abc602b54366",
             "eb0ef7b1d082d855"
           ],
+          "publication_omitted_structure_witness_count": 0,
+          "source_evidence_unretained_shape_observation_lower_bound": 0,
           "profile_family_ids": [
             "2863946d431176d3"
           ],
@@ -152,7 +156,7 @@
       "anchor_kind": "session_document",
       "default_element_kind": "session_document",
       "first_seen": "2026-09-08T09:00:35.640671+00:00",
-      "last_seen": "2026-09-08T18:46:54.516245+00:00",
+      "last_seen": "2026-09-15T20:22:50.812665+00:00",
       "bundle_scope_count": 12,
       "sample_count": 12,
       "anchor_profile_family_id": "42934922ee9bfd50d3e52d41a83daf580cc4dc2b3ba515982500a84167da49fe",
@@ -166,23 +170,37 @@
           "artifact_count": 12,
           "supported": true,
           "first_seen": "2026-09-08T09:00:35.640671+00:00",
-          "last_seen": "2026-09-08T18:46:54.516245+00:00",
+          "last_seen": "2026-09-15T20:22:50.812665+00:00",
           "bundle_scope_count": 12,
           "bundle_scope_identities": [],
           "exact_structure_ids": [
             "09e75a57e18f696a603d821e2182e1bc283095c36394eb92e8ac871b679d54f6",
+            "14eea38341a281bece2b56b3052556cd1c950a6738b1367866048aa2d891db59",
             "1598ced848636515bb24f4dd8c502fd1b85cbebf3b4ce27dec0943c2264b1718",
             "189fceda6ea66d681defe6abd1e6f7c3723e533cf5bcad9417b41bde462b8c94",
             "2a02fe10f878a144823a5f29da963a90521037199b5f81a62633e0071d8e78ed",
+            "2d4039b06c17c9fa82ad6a98049ea3c52dcd9ca5bba7f1436ff646764a8179bb",
             "393097659efd6d59a7ee660ce0f6dcaa8ed79bd11f976c812faac986d444a7b0",
+            "431252782e87935b5adcbbcae858c712e02f8809601ecbba7c9d8278a430f3dd",
             "46c6e41a04050a8e6f67f7cf4b0e6c121ca7a3615a01d27a67f13678cf6a12c5",
             "5f8d1cca76f10b6107bd4e13f0fddb108ed6f1c266fec85e61e37371232feff0",
             "6dbd6c03e9978722e63a5b89997c436f1ac90e76abb8acc1d7c2c590f027f8f6",
+            "781942462b61fed64d872e3ef29380463286eb7926c55903434d9d4aa75ac5e1",
+            "7f578016d4b9af94baa1694160de5be37344718469a53aaa7112dbe5fab082c7",
             "8140e3c7570610dc94d85f9080b97200f4021b17c32c2480ab5a92f6f5b0b12e",
+            "8925f3461e99531b703093c511f5fd2feff84aaae0a3831712de6d2414dada2c",
+            "979872583624d50294915e491e5b793a32913a10141254595405ced9f911daf9",
             "9bb418d7b408f7b2d67849a48c41a877279b4b6f8538a5307cfbfae4f0cdfb08",
+            "9e809ca2d9b77891d8bd565763484159069e2f796538e110748c37da5e6006f9",
+            "bf91f050dbd2eb2273449c7c7f71e76fde80515c790e046e3e281cdf2fb83341",
+            "dfabcabebc68065f59d7a9a6d35866a45913c1de426cb0688a7af740342670d7",
+            "e3f02824a11c015d115526f8c0ff204a39695e18a0ce87cc0aaecdd486ed7a47",
             "e54c8833a5256d0cc975888c9ab90d5f5d890b412ce5ed21378838b5e5681196",
-            "e7477628eab1fde25cd64134c8315b7a57625b362d92b0853a872fbee9b020cc"
+            "e7477628eab1fde25cd64134c8315b7a57625b362d92b0853a872fbee9b020cc",
+            "e85d2d34fe6791d66e1385363098c4c5f99fb6f9be4b0372655fbe3e37d72e72"
           ],
+          "publication_omitted_structure_witness_count": 0,
+          "source_evidence_unretained_shape_observation_lower_bound": 0,
           "profile_family_ids": [],
           "profile_tokens": [],
           "observed_artifact_count": 12,
@@ -204,7 +222,7 @@
         "identity_revision": 2,
         "zip_member_revision": 2,
         "phase": "structure",
-        "reduction_revision": 1,
+        "reduction_revision": 2,
         "key_policy": {
           "revision": 1,
           "cardinality_limit": 256,
@@ -230,22 +248,19 @@
           "dynamic_ratio": 0.5
         }
       },
-      "structure_fingerprint": "29e59f8c29a1d8c7944b4ec4e81dde8ba80ceeca153cb75ef40bef5ce14057ff",
+      "structure_fingerprint": "415a50c88f9b33c7173448e5150f5d82caa3d57dce021f9cac0fb82dd837c25d",
       "statistics_fingerprint": "2f654e303b3fbbc1969de6e0e7be77ac35826cc81aa62242acdca155572011af",
-      "implementation_fingerprint": "2f3203cd609392aef647d8754715a0fa6990597283d1c58e95c88fb37896ab9b"
+      "implementation_fingerprint": "2fbb0443f383f5136beeb82b84bfa7fa36cc7ee77444db5c757354573cf42518"
     },
     "source_cache_phase_hits": {
-      "statistics": 1,
-      "structure": 1
+      "statistics": 2,
+      "structure": 2
     },
-    "source_cache_phase_misses": {
-      "statistics": 1,
-      "structure": 1
-    },
+    "source_cache_phase_misses": {},
     "source_statistics_population": "current_source_records",
     "source_inherited_prefixes_subtracted": false,
-    "source_cache_hits": 2,
-    "source_cache_misses": 2,
+    "source_cache_hits": 4,
+    "source_cache_misses": 0,
     "source_terminal_outcomes": {
       "included": 12
     },
@@ -257,19 +272,19 @@
     },
     "source_terminal_reasons": {},
     "source_phase_timings_ms": {
-      "collect": 35702.077,
-      "fold": 169.987,
-      "hash": 3460.744,
-      "inventory": 24.285,
-      "preliminary": 14220.505,
-      "revision_selection": 0.13,
-      "statistics": 17847.782
+      "collect": 190.398,
+      "fold": 93.561,
+      "hash": 18.949,
+      "inventory": 0.166,
+      "preliminary": 41.136,
+      "revision_selection": 0.074,
+      "statistics": 35.738
     },
     "producer_version_counts": {},
     "producer_version_missing_sources": 2,
     "producer_version_conflicting_sources": 0,
     "producer_version_unrecognized_sources": 0,
-    "source_input_manifest_digest": "a0612e6e9f9a00682a0220ba4df9f3eaf6c8c3c4e32a6946ebe3db816f063662",
+    "source_input_manifest_digest": "666504342e97832bbaabc388ac378d168b6658eaca40b4ea79a0f98b020824c1",
     "source_candidate_count": 2,
     "source_included_candidate_count": 2,
     "source_included_native_source_revision_count": 12
