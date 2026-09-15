@@ -1246,6 +1246,7 @@ def write_parsed_session_to_archive(
     # When the caller owns the transaction (bulk batching) we must not commit
     # per session; nullcontext leaves BEGIN/COMMIT to the caller.
     transaction = conn if manage_transaction else nullcontext()
+    invalidated_identity_children: set[str] = set()
     try:
         with transaction:
             conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
@@ -1679,6 +1680,11 @@ def write_parsed_session_to_archive(
             f"FOREIGN KEY constraint failed writing session_id={session_id!r} "
             f"origin={origin.value!r} native_id={native_id!r}: {exc}"
         ) from exc
+    # The lineage columns of every child invalidated above are now NULL, so the
+    # child reads as a complete root while its recomposed prefix is gone. The
+    # loss is named as ordinary retryable convergence debt (ops tier) rather
+    # than left silent until someone orders a full rebuild (polylogue-e0xan).
+    _record_identity_invalidation_debt(conn, invalidated_identity_children)
     if write_outcome is not None:
         write_outcome.append(
             ArchiveWriteOutcome(
@@ -8737,6 +8743,56 @@ def _canonicalize_session_link_evidence(
             link_type,
         ),
     )
+
+
+#: Convergence-debt stage naming a child whose recomposed lineage prefix was
+#: dropped by a provider-session identity contradiction. It is its own stage
+#: (not the generic ``convergence`` row) so the daemon's retry drain cannot
+#: clear it by running unrelated stages that never re-derive the lost prefix.
+IDENTITY_INVALIDATION_DEBT_STAGE = "lineage_prefix_recompose"
+
+_IDENTITY_INVALIDATION_DEBT_ERROR = (
+    "lineage link invalidated by a provider-session identity contradiction; "
+    "the child's recomposed prefix must be re-derived from source evidence"
+)
+
+
+def _main_database_path(conn: sqlite3.Connection) -> Path | None:
+    """Return the file backing the connection's ``main`` schema, if any."""
+    for _sequence, name, filename in conn.execute("PRAGMA database_list").fetchall():
+        if str(name) == "main" and str(filename or ""):
+            return Path(str(filename))
+    return None
+
+
+def _record_identity_invalidation_debt(conn: sqlite3.Connection, session_ids: set[str]) -> None:
+    """Record retryable convergence debt for lineage-invalidated children.
+
+    The invalidation itself lands in the derived index; the debt belongs to the
+    ops tier, which owns ``convergence_debt``. It is written through the same
+    ``CursorStore`` writer every other debt producer uses -- no parallel ledger
+    -- on the archive's own ``ops.db`` sibling. An index connection with no
+    ops tier beside it (in-memory index, bare fixture) records nothing rather
+    than bootstrapping a disposable tier from the write path.
+    """
+    if not session_ids:
+        return
+    index_path = _main_database_path(conn)
+    if index_path is None:
+        return
+    ops_db_path = index_path.with_name("ops.db")
+    if not ops_db_path.exists():
+        return
+    from polylogue.sources.live.cursor import CursorStore
+
+    store = CursorStore(index_path, initialize=False, ops_db_path=ops_db_path)
+    for session_id in sorted(session_ids):
+        store.record_convergence_debt(
+            stage=IDENTITY_INVALIDATION_DEBT_STAGE,
+            subject_type="session_id",
+            subject_id=session_id,
+            error=_IDENTITY_INVALIDATION_DEBT_ERROR,
+        )
 
 
 def _write_session_identity_claims(

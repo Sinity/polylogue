@@ -32,10 +32,11 @@ from polylogue.storage.derived.session.derivation import archive_session_partiti
 from polylogue.storage.derived.session.input_binding import session_input_bindings
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION, LineageCompleteness
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     _MAX_LINEAGE_DEPTH,
+    IDENTITY_INVALIDATION_DEBT_STAGE,
     _provider_usage_cumulative_baseline,
     count_dangling_prefix_branch_points,
     read_archive_session_envelope,
@@ -2740,3 +2741,86 @@ def test_hermes_continuation_hydration_copies_are_shallow_and_share_blocks(tmp_p
     for index in range(1, links):
         composed_block = by_raw_id[f"s{index:04d}"].messages[0].blocks[0]
         assert composed_block is root_block, "recomposition must share blocks, never deep-copy them"
+
+
+def test_alias_invalidation_records_retryable_convergence_debt(tmp_path: Path) -> None:
+    """A provider-session identity contradiction NULLs a child's lineage
+    columns, leaving it reading as a complete root with its recomposed prefix
+    gone. That loss must be *named* as retryable convergence debt targeting the
+    invalidated child, not left silent until someone orders a full rebuild
+    (polylogue-e0xan).
+
+    Anti-vacuity: drop the ``_record_identity_invalidation_debt`` call (or
+    point it at a different target) and the debt row for ``child_id`` is
+    absent, so the assertions below go red.
+    """
+    db = tmp_path / "index.db"
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    conn = _connect(db)
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="alpha",
+        title="alpha",
+        provider_session_aliases=["shared-stem"],
+        messages=[_msg("a0", Role.USER, "hello", 0), _msg("a1", Role.ASSISTANT, "hi there", 1)],
+    )
+    write_parsed_session_to_archive(conn, parent)
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="shared-stem",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0),
+            _msg("c1", Role.ASSISTANT, "hi there", 1),
+            _msg("cx", Role.USER, "child diverges here", 2),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    resolved_before = conn.execute(
+        "SELECT resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    assert resolved_before["resolved_dst_session_id"] is not None
+
+    ops = sqlite3.connect(tmp_path / "ops.db")
+    try:
+        assert ops.execute("SELECT COUNT(*) FROM convergence_debt").fetchone()[0] == 0
+    finally:
+        ops.close()
+
+    # A second session claims the same alias: the claim is now ambiguous and
+    # the child's lineage columns are invalidated.
+    contender = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="beta",
+        title="beta",
+        provider_session_aliases=["shared-stem"],
+        messages=[_msg("b0", Role.USER, "unrelated", 0)],
+    )
+    write_parsed_session_to_archive(conn, contender)
+    resolved_after = conn.execute(
+        "SELECT resolved_dst_session_id, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    assert resolved_after["resolved_dst_session_id"] is None
+    assert resolved_after["branch_point_message_id"] is None
+
+    ops = sqlite3.connect(tmp_path / "ops.db")
+    ops.row_factory = sqlite3.Row
+    try:
+        debt = ops.execute(
+            "SELECT stage, target_type, target_id, status, attempts, last_error, next_retry_at FROM convergence_debt"
+        ).fetchall()
+    finally:
+        ops.close()
+    assert [(row["target_type"], row["target_id"]) for row in debt] == [("session_id", child_id)]
+    assert debt[0]["stage"] == IDENTITY_INVALIDATION_DEBT_STAGE
+    assert debt[0]["status"] == "failed"
+    assert debt[0]["attempts"] >= 1
+    assert "identity contradiction" in debt[0]["last_error"]
+    # Retryable, not an inert marker: the row carries a scheduled retry.
+    assert debt[0]["next_retry_at"]
