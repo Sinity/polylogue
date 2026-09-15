@@ -146,7 +146,6 @@ polylogue-hook = "polylogue.sources.hook_producer:main"
 polylogued = "polylogue.daemon.cli:main"
 polylogue-browser-capture-native-host = "polylogue.browser_capture.native_host:main"
 polylogue-mcp = "polylogue.mcp.cli:main"
-polylogue-agentctl-adapter = "polylogue.agent_integration.agentctl_adapter:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["polylogue", "devtools"]

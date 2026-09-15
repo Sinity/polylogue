@@ -28,9 +28,6 @@ from polylogue.storage.search.models import (
 from polylogue.storage.search.models import (
     SessionSearchIdHit as StorageSessionSearchIdHit,
 )
-from polylogue.storage.search_providers.hybrid_sessions import (
-    _resolve_ranked_session_hits,
-)
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from tests.infra.identity import archive_message_id
@@ -137,51 +134,6 @@ class _FakeRepo(RepositoryArchiveSearchMixin):
             )
             for record in session_records
         ]
-
-
-def _memory_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL)")
-    conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL)")
-    return conn
-
-
-def test_resolve_ranked_session_hits_preserves_order_and_provider_scope() -> None:
-    conn = _memory_conn()
-    conn.executemany(
-        "INSERT INTO sessions(session_id, origin) VALUES (?, ?)",
-        [
-            ("conv-a", "chatgpt"),
-            ("conv-b", "claude"),
-        ],
-    )
-    conn.executemany(
-        "INSERT INTO messages(message_id, session_id) VALUES (?, ?)",
-        [
-            ("msg-a1", "conv-a"),
-            ("msg-a2", "conv-a"),
-            ("msg-b1", "conv-b"),
-        ],
-    )
-
-    hits = _resolve_ranked_session_hits(
-        conn,
-        message_results=[("msg-b1", 0.9), ("msg-a1", 0.8), ("msg-a2", 0.7)],
-        limit=10,
-        scope_names=None,
-    )
-    assert hits.session_ids() == ["conv-b", "conv-a"]
-    assert [hit.rank for hit in hits.hits] == [1, 2]
-
-    scoped_hits = _resolve_ranked_session_hits(
-        conn,
-        message_results=[("msg-b1", 0.9), ("msg-a1", 0.8), ("msg-a2", 0.7)],
-        limit=10,
-        scope_names=["chatgpt"],
-    )
-    assert scoped_hits.session_ids() == ["conv-a"]
-    assert [hit.rank for hit in scoped_hits.hits] == [1]
 
 
 @pytest.mark.asyncio

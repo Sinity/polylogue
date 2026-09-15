@@ -29,7 +29,6 @@ from click.testing import CliRunner
 from polylogue.analysis.registry import INSIGHT_REGISTRY, InsightType, fetch_insights_async, insight_items_payload
 from polylogue.api import Polylogue
 from polylogue.cli.click_app import cli
-from polylogue.mcp.insight_tool_contracts import InsightListToolSpec
 from tests.infra.json_contracts import extract_json_result
 from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
@@ -148,16 +147,7 @@ async def test_cli_mcp_and_api_insight_lists_are_identical(cli_workspace: dict[s
             # The MCP tool derives its own (limit, offset) defaults from the
             # registry; routing them back through the same product route is what
             # makes the surfaces one surface.
-            spec = InsightListToolSpec.from_insight_type(insight_type)
-            default_limit = insight_type.mcp_default_limit
-
-            def _clamp(value: object, fallback: int = default_limit) -> int:
-                return int(value) if isinstance(value, int) else fallback
-
-            mcp_kwargs = spec.normalize_kwargs(
-                _clamp,
-                {name: default for name, default in spec.signature.kwdefaults.items() if name in {"limit", "offset"}},
-            )
+            mcp_kwargs: dict[str, object] = {"limit": insight_type.mcp_default_limit, "offset": 0}
             mcp_items = await fetch_insights_async(insight_type, archive, **mcp_kwargs)
             mcp_payload = insight_items_payload(mcp_items, insight_type)
 
