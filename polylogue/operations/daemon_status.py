@@ -287,6 +287,12 @@ def _same_directory(left: Path, right: Path) -> bool:
     return resolved_left == resolved_right
 
 
+def _safe_version(value: object) -> int:
+    """Coerce a tier version reported by the inventory, defaulting to 0."""
+
+    return value if isinstance(value, int) else 0
+
+
 def _derived_tier_refusals(tiers: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
     """Project every refused derived tier into status/readiness evidence.
 
@@ -310,8 +316,8 @@ def _derived_tier_refusals(tiers: Mapping[str, Mapping[str, object]]) -> list[di
         elif info.get("version_status") == "mismatch":
             exc = SchemaVersionMismatchError(
                 f"{name} tier schema version cannot be served by this runtime",
-                current_version=int(info.get("user_version") or 0),
-                expected_version=int(info.get("expected_user_version") or 0),
+                current_version=_safe_version(info.get("user_version")),
+                expected_version=_safe_version(info.get("expected_user_version")),
             )
         if exc is None:
             continue

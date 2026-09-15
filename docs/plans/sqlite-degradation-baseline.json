@@ -205,11 +205,11 @@
     },
     {
       "file": "polylogue/daemon/fts_status.py",
-      "digest": "2cd8182b2452d0af3ab20564b47647f16209e76c"
+      "digest": "5c141c129aee75ac48374d917905c9e35632832e"
     },
     {
       "file": "polylogue/daemon/fts_status.py",
-      "digest": "5c141c129aee75ac48374d917905c9e35632832e"
+      "digest": "fd7823b9f662916d5ec22cae1677b226e83e29f3"
     },
     {
       "file": "polylogue/daemon/health.py",
@@ -297,8 +297,12 @@
     },
     {
       "file": "polylogue/daemon/status.py",
+      "digest": "3b7e4088dd7ecd925fe0977617d3de7c93bd1671"
+    },
+    {
+      "file": "polylogue/daemon/status.py",
       "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
-      "count": 3
+      "count": 2
     },
     {
       "file": "polylogue/daemon/status.py",
@@ -310,7 +314,7 @@
     },
     {
       "file": "polylogue/daemon/status.py",
-      "digest": "bc95be39a6aa3d8c889123934956901589f416cf"
+      "digest": "d1d0d328543f93591501dc334a172db16fdb4ca4"
     },
     {
       "file": "polylogue/demo/seed.py",
