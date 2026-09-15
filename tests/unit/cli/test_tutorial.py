@@ -188,3 +188,48 @@ def test_stage_first_search_no_archive(monkeypatch: pytest.MonkeyPatch, tmp_path
     satisfied, message = _stage_first_search()
     assert satisfied is False
     assert "ingest" in message.lower() or "archive" in message.lower()
+
+
+def test_daemon_alive_rejects_a_directly_served_status_read() -> None:
+    """A direct in-process status read never counts as a running daemon.
+
+    The ``status`` operation declares ``DaemonFallback.DIRECT_READ``, so it
+    answers with no daemon running at all; the probe discriminates on the
+    result's authority mode instead.
+
+    Anti-vacuity: reading liveness from "the dispatch did not raise" makes
+    the ``direct`` case red, since that probe succeeds.
+    """
+    from unittest.mock import patch
+
+    from polylogue.cli.commands.tutorial import _daemon_alive
+    from polylogue.cli.operation_kernel import OperationResult
+
+    def _served(mode: str) -> Any:
+        def _call(config: Any, operation: str, payload: dict[str, object], **kwargs: Any) -> OperationResult:
+            del config, payload, kwargs
+            return OperationResult(operation, {}, {"mode": mode, "class": "read"})
+
+        return _call
+
+    with patch("polylogue.cli.operation_kernel.configured_read_operation", new=_served("direct")):
+        assert _daemon_alive() is False
+    with patch("polylogue.cli.operation_kernel.configured_read_operation", new=_served("daemon")):
+        assert _daemon_alive() is True
+
+
+def test_daemon_alive_never_raises() -> None:
+    """A probe that explodes is worse than one that says "no".
+
+    Anti-vacuity: letting the dispatch exception propagate makes this red.
+    """
+    from unittest.mock import patch
+
+    from polylogue.cli.commands.tutorial import _daemon_alive
+
+    def _boom(config: Any, operation: str, payload: dict[str, object], **kwargs: Any) -> Any:
+        del config, operation, payload, kwargs
+        raise RuntimeError("archive is unreadable")
+
+    with patch("polylogue.cli.operation_kernel.configured_read_operation", new=_boom):
+        assert _daemon_alive() is False

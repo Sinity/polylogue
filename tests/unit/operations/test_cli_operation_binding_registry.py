@@ -23,7 +23,7 @@ from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS
 #: Operations that are declared but not yet reachable from a CLI route.  This
 #: set is closed on purpose: a new declaration is red until someone either
 #: binds it or adds it here with the step that adopts it.
-EXPECTED_PENDING_ADOPTION = frozenset({"completion", "ingest"})
+EXPECTED_PENDING_ADOPTION = frozenset({"completion"})
 
 
 def test_every_declared_operation_is_classified_exactly_once() -> None:

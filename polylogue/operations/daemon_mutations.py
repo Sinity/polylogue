@@ -248,6 +248,39 @@ def maintenance_blob_gc_recover(
     )
 
 
+def maintenance_demo_augment(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Apply the deterministic demo-only post-ingest writes under daemon authority.
+
+    Ingest alone produces the parsed session/message tree; the demo world's
+    provider usage, insight materialization, canonical repo name and synthetic
+    embeddings are layered on afterwards so a daemon-ingested demo archive
+    matches ``polylogue demo seed``'s semantic contract. Idempotent: a repeated
+    request re-applies the same deterministic content.
+    """
+    del audit, snapshot
+
+    from polylogue.demo import apply_demo_post_ingest_augmentation
+
+    with_overlays = bool(request.payload.get("with_overlays", False))
+    apply_demo_post_ingest_augmentation(context.archive_root)
+    if with_overlays:
+        from polylogue.scenarios import seed_demo_user_overlays
+
+        seed_demo_user_overlays(context.archive_root)
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed",
+        "result": {"augmented": True, "overlays": with_overlays},
+    }
+
+
 def _audit_int(value: object, *, field: str) -> int:
     """Reject malformed durable counters before scheduling a mutation batch."""
 

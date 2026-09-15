@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.commands.dashboard import dashboard_command
+from polylogue.cli.operation_kernel import OperationResult
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.services import RuntimeServices
@@ -31,12 +32,34 @@ def _make_env() -> AppEnv:
     return AppEnv(ui=ui, services=RuntimeServices(config=config))
 
 
+def _served(mode: str) -> Any:
+    """Stand in for the status operation, served by the named authority."""
+
+    def _call(config: Any, operation: str, payload: dict[str, object], **kwargs: Any) -> OperationResult:
+        del config, payload, kwargs
+        return OperationResult(operation, {}, {"mode": mode, "class": "read"})
+
+    return _call
+
+
+def _patch_probe(mode: str) -> Any:
+    return patch("polylogue.cli.operation_kernel.configured_read_operation", new=_served(mode))
+
+
+def _probe_raises(exc: BaseException) -> Any:
+    def _call(config: Any, operation: str, payload: dict[str, object], **kwargs: Any) -> OperationResult:
+        del config, operation, payload, kwargs
+        raise exc
+
+    return patch("polylogue.cli.operation_kernel.configured_read_operation", new=_call)
+
+
 def test_dashboard_status_json_reports_terminal_surface_and_no_web_launch(monkeypatch: pytest.MonkeyPatch) -> None:
     """``dashboard --status --format json`` is an operator-visible contract."""
 
     monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:8766")
     runner = CliRunner()
-    with patch("polylogue.cli.commands.dashboard.urlopen", side_effect=OSError("offline")):
+    with _probe_raises(OSError("offline")):
         result = runner.invoke(dashboard_command, ["--status", "--format", "json"], obj=_make_env())
 
     assert result.exit_code == 0, result.output
@@ -48,6 +71,26 @@ def test_dashboard_status_json_reports_terminal_surface_and_no_web_launch(monkey
     assert payload["web_reader_launch_attempted"] is False
     assert payload["daemon_api_reachable"] is False
     assert "OSError" in payload["failure_reason"]
+
+
+def test_dashboard_direct_served_status_is_not_reported_as_a_reachable_daemon() -> None:
+    """A direct in-process read is not evidence that a daemon is running.
+
+    The ``status`` operation declares ``DaemonFallback.DIRECT_READ``, so it
+    succeeds with no daemon at all. Reachability is read off the result's
+    authority mode instead.
+
+    Anti-vacuity: reporting reachability from "the dispatch did not raise"
+    makes this red, because this probe succeeds and is served directly.
+    """
+    runner = CliRunner()
+    with _patch_probe("direct"):
+        result = runner.invoke(dashboard_command, ["--status", "--format", "json"], obj=_make_env())
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["daemon_api_reachable"] is False
+    assert "direct" in str(payload["failure_reason"])
 
 
 def test_dashboard_default_prints_evidence_before_launching_tui() -> None:
@@ -62,14 +105,14 @@ def test_dashboard_default_prints_evidence_before_launching_tui() -> None:
 
     runner = CliRunner()
     with (
-        patch("polylogue.cli.commands.dashboard.urlopen", side_effect=OSError("offline")),
+        _probe_raises(OSError("offline")),
         patch("polylogue.ui.tui.app.PolylogueApp", FakeApp),
     ):
         result = runner.invoke(dashboard_command, [], obj=_make_env())
 
     assert result.exit_code == 0, result.output
     assert "Dashboard surface: terminal TUI (Textual)" in result.output
-    assert "Daemon API status probe:" in result.output
+    assert "Daemon status-operation probe" in result.output
     assert "Web reader launch: not attempted by this command" in result.output
     assert "Readiness: degraded" in result.output
     # polylogue-jnj.8: degraded readiness teaches the prerequisite and a
@@ -77,17 +120,6 @@ def test_dashboard_default_prints_evidence_before_launching_tui() -> None:
     assert "Prerequisite: start the daemon with `polylogued run`" in result.output
     assert "CLI fallback: `polylogue find QUERY then read`" in result.output
     assert "Launching Textual dashboard in this terminal." in result.output
-
-
-class _FakeResponse:
-    def __enter__(self) -> _FakeResponse:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        return None
-
-    def read(self, _n: int = -1) -> bytes:
-        return b"{"
 
 
 def test_dashboard_status_degraded_teaches_prerequisite_and_cli_fallback() -> None:
@@ -98,7 +130,7 @@ def test_dashboard_status_degraded_teaches_prerequisite_and_cli_fallback() -> No
     only concerns the printed readiness guidance, not the TUI launch itself).
     """
     runner = CliRunner()
-    with patch("polylogue.cli.commands.dashboard.urlopen", side_effect=OSError("offline")):
+    with _probe_raises(OSError("offline")):
         result = runner.invoke(dashboard_command, ["--status"], obj=_make_env())
 
     assert result.exit_code == 0, result.output
@@ -110,7 +142,7 @@ def test_dashboard_status_degraded_teaches_prerequisite_and_cli_fallback() -> No
 def test_dashboard_status_reachable_daemon_skips_degraded_guidance() -> None:
     """A reachable daemon does not print the degraded-only fallback hints."""
     runner = CliRunner()
-    with patch("polylogue.cli.commands.dashboard.urlopen", return_value=_FakeResponse()):
+    with _patch_probe("daemon"):
         result = runner.invoke(dashboard_command, ["--status"], obj=_make_env())
 
     assert result.exit_code == 0, result.output

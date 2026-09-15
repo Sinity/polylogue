@@ -63,7 +63,7 @@ def _stage_start_daemon() -> tuple[bool, str]:
     """Probe daemon liveness using the first-run diagnostic."""
     from polylogue.cli.commands.status_diagnostics import diagnose_first_run
 
-    diag = diagnose_first_run(daemon_alive=_daemon_http_alive())
+    diag = diagnose_first_run(daemon_alive=_daemon_alive())
     if diag.kind == "healthy":
         return True, "Daemon is running and archive is healthy."
     if diag.kind == "no_daemon":
@@ -152,20 +152,22 @@ def _guided_path_needed() -> bool:
     return not starter_config_path().exists() and not (archive_root() / "index.db").exists()
 
 
-def _daemon_http_alive() -> bool:
-    """Best-effort daemon liveness probe with a short timeout."""
-    from urllib.request import Request, urlopen
+def _daemon_alive() -> bool:
+    """Best-effort daemon liveness probe; never raises.
 
+    True only when a daemon actually served the declared ``status``
+    operation. That operation also permits a direct in-process read, so
+    "the call succeeded" is not evidence of a daemon — the probe reads the
+    result's authority instead (polylogue.cli.daemon_probe).
+    """
+    from polylogue.cli.daemon_probe import daemon_serving_probe
     from polylogue.config import load_polylogue_config
 
-    url = load_polylogue_config().daemon_url or "http://127.0.0.1:8766"
     try:
-        req = Request(f"{url}/api/status", method="GET")
-        with urlopen(req, timeout=0.5) as resp:
-            resp.read(1)
-        return True
+        served_by_daemon, _reason = daemon_serving_probe(load_polylogue_config())
     except Exception:
         return False
+    return served_by_daemon
 
 
 @click.command("tutorial")

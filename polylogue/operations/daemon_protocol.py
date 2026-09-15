@@ -303,6 +303,10 @@ class BlobGCRecoverRequest(_OperationPayload):
     generation_id: str = Field(min_length=1)
 
 
+class DemoAugmentRequest(_OperationPayload):
+    with_overlays: bool = False
+
+
 class OperationStatusRequest(_OperationPayload):
     request_id: str = Field(min_length=1)
 
@@ -1055,6 +1059,20 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=BlobGCRecoverRequest,
         result_model=MutationResult,
         handler="maintenance_blob_gc_recover",
+    ),
+    DaemonOperationSpec(
+        "maintenance.demo.augment",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.demo_augment",
+        deadline_s=120.0,
+        request_contract="maintenance.demo.augment.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="DemoAugmentRequest",
+        result_type="MutationResult",
+        request_model=DemoAugmentRequest,
+        result_model=MutationResult,
+        handler="maintenance_demo_augment",
     ),
 )
 
