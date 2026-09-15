@@ -257,6 +257,78 @@ async def main():
 counts = asyncio.run(main())
 ```
 
+## Semantic Operations
+
+These calls are the Python bindings of the governed semantic operations shared
+with the CLI and the MCP server. The full per-surface matrix, including every
+intentional absence and its reason, is generated in
+[API parity](api-parity.md); `devtools verify api-parity` proves this section
+still matches the live facade.
+
+```python
+from polylogue import Polylogue
+from polylogue.annotations.importer import AnnotationBatchImportRequest
+
+
+async def operations(archive: Polylogue, jsonl_payload: str) -> None:
+    # query: terminal query page with explicit result semantics
+    units = await archive.query_units("messages where text:needle", limit=20)
+
+    # read / get: resolve one stable ref to its public payload
+    payload = await archive.resolve_ref("session:claude-code:abc123")
+
+    # explain: describe how a query expression lowers, without running it
+    plan = await archive.explain_query_expression("messages where text:needle")
+
+    # context: bounded context image for a resume or postmortem packet
+    image = await archive.context_image_payload(max_sessions=5, include_assertions=True)
+
+    # status: archive readiness and counts
+    totals = await archive.stats()
+
+    # write: durable agent work events and decisions
+    await archive.record_work_event(
+        "claude-code:abc123",
+        event_id="evt-1",
+        event_type="checkpoint",
+        summary="verified the parity gate",
+    )
+    await archive.emit_decision(
+        "claude-code:abc123",
+        event_id="dec-1",
+        decision="adopt",
+        summary="adopt the declared operation matrix",
+    )
+
+    # write: durable typed annotation batches under a declared schema version
+    result = await archive.import_annotation_batch(
+        AnnotationBatchImportRequest(
+            jsonl=jsonl_payload,
+            batch_id="batch-one",
+            schema_id="review",
+            schema_version=1,
+            target_ref="session:claude-code:abc123",
+            source_result_ref="result:local",
+            actor_ref="agent:reviewer",
+            model_ref="model:local",
+            prompt_ref="prompt:review-v1",
+        )
+    )
+
+    # judge: adjudicate queued assertion candidates
+    judgments = await archive.judge_assertion_candidates(items=[])
+
+    # maintenance: rebuild derived session insights
+    counts = await archive.rebuild_insights()
+
+    # embedding readiness and coverage
+    preflight = archive.embedding_preflight(max_sessions=10)
+    coverage = archive.embedding_status(detail=True)
+```
+
+`embedding_preflight` and `embedding_status` are synchronous: they read
+already-materialized embedding state and never await the backend.
+
 ## Async API
 
 Polylogue provides a full async/await facade with concurrent operations:
@@ -325,6 +397,7 @@ asyncio.run(main())
 | `list_archive_coverage_insights(query)` | List provider, day, or week archive coverage insights |
 | `list_tool_usage_insights(query)` | Per-provider tool usage with explicit coverage gaps |
 | `list_archive_debt_insights(query)` | List governed archive-debt insights |
+| `import_annotation_batch(request, registry)` | Import a durable typed annotation batch under a declared schema version |
 
 
 ---

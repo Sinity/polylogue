@@ -154,6 +154,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify api-parity",
+        "verification",
+        "Check CLI/MCP/Python semantic-operation parity and the library documentation.",
+        "devtools.verify_api_parity",
+        json_flag=True,
+        flags=(("--check", "Exit non-zero when any parity or documentation finding is reported."),),
+        use_when=(
+            "After changing the Python facade, an MCP tool declaration, or docs/library-api.md, to prove every "
+            "public callable is still bound by a semantic operation or an explicit exclusion and that the "
+            "documented calls still match the live signatures."
+        ),
+        examples=(
+            "devtools verify api-parity",
+            "devtools verify api-parity --json",
+        ),
+    ),
+    CommandSpec(
         "gate",
         "verification",
         "Run one named invariant check.",
