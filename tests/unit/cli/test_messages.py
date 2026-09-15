@@ -127,6 +127,49 @@ class _FakeApi:
         objs = self._message_objects(msgs) if msgs else []
         return objs, total, self.lineage_completeness
 
+    async def read_transcript_window(self, session_id: str, **kwargs: object) -> object:
+        """Mirror the production route over this fake's storage read.
+
+        ``run_messages`` reaches the bound transcript-window route
+        (polylogue-ijbwq), so the double must answer that shape; the window
+        coordinates it reports are still computed from this fake's own page.
+        """
+
+        from polylogue.archive.query.transaction import QueryTransactionRequest
+        from polylogue.operations.transcript_window import (
+            TRANSCRIPT_WINDOW_ORDER,
+            TRANSCRIPT_WINDOW_PROJECTION,
+            TranscriptWindow,
+        )
+
+        kwargs.pop("continuation", None)
+        rows, total, completeness = await self.get_messages_paginated(session_id, **kwargs)
+        limit_value = kwargs.get("limit", 50)
+        offset_value = kwargs.get("offset", 0)
+        assert isinstance(limit_value, int)
+        assert isinstance(offset_value, int)
+        next_offset = offset_value + len(rows) if offset_value + len(rows) < total else None
+        return TranscriptWindow(
+            rows=list(rows),
+            total=total,
+            limit=limit_value,
+            offset=offset_value,
+            next_offset=next_offset,
+            continuation="continuation-token" if next_offset is not None else None,
+            lineage_complete=completeness.complete,
+            lineage_truncation_reason=(
+                str(completeness.truncation_reason) if completeness.truncation_reason is not None else None
+            ),
+            transaction=QueryTransactionRequest(
+                operation="sessions.read",
+                arguments={"ref": f"session:{session_id}"},
+                page_size=limit_value,
+                offset=offset_value,
+                projection=TRANSCRIPT_WINDOW_PROJECTION,
+                stable_order=TRANSCRIPT_WINDOW_ORDER,
+            ),
+        )
+
     async def iter_messages(
         self,
         session_id: str,

@@ -474,30 +474,20 @@ async def execute_session_operation(api: Any, request: SessionOperation, *, raw_
             raise ValueError("session not found")
         return evidence
     if isinstance(request, SessionRead):
+        from polylogue.operations.transcript_window import message_transcript_window
         from polylogue.surfaces.payloads import message_row_envelope_from_domain
 
-        request, tx = _transaction(request)
-
-        # Repository composition owns lineage. Bind before and after it so a
-        # concurrent archive mutation cannot issue a misleading continuation.
-        async def frame() -> QueryTransactionRequest:
-            return await QueryTransaction(api.archive_root, tx).run(lambda archive: _frame(archive, tx))
-
-        framed = await frame()
-        messages, total, completeness = await api.get_messages_paginated(
-            request.ref.removeprefix("session:"), limit=request.limit, offset=request.offset
-        )
-        tx = framed
-        await frame()
-        gaps = [] if completeness.complete else [str(completeness.truncation_reason)]
+        # The transcript window has exactly one execution route
+        # (polylogue-ijbwq): this operation owns the *projection* onto the
+        # session-owner page, not the window arithmetic, snapshot binding or
+        # continuation token, which every public surface now shares.
+        session_id = request.ref.removeprefix("session:")
+        window = await message_transcript_window(api, request)
         return _page(
-            [
-                message_row_envelope_from_domain(message, session_id=request.ref.removeprefix("session:"))
-                for message in messages
-            ],
-            total,
-            framed,
-            gaps=gaps,
+            [message_row_envelope_from_domain(message, session_id=session_id) for message in window.rows],
+            window.total,
+            window.transaction,
+            gaps=window.gaps,
         )
     assert isinstance(request, ResumeContext)
     from polylogue.context.preamble import build_context_preamble_payload

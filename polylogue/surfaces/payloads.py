@@ -3964,6 +3964,17 @@ class SessionMessagesResponsePayload(SurfacePayloadModel):
     total: int
     limit: int
     offset: int
+    # polylogue-ijbwq: the window's own continuation coordinates. Before this
+    # the CLI and MCP message-row surfaces could name a window but not resume
+    # one safely -- they re-asked for an offset, which a write landing between
+    # pages shifts. ``continuation`` is the opaque snapshot-bound token every
+    # surface now mints from the one execution route
+    # (``polylogue/operations/transcript_window.py``); resuming it after a
+    # write revalidates the archive epoch and refuses as stale rather than
+    # paging into moved rows. ``next_offset`` is null exactly when the window
+    # is the last one.
+    next_offset: int | None = None
+    continuation: str | None = None
     # polylogue-ppkj: whether ``messages`` is a page of the full composed
     # lineage transcript, or was silently truncated by a dangling branch
     # point / depth-limited composition. Mirrors the MCP surface's

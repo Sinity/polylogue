@@ -1097,38 +1097,63 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 )
 
                 window_offset = offset or 0
+                window_continuation: str | None = None
                 if continuation is not None:
-                    token = continuation.removeprefix("message-offset:")
-                    if not token.isdecimal():
-                        return hooks.error_json(
-                            "invalid messages continuation", code="invalid_continuation", tool="read"
-                        )
-                    window_offset = int(token)
-                messages, total, completeness = await hooks.get_polylogue().get_messages_paginated(
-                    session_id or normalized,
-                    limit=hooks.clamp_limit(limit),
-                    offset=window_offset,
+                    # Two accepted forms, one issued form. ``message-offset:<n>``
+                    # is the plain decimal coordinate the ``topology`` view also
+                    # speaks; anything else is the opaque snapshot-bound token
+                    # this route now mints and every other surface can read.
+                    if continuation.startswith("message-offset:"):
+                        token = continuation.removeprefix("message-offset:")
+                        if not token.isdecimal():
+                            return hooks.error_json(
+                                "invalid messages continuation", code="invalid_continuation", tool="read"
+                            )
+                        window_offset = int(token)
+                    else:
+                        window_continuation = continuation
+                from polylogue.archive.query.transaction import (
+                    QueryContinuationInvalidError,
+                    QueryContinuationStaleError,
                 )
-                return hooks.json_payload(
-                    SessionMessagesResponsePayload(
-                        session_id=session_id or normalized,
-                        messages=tuple(
-                            message_row_envelope_from_domain(message, session_id=session_id or normalized)
-                            for message in messages
-                        ),
-                        total=total,
+
+                target = session_id or normalized
+                try:
+                    window = await hooks.get_polylogue().read_transcript_window(
+                        target,
                         limit=hooks.clamp_limit(limit),
                         offset=window_offset,
-                        lineage_complete=completeness.complete,
-                        lineage_truncation_reason=completeness.truncation_reason,
+                        continuation=window_continuation,
+                    )
+                except QueryContinuationStaleError as exc:
+                    # Same typed refusal the query tool gives: a write since
+                    # the token was issued is never answered with shifted rows.
+                    return hooks.error_json(str(exc), code=exc.code, tool="read")
+                except QueryContinuationInvalidError as exc:
+                    return hooks.error_json(str(exc), code=exc.code, tool="read")
+                messages = window.rows
+                total = window.total
+                return hooks.json_payload(
+                    SessionMessagesResponsePayload(
+                        session_id=target,
+                        messages=tuple(
+                            message_row_envelope_from_domain(message, session_id=target) for message in messages
+                        ),
+                        total=total,
+                        limit=window.limit,
+                        offset=window.offset,
+                        next_offset=window.next_offset,
+                        continuation=window.continuation,
+                        lineage_complete=window.lineage_complete,
+                        lineage_truncation_reason=window.lineage_truncation_reason,
                         authority=authority_for_config(
                             hooks.get_polylogue().config,
                             server_identity="direct",
                         ),
                         outcome=lineage_page_outcome(
                             matched=total,
-                            complete=completeness.complete,
-                            truncation_reason=completeness.truncation_reason,
+                            complete=window.lineage_complete,
+                            truncation_reason=window.lineage_truncation_reason,
                         ),
                     )
                 )

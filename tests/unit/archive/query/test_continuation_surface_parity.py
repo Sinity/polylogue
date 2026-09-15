@@ -13,6 +13,10 @@ by all three, rather than three independently-drifting per-surface
 implementations (the exact failure mode the shared-transaction program
 guards against, per polylogue-z9gh.9's #2472/#2470 partitioning-bug history).
 
+The second half of this module covers the *transcript window* request across
+four surfaces (Python API, CLI, MCP, HTTP), which polylogue-ijbwq put behind
+one bound execution route (``polylogue/operations/transcript_window.py``).
+
 These tests start a real HTTP server; they share an xdist group with the
 other web-reader HTTP lane to avoid cross-worker port/event-loop
 interference (tests/unit/daemon/test_web_reader.py).
@@ -243,3 +247,172 @@ async def test_continuation_stale_epoch_rejected_identically_across_http_api_mcp
             )
         )
     assert mcp_stale["code"] == "query_continuation_stale"
+
+
+# ---------------------------------------------------------------------------
+# Transcript window (polylogue-ijbwq)
+#
+# The tests above cover the ``query-units`` request.  The transcript window --
+# "messages [offset, offset + limit) of this session" -- had no such coverage
+# because until polylogue-ijbwq only one of its four surfaces bound a snapshot
+# at all: the CLI's session-document route.  The other three resumed by
+# re-asking an offset, which a write landing between pages silently shifts.
+#
+# Anti-vacuity for both tests below: point any one surface back at
+# ``Polylogue.get_messages_paginated`` with its own offset arithmetic (that is,
+# re-split the route this bead unified) and that surface answers the resume
+# with rows instead of refusing, so the parity assertion fails naming it.
+# ---------------------------------------------------------------------------
+
+
+def _write_window_session(archive_root: Path, native_id: str, count: int) -> str:
+    with ArchiveStore(archive_root) as archive_db:
+        return write_index_session(
+            archive_db,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=native_id,
+                title="Transcript window continuation parity",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id=f"m{index}",
+                        role=Role.USER if index % 2 == 0 else Role.ASSISTANT,
+                        text=f"window body {index}",
+                        timestamp=f"2026-01-01T00:00:{index:02d}Z",
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"window body {index}")],
+                    )
+                    for index in range(count)
+                ],
+            ),
+        )
+
+
+def _cli_messages_json(session_id: str, *, args: list[str]) -> tuple[int, str]:
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    result = CliRunner().invoke(
+        cli,
+        ["read", f"session:{session_id}", "--view", "messages", "--format", "json", *args],
+        catch_exceptions=True,
+    )
+    if result.exception is not None and not isinstance(result.exception, SystemExit):
+        raise result.exception
+    return result.exit_code, result.output
+
+
+async def test_transcript_window_continuation_resumes_identically_across_surfaces(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A window token minted anywhere resumes to the same page everywhere.
+
+    Production dependencies exercised: ``Polylogue.read_transcript_window``,
+    the CLI ``read --view messages --continuation``, the MCP ``read`` tool's
+    ``messages`` view and ``GET /api/sessions/:id/messages?continuation=`` --
+    all four reaching ``polylogue/operations/transcript_window.py``.
+    """
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    session_id = _write_window_session(archive_root, "window-parity", 4)
+
+    archive = Polylogue(archive_root=archive_root)
+    first = await archive.read_transcript_window(session_id, limit=2, offset=0)
+    assert first.continuation is not None
+    token = first.continuation
+
+    api_second = await archive.read_transcript_window(session_id, continuation=token)
+    api_ids = [str(message.id) for message in api_second.rows]
+    assert api_second.offset == 2
+    assert api_second.continuation is None
+
+    exit_code, output = _cli_messages_json(session_id, args=["--continuation", token])
+    assert exit_code == 0, output
+    cli_payload = cast(dict[str, object], json.loads(output))
+    cli_ids = [str(cast(dict[str, object], row)["id"]) for row in cast(list[object], cli_payload["messages"])]
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        mcp_payload = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["read"].fn,
+                ref=f"session:{session_id}",
+                view="messages",
+                continuation=token,
+            )
+        )
+    assert "error" not in mcp_payload, mcp_payload
+    mcp_ids = [str(row["id"]) for row in mcp_payload["messages"]]
+
+    with _running_http_server() as base_url:
+        http_payload = cast(
+            dict[str, object],
+            _get_json(base_url, f"/api/sessions/{session_id}/messages?continuation={quote(token, safe='')}"),
+        )
+    http_ids = [str(cast(dict[str, object], row)["id"]) for row in cast(list[object], http_payload["messages"])]
+
+    assert api_ids == cli_ids == mcp_ids == http_ids
+    assert len(api_ids) == 2
+    assert int(cast(int, cli_payload["offset"])) == int(mcp_payload["offset"]) == 2
+    assert int(cast(int, http_payload["offset"])) == 2
+
+
+async def test_transcript_window_stale_continuation_rejected_identically_across_surfaces(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A window token issued before a write lands is refused the same way everywhere.
+
+    Production dependency exercised: ``bind_snapshot`` in
+    ``polylogue/operations/transcript_window.py`` calls
+    ``validate_continuation_epoch`` on every resume, whichever surface asked.
+    Bypassing it on one surface would let a stale offset page into rows the
+    write moved; here that surface would return 200/rows while the other three
+    raise ``query_continuation_stale``.
+    """
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    session_id = _write_window_session(archive_root, "stale-window-parity", 4)
+
+    archive = Polylogue(archive_root=archive_root)
+    first = await archive.read_transcript_window(session_id, limit=2, offset=0)
+    assert first.continuation is not None
+    token = first.continuation
+
+    # A write after the token was issued moves the shared archive epoch.
+    _write_needle_message(archive_root, "stale-window-mutation", "unrelated write")
+
+    with pytest.raises(QueryContinuationStaleError):
+        await archive.read_transcript_window(session_id, continuation=token)
+
+    exit_code, output = _cli_messages_json(session_id, args=["--continuation", token])
+    assert exit_code != 0, output
+    assert "query_continuation_stale" in output, output
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        mcp_stale = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["read"].fn,
+                ref=f"session:{session_id}",
+                view="messages",
+                continuation=token,
+            )
+        )
+    assert mcp_stale["code"] == "query_continuation_stale", mcp_stale
+
+    with _running_http_server() as base_url:
+        http_status, http_payload = _request_json(
+            base_url, f"/api/sessions/{session_id}/messages?continuation={quote(token, safe='')}"
+        )
+    assert http_status == HTTPStatus.CONFLICT
+    assert cast(dict[str, object], http_payload)["error"] == "query_continuation_stale"

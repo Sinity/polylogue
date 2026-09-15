@@ -32,6 +32,8 @@ async def _invoke_read(mcp_server: MCPServerUnderTest, *, view: str) -> dict[str
         poly.get_messages_paginated = AsyncMock(
             return_value=((), 0, LineageCompleteness(complete=True, truncation_reason=None))
         )
+        # ``read(view="messages")`` reaches the bound transcript-window route
+        # (polylogue-ijbwq), which the shared mock already stubs.
         get_polylogue.return_value = poly
         raw = await invoke_surface_async(
             mcp_server._tool_manager._tools["read"].fn,

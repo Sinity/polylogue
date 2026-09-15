@@ -6,13 +6,17 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from polylogue.core.enums import Origin
+from polylogue.archive.message.roles import Role
+from polylogue.core.enums import MaterialOrigin, Origin
 
 Bound = Annotated[int, Field(ge=1, le=1000)]
 Offset = Annotated[int, Field(ge=0)]
 Text = Annotated[str, Field(min_length=1, max_length=8192)]
 Continuation = Annotated[str, Field(min_length=1, max_length=65536)]
 RawOrigin = Literal["claude-code-session", "codex-session"]
+#: Mirrors ``MessageTypeName`` in the storage query layer. Declared here rather
+#: than imported so an operation contract does not reach into storage.
+MessageTypeFilter = Literal["message", "summary", "tool_use", "tool_result", "thinking", "context", "protocol"]
 
 
 class Request(BaseModel):
@@ -41,8 +45,22 @@ class SessionSearch(SessionList):
 
 
 class SessionRead(Request):
+    """One bounded transcript window for an exact session reference.
+
+    The three message filters are part of the request identity, not of the
+    window: a continuation minted for ``message_role=("user",)`` cannot resume
+    an unfiltered read, because the two do not name the same row sequence.
+    They live here rather than only on ``Polylogue.get_messages_paginated`` so
+    that routing every surface through the one bound execution route
+    (``polylogue/operations/transcript_window.py``) preserves the selection
+    vocabulary instead of dropping it (polylogue-ijbwq).
+    """
+
     operation: Literal["sessions.read"] = "sessions.read"
     ref: Text
+    message_role: tuple[Role, ...] = ()
+    message_type: MessageTypeFilter | None = None
+    material_origin: tuple[MaterialOrigin, ...] = ()
     limit: Bound = 50
     offset: Offset = 0
     continuation: Continuation | None = None

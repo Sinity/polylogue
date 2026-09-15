@@ -127,6 +127,7 @@ READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
 READ_BY_ID_EMPTY_METHODS: frozenset[str] = frozenset(
     {
         "get_messages_paginated",  # special: raises SessionNotFoundError
+        "read_transcript_window",  # the bound window over the same read; same refusal
         "get_session_stats",
         "get_session_work_event_insights",
         "get_session_phase_insights",

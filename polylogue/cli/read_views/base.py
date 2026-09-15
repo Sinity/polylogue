@@ -29,6 +29,9 @@ class ReadViewMessageOptions:
     limit: int | None = None
     offset: int = 0
     full: bool = False
+    #: Snapshot-bound continuation for the transcript window (polylogue-ijbwq).
+    #: It carries its own window coordinates, so it supersedes limit/offset.
+    continuation: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

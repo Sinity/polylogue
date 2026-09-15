@@ -31,6 +31,7 @@ def build_message_options(values: ReadViewOptionValues) -> ReadViewMessageOption
         limit=cast(int | None, values.get("limit")),
         offset=cast(int, values.get("offset", 0)),
         full=cast(bool, values.get("full", False)),
+        continuation=cast(str | None, values.get("continuation")),
     )
 
 
@@ -93,6 +94,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         offset=offset,
         full=options.full,
         output_format=invocation.output_format,
+        continuation=options.continuation,
     )
 
 
