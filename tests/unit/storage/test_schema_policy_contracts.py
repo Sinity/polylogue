@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import BlockType, Provider, Role
-from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
+from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, SchemaVersionMismatchError
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -292,8 +292,15 @@ def test_pinned_read_only_archive_open_rejects_drifted_physical_index_after_prom
 
 
 def test_read_only_archive_open_does_not_bootstrap_missing_tiers(tmp_path: Path) -> None:
-    """Read/status surfaces must not create an empty archive as a side effect."""
-    with pytest.raises(sqlite3.OperationalError):
+    """Read/status surfaces must not create an empty archive as a side effect.
+
+    #5162 typed the refusal: an absent index tier raises
+    ``ArchiveTierUnavailableError`` rather than leaking the driver's
+    ``sqlite3.OperationalError``. The subject of this test is the assertion
+    below -- that the refusal creates nothing -- and the narrow expected type
+    keeps it red if the boundary ever re-leaks a raw driver error.
+    """
+    with pytest.raises(ArchiveTierUnavailableError):
         ArchiveStore.open_existing(tmp_path, read_only=True).close()
 
     assert not any(tmp_path.glob("*.db"))

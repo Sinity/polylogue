@@ -14,9 +14,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from tests.infra.daemon_operations import cli_daemon_archive
 
 
 def test_compare_without_verdict_prints_blinded_pair_and_records_nothing(
@@ -53,66 +55,75 @@ def test_compare_without_verdict_prints_blinded_pair_and_records_nothing(
 
 def test_compare_with_verdict_records_and_is_readable_via_calibration(
     cli_workspace: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner = CliRunner()
-    record = runner.invoke(
-        cli,
-        [
-            "compare",
-            "--left",
-            "session:codex:a",
-            "--right",
-            "session:codex:b",
-            "--dimension",
-            "quality",
-            "--rubric",
-            "quality-v1",
-            "--verdict",
-            "prefer_left",
-            "--actor-ref",
-            "agent:worker",
-            "--exec-context-id",
-            "ctx:1",
-            "--json",
-        ],
-    )
-    assert record.exit_code == 0, record.output
-    recorded = json.loads(record.output)
-    assert recorded["verdict"] == "prefer_left"
-    assert recorded["revealed"]["left"]["ref"] == "session:codex:a"
+    """#5172 routed ``compare``'s write through the declared daemon mutation.
 
-    # A second recording of the same operator (gold) judgment on the same
-    # comparison lets --calibration compute a real agreement rate against it.
-    gold = runner.invoke(
-        cli,
-        [
-            "compare",
-            "--left",
-            "session:codex:a",
-            "--right",
-            "session:codex:b",
-            "--dimension",
-            "quality",
-            "--rubric",
-            "quality-v1",
-            "--verdict",
-            "prefer_left",
-            "--actor-ref",
-            "user:local",
-            "--exec-context-id",
-            "ctx:gold",
-            "--json",
-        ],
-    )
-    assert gold.exit_code == 0, gold.output
+    The command owns syntax, preview and refusal; the resident daemon is the
+    sole writer. A test that wants to observe what the mutation actually does
+    therefore has to supply the daemon the command requires -- which keeps the
+    production route real rather than mocking the facade.
+    """
+    with cli_daemon_archive(cli_workspace["archive_root"], monkeypatch):
+        runner = CliRunner()
+        record = runner.invoke(
+            cli,
+            [
+                "compare",
+                "--left",
+                "session:codex:a",
+                "--right",
+                "session:codex:b",
+                "--dimension",
+                "quality",
+                "--rubric",
+                "quality-v1",
+                "--verdict",
+                "prefer_left",
+                "--actor-ref",
+                "agent:worker",
+                "--exec-context-id",
+                "ctx:1",
+                "--json",
+            ],
+        )
+        assert record.exit_code == 0, record.output
+        recorded = json.loads(record.output)
+        assert recorded["verdict"] == "prefer_left"
+        assert recorded["revealed"]["left"]["ref"] == "session:codex:a"
 
-    calibration = runner.invoke(
-        cli,
-        ["compare", "--calibration", "--gold-actor", "user:local", "--json"],
-    )
-    assert calibration.exit_code == 0, calibration.output
-    reports = json.loads(calibration.output)
-    worker_reports = [r for r in reports if r["actor_ref"] == "agent:worker"]
-    assert len(worker_reports) == 1
-    assert worker_reports[0]["agreement_rate"] == 1.0
-    assert worker_reports[0]["n_gold_overlap"] == 1
+        # A second recording of the same operator (gold) judgment on the same
+        # comparison lets --calibration compute a real agreement rate against it.
+        gold = runner.invoke(
+            cli,
+            [
+                "compare",
+                "--left",
+                "session:codex:a",
+                "--right",
+                "session:codex:b",
+                "--dimension",
+                "quality",
+                "--rubric",
+                "quality-v1",
+                "--verdict",
+                "prefer_left",
+                "--actor-ref",
+                "user:local",
+                "--exec-context-id",
+                "ctx:gold",
+                "--json",
+            ],
+        )
+        assert gold.exit_code == 0, gold.output
+
+        calibration = runner.invoke(
+            cli,
+            ["compare", "--calibration", "--gold-actor", "user:local", "--json"],
+        )
+        assert calibration.exit_code == 0, calibration.output
+        reports = json.loads(calibration.output)
+        worker_reports = [r for r in reports if r["actor_ref"] == "agent:worker"]
+        assert len(worker_reports) == 1
+        assert worker_reports[0]["agreement_rate"] == 1.0
+        assert worker_reports[0]["n_gold_overlap"] == 1
