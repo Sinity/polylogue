@@ -218,16 +218,22 @@ def memory_bounded_worker_cap(
 ) -> tuple[int, dict[str, Any]]:
     """The widest run this job's pytest cgroup may hold right now.
 
-    Both readings are live at launch.  The cgroup is the hard boundary for
-    this process, while host ``MemAvailable`` is the bound on what the kernel
-    can hand it; whichever is tighter wins.  The pytest pool's admission
-    decision still owns queue pressure, and the derived ``CORPUS_MAX_WORKERS``
-    cap remains the upper bound even when both readings are roomy.
+    The pytest cgroup is the only bound that narrows the width.  Host
+    ``MemAvailable`` is an instantaneous reading of a resource every other
+    agent on the machine is also taking from: letting it narrow an
+    already-admitted run means an unrelated agent allocating for a second
+    decides how wide the corpus runs, and this suite is SQLite-IO-bound, so
+    that width is not recovered later.  Admission under host pressure is the
+    pytest pool's decision and is already made before this runs; the host
+    reading is kept in the receipt as an observation of the machine at launch.
+
+    The reading is live at launch, so a job that waited in the queue is sized
+    against the budget it actually has.  The derived ``CORPUS_MAX_WORKERS``
+    cap remains the upper bound even when the cgroup is roomy.
     """
     host = available_memory_mib(meminfo=meminfo)
     cgroup = pytest_slot_available_mib(process_cgroup=process_cgroup, root=cgroup_root)
-    measured = [value for value in (host, cgroup) if value is not None]
-    if not measured:
+    if cgroup is None:
         return requested, {
             "basis": "unmeasured",
             "host_available_mib": host,
@@ -236,12 +242,10 @@ def memory_bounded_worker_cap(
             "requested_workers": requested,
             "narrowed": False,
         }
-    available = min(measured)
-    workers = max(1, min(requested, width_within(available)))
-    basis = "cgroup_budget" if cgroup is not None and (host is None or cgroup <= host) else "mem_available"
+    workers = max(1, min(requested, width_within(cgroup)))
     return workers, {
-        "basis": basis,
-        "available_mib": available,
+        "basis": "cgroup_budget",
+        "available_mib": cgroup,
         "host_available_mib": host,
         "cgroup_available_mib": cgroup,
         "headroom_fraction": MEMORY_HEADROOM_FRACTION,
