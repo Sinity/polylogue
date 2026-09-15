@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol, TypeAlias, TypeVar, cast, runtime_checkable
 from unittest.mock import AsyncMock, MagicMock
 
-from polylogue.archive.models import Session
-from polylogue.core.enums import Provider
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATIONS, TARGET_PROMPTS, declared_tool_names
-from tests.infra.builders import make_conv, make_msg
 
 MCP_TOOL_NAME_BASELINE = frozenset({"query", "read", "get", "explain", "context", "status"})
 
@@ -235,64 +231,3 @@ def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
         return_value=BulkTagMutationResult(session_count=0, tag_count=0, affected_count=0, skipped_count=0)
     )
     return poly
-
-
-def make_mock_filter(results: Sequence[object] | None = None, **method_overrides: object) -> MagicMock:
-    """Create a chaining-capable SessionFilter mock."""
-    filt = MagicMock()
-    for method in (
-        "contains",
-        "exclude_text",
-        "provider",
-        "exclude_provider",
-        "tag",
-        "exclude_tag",
-        "has",
-        "title",
-        "id",
-        "since",
-        "until",
-        "sort",
-        "reverse",
-        "limit",
-        "sample",
-        "after",
-        "before",
-        "tags",
-    ):
-        getattr(filt, method).return_value = filt
-    filt.list = AsyncMock(return_value=results or [])
-    filt.count = AsyncMock(return_value=len(results or []))
-    filt.delete = AsyncMock(return_value=0)
-    for method_name, override_value in method_overrides.items():
-        method = getattr(filt, method_name)
-        if isinstance(override_value, Exception):
-            method.side_effect = override_value
-        else:
-            method.return_value = override_value
-    return filt
-
-
-def make_simple_session() -> Session:
-    """Return a representative session for MCP surface tests."""
-    return make_conv(
-        id="test:conv-123",
-        provider=Provider.CHATGPT,
-        title="Test Session",
-        messages=[
-            make_msg(
-                id="msg-1",
-                role="user",
-                text="Hello, how are you?",
-                timestamp=datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
-            ),
-            make_msg(
-                id="msg-2",
-                role="assistant",
-                text="I'm doing well, thank you!",
-                timestamp=datetime(2024, 1, 15, 10, 30, 30, tzinfo=timezone.utc),
-            ),
-        ],
-        created_at=datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
-        updated_at=datetime(2024, 1, 15, 10, 31, 0, tzinfo=timezone.utc),
-    )

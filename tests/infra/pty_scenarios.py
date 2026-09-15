@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import signal
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import cast
 
 from tests.infra.pty_cli import PtyEventLike, PtyResult, run_in_pty
-
-EventKind = Literal["write", "resize", "interrupt", "terminate"]
 
 
 @dataclass(frozen=True, slots=True)

@@ -86,15 +86,6 @@ def generate_large_jsonl(
     return lines
 
 
-def write_jsonl_file(
-    path: Path,
-    lines: list[str],
-) -> None:
-    """Write JSONL lines to a file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 def corrupt_line_malformed_json(lines: list[str], index: int) -> list[str]:
     """Replace a line with malformed JSON (broken syntax)."""
     result = list(lines)
