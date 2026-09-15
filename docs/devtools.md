@@ -73,6 +73,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools verify` | Run every quick gate, then a bounded affected selection or the explicit complete test corpus. |
 | `devtools verify api-parity` | Check CLI/MCP/Python semantic-operation parity and the library documentation. |
+| `devtools verify cli-acceptance` | Render, lint and measure the public CLI acceptance surface. |
 | `devtools verify provider-completeness` | Report provider/importer package completeness from OriginSpec declarations. |
 
 ### Generated Surfaces
