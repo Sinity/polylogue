@@ -409,9 +409,16 @@ _FTS_REPAIR_COUNT_KEY = "_fts_repair"
 
 
 def _needs_session_fts_repair(conn: sqlite3.Connection, session_id: str) -> bool:
-    from polylogue.storage.fts.session_repair import session_fts_needs_repair_sync
+    """Ask the FTS domain whether this unchanged session's partition drifted.
 
-    return session_fts_needs_repair_sync(conn, session_id)
+    Content-changed sessions are republished unconditionally; this covers the
+    re-ingest of unchanged content, where the partition can still be stale from
+    an interrupted earlier write. The rule is the FTS derivation's own
+    inspection, so there is no second staleness definition to drift from it.
+    """
+    from polylogue.storage.fts.derivation import session_partition_is_valid_sync
+
+    return not session_partition_is_valid_sync(conn, session_id)
 
 
 def _existing_native_message_ids(conn: sqlite3.Connection, session_id: str) -> set[str]:
