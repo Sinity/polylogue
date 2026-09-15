@@ -1,42 +1,10 @@
 {
   "artifact_counts": {
-    "session_document": 116
+    "agent_sidecar_meta": 116
   },
-  "cluster_count": 1,
-  "clusters": [
-    {
-      "artifact_kind": "session_document",
-      "bundle_scope_count": 35,
-      "cluster_id": "fd950579a81649c6",
-      "confidence": 1.0,
-      "dominant_keys": [
-        "artifactType",
-        "summary",
-        "updatedAt",
-        "version"
-      ],
-      "exact_structure_ids": [
-        "21f9bf3ee1efe680",
-        "fcfa792f1da4a3ea"
-      ],
-      "first_seen": "2025-12-09T02:29:52.403557+00:00",
-      "last_seen": "2026-03-03T15:52:35.826969+00:00",
-      "profile_tokens": [
-        "field:artifactType",
-        "field:summary",
-        "field:updatedAt",
-        "field:version",
-        "type:artifactType:string",
-        "type:summary:string",
-        "type:updatedAt:string",
-        "type:version:string"
-      ],
-      "promoted_package_version": "v1",
-      "provider": "antigravity",
-      "sample_count": 116
-    }
-  ],
-  "default_version": "v1",
-  "generated_at": "2026-05-11T04:57:24.939544+00:00",
+  "cluster_count": 0,
+  "clusters": [],
+  "default_version": "v3",
+  "generated_at": "2026-09-15T20:29:36.137323+00:00",
   "provider": "antigravity"
 }

@@ -22,6 +22,8 @@
       "bundle_scope_count": 0,
       "bundle_scope_identities": [],
       "exact_structure_ids": [],
+      "publication_omitted_structure_witness_count": 0,
+      "source_evidence_unretained_shape_observation_lower_bound": 0,
       "profile_family_ids": [],
       "profile_tokens": [],
       "observed_artifact_count": 2122,

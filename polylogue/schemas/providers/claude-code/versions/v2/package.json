@@ -535,6 +535,8 @@
         "17f6421752da7bb79e3c2008407d643d66acb38f965f1920f842d732e52d3105",
         "17f7a8e483a91f138712126317de452de041ef15e88e755cc908fba2034ff1a4"
       ],
+      "publication_omitted_structure_witness_count": 0,
+      "source_evidence_unretained_shape_observation_lower_bound": 0,
       "profile_family_ids": [],
       "profile_tokens": [],
       "observed_artifact_count": 10282,
@@ -1064,6 +1066,8 @@
         "0cdf012a3372fd00adef94e080b8e38a65013ce4d7017cd312e4a173e7b02f55",
         "0ce2f38c8759033bc474f44282d93c1630619a3fb49b87040ba89c3402bfa9f9"
       ],
+      "publication_omitted_structure_witness_count": 0,
+      "source_evidence_unretained_shape_observation_lower_bound": 0,
       "profile_family_ids": [],
       "profile_tokens": [],
       "observed_artifact_count": 4029,
@@ -1312,6 +1316,8 @@
         "fcead7142cc1ad37c53c4ce7f184f15c25dd7a316e3998eadc70742db37f72d0",
         "ff301c5e122c62a99226fdc6defec571ed6ae7dfec4e468048edfc5effb55d20"
       ],
+      "publication_omitted_structure_witness_count": 0,
+      "source_evidence_unretained_shape_observation_lower_bound": 0,
       "profile_family_ids": [],
       "profile_tokens": [],
       "observed_artifact_count": 1,
@@ -1320,5 +1326,5 @@
   ],
   "orphan_adjunct_counts": {},
   "workload_profile_file": null,
-  "observation_status": "current"
+  "observation_status": "historical"
 }

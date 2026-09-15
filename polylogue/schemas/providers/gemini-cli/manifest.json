@@ -1,11 +1,12 @@
 {
   "artifact_counts": {
     "session_document": 27,
+    "session_index": 144,
     "session_record_stream": 637
   },
   "cluster_count": 0,
   "clusters": [],
   "default_version": "v3",
-  "generated_at": "2026-09-08T18:47:21.562309+00:00",
+  "generated_at": "2026-09-15T20:28:46.639853+00:00",
   "provider": "gemini-cli"
 }
