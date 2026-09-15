@@ -112,13 +112,16 @@ def running_daemon_operations(
     seed_archive: Callable[[Path], None] | None = None,
     server_error_sink: queue.SimpleQueue[str] | None = None,
     compute_workers: int = 2,
+    compute_queue_units: int = 4,
 ) -> Iterator[DaemonOperationStack]:
     """Start one real machine operation stack rooted at ``archive_root``.
 
     ``seed_archive`` runs after bootstrap and before daemon startup. The shared
     compute adapter is passed to both the runtime and UDS server explicitly;
     no global adapter, browser route, configuration root, or daemon singleton
-    is used.
+    is used.  ``compute_workers``/``compute_queue_units`` size that one bounded
+    kernel: a test that deliberately saturates admission and one that measures
+    service under load need different sizes, and both must state which.
     """
 
     archive_root = archive_root.resolve()
@@ -144,7 +147,7 @@ def running_daemon_operations(
     bridge.run_sync("daemon.operation_journals.startup", prepare_operation_journals, archive_root)
     bridge.run_sync("daemon.operation_recovery.startup", recover_interrupted_operations, archive_root)
     kernel = BoundedComputeAdapter(
-        max_workers=compute_workers, queue_units=4, thread_name_prefix="test-daemon-operation"
+        max_workers=compute_workers, queue_units=compute_queue_units, thread_name_prefix="test-daemon-operation"
     )
     runtime = DaemonOperationRuntime(
         archive_root, write_bridge=bridge, execution_kernel=kernel, owner_loop=bridge.owner_loop
