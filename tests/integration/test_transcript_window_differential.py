@@ -29,6 +29,20 @@ Anti-vacuity — what turns these red:
 * ``test_mcp_messages_continuation_resumes_the_window`` — remove the
   ``message-offset:`` continuation branch and MCP refuses with
   ``invalid_continuation`` instead of returning the second page.
+* ``test_transcript_window_rank_and_provenance_are_identical_across_surfaces``
+  — rank (``position``) and provenance (``identity_source``,
+  ``material_origin``, ``message_type``, and the lineage topology fields) are
+  read off the domain message by every surface only because they all execute
+  the one bound route (``polylogue/operations/transcript_window.py``).  Point
+  any one surface back at ``Polylogue.get_messages_paginated`` with its own
+  window arithmetic and it can still agree on ids while disagreeing on the
+  window's rank origin; this test compares the fields themselves.
+* ``test_every_surface_mints_a_snapshot_bound_continuation`` — drop the
+  snapshot binding on any one surface (stop threading ``window.continuation``
+  into its payload, or resume by re-asking an offset) and that surface reports
+  ``continuation is None`` for a window that has a next page, while the other
+  three carry a token.  This is the property that was false on three of four
+  surfaces before polylogue-ijbwq.
 """
 
 from __future__ import annotations
@@ -108,6 +122,46 @@ def _get_json(base_url: str, path: str) -> dict[str, Any]:
     with urlopen(Request(f"{base_url}{path}"), timeout=10) as resp:
         assert resp.status == HTTPStatus.OK, f"unexpected status {resp.status} for {path}"
         return cast(dict[str, Any], json.loads(resp.read()))
+
+
+#: Rank and provenance facts every surface must report identically for the
+#: same window, as ``(public wire name, domain attribute)``.  ``position`` is
+#: the rank within the composed transcript; the rest name where the row came
+#: from and how its identity was decided.  The public spellings are the ones
+#: ``MESSAGE_TOPOLOGY_MASK`` declares, which is why a surface cannot quietly
+#: rename one.
+_RANK_AND_PROVENANCE: tuple[tuple[str, str], ...] = (
+    ("position", "position"),
+    ("identity_source", "identity_source"),
+    ("material_origin", "material_origin"),
+    ("message_type", "message_type"),
+    ("parent_message_id", "parent_id"),
+    ("variant_index", "branch_index"),
+    ("is_active_leaf", "is_active_leaf"),
+)
+
+
+def _scalar(value: object) -> object:
+    """Normalise enum/str spellings so only real disagreement fails."""
+
+    return None if value is None else str(value)
+
+
+def _wire_facts(payload: dict[str, Any]) -> tuple[dict[str, object], ...]:
+    """Read the rank/provenance facts off one surface's serialized rows."""
+
+    rows = payload.get("messages")
+    assert isinstance(rows, list), f"no message rows in envelope: {sorted(payload)}"
+    return tuple({name: _scalar(row.get(name)) for name, _ in _RANK_AND_PROVENANCE} for row in rows)
+
+
+def _domain_facts(messages: object) -> tuple[dict[str, object], ...]:
+    """Read the same facts off the Python API's domain rows."""
+
+    return tuple(
+        {name: _scalar(getattr(message, attribute, None)) for name, attribute in _RANK_AND_PROVENANCE}
+        for message in cast("list[Any]", messages)
+    )
 
 
 def _row_ids(payload: dict[str, Any]) -> tuple[str, ...]:
@@ -280,3 +334,182 @@ async def test_mcp_messages_continuation_resumes_the_window(
     assert _row_ids(resumed) != first
     # A malformed continuation is refused typed, never silently read as page one.
     assert json.dumps(bad).find("invalid_continuation") >= 0, bad
+
+
+async def _api_window_payload(archive_root: Path, session_id: str, *, limit: int, offset: int) -> dict[str, Any]:
+    """The Python API's own transcript-window entry point, serialized like the rest."""
+
+    archive = Polylogue(archive_root=archive_root)
+    try:
+        window = await archive.read_transcript_window(session_id, limit=limit, offset=offset)
+    finally:
+        await archive.close()
+    return {
+        "messages": list(_domain_facts(window.rows)),
+        "total": window.total,
+        "limit": window.limit,
+        "offset": window.offset,
+        "next_offset": window.next_offset,
+        "continuation": window.continuation,
+    }
+
+
+def _cli_window_payload(session_id: str, *, limit: int, offset: int) -> dict[str, Any]:
+    from polylogue.cli.click_app import cli
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "read",
+            f"session:{session_id}",
+            "--view",
+            "messages",
+            "--limit",
+            str(limit),
+            "--offset",
+            str(offset),
+            "--format",
+            "json",
+        ],
+        catch_exceptions=True,
+    )
+    if result.exception is not None and not isinstance(result.exception, SystemExit):
+        raise result.exception
+    assert result.exit_code == 0, f"CLI read failed ({result.exit_code}): {result.output}"
+    return cast("dict[str, Any]", json.loads(result.output))
+
+
+async def _mcp_window_payload(
+    mcp_server: MCPServerUnderTest,
+    archive_root: Path,
+    session_id: str,
+    *,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        raw = await invoke_surface_async(
+            mcp_server._tool_manager._tools["read"].fn,
+            ref=f"session:{session_id}",
+            view="messages",
+            limit=limit,
+            offset=offset,
+        )
+    payload = cast("dict[str, Any]", json.loads(raw))
+    assert "error" not in payload, payload
+    return payload
+
+
+async def test_transcript_window_rank_and_provenance_are_identical_across_surfaces(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same window, same rank and same provenance -- not merely the same ids.
+
+    Anti-vacuity: agreeing on ids only proves the four surfaces selected the
+    same rows.  These fields prove they were composed by the same route: point
+    one surface back at its own ``get_messages_paginated`` call with its own
+    offset arithmetic and it can still list the right ids while reporting a
+    ``position`` relative to its page rather than to the transcript.
+    """
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    session_id = _seed_session(archive_root)
+
+    limit, offset = 2, 2
+    api = await _api_window_payload(archive_root, session_id, limit=limit, offset=offset)
+    cli = _wire_facts(_cli_window_payload(session_id, limit=limit, offset=offset))
+    mcp = _wire_facts(await _mcp_window_payload(mcp_server, archive_root, session_id, limit=limit, offset=offset))
+    with _running_http_server() as base_url:
+        http = _wire_facts(
+            _get_json(base_url, f"/api/sessions/{session_id}/messages?limit={limit}&offset={offset}"),
+        )
+
+    api_facts = tuple(api["messages"])
+    assert len(api_facts) == limit, f"the window itself is wrong before parity matters: {api_facts}"
+    # Rank is the transcript position, not the position within the page: the
+    # third and fourth messages of a six-message session.
+    assert [fact["position"] for fact in api_facts] == ["2", "3"]
+    assert api_facts == cli == mcp == http
+
+
+async def test_every_surface_mints_a_snapshot_bound_continuation(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A window with a next page carries a resumable token on all four surfaces.
+
+    Anti-vacuity: this is exactly the property that was false before
+    polylogue-ijbwq -- only the CLI session-document route minted a
+    snapshot-bound continuation and the other three resumed by re-asking an
+    offset.  Drop the binding on any one surface (stop threading
+    ``window.continuation`` into its payload) and that surface reports ``None``
+    here while the other three carry a token.  The token is also proved
+    *usable*, not merely present, by resuming it on MCP.
+    """
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    session_id = _seed_session(archive_root)
+
+    half = _MESSAGE_COUNT // 2
+    api = await _api_window_payload(archive_root, session_id, limit=half, offset=0)
+    cli = _cli_window_payload(session_id, limit=half, offset=0)
+    mcp = await _mcp_window_payload(mcp_server, archive_root, session_id, limit=half, offset=0)
+    with _running_http_server() as base_url:
+        http = _get_json(base_url, f"/api/sessions/{session_id}/messages?limit={half}&offset=0")
+
+    for name, payload in (("api", api), ("cli", cli), ("mcp", mcp), ("http", http)):
+        assert payload["next_offset"] == half, f"{name} reported next_offset={payload['next_offset']!r}"
+        assert isinstance(payload["continuation"], str) and payload["continuation"], (
+            f"{name} minted no snapshot-bound continuation for a window that has a next page"
+        )
+
+    # One vocabulary: every surface mints a token for the same transaction --
+    # same operation, arguments, projection, order, window and bound archive
+    # epoch.  (The encoded bytes carry the issuing wall clock, so they are
+    # compared decoded rather than byte-for-byte.)
+    from polylogue.archive.query.transaction import QueryContinuation
+
+    decoded = {
+        name: QueryContinuation.decode(str(payload["continuation"]))
+        for name, payload in (("api", api), ("cli", cli), ("mcp", mcp), ("http", http))
+    }
+    requests = {
+        name: (
+            token.request.operation,
+            json.dumps(dict(token.request.arguments), sort_keys=True, default=str),
+            token.request.page_size,
+            token.request.offset,
+            token.request.projection,
+            token.request.stable_order,
+            token.request.archive_epoch,
+        )
+        for name, token in decoded.items()
+    }
+    assert len(set(requests.values())) == 1, requests
+    assert len({token.result_ref for token in decoded.values()}) == 1
+
+    first_ids = _row_ids(mcp)
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        resumed = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["read"].fn,
+                ref=f"session:{session_id}",
+                view="messages",
+                continuation=str(mcp["continuation"]),
+            )
+        )
+    assert "error" not in resumed, resumed
+    assert int(resumed["offset"]) == half
+    assert _row_ids(resumed) != first_ids
+    assert resumed["continuation"] is None and resumed["next_offset"] is None

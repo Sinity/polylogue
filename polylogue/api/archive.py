@@ -142,6 +142,7 @@ if TYPE_CHECKING:
     from polylogue.core.protocols import ProgressCallback
     from polylogue.operations import ArchiveStats
     from polylogue.operations.mutation_transaction import MutationActuator, MutationPlan, MutationReceipt
+    from polylogue.operations.transcript_window import TranscriptWindow
     from polylogue.readiness import ReadinessReport
     from polylogue.sources.parsers.hermes_lifecycle import HermesLifecycleReconciliation
     from polylogue.storage.derived.session.runtime import SessionInsightCounts
@@ -6383,6 +6384,44 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if content_projection is not None and content_projection.filters_content():
             messages = project_message_content(messages, content_projection)
         return messages, total, completeness
+
+    async def read_transcript_window(
+        self,
+        session_id: str,
+        *,
+        message_role: MessageRoleFilter = (),
+        message_type: MessageTypeName | None = None,
+        material_origin: tuple[MaterialOrigin, ...] = (),
+        limit: int = 50,
+        offset: int = 0,
+        continuation: str | None = None,
+    ) -> TranscriptWindow[Message]:
+        """Read one snapshot-bound transcript window (polylogue-ijbwq).
+
+        This is the Python API's entry to the single execution route every
+        public surface shares. ``get_messages_paginated`` is the storage read
+        inside it and answers rows only; this method additionally binds the
+        archive snapshot, validates a resumed continuation's epoch and mints
+        the next continuation, so a write landing between two pages is refused
+        as stale here exactly as it is on the CLI, MCP and HTTP.
+        """
+
+        from polylogue.operations.transcript_window import message_transcript_window, window_request
+
+        return await message_transcript_window(
+            self,
+            window_request(
+                session_id,
+                limit=limit,
+                offset=offset,
+                continuation=continuation,
+                filters={
+                    "message_role": tuple(message_role),
+                    "message_type": message_type,
+                    "material_origin": tuple(material_origin),
+                },
+            ),
+        )
 
     def iter_messages(
         self,

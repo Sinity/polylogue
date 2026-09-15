@@ -45,7 +45,7 @@ ReadViewExecutionKind = Literal[
 READ_VIEW_GLOBAL_OPTION_NAMES = frozenset({"limit", "offset"})
 
 
-MESSAGE_READ_VIEW_OPTION_NAMES = frozenset({"full", "limit", "offset"})
+MESSAGE_READ_VIEW_OPTION_NAMES = frozenset({"full", "limit", "offset", "continuation"})
 CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
 CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
     {

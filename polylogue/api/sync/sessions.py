@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from polylogue.archive.semantic.content_projection import ContentProjectionSpec
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
+    from polylogue.operations.transcript_window import TranscriptWindow
     from polylogue.readiness import ReadinessReport
     from polylogue.storage.runtime import LineageCompleteness
     from polylogue.storage.search import SearchResult
@@ -55,6 +56,29 @@ class SyncSessionQueriesMixin:
                 limit=limit,
                 offset=offset,
                 content_projection=content_projection,
+            )
+        )
+
+    def read_transcript_window(
+        self,
+        session_id: str,
+        *,
+        message_role: MessageRoleFilter = (),
+        message_type: MessageTypeName | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        continuation: str | None = None,
+    ) -> TranscriptWindow[Message]:
+        """Synchronous mirror of the one bound transcript-window route."""
+
+        return run_coroutine_sync(
+            self._facade.read_transcript_window(
+                session_id,
+                message_role=message_role,
+                message_type=message_type,
+                limit=limit,
+                offset=offset,
+                continuation=continuation,
             )
         )
 

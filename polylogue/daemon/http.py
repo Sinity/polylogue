@@ -21,10 +21,15 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
 from time import monotonic, time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
-from polylogue.archive.query.transaction import archive_read_context
+from polylogue.archive.query.transaction import (
+    QueryContinuationInvalidError,
+    QueryContinuationStaleError,
+    archive_read_context,
+)
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES, read_view_http_capability_payloads
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.errors import DatabaseError, PolylogueError
@@ -4938,15 +4943,25 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if view == "messages":
             limit = self._get_int(params, "limit", 50)
             offset = self._get_int(params, "offset", 0)
+            window_continuation = self._get_param(params, "continuation")
             archive_root = _web_reader_archive_root()
-            if archive_root is not None:
-                payload: object | None = self._do_archive_get_messages(archive_root, conv_id, limit, offset)
-            else:
+            try:
+                if archive_root is not None:
+                    payload: object | None = self._do_archive_get_messages(
+                        archive_root, conv_id, limit, offset, window_continuation
+                    )
+                else:
 
-                async def _get(poly: Polylogue) -> object:
-                    return await self._do_get_messages(poly, conv_id, limit, offset)
+                    async def _get(poly: Polylogue) -> object:
+                        return await self._do_get_messages(poly, conv_id, limit, offset, window_continuation)
 
-                payload = self._sync_run(_get)
+                    payload = self._sync_run(_get)
+            except QueryContinuationStaleError as exc:
+                self._send_error(HTTPStatus.CONFLICT, exc.code, str(exc))
+                return
+            except QueryContinuationInvalidError as exc:
+                self._send_error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))
+                return
         elif view == "context":
             if output_format != "json":
                 self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
@@ -5134,17 +5149,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
         offset = max(0, self._get_int(params, "offset", 0))
+        continuation = self._get_param(params, "continuation")
 
         archive_root = _web_reader_archive_root()
-        if archive_root is not None:
-            self._send_json(HTTPStatus.OK, self._do_archive_get_messages(archive_root, conv_id, limit, offset))
+        try:
+            if archive_root is not None:
+                payload = self._do_archive_get_messages(archive_root, conv_id, limit, offset, continuation)
+            else:
+
+                async def _get(poly: Polylogue) -> object:
+                    return await self._do_get_messages(poly, conv_id, limit, offset, continuation)
+
+                payload = self._sync_run(_get)
+        except QueryContinuationStaleError as exc:
+            # A write landed since the token was issued; resuming it would page
+            # into shifted rows, so the route refuses rather than answers.
+            self._send_error(HTTPStatus.CONFLICT, exc.code, str(exc))
             return
-
-        async def _get(poly: Polylogue) -> object:
-            return await self._do_get_messages(poly, conv_id, limit, offset)
-
-        result = self._sync_run(_get)
-        self._send_json(HTTPStatus.OK, result)
+        except QueryContinuationInvalidError as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, exc.code, str(exc))
+            return
+        self._send_json(HTTPStatus.OK, payload)
 
     async def _do_get_messages(
         self,
@@ -5152,12 +5177,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv_id: str,
         limit: int,
         offset: int,
+        continuation: str | None = None,
     ) -> object:
         started_at = monotonic()
-        messages, total, completeness = await poly.get_messages_paginated(
-            conv_id,
-            limit=limit,
-            offset=offset,
+        # polylogue-ijbwq: window arithmetic, snapshot binding and the
+        # continuation token come from the one shared execution route; this
+        # handler owns only the web-reader projection below.
+        window = await poly.read_transcript_window(conv_id, limit=limit, offset=offset, continuation=continuation)
+        messages, total = window.rows, window.total
+        completeness = SimpleNamespace(
+            complete=window.lineage_complete,
+            truncation_reason=window.lineage_truncation_reason,
         )
         session_id = str(conv_id)
         session = await poly.get_session(conv_id)
@@ -5206,8 +5236,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             ],
             "semantic_entries": list(placement.session_entries),
             "total": total,
-            "limit": limit,
-            "offset": offset,
+            "limit": window.limit,
+            "offset": window.offset,
+            "next_offset": window.next_offset,
+            "continuation": window.continuation,
             "lineage_complete": completeness.complete,
             "lineage_truncation_reason": completeness.truncation_reason,
             "outcome": lineage_page_outcome(
@@ -5226,6 +5258,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv_id: str,
         limit: int,
         offset: int,
+        continuation: str | None = None,
     ) -> object:
         """Return a bounded ``[offset, offset + limit)`` page of a session's messages.
 
@@ -5238,6 +5271,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         (``polylogue/cli/messages.py``), which already builds its transcript
         from a bounded page rather than the full session.
         """
+        from polylogue.operations.transcript_window import read_transcript_window_sync, window_request
+
         started_at = monotonic()
         with archive_read_context(
             archive_root,
@@ -5250,20 +5285,51 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             try:
                 session_id = archive.resolve_session_id(conv_id)
-                envelope = archive.read_session_page(session_id, limit=limit, offset=offset)
             except KeyError:
                 return {
                     "messages": [],
                     "total": 0,
                     "limit": limit,
                     "offset": offset,
+                    "next_offset": None,
+                    "continuation": None,
                     "lineage_complete": True,
                     "lineage_truncation_reason": None,
                     "outcome": decide_outcome(matched=0, error="session_not_found").to_dict(),
                     "authority": authority,
                 }
-        page = list(envelope.messages)
-        total = envelope.total_message_count if envelope.total_message_count is not None else len(page)
+
+            composed: list[object] = []
+
+            def _read(page_limit: int, page_offset: int) -> tuple[list[object], int, object]:
+                # The web reader keeps its own row projection on purpose: the
+                # composed archive row carries source_session_id/inherited_prefix
+                # and the stored per-message word_count, which the domain
+                # ``Message`` model does not represent. What it no longer owns
+                # is the window itself (polylogue-ijbwq).
+                page_envelope = archive.read_session_page(session_id, limit=page_limit, offset=page_offset)
+                composed.append(page_envelope)
+                rows = list(page_envelope.messages)
+                page_total = (
+                    page_envelope.total_message_count if page_envelope.total_message_count is not None else len(rows)
+                )
+                return (
+                    cast("list[object]", rows),
+                    page_total,
+                    SimpleNamespace(
+                        complete=page_envelope.lineage_complete,
+                        truncation_reason=page_envelope.lineage_truncation_reason,
+                    ),
+                )
+
+            window = read_transcript_window_sync(
+                archive,
+                window_request(session_id, limit=limit, offset=offset, continuation=continuation),
+                read=_read,
+            )
+        envelope = cast("Any", composed[-1])
+        page = list(window.rows)
+        total = window.total
         placement = self._archive_semantic_card_placement(envelope)
         return {
             "session_id": envelope.session_id,
@@ -5279,8 +5345,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             ],
             "semantic_entries": list(placement.session_entries),
             "total": total,
-            "limit": limit,
-            "offset": offset,
+            "limit": window.limit,
+            "offset": window.offset,
+            "next_offset": window.next_offset,
+            "continuation": window.continuation,
             # polylogue-ppkj: the envelope already carries the read-time
             # completeness signal (read_session_page/read_archive_session_envelope
             # compute it); it was just never included in the response body.

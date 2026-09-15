@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from time import monotonic
+from types import SimpleNamespace
 from typing import cast
 
 import click
@@ -11,6 +12,7 @@ import click
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.message.models import Message
+from polylogue.archive.query.transaction import QueryContinuationInvalidError, QueryContinuationStaleError
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -37,6 +39,7 @@ def run_messages(
     offset: int = 0,
     full: bool = False,
     output_format: str | None = None,
+    continuation: str | None = None,
 ) -> None:
     """Execute the messages verb."""
     from polylogue.api import Polylogue
@@ -46,22 +49,30 @@ def run_messages(
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
             effective_limit = limit
             try:
-                messages, total, completeness = await api.get_messages_paginated(
-                    session_id,
-                    limit=effective_limit,
-                    offset=offset,
+                # polylogue-ijbwq: the window comes from the one bound
+                # execution route, so this verb reports the same rows, rank,
+                # provenance and continuation as the Python API, MCP and HTTP
+                # for the same (ref, limit, offset).
+                window = await api.read_transcript_window(
+                    session_id, limit=effective_limit, offset=offset, continuation=continuation
                 )
-                if full and offset + len(messages) < total:
-                    full_limit = max(total - offset, 0)
-                    messages, total, completeness = await api.get_messages_paginated(
-                        session_id,
-                        limit=full_limit,
-                        offset=offset,
-                    )
-                    effective_limit = full_limit
+                if full and window.next_offset is not None:
+                    effective_limit = max(window.total - window.offset, 1)
+                    window = await api.read_transcript_window(session_id, limit=effective_limit, offset=window.offset)
             except SessionNotFoundError:
                 env.ui.error(f"Session not found: {session_id}")
                 return
+            except (QueryContinuationStaleError, QueryContinuationInvalidError) as exc:
+                # The CLI refuses a stale or foreign continuation typed, with
+                # the same code the MCP and HTTP surfaces report, instead of
+                # silently re-reading a shifted window.
+                raise click.ClickException(f"{exc.code}: {exc}") from exc
+            messages = window.rows
+            total = window.total
+            completeness = SimpleNamespace(
+                complete=window.lineage_complete,
+                truncation_reason=window.lineage_truncation_reason,
+            )
 
             fmt = output_format or "markdown"
 
@@ -83,8 +94,10 @@ def run_messages(
                         session_id=session_id,
                         messages=tuple(message_row_envelope_from_domain(m, session_id=session_id) for m in messages),
                         total=total,
-                        limit=effective_limit,
-                        offset=offset,
+                        limit=window.limit,
+                        offset=window.offset,
+                        next_offset=window.next_offset,
+                        continuation=window.continuation,
                         lineage_complete=completeness.complete,
                         lineage_truncation_reason=completeness.truncation_reason,
                         authority=authority_for_config(api.config, server_identity="direct", started_at=started_at),

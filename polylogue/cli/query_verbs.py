@@ -478,6 +478,7 @@ def _read_view_option_values(
     node_limit: int | None,
     edge_offset: int,
     edge_limit: int | None,
+    continuation: str | None = None,
 ) -> dict[str, object]:
     """Collect raw Click option values for read-view handler builders."""
 
@@ -498,6 +499,7 @@ def _read_view_option_values(
         "node_limit": node_limit,
         "edge_offset": edge_offset,
         "edge_limit": edge_limit,
+        "continuation": continuation,
     }
 
 
@@ -1141,6 +1143,15 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
     show_default=True,
     help="Lineage edge-page size (--view lineage).",
 )
+@click.option(
+    "--continuation",
+    "continuation",
+    default=None,
+    help=(
+        "Resume a transcript window from a snapshot-bound continuation token (--view messages). "
+        "Supersedes --limit/--offset; a write landing since the token was issued is refused as stale."
+    ),
+)
 @click.argument("ref", required=False)
 @click.pass_context
 def read_verb(
@@ -1176,6 +1187,7 @@ def read_verb(
     node_limit: int | None = DEFAULT_LINEAGE_PAGE_LIMIT,
     edge_offset: int = 0,
     edge_limit: int | None = DEFAULT_LINEAGE_PAGE_LIMIT,
+    continuation: str | None = None,
     ref: str | None = None,
 ) -> None:
     """Read matched sessions.
@@ -1559,6 +1571,7 @@ def read_verb(
                     node_limit=node_limit,
                     edge_offset=edge_offset,
                     edge_limit=edge_limit,
+                    continuation=continuation,
                 ),
             ),
             explicit_options=explicit_options,

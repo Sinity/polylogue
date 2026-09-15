@@ -556,6 +556,18 @@
       ],
       "default": null
     },
+    "continuation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Continuation"
+    },
     "limit": {
       "title": "Limit",
       "type": "integer"
@@ -583,6 +595,18 @@
       },
       "title": "Messages",
       "type": "array"
+    },
+    "next_offset": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Offset"
     },
     "offset": {
       "title": "Offset",
