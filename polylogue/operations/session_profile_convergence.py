@@ -107,6 +107,13 @@ def make_session_profile_derivation(
 
     user_db = archive_root / "user.db"
 
+    # Marker availability is resolved when a connection is opened, never when
+    # this adapter is constructed.  The daemon owner is composed once, before
+    # the first tier-creating call, so a construction-time ``exists()`` check
+    # would blind the whole process run to markers whenever ``user.db`` is
+    # created afterwards -- and ``user.db`` is the durable, irreplaceable
+    # tier, so silently deriving without it is the wrong failure direction.
+
     def marker_read_connection() -> sqlite3.Connection:
         return open_readonly_connection(user_db, timeout_class="background-read")
 
@@ -119,8 +126,8 @@ def make_session_profile_derivation(
         materializer_version=materializer_version,
         session_scope=_session_scope,
         quiet_key=quiet_key,
-        marker_read_connection=marker_read_connection if user_db.exists() else None,
-        marker_write_connection=marker_write_connection if user_db.exists() else None,
+        marker_read_connection=marker_read_connection,
+        marker_write_connection=marker_write_connection,
         generation_binding=generation_binding,
     )
 

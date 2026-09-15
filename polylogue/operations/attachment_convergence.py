@@ -97,6 +97,44 @@ def _permanent_failure(exc: BaseException) -> bool:
     return status in {403, 404}
 
 
+def _surviving_blob_ref(
+    source_conn: sqlite3.Connection,
+    *,
+    raw_id: str,
+    source_path: str,
+    blob_store: ArchiveBlobPublisher,
+) -> tuple[bytes, int] | None:
+    """Return the blob a retained source ref still names, when it survives.
+
+    The durable source tier keeps an ``attachment`` blob ref per raw session
+    and acquisition coordinate.  After a rebuild the derived attachment row is
+    ``unfetched`` again while those bytes are still on disk, so a re-bind is
+    the correct recovery and a re-download is waste that a dead provider file
+    would turn into permanent loss.
+
+    Ambiguity is refused rather than guessed: several attachments of one raw
+    session can share the fallback coordinate, and binding the wrong blob to
+    an attachment is worse than fetching it again.
+    """
+    rows = source_conn.execute(
+        """
+        SELECT blob_hash, size_bytes
+        FROM blob_refs
+        WHERE ref_type = 'attachment' AND ref_id = ? AND source_path = ?
+        """,
+        (raw_id, source_path),
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    blob_hash = bytes(rows[0][0])
+    size_bytes = int(rows[0][1])
+    if is_blob_hash_excised(source_conn, blob_hash):
+        return None
+    if not blob_store.exists(blob_hash.hex()):
+        return None
+    return blob_hash, size_bytes
+
+
 def converge_drive_attachments(
     index_conn: sqlite3.Connection,
     source_conn: sqlite3.Connection,
@@ -121,6 +159,10 @@ def converge_drive_attachments(
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     acquired_refs: list[ArchiveSourceBlobRef] = []
     acquired_rows: list[tuple[str, bytes, int]] = []
+    #: Rows bound to a blob that survived in the store; no provider
+    #: request and no new source blob ref, but the same durable index
+    #: outcome as a fresh acquisition.
+    rebound_rows: list[tuple[str, bytes, int]] = []
     terminal_ids: list[str] = []
     excised_ids: list[str] = []
     deferred = 0
@@ -136,6 +178,21 @@ def converge_drive_attachments(
             provider_file_id = row["provider_file_id"]
             if not isinstance(provider_file_id, str) or not provider_file_id:
                 terminal_ids.append(attachment_id)
+                continue
+            raw_id = str(row["raw_id"])
+            source_path = str(row["source_url"] or "attachment-convergence")
+            surviving = _surviving_blob_ref(
+                source_conn,
+                raw_id=raw_id,
+                source_path=source_path,
+                blob_store=publisher,
+            )
+            if surviving is not None:
+                # The bytes are already in the blob store and the durable
+                # source ledger still points at them.  Re-bind the rebuilt
+                # index row instead of spending a provider request on content
+                # the archive never lost.
+                rebound_rows.append((attachment_id, surviving[0], surviving[1]))
                 continue
             cached = fetch_outcomes.get(provider_file_id)
             if cached is not None:
@@ -156,9 +213,9 @@ def converge_drive_attachments(
                 acquired_refs.append(
                     ArchiveSourceBlobRef(
                         blob_hash=blob_hash,
-                        raw_id=str(row["raw_id"]),
+                        raw_id=raw_id,
                         ref_type="attachment",
-                        source_path=str(row["source_url"] or "attachment-convergence"),
+                        source_path=source_path,
                         size_bytes=byte_count,
                         acquired_at_ms=observed_at_ms,
                         publication_receipt_id=publisher.receipt_id(blob_hash.hex()),
@@ -224,8 +281,9 @@ def converge_drive_attachments(
                 by_raw_id.setdefault(str(ref.raw_id), []).append(ref)
             for raw_id, refs in by_raw_id.items():
                 write_source_blob_refs(source_conn, raw_id, tuple(refs))
+        if acquired_rows or rebound_rows:
             with index_conn:
-                for attachment_id, blob_hash, byte_count in acquired_rows:
+                for attachment_id, blob_hash, byte_count in (*acquired_rows, *rebound_rows):
                     index_conn.execute(
                         """
                         UPDATE attachments
@@ -260,7 +318,7 @@ def converge_drive_attachments(
 
     return AttachmentConvergenceResult(
         inspected=len(rows),
-        acquired=len(acquired_rows),
+        acquired=len(acquired_rows) + len(rebound_rows),
         terminal=len(terminal_ids),
         deferred=deferred,
         excised=len(excised_ids),

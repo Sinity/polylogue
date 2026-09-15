@@ -79,3 +79,58 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_marker_lowering_sees_a_user_db_created_after_composition(tmp_path: Path) -> None:
+    """A ``user.db`` that appears after composition still receives markers.
+
+    Anti-vacuity: binding marker availability at construction time (the
+    ``user_db.exists()`` check this replaces) leaves both marker connections
+    ``None`` for the owner's lifetime, so no assertion is ever lowered and the
+    final assertion count stays zero.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    with sqlite3.connect(recovered.index_db) as conn:
+        block_id = conn.execute(
+            "SELECT block_id FROM blocks WHERE session_id = ? ORDER BY block_id LIMIT 1",
+            (recovered.target_session_id,),
+        ).fetchone()
+        assert block_id is not None
+        conn.execute(
+            "UPDATE blocks SET text = ? WHERE block_id = ?",
+            ("::finding: marker survives a late user tier\n", block_id[0]),
+        )
+        conn.commit()
+
+    user_db = recovered.root / "user.db"
+    user_db.unlink()
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        # The durable user tier is created only after the owner exists, exactly
+        # as the daemon's own startup order does.
+        with sqlite3.connect(user_db) as conn:
+            initialize_archive_tier(conn, ArchiveTier.USER)
+            conn.commit()
+
+        report = await composed.callback((recovered.target_session_id,))
+        assert report.outcomes
+        assert all(item.outcome is Outcome.DONE for item in report.outcomes)
+
+        with sqlite3.connect(user_db) as conn:
+            lowered = conn.execute("SELECT COUNT(*) FROM assertions").fetchone()
+        assert lowered is not None and lowered[0] > 0
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)

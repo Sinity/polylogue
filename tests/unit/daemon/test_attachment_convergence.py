@@ -286,3 +286,64 @@ def test_attachment_convergence_terminal_failure_does_not_fabricate_bytes(tmp_pa
     assert calls == ["deleted-file"]
     index.close()
     source.close()
+
+
+def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) -> None:
+    """A rebuilt attachment row re-binds bytes the blob store still holds.
+
+    Anti-vacuity: without the ``blob_refs`` consultation the second pass
+    reaches the downloader, which fails this test outright, and the row would
+    only be restored by re-fetching content the archive never lost.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("survivor", file_id="drive-file-1"), raw_id="survivor-raw")
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    source.row_factory = sqlite3.Row
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+
+    payload = b"bytes that outlive the derived tier"
+    first = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_bytes=lambda file_id: payload,
+    )
+    assert first.acquired == 1
+    blob_hash = hashlib.sha256(payload).digest()
+    assert (tmp_path / "blob").exists()
+    ref_count = source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone()[0]
+    assert ref_count == 1
+
+    # Rebuild the derived tier: the index row loses its binding while the
+    # durable source ledger and the blob bytes survive untouched.
+    with index:
+        index.execute("UPDATE attachments SET blob_hash = NULL, byte_count = 0, acquisition_status = 'unfetched'")
+
+    attempted: list[str] = []
+
+    def refuse(file_id: str) -> bytes:
+        # The production route classifies exceptions, so record the attempt
+        # too: a swallowed refusal must still be visible to the assertions.
+        attempted.append(file_id)
+        raise AssertionError(f"surviving blob must not be re-downloaded: {file_id}")
+
+    second = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_bytes=refuse,
+    )
+
+    row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
+    assert attempted == []
+    assert second.acquired == 1
+    assert second.complete
+    assert bytes(row["blob_hash"]) == blob_hash
+    assert row["byte_count"] == len(payload)
+    assert row["acquisition_status"] == "acquired"
+    # The re-bind adds no duplicate durable ref.
+    assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone()[0] == 1
+    index.close()
+    source.close()
