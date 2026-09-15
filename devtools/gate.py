@@ -207,6 +207,14 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
+        "test-collection",
+        "Collect the declared test corpus without running it, so an unimportable module cannot merge.",
+        "module",
+        ("devtools.verify_test_collection", "--json"),
+        label="gate test-collection",
+        in_quick=True,
+    ),
+    Gate(
         "schema-audit",
         "Run committed provider schema package quality checks.",
         "module",
