@@ -551,7 +551,7 @@ def _sizing_note(sizing: Mapping[str, Any] | None) -> str | None:
     """Why this run is narrower than it asked to be, or None when it is not."""
     if sizing is None or not sizing.get("narrowed"):
         return None
-    bound = "the job cgroup" if sizing["basis"] == "cgroup_budget" else "host memory"
+    bound = "the job cgroup" if sizing["basis"] == "cgroup_budget" else "the declared slice budget"
     return (
         f"pytest slot: {sizing['available_mib']} MiB from {bound} "
         f"(host {sizing['host_available_mib']} MiB, cgroup {sizing['cgroup_available_mib']} MiB) "
