@@ -10,7 +10,6 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -19,7 +18,6 @@ from polylogue.operations.query_lowering import cli_query_spec, lower_cli_query_
 
 if TYPE_CHECKING:
     from polylogue.archive.query.expression import WithUnitWindow
-    from polylogue.archive.query.facets import FacetBuckets
     from polylogue.archive.query.search_contract import LaneFailure
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.config import Config, PolylogueConfig
@@ -661,13 +659,23 @@ def _grouped_completions(source: str, incomplete: str, *, archive: ArchiveStore,
 
 
 def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
-    """Reuse the API's canonical aggregate implementation over this reader."""
+    """Answer facets from the one canonical envelope the API surface builds.
 
-    from polylogue.api.archive import _archive_facet_buckets
+    This used to restate that assembly over the same buckets and had drifted
+    away from it: no ``family_status``, ``availability``, ``deadline_s``,
+    ``elapsed_s`` or ``stale_age_s``; hard-coded ``budget_exceeded`` and
+    ``cost_class``; its own family lists (``omitted`` in both complete and
+    deferred, no ``total_counts``); and no ``PostFilterScopeTooLargeError``
+    handling, so a too-large scope raised instead of degrading. Building the
+    shared model and dumping it keeps the two surfaces equal by construction
+    rather than by matching key lists.
+    """
+
+    import time
+
+    from polylogue.api.archive import PostFilterScopeTooLargeError, _archive_facet_buckets, build_facets_response
     from polylogue.archive.query.expression import compile_expression_into
-    from polylogue.archive.query.facets import compute_idf
     from polylogue.archive.query.spec import SessionQuerySpec
-    from polylogue.surfaces.outcome import decide_outcome
 
     query = str(params.get("query") or "").strip()
     base = SessionQuerySpec.from_params(
@@ -679,76 +687,31 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     )
     spec = compile_expression_into(query, base) if query else base
     include_deferred = _truthy(params.get("include_deferred")) or _truthy(params.get("include_expensive"))
-    global_buckets = _archive_facet_buckets(archive, None, include_deferred=include_deferred)
     scoped_to_query = spec.has_filters()
-    scoped = (
-        _archive_facet_buckets(archive, spec, include_deferred=include_deferred) if scoped_to_query else global_buckets
-    )
-    active = scoped if scoped_to_query else global_buckets
 
-    def buckets(value: FacetBuckets) -> dict[str, object]:
-        return {
-            "origins": dict(value.origins),
-            "tags": dict(value.tags),
-            "repos": dict(value.repos),
-            "role_counts": dict(value.role_counts),
-            "material_origins": dict(value.material_origins),
-            "message_types": dict(value.message_types),
-            "action_types": dict(value.action_types),
-            "has_flags": dict(value.has_flags),
-            "omitted": dict(value.omitted),
-            "total_sessions": value.total_sessions,
-            "total_messages": value.total_messages,
-        }
+    started_at = time.perf_counter()
+    global_buckets = _archive_facet_buckets(archive, None, include_deferred=include_deferred)
+    post_filter_gap: str | None = None
+    if scoped_to_query:
+        try:
+            scoped_buckets = _archive_facet_buckets(archive, spec, include_deferred=include_deferred)
+        except PostFilterScopeTooLargeError as exc:
+            from polylogue.archive.query.facets import FacetBuckets
 
-    deferred = (
-        {}
-        if include_deferred
-        else dict.fromkeys(
-            ("repos", "role_counts", "material_origins", "message_types", "action_types", "has_flags", "omitted"),
-            "deferred_by_default",
-        )
+            scoped_buckets, post_filter_gap = FacetBuckets(), exc.gap_reason
+    else:
+        scoped_buckets = global_buckets
+
+    response = build_facets_response(
+        global_buckets=global_buckets,
+        scoped_buckets=scoped_buckets,
+        scoped_to_query=scoped_to_query,
+        include_deferred=include_deferred,
+        elapsed_s=time.perf_counter() - started_at,
+        include_idf=not _truthy(params.get("no_idf")),
+        post_filter_gap=post_filter_gap,
     )
-    complete = (
-        (
-            "origins",
-            "tags",
-            "repos",
-            "role_counts",
-            "material_origins",
-            "message_types",
-            "action_types",
-            "has_flags",
-            "omitted",
-        )
-        if include_deferred
-        else ("origins", "tags")
-    )
-    return {
-        "outcome": decide_outcome(matched=active.total_sessions).to_dict(),
-        "scoped_to_query": scoped_to_query,
-        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "stale": False,
-        "budget_exceeded": False,
-        "cost_class": "cheap",
-        "complete_families": list(complete),
-        "deferred_families": deferred,
-        "family_errors": {},
-        "origins": dict(active.origins),
-        "tags": dict(active.tags),
-        "repos": dict(active.repos),
-        "role_counts": dict(active.role_counts),
-        "material_origins": dict(active.material_origins),
-        "message_types": dict(active.message_types),
-        "action_types": dict(active.action_types),
-        "has_flags": dict(active.has_flags),
-        "omitted_facet_counts": dict(active.omitted),
-        "total_sessions": active.total_sessions,
-        "total_messages": active.total_messages,
-        "scoped": buckets(scoped),
-        "global": buckets(global_buckets),
-        "idf": {} if _truthy(params.get("no_idf")) else compute_idf(global_buckets),
-    }
+    return cast(dict[str, object], response.model_dump(by_alias=True, mode="json"))
 
 
 def _lineage_seed_from_predicate(predicate: object) -> str | None:
