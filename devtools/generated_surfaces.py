@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from devtools import (
     render_agent_manual,
+    render_api_parity,
     render_cli_output_schemas,
     render_cli_reference,
     render_devtools_reference,
@@ -33,6 +34,23 @@ class GeneratedSurface:
 
 
 GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
+    GeneratedSurface(
+        name="api-parity",
+        label="API parity matrix",
+        description="Render docs/api-parity.md from the declared CLI/MCP/Python semantic-operation matrix.",
+        command=control_plane_argv("render api-parity"),
+        main=render_api_parity.main,
+        inputs=(
+            "polylogue/api/parity.py",
+            "polylogue/api/__init__.py",
+            "polylogue/api/archive.py",
+            "polylogue/api/embeddings.py",
+            "polylogue/api/ingest.py",
+            "polylogue/api/insights.py",
+            "polylogue/mcp/declarations/registry.py",
+            "devtools/render_api_parity.py",
+        ),
+    ),
     GeneratedSurface(
         name="agent-manual",
         label="Agent manual",
