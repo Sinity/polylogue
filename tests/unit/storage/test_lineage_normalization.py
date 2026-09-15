@@ -11,6 +11,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -18,6 +19,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
+from polylogue.sources.parsers import hermes_state
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -2606,3 +2608,135 @@ def test_dangling_branch_point_census_counts_edges_and_sessions(tmp_path: Path) 
     conn.commit()
     assert count_dangling_prefix_branch_points(conn) == (0, 0)
     conn.close()
+
+
+def _hermes_chain_state_db(path: Path, *, links: int, messages_per_session: int) -> None:
+    """A Hermes state.db of ``links`` sessions, each a compression continuation of the last."""
+    with sqlite3.connect(path) as source:
+        source.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (16);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                model_config TEXT,
+                parent_session_id TEXT,
+                started_at REAL,
+                ended_at REAL,
+                end_reason TEXT,
+                title TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL,
+                tool_calls TEXT,
+                observed INTEGER,
+                active INTEGER,
+                compacted INTEGER
+            );
+            """
+        )
+        message_id = 0
+        for index in range(links):
+            session_id = f"s{index:04d}"
+            parent = f"s{index - 1:04d}" if index else None
+            source.execute(
+                "INSERT INTO sessions VALUES (?, 'cli', '{}', ?, ?, ?, 'compression', ?)",
+                (session_id, parent, float(index), float(index) + 0.5, f"Session {index}"),
+            )
+            for offset in range(messages_per_session):
+                message_id += 1
+                source.execute(
+                    "INSERT INTO messages VALUES (?, ?, ?, ?, ?, NULL, 0, 1, 0)",
+                    (
+                        message_id,
+                        session_id,
+                        "user" if offset % 2 == 0 else "assistant",
+                        f"{session_id} message {offset}",
+                        float(index) + offset / 1000,
+                    ),
+                )
+
+
+def test_hermes_continuation_hydration_refuses_past_its_declared_composition_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bound is the fix: a chain past it refuses, typed, before composing it.
+
+    Anti-vacuity: with the bound removed (or raised past the chain), this same
+    input composes ``links * (links + 1) / 2 * messages_per_session`` messages
+    and the call returns instead of raising -- exactly the unbounded behaviour
+    this test exists to keep out. The composed-message counter also proves the
+    refusal is *pre-allocation*: a bound checked after composing would leave the
+    counter at the full quadratic total.
+    """
+    links = 40
+    messages_per_session = 10
+    limit = 600
+    monkeypatch.setattr(hermes_state, "HERMES_MAX_COMPOSED_MESSAGES", limit)
+
+    composed_messages = 0
+    original_copy = ParsedMessage.model_copy
+
+    def counting_copy(self: ParsedMessage, **kwargs: Any) -> ParsedMessage:
+        nonlocal composed_messages
+        composed_messages += 1
+        return original_copy(self, **kwargs)
+
+    monkeypatch.setattr(ParsedMessage, "model_copy", counting_copy)
+
+    state_db = tmp_path / "state.db"
+    _hermes_chain_state_db(state_db, links=links, messages_per_session=messages_per_session)
+
+    with pytest.raises(hermes_state.HermesLineageBoundError) as refusal:
+        parse_state_db(state_db)
+
+    assert refusal.value.bound == "composed_messages"
+    assert refusal.value.limit == limit
+    assert refusal.value.observed > limit
+    # Named counts, not a generic message: the operator can see what was refused.
+    assert str(refusal.value.observed) in str(refusal.value)
+    assert str(limit) in str(refusal.value)
+
+    unbounded_total = messages_per_session * links * (links + 1) // 2
+    assert unbounded_total == 8200
+    # Composition stops at the bound. The slack covers the per-message copies
+    # made while building the individual sessions, which are linear in the source.
+    assert composed_messages < limit + links * messages_per_session
+    assert composed_messages < unbounded_total // 4
+
+
+def test_hermes_continuation_hydration_copies_are_shallow_and_share_blocks(tmp_path: Path) -> None:
+    """Within the bound, recomposition costs one shallow copy per composed message.
+
+    Anti-vacuity: restoring ``model_copy(deep=True)`` makes the block-identity
+    assertion red, because a deep copy duplicates the whole block subtree once
+    per link -- the term that turned a 2 MB state.db into gigabytes.
+    """
+    links = 6
+    messages_per_session = 3
+    state_db = tmp_path / "state.db"
+    _hermes_chain_state_db(state_db, links=links, messages_per_session=messages_per_session)
+
+    parsed = parse_state_db(state_db)
+    by_raw_id = {session.provider_session_id.split("@", 1)[0]: session for session in parsed}
+
+    # Recomposition semantics are preserved: each child reads as parent prefix + tail.
+    for index in range(links):
+        session = by_raw_id[f"s{index:04d}"]
+        assert [message.text for message in session.messages] == [
+            f"s{link:04d} message {offset}" for link in range(index + 1) for offset in range(messages_per_session)
+        ]
+        assert [message.position for message in session.messages] == list(range((index + 1) * messages_per_session))
+        assert session.messages[-1].is_active_leaf is True
+        assert not any(message.is_active_leaf for message in session.messages[:-1])
+
+    root_block = by_raw_id["s0000"].messages[0].blocks[0]
+    for index in range(1, links):
+        composed_block = by_raw_id[f"s{index:04d}"].messages[0].blocks[0]
+        assert composed_block is root_block, "recomposition must share blocks, never deep-copy them"
