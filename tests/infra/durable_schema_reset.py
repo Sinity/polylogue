@@ -310,6 +310,49 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
             raise AssertionError(f"no historical definition found for replaced source view: {view_name}")
         conn.executescript(historical_sql)
     _restore_retired_source_objects(conn, version)
+    _restore_pre_v46_raw_authority_blockers(conn, version)
+
+
+#: The pre-v46 ``raw_authority_blockers`` shape (polylogue-5dzj9).  Migration
+#: 046 rebuilds the table to drop its foreign keys into the two ledger tables
+#: the 2026-09-15 ruling on polylogue-6kur retires, and the reset above
+#: deliberately never drops a rebuilt table -- so a fixture staged below v46
+#: keeps the CURRENT shape unless the historical one is restored here.
+_PRE_V46_RAW_AUTHORITY_BLOCKERS_DDL = """
+DROP INDEX IF EXISTS idx_raw_authority_blockers_open_plan;
+DROP TABLE IF EXISTS raw_authority_blockers;
+CREATE TABLE raw_authority_blockers (
+    blocker_id          TEXT PRIMARY KEY,
+    plan_id             TEXT NOT NULL REFERENCES raw_authority_plans(plan_id),
+    census_id           TEXT NOT NULL REFERENCES raw_authority_censuses(census_id),
+    reason              TEXT NOT NULL,
+    expected_json       TEXT NOT NULL CHECK(json_valid(expected_json)),
+    observed_json       TEXT NOT NULL CHECK(json_valid(observed_json)),
+    created_at_ms       INTEGER NOT NULL CHECK(created_at_ms >= 0),
+    resolved_at_ms      INTEGER CHECK(resolved_at_ms IS NULL OR resolved_at_ms >= created_at_ms),
+    resolution          TEXT,
+    CHECK((resolved_at_ms IS NULL) = (resolution IS NULL))
+) STRICT;
+CREATE UNIQUE INDEX idx_raw_authority_blockers_open_plan
+ON raw_authority_blockers(plan_id)
+WHERE resolved_at_ms IS NULL;
+"""
+
+
+def _restore_pre_v46_raw_authority_blockers(conn: sqlite3.Connection, version: int) -> None:
+    """Put the historical blocker shape back on a fixture staged below v46."""
+    if version >= 46:
+        return
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_authority_blockers)")}
+    if not columns or "plan_input_digest" not in columns:
+        return
+    rows = int(conn.execute("SELECT COUNT(*) FROM raw_authority_blockers").fetchone()[0])
+    if rows:
+        raise AssertionError(
+            "reset_source_fixture_to_version cannot re-key populated raw_authority_blockers rows backwards; "
+            "seed blocker rows after the reset"
+        )
+    conn.executescript(_PRE_V46_RAW_AUTHORITY_BLOCKERS_DDL)
 
 
 def _restore_retired_source_objects(conn: sqlite3.Connection, version: int) -> None:

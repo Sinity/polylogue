@@ -460,26 +460,28 @@ def _pinned_authority_frontier_projection(
                 f"SELECT COUNT(*) FROM {source_schema}.raw_authority_blockers WHERE resolved_at_ms IS NULL"
             ).fetchone()[0]
         )
-        if _table_columns(index_conn, source_schema, "raw_authority_plans"):
-            remediation_refs = [
-                {
-                    "blocker_id": str(blocker_id),
-                    "plan_id": str(plan_id),
-                    "detail_query_handle": raw_authority_detail_query_handle(str(census_id), str(plan_id)),
-                }
-                for blocker_id, plan_id, census_id in conn.execute(
-                    f"""
-                    SELECT b.blocker_id, b.plan_id, b.census_id
-                    FROM {source_schema}.raw_authority_blockers b
-                    JOIN {source_schema}.raw_authority_plans p ON p.plan_id = b.plan_id
-                    WHERE b.resolved_at_ms IS NULL
-                      AND json_extract(p.authority_witness_json, '$.schema') =
-                          'polylogue.raw-authority-frontier-plan.v1'
-                    ORDER BY b.created_at_ms, b.blocker_id
-                    LIMIT 16
-                    """
-                )
-            ]
+        remediation_refs = [
+            {
+                "blocker_id": str(blocker_id),
+                "plan_id": str(plan_id),
+                "detail_query_handle": (
+                    None if census_id is None else raw_authority_detail_query_handle(str(census_id), str(plan_id))
+                ),
+            }
+            for blocker_id, plan_id, census_id in conn.execute(
+                f"""
+                SELECT b.blocker_id,
+                       json_extract(b.expected_json, '$.plan_id'),
+                       b.observed_pass_id
+                FROM {source_schema}.raw_authority_blockers b
+                WHERE b.resolved_at_ms IS NULL
+                  AND json_extract(b.expected_json, '$.authority_witness.schema') =
+                      'polylogue.raw-authority-frontier-plan.v1'
+                ORDER BY b.created_at_ms, b.blocker_id
+                LIMIT 16
+                """
+            )
+        ]
     return {
         "raw_authority_census": authority_census,
         "raw_authority_frontier": frontier,
@@ -1073,15 +1075,20 @@ def raw_materialization_readiness_snapshot(
                     {
                         "blocker_id": str(blocker_id),
                         "plan_id": str(plan_id),
-                        "detail_query_handle": raw_authority_detail_query_handle(str(census_id), str(plan_id)),
+                        "detail_query_handle": (
+                            None
+                            if census_id is None
+                            else raw_authority_detail_query_handle(str(census_id), str(plan_id))
+                        ),
                     }
                     for blocker_id, plan_id, census_id in conn.execute(
                         """
-                        SELECT b.blocker_id, b.plan_id, b.census_id
+                        SELECT b.blocker_id,
+                               json_extract(b.expected_json, '$.plan_id'),
+                               b.observed_pass_id
                         FROM source.raw_authority_blockers AS b
-                        JOIN source.raw_authority_plans AS p ON p.plan_id = b.plan_id
                         WHERE b.resolved_at_ms IS NULL
-                          AND json_extract(p.authority_witness_json, '$.schema') =
+                          AND json_extract(b.expected_json, '$.authority_witness.schema') =
                               'polylogue.raw-authority-frontier-plan.v1'
                         ORDER BY b.created_at_ms, b.blocker_id
                         LIMIT 16

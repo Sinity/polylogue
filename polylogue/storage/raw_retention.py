@@ -2382,20 +2382,31 @@ def _delete_orphaned_raw_authority_plans(conn: sqlite3.Connection) -> int:
         # describe. Temp full plan_id indexes make this index-driven instead
         # of a full scan of the (potentially hundreds-of-thousands-row)
         # census/blocker tables per candidate.
+        # polylogue-5dzj9: blockers are keyed on the plan's content address
+        # (``plan_input_digest``) since source v46, not on the plan row's
+        # surrogate id, so the blocker anti-join resolves the candidate's own
+        # digest through its primary key and probes the digest index.
         reference_indexes = {
-            "_tmp_rawretention_authplan_cp": "raw_authority_census_plans",
-            "_tmp_rawretention_authplan_cpp": "raw_authority_census_post_plans",
-            "_tmp_rawretention_authplan_blk": "raw_authority_blockers",
+            "_tmp_rawretention_authplan_cp": ("raw_authority_census_plans", "plan_id"),
+            "_tmp_rawretention_authplan_cpp": ("raw_authority_census_post_plans", "plan_id"),
+            "_tmp_rawretention_authplan_blk": ("raw_authority_blockers", "plan_input_digest"),
         }
-        for index_name, table in reference_indexes.items():
-            conn.execute(f"CREATE INDEX {index_name} ON {table}(plan_id)")
+        for index_name, (table, column) in reference_indexes.items():
+            conn.execute(f"CREATE INDEX {index_name} ON {table}({column})")
         try:
             conn.execute(
                 """
                 DELETE FROM _orphan_authority_plan_candidates
                 WHERE plan_id IN (SELECT plan_id FROM raw_authority_census_plans)
                    OR plan_id IN (SELECT plan_id FROM raw_authority_census_post_plans)
-                   OR plan_id IN (SELECT plan_id FROM raw_authority_blockers)
+                   OR plan_id IN (
+                          SELECT c.plan_id
+                          FROM _orphan_authority_plan_candidates AS c
+                          JOIN raw_authority_plans AS p ON p.plan_id = c.plan_id
+                          WHERE p.input_digest IN (
+                              SELECT plan_input_digest FROM raw_authority_blockers
+                          )
+                      )
                 """
             )
         finally:

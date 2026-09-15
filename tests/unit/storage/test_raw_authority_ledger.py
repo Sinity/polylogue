@@ -535,7 +535,7 @@ def test_auto_resolve_stale_plan_blockers_never_clears_failed_application_blocke
     )
     with sqlite3.connect(tmp_path / "source.db") as conn:
         failed_blocker_id = conn.execute(
-            "SELECT blocker_id FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+            "SELECT blocker_id FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ? AND resolved_at_ms IS NULL",
             (failed_plan.plan_id,),
         ).fetchone()[0]
 
@@ -557,7 +557,7 @@ def test_auto_resolve_stale_plan_blockers_never_clears_failed_application_blocke
         # predicate, it does not disable automatic stale-plan clearing.
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+                "SELECT COUNT(*) FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ? AND resolved_at_ms IS NULL",
                 (stale_plan.plan_id,),
             ).fetchone()[0]
             == 0
@@ -1943,7 +1943,7 @@ def test_frontier_classifies_dangling_head_session_as_corrupt(tmp_path: Path) ->
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         blocker = source_conn.execute(
-            "SELECT reason, resolved_at_ms FROM raw_authority_blockers WHERE plan_id = ?",
+            "SELECT reason, resolved_at_ms FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ?",
             (item.plan_id,),
         ).fetchone()
     assert blocker is not None
@@ -2145,7 +2145,7 @@ def test_ineligible_quarantined_raw_gets_a_terminal_actuator_not_refine_quaranti
     # "an automatic actuator will resolve this".
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         blocker = source_conn.execute(
-            "SELECT reason, resolved_at_ms FROM raw_authority_blockers WHERE plan_id = ?",
+            "SELECT reason, resolved_at_ms FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ?",
             (item.plan_id,),
         ).fetchone()
     assert blocker is not None
@@ -2424,19 +2424,18 @@ def test_census_plan_rows_prune_past_retention_even_with_an_unresolved_blocker(
     The fix: a blocker's own ``expected_json``/``observed_json`` columns
     already carry a complete, self-contained snapshot of the plan and its
     evidence (``_reconcile_frontier_obligations``), and
-    ``resolve_raw_authority_blocker`` reads that plus the census-independent
-    ``raw_authority_plans`` table -- never
+    ``resolve_raw_authority_blocker`` reads ONLY that snapshot since source
+    v46 (polylogue-5dzj9) -- never ``raw_authority_plans`` and never
     ``raw_authority_census_plans``/``_post_plans``. So plan-row DETAIL no
-    longer needs to survive for an unresolved blocker to stay resolvable;
-    only the census HEADER does (a real FK: ``raw_authority_blockers``
-    references ``raw_authority_censuses(census_id)``).
+    longer needs to survive for an unresolved blocker to stay resolvable, and
+    the census HEADER a blocker names is retained as a readable breadcrumb
+    (``observed_pass_id``), not as a foreign key.
 
     Simulates the permanent-obligation shape directly: one durable,
     unresolved blocker planted on the very first of nine census passes.
     Proves plan-row detail for that first census prunes on the ordinary
     count-based window like any other, the blocker itself is never
-    silently marked resolved, and its census HEADER survives (the FK it
-    actually needs).
+    silently marked resolved, and the census HEADER it names survives.
     """
     monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_PLAN_RETENTION", 2)
     bootstrap_archive_root(tmp_path)
@@ -2457,15 +2456,16 @@ def test_census_plan_rows_prune_past_retention_even_with_an_unresolved_blocker(
         conn.execute(
             """
             INSERT INTO raw_authority_blockers (
-                blocker_id, plan_id, census_id, reason, expected_json,
+                blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
                 observed_json, created_at_ms
-            ) VALUES (?, ?, ?, ?, '{}', '{}', 1)
+            ) VALUES (?, ?, ?, ?, ?, '{}', 1)
             """,
             (
                 "raw-authority-blocker:permanently-pinned",
-                plan.plan_id,
+                plan.input_digest,
                 first_receipt.census_id,
                 "quarantined-raw refinement strategy proved this raw ineligible: a structurally permanent fact",
+                json.dumps(plan.to_dict()),
             ),
         )
         conn.commit()
@@ -2496,7 +2496,7 @@ def test_census_plan_rows_prune_past_retention_even_with_an_unresolved_blocker(
     # Never silently cleared -- this is the failure mode the old guard was
     # (over-)protecting against, and it must still not happen.
     assert blocker_resolved_at is None
-    # Its census HEADER survives -- the real FK obligation.
+    # The census HEADER it names survives.
     assert header_row is not None
     # But the plan-row DETAIL for that census prunes like everyone else's,
     # bounded to the retention window regardless of the still-open blocker.

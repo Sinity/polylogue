@@ -342,7 +342,9 @@ pass while any is open (`raw_convergence.py:5307-5316`). One migration change:
 `census_id TEXT NOT NULL REFERENCES raw_authority_censuses(census_id)` must
 become a non-FK `observed_pass_id TEXT` plus the new
 `plan_input_digest TEXT NOT NULL`, because its current parent table is
-retired. `plan_id` becomes the digest. The partial unique index on open
+retired. `plan_id` becomes the digest. **Landed in source v46**
+(`046_rekey_raw_authority_blockers.sql`, polylogue-5dzj9); see the "As
+implemented" note in §8. The partial unique index on open
 blockers per plan (`source.py:484-486`) is retained, re-expressed on the
 digest. Readers — `describe_raw_authority_blocker` (`:1929`),
 `list_unresolved_raw_authority_blockers` (`:1976`),
@@ -547,6 +549,36 @@ in `docs/internals.md`, not a preference.
    columns from their `plan_id`. Bounded by the existing 8-census retention
    window — anything older is already deleted today (§1), which is stated in
    the migration comment so the bound is not mistaken for data loss.
+**As implemented (source v46, polylogue-5dzj9).** M1-M4 for the blocker
+re-key landed as ONE numbered migration,
+`046_rekey_raw_authority_blockers.sql`, plus the reader/writer sweep, and it
+diverges from the sequence above in three recorded ways:
+
+* `raw_replay_decisions` was **not** created. The amended 2026-09-15 ruling on
+  `polylogue-6kur` forbids it unless the re-key demonstrably needs it, and it
+  does not: `raw_authority_blockers.expected_json` is already the full
+  `RawReplayPlan.to_dict()` snapshot every blocker writer records, so every
+  reader that used to join `raw_authority_plans` for the authority witness now
+  reads the blocker's own row.
+* The blocker columns could not be added with `ALTER TABLE ... ADD COLUMN`:
+  SQLite cannot drop a column's `REFERENCES` clause in place, and leaving the
+  two foreign keys is exactly what blocks the M5 `DROP TABLE`. The table is
+  rebuilt (create-copy-drop-rename, the house style of migration 041), which
+  also lets `plan_input_digest` be `NOT NULL` immediately and retires the
+  `plan_id`/`census_id` columns rather than leaving them beside their
+  successors.
+* The backfill is therefore in the same migration, not a following slot:
+  `plan_input_digest` comes from `raw_authority_plans.input_digest` (the
+  pre-v46 `NOT NULL` foreign key guarantees the row), with the blocker's own
+  `expected_json` as fallback; `observed_pass_id` is the former `census_id`
+  with the foreign key removed.
+
+Schema-closure membership reported at implementation time: `archive_tiers/source.py`,
+`storage/raw_authority.py`, `storage/archive_readiness.py` and
+`storage/raw_retention.py` are **IN** the derived schema closure;
+`storage/raw_reconciler.py` is **out**. This change must therefore land before
+a production rebuild starts.
+
 3. **M3 — readers (code).** New lookup path behind the decisions table; ops
    tables created by DDL (disposable tier, no chain). Both ledgers are live;
    the census tables are still written. Reversible by reverting code.

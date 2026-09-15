@@ -383,7 +383,8 @@ def _raw_authority_detail_document(conn: sqlite3.Connection, census_id: str, rec
             SELECT blocker_id, reason, expected_json, observed_json,
                    created_at_ms, resolved_at_ms, resolution
             FROM raw_authority_blockers
-            WHERE census_id = ? AND plan_id = ?
+            WHERE observed_pass_id = ?
+              AND json_extract(expected_json, '$.plan_id') = ?
             ORDER BY created_at_ms, blocker_id
             """,
             (census_id, record_id),
@@ -512,7 +513,8 @@ def read_raw_authority_census(
                    p.source_preconditions_json, p.index_preconditions_json,
                    p.created_at_ms,
                    (SELECT COUNT(*) FROM raw_authority_blockers AS b
-                    WHERE b.census_id = cp.census_id AND b.plan_id = cp.plan_id) AS blocker_count
+                    WHERE b.observed_pass_id = cp.census_id
+                      AND b.plan_input_digest = p.input_digest) AS blocker_count
             FROM raw_authority_census_plans AS cp
             JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
             WHERE cp.census_id = ?
@@ -929,9 +931,8 @@ def unresolved_raw_replay_blockers(archive_root: Path) -> int:
                 """
                 SELECT COUNT(*)
                 FROM raw_authority_blockers AS b
-                JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
                 WHERE b.resolved_at_ms IS NULL
-                  AND COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') !=
+                  AND COALESCE(json_extract(b.expected_json, '$.authority_witness.schema'), '') !=
                       'polylogue.raw-authority-frontier-plan.v1'
                 """
             ).fetchone()[0]
@@ -975,11 +976,10 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
         # could be dropped -- but that detail is not where blocker evidence
         # lives. `_reconcile_frontier_obligations` snapshots the full plan
         # into the blocker row itself (`expected_json`/`observed_json`), and
-        # `resolve_raw_authority_blocker` reads that plus the census-
-        # independent `raw_authority_plans` table (kept alive for as long as
-        # any blocker references it, regardless of this window -- see
-        # `raw_retention._delete_orphaned_raw_authority_plans`). Neither
-        # touches `raw_authority_census_plans`/`_post_plans` at all, so
+        # since source v46 (polylogue-5dzj9) `resolve_raw_authority_blocker`
+        # reads ONLY that snapshot -- the blocker is re-keyed on the plan's
+        # content address and no longer joins `raw_authority_plans` at all.
+        # Neither touches `raw_authority_census_plans`/`_post_plans`, so
         # gating THIS window on blocker resolution bought nothing but an
         # unbounded pin: a structurally permanent obligation (e.g. a
         # quarantined raw with no logical source key to refine against)
@@ -1010,7 +1010,7 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
             for statement in (
                 "DELETE FROM raw_authority_census_plans WHERE census_id = ?",
                 "DELETE FROM raw_authority_census_post_plans WHERE census_id = ?",
-                "DELETE FROM raw_authority_blockers WHERE census_id = ? AND resolved_at_ms IS NOT NULL",
+                "DELETE FROM raw_authority_blockers WHERE observed_pass_id = ? AND resolved_at_ms IS NOT NULL",
             ):
                 cursor = conn.executemany(statement, ((census,) for census in chunk))
                 plan_rows += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
@@ -1025,9 +1025,10 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
     headers = 0
     if header_floor_row is not None:
         # Same obligation guard, and additionally an FK guard:
-        # raw_authority_blockers and predecessor_census_id both reference
-        # raw_authority_censuses(census_id). Keep the newest headers and every
-        # header named by a blocker. The predecessor chain is a bounded
+        # predecessor_census_id references raw_authority_censuses(census_id).
+        # A blocker's `observed_pass_id` is a non-FK breadcrumb since v46, but
+        # a header a blocker still names stays readable: keep the newest
+        # headers and every header named by a blocker. The predecessor chain is a bounded
         # read-history convenience, so cut any surviving edge into the delete
         # set before deleting it. The NULL edge is the compacted boundary.
         floor = int(header_floor_row[0])
@@ -1041,7 +1042,7 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
                   AND NOT EXISTS (
                       SELECT 1
                       FROM raw_authority_blockers AS b
-                      WHERE b.census_id = c.census_id
+                      WHERE b.observed_pass_id = c.census_id
                   )
                 ORDER BY c.sequence_no DESC
                 """,
@@ -1060,7 +1061,7 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
                   AND NOT EXISTS (
                       SELECT 1
                       FROM raw_authority_blockers AS b
-                      WHERE b.census_id = c.census_id
+                      WHERE b.observed_pass_id = c.census_id
                   )
             )
             UPDATE raw_authority_censuses
@@ -1633,6 +1634,29 @@ def _raw_replay_plan_from_row(row: sqlite3.Row) -> RawReplayPlan:
     )
 
 
+def _raw_replay_plan_from_expected_json(expected_json: str) -> RawReplayPlan:
+    """Rebuild the blocked plan from the blocker's own durable snapshot.
+
+    polylogue-5dzj9: ``raw_authority_blockers.expected_json`` is written by
+    every blocker writer as ``RawReplayPlan.to_dict()``, so the blocker row is
+    self-sufficient evidence. Readers used to reach the same plan through a
+    ``JOIN raw_authority_plans``; that table is per-pass bookkeeping the
+    2026-09-15 ruling retires, and a durable authorization must not depend on
+    it. This is a straight decode of the snapshot -- no reconstruction from a
+    rebuildable tier, and no re-derivation from current evidence.
+    """
+    payload = json.loads(expected_json)
+    return RawReplayPlan(
+        plan_id=str(payload["plan_id"]),
+        input_digest=str(payload["input_digest"]),
+        input_raw_ids=tuple(str(value) for value in payload["input_raw_ids"]),
+        logical_keys=tuple(str(value) for value in payload["logical_keys"]),
+        authority_witness=json_document(payload["authority_witness"]),
+        source_preconditions=json_document(payload["source_preconditions"]),
+        index_preconditions=json_document(payload["index_preconditions"]),
+    )
+
+
 def _raw_authority_census_receipt(conn: sqlite3.Connection, census_id: str) -> RawAuthorityCensusReceipt:
     row = conn.execute(
         """
@@ -2052,11 +2076,12 @@ def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSOND
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
-            SELECT b.blocker_id, b.plan_id, b.census_id, b.reason, b.created_at_ms,
-                   COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') AS witness_schema,
+            SELECT b.blocker_id,
+                   json_extract(b.expected_json, '$.plan_id') AS plan_id,
+                   b.observed_pass_id, b.reason, b.created_at_ms,
+                   COALESCE(json_extract(b.expected_json, '$.authority_witness.schema'), '') AS witness_schema,
                    json_extract(b.observed_json, '$.judgment_assertion_id') AS judgment_assertion_id
             FROM raw_authority_blockers AS b
-            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
             WHERE b.blocker_id = ? AND b.resolved_at_ms IS NULL
             """,
             (blocker_id,),
@@ -2070,7 +2095,7 @@ def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSOND
         {
             "blocker_id": str(row["blocker_id"]),
             "plan_id": str(row["plan_id"]),
-            "census_id": str(row["census_id"]),
+            "census_id": (None if row["observed_pass_id"] is None else str(row["observed_pass_id"])),
             "reason": str(row["reason"]),
             "created_at_ms": int(row["created_at_ms"]),
             "kind": kind,
@@ -2131,11 +2156,12 @@ def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 1
         )
         rows = conn.execute(
             """
-            SELECT b.blocker_id, b.plan_id, b.census_id, b.reason, b.created_at_ms,
-                   COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') AS witness_schema,
+            SELECT b.blocker_id,
+                   json_extract(b.expected_json, '$.plan_id') AS plan_id,
+                   b.observed_pass_id, b.reason, b.created_at_ms,
+                   COALESCE(json_extract(b.expected_json, '$.authority_witness.schema'), '') AS witness_schema,
                    json_extract(b.observed_json, '$.judgment_assertion_id') AS judgment_assertion_id
             FROM raw_authority_blockers AS b
-            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
             WHERE b.resolved_at_ms IS NULL
             ORDER BY b.created_at_ms, b.blocker_id
             LIMIT ? OFFSET ?
@@ -2147,14 +2173,18 @@ def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 1
             {
                 "blocker_id": str(row["blocker_id"]),
                 "plan_id": str(row["plan_id"]),
-                "census_id": str(row["census_id"]),
+                "census_id": (None if row["observed_pass_id"] is None else str(row["observed_pass_id"])),
                 "reason": str(row["reason"]),
                 "created_at_ms": int(row["created_at_ms"]),
                 "kind": _blocker_kind(
                     witness_schema=str(row["witness_schema"]),
                     has_judgment_assertion=row["judgment_assertion_id"] is not None,
                 ),
-                "detail_query_handle": raw_authority_detail_query_handle(str(row["census_id"]), str(row["plan_id"])),
+                "detail_query_handle": (
+                    None
+                    if row["observed_pass_id"] is None
+                    else raw_authority_detail_query_handle(str(row["observed_pass_id"]), str(row["plan_id"]))
+                ),
             }
         )
         for row in rows
@@ -2195,12 +2225,9 @@ def resolve_raw_authority_blocker(
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
-            SELECT b.blocker_id, b.plan_id, b.census_id, b.expected_json,
-                   b.observed_json, p.input_raw_ids_json, p.input_digest,
-                   p.logical_keys_json, p.authority_witness_json,
-                   p.source_preconditions_json, p.index_preconditions_json
+            SELECT b.blocker_id, b.plan_input_digest, b.observed_pass_id,
+                   b.expected_json, b.observed_json
             FROM raw_authority_blockers AS b
-            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
             WHERE b.blocker_id = ? AND b.resolved_at_ms IS NULL
             """,
             (blocker_id,),
@@ -2208,7 +2235,9 @@ def resolve_raw_authority_blocker(
         if row is None:
             conn.rollback()
             raise KeyError(blocker_id)
-        stored_plan = _raw_replay_plan_from_row(row)
+        # polylogue-5dzj9: the blocked plan comes from the blocker's own
+        # durable snapshot, not from a join into the retired plan ledger.
+        stored_plan = _raw_replay_plan_from_expected_json(str(row["expected_json"]))
         witness_schema = stored_plan.authority_witness.get("schema")
         frontier_observed = json.loads(str(row["observed_json"]))
         if witness_schema == "polylogue.raw-authority-frontier-plan.v1":
@@ -2231,14 +2260,13 @@ def resolve_raw_authority_blocker(
                     raise RuntimeError("frontier judgment resolution requires disposition=retain_canonical_authority")
             observed = stored_plan
         else:
-            input_raw_ids = tuple(str(value) for value in json.loads(str(row["input_raw_ids_json"])))
-            observed = build_raw_replay_plan(conn, input_raw_ids)
+            observed = build_raw_replay_plan(conn, stored_plan.input_raw_ids)
         now = int(time.time() * 1000)
         full_receipt = json_document(
             {
                 "schema": "polylogue.raw-authority-blocker-resolution.v1",
                 "blocker_id": blocker_id,
-                "superseded_plan_id": str(row["plan_id"]),
+                "superseded_plan_id": stored_plan.plan_id,
                 "current_plan": observed.to_dict(),
                 "operator_resolution": resolution.strip(),
                 "operator_assertion_id": assertion_id,
@@ -2262,7 +2290,7 @@ def resolve_raw_authority_blocker(
         {
             "schema": "polylogue.raw-authority-blocker-resolution-summary.v1",
             "blocker_id": blocker_id,
-            "superseded_plan_id": str(row["plan_id"]),
+            "superseded_plan_id": stored_plan.plan_id,
             "current_plan": {
                 "plan_id": observed.plan_id,
                 "input_digest": observed.input_digest,
@@ -2273,7 +2301,11 @@ def resolve_raw_authority_blocker(
             "operator_assertion_id": assertion_id,
             "judgment_disposition": judgment_disposition,
             "resolved_at_ms": now,
-            "detail_query_handle": raw_authority_detail_query_handle(str(row["census_id"]), str(row["plan_id"])),
+            "detail_query_handle": (
+                None
+                if row["observed_pass_id"] is None
+                else raw_authority_detail_query_handle(str(row["observed_pass_id"]), stored_plan.plan_id)
+            ),
         }
     )
 
@@ -2365,10 +2397,9 @@ def auto_resolve_stale_plan_blockers(archive_root: Path) -> int:
                 f"""
                 SELECT b.blocker_id
                 FROM raw_authority_blockers AS b
-                JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
                 WHERE b.resolved_at_ms IS NULL
                   AND json_extract(b.observed_json, '$.{BLOCKER_ORIGIN_KEY}') IN ({placeholders})
-                  AND COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') !=
+                  AND COALESCE(json_extract(b.expected_json, '$.authority_witness.schema'), '') !=
                       '{_FRONTIER_WITNESS_SCHEMA}'
                 """,
                 AUTO_CLEARABLE_BLOCKER_ORIGINS,
@@ -2409,14 +2440,14 @@ def reject_stale_raw_replay_plan(
         conn.execute(
             """
             INSERT INTO raw_authority_blockers (
-                blocker_id, plan_id, census_id, reason, expected_json,
+                blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
                 observed_json, created_at_ms
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(blocker_id) DO NOTHING
             """,
             (
                 blocker_id,
-                plan.plan_id,
+                plan.input_digest,
                 census_id,
                 outcome.reason,
                 _canonical_json(plan.to_dict()),
@@ -2445,8 +2476,8 @@ def reject_stale_raw_replay_plan(
         if updated != 1:
             raise RuntimeError(f"stale rejection does not conserve one selected plan: {plan.plan_id}")
         open_count = conn.execute(
-            "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
-            (plan.plan_id,),
+            "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_input_digest = ? AND resolved_at_ms IS NULL",
+            (plan.input_digest,),
         ).fetchone()[0]
         if int(open_count) != 1:
             raise RuntimeError(f"stale rejection did not leave one open blocker: {plan.plan_id}")
@@ -2480,14 +2511,14 @@ def reject_invalid_raw_replay_application(
         conn.execute(
             """
             INSERT INTO raw_authority_blockers (
-                blocker_id, plan_id, census_id, reason, expected_json,
+                blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
                 observed_json, created_at_ms
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(blocker_id) DO NOTHING
             """,
             (
                 blocker_id,
-                plan.plan_id,
+                plan.input_digest,
                 census_id,
                 outcome.reason,
                 _canonical_json(plan.to_dict()),
@@ -2516,8 +2547,8 @@ def reject_invalid_raw_replay_application(
         if updated != 1:
             raise RuntimeError(f"invalid application does not conserve one selected plan: {plan.plan_id}")
         open_count = conn.execute(
-            "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
-            (plan.plan_id,),
+            "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_input_digest = ? AND resolved_at_ms IS NULL",
+            (plan.input_digest,),
         ).fetchone()[0]
         if int(open_count) != 1:
             raise RuntimeError(f"invalid application did not leave one open blocker: {plan.plan_id}")

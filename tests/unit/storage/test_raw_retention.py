@@ -1556,6 +1556,7 @@ def test_superseded_raw_cleanup_prunes_orphaned_raw_authority_plans(tmp_path: Pa
     conn.execute(
         """CREATE TABLE raw_authority_plans (
             plan_id TEXT PRIMARY KEY,
+            input_digest TEXT NOT NULL DEFAULT '',
             input_raw_ids_json TEXT NOT NULL
         )"""
     )
@@ -1580,8 +1581,8 @@ def test_superseded_raw_cleanup_prunes_orphaned_raw_authority_plans(tmp_path: Pa
     conn.execute(
         """CREATE TABLE raw_authority_blockers (
             blocker_id TEXT PRIMARY KEY,
-            plan_id TEXT NOT NULL,
-            census_id TEXT NOT NULL,
+            plan_input_digest TEXT NOT NULL,
+            observed_pass_id TEXT,
             resolved_at_ms INTEGER
         )"""
     )
@@ -1614,19 +1615,23 @@ def test_superseded_raw_cleanup_prunes_orphaned_raw_authority_plans(tmp_path: Pa
     #   happen, but the guard must hold regardless).
     # plan-kept: its input raw survives -> untouched (not even an orphan candidate).
     conn.execute(
-        "INSERT INTO raw_authority_plans (plan_id, input_raw_ids_json) VALUES ('plan-free-orphan', ?)",
+        "INSERT INTO raw_authority_plans (plan_id, input_digest, input_raw_ids_json) "
+        "VALUES ('plan-free-orphan', 'digest-plan-free-orphan', ?)",
         (f'["{old_free}"]',),
     )
     conn.execute(
-        "INSERT INTO raw_authority_plans (plan_id, input_raw_ids_json) VALUES ('plan-census-orphan', ?)",
+        "INSERT INTO raw_authority_plans (plan_id, input_digest, input_raw_ids_json) "
+        "VALUES ('plan-census-orphan', 'digest-plan-census-orphan', ?)",
         (f'["{old_census}"]',),
     )
     conn.execute(
-        "INSERT INTO raw_authority_plans (plan_id, input_raw_ids_json) VALUES ('plan-blocker-orphan', ?)",
+        "INSERT INTO raw_authority_plans (plan_id, input_digest, input_raw_ids_json) "
+        "VALUES ('plan-blocker-orphan', 'digest-plan-blocker-orphan', ?)",
         (f'["{old_blocker}"]',),
     )
     conn.execute(
-        "INSERT INTO raw_authority_plans (plan_id, input_raw_ids_json) VALUES ('plan-kept', ?)",
+        "INSERT INTO raw_authority_plans (plan_id, input_digest, input_raw_ids_json) "
+        "VALUES ('plan-kept', 'digest-plan-kept', ?)",
         (f'["{full_new}"]',),
     )
     conn.execute("INSERT INTO raw_authority_censuses (census_id, plan_count) VALUES ('census-a', 1)")
@@ -1634,8 +1639,9 @@ def test_superseded_raw_cleanup_prunes_orphaned_raw_authority_plans(tmp_path: Pa
         "INSERT INTO raw_authority_census_plans (census_id, plan_id) VALUES ('census-a', 'plan-census-orphan')"
     )
     conn.execute(
-        "INSERT INTO raw_authority_blockers (blocker_id, plan_id, census_id, resolved_at_ms) "
-        "VALUES ('blk-1', 'plan-blocker-orphan', 'census-a', NULL)"
+        "INSERT INTO raw_authority_blockers (blocker_id, plan_input_digest, observed_pass_id, resolved_at_ms) "
+        "SELECT 'blk-1', input_digest, 'census-a', NULL "
+        "FROM raw_authority_plans WHERE plan_id = 'plan-blocker-orphan'"
     )
     conn.commit()
 

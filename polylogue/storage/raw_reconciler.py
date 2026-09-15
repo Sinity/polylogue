@@ -932,7 +932,7 @@ def _apply_judgment_dispositions(
             str(plan_id): json_document(json.loads(str(resolution)))
             for plan_id, resolution in conn.execute(
                 """
-                SELECT plan_id, resolution
+                SELECT json_extract(expected_json, '$.plan_id'), resolution
                 FROM raw_authority_blockers
                 WHERE resolved_at_ms IS NOT NULL AND resolution IS NOT NULL
                 ORDER BY resolved_at_ms
@@ -1026,14 +1026,14 @@ def _reconcile_frontier_obligations(
             conn.execute(
                 """
                 INSERT INTO raw_authority_blockers (
-                    blocker_id, plan_id, census_id, reason, expected_json,
+                    blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
                     observed_json, created_at_ms
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT DO NOTHING
                 """,
                 (
                     blocker_id,
-                    item.plan_id,
+                    _plan(item).input_digest,
                     census_id,
                     item.reason,
                     _canonical_json(_plan(item).to_dict()),
@@ -1043,11 +1043,10 @@ def _reconcile_frontier_obligations(
             )
         open_rows = conn.execute(
             """
-            SELECT b.blocker_id, b.plan_id
+            SELECT b.blocker_id, json_extract(b.expected_json, '$.plan_id')
             FROM raw_authority_blockers AS b
-            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
             WHERE b.resolved_at_ms IS NULL
-              AND json_extract(p.authority_witness_json, '$.schema') =
+              AND json_extract(b.expected_json, '$.authority_witness.schema') =
                   'polylogue.raw-authority-frontier-plan.v1'
             """
         ).fetchall()
