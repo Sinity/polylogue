@@ -131,12 +131,19 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
+        # The readiness query failed: nothing here was measured.  Every
+        # sibling key already reports the not-ready value; the work-events
+        # flag used to return True on this same path, publishing a positive
+        # readiness claim out of an exception handler (polylogue-bu47u).
+        # ``coverage_pct`` is unknown, not zero -- consumers render ``None``
+        # explicitly as "coverage unknown".
         return {
             "indexed_surface": "messages_fts",
             "messages_ready": False,
-            "session_work_events_ready": True,
+            "session_work_events_ready": False,
             "invariant_ready": False,
-            "coverage_pct": 0.0,
+            "coverage_pct": None,
+            "coverage_exact": False,
             "surfaces": {},
         }
 
