@@ -333,6 +333,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "schema frontier",
+        "schema",
+        "Declare, record and check the schema-source frontier.",
+        "devtools.schema_frontier",
+        json_flag=True,
+        use_when=(
+            "Before and after any provider schema generation run: the frontier names every declared source root "
+            "with its exclusions and records each root's admitted membership, so a moved, emptied or mutated root "
+            "fails the check instead of silently narrowing the sample set."
+        ),
+        examples=(
+            "devtools schema frontier",
+            "devtools schema frontier --list",
+            "devtools schema frontier --record --subject gemini-cli",
+            "devtools schema frontier --verify-content --json",
+        ),
+    ),
+    CommandSpec(
         "schema promote",
         "schema",
         "Promote a schema evidence cluster into a registered package version.",

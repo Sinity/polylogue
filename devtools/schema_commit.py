@@ -22,6 +22,12 @@ from polylogue.core.json import JSONDocument
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
 from polylogue.schemas.runtime_registry import canonical_schema_provider
+from polylogue.schemas.source_frontier import (
+    SchemaFrontierError,
+    check_frontier,
+    frontier_source_inputs,
+    load_frontier,
+)
 from polylogue.schemas.source_inference import parse_schema_source_input
 from polylogue.storage.archive_identity import ArchiveLocation
 
@@ -63,6 +69,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--privacy-config", type=Path, default=None, help="Path to TOML privacy config overrides.")
     parser.add_argument("--source", action="append", default=[], help="Declared source input as provider=path.")
+    parser.add_argument(
+        "--frontier",
+        nargs="?",
+        const="",
+        default=None,
+        help=(
+            "Take source inputs from the declared schema-source frontier (optionally at this path) instead of "
+            "repeating --source. The frontier check must be green first."
+        ),
+    )
     parser.add_argument("--source-cache", type=Path, default=None, help="Private reduced-evidence SQLite cache.")
     parser.add_argument("--source-workers", type=int, default=2, help="Bounded source evidence workers.")
     parser.add_argument(
@@ -95,6 +111,22 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"schema-commit: {exc}", file=sys.stderr)
         return 1
+
+    if args.frontier is not None:
+        provider_token = str(canonical_schema_provider(str(args.provider)))
+        try:
+            frontier = load_frontier(Path(args.frontier) if args.frontier else None)
+            check = check_frontier(frontier, subjects=(provider_token,))
+            if not check.ok:
+                for finding in check.errors:
+                    print(
+                        f"schema-commit: frontier {finding.kind}: {finding.root} -- {finding.detail}", file=sys.stderr
+                    )
+                raise SchemaFrontierError("the declared frontier does not match the live roots")
+            source_inputs = source_inputs + frontier_source_inputs(frontier, provider_token)
+        except SchemaFrontierError as exc:
+            print(f"schema-commit: {exc}", file=sys.stderr)
+            return 1
 
     def on_progress(phase: str, payload: JSONDocument) -> None:
         print(f"schema-commit: {json.dumps({'phase': phase, **payload}, sort_keys=True)}", file=sys.stderr, flush=True)
