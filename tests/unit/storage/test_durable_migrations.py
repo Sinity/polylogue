@@ -2716,3 +2716,192 @@ def test_losing_a_migration_race_restores_the_callers_foreign_keys(
         assert bool(conn.execute("PRAGMA foreign_keys").fetchone()[0]) is True
     finally:
         conn.close()
+
+
+_V31_ARTIFACT_CENSUS_DDL = (
+    Path(__file__).parents[3]
+    / "polylogue"
+    / "storage"
+    / "sqlite"
+    / "migrations"
+    / "source"
+    / "031_raw_authority_artifact_census_receipts.sql"
+).read_text(encoding="utf-8")
+
+_RETIRED_ARTIFACT_CENSUS_OBJECTS = (
+    ("table", "raw_authority_artifact_census_receipts"),
+    ("table", "raw_authority_artifact_census_checkpoints"),
+    ("table", "raw_authority_artifact_census_checkpoint_members"),
+    ("index", "idx_raw_authority_artifact_census_receipts_applied_at"),
+    ("index", "idx_raw_authority_artifact_census_checkpoint_members_page"),
+    ("index", "idx_raw_sessions_raw_authority_census_candidates"),
+    ("trigger", "invalidate_pending_raw_authority_artifact_census_checkpoint_on_raw_delete"),
+)
+
+
+def _present_schema_objects(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    placeholders = ", ".join("?" for _ in _RETIRED_ARTIFACT_CENSUS_OBJECTS)
+    return {
+        (str(kind), str(name))
+        for kind, name in conn.execute(
+            f"SELECT type, name FROM sqlite_master WHERE name IN ({placeholders})",
+            tuple(name for _kind, name in _RETIRED_ARTIFACT_CENSUS_OBJECTS),
+        ).fetchall()
+    }
+
+
+def test_fresh_source_tier_has_no_raw_authority_artifact_census_objects() -> None:
+    """polylogue-f1s9a: a freshly created source tier never mints the census artifacts.
+
+    Anti-vacuity: re-adding migration 031's DDL to ``SOURCE_DDL`` turns every
+    one of these seven objects red.
+    """
+    with sqlite3.connect(":memory:") as fresh:
+        fresh.executescript(SOURCE_DDL)
+        assert _present_schema_objects(fresh) == set()
+
+
+def test_source_tier_v44_migration_045_drops_artifact_census_without_losing_retained_rows(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    """polylogue-f1s9a: v45 removes the retired artifact-census objects from a real archive.
+
+    Anti-vacuity: delete any DROP statement from
+    ``045_drop_raw_authority_artifact_census.sql`` and the corresponding object
+    survives the migration, failing the emptiness assertion; drop the migration
+    entirely and ``applied_versions`` no longer contains 45. Remove a retained
+    table's row assertion and a migration that cascaded those rows away would
+    still pass.
+    """
+    db_path = workspace_env["archive_root"] / "source.db"
+    db_path.unlink(missing_ok=True)
+    raw_blob_hash, raw_blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(
+        b"synthetic-v45-raw"
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SOURCE_DDL)
+        reset_source_fixture_to_version(conn, SOURCE_SCHEMA_VERSION - 1)
+        # The artifact-census objects are already absent from SOURCE_DDL (they
+        # are listed in RETIRED_SOURCE_SCHEMA_OBJECTS), so a v44 archive that
+        # still carries them must be reconstructed from migration 031 itself.
+        conn.executescript(_V31_ARTIFACT_CENSUS_DDL)
+        conn.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION - 1}")
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('v44-raw', 'codex-session', '/v44.json', ?, ?, 1)
+            """,
+            (bytes.fromhex(raw_blob_hash), raw_blob_size),
+        )
+        # The three retained raw-authority tables must survive byte for byte.
+        conn.execute(
+            """
+            INSERT INTO raw_authority_parser_census (
+                raw_id, parser_fingerprint, status, logical_keys_json, censused_at_ms
+            ) VALUES ('v44-raw', 'fingerprint-v44', 'complete', '["codex-session:v44"]', 1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_verdicts (
+                raw_id, logical_source_key, verdict, cohort_member_count,
+                cohort_fingerprint, computed_at_ms
+            ) VALUES ('v44-raw', 'codex-session:v44', 'full', 1, ?, 1)
+            """,
+            (b"f" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_plans (
+                plan_id, input_digest, input_raw_ids_json, logical_keys_json,
+                authority_witness_json, source_preconditions_json,
+                index_preconditions_json, created_at_ms
+            ) VALUES ('v44-plan', ?, '["v44-raw"]', '["codex-session:v44"]', '{}', '{}', '{}', 1)
+            """,
+            ("d" * 64,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_censuses (
+                census_id, sequence_no, scope_json, residual_json, parser_fingerprint,
+                mode, lifecycle_status, quiescent, inventory_digest, residual_digest,
+                plan_count, executable_plan_count, residual_plan_count, created_at_ms
+            ) VALUES ('v44-census', 1, '{}', '{}', 'fingerprint-v44', 'census', 'planned',
+                      1, ?, ?, 0, 0, 0, 1)
+            """,
+            ("a" * 64, "b" * 64),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_blockers (
+                blocker_id, plan_id, census_id, reason, expected_json, observed_json, created_at_ms
+            ) VALUES ('v44-blocker', 'v44-plan', 'v44-census', 'fixture', '{}', '{}', 1)
+            """
+        )
+        # And the retired artifact-census objects must actually be populated,
+        # so the drop is proven against rows rather than against empty shells.
+        conn.execute(
+            """
+            INSERT INTO raw_authority_artifact_census_receipts (
+                receipt_id, receipt_sha256, receipt_json, backup_manifest_path,
+                applied_at_ms, tool_version
+            ) VALUES ('v44-receipt', ?, '{}', '/backup/manifest.json', 1, 'fixture')
+            """,
+            ("c" * 64,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_artifact_census_checkpoints (
+                census_id, universe_sha256, candidate_count, snapshot_max_raw_rowid,
+                index_generation, index_identity_sha256, created_at_ms
+            ) VALUES ('v44-artifact-census', ?, 1, 1, 'gen', ?, 1)
+            """,
+            ("e" * 64, "e" * 64),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_authority_artifact_census_checkpoint_members (
+                census_id, ordinal, raw_id
+            ) VALUES ('v44-artifact-census', 0, 'v44-raw')
+            """
+        )
+        conn.commit()
+
+    with sqlite3.connect(db_path) as staged:
+        assert _present_schema_objects(staged) == set(_RETIRED_ARTIFACT_CENSUS_OBJECTS)
+
+    manifest = _verified_backup_manifest(tmp_path / "source-v44-backup")
+    with sqlite3.connect(db_path) as migrated:
+        migrated.execute("PRAGMA foreign_keys = ON")
+        result = migrate_archive_tier(migrated, ArchiveTier.SOURCE, backup_manifest=manifest)
+        assert result.from_version == SOURCE_SCHEMA_VERSION - 1
+        assert result.applied_versions == (SOURCE_SCHEMA_VERSION,)
+
+        # Every retired artifact-census object is gone.
+        assert _present_schema_objects(migrated) == set()
+
+        # The three retained raw-authority tables migrated without data loss.
+        assert migrated.execute(
+            "SELECT raw_id, parser_fingerprint, status FROM raw_authority_parser_census"
+        ).fetchall() == [("v44-raw", "fingerprint-v44", "complete")]
+        assert migrated.execute(
+            "SELECT raw_id, logical_source_key, verdict FROM raw_authority_verdicts"
+        ).fetchall() == [("v44-raw", "codex-session:v44", "full")]
+        assert migrated.execute("SELECT blocker_id, plan_id, census_id FROM raw_authority_blockers").fetchall() == [
+            ("v44-blocker", "v44-plan", "v44-census")
+        ]
+        assert migrated.execute("SELECT raw_id FROM raw_sessions").fetchall() == [("v44-raw",)]
+        assert migrated.execute("PRAGMA foreign_key_check").fetchall() == []
+
+        with sqlite3.connect(":memory:") as fresh:
+            fresh.executescript(SOURCE_DDL)
+            fresh.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+            parity = migration_runner.prove_durable_fresh_ddl_parity(
+                ArchiveTier.SOURCE,
+                SOURCE_SCHEMA_VERSION,
+                migrated_connection=migrated,
+                fresh_connection=fresh,
+                evidence_ref="test:source-v45:artifact-census-drop-parity",
+            )
+        assert parity.matches, parity
