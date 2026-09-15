@@ -6,6 +6,13 @@ already decided admission under host pressure, and this suite is SQLite-IO
 bound, so a width surrendered to an unrelated agent's momentary allocation is
 not won back later in the run.
 
+Where the pool's cgroup layout is absent entirely the fallback is the declared
+slice budget, still never the host.  Measured on sinnix-prime 2026-09-15: the
+live ``agentctl-pytest.slice`` is a *user*-manager unit with
+``MemoryHigh=12G`` / ``MemoryMax=14G``, and a process inside it reads 12078 MiB
+(heavy) or 4932 MiB (quick) remaining -- three workers and one.  Querying the
+system manager for that unit reports ``infinity`` and describes nothing.
+
 Anti-vacuity:
 - replace ``pytest_slot_available_mib`` with the generic ancestor walk and
   ``test_the_pytest_slice_ignores_shared_agent_slice_usage`` goes red -- a
@@ -32,6 +39,10 @@ Anti-vacuity:
   ``test_the_slot_records_which_bound_narrowed_the_run`` go red -- every case
   there pairs a slice that is the bound with a host reading derived to be
   roomier than the slice can ever hand out (``HOST_NOT_THE_BOUND_MIB``);
+- return a bare ``requested`` when the cgroup is unreadable and
+  ``test_an_unreadable_cgroup_falls_back_to_the_declared_budget`` goes red --
+  ``requested`` is whatever ``-n`` the command named, so a host without the
+  pool's slice layout would run ``-n 8`` at eight;
 - restore host ``MemAvailable`` as a second narrowing input -- ``min(host,
   cgroup)`` -- and ``test_a_loaded_host_does_not_narrow_an_admitted_run`` and
   ``test_a_host_narrower_than_the_slice_does_not_decide`` go red: both pair a
@@ -243,6 +254,7 @@ def test_a_loaded_host_does_not_narrow_an_admitted_run(tmp_path: Path) -> None:
     workers, basis = memory_bounded_worker_cap(meminfo=_meminfo(tmp_path, host_mib), **_unbounded_cgroup(tmp_path))
     assert workers == CORPUS_MAX_WORKERS
     assert basis["narrowed"] is False
+    assert basis["basis"] == "declared_budget"
     assert basis["host_available_mib"] == host_mib
 
 
@@ -259,18 +271,41 @@ def test_a_starved_cgroup_still_runs_one_worker(tmp_path: Path) -> None:
     assert basis["basis"] == "cgroup_budget"
 
 
-def test_an_unbounded_cgroup_does_not_narrow_silently(tmp_path: Path) -> None:
-    """With no cgroup limit there is nothing to narrow against, however the host looks.
+def test_an_unbounded_cgroup_falls_back_to_the_declared_budget(tmp_path: Path) -> None:
+    """With no readable cgroup limit the declared slice budget answers, not the host.
 
-    A starved host reading must not become the answer here: unmeasured means
-    the one bound this run respects was not readable, not that memory is short.
+    A starved host reading must not become the answer here: an unreadable
+    cgroup means the live bound could not be measured, not that memory is
+    short. The width is what the slice is declared to allow.
     """
     workers, basis = memory_bounded_worker_cap(
         meminfo=_meminfo(tmp_path, STARVED_CGROUP_MIB), **_unbounded_cgroup(tmp_path)
     )
     assert workers == CORPUS_MAX_WORKERS
-    assert basis["basis"] == "unmeasured"
+    assert basis["basis"] == "declared_budget"
+    assert basis["available_mib"] == PYTEST_SLICE_MEMORY_HIGH_MIB
     assert basis["narrowed"] is False
+
+
+def test_an_unreadable_cgroup_falls_back_to_the_declared_budget(tmp_path: Path) -> None:
+    """A command asking for more than the slice is declared to hold is still cut down.
+
+    ``requested`` is whatever ``-n`` the argv named, not the corpus default, so
+    an unmeasured cgroup returning it unchanged would run a hand-written
+    ``-n 8`` at eight on any host lacking the pool's slice layout -- a cgroup
+    namespace, a foreign runtime, a process outside the pool. That is the
+    width class m3018's originating incident was killed at.
+    """
+    over_wide = CORPUS_MAX_WORKERS + 5
+    workers, basis = memory_bounded_worker_cap(
+        requested=over_wide, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **_unbounded_cgroup(tmp_path)
+    )
+    assert workers == CORPUS_MAX_WORKERS
+    assert basis["basis"] == "declared_budget"
+    assert basis["requested_workers"] == over_wide
+    assert basis["narrowed"] is True
+    # Still not the host: a roomy host does not buy back the declared ceiling.
+    assert basis["host_available_mib"] == HOST_NOT_THE_BOUND_MIB
 
 
 def test_an_unreadable_meminfo_is_only_an_absent_observation(tmp_path: Path) -> None:

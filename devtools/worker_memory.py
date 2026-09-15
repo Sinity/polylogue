@@ -230,17 +230,30 @@ def memory_bounded_worker_cap(
     The reading is live at launch, so a job that waited in the queue is sized
     against the budget it actually has.  The derived ``CORPUS_MAX_WORKERS``
     cap remains the upper bound even when the cgroup is roomy.
+
+    When the cgroup carries no readable limit the fallback is the *declared*
+    slice budget, not the host: ``requested`` is whatever ``-n`` the command
+    named, so returning it unnarrowed would let ``-n 8`` run at 8 wherever the
+    pool's layout is absent -- a cgroup namespace, a foreign runtime, a process
+    outside the pool.  ``PYTEST_SLICE_MEMORY_HIGH_MIB`` is what the slice is
+    declared to allow, so falling back to it keeps the same budget answering
+    the question when its live enforcement cannot be read.
     """
     host = available_memory_mib(meminfo=meminfo)
     cgroup = pytest_slot_available_mib(process_cgroup=process_cgroup, root=cgroup_root)
     if cgroup is None:
-        return requested, {
-            "basis": "unmeasured",
+        workers = max(1, min(requested, CORPUS_MAX_WORKERS))
+        return workers, {
+            "basis": "declared_budget",
+            "available_mib": PYTEST_SLICE_MEMORY_HIGH_MIB,
             "host_available_mib": host,
             "cgroup_available_mib": None,
-            "workers": requested,
+            "headroom_fraction": MEMORY_HEADROOM_FRACTION,
+            "controller_peak_mib": CONTROLLER_PEAK_MIB,
+            "worker_peak_mib": WORKER_PEAK_MIB,
+            "workers": workers,
             "requested_workers": requested,
-            "narrowed": False,
+            "narrowed": workers < requested,
         }
     workers = max(1, min(requested, width_within(cgroup)))
     return workers, {
