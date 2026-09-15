@@ -81,6 +81,24 @@ class RouteSpec:
 DaemonRouteDeclaration = RouteSpec
 
 
+def _consumer_edges(producer: str) -> tuple[CompletenessEdge, ...]:
+    """Consumers that go blind when this route declaration is absent.
+
+    Both edges are hard failures, not documentation. ``daemon-http``
+    generates the route's dispatch adapter from the declaration
+    (``_declared_get_routes``), and ``validate_declared_route_reachability``
+    refuses daemon startup when generation and installation disagree.
+    ``openapi-schema`` raises ``RuntimeError`` from
+    ``devtools/render_openapi.py`` when the rendered document carries no
+    operation for a declared method/path.
+    """
+
+    return (
+        CompletenessEdge(producer, "daemon-http", "route", "polylogue/daemon/http.py"),
+        CompletenessEdge(producer, "openapi-schema", "generated-document", "docs/openapi/search.yaml"),
+    )
+
+
 _FIND_DECLARATION = RouteSpec(
     kernel=DeclarationSpec(
         declaration_id="daemon.find.sessions",
@@ -115,8 +133,20 @@ _FIND_DECLARATION = RouteSpec(
                 target_path="/api/sessions",
             ),
         ),
-        examples=(),
-        completeness_edges=(),
+        examples=(
+            # Derived from the live request contract: ``_handle_list_sessions``
+            # reads ``limit``/``offset``/``cursor`` directly and routes every
+            # other key through ``_build_query_spec_params``; ``query`` is
+            # compiled by the shared expression parser, so an origin clause is
+            # a structured filter rather than an FTS term.
+            ExampleSpec("default", "Read the first bounded session page", (("limit", 20),)),
+            ExampleSpec(
+                "origin-filter",
+                "Find sessions from one origin with the shared query grammar",
+                (("query", "origin:claude-code-session"), ("limit", 5)),
+            ),
+        ),
+        completeness_edges=_consumer_edges("polylogue.daemon.http.DaemonAPIHandler._handle_list_sessions"),
     ),
     method="GET",
     path="/api/sessions",
@@ -140,15 +170,11 @@ _STATUS_DECLARATION = RouteSpec(
         repair_command="devtools render openapi",
         handlers=(HandlerBinding("daemon-http", "polylogue/daemon/http.py", "_handle_status", "GET /api/status"),),
         outputs=(OutputSpec("response", "json", "DaemonStatusPayload", "/api/status"),),
-        examples=(ExampleSpec("default", "Read daemon status"),),
-        completeness_edges=(
-            CompletenessEdge(
-                "polylogue.daemon.http.DaemonAPIHandler._handle_status",
-                "daemon-http",
-                "route",
-                "polylogue/daemon/http.py",
-            ),
-        ),
+        # ``_handle_status`` accepts ``params: ... | None`` and reads none of
+        # them: the status snapshot takes no request input, so the only
+        # faithful example is the parameterless one.
+        examples=(ExampleSpec("default", "Read daemon status", ()),),
+        completeness_edges=_consumer_edges("polylogue.daemon.http.DaemonAPIHandler._handle_status"),
     ),
     method="GET",
     path="/api/status",
@@ -174,15 +200,19 @@ _QUERY_UNITS_DECLARATION = RouteSpec(
             HandlerBinding("daemon-http", "polylogue/daemon/http.py", "_handle_query_units", "GET /api/query-units"),
         ),
         outputs=(OutputSpec("response", "json", "QueryUnitResultEnvelope", "/api/query-units"),),
-        examples=(ExampleSpec("default", "Read a bounded query-unit page"),),
-        completeness_edges=(
-            CompletenessEdge(
-                "polylogue.daemon.http.DaemonAPIHandler._handle_query_units",
-                "daemon-http",
-                "route",
-                "polylogue/daemon/http.py",
+        examples=(
+            # ``_handle_query_units`` reads ``expression``/``limit``/``offset``
+            # on an initial request. The follow-up shape takes only the opaque
+            # ``continuation`` the previous page emitted and rejects any other
+            # key, so no static literal can stand for it; it is deliberately
+            # not declared as an example.
+            ExampleSpec(
+                "default",
+                "Read a bounded query-unit page",
+                (("expression", "messages where role:user"), ("limit", 2)),
             ),
         ),
+        completeness_edges=_consumer_edges("polylogue.daemon.http.DaemonAPIHandler._handle_query_units"),
     ),
     method="GET",
     path="/api/query-units",
@@ -210,15 +240,17 @@ _READ_DECLARATION = RouteSpec(
             ),
         ),
         outputs=(OutputSpec("response", "json", "SessionReadViewEnvelope", "/api/sessions/:id/read"),),
-        examples=(ExampleSpec("messages", "Read a bounded session message view"),),
-        completeness_edges=(
-            CompletenessEdge(
-                "polylogue.daemon.http.DaemonAPIHandler._handle_get_session_read",
-                "daemon-http",
-                "route",
-                "polylogue/daemon/http.py",
+        examples=(
+            # ``view`` must already exist in ``READ_VIEW_HTTP_CAPABILITIES`` and
+            # ``format`` must be one that capability declares; the messages view
+            # additionally reads ``limit``/``offset``.
+            ExampleSpec(
+                "messages",
+                "Read a bounded session message view",
+                (("view", "messages"), ("format", "json"), ("limit", 50), ("offset", 0)),
             ),
         ),
+        completeness_edges=_consumer_edges("polylogue.daemon.http.DaemonAPIHandler._handle_get_session_read"),
     ),
     method="GET",
     path="/api/sessions/:id/read",
