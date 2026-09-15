@@ -73,10 +73,15 @@ class TestRootHelpDocumentsQueryFirst:
         assert result.exit_code == 0
         assert "Product roles:" in result.output
         assert "Setup/demo/evidence:" in result.output
-        assert "Reader/TUI:" in result.output
         assert "Operations:" in result.output
         assert "Search/read/action:" in result.output
         assert "polylogue ops status" in result.output
+        # The former "Reader/TUI:" role went with the TUI itself (polylogue-f94,
+        # PR #5182). Asserting a role that no longer exists would pin deleted
+        # product surface; asserting the three that do exist keeps the real
+        # invariant -- root help groups commands by product role rather than
+        # listing them flat.
+        assert "Reader/TUI:" not in result.output
 
 
 # ---------------------------------------------------------------------------
