@@ -5,8 +5,7 @@ up where the previous run left off: each stage probes the archive/config
 state and either marks itself ``[skip]`` (already satisfied) or guides the
 operator through the next action. ``--non-interactive`` suppresses prompts
 and prints the diagnostic block once — used by tests and as a "what would
-this do" preview. Reader launch is intentionally not part of this command:
-``polylogue dashboard`` owns the TUI launch contract.
+this do" preview.
 """
 
 from __future__ import annotations
@@ -222,7 +221,6 @@ def tutorial_command(env: AppEnv, non_interactive: bool) -> None:
     if satisfied_count == total:
         console.print(
             "\n[green]Ready.[/green] Try `polylogue find QUERY then read`, "
-            "`polylogue dashboard --status` before launching the terminal TUI, "
             "or `polylogue manual` for the full reference."
         )
     else:

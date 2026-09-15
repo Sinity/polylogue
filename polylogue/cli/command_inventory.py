@@ -51,10 +51,8 @@ ROOT_COMMAND_ROLE_SECTIONS: tuple[RootCommandRoleSection, ...] = (
     ),
     RootCommandRoleSection(
         title="Reader and local UI",
-        commands=("agents", "dashboard"),
-        footer=(
-            "`agents` exposes JSON-first coordination views for agent loops; `dashboard` launches the terminal TUI."
-        ),
+        commands=("agents",),
+        footer="`agents` exposes JSON-first coordination views for agent loops.",
     ),
     RootCommandRoleSection(
         title="Operations and maintenance",

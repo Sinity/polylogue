@@ -819,12 +819,11 @@ def run_runtime_readiness(config: Config) -> ReadinessReport:
     checks.append(ReadinessCheck("terminal", VerifyStatus.OK, summary=term_detail))
 
     rich_ok = _module_available("rich")
-    textual_ok = _module_available("textual")
     checks.append(
         ReadinessCheck(
             "ui_libraries",
             VerifyStatus.OK if rich_ok else VerifyStatus.WARNING,
-            summary=f"Rich={'yes' if rich_ok else 'no'}, Textual={'yes' if textual_ok else 'no'}",
+            summary=f"Rich={'yes' if rich_ok else 'no'}",
         )
     )
 

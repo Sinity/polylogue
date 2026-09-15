@@ -103,7 +103,6 @@ COMMAND_ROOT_OWNERS: dict[str, str] = {
     "config": "tests/unit/cli/test_completions_contract.py",
     "context": "tests/unit/cli/test_context_view.py",
     "continue": "tests/unit/cli/test_continue_absorption.py",
-    "dashboard": "tests/unit/cli/test_dashboard_command.py",
     "delete": "tests/unit/cli/test_query_verbs_runtime.py",
     "demo": "tests/unit/cli/test_demo_command.py",
     "facets": "tests/unit/cli/test_facets.py",

@@ -412,7 +412,6 @@ def cli(
     Product roles:
         Search/read/action:   find QUERY then read|select|mark|analyze|delete|continue; facets
         Setup/demo/evidence:  config, init, import, demo, tutorial, manual
-        Reader/TUI:           dashboard --status, dashboard
         Operations:           status (same as polylogue ops status), ops diagnostics, ops maintenance, ops backup
 
     \b

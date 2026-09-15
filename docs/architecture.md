@@ -105,7 +105,7 @@ These expose the archive and its insights:
   `GET /assets/:asset` (`webui/`,
   TypeScript + Preact + Vite; committed build output under
   `polylogue/daemon/static/dist`).
-- dashboard and TUI: `polylogue/ui/`
+- terminal rendering facade: `polylogue/ui/`
 - renderers: `polylogue/rendering/`
 
 Leaf adapters over archive operations and derived insights.

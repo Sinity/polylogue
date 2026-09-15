@@ -1295,34 +1295,6 @@ def test_run_cli_uses_python_bootstrap_under_mutmut(
     assert env["PY_IGNORE_IMPORTMISMATCH"] == "1"
 
 
-# ---------------------------------------------------------------------------
-# Merged from test_command_surfaces.py (2026-03-15)
-# ---------------------------------------------------------------------------
-
-
-class TestDashboardCommand:
-    def test_dashboard_launches_app(self, cli_runner: CliRunner, cli_workspace: CliWorkspace) -> None:
-        with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
-            mock_app = MagicMock()
-            mock_app_cls.return_value = mock_app
-            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
-        assert result.exit_code == 0
-        mock_app.run.assert_called_once()
-
-    def test_dashboard_creates_app_with_facade(
-        self,
-        cli_runner: CliRunner,
-        cli_workspace: CliWorkspace,
-    ) -> None:
-        with patch("polylogue.ui.tui.app.PolylogueApp") as mock_app_cls:
-            mock_app = MagicMock()
-            mock_app_cls.return_value = mock_app
-            result = cli_runner.invoke(click_cli, ["--plain", "dashboard"])
-        assert result.exit_code == 0
-        kwargs = mock_app_cls.call_args.kwargs
-        assert kwargs["polylogue"] is not None
-
-
 class TestCompletionsCommand:
     @pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
     def test_completion_generates_script(self, cli_runner: CliRunner, shell: str) -> None:
