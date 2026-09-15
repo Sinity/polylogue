@@ -8,7 +8,12 @@ from collections.abc import Callable
 
 import pytest
 
-from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
+from polylogue.storage.fts.derivation import (
+    GLOBAL_PARTITION,
+    FtsDerivationAdapter,
+    converge_fts_partition_sync,
+    session_partition_is_valid_sync,
+)
 from polylogue.storage.fts.fts_lifecycle import (
     FTS_TRIGGER_NAMES,
     delete_excess_message_rows_batched_sync,
@@ -415,3 +420,38 @@ def test_replace_fts_triggers_still_replaces_definitions(test_conn: sqlite3.Conn
 def _triggers_present(conn: sqlite3.Connection) -> bool:
     names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
     return bool(names & set(FTS_TRIGGER_NAMES))
+||||||| parent of 772db1d6e (refactor: Retire the duplicate session FTS repair module)
+
+
+def test_write_path_partition_convergence_replaces_identity_drift(test_conn: sqlite3.Connection) -> None:
+    """The canonical write path's FTS route detects and repairs identity drift.
+
+    This is the contract that retired ``storage/fts/session_repair.py``: the
+    write path asks the FTS domain, not a second staleness rule of its own.
+
+    Anti-vacuity: corrupting ``messages_fts_identity.source_hash`` is exactly
+    what the deleted probe detected. If ``session_partition_is_valid_sync``
+    stopped consulting the identity relation, the first assertion goes True and
+    ``converge_fts_partition_sync`` returns False, failing this test; if the
+    republish stopped happening, the final ``valid`` assertion fails.
+    """
+    restore_fts_triggers_sync(test_conn)
+    _seed_text_block(
+        test_conn,
+        native_session_id="conv-writepath-converge",
+        native_message_id="msg-writepath-converge",
+        text="write path convergence needle",
+    )
+    session_id = "unknown-export:conv-writepath-converge"
+    repair_message_fts_index_sync(test_conn, [session_id])
+    assert session_partition_is_valid_sync(test_conn, session_id)
+    # A second pass over an unchanged, valid partition must do nothing.
+    assert converge_fts_partition_sync(test_conn, session_id) is False
+
+    test_conn.execute(
+        "UPDATE messages_fts_identity SET source_hash = ? WHERE block_id LIKE ?",
+        (b"drift" + b"\x00" * 27, f"{session_id}:%"),
+    )
+    assert not session_partition_is_valid_sync(test_conn, session_id)
+    assert converge_fts_partition_sync(test_conn, session_id) is True
+    assert session_partition_is_valid_sync(test_conn, session_id)

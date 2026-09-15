@@ -153,8 +153,8 @@ from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_exc
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.fts.derivation import converge_fts_partition_sync
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
-from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     BrowserCapturePrecedence,
@@ -570,7 +570,7 @@ def _write_parsed_precedence_result(
                 (raw_id, session_id, raw_id),
             )
             raw_link_changed = bool(cursor.rowcount)
-        fts_repaired = repair_session_fts_if_needed_sync(store._conn, session_id)
+        fts_repaired = converge_fts_partition_sync(store._conn, session_id)
         if manage_transaction:
             store._conn.commit()
         counts = store._skipped_counts(session)

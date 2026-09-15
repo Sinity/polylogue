@@ -359,20 +359,25 @@ class FtsDerivationAdapter:
         """Inspect membership against ``blocks`` without consulting state tables."""
         generation = _generation(conn)
         compatible = _schema_compatible(conn)
-        # The global residue key is not a rebuild partition.  Its inspection
-        # must count the shared relation without materializing every block's
-        # input payload; the only values its publisher reads are orphan rowids.
-        # One partition input per inspection: input_for materializes every
-        # block's search_text and hashes it, so calling it twice per session
-        # doubled the cost of the rebuild path for no added evidence.
-        expected: FtsPartitionInput | None = None
+        # Inspection counts the two relations; it never materializes the input
+        # projection.  ``input_for`` reads and hashes every block's
+        # ``search_text``, which is what a *replacement* is bound to -- an
+        # inspection only has to answer whether membership and identity agree
+        # with ``blocks``, and every one of those questions is a COUNT over an
+        # indexed join.  Canonical writers call this on every unchanged
+        # re-ingest, where hashing the session's whole text would dominate the
+        # write and buy no extra evidence.
         if key == GLOBAL_PARTITION or not table_exists(conn, "blocks"):
             expected_rows = (
                 _indexable_row_count(conn) if key == GLOBAL_PARTITION and table_exists(conn, "blocks") else 0
             )
         else:
-            expected = self.input_for(conn, key)
-            expected_rows = len(expected.rows)
+            expected_rows = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND search_text != ''",
+                    (key,),
+                ).fetchone()[0]
+            )
         if not compatible:
             return FtsPartitionInspection(
                 key,
@@ -449,20 +454,17 @@ class FtsDerivationAdapter:
                 )
             )
         else:
-            if expected is None:
-                expected = self.input_for(conn, key)
-            required = tuple(row.rowid for row in expected.rows)
-            placeholders = ", ".join("?" for _ in required)
-            present_rows = (
-                0
-                if not required
-                else int(
-                    conn.execute(
-                        f"SELECT COUNT(*) FROM messages_fts_docsize WHERE id IN ({placeholders})", required
-                    ).fetchone()[0]
-                )
+            missing_rows = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM blocks AS b
+                    LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
+                    WHERE b.session_id = ? AND b.search_text != '' AND d.id IS NULL
+                    """,
+                    (key,),
+                ).fetchone()[0]
             )
-            missing_rows = len(required) - present_rows
+            present_rows = expected_rows - missing_rows
             excess_rows = int(
                 conn.execute(
                     """
@@ -830,6 +832,35 @@ def replace_fts_partition_sync(conn: sqlite3.Connection, session_id: str) -> boo
     return adapter.publish_partition(conn, adapter.input_for(conn, session_id))
 
 
+def session_partition_is_valid_sync(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Whether one session's FTS partition already agrees with ``blocks``.
+
+    This is the domain's own authoritative inspection, not a second probe:
+    membership, identity and duplicate rules all come from
+    ``inspect_partition``.  A canonical writer that re-ingested unchanged
+    content asks this to decide whether it must republish the partition.
+    """
+    if not session_id:
+        return True
+    return FtsDerivationAdapter().inspect_partition(conn, session_id).valid
+
+
+def converge_fts_partition_sync(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Bring one session's FTS partition to valid, reporting whether work ran.
+
+    Inspection and replacement are the domain's, so a canonical write path
+    carries no repair SQL or staleness rule of its own.  An incompatible FTS
+    schema is a readiness failure rather than something a write repairs:
+    ``publish_partition`` refuses, and the daemon's FTS derivation reports it.
+    """
+    if not session_id:
+        return False
+    adapter = FtsDerivationAdapter()
+    if adapter.inspect_partition(conn, session_id).valid:
+        return False
+    return adapter.publish_partition(conn, adapter.input_for(conn, session_id))
+
+
 __all__ = [
     "GLOBAL_PARTITION",
     "FtsDomainAdapter",
@@ -841,4 +872,7 @@ __all__ = [
     "FtsPartitionInspection",
     "FtsPartitionReplacement",
     "active_fts_triggers_sync",
+    "converge_fts_partition_sync",
+    "replace_fts_partition_sync",
+    "session_partition_is_valid_sync",
 ]
