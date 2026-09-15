@@ -1411,7 +1411,10 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        return LiveIngestAttemptSummary()
+        return LiveIngestAttemptSummary(
+            available=False,
+            unavailable_reason=f"live_ingest_attempt table unreadable: {exc}",
+        )
 
     now = datetime.now(UTC)
     recent_attempts = [
@@ -1515,8 +1518,14 @@ def _archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttempt
             slow_threshold_s = _archive_compute_slow_threshold_s(conn)
         finally:
             conn.close()
-    except sqlite3.Error:
-        return None
+    except sqlite3.Error as exc:
+        # ``None`` here means "ops has nothing to say" and lets the caller fall
+        # through to the index tier.  An unreadable ops tier is a different
+        # fact: report it as unmeasured rather than as an absence of writers.
+        return LiveIngestAttemptSummary(
+            available=False,
+            unavailable_reason=f"ops ingest_attempts unreadable: {exc}",
+        )
 
     now = datetime.now(UTC)
     recent_attempts = [
@@ -2020,8 +2029,15 @@ def _daemon_claim_guard(
     fts_component = _component_from_fts_readiness(fts_readiness)
     profile_component = _component_from_insight_freshness(insight_freshness)
     embedding_component = _component_from_daemon_embedding_readiness(embedding_readiness)
-    active_writer = bool(live_ingest_attempts.running_count)
+    # An unreadable attempt ledger cannot rule out a concurrent writer, so it
+    # must not certify one is absent (polylogue-bu47u).  Same derivation as the
+    # direct path's ``ingest_workload.available`` branch in
+    # operations.daemon_status, which this producer had drifted away from.
+    writer_measurable = live_ingest_attempts.available
+    active_writer = not writer_measurable or bool(live_ingest_attempts.running_count)
     writer_parts: list[str] = []
+    if not writer_measurable:
+        writer_parts.append("ingest workload inspection unavailable; cannot rule out a concurrent archive writer")
     if live_ingest_attempts.running_count:
         writer_parts.append(f"{live_ingest_attempts.running_count} live ingest attempt(s) running")
     derived_domains = [
@@ -2266,6 +2282,16 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
 
 
 def _component_from_live_ingest(summary: LiveIngestAttemptSummary) -> ComponentReadiness:
+    if not summary.available:
+        # Zero counts from an unread ledger are not a measured idle daemon.
+        return ComponentReadiness(
+            component="daemon_ingest",
+            scope="daemon",
+            state=CapabilityReadinessState.UNKNOWN,
+            summary=summary.unavailable_reason or "live ingest attempt evidence is unavailable",
+            counts={},
+            caveats=("ingest_attempt_ledger_unreadable",),
+        )
     if summary.stuck_running_count or summary.stale_running_count:
         state = CapabilityReadinessState.DEGRADED
     elif summary.running_count:
@@ -2592,6 +2618,10 @@ def reset_periodic_status_component_registry() -> None:
         _PERIODIC_STATUS_REGISTRY = None
 
 
+_UNMEASURED_UNSET: Any = object()
+"""Sentinel: this component has no distinct unmeasured projection."""
+
+
 def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
@@ -2688,22 +2718,40 @@ def build_daemon_status(
         names=[spec.name for spec in specs]
     )
 
-    def _v(name: str, default: Any) -> Any:
-        value = snapshots[name].value
+    # A snapshot in one of these states did not complete a collection for this
+    # call.  Its ``value`` is either ``None`` or a *previous* good value, so
+    # serving it -- or the model default -- as a current measurement is the
+    # refusal-rendered-as-a-positive-claim defect (polylogue-bu47u AC1).
+    unmeasured_states = {"timed_out", "unavailable", "degraded"}
+
+    def _v(name: str, default: Any, *, unmeasured: Any = _UNMEASURED_UNSET) -> Any:
+        """Return the component's collected value.
+
+        ``unmeasured`` is required wherever the ordinary ``default`` would read
+        as a positive claim (an all-zero readiness model renders as "ready");
+        it is substituted whenever the collector timed out, was unavailable, or
+        errored, even if a stale last-good value exists.
+        """
+        snapshot = snapshots[name]
+        if unmeasured is not _UNMEASURED_UNSET and snapshot.state in unmeasured_states:
+            return unmeasured
+        value = snapshot.value
         return value if value is not None else default
 
     db_info: dict[str, object] = _v("db_size", {})
     storage_info = _v("archive_storage", ArchiveStorageStatus())
     fts: dict[str, object] = _v("fts_readiness", {})
     freshness: dict[str, object] = _v("insight_freshness", {})
+    _session_summary_unknown = ComponentReadiness(
+        component="session_summary",
+        scope="archive",
+        state=CapabilityReadinessState.UNKNOWN,
+        summary="session-summary inspection unavailable",
+    )
     session_summary_readiness = _v(
         "session_summary",
-        ComponentReadiness(
-            component="session_summary",
-            scope="archive",
-            state=CapabilityReadinessState.UNKNOWN,
-            summary="session-summary inspection unavailable",
-        ),
+        _session_summary_unknown,
+        unmeasured=_session_summary_unknown,
     )
     if not isinstance(session_summary_readiness, ComponentReadiness):
         session_summary_readiness = ComponentReadiness(
@@ -2712,7 +2760,18 @@ def build_daemon_status(
             state=CapabilityReadinessState.UNKNOWN,
             summary="session-summary inspection returned an unexpected value",
         )
-    raw_materialization_readiness = _v("raw_materialization", RawMaterializationReadiness())
+    # ``RawMaterializationReadiness()`` defaults to ``available=True`` with all
+    # counts zero, which every downstream predicate reads as "inspected and
+    # clean".  An un-run or timed-out collector must instead be unavailable, so
+    # ``raw_materialization_ready``/``raw_materialization_unmeasured_reason``
+    # withhold certification rather than fabricate it (polylogue-bu47u AC1).
+    raw_materialization_readiness = _v(
+        "raw_materialization",
+        RawMaterializationReadiness(available=False),
+        unmeasured=RawMaterializationReadiness(available=False),
+    )
+    if not isinstance(raw_materialization_readiness, RawMaterializationReadiness):
+        raw_materialization_readiness = RawMaterializationReadiness(available=False)
     raw_frontier_integrity = _raw_frontier_integrity_info(raw_materialization_readiness)
     raw_replay_backlog: dict[str, object] = _v("raw_replay_backlog", {})
     sinex_publication: dict[str, object] = _v("sinex_publication", {})
@@ -2726,7 +2785,14 @@ def build_daemon_status(
         }
     )
     live_cursor = _v("live_cursor", LiveCursorSummary())
-    live_ingest_attempts = _v("live_ingest_attempts", LiveIngestAttemptSummary())
+    live_ingest_attempts = _v(
+        "live_ingest_attempts",
+        LiveIngestAttemptSummary(),
+        unmeasured=LiveIngestAttemptSummary(
+            available=False,
+            unavailable_reason="live ingest attempt collection did not complete",
+        ),
+    )
     convergence = _convergence_debt_from_snapshot(snapshots["convergence"])
     cursor_lag = _v("cursor_lag", CursorLagSummary())
     ingest_slo = slo_status_info(cursor_lag=cursor_lag)
@@ -2800,9 +2866,17 @@ def build_daemon_status(
                 rss_peak_mb = attempt.rss_peak_children_mb
             break
 
+    from polylogue.daemon.lifecycle import lifecycle_status
+
+    daemon_lifecycle = lifecycle_status()
+    daemon_alive = _check_daemon_liveness(daemon_lifecycle)
     component_state = ComponentState(
         watcher="running" if watch_sources else "stopped",
-        api="running",
+        # The API is served by the resident daemon: claiming it is running
+        # while the same payload reports ``daemon_liveness: false`` publishes a
+        # component state nothing observed (polylogue-bu47u AC4).  Both facts
+        # now come from one lifecycle snapshot.
+        api="running" if daemon_alive else "stopped",
         browser_capture="running" if browser_capture_active else "stopped",
     )
     fts_readiness = FTSReadiness(
@@ -2817,7 +2891,9 @@ def build_daemon_status(
         if fts.get("message_indexable_count") is None
         else _safe_int(fts.get("message_indexable_count", 0)),
         coverage_pct=None if fts.get("coverage_pct") is None else _safe_float(fts.get("coverage_pct")),
-        coverage_exact=bool(fts.get("coverage_exact", True)),
+        # An absent payload is an unmeasured surface; defaulting the
+        # exactness flag to True asserts a precision nothing computed.
+        coverage_exact=bool(fts.get("coverage_exact", False)),
         surfaces=cast(dict[str, dict[str, int | bool | str | None]], fts.get("surfaces", {})),
     )
     embedding_readiness = EmbeddingReadiness(
@@ -2854,9 +2930,6 @@ def build_daemon_status(
         profile_ready=(bool(freshness["profile_ready"]) if freshness.get("profile_ready") is not None else None),
     )
 
-    from polylogue.daemon.lifecycle import lifecycle_status
-
-    daemon_lifecycle = lifecycle_status()
     component_readiness = _daemon_component_readiness(
         component_state=component_state,
         fts_readiness=fts_readiness,
@@ -2882,7 +2955,7 @@ def build_daemon_status(
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_optional_int(raw_failures.get("detection_warnings")),
         sinex_publication=sinex_publication,
-        daemon_liveness=_check_daemon_liveness(daemon_lifecycle),
+        daemon_liveness=daemon_alive,
         daemon_lifecycle=daemon_lifecycle,
         component_state=component_state,
         source_lag=[SourceLagItem(name=s.name, root=str(s.root), exists=s.exists()) for s in watch_sources],
