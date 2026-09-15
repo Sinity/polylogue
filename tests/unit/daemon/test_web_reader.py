@@ -3170,17 +3170,22 @@ class TestCockpitAggregateRoutes:
     @pytest.mark.parametrize(
         ("is_error", "exit_code", "expected_outcomes"),
         [
-            (0, 2, {"ok": 0, "failed": 1, "unknown": 0}),
-            (1, 0, {"ok": 1, "failed": 0, "unknown": 0}),
+            (True, 2, {"ok": 0, "failed": 1, "unknown": 0}),
+            (False, 0, {"ok": 1, "failed": 0, "unknown": 0}),
         ],
     )
     def test_evidence_summary_matches_structural_tool_relations(
         self,
         workspace_env: dict[str, Path],
-        is_error: int,
+        is_error: bool,
         exit_code: int,
         expected_outcomes: dict[str, int],
     ) -> None:
+        """The strip reports the canonical structural outcome the parser
+        declared. Anti-vacuity: re-deriving the state from the legacy
+        ``tool_result_exit_code``/``is_error`` compat pair, or reporting a
+        distrusted ``tool_outcome='unknown'`` as ``ok``, turns this red.
+        """
         from polylogue.archive.message.roles import Role
         from polylogue.core.enums import BlockType, Provider
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
@@ -3202,22 +3207,16 @@ class TestCockpitAggregateRoutes:
                                 ParsedContentBlock(type=BlockType.TOOL_USE, text="pytest", tool_id="tool-evidence"),
                                 ParsedContentBlock(
                                     type=BlockType.TOOL_RESULT,
-                                    outcome_unknown_reason="not_reported",
-                                    text="failed",
+                                    text="result",
                                     tool_id="tool-evidence",
+                                    is_error=is_error,
+                                    exit_code=exit_code,
                                 ),
                             ],
                         )
                     ],
                 ),
             )
-
-        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
-            conn.execute(
-                "UPDATE blocks SET tool_result_is_error = ?, tool_result_exit_code = ? WHERE session_id = ? AND block_type = 'tool_result'",
-                (is_error, exit_code, "codex-session:evidence-summary"),
-            )
-            conn.commit()
 
         session_id = "codex-session:evidence-summary"
         with _running_server(workspace_env, seeded=False) as (_, base_url):
@@ -3227,6 +3226,61 @@ class TestCockpitAggregateRoutes:
         outcomes = cast(dict[str, object], payload["outcomes"])
         assert outcomes == expected_outcomes
         assert cast(dict[str, object], payload["cost"])["total_usd"] is None
+
+    def test_evidence_summary_reports_a_distrusted_result_as_unknown(self, workspace_env: dict[str, Path]) -> None:
+        """A parser-declared unknown outcome is never reported as ``ok``,
+        even when the provider exit code the parser refused to trust is 0.
+        """
+        from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, Provider
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="evidence-unknown",
+                    title="Distrusted evidence",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m-unknown",
+                            role=Role.ASSISTANT,
+                            text="ran test",
+                            blocks=[
+                                ParsedContentBlock(type=BlockType.TOOL_USE, text="pytest", tool_id="tool-unknown"),
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_RESULT,
+                                    outcome_unknown_reason="not_reported",
+                                    text="result",
+                                    tool_id="tool-unknown",
+                                ),
+                            ],
+                        )
+                    ],
+                ),
+            )
+
+        # The legacy compat pair says "exit 0, not an error"; the canonical
+        # outcome says the parser did not trust it. The strip must follow the
+        # canonical outcome.
+        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
+            conn.execute(
+                "UPDATE blocks SET tool_result_is_error = 0, tool_result_exit_code = 0 "
+                "WHERE session_id = ? AND block_type = 'tool_result'",
+                ("codex-session:evidence-unknown",),
+            )
+            conn.commit()
+
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            payload = cast(
+                dict[str, object],
+                _get_json(base_url, "/api/sessions/codex-session:evidence-unknown/evidence-summary"),
+            )
+
+        assert payload["tool_calls"] == 1
+        assert payload["outcomes"] == {"ok": 0, "failed": 0, "unknown": 1}
 
     def test_evidence_summary_composes_prefix_sharing_tool_evidence(self, workspace_env: dict[str, Path]) -> None:
         """The evidence strip and transcript must describe the same composed
@@ -3240,13 +3294,14 @@ class TestCockpitAggregateRoutes:
             ParsedContentBlock(type=BlockType.TOOL_USE, text="pytest", tool_id="tool-parent"),
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
-                outcome_unknown_reason="not_reported",
+                is_error=False,
+                exit_code=0,
                 text="ok",
                 tool_id="tool-parent",
             ),
         ]
         with ArchiveStore(workspace_env["archive_root"]) as archive:
-            parent_id = write_index_session(
+            write_index_session(
                 archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
@@ -3283,14 +3338,6 @@ class TestCockpitAggregateRoutes:
                     ],
                 ),
             )
-
-        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
-            conn.execute(
-                "UPDATE blocks SET tool_result_is_error = 0, tool_result_exit_code = 0 "
-                "WHERE session_id = ? AND block_type = 'tool_result'",
-                (parent_id,),
-            )
-            conn.commit()
 
         with _running_server(workspace_env, seeded=False) as (_, base_url):
             payload = cast(
