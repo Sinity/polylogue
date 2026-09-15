@@ -9,7 +9,10 @@ Two effects, in one order that cannot lose material:
    one verified copy.
 2. **Delete** every member no durable row references, through the canonical
    blob-GC seam, which owns publisher exclusion, the final locked liveness
-   recheck, and crash-consistent generation intent.
+   recheck, and crash-consistent generation intent. A restoration verdict
+   decided in step 1 authorizes nothing by itself: residency is re-proved at
+   the unlink point, because a later carrier of the same session publishes
+   over the destination an earlier carrier was restored into.
 
 The disposition selects nothing here: being unreferenced is the whole
 criterion, and it is exactly the criterion recurring GC applies. A proven
@@ -961,6 +964,146 @@ def _delete_invalid_entries(
     return results
 
 
+STALE_RESTORATION_DETAIL = (
+    "the restoration that authorized this delete no longer holds: a later member of this run "
+    "published over the same destination"
+)
+UNPROVEN_RESIDENCY_PREFIX = "residency could not be re-proved at unlink time: "
+
+
+def _restorations_invalidated_by_a_later_publish(
+    restorations: tuple[RestorationResult, ...],
+) -> frozenset[str]:
+    """Carriers whose completed restoration a later member of this run undid.
+
+    One ordinary destination holds one artifact, so when a second carrier
+    publishes to a destination an earlier carrier was restored into, the
+    earlier carrier's verdict describes bytes that are no longer there. The
+    verdicts are frozen before the delete pass, so without this the earlier
+    sole copy is unlinked on a verdict that stopped being true. Only an
+    outcome that writes (``RESTORED``) can displace a predecessor; an
+    already-present verdict publishes nothing.
+    """
+    invalidated: set[str] = set()
+    restored_at: dict[str, str] = {}
+    for restoration in restorations:
+        if not restoration.completed or not restoration.spool_path:
+            continue
+        if restoration.outcome is RestorationOutcome.RESTORED:
+            invalidated.update(
+                blob_hash
+                for blob_hash, path in restored_at.items()
+                if path == restoration.spool_path and blob_hash != restoration.blob_hash
+            )
+        restored_at[restoration.blob_hash] = restoration.spool_path
+    return frozenset(invalidated)
+
+
+def _residency_refusal(
+    member: BlobDispositionMember,
+    restoration: RestorationResult,
+    *,
+    context: BlobDispositionContext,
+) -> str | None:
+    """Re-prove, by reading now, that an ordinary source still holds this material.
+
+    The plan-time verdict authorized nothing on its own: this runs at the
+    unlink point and asks the same admission rule again against what the
+    destination holds at this moment. ``None`` means the material is resident;
+    any string is why the carrier must not be unlinked.
+    """
+    path = context.blob_store.blob_path(member.blob_hash)
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        return f"the carrier is unreadable: {exc}"
+    if any(prover.prove(member.blob_hash, path, len(payload)) for prover in context.provers):
+        return None
+    if not restoration.spool_path:
+        return "the completed restoration names no destination to re-read"
+    target = Path(restoration.spool_path)
+    if restoration.destination == RestorationDestination.HOOK_EVENT_SPOOL.value:
+        return _hook_residency_refusal(target, payload)
+    return _capture_residency_refusal(target, payload)
+
+
+def _hook_residency_refusal(target: Path, payload: bytes) -> str | None:
+    from polylogue.sources.hooks import HookSpoolRecordError, read_hook_spool_record
+
+    try:
+        envelope = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        return f"the carrier is not a readable envelope: {exc}"
+    try:
+        resident = read_hook_spool_record(target)
+    except (HookSpoolRecordError, OSError) as exc:
+        return f"the hook spool no longer reads back this event: {exc}"
+    if resident != envelope:
+        return "the hook spool holds a different event under this identity"
+    return None
+
+
+def _capture_residency_refusal(target: Path, payload: bytes) -> str | None:
+    from pydantic import ValidationError
+
+    from polylogue.browser_capture.models import BrowserCaptureEnvelope
+    from polylogue.browser_capture.receiver import CaptureConvergence, capture_convergence
+
+    try:
+        carrier = BrowserCaptureEnvelope.model_validate_json(payload)
+    except (ValidationError, ValueError) as exc:
+        return f"the carrier is not a valid capture: {exc}"
+    try:
+        resident = BrowserCaptureEnvelope.model_validate_json(target.read_bytes())
+    except (OSError, ValidationError, ValueError) as exc:
+        return f"the capture spool no longer reads back this artifact: {exc}"
+    # Residency is exactly the admission rule's DUPLICATE verdict: anything
+    # else means the resident artifact is not this carrier's material.
+    if capture_convergence(carrier, resident) is not CaptureConvergence.DUPLICATE:
+        return "the capture spool no longer holds this carrier's revision"
+    return None
+
+
+def _refuse_unproven_restorations(
+    results: list[MemberResult],
+    *,
+    candidates: list[MemberResult],
+    members: dict[str, BlobDispositionMember],
+    restorations: dict[str, RestorationResult],
+    invalidated: frozenset[str],
+    context: BlobDispositionContext,
+    reread: bool,
+) -> tuple[list[MemberResult], list[MemberResult]]:
+    """Drop every restore-backed candidate whose residency does not hold now."""
+    refusals: dict[str, str] = {}
+    for candidate in candidates:
+        member = members.get(candidate.blob_hash)
+        if member is None or member.disposition is not BlobDisposition.RESTORE_REQUIRED:
+            continue
+        restoration = restorations.get(candidate.blob_hash)
+        if restoration is None:
+            refusals[candidate.blob_hash] = "restoration produced no result for this member"
+            continue
+        if candidate.blob_hash in invalidated:
+            refusals[candidate.blob_hash] = STALE_RESTORATION_DETAIL
+            continue
+        if not reread:
+            continue
+        refusal = _residency_refusal(member, restoration, context=context)
+        if refusal is not None:
+            refusals[candidate.blob_hash] = UNPROVEN_RESIDENCY_PREFIX + refusal
+    if not refusals:
+        return results, candidates
+    results = [
+        replace(result, outcome=MemberOutcome.BLOCKED, detail=refusals[result.blob_hash])
+        if result.blob_hash in refusals and result.outcome is MemberOutcome.DELETED
+        else result
+        for result in results
+    ]
+    remaining = [candidate for candidate in candidates if candidate.blob_hash not in refusals]
+    return results, remaining
+
+
 def _authorization_blockers(
     plan: BlobDispositionPlan,
     *,
@@ -1021,6 +1164,19 @@ def apply_disposition_plan(
     classified = [_classify_member(member, context=context, restorations=by_hash) for member in plan.members]
     candidates = [result for result, deletable in classified if deletable]
     results = [result for result, _ in classified]
+
+    # The verdicts above were decided before this run's other restorations
+    # landed. A delete is authorized by residency proved here, at the unlink
+    # point, not by a verdict that was true when the plan was classified.
+    results, candidates = _refuse_unproven_restorations(
+        results,
+        candidates=candidates,
+        members={member.blob_hash: member for member in plan.members},
+        restorations=by_hash,
+        invalidated=_restorations_invalidated_by_a_later_publish(restorations),
+        context=context,
+        reread=not dry_run,
+    )
 
     seam_blockers: tuple[str, ...] = ()
     if candidates:

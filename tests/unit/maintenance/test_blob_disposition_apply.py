@@ -28,6 +28,8 @@ from polylogue.maintenance.blob_disposition import (
 from polylogue.maintenance.blob_disposition_apply import (
     DIRECT_UNLINK_DETAIL,
     INVALID_ENTRY_COHORT,
+    STALE_RESTORATION_DETAIL,
+    UNPROVEN_RESIDENCY_PREFIX,
     DispositionApplyReceipt,
     MemberOutcome,
     RestorationOutcome,
@@ -544,7 +546,9 @@ def test_a_newer_revision_replaces_the_spooled_capture(tmp_path: Path) -> None:
 
 def test_two_carriers_of_one_session_converge_on_one_artifact_holding_the_newer(tmp_path: Path) -> None:
     """Anti-vacuity: blocking on the collision strands both carriers, and
-    publishing them independently leaves two artifacts for one session."""
+    publishing them independently leaves two artifacts for one session. The
+    earlier carrier is still the sole copy of a revision the one artifact does
+    not hold, so only the carrier the artifact holds is deletable."""
     archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
     _, earlier_path = _store_aged(blob_root, _EARLIER_CAPTURE)
     _, later_path = _store_aged(blob_root, _LATER_CAPTURE)
@@ -552,12 +556,75 @@ def test_two_carriers_of_one_session_converge_on_one_artifact_holding_the_newer(
 
     receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
 
-    assert receipt.ok, receipt.blockers
     assert receipt.restoration_counts[RestorationOutcome.BLOCKED.value] == 0
     (artifact,) = list(capture_spool.rglob("*.json"))
     assert artifact.read_bytes() == _LATER_CAPTURE
-    assert [result.outcome for result in receipt.results] == [MemberOutcome.DELETED, MemberOutcome.DELETED]
-    assert not earlier_path.exists() and not later_path.exists()
+    assert not later_path.exists()
+    assert earlier_path.read_bytes() == _EARLIER_CAPTURE
+
+
+def _two_carrier_receipt(tmp_path: Path) -> tuple[DispositionApplyReceipt, Path, Path]:
+    """One session, two sole-copy carriers, the earlier published first."""
+    archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
+    _, earlier_path = _store_aged(blob_root, _EARLIER_CAPTURE)
+    _, later_path = _store_aged(blob_root, _LATER_CAPTURE)
+    plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
+    receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
+    return receipt, earlier_path, later_path
+
+
+def _assert_earlier_carrier_survives(receipt: DispositionApplyReceipt, earlier_path: Path, later_path: Path) -> None:
+    earlier, later = (
+        (receipt.results[0], receipt.results[1])
+        if receipt.results[0].from_path == str(earlier_path)
+        else (receipt.results[1], receipt.results[0])
+    )
+    restorations = {restoration.blob_hash: restoration for restoration in receipt.restorations}
+    # The interleaving this defect needs: both restorations completed, and the
+    # later member published over the destination the earlier was restored into.
+    assert restorations[earlier.blob_hash].outcome is RestorationOutcome.RESTORED
+    assert restorations[later.blob_hash].outcome is RestorationOutcome.RESTORED
+    assert restorations[earlier.blob_hash].spool_path == restorations[later.blob_hash].spool_path
+    assert Path(restorations[later.blob_hash].spool_path).read_bytes() == _LATER_CAPTURE
+
+    assert earlier.outcome is MemberOutcome.BLOCKED
+    assert earlier_path.read_bytes() == _EARLIER_CAPTURE
+    assert later.outcome is MemberOutcome.DELETED
+    assert not later_path.exists()
+    assert receipt.deleted_count == 1
+    # A refused member is an observable refusal, never a silent success.
+    assert not receipt.ok and receipt.blockers == ()
+
+
+def test_a_carrier_whose_restoration_a_later_publish_undid_is_not_deleted(tmp_path: Path) -> None:
+    """Anti-vacuity: restoration verdicts are frozen before the delete pass,
+    so the earlier carrier carries a RESTORED verdict describing bytes the
+    later carrier's publish replaced. Dropping the re-proof at the unlink
+    point (the ``_refuse_unproven_restorations`` call in
+    ``apply_disposition_plan``) deletes both sole copies and makes this red on
+    the earlier member's outcome and on its surviving bytes."""
+    receipt, earlier_path, later_path = _two_carrier_receipt(tmp_path)
+
+    _assert_earlier_carrier_survives(receipt, earlier_path, later_path)
+    blocked = next(result for result in receipt.results if result.outcome is MemberOutcome.BLOCKED)
+    assert blocked.detail == STALE_RESTORATION_DETAIL
+
+
+def test_residency_is_re_read_at_the_unlink_point_not_inferred_from_this_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-proof reads the destination, so it also catches an overwrite this
+    run did not perform. Anti-vacuity: with the run-order rule neutralized,
+    only the read-back stands between the earlier sole copy and the unlink;
+    removing the read-back makes this red."""
+    import polylogue.maintenance.blob_disposition_apply as apply_module
+
+    monkeypatch.setattr(apply_module, "_restorations_invalidated_by_a_later_publish", lambda restorations: frozenset())
+    receipt, earlier_path, later_path = _two_carrier_receipt(tmp_path)
+
+    _assert_earlier_carrier_survives(receipt, earlier_path, later_path)
+    blocked = next(result for result in receipt.results if result.outcome is MemberOutcome.BLOCKED)
+    assert blocked.detail.startswith(UNPROVEN_RESIDENCY_PREFIX)
 
 
 def test_a_rehearsal_predicts_the_restoration_counts_its_apply_produces(tmp_path: Path) -> None:
