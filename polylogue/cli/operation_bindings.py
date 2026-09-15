@@ -51,18 +51,19 @@ class CliOperationBinding:
 
 _ARCHIVE_QUERY = "polylogue.cli.archive_query"
 _LOWERING = "polylogue.cli.lowering"
+_ROWS = "polylogue.cli.render.rows"
 
 CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
     "cli.query": CliOperationBinding(
         lowering=f"{_LOWERING}:lower_cli_query",
         renderers=(
-            f"{_ARCHIVE_QUERY}:_emit_daemon_list_payload",
-            f"{_ARCHIVE_QUERY}:_emit_daemon_search_payload",
+            f"{_ROWS}:emit_session_list_page",
+            f"{_ROWS}:emit_session_search_page",
         ),
     ),
     "query.units": CliOperationBinding(
         lowering=f"{_LOWERING}:lower_query_units",
-        renderers=(f"{_ARCHIVE_QUERY}:_emit_rows",),
+        renderers=(f"{_ROWS}:emit_rows",),
     ),
     "query.aggregate": CliOperationBinding(
         lowering=f"{_LOWERING}:lower_query_aggregate",
