@@ -161,12 +161,16 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   materializer code stays in the AST). So a change that touches no schema at all
   moves the identity: memoizing one function in `sources/origin_specs.py` moves
   all three. Comments are absent from an AST, so a comment-only edit does not.
-  The closure is 442 of 1,241 modules — storage 150, archive 94, sources 63,
-  core 40 — and follows the import graph, so no directory rule describes it:
-  `daemon/write_coordinator.py` is inside it while `daemon/convergence.py` and
-  `sources/live/watcher.py`, the most ingest-central file in the tree, are
-  outside. `devtools schema closure <file>` answers membership for the working
-  checkout; classifying by path gets it wrong.
+  The closure is 560 of 1,311 modules — storage 162, archive 99, sources 93,
+  core 50 — and follows the import graph, so no directory rule describes it:
+  `daemon/write_coordinator.py` and `sources/live/watcher.py` are inside it
+  while `daemon/convergence.py` and `daemon/cli.py` are outside.
+  `devtools schema closure <file>` answers membership for the working checkout;
+  classifying by path gets it wrong. The membership itself is checked in at
+  `docs/plans/schema-closure-baseline.json` and ratcheted by
+  `devtools gate schema-closure`: the closure may shrink freely, and growth
+  fails the gate until the baseline is updated in the same change, so a PR that
+  widens the reconvergence blast radius says so in its diff.
 - **Sequencing.** A closure change landing while a rebuild runs invalidates that
   rebuild's derived tier underneath it, and the failure is quiet — the halted
   unit stops producing while the run still looks healthy. Land closure changes
