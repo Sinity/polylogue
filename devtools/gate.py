@@ -207,6 +207,22 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
+        "schema-closure",
+        "Ratchet the derived schema identity closure: it may shrink, never grow.",
+        "module",
+        ("devtools.verify_schema_closure", "--json"),
+        label="gate schema-closure",
+        in_quick=True,
+    ),
+    Gate(
+        "test-collection",
+        "Collect the declared test corpus without running it, so an unimportable module cannot merge.",
+        "module",
+        ("devtools.verify_test_collection", "--json"),
+        label="gate test-collection",
+        in_quick=True,
+    ),
+    Gate(
         "schema-audit",
         "Run committed provider schema package quality checks.",
         "module",

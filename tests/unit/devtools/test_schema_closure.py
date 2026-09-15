@@ -11,6 +11,7 @@ excluding ``convergence.py``.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -63,3 +64,85 @@ def test_command_lists_the_whole_closure(capsys: pytest.CaptureFixture[str]) -> 
     payload = json.loads(capsys.readouterr().out)
     assert payload["count"] == len(derived_identity_source_closure())
     assert "polylogue/storage/sqlite/archive_tiers/write.py" in payload["members"]
+
+
+class TestClosureRatchetGate:
+    """The closure may shrink freely; growth must be declared in the baseline.
+
+    Anti-vacuity: make ``verify_schema_closure.main`` compare counts instead of
+    membership, and ``test_growth_is_blocking`` still passes while
+    ``test_a_swap_that_keeps_the_count_is_still_growth`` goes red. Make the
+    gate symmetric (fail on removal too) and ``test_shrinking_is_free`` goes
+    red. Delete the checked-in baseline and
+    ``test_the_checked_in_baseline_matches_the_live_closure`` goes red.
+    """
+
+    def test_the_gate_is_registered_in_the_quick_path(self) -> None:
+        from devtools.gate import GATES_BY_NAME, quick_gates
+
+        assert "schema-closure" in {gate.name for gate in quick_gates()}
+        assert GATES_BY_NAME["schema-closure"].blocking is True
+
+    def test_the_checked_in_baseline_matches_the_live_closure(self) -> None:
+        """A green gate on master means the baseline is the real membership."""
+        from devtools import verify_schema_closure
+
+        baseline = verify_schema_closure.load_baseline(verify_schema_closure.ROOT / verify_schema_closure.BASELINE_PATH)
+        assert set(baseline) == set(verify_schema_closure.measure_closure())
+
+    def test_growth_is_blocking(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from devtools import verify_schema_closure
+
+        self._with(monkeypatch, tmp_path, baseline=("a.py",), observed=("a.py", "b.py"))
+        assert verify_schema_closure.main(["--json"]) == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["added"] == ["b.py"]
+
+    def test_shrinking_is_free(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from devtools import verify_schema_closure
+
+        self._with(monkeypatch, tmp_path, baseline=("a.py", "b.py"), observed=("a.py",))
+        assert verify_schema_closure.main(["--json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["removed"] == ["b.py"]
+        assert payload["added"] == []
+
+    def test_a_swap_that_keeps_the_count_is_still_growth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The ratchet is over membership, not over a size integer."""
+        from devtools import verify_schema_closure
+
+        self._with(monkeypatch, tmp_path, baseline=("a.py", "b.py"), observed=("a.py", "c.py"))
+        assert verify_schema_closure.main(["--json"]) == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["added"] == ["c.py"]
+        assert payload["observed_count"] == payload["baseline_count"]
+
+    def test_a_missing_baseline_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from devtools import verify_schema_closure
+
+        self._with(monkeypatch, tmp_path, baseline=None, observed=("a.py",))
+        assert verify_schema_closure.main(["--json"]) == 1
+
+    @staticmethod
+    def _with(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        *,
+        baseline: tuple[str, ...] | None,
+        observed: tuple[str, ...],
+    ) -> None:
+        from devtools import verify_schema_closure
+
+        root = Path(tmp_path)
+        if baseline is not None:
+            verify_schema_closure.write_baseline(root / verify_schema_closure.BASELINE_PATH, baseline)
+        monkeypatch.setattr(verify_schema_closure, "ROOT", root)
+        monkeypatch.setattr(verify_schema_closure, "measure_closure", lambda **_kwargs: observed)
