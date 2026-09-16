@@ -262,11 +262,13 @@ BULK_BUILD_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
 #   - a raised autocheckpoint threshold: a cold build commits constantly, and
 #     an autocheckpoint inside a 256 MiB catch-up page charges its whole WAL
 #     copy-back to whichever commit crossed the threshold.
-#   - ``foreign_keys=OFF``: the per-row parent probe on every message/block
-#     insert buys nothing on a generation being built from one writer's own
-#     consistent output. The boundary runs ``PRAGMA foreign_key_check`` before
-#     the generation returns to the live shape, so the constraint is *verified*
-#     rather than merely trusted.
+#
+# Foreign-key enforcement stays ON. Turning it off would need a verification
+# pass at a boundary, and this shape has no boundary that may mutate the
+# connection (see ``ArchiveStore.finish_active_cold_build``). Keeping it on
+# means the cold shape relaxes durability only, and cannot change what a pass
+# writes, defers or refuses -- which is the property that makes it safe to
+# select automatically on the live route.
 #
 # What is deliberately NOT taken from ``BULK_BUILD_WRITE_CONNECTION_PROFILE``:
 # ``journal_mode=MEMORY`` and ``locking_mode=EXCLUSIVE``. The active generation
@@ -290,7 +292,7 @@ COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     # single intake page.
     cache_size_kib=WRITE_CACHE_SIZE_KIB,
     mmap_size_bytes=WRITE_MMAP_SIZE_BYTES,
-    foreign_keys=False,
+    foreign_keys=True,
     journal_mode="WAL",
     synchronous="OFF",
     wal_autocheckpoint_pages=COLD_BUILD_ACTIVE_WAL_AUTOCHECKPOINT_PAGES,

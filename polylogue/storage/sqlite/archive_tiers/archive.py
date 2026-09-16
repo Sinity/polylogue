@@ -972,39 +972,35 @@ class ArchiveStore:
         self._active_cold_build_engaged = True
 
     def finish_active_cold_build(self) -> None:
-        """Return an active cold-built generation to the live write shape.
+        """Release the active cold-build shape at the end of a pass.
 
-        Verifies the constraint the build ran without: ``foreign_keys=OFF``
-        skips the per-row parent probe, so the boundary runs
-        ``PRAGMA foreign_key_check`` over the whole generation and refuses to
-        hand it back to live readers if anything is dangling. Then restores
-        the live durability pragmas and truncates the WAL the raised
-        autocheckpoint threshold let grow.
+        This boundary deliberately mutates **nothing**: it neither commits nor
+        restores pragmas.
 
-        This boundary deliberately **never commits**. ``close()`` closes the
-        connection without committing, so an open transaction is rolled back;
-        committing here would persist work the ordinary path discards, which
-        is exactly how a boundary could change what a pass defers. The
-        foreign-key check reads this connection's own view, so it is valid
-        with a transaction open; the WAL truncation is not, and is skipped
-        while one is.
+        Both were tried and both were wrong. ``synchronous`` cannot be set
+        inside a transaction -- SQLite answers ``Safety level may not be
+        changed inside a transaction`` -- and this boundary does not own the
+        connection's transaction state, so restoring durability pragmas here
+        raised ``OperationalError`` and failed the whole ingest pass whenever a
+        record left a transaction open. Committing first only hid that most of
+        the time, and committing is itself wrong: ``close()`` closes without
+        committing, so an open transaction is rolled back, and a commit here
+        would persist work the ordinary path discards.
+
+        Nothing needs restoring. ``synchronous``, ``foreign_keys`` and
+        ``wal_autocheckpoint`` are per-connection settings, and this connection
+        is closed when the pass ends; the next pass opens a fresh one and
+        re-selects the shape from generation state. ``journal_mode`` is the
+        only file-level setting and the cold profile never changes it -- it
+        stays WAL, so readers are unaffected throughout.
+
+        The one useful thing left is truncating the WAL the raised
+        autocheckpoint threshold let grow, which is not valid inside a
+        transaction and is therefore best-effort.
         """
         self._require_writable("finish an active cold build")
         if not self._active_cold_build_engaged:
             return
-        from polylogue.storage.sqlite.connection_profile import (
-            WRITE_CONNECTION_PROFILE,
-            write_connection_pragma_statements,
-        )
-
-        violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)
-        if violations:
-            raise RuntimeError(
-                "active cold build left dangling references; the generation is not publishable: "
-                f"{[tuple(row) for row in violations]}"
-            )
-        for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
-            self._conn.execute(statement)
         if not self._conn.in_transaction:
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self._active_cold_build_engaged = False
