@@ -16,9 +16,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.watch_config import WatchSource
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -160,7 +160,7 @@ def test_a_second_write_of_one_session_under_fresh_mode_is_refused(tmp_path: Pat
     import pytest
 
     from polylogue.core.enums import Provider
-    from polylogue.pipeline.models import ParsedSession
+    from polylogue.sources.parsers.base import ParsedSession
     from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
     session = ParsedSession(
