@@ -51,6 +51,7 @@ class TestSchemaDDLParity:
         required_indexes = [
             "idx_sessions_origin_sort",
             "idx_sessions_sort_key",
+            "idx_sessions_recent_order",
             "idx_messages_session_position",
         ]
         ddl_lower = SCHEMA_DDL.lower()
@@ -531,16 +532,64 @@ class TestAnalyticsQueryPlan:
         finally:
             conn.close()
 
-    def test_global_recent_sessions_uses_sort_key_index(self, tmp_path: Path) -> None:
-        """Global recent-session listing must avoid a table scan and temp sort."""
+    # polylogue-lxdwy: the ORDER BY here is copied verbatim from the production
+    # readers (``queries/sessions_reads.py`` list_sessions /
+    # list_session_summaries, and ``archive_tiers/archive.py::_summary_order_by``
+    # for sort=date). The earlier version of this test exercised a simplified
+    # ``ORDER BY sort_key_ms DESC`` that no reader issues, so it stayed green
+    # while every real listing still planned as SCAN + USE TEMP B-TREE.
+    PRODUCTION_RECENT_ORDER_BY = "ORDER BY (sort_key_ms IS NULL) ASC, sort_key_ms DESC, session_id DESC"
+
+    def test_global_recent_sessions_uses_production_ordering_index(self, tmp_path: Path) -> None:
+        """The readers' own ORDER BY must be index-served, not temp-sorted.
+
+        Anti-vacuity: dropping ``idx_sessions_recent_order`` from the index-tier
+        DDL, or narrowing it back to ``sessions(sort_key_ms DESC)``, restores
+        ``SCAN sessions | USE TEMP B-TREE FOR ORDER BY`` and turns this red.
+        """
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         try:
             conn.executescript(SCHEMA_DDL)
-            cursor = conn.execute("EXPLAIN QUERY PLAN SELECT * FROM sessions ORDER BY sort_key_ms DESC LIMIT 50")
+            cursor = conn.execute(
+                f"EXPLAIN QUERY PLAN SELECT * FROM sessions {self.PRODUCTION_RECENT_ORDER_BY} LIMIT 50"
+            )
             plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
-            assert "idx_sessions_sort_key" in plan, f"Expected global sort index usage, got: {plan}"
+            assert "idx_sessions_recent_order" in plan, f"Expected production ordering index usage, got: {plan}"
             assert "USE TEMP B-TREE" not in plan.upper(), f"Expected no temporary sort, got: {plan}"
+        finally:
+            conn.close()
+
+    def test_production_recent_order_by_matches_the_readers(self) -> None:
+        """The indexed ORDER BY is the one the production readers emit.
+
+        An index proven against a hand-written ORDER BY is worth nothing if the
+        readers drift away from it, so pin the exact clause text here.
+        Anti-vacuity: changing either reader's ordering without updating the
+        index turns this red before the plan test can go quietly stale.
+        """
+        from polylogue.storage.sqlite.queries import sessions_reads
+
+        source = Path(sessions_reads.__file__).read_text(encoding="utf-8")
+        assert "ORDER BY (sort_key_ms IS NULL) ASC, sort_key_ms DESC, session_id DESC" in source
+        assert "ORDER BY (c.sort_key_ms IS NULL) ASC, c.sort_key_ms DESC, c.session_id DESC" in source
+
+    def test_bare_sort_key_index_still_serves_range_bounds(self, tmp_path: Path) -> None:
+        """``idx_sessions_sort_key`` remains the since/until range index.
+
+        It is kept alongside the expression index because the expression index's
+        leading column is the nullness term, which cannot serve a bare range
+        predicate on the timestamp.
+        """
+        db_path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(SCHEMA_DDL)
+            cursor = conn.execute(
+                "EXPLAIN QUERY PLAN SELECT session_id FROM sessions WHERE sort_key_ms >= 1 AND sort_key_ms < 2"
+            )
+            plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
+            assert "idx_sessions_sort_key" in plan, f"Expected range index usage, got: {plan}"
         finally:
             conn.close()
 
