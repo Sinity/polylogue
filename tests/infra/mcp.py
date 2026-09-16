@@ -10,7 +10,12 @@ from typing import Protocol, TypeAlias, TypeVar, cast, runtime_checkable
 from unittest.mock import AsyncMock, MagicMock
 
 from polylogue.mcp.declarations.models import MCPCapabilities
-from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATIONS, TARGET_PROMPTS, declared_tool_names
+from polylogue.mcp.declarations.registry import (
+    MCP_TOOL_DECLARATIONS,
+    TARGET_PROMPTS,
+    TARGET_RESOURCES,
+    declared_tool_names,
+)
 
 MCP_TOOL_NAME_BASELINE = frozenset({"query", "read", "get", "explain", "context", "status"})
 
@@ -41,15 +46,12 @@ EXPECTED_MINIMAL_ARGUMENTS = {
 # any test and had gone stale in both directions).
 EXPECTED_PROMPT_NAMES = {entry.name for entry in TARGET_PROMPTS}
 
-# NOTE: there is no declaration-derived resource-URI pin yet. TARGET_RESOURCES
-# (polylogue/mcp/declarations/registry.py) describes an aspirational future
-# resource surface (polylogue-t46.8.2/polylogue-t46.8.3) that does not match
-# today's live registrations in polylogue/mcp/server_resources.py, so
-# deriving an expected set from it here would assert something not yet true.
-# A prior hand-maintained EXPECTED_RESOURCE_URIS/EXPECTED_RESOURCE_TEMPLATE_URIS
-# pair was found unreferenced and stale in both directions (polylogue-il50)
-# and removed rather than left as misleading dead code; reintroduce it once
-# TARGET_RESOURCES is reconciled with live registration.
+# Resource discovery, like tools and prompts above, is declaration-derived.
+# TARGET_RESOURCES was reconciled with live registration under polylogue-w17k1;
+# the object kinds it once advertised without building are recorded as
+# UNBUILT_RESOURCE_OBJECT_KINDS instead of being silently dropped.
+EXPECTED_RESOURCE_URIS = {entry.uri_template for entry in TARGET_RESOURCES if "{" not in entry.uri_template}
+EXPECTED_RESOURCE_TEMPLATE_URIS = {entry.uri_template for entry in TARGET_RESOURCES if "{" in entry.uri_template}
 
 SurfaceResult = TypeVar("SurfaceResult")
 MCPSurfaceHandler: TypeAlias = Callable[..., str | Awaitable[str]]

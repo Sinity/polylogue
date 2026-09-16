@@ -402,20 +402,120 @@ def _target_algebra(*, privileged: bool) -> tuple[MCPTransactionDeclaration, ...
 TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = _target_algebra(privileged=False)
 PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = _target_algebra(privileged=True)
 
-TARGET_RESOURCES: Final[tuple[MCPResourceDeclaration, ...]] = tuple(
+#: Object kinds whose ``polylogue://<kind>/{id}`` resource was declared here
+#: before it existed. They are recorded, not deleted: the design intent is a
+#: stable read-only URI per archive identity class, which is still wanted
+#: (polylogue-t46.8.2/polylogue-t46.8.3). They are kept out of TARGET_RESOURCES
+#: because a declaration is what a caller is told it can fetch, and telling a
+#: caller about a resource that does not exist is the over-advertisement half
+#: of polylogue-w17k1.
+UNBUILT_RESOURCE_OBJECT_KINDS: Final[tuple[str, ...]] = (
+    "message",
+    "block",
+    "action",
+    "file",
+    "query",
+    "result-set",
+    "recall-pack",
+)
+
+_READ_ONLY_PROJECTION = "read-only object projection; resources never acquire instruction or mutation authority"
+
+#: Every resource ``polylogue/mcp/server_resources.py`` actually registers.
+#: Declared in both directions (polylogue-w17k1): an entry here with no live
+#: registration over-advertises capability, and a live registration missing
+#: from here hides real capability from an agent that reads the declaration.
+#: ``tests/infra/mcp.py`` pins this against the live server.
+TARGET_RESOURCES: Final[tuple[MCPResourceDeclaration, ...]] = (
     MCPResourceDeclaration(
-        uri_template=f"polylogue://{kind}/{{id}}",
-        object_kinds=(kind,),
+        uri_template="polylogue://agent/manual",
+        object_kinds=("agent-asset",),
         required_capability=None,
-        authority="read-only object projection; resources never acquire instruction or mutation authority",
-    )
-    for kind in ("session", "message", "block", "action", "file", "query", "result-set", "recall-pack")
-) + (
+        authority="standing agent manual text; no mutation authority",
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://agent/reference",
+        object_kinds=("agent-asset",),
+        required_capability=None,
+        authority="standing agent reference text; no mutation authority",
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://agent/manifest",
+        object_kinds=("agent-asset", "capability"),
+        required_capability=None,
+        authority="capability-scoped surface manifest; no mutation authority",
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://stats",
+        object_kinds=("result-set",),
+        required_capability=None,
+        authority=_READ_ONLY_PROJECTION,
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://sessions",
+        object_kinds=("session", "result-set"),
+        required_capability=None,
+        authority=_READ_ONLY_PROJECTION,
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://tags",
+        object_kinds=("tag", "result-set"),
+        required_capability=None,
+        authority=_READ_ONLY_PROJECTION,
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://readiness",
+        object_kinds=("capability",),
+        required_capability=None,
+        authority="derived read-model readiness; no mutation authority",
+    ),
     MCPResourceDeclaration(
         uri_template="polylogue://capabilities/query",
         object_kinds=("capability", "query", "result-set"),
         required_capability=None,
         authority="executable query vocabulary and recovery guidance; no mutation authority",
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://capabilities/action-affordances",
+        object_kinds=("capability", "action"),
+        required_capability=None,
+        authority="declared action affordances; no mutation authority",
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://session/{conv_id}",
+        object_kinds=("session",),
+        required_capability=None,
+        authority=_READ_ONLY_PROJECTION,
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://messages/{conv_id}",
+        object_kinds=("message",),
+        required_capability=None,
+        authority=_READ_ONLY_PROJECTION,
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://session-tree/{conv_id}",
+        object_kinds=("session",),
+        required_capability=None,
+        authority=_READ_ONLY_PROJECTION,
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://origin/{name}/recent",
+        object_kinds=("session", "result-set"),
+        required_capability=None,
+        authority=_READ_ONLY_PROJECTION,
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://raw-authority-census/{census_id}/{offset}",
+        object_kinds=("result-set",),
+        required_capability=None,
+        authority=_READ_ONLY_PROJECTION,
+    ),
+    MCPResourceDeclaration(
+        uri_template="polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}",
+        object_kinds=("result-set",),
+        required_capability=None,
+        authority=_READ_ONLY_PROJECTION,
     ),
 )
 
@@ -449,6 +549,7 @@ __all__ = [
     "TARGET_DEFAULT_READ_ALGEBRA",
     "TARGET_PROMPTS",
     "TARGET_RESOURCES",
+    "UNBUILT_RESOURCE_OBJECT_KINDS",
     "declaration_for_tool",
     "declared_tool_names",
 ]

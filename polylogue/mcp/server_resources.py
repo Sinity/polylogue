@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import asdict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from polylogue.mcp.archive_support import (
     archive_session_list_payload,
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
 
     from polylogue.mcp.server_support import ServerCallbacks
+
+_ResourceHandler: TypeAlias = Callable[..., Any]
 
 
 def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
@@ -371,4 +374,38 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
             return _exception_to_error_json("resource.raw-authority-detail", exc)
 
 
-__all__ = ["register_resources"]
+class _ResourceRecorder:
+    """Stands in for ``MCPServer`` to capture what registration declares.
+
+    ``register_resources`` only *defines and decorates* handlers, so a recorder
+    observes the real registration pass without a server, a config or an
+    archive.
+    """
+
+    def __init__(self) -> None:
+        self.uri_templates: list[str] = []
+
+    def resource(self, uri_template: str) -> Callable[[_ResourceHandler], _ResourceHandler]:
+        self.uri_templates.append(uri_template)
+
+        def identity(handler: _ResourceHandler) -> _ResourceHandler:
+            return handler
+
+        return identity
+
+
+def registered_resource_uri_templates() -> tuple[str, ...]:
+    """Return every resource URI template this module registers, in order.
+
+    This is the live half of the resource reconciliation in
+    ``agent_integration/manifest.py`` (polylogue-w17k1). It reads the
+    registration pass rather than restating it, so a resource added below with
+    no matching ``TARGET_RESOURCES`` entry shows up as an undeclared live
+    resource instead of drifting silently.
+    """
+    recorder = _ResourceRecorder()
+    register_resources(cast("MCPServer", recorder), cast("ServerCallbacks", None))
+    return tuple(recorder.uri_templates)
+
+
+__all__ = ["register_resources", "registered_resource_uri_templates"]
