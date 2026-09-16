@@ -22,6 +22,7 @@ BEFORE that call are still real and counted.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -47,6 +48,24 @@ from tests.infra.io_counter import ReadCounter, read_counter
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _admit_every_page(watcher: LiveWatcher, _root: Path) -> None:
+    """Drive the production intake route until it stops making progress."""
+    from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
+    from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
+
+    context = DaemonIntakeContext(
+        archive_root=Path(watcher._polylogue.archive_root), watcher=watcher, sources=watcher._sources
+    )
+    dispatcher = FairIntakeDispatcher(
+        tuple(
+            IntakeClassSpec(name=source.name, adapter=FileIntakeAdapter(context, source)) for source in watcher._sources
+        )
+    )
+    for _ in range(64):
+        if not (await dispatcher.run_once()).progressed:
+            return
 
 
 def _claude_code_record(
@@ -205,7 +224,6 @@ def processor(tmp_path: Path) -> Iterator[tuple[LiveBatchProcessor, Path, Path]]
 
 def _seed_initial_ingest(proc: LiveBatchProcessor, path: Path, *, session_id: str = "session-abc") -> None:
     """Run a first full ingest so the cursor is populated."""
-    import asyncio
 
     asyncio.run(proc.ingest_files([path], emit_event=False))
     cast(Any, proc)._test_existing_ids[path] = session_id
@@ -289,7 +307,6 @@ class TestActiveAppendNoFullReread:
     def test_append_with_sessionid_line_does_not_re_read_whole_file(
         self, processor: tuple[LiveBatchProcessor, Path, Path]
     ) -> None:
-        import asyncio
 
         proc, root, _ = processor
         session_id = "session-abc"
@@ -334,7 +351,6 @@ class TestActiveAppendNoFullReread:
         Pins the contract so a future refactor that drops the stem-fallback
         doesn't silently amplify reads.
         """
-        import asyncio
 
         proc, root, _ = processor
         session_id = "session-abc"
@@ -382,7 +398,6 @@ class TestActiveAppendNoFullReread:
         planner, cursor writer, and watcher-facing batch route.  It counts any
         second-tick full-route entry and source/blob reads.
         """
-        import asyncio
 
         proc, root, _ = processor
         session_id = "post-persist-race"
@@ -461,7 +476,6 @@ class TestMtimeDriftCatchUp:
     """
 
     def test_unchanged_content_with_drifted_mtime_does_not_trigger_full_read(self, tmp_path: Path) -> None:
-        import asyncio
 
         root = tmp_path / "projects"
         root.mkdir()
@@ -492,10 +506,10 @@ class TestMtimeDriftCatchUp:
         # Now exercise the watcher's `_needs_work_from_state` path. We
         # build a fresh watcher (which shares the same cursor DB) and
         # call its catch-up loop directly.
-        watcher = LiveWatcher(cast(Any, polylogue), sources, cursor=cursor, debounce_s=0.0)
+        watcher = LiveWatcher(cast(Any, polylogue), sources, cursor=cursor)
 
         with read_counter() as counter:
-            asyncio.run(watcher._catch_up([root]))
+            asyncio.run(_admit_every_page(watcher, root))
 
         # The contract: an mtime-only change must not full-read the file.
         # Today this fails because `_needs_work_from_state` calls
@@ -532,7 +546,7 @@ class TestRestartedCursorReconcile:
             [_claude_code_record(session_id="abc", uuid="m-appended", text="new tail")],
         )
         sources = (WatchSource(name="claude-code", root=root),)
-        watcher = LiveWatcher(cast(Any, polylogue), sources, cursor=cursor, debounce_s=0.0)
+        watcher = LiveWatcher(cast(Any, polylogue), sources, cursor=cursor)
 
         needs_work = watcher._needs_work_from_state(path, stat=path.stat(), cursor=None)
 
@@ -575,7 +589,6 @@ class TestSubagentAppendDoesNotFullReread:
     def test_subagent_append_with_parent_session_id_takes_append_path(
         self, processor: tuple[LiveBatchProcessor, Path, Path]
     ) -> None:
-        import asyncio
 
         proc, root, _ = processor
         parent_session = "parent-session-xyz"
@@ -617,7 +630,6 @@ class TestCatchUpReadsEachFileAtMostOnce:
     """
 
     def test_catchup_does_not_rehash_unchanged_files_when_mtime_drifts(self, tmp_path: Path) -> None:
-        import asyncio
 
         root = tmp_path / "projects"
         root.mkdir()
@@ -656,9 +668,9 @@ class TestCatchUpReadsEachFileAtMostOnce:
             os.utime(path, (future, future))
 
         # Now restart: a fresh watcher runs catch-up over all files.
-        watcher = LiveWatcher(cast(Any, polylogue), sources, cursor=cursor, debounce_s=0.0)
+        watcher = LiveWatcher(cast(Any, polylogue), sources, cursor=cursor)
         with read_counter() as counter:
-            asyncio.run(watcher._catch_up([root]))
+            asyncio.run(_admit_every_page(watcher, root))
 
         # AC: catch-up reads each file at most once (modulo failure-retry).
         # Stronger here: catch-up reads NOTHING from any source file because

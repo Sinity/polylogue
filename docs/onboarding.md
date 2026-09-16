@@ -63,8 +63,10 @@ polylogued run
 ```
 
 The daemon watches the configured roots, ingests new sessions,
-and keeps insights and FTS indexes converged. The first run does
-a catch-up pass over everything it finds.
+and keeps insights and FTS indexes converged. Its fair-intake
+dispatcher works through whatever backlog it finds a page at a
+time, so a first run over a large corpus makes bounded progress
+on every source rather than draining one before starting the next.
 
 Check status at any time:
 

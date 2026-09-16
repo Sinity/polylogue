@@ -15,13 +15,15 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
+from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
 
 
-def _make_watcher(tmp_path: Path, root: Path, *, debounce_s: float = 0.01) -> LiveWatcher:
+def _make_watcher(tmp_path: Path, root: Path) -> LiveWatcher:
     polylogue = cast(
         Any,
         SimpleNamespace(
@@ -30,7 +32,7 @@ def _make_watcher(tmp_path: Path, root: Path, *, debounce_s: float = 0.01) -> Li
         ),
     )
     cursor = CursorStore(tmp_path / "archive.sqlite")
-    return LiveWatcher(polylogue, (WatchSource(name="test", root=root),), debounce_s=debounce_s, cursor=cursor)
+    return LiveWatcher(polylogue, (WatchSource(name="test", root=root),), cursor=cursor)
 
 
 @pytest.mark.parametrize("route", ["append", "full"])
@@ -140,108 +142,46 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_flush_pending_requeues_when_archive_is_busy(
+async def test_a_locked_archive_leaves_the_whole_page_retryable_and_unacknowledged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A lock race is the page's failure, and the dispatcher owns the retry.
+
+    Anti-vacuity: acknowledge a failed item (report DUPLICATE or ADMITTED on
+    an ingest that raised) and the resume cursor advances past a file that was
+    never admitted -- the assertions on the outcomes and on ``_after`` below
+    both go red.
+    """
+
     root = tmp_path / "src"
     root.mkdir()
-    source = root / "session.jsonl"
-    source.write_text('{"role":"user","content":"a"}\n')
-    watcher = _make_watcher(tmp_path, root, debounce_s=0)
-    watcher._pending_paths.add(source)
-    calls: list[tuple[list[Path], int | None, int]] = []
+    first = root / "a-session.jsonl"
+    second = root / "b-session.jsonl"
+    first.write_text('{"role":"user","content":"a"}\n')
+    second.write_text('{"role":"user","content":"b"}\n')
+    watcher = _make_watcher(tmp_path, root)
+    calls: list[list[Path]] = []
 
-    async def locked_ingest(
-        paths: list[Path],
-        *,
-        queued_file_count: int | None = None,
-        skipped_file_count: int = 0,
-        **_kwargs: object,
-    ) -> None:
-        calls.append((paths, queued_file_count, skipped_file_count))
+    async def locked_ingest(paths: list[Path], **_kwargs: object) -> None:
+        calls.append(list(paths))
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(watcher, "_ingest_files", locked_ingest)
+    source = watcher._sources[0]
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
+        source,
+    )
+    page = await adapter.discover(limit=8)
+    assert {Path(cast(Any, item.payload)) for item in page} == {first, second}
 
-    flushed = await watcher._flush_pending()
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        await adapter.admit_page(page)
 
-    assert flushed is True
-    assert calls == [([source], 1, 0)]
-    assert watcher._pending_paths == {source}
-
-
-@pytest.mark.asyncio
-async def test_flush_pending_requeues_forced_and_concurrent_paths_after_lock(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    source = root / "session.jsonl"
-    concurrent = root / "concurrent.jsonl"
-    source.write_text('{"role":"user","content":"a"}\n')
-    concurrent.write_text('{"role":"user","content":"b"}\n')
-    watcher = _make_watcher(tmp_path, root, debounce_s=0)
-    watcher._pending_paths.add(source)
-    watcher._forced_reparse_paths.add(source)
-    monkeypatch.setattr(watcher, "_ensure_pending_scheduled", lambda: None)
-    calls: list[list[Path]] = []
-
-    async def ingest(
-        paths: list[Path],
-        *,
-        queued_file_count: int | None = None,
-        skipped_file_count: int = 0,
-        **_kwargs: object,
-    ) -> None:
-        del queued_file_count, skipped_file_count
-        calls.append(paths)
-        if len(calls) == 1:
-            # This models a filesystem event arriving while the snapshot is
-            # in flight.  The retry must merge it with the failed snapshot.
-            watcher._enqueue(concurrent)
-            raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(watcher, "_ingest_files", ingest)
-
-    assert await watcher._flush_pending() is True
-    assert watcher._pending_paths == {source, concurrent}
-    assert watcher._forced_reparse_paths == {source}
-
-    assert await watcher._flush_pending() is True
-    assert {source, concurrent} == set(calls[1])
-    assert not watcher._pending_paths
-    assert not watcher._forced_reparse_paths
-
-
-@pytest.mark.asyncio
-async def test_flush_pending_reraises_unexpected_sqlite_errors(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    source = root / "session.jsonl"
-    source.write_text('{"role":"user","content":"a"}\n')
-    watcher = _make_watcher(tmp_path, root, debounce_s=0)
-    watcher._pending_paths.add(source)
-
-    async def failing_ingest(
-        paths: list[Path],
-        *,
-        queued_file_count: int | None = None,
-        skipped_file_count: int = 0,
-        **_kwargs: object,
-    ) -> None:
-        del paths, queued_file_count, skipped_file_count
-        raise sqlite3.OperationalError("disk I/O error")
-
-    monkeypatch.setattr(watcher, "_ingest_files", failing_ingest)
-
-    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
-        await watcher._flush_pending()
-    assert not watcher._pending_paths
+    # One page, one batch attempt -- not one per file.
+    assert calls == [[first, second]]
+    assert adapter._after is None
 
 
 @pytest.mark.asyncio
@@ -299,47 +239,6 @@ async def test_ingest_files_serializes_batch_processor_calls(
 
 
 @pytest.mark.asyncio
-async def test_watcher_queues_behind_daemon_maintenance_writer(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    source = root / "session.jsonl"
-    source.write_text('{"role":"user","content":"a"}\n')
-    watcher_queued = asyncio.Event()
-
-    def observe(event: DaemonWriteEvent) -> None:
-        if event.phase == "queued" and event.actor == "watcher.live_ingest":
-            watcher_queued.set()
-
-    coordinator = DaemonWriteCoordinator(observer=observe)
-    watcher = _make_watcher(tmp_path, root)
-    watcher._write_coordinator = coordinator
-    maintenance_entered = asyncio.Event()
-    release_maintenance = asyncio.Event()
-    ingest_entered = asyncio.Event()
-
-    async def maintenance() -> None:
-        maintenance_entered.set()
-        await release_maintenance.wait()
-
-    async def ingest_files(*_args: object, **_kwargs: object) -> None:
-        ingest_entered.set()
-
-    monkeypatch.setattr(watcher._batch_processor, "ingest_files", ingest_files)
-    maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
-    await maintenance_entered.wait()
-    watcher_task = asyncio.create_task(watcher._ingest_files([source]))
-    await watcher_queued.wait()
-
-    assert not ingest_entered.is_set()
-    release_maintenance.set()
-    await asyncio.gather(maintenance_task, watcher_task)
-    assert ingest_entered.is_set()
-
-
-@pytest.mark.asyncio
 async def test_default_cursor_initialization_waits_for_batch_writer_lease(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -351,7 +250,7 @@ async def test_default_cursor_initialization_waits_for_batch_writer_lease(
     watcher_queued = asyncio.Event()
 
     def observe(event: DaemonWriteEvent) -> None:
-        if event.phase == "queued" and event.actor == "watcher.live_batch":
+        if event.phase == "queued" and event.actor.startswith("watcher."):
             watcher_queued.set()
 
     coordinator = DaemonWriteCoordinator(observer=observe)
@@ -362,11 +261,14 @@ async def test_default_cursor_initialization_waits_for_batch_writer_lease(
     watcher = LiveWatcher(
         polylogue,
         (WatchSource(name="test", root=root),),
-        debounce_s=0,
         write_coordinator=coordinator,
     )
     assert not (tmp_path / "ops.db").exists()
-    watcher._pending_paths.add(source)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
+        watcher._sources[0],
+    )
+    page = await adapter.discover(limit=8)
     monkeypatch.setattr(watcher, "_needs_work_from_state", lambda *_args, **_kwargs: False)
     maintenance_entered = asyncio.Event()
     release_maintenance = asyncio.Event()
@@ -377,12 +279,13 @@ async def test_default_cursor_initialization_waits_for_batch_writer_lease(
 
     maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
     await maintenance_entered.wait()
-    flush_task = asyncio.create_task(watcher._flush_pending())
+    flush_task = asyncio.create_task(adapter.admit_page(page))
     await watcher_queued.wait()
 
     assert not (tmp_path / "ops.db").exists()
     release_maintenance.set()
-    assert await flush_task is True
+    outcomes = await flush_task
+    assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.DUPLICATE]
     await maintenance_task
     assert (tmp_path / "ops.db").exists()
 
@@ -415,7 +318,7 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
     deferral_attempted = asyncio.Event()
 
     def observe(event: DaemonWriteEvent) -> None:
-        if event.phase == "queued" and event.actor == "watcher.live_batch":
+        if event.phase == "queued" and event.actor.startswith("watcher."):
             watcher_queued.set()
 
     original_set = cursor.set
@@ -430,7 +333,11 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
     watcher._cursor = cursor
     watcher._batch_processor._cursor = cursor
     watcher._write_coordinator = coordinator
-    watcher._pending_paths.add(source)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
+        watcher._sources[0],
+    )
+    page = await adapter.discover(limit=8)
     maintenance_entered = asyncio.Event()
     release_maintenance = asyncio.Event()
 
@@ -440,7 +347,7 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
 
     maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
     await maintenance_entered.wait()
-    flush_task = asyncio.create_task(watcher._flush_pending())
+    flush_task = asyncio.create_task(adapter.admit_page(page))
     queued_wait = asyncio.create_task(watcher_queued.wait())
     deferral_wait = asyncio.create_task(deferral_attempted.wait())
     done, pending = await asyncio.wait((queued_wait, deferral_wait), return_when=asyncio.FIRST_COMPLETED)
@@ -451,7 +358,7 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
     assert before_release is not None
     assert before_release.byte_size == len(complete)
     release_maintenance.set()
-    assert await flush_task is True
+    assert await flush_task
     await maintenance_task
     await deferral_wait
     record = cursor.get_record(source)

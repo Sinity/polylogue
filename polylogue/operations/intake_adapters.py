@@ -24,6 +24,8 @@ from polylogue.daemon.intake import (
     IntakeAdapter,
     IntakeItem,
 )
+from polylogue.logging import WARNING, emit
+from polylogue.sources.live.acquisition_log import log_unclaimed_file
 from polylogue.sources.live.metrics import REFUSED_DAEMON_DEGRADED
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
@@ -130,6 +132,27 @@ def _ordered_children(
     return children
 
 
+def _log_unclaimed_intake_candidate(path: Path, *, source_name: str, suffixes: tuple[str, ...]) -> None:
+    """Log one discovered file no configured suffix accepts.
+
+    Best-effort ``stat``: a file that vanished between the listing and this
+    call was still seen and unclaimed, just without size/mtime detail.
+    """
+    try:
+        stat_result = path.stat()
+        size: int | None = stat_result.st_size
+        mtime: float | None = stat_result.st_mtime
+    except OSError:
+        size, mtime = None, None
+    log_unclaimed_file(
+        path=path,
+        size=size,
+        mtime=mtime,
+        reason=f"suffix not in watched set {suffixes} for source {source_name!r}",
+        source_name=source_name,
+    )
+
+
 def _bounded_source_paths(
     source: WatchSource,
     all_sources: tuple[WatchSource, ...],
@@ -175,7 +198,14 @@ def _bounded_source_paths(
         if after is not None and key <= after:
             continue
         try:
-            if deepest_source_for_path(path, all_sources) is not source or not source.accepts(path):
+            if deepest_source_for_path(path, all_sources) is not source:
+                continue
+            if not source.accepts(path):
+                # A file this source's own walk reached but whose suffix no
+                # detector is configured to accept. The record exists whether
+                # or not an operator runs the standalone sweep, and discovery
+                # is the only production walk left that reaches it.
+                _log_unclaimed_intake_candidate(path, source_name=source.name, suffixes=source.suffixes)
                 continue
         except FileNotFoundError:
             continue
@@ -279,17 +309,72 @@ class FileIntakeAdapter(IntakeAdapter):
         if not batch:
             return outcomes
 
-        paths = [Path(cast(Any, item.payload)) for item in batch]
         try:
+            # The source-selection/cursor authority gate runs before anything
+            # in this page can mutate cursor state -- before initialization,
+            # before the needs-work selection reads a row. A page whose
+            # authority is refused must leave the archive exactly as it was.
+            processor = getattr(self.context.watcher, "_batch_processor", None)
+            if processor is not None:
+                processor.require_cursor_authority([Path(cast(Any, item.payload)) for item in batch])
+            # Cursor initialization precedes every read of cursor state, and
+            # takes the writer admission to do it: the selection below reads
+            # the cursor rows, so doing it first would touch (and create) the
+            # store outside the writer lease.
             cursor = getattr(self.context.watcher, "_cursor", None)
             run_writer_sync = getattr(self.context.watcher, "_run_writer_sync", None)
             if cursor is not None and callable(run_writer_sync):
                 await run_writer_sync("watcher.intake.cursor_initialize", cursor.initialize)
+            # Narrow the page before it costs anything more: a bounded walk
+            # re-offers files whose cursor already accounts for them, and
+            # handing those to the batch buys a planning pass per file per
+            # pass for no admission.
+            paths = [Path(cast(Any, item.payload)) for item in batch]
+            select = getattr(self.context.watcher, "select_ingest_candidates", None)
+            if not callable(select):
+                needed = set(paths)
+            elif callable(run_writer_sync):
+                # The selection is a read that can decide to write: an
+                # incomplete-append deferral, an archived-cursor
+                # reconciliation and a device-drift rebase all correct cursor
+                # rows in place. Those are ordinary archive writes, so they
+                # run through the writer admission like every other one --
+                # under process-wide lease enforcement an unadmitted cursor
+                # write is refused, which turned the whole page retryable.
+                needed = set(await run_writer_sync("watcher.intake.select", select, paths))
+            else:
+                needed = set(select(paths))
+            skipped = [item for item in batch if Path(cast(Any, item.payload)) not in needed]
+            for item in skipped:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.DUPLICATE, actual_cost=max(1, int(item.estimated_cost))
+                )
+            batch = [item for item in batch if Path(cast(Any, item.payload)) in needed]
+            if not batch:
+                return outcomes
+            paths = [Path(cast(Any, item.payload)) for item in batch]
             metrics = await self.context.watcher._ingest_files(
-                paths, queued_file_count=len(paths), whole_archive_convergence=False
+                paths,
+                queued_file_count=len(paths) + len(skipped),
+                skipped_file_count=len(skipped),
+                whole_archive_convergence=False,
             )
         except (OSError, ValueError, RuntimeError) as exc:
+            # A cursor-authority refusal lands here too: it is retryable for
+            # every item in the page, and nothing in the archive changed. Say
+            # so once per page: a class that reports only ``retried`` counts
+            # is otherwise a silent refusal with no reason anywhere.
             reason = f"{type(exc).__name__}: {exc}"
+            emit(
+                "daemon.intake.page_refused",
+                level=WARNING,
+                outcome="degraded",
+                reason="page_admission_failed",
+                component=self.class_name,
+                files=len(batch),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
             for item in batch:
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=reason)
             return outcomes

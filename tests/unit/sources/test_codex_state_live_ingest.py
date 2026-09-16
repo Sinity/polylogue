@@ -679,25 +679,26 @@ def test_historical_codex_page_image_is_not_finalized_as_current_state(
 
 
 @pytest.mark.asyncio
-async def test_fresh_root_catch_up_completes_every_chunk_with_a_codex_state_snapshot(
+async def test_a_fresh_root_admits_every_page_with_a_codex_state_snapshot_among_them(
     workspace_env: dict[str, Path],
 ) -> None:
-    """polylogue-6q16u: a fresh archive root whose scan contains one
-    ``~/.codex/*.sqlite`` finishes the whole catch-up.
+    """polylogue-6q16u: a fresh archive root whose walk contains one
+    ``~/.codex/*.sqlite`` finishes every page.
 
-    The rehearsal-4 failure was not a single ingest call: the watcher planned
-    45,490 files, ingested three chunks, and then every later chunk, the
-    hook-spool drain and raw materialization were refused with ``1 cursor/head
-    authority row(s) could not be compared``. This drives the real chunked
-    catch-up route (``LiveWatcher._catch_up`` -> ``_plan_catch_up`` ->
-    coordinated chunk ingest) over enough files for five chunks, with the
-    snapshot raw among them.
+    The rehearsal-4 failure was not a single ingest call: the run ingested
+    three batches, and then every later batch, plus raw materialization, was
+    refused with ``1 cursor/head authority row(s) could not be compared``.
+    This drives the real intake route (``FairIntakeDispatcher.run_once`` ->
+    ``FileIntakeAdapter.admit_page`` -> ``LiveWatcher._ingest_files``) over
+    enough files for five pages, with the snapshot raw among them.
 
     Anti-vacuity: drop the terminal source-tier receipt from the codex-state
-    branch of ``LiveBatchProcessor._ingest_full_records_archive`` and the
-    chunk that admits ``goals_1.sqlite`` leaves an uncomparable cursor row, so
-    the following chunks ingest nothing and the session count stops short.
+    branch of ``LiveBatchProcessor._ingest_full_records_archive`` and the page
+    that admits ``goals_1.sqlite`` leaves an uncomparable cursor row, so the
+    following pages ingest nothing and the session count stops short.
     """
+    from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
+    from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
     from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
 
     archive, codex_root, codex_state_root = _make_processor(workspace_env, "codex-home-catchup", "codex-catchup.db")
@@ -712,24 +713,28 @@ async def test_fresh_root_catch_up_completes_every_chunk_with_a_codex_state_snap
         path.write_text(template.read_text(encoding="utf-8").replace(_THREAD_ID, thread_id), encoding="utf-8")
     template.unlink()
 
-    watcher = live_watcher.LiveWatcher(
-        archive,
-        (
-            WatchSource(name="codex", root=codex_root),
-            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
-        ),
-        cursor=CursorStore(archive_root / "ops.db"),
+    sources = (
+        WatchSource(name="codex", root=codex_root),
+        WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
     )
+    watcher = live_watcher.LiveWatcher(archive, sources, cursor=CursorStore(archive_root / "ops.db"))
     try:
-        candidates = watcher._scan_catch_up_candidates([codex_root, codex_state_root])
-        assert len(candidates) == rollout_count + 1
-        chunks = watcher._chunk_catch_up_paths(
-            tuple(candidate.path for candidate in candidates),
-            {candidate.path: candidate for candidate in candidates},
+        context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
+        # Four rows per page over eighteen files: the deadlock only showed
+        # after the third page.
+        dispatcher = FairIntakeDispatcher(
+            tuple(
+                IntakeClassSpec(name=source.name, adapter=FileIntakeAdapter(context, source), page_size=4)
+                for source in sources
+            )
         )
-        assert len(chunks) >= 5, "the deadlock only showed after chunk 3"
-
-        await watcher._catch_up([codex_root, codex_state_root])
+        pages = 0
+        for _ in range(12):
+            result = await dispatcher.run_once()
+            pages += 1
+            if not result.progressed:
+                break
+        assert pages >= 5
 
         assert raw_frontier_source_selection_block_reason(archive_root) is None
         assert _cursor_authority_gap_states(archive_root) == []

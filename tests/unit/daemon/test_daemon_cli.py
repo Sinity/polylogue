@@ -1301,203 +1301,6 @@ def test_explicit_browser_capture_root_uses_spool_override_classifier(tmp_path: 
     )
 
 
-def test_run_live_watcher_stops_on_keyboard_interrupt(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    class FakePolylogue:
-        async def __aenter__(self) -> object:
-            return object()
-
-        async def __aexit__(self, *exc: object) -> None:
-            return None
-
-    stopped: list[bool] = []
-    shutdown_timeouts: list[float] = []
-
-    class Coordinator:
-        async def shutdown(self, *, timeout: float) -> bool:
-            shutdown_timeouts.append(timeout)
-            return True
-
-    class FakeWatcher(_NoIntakeHints):
-        stopped = False
-
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        async def run(self) -> None:
-            raise KeyboardInterrupt
-
-        def stop(self) -> None:
-            self.stopped = True
-            stopped.append(self.stopped)
-
-    sources = (WatchSource(name="codex", root=Path("/tmp/codex")),)
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
-
-    with (
-        patch.object(daemon_cli, "Polylogue", FakePolylogue),
-        patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
-        patch.object(daemon_cli, "daemon_write_coordinator", return_value=Coordinator()),
-    ):
-        writer_drained = asyncio.run(daemon_cli.run_live_watcher(sources=sources, debounce_s=1.0))
-
-    assert stopped == [True]
-    assert shutdown_timeouts == [5.0]
-    assert writer_drained is True
-
-
-def test_run_live_watcher_refuses_before_entry_while_rebuild_lease_is_held(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
-
-    archive_root_path = tmp_path / "archive"
-    archive_root_path.mkdir()
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root_path)
-
-    class ForbiddenPolylogue:
-        def __init__(self) -> None:
-            raise AssertionError("standalone watcher entered archive before rebuild refusal")
-
-    monkeypatch.setattr(daemon_cli, "Polylogue", ForbiddenPolylogue)
-    with (
-        RebuildLease(archive_root_path),
-        pytest.raises(
-            RebuildLeaseUnavailableError,
-            match="offline index rebuild owns archive",
-        ),
-    ):
-        asyncio.run(daemon_cli.run_live_watcher(sources=(), debounce_s=1.0))
-
-
-def test_live_watcher_cancellation_during_drain_retains_rebuild_exclusion(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
-
-    archive_root_path = tmp_path / "archive"
-    archive_root_path.mkdir()
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root_path)
-
-    class FakePolylogue:
-        async def __aenter__(self) -> object:
-            return object()
-
-        async def __aexit__(self, *exc: object) -> None:
-            return None
-
-    class FakeWatcher(_NoIntakeHints):
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        async def run(self) -> None:
-            return None
-
-        def stop(self) -> None:
-            return None
-
-    class BlockingCoordinator:
-        def __init__(self) -> None:
-            self.shutdown_started = asyncio.Event()
-
-        async def shutdown(self, *, timeout: float) -> bool:
-            assert timeout == 5.0
-            self.shutdown_started.set()
-            await asyncio.Event().wait()
-            return False
-
-    coordinator = BlockingCoordinator()
-
-    async def exercise() -> None:
-        with (
-            patch.object(daemon_cli, "Polylogue", FakePolylogue),
-            patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
-            patch.object(daemon_cli, "daemon_write_coordinator", return_value=coordinator),
-        ):
-            task = asyncio.create_task(daemon_cli.run_live_watcher(sources=(), debounce_s=1.0))
-            await coordinator.shutdown_started.wait()
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-    asyncio.run(exercise())
-
-    with pytest.raises(RebuildLeaseUnavailableError, match="index rebuild lease is already held"):
-        with RebuildLease(archive_root_path):
-            pass
-
-
-def test_live_watcher_stop_failure_still_retains_undrained_rebuild_exclusion(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A watcher stop exception cannot bypass coordinator drain authority."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance import raw_authority
-    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
-
-    archive_root_path = tmp_path / "archive"
-    archive_root_path.mkdir()
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root_path)
-
-    class FakePolylogue:
-        async def __aenter__(self) -> object:
-            return object()
-
-        async def __aexit__(self, *exc: object) -> None:
-            return None
-
-    class FailingStopWatcher:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        async def run(self) -> None:
-            return None
-
-        def stop(self) -> None:
-            raise RuntimeError("watcher stop failed")
-
-    class UndrainedCoordinator:
-        async def shutdown(self, *, timeout: float) -> bool:
-            assert timeout == 5.0
-            return False
-
-    captured: list[raw_authority.ArchiveWriterRebuildExclusion] = []
-    real_exclusion = raw_authority.archive_writer_rebuild_exclusion
-
-    @contextlib.contextmanager
-    def capture_exclusion(root: Path) -> Iterator[raw_authority.ArchiveWriterRebuildExclusion]:
-        with real_exclusion(root) as exclusion:
-            captured.append(exclusion)
-            yield exclusion
-
-    monkeypatch.setattr(raw_authority, "archive_writer_rebuild_exclusion", capture_exclusion)
-    with (
-        patch.object(daemon_cli, "Polylogue", FakePolylogue),
-        patch.object(daemon_cli, "LiveWatcher", FailingStopWatcher),
-        patch.object(daemon_cli, "daemon_write_coordinator", return_value=UndrainedCoordinator()),
-        pytest.raises(RuntimeError, match="watcher stop failed"),
-    ):
-        asyncio.run(daemon_cli.run_live_watcher(sources=(), debounce_s=1.0))
-
-    assert len(captured) == 1
-    with pytest.raises(RebuildLeaseUnavailableError, match="index rebuild lease is already held"):
-        with RebuildLease(archive_root_path):
-            pass
-
-    captured[0].release()
-    with RebuildLease(archive_root_path):
-        pass
-
-
 def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -4434,3 +4237,61 @@ def test_whale_pass_on_an_empty_root_is_quiet_not_a_repeating_failure(
     )
 
     assert attempted is False
+
+
+@pytest.mark.asyncio
+async def test_an_undrained_writer_retains_rebuild_exclusion_for_the_process(tmp_path: Path) -> None:
+    """Drain authority decides whether an offline rebuild may ever start.
+
+    This is the invariant the deleted standalone ``run_live_watcher`` entry
+    point used to carry: the daemon's own shutdown path
+    (``_shutdown_writer_coordinator_with_rebuild_exclusion``) is the one route
+    that holds it now.
+
+    Anti-vacuity: drop the ``retain_until_process_exit`` call for an undrained
+    writer, or swallow the shutdown exception, and the retained flags below go
+    False.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    class _Exclusion:
+        def __init__(self) -> None:
+            self.retained = False
+
+        def retain_until_process_exit(self) -> None:
+            self.retained = True
+
+    class _Coordinator:
+        def __init__(self, drained: bool | BaseException) -> None:
+            self._drained = drained
+
+        async def shutdown(self, *, timeout: float) -> bool:
+            assert timeout == 5.0
+            if isinstance(self._drained, BaseException):
+                raise self._drained
+            return self._drained
+
+    drained_exclusion = _Exclusion()
+    assert (
+        await daemon_cli._shutdown_writer_coordinator_with_rebuild_exclusion(
+            cast(Any, _Coordinator(True)), cast(Any, drained_exclusion), timeout=5.0
+        )
+        is True
+    )
+    assert drained_exclusion.retained is False
+
+    undrained_exclusion = _Exclusion()
+    assert (
+        await daemon_cli._shutdown_writer_coordinator_with_rebuild_exclusion(
+            cast(Any, _Coordinator(False)), cast(Any, undrained_exclusion), timeout=5.0
+        )
+        is False
+    )
+    assert undrained_exclusion.retained is True
+
+    raising_exclusion = _Exclusion()
+    with pytest.raises(RuntimeError, match="drain failed"):
+        await daemon_cli._shutdown_writer_coordinator_with_rebuild_exclusion(
+            cast(Any, _Coordinator(RuntimeError("drain failed"))), cast(Any, raising_exclusion), timeout=5.0
+        )
+    assert raising_exclusion.retained is True

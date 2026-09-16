@@ -50,9 +50,8 @@ logger = get_logger(__name__)
 _DEFAULT_WORKER_COUNT_FLOOR = 1
 _DEFAULT_WARM_TIMEOUT_SECONDS = 60.0
 
-# The watcher's own catch-up/live-batch chunking already caps a single batch
-# at 64 MiB (``_CATCH_UP_MAX_BATCH_BYTES`` in ``sources/live/watcher.py``), so
-# the adaptive budget below only needs to comfortably cover one batch's worth
+# The dispatcher's per-pass byte budget already caps one admitted page at
+# 64 MiB, so the adaptive budget below only needs to cover one page's worth
 # of small JSONL files, not a whole-archive whale pass like the census
 # prefetch cache. Floor/ceiling still scale with the machine rather than a
 # fixed constant, mirroring ``daemon_parse_stage_max_inflight_bytes``.

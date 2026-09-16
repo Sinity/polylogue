@@ -445,6 +445,16 @@ class FairIntakeDispatcher:
             attempts = runtime.attempts.get(item.item_id, 0) + 1
             runtime.attempts[item.item_id] = attempts
             retried += 1
+            emit(
+                "daemon.intake.item_retryable",
+                level=WARNING,
+                outcome="degraded",
+                reason="admission_failed",
+                component=spec.name,
+                source_id=item.item_id,
+                attempts=attempts,
+                error_detail=str(result.reason),
+            )
             if attempts >= spec.max_attempts:
                 runtime.attempts.pop(item.item_id, None)
                 runtime.retry_after[item.item_id] = self._clock() + max(0.0, spec.retry_cooldown_s)

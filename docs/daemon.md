@@ -58,7 +58,7 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--root` | (auto) | Add an export watch root alongside typed defaults (repeatable) |
-| `--debounce-s` | `2.0` | Quiet period in seconds before parsing a modified file |
+| `--debounce-s` | `2.0` | Inert. The watcher has no queue to debounce since acquisition became the dispatcher's; the flag and its `daemon.watch.debounce_s` config key are still accepted and still do nothing. |
 | `--no-watch` | off | Disable the live source watcher |
 | `--no-browser-capture` | off | Disable the browser-capture receiver |
 | `--no-api` | off | Disable the HTTP API + web reader |
@@ -586,6 +586,39 @@ daemon holding one is not `ok`. Halts survive restart; clearing one is explicit
 
 Refusing at execution time is the defect this replaces. Work that cannot
 succeed must never have been planned.
+
+### Acquisition: one intake route
+
+`FairIntakeDispatcher` is the only intake authority. Nothing else discovers,
+plans or admits source files.
+
+```text
+LiveWatcher (watchfiles)  ->  intake revision + wakeup   (a hint, never a queue)
+FairIntakeDispatcher.run_once
+  -> per class: adapter.discover(limit=page_size)        (bounded resumable walk)
+  -> plan the page against the class byte share          (never split below one file)
+  -> FileIntakeAdapter.admit_page(page)                  (one call for the page)
+       -> cursor authority gate, then cursor.initialize
+       -> LiveWatcher.select_ingest_candidates           (bulk cursor comparison)
+       -> LiveWatcher._ingest_files                      (one batch, one parse-stage warm)
+       -> one embedding + one session-profile convergence for the page
+  -> one outcome per item: admitted / duplicate / excluded / deferred /
+     retryable / terminal, feeding the per-item deficit, retry and isolation
+     accounting
+```
+
+The watcher owns no catch-up scan, debounce queue, failed-retry scan or
+periodic sweep: those were a second route with their own defects and their own
+(separately measured) performance profile.
+
+One writer hold covers one page, not one file. It cannot be dropped entirely
+yet: `ingest_files` still performs ops-tier writes (attempt progress,
+convergence debt, cursor commits) that are not individually admitted, and
+process-wide lease enforcement refuses an unadmitted write. Convergence,
+embedding and session-profile work already runs outside it.
+
+Hook capture rides the same route: producers append to per-process NDJSON
+carriers, which are ordinary files in their own `hook_carrier` intake class.
 
 ### Daemon-Owned Tasks
 

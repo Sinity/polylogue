@@ -198,9 +198,10 @@ _HEARTBEAT_INTERVAL_SECONDS = 900
 _DB_OPTIMIZE_INTERVAL_SECONDS = 86_400
 
 # polylogue-5xxmc: ``catch_up_complete`` sequences a maintenance loop behind
-# the live watcher's initial source catch-up (see ``_bridge_catch_up_complete``
-# below) so archive-wide convergence work never races freshly-arriving
-# sessions for the single writer. That sequencing is a startup-ordering aid,
+# the watcher's readiness (see ``_bridge_catch_up_complete`` below) so
+# archive-wide convergence work never races a starting watcher for the single
+# writer. Acquisition itself is the dispatcher's, so the event is now set as
+# soon as the watch is registered. That sequencing is a startup-ordering aid,
 # not a permanent kill switch -- if the watcher never reaches catch-up-complete
 # (crash, hang, or any other path that leaves the bridge task without a source
 # event to forward) every gated loop must still eventually run instead of
@@ -940,24 +941,16 @@ async def _periodic_convergence_check(
     *,
     fts_owner: FtsConvergenceOwner,
     catch_up_complete: asyncio.Event | None = None,
-    catch_up_active: Callable[[], bool] | None = None,
     session_profile_callback: Callable[[tuple[str, ...] | None], Awaitable[object]] | None = None,
 ) -> None:
-    """Periodically retry recorded derived convergence debt.
-
-    The archive-wide exact FTS audit is whole-archive work; while the watcher
-    is inside a chunked catch-up it is skipped (the catch-up's last chunk
-    publishes readiness) instead of rescanning the growing archive between
-    chunks.
-    """
+    """Periodically retry recorded derived convergence debt."""
     db = _active_index_db_path()
 
     async def once() -> None:
         await _retry_convergence_debt_once(db)
-        if catch_up_active is None or not catch_up_active():
-            await fts_owner.converge()
-            if session_profile_callback is not None:
-                await session_profile_callback(None)
+        await fts_owner.converge()
+        if session_profile_callback is not None:
+            await session_profile_callback(None)
 
     await daemon_periodic_runner().run(
         "convergence_check",
@@ -2039,46 +2032,6 @@ async def _shutdown_writer_coordinator_with_rebuild_exclusion(
     return writer_drained
 
 
-async def run_live_watcher(
-    *,
-    sources: tuple[WatchSource, ...],
-    debounce_s: float,
-) -> bool:
-    from polylogue.daemon.events import emit_catch_up_cycle
-    from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
-    from polylogue.paths import archive_root
-
-    archive_root_path = Path(archive_root())
-    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion:
-        coordinator = daemon_write_coordinator()
-        watcher: LiveWatcher | None = None
-        writer_drained = False
-        try:
-            async with Polylogue() as polylogue:
-                watcher = LiveWatcher(
-                    polylogue,
-                    sources,
-                    debounce_s=debounce_s,
-                    event_emitter=_emit_live_batch_event,
-                    catch_up_event_emitter=emit_catch_up_cycle,
-                    write_coordinator=coordinator,
-                )
-                with contextlib.suppress(KeyboardInterrupt):
-                    await watcher.run()
-        finally:
-            try:
-                if watcher is not None:
-                    watcher.stop()
-            finally:
-                writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
-                    coordinator,
-                    rebuild_exclusion,
-                    timeout=5.0,
-                )
-        return writer_drained
-
-
 async def run_daemon_services(
     *,
     sources: tuple[WatchSource, ...],
@@ -2709,7 +2662,6 @@ async def _run_daemon_services_under_active_writer_lease(
                 archive_root_path / "index.db",
                 compute_adapter=daemon_compute,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
-                quiet=lambda: bool(watcher_holder and watcher_holder[0].catch_up_active),
             )
 
             async def converge_ingest_embeddings(index_db: Path, paths: Sequence[Path]) -> bool:
@@ -2799,7 +2751,6 @@ async def _run_daemon_services_under_active_writer_lease(
                         sources,
                         fts_owner=fts_owner,
                         catch_up_complete=gate,
-                        catch_up_active=lambda: bool(watcher_holder and watcher_holder[0].catch_up_active),
                         session_profile_callback=session_profile_callback,
                     ),
                 ),
@@ -2864,8 +2815,6 @@ async def _run_daemon_services_under_active_writer_lease(
         # convergence coupling (polylogue-gbs02).
         try:
             if not watcher_creation_blocked:
-                from polylogue.daemon.events import emit_catch_up_cycle
-
                 async with Polylogue() as polylogue:
                     from polylogue.daemon.intake_adapters import (
                         DaemonIntakeContext,
@@ -2876,14 +2825,11 @@ async def _run_daemon_services_under_active_writer_lease(
                     watcher = LiveWatcher(
                         polylogue,
                         sources,
-                        debounce_s=debounce_s,
                         converger=converger,
                         event_emitter=_emit_live_batch_event,
-                        catch_up_event_emitter=emit_catch_up_cycle,
                         write_coordinator=write_coordinator,
                         embedding_owner=embedding_callback,
                         session_profile_callback=session_profile_callback,
-                        intake_hints_only=True,
                         intake_wakeup=raw_intake_wakeup,
                     )
                     watcher_holder.append(watcher)
@@ -3091,12 +3037,6 @@ async def _run_daemon_services_under_active_writer_lease(
                 await _shutdown_server_if_serving(uds_server, uds_server_task, label="uds")
             if api_server is not None:
                 await api_server.operation_runtime.shutdown()
-
-            # Cancel orphaned debounced watcher child tasks.
-            if watcher is not None:
-                cancel_pending = getattr(watcher, "cancel_pending", None)
-                if callable(cancel_pending):
-                    cancel_pending()
 
             # One owner cancels and awaits every child inside its declared
             # deadline. Anything still running afterwards is named here
@@ -3832,7 +3772,6 @@ __all__ = [
     "main",
     "run_command",
     "run_daemon_services",
-    "run_live_watcher",
     "status_command",
     "watch_command",
 ]

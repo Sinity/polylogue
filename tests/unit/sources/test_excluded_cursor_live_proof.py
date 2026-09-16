@@ -43,9 +43,9 @@ def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path:
         "partial_tail_frontier_residual": "The deferred-partial candidate has no accepted byte head, so its readiness gate was injected for this case only.",
         "residual_successor": "polylogue-excluded-cursor-live-proof",
     }
-    assert receipt["production_route"]["catch_up"] == (
-        "LiveWatcher._catch_up -> _scan_catch_up_candidates -> _catch_up_candidates -> "
-        "_plan_catch_up -> coordinated chunk ingest"
+    assert receipt["production_route"]["intake"] == (
+        "FairIntakeDispatcher.run_once -> FileIntakeAdapter.admit_page -> "
+        "LiveWatcher.select_ingest_candidates -> page ingest"
     )
     assert receipt["anti_vacuity"] == {
         "indexed_authority": "byte_proven_source_raw_and_revision_head",

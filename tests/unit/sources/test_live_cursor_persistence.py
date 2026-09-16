@@ -78,11 +78,25 @@ def _lock_first_index_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", lock_once)
 
 
+async def _admit(watcher: LiveWatcher, path: Path) -> dict[str, object]:
+    """Admit one path through the production intake route."""
+    from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
+
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+    )
+    return dict(await adapter.admit_page(await adapter.discover(limit=8)))
+
+
 def _watcher(archive: Polylogue, root: Path) -> LiveWatcher:
     return LiveWatcher(
         archive,
         (WatchSource(name="claude-code", root=root),),
-        debounce_s=0,
         cursor=CursorStore(archive.archive_root / "index.db"),
     )
 
@@ -115,16 +129,15 @@ async def test_full_ingest_lock_keeps_raw_pending_and_requeues_without_eof_recon
     _lock_first_index_persistence(monkeypatch)
 
     try:
-        watcher._pending_paths.add(source_path)
-        assert await watcher._flush_pending() is True
+        with pytest.raises(sqlite3.OperationalError):
+            await _admit(watcher, source_path)
 
         assert watcher._cursor.get_record(source_path) is None
         assert watcher._needs_work(source_path) is True
         assert watcher._cursor.get_record(source_path) is None
         assert _raw_parse_states(workspace_env["archive_root"], source_path) == [(None, None)]
-        assert source_path in watcher._pending_paths
 
-        assert await watcher._flush_pending() is True
+        await _admit(watcher, source_path)
 
         cursor = watcher._cursor.get_record(source_path)
         session = await archive.get_session("claude-code:full-lock")
@@ -137,7 +150,7 @@ async def test_full_ingest_lock_keeps_raw_pending_and_requeues_without_eof_recon
             for parsed_at, error in _raw_parse_states(workspace_env["archive_root"], source_path)
         )
     finally:
-        watcher.cancel_pending()
+        watcher.stop()
         await archive.close()
 
 
@@ -172,16 +185,15 @@ async def test_append_lock_preserves_prior_cursor_and_retries_tail_through_watch
     watcher = _watcher(archive, root)
 
     try:
-        watcher._pending_paths.add(source_path)
-        assert await watcher._flush_pending() is True
+        await _admit(watcher, source_path)
         prior_cursor = watcher._cursor.get_record(source_path)
         assert prior_cursor is not None
 
         with source_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(second) + "\n")
         _lock_first_index_persistence(monkeypatch)
-        watcher._pending_paths.add(source_path)
-        assert await watcher._flush_pending() is True
+        with pytest.raises(sqlite3.OperationalError):
+            await _admit(watcher, source_path)
 
         locked_cursor = watcher._cursor.get_record(source_path)
         assert locked_cursor is not None
@@ -189,9 +201,8 @@ async def test_append_lock_preserves_prior_cursor_and_retries_tail_through_watch
         assert locked_cursor.failure_count == 0
         assert watcher._needs_work(source_path) is True
         assert (None, None) in _raw_parse_states(workspace_env["archive_root"], source_path)
-        assert source_path in watcher._pending_paths
 
-        assert await watcher._flush_pending() is True
+        await _admit(watcher, source_path)
 
         cursor = watcher._cursor.get_record(source_path)
         session = await archive.get_session("claude-code:append-lock")
@@ -204,7 +215,7 @@ async def test_append_lock_preserves_prior_cursor_and_retries_tail_through_watch
             for parsed_at, error in _raw_parse_states(workspace_env["archive_root"], source_path)
         )
     finally:
-        watcher.cancel_pending()
+        watcher.stop()
         await archive.close()
 
 
@@ -245,4 +256,4 @@ def test_archived_cursor_reconciliation_rejects_parsed_raw_without_index_materia
         assert watcher._needs_work(source_path) is True
         assert watcher._cursor.get_record(source_path) is None
     finally:
-        watcher.cancel_pending()
+        watcher.stop()

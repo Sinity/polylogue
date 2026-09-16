@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -11,6 +11,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
+from polylogue.daemon.intake import AdmissionOutcome, IntakeItem
+from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
@@ -117,8 +119,17 @@ class _GateTrackingCoordinator:
             self.depth -= 1
 
 
+@contextlib.asynccontextmanager
+async def _held(coordinator: Any) -> AsyncIterator[None]:
+    coordinator.depth += 1
+    try:
+        yield
+    finally:
+        coordinator.depth -= 1
+
+
 @pytest.mark.asyncio
-async def test_live_flush_runs_lease_free_owners_after_releasing_the_writer_gate(
+async def test_page_admission_runs_lease_free_owners_outside_the_writer_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -129,8 +140,9 @@ async def test_live_flush_runs_lease_free_owners_after_releasing_the_writer_gate
     actually happens -- and it must observe the gate released, or an unrelated
     archive writer would still be queued behind one network round trip.
 
-    Anti-vacuity: move the owner call back inside ``flush_batch`` (or into
-    ``_ingest_files``) and ``observed`` records ``gate_held=True``.
+    Anti-vacuity: move the owner call inside ``_ingest_files`` (or wrap the
+    page in a coordinator hold again) and ``observed`` records
+    ``gate_held=True`` for the owner.
     """
     index_db = tmp_path / "index.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
@@ -158,21 +170,32 @@ async def test_live_flush_runs_lease_free_owners_after_releasing_the_writer_gate
     )
 
     async def fake_ingest_files(paths: list[Path], **_kwargs: object) -> object:
-        observed.append(("ingest", coordinator.held, tuple(paths)))
+        # The batch takes its own short writer admissions internally; this
+        # double stands in for that whole region.
+        async with _held(coordinator):
+            observed.append(("ingest", coordinator.held, tuple(paths)))
         return SimpleNamespace(
             changed_session_ids=("session-1", "session-1", "session-2"),
             succeeded_file_count=1,
+            succeeded_paths=(source,),
             failed_file_count=0,
+            failed_paths=[],
+            deferred_paths=(),
+            excluded_paths={},
+            stale_cursor_write_count=0,
+            source_payload_read_bytes=source.stat().st_size,
         )
 
     monkeypatch.setattr(watcher, "_ingest_files", fake_ingest_files)
-    monkeypatch.setattr(watcher, "_needs_work_from_state", lambda *_a, **_k: True)
-    monkeypatch.setattr(watcher, "_schedule_failed_retry_scan", lambda: None)
-    monkeypatch.setattr(watcher._batch_processor, "admit_paths", lambda paths: list(paths))
-    monkeypatch.setattr(watcher, "_archived_cursor_reconciliation_scope", contextlib.nullcontext)
-    watcher._pending_paths.add(source)
+    monkeypatch.setattr(watcher, "select_ingest_candidates", lambda paths: tuple(paths))
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
+        watcher._sources[0],
+    )
+    item = IntakeItem(item_id=f"file:{source}", class_name="projects", payload=source, estimated_cost=1)
 
-    assert await watcher._flush_pending() is True
+    outcomes = await adapter.admit_page((item,))
+    assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.ADMITTED]
 
     assert observed == [
         ("ingest", True, (source,)),

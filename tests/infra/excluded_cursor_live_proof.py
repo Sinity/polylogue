@@ -265,6 +265,22 @@ def _case_summary(
     }
 
 
+async def _admit_one_page(watcher: LiveWatcher, source_root: Path) -> None:
+    """Admit one dispatcher page over ``source_root`` -- the production route."""
+    from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
+
+    source = next(source for source in watcher._sources if source.root == source_root)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        source,
+    )
+    await adapter.admit_page(await adapter.discover(limit=64))
+
+
 def _run_case(
     *,
     root: Path,
@@ -298,7 +314,7 @@ def _run_case(
                 else nullcontext()
             )
             with frontier_patch, patch.object(watcher, "_ingest_files", capture_ingest):
-                asyncio.run(watcher._catch_up([source_root]))
+                asyncio.run(_admit_one_page(watcher, source_root))
     finally:
         watcher.stop()
     return _case_summary(
@@ -419,9 +435,9 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         "production_route": {
             "cursor_gate": "LiveWatcher._needs_work",
             "transition": "LiveBatchProcessor._record_full_cursor -> CursorStore.set",
-            "catch_up": (
-                "LiveWatcher._catch_up -> _scan_catch_up_candidates -> _catch_up_candidates -> "
-                "_plan_catch_up -> coordinated chunk ingest"
+            "intake": (
+                "FairIntakeDispatcher.run_once -> FileIntakeAdapter.admit_page -> "
+                "LiveWatcher.select_ingest_candidates -> page ingest"
             ),
             "ingest": "LiveWatcher._ingest_files -> LiveBatchProcessor.ingest_files",
             "failure_evidence": "source.raw_artifacts",
@@ -430,10 +446,10 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         "outcomes": outcomes,
         "cases": cases,
         "fairness": {
-            "planner": "_interleave_by_source",
+            "planner": "FairIntakeDispatcher deficit round-robin over intake classes",
             "property": (
-                "browser-capture drains first; among non-browser-capture families, one candidate from each "
-                "present family reaches the first round"
+                "every schedulable class receives its weighted byte share each pass; no class can starve "
+                "a sibling, and a poison item is isolated rather than blocking its class"
             ),
         },
         "anti_vacuity": {
