@@ -29,6 +29,7 @@ from polylogue.core.write_lease import (
     bind_write_lease_thread,
     current_write_lease,
     delegate_write_lease,
+    grant_write_lease_thread,
     write_lease,
 )
 from polylogue.logging import ERROR, INFO, WARNING, emit
@@ -661,6 +662,12 @@ async def _run_in_daemon_thread(
     loop = asyncio.get_running_loop()
     result: ConcurrentFuture[T] = ConcurrentFuture()
     context = contextvars.copy_context()
+    # Mint the thread grant here, on the owning side, before the worker
+    # exists. On a free-threading build every spawned thread inherits the
+    # lease, so a worker that bound *itself* would be self-authorizing rather
+    # than deliberately admitted (polylogue-1oa7o); the grant is single-use
+    # and checked against this exact lease object.
+    thread_grant = grant_write_lease_thread() if current_write_lease() is not None else None
 
     def worker() -> None:
         error: BaseException | None = None
@@ -668,8 +675,8 @@ async def _run_in_daemon_thread(
             # The context copied from the coordinator task carries the lease;
             # bind this concrete worker thread before any SQLite factory runs.
             def invoke() -> T:
-                if current_write_lease() is not None:
-                    bind_write_lease_thread()
+                if thread_grant is not None:
+                    bind_write_lease_thread(thread_grant)
                 return function(*args, **kwargs)
 
             value = context.run(invoke)
