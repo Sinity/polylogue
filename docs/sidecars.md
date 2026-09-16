@@ -14,8 +14,8 @@ verification graphs, and failed backups; each kind below names its contract.
 | SQLite staging provenance (`*.polylogue-import`) | `stage_sqlite_snapshot` | `original_sqlite_source_path` | with the staged snapshot | records the original source path; non-ingestible | snapshot loses acquisition identity |
 | Verify receipts/graph (`.cache/verify/**`) | devtools | devtools, harvest evidence | per checkout, gitignored | a testmon datafile without its sidecars, and sidecars without the datafile, both read as an unusable graph | an unusable graph falls back to the complete corpus |
 
-Hook spool entries (`hooks/pending/<day>/<event_id>.json`) are primary
-acquisition sources, not sidecars; their envelope contract lives in
+Hook-event carriers (`hooks/carriers/<provider>/<day>/<pid>.ndjson`) are
+primary acquisition sources, not sidecars; their envelope contract lives in
 `sources/hooks.py`.
 
 Both tool-output families are joined back to their owning block from

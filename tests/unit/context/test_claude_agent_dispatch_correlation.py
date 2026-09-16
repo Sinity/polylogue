@@ -56,8 +56,8 @@ def _write_tool_hook_event(
     payload: dict[str, object],
     observed_at_ms: int = 1_000,
 ) -> None:
-    """Write one hook event in the shape ``sources/hooks._persist_record`` stores:
-    the full spool envelope, with the harness's own payload nested inside it."""
+    """Write one hook event in the shape ``sources/hooks`` materializes:
+    the full carrier envelope, with the harness's own payload nested inside it."""
     envelope: dict[str, object] = {
         "event_id": event_id,
         "event_type": event_type,

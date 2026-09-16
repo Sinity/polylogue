@@ -62,9 +62,9 @@ def _lifecycle_events_for(source_conn: sqlite3.Connection, hermes_session_native
     for hook_event in list_hook_events(
         source_conn, origin=Origin.HERMES_SESSION, session_native_id=hermes_session_native_id
     ):
-        # ``hook_event.payload`` is the full spooled envelope (event_id/
+        # ``hook_event.payload`` is the full carrier envelope (event_id/
         # event_type/session_id/timestamp/provider/payload/observed_at_ms,
-        # see ``sources.hooks._persist_record``); the producer's own event
+        # see ``sources.hooks.carrier_hook_events``); the producer's own event
         # body is nested one level deeper under its own "payload" key --
         # same unwrap ``context.hermes_delivery_correlation`` performs.
         inner_payload = hook_event.payload.get("payload")

@@ -115,10 +115,11 @@ def _write_tool_hook_event(
     event_type: str = "PostToolUse",
     event_id: str = "e1",
 ) -> None:
-    """Insert one drained hook envelope exactly as ``sources/hooks`` stores it.
+    """Insert one materialized hook envelope exactly as ``sources/hooks`` stores it.
 
-    ``_persist_record`` writes the producer envelope, so the harness payload
-    sits under ``$.payload`` and the reader must resolve it there.
+    ``carrier_hook_events`` builds the row from the producer's own carrier
+    line, so the harness payload sits under ``$.payload`` and the reader must
+    resolve it there.
     """
     record = {
         "event_type": event_type,
@@ -138,7 +139,7 @@ def _write_tool_hook_event(
         (
             f"hook:{event_id}",
             Origin.CLAUDE_CODE_SESSION.value,
-            f"/sanitized/hooks/pending/{event_id}.json",
+            f"/sanitized/hooks/carriers/claude-code/2026-09-06/{event_id}.ndjson",
             event_type,
             json.dumps(record, sort_keys=True, separators=(",", ":")),
             _OBSERVED_AT_MS,
