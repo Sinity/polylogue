@@ -653,6 +653,7 @@ class ArchiveStore:
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
         defer_secondary_indexes: bool = False,
+        active_cold_build: bool = False,
     ) -> None:
         if not validate_index_layout and not read_only:
             raise ValueError("index-layout validation may only be waived for read-only archive access")
@@ -666,6 +667,10 @@ class ArchiveStore:
             raise ValueError("an opened index descriptor is valid only for read-only archive access")
         if defer_secondary_indexes and (read_only or owned_inactive_generation is None):
             raise ValueError("secondary-index deferral requires an owned inactive writable generation")
+        if active_cold_build and (read_only or owned_inactive_generation is not None or source_tier_acquisition):
+            raise ValueError("the active cold-build shape requires a plain writable active-generation open")
+        self._active_cold_build_requested = active_cold_build
+        self._active_cold_build_engaged = False
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_source_validation = frozen_source_validation
@@ -752,6 +757,7 @@ class ArchiveStore:
                 # the live single-writer profile. See
                 # BULK_BUILD_WRITE_CONNECTION_PROFILE's docstring.
                 bulk_build_profile=owned_inactive_generation is not None,
+                active_cold_build=active_cold_build,
             )
             if defer_secondary_indexes:
                 from polylogue.storage.sqlite.runtime_indexes import defer_secondary_indexes_sync
@@ -760,6 +766,8 @@ class ArchiveStore:
                     raise ValueError("secondary-index deferral is only valid for an empty archive generation")
                 self._deferred_secondary_indexes = defer_secondary_indexes_sync(self._conn)
                 self._conn.commit()
+            if active_cold_build:
+                self._engage_active_cold_build()
         except Exception:
             conn = getattr(self, "_conn", None)
             if conn is not None:
@@ -777,6 +785,7 @@ class ArchiveStore:
         read_only: bool,
         read_timeout: float,
         bulk_build_profile: bool = False,
+        active_cold_build: bool = False,
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
     ) -> None:
@@ -892,9 +901,12 @@ class ArchiveStore:
                 # (polylogue-bp12n.6, ``archive_tiers/write_shard.py``).
                 else sqlite3.connect(self.index_db_path, uri=True)
             )
-            pragma_statements = write_connection_pragma_statements(
-                BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
-            )
+            write_profile = BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
+            if active_cold_build and not bulk_build_profile:
+                from polylogue.storage.sqlite.connection_profile import COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
+
+                write_profile = COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
+            pragma_statements = write_connection_pragma_statements(write_profile)
         self._conn.row_factory = sqlite3.Row
         for statement in pragma_statements:
             self._conn.execute(statement)
@@ -932,6 +944,62 @@ class ArchiveStore:
         """Reject mutations before they can open or use a writable tier."""
         if self._read_only:
             raise ReadOnlyArchiveError(f"read-only archive evidence cannot {operation}")
+
+    @property
+    def active_cold_build_engaged(self) -> bool:
+        """Whether this writer actually took the active cold-build shape.
+
+        ``False`` on an open that asked for it but found the generation
+        non-empty: the shape is licensed by emptiness, so the store reverts to
+        the ordinary live write profile rather than refusing the open.
+        """
+        return self._active_cold_build_engaged
+
+    def _engage_active_cold_build(self) -> None:
+        """Take the cold-build shape only while the generation is provably empty."""
+        from polylogue.storage.sqlite.connection_profile import (
+            WRITE_CONNECTION_PROFILE,
+            write_connection_pragma_statements,
+        )
+
+        if self._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None:
+            # The emptiness proof is what licenses synchronous=OFF and
+            # foreign_keys=OFF; without it this is an ordinary live write.
+            for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
+                self._conn.execute(statement)
+            self._active_cold_build_engaged = False
+            return
+        self._active_cold_build_engaged = True
+
+    def finish_active_cold_build(self) -> None:
+        """Return an active cold-built generation to the live write shape.
+
+        Verifies the constraint the build ran without: ``foreign_keys=OFF``
+        skips the per-row parent probe, so the boundary runs
+        ``PRAGMA foreign_key_check`` over the whole generation and refuses to
+        hand it back to live readers if anything is dangling. Then restores
+        the live durability pragmas and truncates the WAL the raised
+        autocheckpoint threshold let grow.
+        """
+        self._require_writable("finish an active cold build")
+        if not self._active_cold_build_engaged:
+            return
+        from polylogue.storage.sqlite.connection_profile import (
+            WRITE_CONNECTION_PROFILE,
+            write_connection_pragma_statements,
+        )
+
+        self._conn.commit()
+        violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)
+        if violations:
+            raise RuntimeError(
+                "active cold build left dangling references; the generation is not publishable: "
+                f"{[tuple(row) for row in violations]}"
+            )
+        for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
+            self._conn.execute(statement)
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self._active_cold_build_engaged = False
 
     def restore_deferred_secondary_indexes(self) -> None:
         """Recreate deferred reader indexes before publishing a generation."""
@@ -981,6 +1049,18 @@ class ArchiveStore:
             opened_index_fd=opened_main_fd,
             validate_index_layout=validate_index_layout,
         )
+
+    @classmethod
+    def open_active_cold_build(cls, archive_root: Path) -> ArchiveStore:
+        """Open the active generation for a cold build (polylogue-6xcqj).
+
+        Identical to ``open_existing(read_only=False)`` -- same writer lease,
+        same identity assertion, same bootstrap -- except that a generation
+        proven empty at open takes the cold-build write profile. A non-empty
+        generation silently gets the ordinary live profile; check
+        ``active_cold_build_engaged`` to see which happened.
+        """
+        return cls(archive_root, initialize=True, read_only=False, active_cold_build=True)
 
     @classmethod
     def open_source_tier_acquisition(cls, archive_root: Path) -> ArchiveStore:

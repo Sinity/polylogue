@@ -8,9 +8,9 @@ import os
 import sqlite3
 import time
 import zipfile
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from concurrent.futures import Future
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -71,6 +71,7 @@ from polylogue.core.stage_admission import admit_stage_write
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
 from polylogue.logging import WARNING, emit, get_logger
+from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
     IngestAttemptDisposition,
@@ -460,6 +461,24 @@ def _record_zip_container_coordinate(
         addressing_mode=record.addressing_mode,
         content_identity=record.content_identity,
     )
+
+
+def _fresh_build_admits(sessions: Iterable[Any], written: set[str] | None) -> bool:
+    """Whether fresh mode is still valid for the sessions about to be written.
+
+    Fresh mode asserts the session id is absent from the generation, so a page
+    that carries a second revision of a logical key it already wrote this pass
+    must fall back to the ordinary compare/replace path for that write rather
+    than tripping the assertion (polylogue-6xcqj / bp12n.9). ``written`` is the
+    live ``fresh_build_batch`` the writer itself appends to.
+    """
+    if written is None:
+        return False
+    for session in sessions:
+        session_id = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
+        if session_id in written:
+            return False
+    return True
 
 
 def _shard_prepared_by_raw_id(
@@ -3220,8 +3239,36 @@ class LiveBatchProcessor:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         result = _ArchiveFullWriteResult()
         pass_clock_started = pass_started if pass_started is not None else time.monotonic()
-        with _open_archive_for_live_write(archive_root) as archive:
+        with _open_archive_for_live_write(archive_root, cold_build=True) as archive:
             source_only = _source_tier_acquisition_required()
+            # polylogue-6xcqj: one materialization route. The cold-build shape
+            # is not a separate offline orchestration -- it is what this same
+            # dispatcher pass takes while the index generation is still empty.
+            # The store proved emptiness at open under the writer lease; the
+            # policy below turns that one fact into the shape, exactly as the
+            # offline replay does from its own destination ownership.
+            cold_build_engaged = bool(getattr(archive, "active_cold_build_engaged", False))
+            batch_shape = select_cold_build_shape(
+                destination=WriteDestination(
+                    tier="index",
+                    active_rebuildable_generation=cold_build_engaged,
+                ),
+                archive_empty=cold_build_engaged,
+            )
+            # A per-pass ledger, not a durable one: fresh mode refuses a second
+            # write of a session id, so a page carrying two revisions of one
+            # logical key must take the ordinary compare/replace path for the
+            # second. ``None`` disables fresh mode entirely.
+            fresh_build_batch: set[str] | None = set() if batch_shape.fresh_build else None
+            if cold_build_engaged:
+                emit(
+                    "live.ingest.cold_build_shape_engaged",
+                    outcome="ok",
+                    reason="index generation is empty",
+                    shape=batch_shape.reason,
+                    fresh_build=batch_shape.fresh_build,
+                    files=len(records),
+                )
             for record_index, record in enumerate(records):
                 # polylogue-11cg9: a single logical session write cannot be
                 # split mid-transaction (it must remain atomic), so the
@@ -3720,6 +3767,8 @@ class LiveBatchProcessor:
                                 # browser captures strands ordinary
                                 # bundle→single transitions in quarantine.
                                 allow_current_complete_raw=True,
+                                shard_paths_by_raw_id=shard_paths_by_raw_id,
+                                fresh_build_batch=fresh_build_batch,
                             )
                         else:
                             archive.bind_raw_revision(
@@ -3740,6 +3789,7 @@ class LiveBatchProcessor:
                                     current_raw_id=source_raw_id,
                                     current_session=session,
                                 )
+                                replay_fresh = _fresh_build_admits(parsed_by_raw_id.values(), fresh_build_batch)
                                 with archive.attached_session_shard(
                                     (shard_paths_by_raw_id or {}).get(source_raw_id)
                                 ) as shard_bindings:
@@ -3750,6 +3800,8 @@ class LiveBatchProcessor:
                                         stage_timings_s=record_timings,
                                         stage_timing_prefix="full",
                                         defer_fts=True,
+                                        fresh_build=replay_fresh,
+                                        fresh_build_batch=fresh_build_batch if replay_fresh else None,
                                         prepared_by_raw_id=_shard_prepared_by_raw_id(
                                             source_raw_id, parsed_by_raw_id, shard_bindings
                                         ),
@@ -3850,6 +3902,8 @@ class LiveBatchProcessor:
                                     stage_timings_s=record_timings,
                                     allow_current_complete_raw=True,
                                     extra_member_raw_ids=retired_siblings,
+                                    shard_paths_by_raw_id=shard_paths_by_raw_id,
+                                    fresh_build_batch=fresh_build_batch,
                                 )
                     else:
                         archive.replace_raw_membership_census(
@@ -3872,6 +3926,8 @@ class LiveBatchProcessor:
                             # This raw passed artifact taxonomy and produced a complete
                             # multi-session census; admit only this caller-owned candidate.
                             allow_current_complete_raw=True,
+                            shard_paths_by_raw_id=shard_paths_by_raw_id,
+                            fresh_build_batch=fresh_build_batch,
                         )
                     if raw_authority_complete:
                         result.raw_ids[record.raw_id] = record_raw_id
@@ -3986,6 +4042,21 @@ class LiveBatchProcessor:
             # is why a freshly ingested 50k-message session searched as empty.
             if result.session_ids:
                 repair_message_fts_index_sync(archive._conn, list(dict.fromkeys(result.session_ids)))
+            if cold_build_engaged:
+                # The cold-build shape is licensed per pass, so it is also
+                # surrendered per pass: verify the constraint the build ran
+                # without (foreign_keys=OFF), restore live durability and
+                # truncate the WAL the raised autocheckpoint let grow. The
+                # next pass re-selects the shape from generation state -- by
+                # then this generation is no longer empty, so the ordinary
+                # live shape is what it gets, which is the transition back.
+                archive.finish_active_cold_build()
+                emit(
+                    "live.ingest.cold_build_shape_released",
+                    outcome="ok",
+                    reason="pass complete; live durability restored",
+                    sessions=len(result.session_ids),
+                )
         # The loop checks before each later record, but a one-record pass has
         # no such boundary, so the final record is checked here. This
         # checkpoint sits AFTER the archive commit: raising would produce a
@@ -4025,6 +4096,35 @@ class LiveBatchProcessor:
             parsed_by_raw_id[raw_id] = sessions[0]
         return parsed_by_raw_id
 
+    @contextmanager
+    def _attached_member_shards(
+        self,
+        archive: Any,
+        member_sessions: Mapping[str, Any],
+        shard_paths_by_raw_id: Mapping[str, Path] | None,
+    ) -> Iterator[dict[str, PreparedRows] | None]:
+        """Mount every member raw's parse shard for one membership write.
+
+        One shard per member raw, each re-keyed from the shard's session
+        identity to the raw identity the writer looks rows up by. A raw with
+        no shard simply contributes nothing, and an empty mapping becomes
+        ``None`` so the writer takes its exact unmodified inline path.
+        """
+        if not shard_paths_by_raw_id:
+            yield None
+            return
+        prepared: dict[str, PreparedRows] = {}
+        with ExitStack() as stack:
+            for member_raw_id in member_sessions:
+                shard_path = shard_paths_by_raw_id.get(member_raw_id)
+                if shard_path is None:
+                    continue
+                bindings = stack.enter_context(archive.attached_session_shard(shard_path))
+                binding = _shard_prepared_by_raw_id(member_raw_id, dict(member_sessions), bindings)
+                if binding is not None:
+                    prepared.update(cast(Any, binding))
+            yield prepared or None
+
     def _apply_membership_sessions(
         self,
         archive: Any,
@@ -4035,6 +4135,8 @@ class LiveBatchProcessor:
         stage_timings_s: dict[str, float] | None = None,
         allow_current_complete_raw: bool = False,
         extra_member_raw_ids: tuple[str, ...] = (),
+        shard_paths_by_raw_id: Mapping[str, Path] | None = None,
+        fresh_build_batch: set[str] | None = None,
     ) -> tuple[list[str], int, int, bool]:
         """Apply membership-governed classification for one logical identity.
 
@@ -4049,6 +4151,15 @@ class LiveBatchProcessor:
         inclusion here is what lets a later-discovered raw be weighed by the
         real content-prefix classifier against siblings the 52l2 guard is
         aware of instead of being evaluated alone.
+
+        ``shard_paths_by_raw_id`` (polylogue-6xcqj) carries the parse worker's
+        sealed row shards into this branch. They used to be consumed only by
+        the ``apply_raw_revision_replay`` branch, so every session that went
+        through membership governance -- which is the ordinary path for any
+        identity with more than one observation -- discarded the shard its
+        parse worker had already built and rebuilt the rows inline on the
+        writer thread. A missing or refused shard still falls back to the
+        inline build, so this can only remove work, never change the write.
         """
         session_ids: list[str] = []
         session_count = 0
@@ -4158,16 +4269,21 @@ class LiveBatchProcessor:
                     )
                 )
             classification = classify_membership_revisions(revisions, existing_accepted_raw_id=accepted_head_raw_id)
-            membership_session_id = archive.apply_raw_membership_classification(
-                logical_source_key,
-                classification,
-                member_sessions,
-                projections,
-                acquired_at_ms=acquired_at_ms,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix="full",
-                defer_fts=True,
-            )
+            member_fresh = _fresh_build_admits(member_sessions.values(), fresh_build_batch)
+            with self._attached_member_shards(archive, member_sessions, shard_paths_by_raw_id) as prepared_by_raw_id:
+                membership_session_id = archive.apply_raw_membership_classification(
+                    logical_source_key,
+                    classification,
+                    member_sessions,
+                    projections,
+                    acquired_at_ms=acquired_at_ms,
+                    stage_timings_s=stage_timings_s,
+                    stage_timing_prefix="full",
+                    defer_fts=True,
+                    fresh_build=member_fresh,
+                    fresh_build_batch=fresh_build_batch if member_fresh else None,
+                    prepared_by_raw_id=prepared_by_raw_id,
+                )
             if membership_session_id is not None:
                 session_ids.append(membership_session_id)
                 session_count += 1

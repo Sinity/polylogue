@@ -12,6 +12,7 @@ from polylogue.pipeline.batch_policy import (
     IngestMode,
     WriteDestination,
     select_batch_shape,
+    select_cold_build_shape,
 )
 
 _OWNED_INDEX = WriteDestination(tier="index", owned_rebuildable_generation=True)
@@ -106,3 +107,47 @@ def test_archive_wide_derivations_require_an_admitted_input_boundary() -> None:
 def test_a_nonsense_queue_measurement_is_refused(depth: int, age: float) -> None:
     with pytest.raises(ValueError):
         select_batch_shape(queue_depth=depth, queue_age_s=age, destination=_LIVE_INDEX)
+
+
+_ACTIVE_INDEX = WriteDestination(tier="index", active_rebuildable_generation=True)
+
+
+def test_an_empty_active_generation_takes_fresh_mode_but_never_drops_reader_indexes() -> None:
+    """polylogue-6xcqj: the dispatcher's own cold shape.
+
+    The active generation is rebuildable, so the durability levers apply; it
+    is also concurrently readable, and ``schema_manifest`` projects
+    ``sqlite_master`` including indexes, so a reader opening a generation with
+    the deferred reader indexes dropped raises a schema mismatch. Fresh mode
+    yes, index deferral no.
+
+    Anti-vacuity: letting ``admits_reader_visible_schema_changes`` return True
+    for an active generation (or folding it back into ``admits_bulk_pragmas``)
+    makes the ``defer_secondary_indexes`` assertion red.
+    """
+    shape = select_cold_build_shape(destination=_ACTIVE_INDEX, archive_empty=True)
+    assert shape.bulk_pragmas is True
+    assert shape.fresh_build is True
+    assert shape.defer_secondary_indexes is False
+
+
+def test_a_non_empty_active_generation_takes_no_fresh_mode() -> None:
+    """Emptiness is what licenses fresh mode; ownership alone never does."""
+    shape = select_cold_build_shape(destination=_ACTIVE_INDEX, archive_empty=False)
+    assert shape.fresh_build is False
+    assert shape.defer_secondary_indexes is False
+
+
+def test_a_live_destination_admits_no_bulk_shape_at_all() -> None:
+    """Neither ownership flag set is an ordinary live write, empty or not."""
+    shape = select_cold_build_shape(destination=_LIVE_INDEX, archive_empty=True)
+    assert shape.bulk_pragmas is False
+    assert shape.fresh_build is False
+    assert shape.defer_secondary_indexes is False
+
+
+def test_an_owned_generation_keeps_both_levers() -> None:
+    """The offline replay's shape is unchanged by the active-generation arm."""
+    shape = select_cold_build_shape(destination=_OWNED_INDEX, archive_empty=True)
+    assert shape.fresh_build is True
+    assert shape.defer_secondary_indexes is True
