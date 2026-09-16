@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Literal, TypeAlias
 
+from polylogue.archive.query.discovery import query_discovery_example, query_discovery_examples
 from polylogue.core.enums import Origin
 from polylogue.declarations import JSONValue
 from polylogue.mcp.declarations import (
@@ -129,25 +130,51 @@ class ToolContract:
 
 @dataclass(frozen=True, slots=True)
 class CheckedQuery:
-    """A query expression and the production parser surface that owns it."""
+    """One query expression projected from a declared discovery example.
 
+    Never written by hand: ``declaration_id`` names a row in
+    :mod:`polylogue.archive.query.discovery`, the declaration site that the
+    production parser gates. The manual therefore cannot teach an expression
+    that no declaration owns.
+    """
+
+    declaration_id: str
     expression: str
     surface: QuerySurface
     purpose: str
-    source_test: str
+
+
+def checked_query(declaration_id: str) -> CheckedQuery:
+    """Project one declared discovery example into the manual model."""
+
+    example = query_discovery_example(declaration_id)
+    return CheckedQuery(
+        declaration_id=example.key,
+        expression=example.expression,
+        surface="session" if example.parser == "session" else "terminal",
+        purpose=example.answers,
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class RecipeStep:
-    """One executable continuity step."""
+    """One executable continuity step.
+
+    A step that runs or explains a query names the declaration it executes
+    (``example_key``) instead of carrying a copied expression; the expression
+    is resolved from the discovery corpus when the call is compiled.
+    """
 
     tool: str
     arguments: Arguments
     purpose: str
     capture: str | None = None
+    example_key: str | None = None
 
     def arguments_dict(self) -> dict[str, JSONValue]:
-        return dict(self.arguments)
+        if self.example_key is None:
+            return dict(self.arguments)
+        return {"expression": query_discovery_example(self.example_key).expression, **dict(self.arguments)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,9 +186,22 @@ class Recipe:
     intent: str
     family: str
     steps: tuple[RecipeStep, ...]
-    queries: tuple[CheckedQuery, ...]
     resources: tuple[str, ...] = ()
     prompts: tuple[str, ...] = ()
+
+    @property
+    def query_declarations(self) -> tuple[str, ...]:
+        """Declaration ids this recipe executes, in step order, deduplicated."""
+
+        keys: list[str] = []
+        for step in self.steps:
+            if step.example_key is not None and step.example_key not in keys:
+                keys.append(step.example_key)
+        return tuple(keys)
+
+    @property
+    def queries(self) -> tuple[CheckedQuery, ...]:
+        return tuple(checked_query(key) for key in self.query_declarations)
 
 
 @dataclass(frozen=True, slots=True)
@@ -661,80 +701,6 @@ CAPABILITY_FAMILIES: tuple[CapabilityFamily, ...] = (
     CapabilityFamily("mutation", "Reversible overlays, judgments, saved runs, and administration", "write", "write"),
 )
 
-# Each expression is drawn from or is a direct value-preserving specialization
-# of the production parser tests named in ``source_test``.
-QUERY_EXAMPLES: tuple[CheckedQuery, ...] = (
-    CheckedQuery(
-        'repo:polylogue since:7d "json envelope"',
-        "session",
-        "Compact field, relative-date, and quoted-text clauses.",
-        "tests/unit/cli/test_query_expression.py::test_multiple_fields",
-    ),
-    CheckedQuery(
-        "sessions where (repo:polylogue OR origin:chatgpt-export) AND NOT tag:stale",
-        "session",
-        "Explicit Boolean session predicate.",
-        "polylogue/archive/query/expression.py module executable-grammar examples",
-    ),
-    CheckedQuery(
-        "messages where role:assistant AND text:timeout",
-        "terminal",
-        "Message-row lookup.",
-        "polylogue/archive/query/expression.py module executable-grammar examples",
-    ),
-    CheckedQuery(
-        "actions where action:file_edit AND path:polylogue/archive",
-        "terminal",
-        "Action-row lookup.",
-        "polylogue/archive/query/expression.py module executable-grammar examples",
-    ),
-    CheckedQuery(
-        "observed-events where kind:tool_finished AND handler:shell | group by status | count",
-        "terminal",
-        "Terminal aggregate with declared group field.",
-        "tests/unit/cli/test_query_expression.py::test_terminal_observed_event_tool_finished_aggregate_reads_blocks_without_materialization",
-    ),
-    CheckedQuery(
-        "files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
-        "terminal",
-        "File-touch history with deterministic ordering and limit.",
-        "tests/unit/cli/test_query_expression.py file-source coverage",
-    ),
-    CheckedQuery(
-        'sessions where semantic:"confirmation gate binding"',
-        "session",
-        "Semantic prior-art retrieval.",
-        "tests/unit/cli/test_query_expression.py::test_boolean_semantic_predicate_lowers",
-    ),
-    CheckedQuery(
-        "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
-        "session",
-        "Provider cohort for a cost audit.",
-        "tests/unit/cli/test_query_expression.py origin alternatives and readable date comparison coverage",
-    ),
-    CheckedQuery(
-        "sessions where repo:polylogue AND NOT tag:complete",
-        "session",
-        "Likely unfinished work for session resumption.",
-        "tests/unit/cli/test_query_expression.py Boolean predicate coverage",
-    ),
-    CheckedQuery(
-        "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
-        "terminal",
-        "Recent failed effects for resumption or forensics.",
-        "tests/unit/cli/test_query_expression.py terminal session-field scoping coverage",
-    ),
-)
-QUERY_EXAMPLE_BY_EXPRESSION = {item.expression: item for item in QUERY_EXAMPLES}
-
-
-def _checked(expression: str) -> CheckedQuery:
-    try:
-        return QUERY_EXAMPLE_BY_EXPRESSION[expression]
-    except KeyError as exc:
-        raise RuntimeError(f"recipe query is not in the checked parser catalog: {expression!r}") from exc
-
-
 RECIPES: tuple[Recipe, ...] = (
     Recipe(
         id="resume-session",
@@ -749,23 +715,17 @@ RECIPES: tuple[Recipe, ...] = (
             ),
             RecipeStep(
                 "query",
-                _args(
-                    expression="sessions where repo:polylogue AND NOT tag:complete",
-                    limit=20,
-                    projection="session-summary",
-                ),
+                _args(limit=20, projection="session-summary"),
                 "Find likely unfinished sessions.",
                 capture="candidate_result_ref",
+                example_key="session-negated-tag",
             ),
             RecipeStep(
                 "query",
-                _args(
-                    expression="actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
-                    limit=20,
-                    projection="action-evidence",
-                ),
+                _args(limit=20, projection="action-evidence"),
                 "Find recent failed effects that may invalidate an optimistic handoff.",
                 capture="failure_result_ref",
+                example_key="actions-unacknowledged-failures",
             ),
             RecipeStep(
                 "read",
@@ -778,10 +738,6 @@ RECIPES: tuple[Recipe, ...] = (
                 "Compile a bounded resume packet from the selected result set and retain its receipt.",
             ),
         ),
-        queries=(
-            _checked("sessions where repo:polylogue AND NOT tag:complete"),
-            _checked("actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20"),
-        ),
         resources=("polylogue://session/{id}", "polylogue://result-set/{id}"),
         prompts=("resume_context",),
     ),
@@ -793,31 +749,23 @@ RECIPES: tuple[Recipe, ...] = (
         steps=(
             RecipeStep(
                 "explain",
-                _args(
-                    subject="query",
-                    expression="observed-events where kind:tool_finished AND handler:shell | group by status | count",
-                ),
+                _args(subject="query"),
                 "Confirm grammar, group field, selected unit, and aggregate semantics before execution.",
+                example_key="aggregate-events-by-status",
             ),
             RecipeStep(
                 "query",
-                _args(
-                    expression="observed-events where kind:tool_finished AND handler:shell | group by status | count",
-                    limit=20,
-                    projection="aggregate-with-evidence",
-                ),
-                "Measure failed versus successful shell events.",
+                _args(limit=20, projection="aggregate-with-evidence"),
+                "Measure failed versus successful tool-finished events.",
                 capture="aggregate_result_ref",
+                example_key="aggregate-events-by-status",
             ),
             RecipeStep(
                 "query",
-                _args(
-                    expression="actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
-                    limit=20,
-                    projection="action-evidence",
-                ),
+                _args(limit=20, projection="action-evidence"),
                 "Locate exact failed action refs.",
                 capture="failure_result_ref",
+                example_key="actions-unacknowledged-failures",
             ),
             RecipeStep(
                 "get",
@@ -830,10 +778,6 @@ RECIPES: tuple[Recipe, ...] = (
                 "Read the surrounding chronology and any recovery verification.",
             ),
         ),
-        queries=(
-            _checked("observed-events where kind:tool_finished AND handler:shell | group by status | count"),
-            _checked("actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20"),
-        ),
         resources=("polylogue://block/{id}", "polylogue://session/{id}"),
         prompts=("postmortem_last", "unacknowledged_failures"),
     ),
@@ -845,28 +789,23 @@ RECIPES: tuple[Recipe, ...] = (
         steps=(
             RecipeStep(
                 "explain",
-                _args(subject="query", expression='sessions where semantic:"confirmation gate binding"'),
+                _args(subject="query"),
                 "Verify semantic lowering and any readiness dependency.",
+                example_key="ranked-boolean-semantic",
             ),
             RecipeStep(
                 "query",
-                _args(
-                    expression='sessions where semantic:"confirmation gate binding"',
-                    limit=20,
-                    projection="session-summary",
-                ),
+                _args(limit=20, projection="session-summary"),
                 "Find conceptually related sessions even when vocabulary differs.",
                 capture="semantic_result_ref",
+                example_key="ranked-boolean-semantic",
             ),
             RecipeStep(
                 "query",
-                _args(
-                    expression="files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
-                    limit=20,
-                    projection="file-evidence",
-                ),
+                _args(limit=20, projection="file-evidence"),
                 "Find concrete edits under the relevant subsystem.",
                 capture="file_result_ref",
+                example_key="files-repository-path",
             ),
             RecipeStep(
                 "read",
@@ -878,10 +817,6 @@ RECIPES: tuple[Recipe, ...] = (
                 _args(ref="message:codex-session:demo-lineage-fork:fork-a3", projection="evidence"),
                 "Resolve the exact message containing the rationale selected from the result set.",
             ),
-        ),
-        queries=(
-            _checked('sessions where semantic:"confirmation gate binding"'),
-            _checked("files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20"),
         ),
         resources=("polylogue://query/{id}", "polylogue://result-set/{id}", "polylogue://message/{id}"),
         prompts=("decisions_about", "sessions_touching_file"),
@@ -899,13 +834,10 @@ RECIPES: tuple[Recipe, ...] = (
             ),
             RecipeStep(
                 "query",
-                _args(
-                    expression="sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
-                    limit=50,
-                    projection="cost-rollup",
-                ),
+                _args(limit=50, projection="cost-rollup"),
                 "Compute the requested cohort using declared cost semantics.",
                 capture="cost_result_ref",
+                example_key="sample-origin-cohort-window",
             ),
             RecipeStep(
                 "explain",
@@ -923,11 +855,27 @@ RECIPES: tuple[Recipe, ...] = (
                 "Resolve a representative source record when a counter or estimate is disputed.",
             ),
         ),
-        queries=(_checked("sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01"),),
         resources=("polylogue://result-set/{id}", "polylogue://session/{id}"),
         prompts=("cost_of",),
     ),
 )
+
+
+def query_examples() -> tuple[CheckedQuery, ...]:
+    """Every query the manual teaches, projected from declared discovery rows.
+
+    The catalog is the declared featured set plus the exact rows the continuity
+    recipes execute, so the manual cannot teach an expression that the recipes
+    do not run and cannot run one the catalog does not teach.
+    """
+
+    keys = [example.key for example in query_discovery_examples(featured=True)]
+    for recipe in RECIPES:
+        keys.extend(key for key in recipe.query_declarations if key not in keys)
+    return tuple(checked_query(key) for key in keys)
+
+
+QUERY_EXAMPLES: tuple[CheckedQuery, ...] = query_examples()
 
 
 def origin_meanings() -> tuple[OriginMeaning, ...]:
@@ -1016,9 +964,11 @@ def recipe_payload() -> dict[str, object]:
                 "arguments": step.arguments_dict(),
                 "purpose": step.purpose,
                 "capture": step.capture,
+                "example_key": step.example_key,
             }
             for step in recipe.steps
         ]
+        row["query_declarations"] = list(recipe.query_declarations)
         row["queries"] = [asdict(query) for query in recipe.queries]
         recipes.append(row)
     return {"schema_version": 1, "content_version": ASSET_VERSION, "recipes": recipes}
@@ -1070,6 +1020,8 @@ __all__ = [
     "origin_meanings",
     "PRIVILEGED_TOOLS",
     "QUERY_EXAMPLES",
+    "checked_query",
+    "query_examples",
     "RECIPES",
     "TARGET_SCHEMA_STATUS",
     "TOOL_CONTRACTS",

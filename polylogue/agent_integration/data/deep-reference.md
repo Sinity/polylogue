@@ -484,46 +484,98 @@ The token decodes to offset 20 and `result:0123456789abcdef01234567`; the verifi
 
 ## Parser catalog
 
-- `repo:polylogue since:7d "json envelope"`
+- `repo:example-repo`
   - surface: `session`
-  - purpose: Compact field, relative-date, and quoted-text clauses.
-  - source evidence: `tests/unit/cli/test_query_expression.py::test_multiple_fields`
-- `sessions where (repo:polylogue OR origin:chatgpt-export) AND NOT tag:stale`
+  - purpose: Finds sessions associated with one repository.
+  - declaration: `session-repository` in `polylogue/archive/query/discovery.py`
+- `sessions where (repo:example-repo OR repo:example-library) AND NOT tag:stale`
   - surface: `session`
-  - purpose: Explicit Boolean session predicate.
-  - source evidence: `polylogue/archive/query/expression.py module executable-grammar examples`
+  - purpose: Finds non-stale sessions from either of two repositories.
+  - declaration: `session-boolean-repositories` in `polylogue/archive/query/discovery.py`
+- `sessions where exists message(role:assistant AND text:timeout)`
+  - surface: `session`
+  - purpose: Finds sessions with an assistant message mentioning a timeout.
+  - declaration: `session-exists-message` in `polylogue/archive/query/discovery.py`
+- `sessions where seq(action:file_edit -> action:shell)`
+  - surface: `session`
+  - purpose: Finds sessions where a file edit precedes a shell action.
+  - declaration: `session-sequence` in `polylogue/archive/query/discovery.py`
+- `near:"semantic search"`
+  - surface: `session`
+  - purpose: Ranks the sessions most relevant to a semantic-search phrase.
+  - declaration: `ranked-semantic-text` in `polylogue/archive/query/discovery.py`
+- `repo:example-repo since:30d`
+  - surface: `session`
+  - purpose: Samples recent sessions from one repository.
+  - declaration: `sample-repository-window` in `polylogue/archive/query/discovery.py`
 - `messages where role:assistant AND text:timeout`
   - surface: `terminal`
-  - purpose: Message-row lookup.
-  - source evidence: `polylogue/archive/query/expression.py module executable-grammar examples`
-- `actions where action:file_edit AND path:polylogue/archive`
+  - purpose: Returns assistant messages mentioning a timeout.
+  - declaration: `messages-assistant-timeout` in `polylogue/archive/query/discovery.py`
+- `actions where session.repo:example-repo AND action:file_edit AND path:src/query`
   - surface: `terminal`
-  - purpose: Action-row lookup.
-  - source evidence: `polylogue/archive/query/expression.py module executable-grammar examples`
-- `observed-events where kind:tool_finished AND handler:shell | group by status | count`
+  - purpose: Returns file-edit actions under the query source path for one repository.
+  - declaration: `actions-file-edits` in `polylogue/archive/query/discovery.py`
+- `actions where tool:shell AND command:pytest`
   - surface: `terminal`
-  - purpose: Terminal aggregate with declared group field.
-  - source evidence: `tests/unit/cli/test_query_expression.py::test_terminal_observed_event_tool_finished_aggregate_reads_blocks_without_materialization`
-- `files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20`
+  - purpose: Returns shell actions whose command mentions pytest.
+  - declaration: `actions-shell-pytest` in `polylogue/archive/query/discovery.py`
+- `actions where session.repo:example-repo AND session.since:7d AND output:failed`
   - surface: `terminal`
-  - purpose: File-touch history with deterministic ordering and limit.
-  - source evidence: `tests/unit/cli/test_query_expression.py file-source coverage`
-- `sessions where semantic:"confirmation gate binding"`
+  - purpose: Returns recent failed action evidence for one repository.
+  - declaration: `actions-unacknowledged-failures` in `polylogue/archive/query/discovery.py`
+- `files where path:src/query/parser.py`
+  - surface: `terminal`
+  - purpose: Returns file evidence for the query parser path.
+  - declaration: `files-query-parser` in `polylogue/archive/query/discovery.py`
+- `files where session.repo:example-repo AND path:src/mcp/server.py`
+  - surface: `terminal`
+  - purpose: Returns file evidence for one path within one repository.
+  - declaration: `files-repository-path` in `polylogue/archive/query/discovery.py`
+- `assertions where kind:decision AND text:"schema migration"`
+  - surface: `terminal`
+  - purpose: Returns decision assertions about a named topic.
+  - declaration: `assertions-decisions-about-topic` in `polylogue/archive/query/discovery.py`
+- `sessions where repo:example-repo AND origin:antigravity-session | messages where role:assistant`
+  - surface: `terminal`
+  - purpose: Returns assistant messages scoped to repository sessions from one origin.
+  - declaration: `scoped-repository-messages` in `polylogue/archive/query/discovery.py`
+- `messages where text:timeout | group by role | count`
+  - surface: `terminal`
+  - purpose: Counts timeout-matching messages by role.
+  - declaration: `aggregate-messages-by-role` in `polylogue/archive/query/discovery.py`
+- `actions where is_error:true | group by tool | count`
+  - surface: `terminal`
+  - purpose: Counts error-marked actions by tool.
+  - declaration: `aggregate-errors-by-tool` in `polylogue/archive/query/discovery.py`
+- `repo:example-repo with messages(message_id,role,text)`
   - surface: `session`
-  - purpose: Semantic prior-art retrieval.
-  - source evidence: `tests/unit/cli/test_query_expression.py::test_boolean_semantic_predicate_lowers`
-- `sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01`
+  - purpose: Builds bounded session orientation with selected message columns.
+  - declaration: `context-session-messages` in `polylogue/archive/query/discovery.py`
+- `sessions where title:"query compiler" with messages(message_id,role), actions(tool_name,semantic_type), files(path)`
   - surface: `session`
-  - purpose: Provider cohort for a cost audit.
-  - source evidence: `tests/unit/cli/test_query_expression.py origin alternatives and readable date comparison coverage`
-- `sessions where repo:polylogue AND NOT tag:complete`
+  - purpose: Builds bounded mixed evidence for sessions whose title mentions the query compiler.
+  - declaration: `context-session-mixed` in `polylogue/archive/query/discovery.py`
+- `lineage:id:example-origin:session-child`
   - surface: `session`
-  - purpose: Likely unfinished work for session resumption.
-  - source evidence: `tests/unit/cli/test_query_expression.py Boolean predicate coverage`
-- `actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20`
+  - purpose: Seeds a recursive lineage walk from one session.
+  - declaration: `recursive-lineage-seed` in `polylogue/archive/query/discovery.py`
+- `repo:example-repo AND NOT tag:stale`
+  - surface: `session`
+  - purpose: Finds repository sessions that are not tagged stale.
+  - declaration: `session-negated-tag` in `polylogue/archive/query/discovery.py`
+- `observed-events where kind:tool_finished | group by status | count`
   - surface: `terminal`
-  - purpose: Recent failed effects for resumption or forensics.
-  - source evidence: `tests/unit/cli/test_query_expression.py terminal session-field scoping coverage`
+  - purpose: Counts tool-finished observed events by status.
+  - declaration: `aggregate-events-by-status` in `polylogue/archive/query/discovery.py`
+- `sessions where semantic:"query compiler failure"`
+  - surface: `session`
+  - purpose: Ranks sessions relevant to a query-compiler failure.
+  - declaration: `ranked-boolean-semantic` in `polylogue/archive/query/discovery.py`
+- `sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01`
+  - surface: `session`
+  - purpose: Selects a bounded origin cohort from a start date, the shape a cost audit measures.
+  - declaration: `sample-origin-cohort-window` in `polylogue/archive/query/discovery.py`
 
 ## Continuity recipes
 
@@ -553,7 +605,7 @@ Recover current work, failed effects, open loops, and a bounded next-step contex
 ```json
 {
   "arguments": {
-    "expression": "sessions where repo:polylogue AND NOT tag:complete",
+    "expression": "repo:example-repo AND NOT tag:stale",
     "limit": 20,
     "projection": "session-summary"
   },
@@ -566,7 +618,7 @@ Recover current work, failed effects, open loops, and a bounded next-step contex
 ```json
 {
   "arguments": {
-    "expression": "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
+    "expression": "actions where session.repo:example-repo AND session.since:7d AND output:failed",
     "limit": 20,
     "projection": "action-evidence"
   },
@@ -612,19 +664,19 @@ Reconstruct a failure from parser-valid row evidence, exact objects, surrounding
 ```json
 {
   "arguments": {
-    "expression": "observed-events where kind:tool_finished AND handler:shell | group by status | count",
+    "expression": "observed-events where kind:tool_finished | group by status | count",
     "subject": "query"
   },
   "name": "explain"
 }
 ```
 
-2. `query` — Measure failed versus successful shell events.
+2. `query` — Measure failed versus successful tool-finished events.
 
 ```json
 {
   "arguments": {
-    "expression": "observed-events where kind:tool_finished AND handler:shell | group by status | count",
+    "expression": "observed-events where kind:tool_finished | group by status | count",
     "limit": 20,
     "projection": "aggregate-with-evidence"
   },
@@ -637,7 +689,7 @@ Reconstruct a failure from parser-valid row evidence, exact objects, surrounding
 ```json
 {
   "arguments": {
-    "expression": "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
+    "expression": "actions where session.repo:example-repo AND session.since:7d AND output:failed",
     "limit": 20,
     "projection": "action-evidence"
   },
@@ -682,7 +734,7 @@ Combine semantic retrieval with file-touch history, then inspect exact prior rat
 ```json
 {
   "arguments": {
-    "expression": "sessions where semantic:\"confirmation gate binding\"",
+    "expression": "sessions where semantic:\"query compiler failure\"",
     "subject": "query"
   },
   "name": "explain"
@@ -694,7 +746,7 @@ Combine semantic retrieval with file-touch history, then inspect exact prior rat
 ```json
 {
   "arguments": {
-    "expression": "sessions where semantic:\"confirmation gate binding\"",
+    "expression": "sessions where semantic:\"query compiler failure\"",
     "limit": 20,
     "projection": "session-summary"
   },
@@ -707,7 +759,7 @@ Combine semantic retrieval with file-touch history, then inspect exact prior rat
 ```json
 {
   "arguments": {
-    "expression": "files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
+    "expression": "files where session.repo:example-repo AND path:src/mcp/server.py",
     "limit": 20,
     "projection": "file-evidence"
   },
@@ -768,7 +820,7 @@ Measure the declared cohort without mixing exact counters, estimates, missing co
 ```json
 {
   "arguments": {
-    "expression": "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
+    "expression": "sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01",
     "limit": 50,
     "projection": "cost-rollup"
   },

@@ -59,6 +59,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         main=render_agent_manual.main,
         inputs=(
             "polylogue/agent_integration/spec.py",
+            "polylogue/archive/query/discovery.py",
             "polylogue/archive/query/transaction.py",
             "polylogue/core/enums.py",
             "polylogue/mcp/declarations/",

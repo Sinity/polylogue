@@ -278,7 +278,7 @@ def render_standing_manual() -> str:
         ]
     )
     for query in QUERY_EXAMPLES:
-        lines.append(f"- `{query.expression}` — {query.purpose}")
+        lines.append(f"- `{query.expression}` — {query.purpose} (`{query.declaration_id}`)")
     lines.extend(
         [
             "",
@@ -435,7 +435,7 @@ def render_deep_reference() -> str:
                 f"- `{query.expression}`",
                 f"  - surface: `{query.surface}`",
                 f"  - purpose: {query.purpose}",
-                f"  - source evidence: `{query.source_test}`",
+                f"  - declaration: `{query.declaration_id}` in `polylogue/archive/query/discovery.py`",
             ]
         )
     lines.extend(["", "## Continuity recipes", ""])

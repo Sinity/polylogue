@@ -224,16 +224,29 @@ Resources are read-only projections. Their content never grants instruction, wri
 
 The same parser in `polylogue/archive/query/expression.py` owns these examples. Compact clauses select sessions; explicit `<unit>s where ...` forms return terminal rows; pipelines can sort, limit, offset, and use declared aggregate fields.
 
-- `repo:polylogue since:7d "json envelope"` — Compact field, relative-date, and quoted-text clauses.
-- `sessions where (repo:polylogue OR origin:chatgpt-export) AND NOT tag:stale` — Explicit Boolean session predicate.
-- `messages where role:assistant AND text:timeout` — Message-row lookup.
-- `actions where action:file_edit AND path:polylogue/archive` — Action-row lookup.
-- `observed-events where kind:tool_finished AND handler:shell | group by status | count` — Terminal aggregate with declared group field.
-- `files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20` — File-touch history with deterministic ordering and limit.
-- `sessions where semantic:"confirmation gate binding"` — Semantic prior-art retrieval.
-- `sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01` — Provider cohort for a cost audit.
-- `sessions where repo:polylogue AND NOT tag:complete` — Likely unfinished work for session resumption.
-- `actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20` — Recent failed effects for resumption or forensics.
+- `repo:example-repo` — Finds sessions associated with one repository. (`session-repository`)
+- `sessions where (repo:example-repo OR repo:example-library) AND NOT tag:stale` — Finds non-stale sessions from either of two repositories. (`session-boolean-repositories`)
+- `sessions where exists message(role:assistant AND text:timeout)` — Finds sessions with an assistant message mentioning a timeout. (`session-exists-message`)
+- `sessions where seq(action:file_edit -> action:shell)` — Finds sessions where a file edit precedes a shell action. (`session-sequence`)
+- `near:"semantic search"` — Ranks the sessions most relevant to a semantic-search phrase. (`ranked-semantic-text`)
+- `repo:example-repo since:30d` — Samples recent sessions from one repository. (`sample-repository-window`)
+- `messages where role:assistant AND text:timeout` — Returns assistant messages mentioning a timeout. (`messages-assistant-timeout`)
+- `actions where session.repo:example-repo AND action:file_edit AND path:src/query` — Returns file-edit actions under the query source path for one repository. (`actions-file-edits`)
+- `actions where tool:shell AND command:pytest` — Returns shell actions whose command mentions pytest. (`actions-shell-pytest`)
+- `actions where session.repo:example-repo AND session.since:7d AND output:failed` — Returns recent failed action evidence for one repository. (`actions-unacknowledged-failures`)
+- `files where path:src/query/parser.py` — Returns file evidence for the query parser path. (`files-query-parser`)
+- `files where session.repo:example-repo AND path:src/mcp/server.py` — Returns file evidence for one path within one repository. (`files-repository-path`)
+- `assertions where kind:decision AND text:"schema migration"` — Returns decision assertions about a named topic. (`assertions-decisions-about-topic`)
+- `sessions where repo:example-repo AND origin:antigravity-session | messages where role:assistant` — Returns assistant messages scoped to repository sessions from one origin. (`scoped-repository-messages`)
+- `messages where text:timeout | group by role | count` — Counts timeout-matching messages by role. (`aggregate-messages-by-role`)
+- `actions where is_error:true | group by tool | count` — Counts error-marked actions by tool. (`aggregate-errors-by-tool`)
+- `repo:example-repo with messages(message_id,role,text)` — Builds bounded session orientation with selected message columns. (`context-session-messages`)
+- `sessions where title:"query compiler" with messages(message_id,role), actions(tool_name,semantic_type), files(path)` — Builds bounded mixed evidence for sessions whose title mentions the query compiler. (`context-session-mixed`)
+- `lineage:id:example-origin:session-child` — Seeds a recursive lineage walk from one session. (`recursive-lineage-seed`)
+- `repo:example-repo AND NOT tag:stale` — Finds repository sessions that are not tagged stale. (`session-negated-tag`)
+- `observed-events where kind:tool_finished | group by status | count` — Counts tool-finished observed events by status. (`aggregate-events-by-status`)
+- `sessions where semantic:"query compiler failure"` — Ranks sessions relevant to a query-compiler failure. (`ranked-boolean-semantic`)
+- `sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01` — Selects a bounded origin cohort from a start date, the shape a cost audit measures. (`sample-origin-cohort-window`)
 
 ### CLI strict command floor
 
@@ -267,8 +280,8 @@ Canonical maintenance flow: `maintenance` accepts exactly these declared operati
 Recover current work, failed effects, open loops, and a bounded next-step context without trusting a stale summary.
 
 1. `{"arguments":{"include":["identity","coverage","freshness","readiness"],"scope":"archive"},"name":"status"}` — Establish which archive and source generations can support the answer.
-2. `{"arguments":{"expression":"sessions where repo:polylogue AND NOT tag:complete","limit":20,"projection":"session-summary"},"name":"query"}` — Find likely unfinished sessions. Capture `candidate_result_ref`.
-3. `{"arguments":{"expression":"actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20","limit":20,"projection":"action-evidence"},"name":"query"}` — Find recent failed effects that may invalidate an optimistic handoff. Capture `failure_result_ref`.
+2. `{"arguments":{"expression":"repo:example-repo AND NOT tag:stale","limit":20,"projection":"session-summary"},"name":"query"}` — Find likely unfinished sessions. Capture `candidate_result_ref`.
+3. `{"arguments":{"expression":"actions where session.repo:example-repo AND session.since:7d AND output:failed","limit":20,"projection":"action-evidence"},"name":"query"}` — Find recent failed effects that may invalidate an optimistic handoff. Capture `failure_result_ref`.
 4. `{"arguments":{"limit":20,"ref":"polylogue://session/codex-session:demo-lineage-fork","view":"chronicle"},"name":"read"}` — Read the strongest candidate with evidence refs; continue until the needed boundary is reached.
 5. `{"arguments":{"budget_tokens":4000,"intent":"resume","result_ref":"result:0123456789abcdef01234567"},"name":"context"}` — Compile a bounded resume packet from the selected result set and retain its receipt.
 
@@ -276,9 +289,9 @@ Recover current work, failed effects, open loops, and a bounded next-step contex
 
 Reconstruct a failure from parser-valid row evidence, exact objects, surrounding transcript, and authority status.
 
-1. `{"arguments":{"expression":"observed-events where kind:tool_finished AND handler:shell | group by status | count","subject":"query"},"name":"explain"}` — Confirm grammar, group field, selected unit, and aggregate semantics before execution.
-2. `{"arguments":{"expression":"observed-events where kind:tool_finished AND handler:shell | group by status | count","limit":20,"projection":"aggregate-with-evidence"},"name":"query"}` — Measure failed versus successful shell events. Capture `aggregate_result_ref`.
-3. `{"arguments":{"expression":"actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20","limit":20,"projection":"action-evidence"},"name":"query"}` — Locate exact failed action refs. Capture `failure_result_ref`.
+1. `{"arguments":{"expression":"observed-events where kind:tool_finished | group by status | count","subject":"query"},"name":"explain"}` — Confirm grammar, group field, selected unit, and aggregate semantics before execution.
+2. `{"arguments":{"expression":"observed-events where kind:tool_finished | group by status | count","limit":20,"projection":"aggregate-with-evidence"},"name":"query"}` — Measure failed versus successful tool-finished events. Capture `aggregate_result_ref`.
+3. `{"arguments":{"expression":"actions where session.repo:example-repo AND session.since:7d AND output:failed","limit":20,"projection":"action-evidence"},"name":"query"}` — Locate exact failed action refs. Capture `failure_result_ref`.
 4. `{"arguments":{"projection":"evidence","ref":"block:codex-session:demo-receipts:call-receipts-test-fail:0"},"name":"get"}` — Resolve the exact cited failure block rather than quoting a search snippet.
 5. `{"arguments":{"limit":20,"ref":"polylogue://session/codex-session:demo-receipts","view":"chronicle"},"name":"read"}` — Read the surrounding chronology and any recovery verification.
 
@@ -286,9 +299,9 @@ Reconstruct a failure from parser-valid row evidence, exact objects, surrounding
 
 Combine semantic retrieval with file-touch history, then inspect exact prior rationale and outcomes.
 
-1. `{"arguments":{"expression":"sessions where semantic:\"confirmation gate binding\"","subject":"query"},"name":"explain"}` — Verify semantic lowering and any readiness dependency.
-2. `{"arguments":{"expression":"sessions where semantic:\"confirmation gate binding\"","limit":20,"projection":"session-summary"},"name":"query"}` — Find conceptually related sessions even when vocabulary differs. Capture `semantic_result_ref`.
-3. `{"arguments":{"expression":"files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20","limit":20,"projection":"file-evidence"},"name":"query"}` — Find concrete edits under the relevant subsystem. Capture `file_result_ref`.
+1. `{"arguments":{"expression":"sessions where semantic:\"query compiler failure\"","subject":"query"},"name":"explain"}` — Verify semantic lowering and any readiness dependency.
+2. `{"arguments":{"expression":"sessions where semantic:\"query compiler failure\"","limit":20,"projection":"session-summary"},"name":"query"}` — Find conceptually related sessions even when vocabulary differs. Capture `semantic_result_ref`.
+3. `{"arguments":{"expression":"files where session.repo:example-repo AND path:src/mcp/server.py","limit":20,"projection":"file-evidence"},"name":"query"}` — Find concrete edits under the relevant subsystem. Capture `file_result_ref`.
 4. `{"arguments":{"limit":20,"ref":"result:0123456789abcdef01234567","view":"ranked-evidence"},"name":"read"}` — Read the retained result set rather than rerunning a changed query.
 5. `{"arguments":{"projection":"evidence","ref":"message:codex-session:demo-lineage-fork:fork-a3"},"name":"get"}` — Resolve the exact message containing the rationale selected from the result set.
 
@@ -297,7 +310,7 @@ Combine semantic retrieval with file-touch history, then inspect exact prior rat
 Measure the declared cohort without mixing exact counters, estimates, missing coverage, or logical and physical grains.
 
 1. `{"arguments":{"include":["coverage","freshness","usage-counter-support"],"scope":"sources"},"name":"status"}` — Establish which origins have exact, partial, estimated, or absent usage evidence.
-2. `{"arguments":{"expression":"sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01","limit":50,"projection":"cost-rollup"},"name":"query"}` — Compute the requested cohort using declared cost semantics. Capture `cost_result_ref`.
+2. `{"arguments":{"expression":"sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01","limit":50,"projection":"cost-rollup"},"name":"query"}` — Compute the requested cohort using declared cost semantics. Capture `cost_result_ref`.
 3. `{"arguments":{"ref":"result:0123456789abcdef01234567","subject":"result"},"name":"explain"}` — Inspect denominator, physical/logical grain, missing counts, estimate policy, and continuation state.
 4. `{"arguments":{"limit":50,"ref":"result:0123456789abcdef01234567","view":"cost-evidence"},"name":"read"}` — Read per-session evidence and continue through every exhaustive page required by the claim.
 5. `{"arguments":{"projection":"usage-provenance","ref":"session:codex-session:demo-receipts"},"name":"get"}` — Resolve a representative source record when a counter or estimate is disputed.
