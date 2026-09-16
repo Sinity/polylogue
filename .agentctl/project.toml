@@ -59,7 +59,7 @@ exec = ["python"]
 pool = "bulk"
 result = "exit"
 cache = "none"
-timeout_seconds = 3600
+timeout_seconds = 28800
 
 [operations.verify_quick]
 description = "Run Polylogue's static fast verification gates"

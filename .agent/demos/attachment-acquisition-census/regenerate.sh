@@ -18,9 +18,28 @@ demo_root="$repo/.agent/demos/attachment-acquisition-census"
 mkdir -p "$demo_root"
 cd "$repo"
 
-reconcile_json="$(POLYLOGUE_ARCHIVE_ROOT="$archive_root" POLYLOGUE_FORCE_PLAIN=1 \
-  polylogue ops maintenance attachment-acquisition-debt --output-format json)"
-echo "$reconcile_json" > "$demo_root/reconcile-attachment-acquisition-debt.json"
+# The `polylogue ops maintenance attachment-acquisition-debt` command was
+# removed when this projection moved to `scan_attachment_coverage`
+# (polylogue/storage/blob_integrity.py). The census reconciles against that
+# surviving route directly.
+reconcile_json="$(POLYLOGUE_ARCHIVE_ROOT="$archive_root" python3 - "$archive_root" <<'RECONCILE'
+from __future__ import annotations
+
+import json
+import sys
+from dataclasses import asdict
+from pathlib import Path
+
+from polylogue.storage.blob_integrity import scan_attachment_coverage
+
+archive_root = Path(sys.argv[1])
+report = scan_attachment_coverage(archive_root / "index.db")
+payload = {key: value for key, value in asdict(report).items() if not isinstance(value, tuple)}
+payload["acquired_missing_blob_sample"] = list(report.acquired_missing_blob_sample)
+print(json.dumps(payload, indent=2, sort_keys=True))
+RECONCILE
+)"
+echo "$reconcile_json" > "$demo_root/reconcile-attachment-coverage.json"
 
 python3 - "$demo_root" "$archive_root" "$reconcile_json" <<'PY'
 from __future__ import annotations
@@ -140,13 +159,18 @@ for (origin, status), bucket in sorted(groups.items()):
     for k in totals:
         totals[k] += bucket[k] if k in bucket else 0
 
+# The committed packet is public and must reproduce byte-for-byte from any
+# seeded fixture root, so the caller's own path is redacted rather than
+# baked into the artifact.
+REDACTED_ARCHIVE_ROOT = "/path/to/demo-archive"
+
 payload = {
-    "archive_root": str(archive_root),
+    "archive_root": REDACTED_ARCHIVE_ROOT,
     "cross_origin_attachment_count": cross_origin_attachment_count,
     "totals": totals,
     "rows": census_rows,
     "reconciliation": {
-        "attachment_acquisition_debt_command": reconcile,
+        "attachment_coverage_scan": reconcile,
         "totals_match": (
             totals["attachment_count"] == reconcile["total_attachments"]
             and totals["acquired_blob_count"] + totals["missing_blob_ref_count"] + totals["acquired_null_blob_hash_count"]
@@ -161,7 +185,7 @@ payload = {
 lines = [
     "# Attachment Acquisition Census",
     "",
-    f"Archive root: `{archive_root}`",
+    f"Archive root: `{REDACTED_ARCHIVE_ROOT}`",
     "",
     "Read-only census over the active archive (polylogue-83u.6), grouped by"
     " (origin, acquisition_status). `unfetched` is the honest floor (bytes"
@@ -178,7 +202,7 @@ lines = [
     f"- Acquired rows with a NULL blob_hash (schema anomaly, should be 0): "
     f"{totals['acquired_null_blob_hash_count']:,}",
     f"- Cross-origin attachments (referenced from >1 origin): {cross_origin_attachment_count:,}",
-    f"- Reconciles against `polylogue ops maintenance attachment-acquisition-debt`: "
+    f"- Reconciles against `scan_attachment_coverage` (polylogue.storage.blob_integrity): "
     f"{payload['reconciliation']['totals_match']}",
     "",
     "## By origin / acquisition_status",

@@ -1163,7 +1163,15 @@ async def replay_archive(
 ) -> JSONDocument:
     """Run selected declarations against an arbitrary archive/corpus pair."""
 
-    selected = tuple(scenario_names or (scenario.scenario_id for scenario in CONTINUITY_SCENARIOS))
+    # ``None`` means "no filter"; an empty tuple is an explicit empty selection
+    # -- the same None-vs-empty semantics ``check_discovery_coverage`` uses, so
+    # one malformed --scenario value cannot make one lane run everything while
+    # the other checks nothing.
+    selected = (
+        tuple(scenario.scenario_id for scenario in CONTINUITY_SCENARIOS)
+        if scenario_names is None
+        else tuple(scenario_names)
+    )
     route: MCPContinuityRoute | StdioMCPContinuityRoute
     if transport == "stdio":
         route = StdioMCPContinuityRoute(
