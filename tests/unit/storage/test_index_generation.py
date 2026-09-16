@@ -27,7 +27,10 @@ from polylogue.storage.index_generation import (
 # realistic pid_max (Linux defaults to <= 4194304 even with 64-bit pids).
 _DEFINITELY_DEAD_PID = 2**31 - 1
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    DEFAULT_ARCHIVE_PAGE_SIZE,
+    initialize_archive_database,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
 
@@ -1182,3 +1185,80 @@ def test_source_snapshot_opens_through_the_validated_descriptor_alias(
     monkeypatch.setattr(index_generation_module, "descriptor_alias_path", lambda fd: None)
     with pytest.raises(RuntimeError, match="no validated descriptor alias"):
         source_revision_snapshot(tmp_path)
+
+
+def _index_page_size(path: Path) -> int:
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        return int(conn.execute("PRAGMA page_size").fetchone()[0])
+
+
+def test_generation_index_is_created_at_the_declared_page_size_and_records_it(tmp_path: Path) -> None:
+    """polylogue-kc8eq (4): page_size is a creation-time choice, so the
+    generation is the only place that can make it, and the only place that can
+    remember what was made.
+
+    Anti-vacuity: before this, ``initialize_archive_database`` opened the file
+    with a bare ``sqlite3.connect`` and never issued the pragma, so every
+    generation silently got SQLite's compiled-in 4096. Dropping the
+    ``page_size=`` argument from ``IndexGenerationStore.create`` makes the
+    first assertion red; dropping the recorded field makes the second red.
+    """
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+
+    assert _index_page_size(Path(generation.index_path)) == DEFAULT_ARCHIVE_PAGE_SIZE
+    assert generation.page_size == DEFAULT_ARCHIVE_PAGE_SIZE
+    assert store.load(generation.generation_id).page_size == DEFAULT_ARCHIVE_PAGE_SIZE
+
+
+def test_two_page_sizes_in_one_process_do_not_share_a_tier_prototype(tmp_path: Path) -> None:
+    """The prototype cache page-copies an empty tier with the SQLite backup
+    API, which makes an empty destination adopt the *source's* page size. A
+    cache keyed without page size would hand the second caller a database at
+    the first caller's page size and report success.
+
+    Anti-vacuity: removing ``page_size`` from ``_tier_prototype_key`` makes the
+    second assertion red (both generations come back at 4096).
+    """
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    small = store.create(owner_id="operator", source_snapshot="snapshot-a", page_size=4096)
+    large = store.create(owner_id="operator", source_snapshot="snapshot-b", page_size=16384)
+
+    assert _index_page_size(Path(small.index_path)) == 4096
+    assert _index_page_size(Path(large.index_path)) == 16384
+
+
+def test_page_size_refuses_a_value_sqlite_would_silently_ignore(tmp_path: Path) -> None:
+    """``PRAGMA page_size`` accepts a non-power-of-two and then ignores it, so
+    the refusal has to be ours.
+
+    Anti-vacuity: deleting the ``_VALID_PAGE_SIZES`` check makes this green-by-
+    accident case (a 4096 database claiming 5000) pass silently.
+    """
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    with pytest.raises(ValueError, match="page_size"):
+        store.create(owner_id="operator", source_snapshot="snapshot-a", page_size=5000)
+
+
+def test_page_size_cannot_be_applied_to_an_existing_tier(tmp_path: Path) -> None:
+    """A durable tier is opened, not created; asking for a page size there is a
+    caller error, not a silent no-op.
+
+    Anti-vacuity: dropping the ``allow_create=False`` guard lets the call
+    succeed while changing nothing.
+    """
+    _archive(tmp_path)
+
+    with pytest.raises(ValueError, match="creation-time"):
+        initialize_archive_database(
+            tmp_path / "source.db",
+            ArchiveTier.SOURCE,
+            allow_create=False,
+            page_size=8192,
+        )

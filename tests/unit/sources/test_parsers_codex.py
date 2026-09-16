@@ -1536,6 +1536,86 @@ class TestGitContextAndInstructions:
         text_blocks = [block for block in message.blocks if block.type is BlockType.TEXT]
         assert [block.text for block in text_blocks] == ["inspect this image"]
 
+    def test_whale_image_and_compaction_bytes_never_reach_search_text_or_fts(
+        self, workspace_env: Mapping[str, Path]
+    ) -> None:
+        """polylogue-dhil: the two classes that dominate whale rollout bytes --
+        inline base64 screenshots and the compaction snapshot that re-embeds the
+        screenshot-laden prefix -- must not survive into the derived tier.
+
+        Measured on a synthetic whale (2026-09-16): a 10,496,756-byte rollout
+        that is 50 percent inline base64 and 50 percent compaction snapshot
+        lowers to 3,602 bytes of ``blocks.text`` and 2,580 bytes of FTS, with
+        zero base64-bearing blocks.
+
+        Anti-vacuity: the parse-level assertions above pin the parser; this one
+        pins the storage route those bytes would actually inflate. Dropping the
+        ``_sanitize_codex_data_url`` call from ``_codex_inline_image_blocks``
+        or from ``_codex_tool_output_text`` makes it red, and so does storing
+        ``compacted.replacement_history`` content as message text, because
+        ``blocks.search_text`` is a generated projection of ``blocks.text`` and
+        ``messages_fts`` indexes it.
+        """
+        image_url = "data:image/png;base64," + ("a" * 200_000)
+        history_entry = {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "look at the screenshot"},
+                {"type": "input_image", "image_url": image_url},
+            ],
+        }
+        payload = [
+            {"type": "session_meta", "payload": {"id": "whale-1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "m-user",
+                    "role": "user",
+                    "content": history_entry["content"],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-shot",
+                    "output": [{"type": "input_image", "image_url": image_url}],
+                },
+            },
+            {
+                "type": "compacted",
+                "timestamp": "2026-01-01T01:00:00Z",
+                "payload": {"message": "compacted", "replacement_history": [history_entry] * 4},
+            },
+        ]
+
+        result = parse(payload, "codex-whale-image")
+
+        with open_connection(db_setup(workspace_env)) as conn:
+            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            leaked_blocks = conn.execute(
+                "SELECT count(*) AS n FROM blocks WHERE search_text LIKE '%data:image/png;base64%'"
+            ).fetchone()["n"]
+            leaked_events = conn.execute(
+                "SELECT count(*) AS n FROM session_events WHERE payload_json LIKE '%data:image/png;base64%'"
+            ).fetchone()["n"]
+            block_text_bytes = conn.execute(
+                "SELECT coalesce(sum(length(coalesce(text, ''))), 0) AS n FROM blocks"
+            ).fetchone()["n"]
+            fts_bytes = conn.execute("SELECT coalesce(sum(length(block)), 0) AS n FROM messages_fts_data").fetchone()[
+                "n"
+            ]
+
+        assert leaked_blocks == 0
+        assert leaked_events == 0
+        # Six inline copies of a 200 KB data URL entered the parse; the derived
+        # tier keeps bounded placeholders, not the payload. The FTS shadow table
+        # is bounded for the same reason -- it indexes ``blocks.search_text``,
+        # which is a generated projection of ``blocks.text``.
+        assert block_text_bytes < 10_000
+        assert fts_bytes < 10_000
+
     def test_message_preserves_image_only_bounded_evidence(self) -> None:
         payload = [
             {
