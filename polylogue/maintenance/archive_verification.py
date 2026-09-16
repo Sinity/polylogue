@@ -84,6 +84,7 @@ from polylogue.storage.blob_liveness import (
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+from polylogue.storage.sqlite.agent_thread_state import read_spawn_edge_children
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -1731,8 +1732,8 @@ def _hook_verdicts_without_evidence(
     :data:`HOOK_DERIVED_LINK_METHODS` because a ``codex_thread_spawn_edge``
     claim decided it, so the absence of that claim today means the evidence
     was destroyed, not that it never existed. Both places a claim can live
-    are consulted before calling one destroyed: the index-tier projection
-    (``codex_thread_spawn_edges``) and the durable hook spool
+    are consulted before calling one destroyed: the index-tier thread-state
+    graph (``work_evidence_edges``) and the durable hook spool
     (``raw_hook_events``) the projection is rebuilt from.
 
     The verdict itself is deliberately left standing --- retain-on-deletion is
@@ -1756,10 +1757,8 @@ def _hook_verdicts_without_evidence(
         return native
 
     projected: set[str] = set()
-    if table_exists(index_conn, "codex_thread_spawn_edges"):
-        projected = {
-            str(row[0]) for row in index_conn.execute("SELECT DISTINCT child_thread_id FROM codex_thread_spawn_edges")
-        }
+    if table_exists(index_conn, "work_evidence_edges"):
+        projected = read_spawn_edge_children(index_conn)
 
     unresolved = [(session_id, method) for session_id, method in candidates if _native_id(session_id) not in projected]
     if not unresolved:

@@ -1898,6 +1898,13 @@ WORK_EVIDENCE_GRAPHS_SPEC = _make_table_spec(
     (
         _raw_column("graph_id", """graph_id              TEXT PRIMARY KEY"""),
         _raw_column("corpus_snapshot_ref", """corpus_snapshot_ref   TEXT NOT NULL"""),
+        # A graph an adapter recomputes from one retained export records which
+        # export it came from and that export's durable receipt order, so a
+        # replay that reaches an older export after a newer one does not
+        # overwrite the newer graph.
+        _raw_column("source_evidence_ref", """source_evidence_ref   TEXT"""),
+        _raw_column("observed_at_ms", """observed_at_ms        INTEGER NOT NULL DEFAULT 0"""),
+        _raw_column("observation_order", """observation_order     INTEGER NOT NULL DEFAULT 0"""),
     ),
 )
 
@@ -1953,6 +1960,11 @@ WORK_EVIDENCE_EDGES_SPEC = _make_table_spec(
             "occurred_at_ms", """occurred_at_ms       INTEGER CHECK(occurred_at_ms IS NULL OR occurred_at_ms >= 0)"""
         ),
         _raw_column("association_state", """association_state    TEXT NOT NULL"""),
+        # The lifecycle label the source runtime itself reported for this
+        # relation (for example a spawned child's own "closed"/"running"
+        # state). It is retained evidence about the relation, not polylogue's
+        # own topology status, and stays NULL when no runtime reported one.
+        _raw_column("source_state_label", """source_state_label   TEXT"""),
     ),
     table_constraints=(
         """PRIMARY KEY(graph_id, edge_ref)""",
