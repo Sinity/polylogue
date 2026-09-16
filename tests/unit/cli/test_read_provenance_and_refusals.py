@@ -11,7 +11,9 @@ machine contracts depending on which verb asked.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -25,7 +27,9 @@ from click.testing import CliRunner
 def _envelope(payload: dict[str, object], *, limit: int = 10, offset: int = 0) -> dict[str, object]:
     from polylogue.cli.render.rows import _page_envelope
 
-    rows = [dict(row) for row in payload.get("items", [])]  # type: ignore[union-attr]
+    raw = payload.get("items", [])
+    assert isinstance(raw, list)
+    rows: list[dict[str, object]] = [dict(cast("Mapping[str, object]", row)) for row in raw]
     return _page_envelope(payload, mode="list", rows=rows, offset=offset, limit=limit, origin=None, source="daemon")
 
 
@@ -53,7 +57,7 @@ def test_an_unknown_total_serializes_as_null_in_machine_formats(capsys: pytest.C
 
     from polylogue.cli.render.rows import emit_rows
 
-    rows = [{"id": f"s:{n}"} for n in range(3)]
+    rows: list[dict[str, object]] = [{"id": f"s:{n}"} for n in range(3)]
     envelope = _envelope({"items": rows, "total": None, "limit": 3}, limit=3)
 
     emit_rows(envelope, rows, output_format="json", text_line=lambda row: str(row["id"]), fields=None)
