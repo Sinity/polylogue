@@ -44,6 +44,10 @@ def test_classified_operations_are_declared_and_agree_with_their_kind() -> None:
             assert metadata.operations == ("session.read",)
         elif metadata.execution_kind == "renderer":
             assert metadata.operations, f"{view_id} is a renderer over nothing"
+        elif metadata.execution_kind == "in-process":
+            # Not migrated yet: the handler reads the archive in this process
+            # and reaches no operation, so it must claim none.
+            assert metadata.operations == ()
         else:
             assert metadata.execution_kind == "distinct-operation"
             # ``session.lineage`` and ``context.compile`` land with S9.
@@ -53,6 +57,15 @@ def test_classified_operations_are_declared_and_agree_with_their_kind() -> None:
 def test_the_decided_classification_partitions_every_view() -> None:
     """The D3 decision itself, pinned so a migration cannot drift it unremarked.
 
+    These are the *executed* routes, not the intended ones: polylogue-dutav
+    found this partition claiming ten ``session.read`` projections where only
+    ``hooks`` reaches ``session.read``
+    (``daemon_reads._SESSION_EVIDENCE_READERS`` serves that kind alone and the
+    handler raises for any other), and claiming ``neighbors`` as a ``cli.query``
+    renderer where it calls ``polylogue.neighbor_candidates`` directly.
+    ``tests/unit/cli/test_read_view_execution_routes.py`` proves each row by
+    dispatching it; this one pins the resulting shape.
+
     Anti-vacuity: moving any view between kinds -- notably reclassifying one of
     the per-session evidence views onto ``query.units``, which the relation
     evidence refutes (``Session.session_events`` is not the materialized
@@ -60,19 +73,7 @@ def test_the_decided_classification_partitions_every_view() -> None:
     the affected paths the ``file`` unit reads) -- turns this red.
     """
 
-    assert read_views_by_execution_kind("session-read-projection") == (
-        "agent-policies",
-        "dialogue",
-        "effective_context",
-        "events",
-        "file-edits",
-        "hooks",
-        "messages",
-        "raw",
-        "summary",
-        "transcript",
-        "web-content",
-    )
+    assert read_views_by_execution_kind("session-read-projection") == ("hooks",)
     assert read_views_by_execution_kind("query-units-projection") == ()
     assert read_views_by_execution_kind("distinct-operation") == (
         "context",
@@ -80,13 +81,28 @@ def test_the_decided_classification_partitions_every_view() -> None:
         "lineage",
         "topology",
     )
-    assert read_views_by_execution_kind("renderer") == (
+    assert read_views_by_execution_kind("renderer") == ("summary", "transcript")
+    assert read_views_by_execution_kind("in-process") == (
+        "agent-policies",
         "chronicle",
         "correlation",
+        "dialogue",
+        "effective_context",
+        "events",
+        "file-edits",
+        "messages",
         "neighbors",
+        "raw",
         "temporal",
+        "web-content",
     )
     assert sum(
         len(read_views_by_execution_kind(kind))
-        for kind in ("session-read-projection", "query-units-projection", "distinct-operation", "renderer")
+        for kind in (
+            "session-read-projection",
+            "query-units-projection",
+            "distinct-operation",
+            "renderer",
+            "in-process",
+        )
     ) == len(READ_VIEW_HANDLER_METADATA)
