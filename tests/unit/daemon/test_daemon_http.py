@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from pathlib import Path
+from typing import Any, cast
 
 
 def test_cross_origin_logic_rejects_external_origin() -> None:
@@ -176,7 +177,7 @@ def test_evidence_summary_outcomes_read_the_canonical_result_state(tmp_path: Pat
     assert payload["outcomes"] == {"ok": 1, "failed": 1, "unknown": 1}
 
 
-def _reset_handler(body: bytes, *, content_length: str | None = None) -> tuple[object, list[tuple[HTTPStatus, object]]]:
+def _reset_handler(body: bytes, *, content_length: str | None = None) -> tuple[Any, list[tuple[HTTPStatus, object]]]:
     """Build a socket-free ``_handle_reset`` handler over one request body."""
     from io import BytesIO
 
@@ -199,7 +200,9 @@ def _reset_handler(body: bytes, *, content_length: str | None = None) -> tuple[o
             self.client_address = ("127.0.0.1", 12345)
             self.rfile = BytesIO(body)
             self.wfile = BytesIO()
-            self.headers = _Headers({"Content-Length": str(len(body)) if content_length is None else content_length})
+            self.headers = cast(
+                "Any", _Headers({"Content-Length": str(len(body)) if content_length is None else content_length})
+            )
 
         def _send_json(
             self, status: HTTPStatus, payload: object, *, extra_headers: Mapping[str, str] | None = None
@@ -367,10 +370,10 @@ def test_evidence_summary_reports_degraded_when_lineage_is_unreadable(tmp_path: 
 
     from polylogue.daemon import http as http_module
 
-    real_read_context = http_module.archive_read_context
+    real_read_context = cast("Any", http_module).archive_read_context
 
     class _FailingLineageConn:
-        def __init__(self, inner: object) -> None:
+        def __init__(self, inner: Any) -> None:
             self._inner = inner
 
         def execute(self, sql: str, *args: object) -> object:
@@ -382,7 +385,7 @@ def test_evidence_summary_reports_degraded_when_lineage_is_unreadable(tmp_path: 
             return getattr(self._inner, name)
 
     class _FailingLineageArchive:
-        def __init__(self, inner: object) -> None:
+        def __init__(self, inner: Any) -> None:
             self._inner = inner
             self._conn = _FailingLineageConn(inner._conn)
 
@@ -390,7 +393,7 @@ def test_evidence_summary_reports_degraded_when_lineage_is_unreadable(tmp_path: 
             return getattr(self._inner, name)
 
     @contextlib.contextmanager
-    def _wrapped(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+    def _wrapped(*args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
         with real_read_context(*args, **kwargs) as archive:
             yield _FailingLineageArchive(archive)
 
