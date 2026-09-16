@@ -77,7 +77,7 @@
       "unavailable_reason": null
     },
     {
-      "digest": "1ed3e1e0c6adf1e9a6a0b8e54efad354b734a5c8e765c1073eaf82cbbd6aec59",
+      "digest": "d66baa6abb0940ae69eba2c22da29c54d276c84ef3964c5098cb501237a4482f",
       "provider": "claude-design",
       "unavailable_reason": null
     },
@@ -226,10 +226,22 @@
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "a52645e270736306a5f61756f2dba69ad467e9e11d2686e6ea64f1394560723e",
+      "package_hash": "2491b9ff8a42c54328c47785aa35d779a45d7f4b3ae3e2ce68e777d55fb9a91b",
       "package_version": "v3",
       "provider": "claude-ai",
-      "version_hash": "11fea952a1adfbbb836b5c4fe9e520d46dfcbc6c575b05d5a3cbc16efd0f3f5f"
+      "version_hash": "e82eab3724809be610a1efd30aa7c4d46cf55e9889e47023faf0b371ea0653d6"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "3d586af0dadfbb29608bb5330e8a8bba40a3c5f34d18604d6ff29058920886b3",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "b543da5ac7efbdd99007f68bfe1d8e6f105d1f68bb21fbf0534e67d67a81c33a",
+      "package_version": "v4",
+      "provider": "claude-ai",
+      "version_hash": "aa44806a331915b2614af961e2e3a7c5dc674cdc16c26fed6e73aed7266b3f7f"
     },
     {
       "element_hashes": [
@@ -330,10 +342,22 @@
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "9802d7e987843d4bfb7576fccb7e88ad61a9a91e2aaca0e3e3d0dea82ff861ba",
+      "package_hash": "10cfb2fde865e1283173dd54c18912e5b8da1da40a580d307e6f50298b364161",
       "package_version": "v3",
       "provider": "claude-design",
-      "version_hash": "7455857b57c6ca9ad48749e3936c206dbb867da83bcd6209c92aa62979289d07"
+      "version_hash": "b532547f974d59b3f2b247a7fe44fa98c6aca659c1de0bb91fbca561afce2ab2"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "26ff2c393c173b7e79d9e83c731a310094a179ad2f1b0bff8ae382911639420f",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "8b9194dc4a5444166f31d7000be4da1462c23da423d5b9650c9387fc14872e56",
+      "package_version": "v4",
+      "provider": "claude-design",
+      "version_hash": "217551515c7ecbe2429059ac82fb1e505ad6376a5ae2dd5030083de1d5c43957"
     },
     {
       "element_hashes": [
@@ -504,7 +528,7 @@
       "version_hash": "8fb3e4ec852721b22e725e4ae0f009c2e2d9860df858d8fc9cffb3492c4fb142"
     }
   ],
-  "receipt_digest": "cabf200906f6b6364c855fb19ad417b54af98c85c7a7cbed83f7dba5d3ada578",
+  "receipt_digest": "e4cadc5200f8cafc553466debc82586ab9b25fcfc76908e6530af7cc5b8b014b",
   "schema": "polylogue.schema-inference-handoff.v1",
   "unsupported_decisions": [
     {
@@ -676,6 +700,21 @@
       ],
       "element_kind": "session_document",
       "package_version": "v3",
+      "provider": "claude-ai",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "required",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v4",
       "provider": "claude-ai",
       "reason": "unsupported_json_schema_construct"
     },
@@ -862,6 +901,14 @@
       "details": [],
       "element_kind": "session_document",
       "package_version": "v3",
+      "provider": "claude-design",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v4",
       "provider": "claude-design",
       "reason": "provider_without_wire_format"
     },
