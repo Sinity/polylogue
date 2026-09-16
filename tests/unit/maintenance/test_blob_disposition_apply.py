@@ -129,7 +129,7 @@ def _append_carrier(root: Path, envelope: dict[str, object]) -> Path:
         session_id=str(envelope["session_id"]),
         provider=str(envelope["provider"]),
         timestamp=str(envelope["timestamp"]),
-        payload=dict(envelope["payload"]),  # type: ignore[arg-type]
+        payload=dict(cast("dict[str, object]", envelope["payload"])),
     )
 
 
