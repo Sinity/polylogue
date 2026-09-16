@@ -37,6 +37,7 @@ from polylogue.daemon.intake import (
 )
 from polylogue.daemon.observation import ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
+from polylogue.logging import capture
 from polylogue.operations.intake_adapters import (
     CallbackIntakeAdapter,
     DaemonIntakeContext,
@@ -1358,3 +1359,133 @@ async def test_a_page_never_splits_below_one_file_and_stops_at_the_class_share(t
     dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=RecordingAdapter(whale), page_size=8)])
     await dispatcher.run_once(budget=100)
     assert [path.name for path in batches[0]] == ["whale"]
+
+
+def _linked_export_source(tmp_path: Path) -> tuple[WatchSource, Path]:
+    """A source root whose export tree is reachable only through a symlink."""
+
+    export = tmp_path / "elsewhere" / "export"
+    export.mkdir(parents=True)
+    session = export / "session.json"
+    session.write_text("{}")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "mounted").symlink_to(export, target_is_directory=True)
+    return WatchSource(name="capture", root=root, suffixes=(".json",)), root / "mounted" / "session.json"
+
+
+@pytest.mark.asyncio
+async def test_a_symlinked_export_tree_is_discovered_and_admitted(tmp_path: Path) -> None:
+    """polylogue-lu1dk: a source root mounted through a symlink is acquired.
+
+    Anti-vacuity: restore ``entry.is_dir(follow_symlinks=False)`` as the only
+    directory test in ``_ordered_children`` and the walk never enters
+    ``mounted/``, so discovery emits nothing, the dispatcher reports zero
+    admitted items, and the source is silently unacquired.
+    """
+
+    source, linked_session = _linked_export_source(tmp_path)
+    ingested: list[Path] = []
+
+    class RecordingWatcher:
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            ingested.extend(paths)
+            return SimpleNamespace(
+                succeeded_file_count=len(paths),
+                failed_file_count=0,
+                stale_cursor_write_count=0,
+                source_payload_read_bytes=2 * len(paths),
+                succeeded_paths=[str(path) for path in paths],
+            )
+
+        async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
+            return None
+
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=tmp_path / "archive",
+            watcher=RecordingWatcher(),  # type: ignore[arg-type]
+            sources=(source,),
+        ),
+        source,
+    )
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=adapter, page_size=8)])
+
+    result = await dispatcher.run_once(budget=64)
+
+    assert result.require_report("capture").discovered == 1
+    assert ingested == [linked_session]
+
+
+def test_a_symlink_cycle_terminates_and_is_reported_once(tmp_path: Path) -> None:
+    """A link back to an ancestor ends the walk instead of recursing forever.
+
+    Anti-vacuity: drop the ``visited_real_paths`` check in
+    ``_admit_linked_directory`` and this walk descends ``loop/loop/loop/...``
+    until the recursion limit or the page limit hides the real files; drop the
+    fault emission and the cycle becomes silent.
+    """
+
+    root = tmp_path / "root"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    kept = nested / "session.json"
+    kept.write_text("{}")
+    (nested / "loop").symlink_to(root, target_is_directory=True)
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    with capture() as records:
+        found = _bounded_source_paths(source, (source,), limit=32, after=None)
+
+    assert found == [kept]
+    cycles = [record for record in records if record.get("reason") == "symlink_cycle"]
+    assert [record["path"] for record in cycles] == [str(nested / "loop")]
+    assert cycles[0]["event"] == "daemon.intake.discovery_failed"
+
+
+def test_a_dangling_symlink_is_a_fault_not_a_crash(tmp_path: Path) -> None:
+    """A link whose target is gone is counted, and its siblings still discovered.
+
+    Anti-vacuity: remove the broken-symlink branch in ``_ordered_children``
+    and the missing export vanishes from the walk with no record at all.
+    """
+
+    root = tmp_path / "root"
+    root.mkdir()
+    kept = root / "session.json"
+    kept.write_text("{}")
+    (root / "gone.json").symlink_to(tmp_path / "never-existed.json")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    with capture() as records:
+        found = _bounded_source_paths(source, (source,), limit=32, after=None)
+
+    assert found == [kept]
+    faults = [record for record in records if record.get("reason") == "broken_symlink"]
+    assert [record["path"] for record in faults] == [str(root / "gone.json")]
+    assert faults[0]["event"] == "daemon.intake.discovery_failed"
+
+
+def test_discovery_does_not_follow_a_link_into_the_archive_root(tmp_path: Path) -> None:
+    """A link pointing at the archive never feeds the archive to itself.
+
+    Anti-vacuity: drop the ``archive_root`` guard and ``source.db`` under the
+    archive root is discovered as intake material.
+    """
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "sidecar.json").write_text("{}")
+    root = tmp_path / "root"
+    root.mkdir()
+    kept = root / "session.json"
+    kept.write_text("{}")
+    (root / "archive-link").symlink_to(archive_root, target_is_directory=True)
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    found = _bounded_source_paths(source, (source,), limit=32, after=None, archive_root=archive_root)
+
+    assert found == [kept]
