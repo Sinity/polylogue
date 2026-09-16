@@ -382,6 +382,20 @@ def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
         and not block.tool_id
         and block.tool_input is None
         and not block.media_type
+        # Every remaining evidence-bearing field must also be absent. A block
+        # carrying citations (``web_constructs``), parser metadata, or a tool
+        # outcome is a second content axis, not the parser-shape artifact this
+        # predicate exists to absorb, so collapsing it to the empty sentinel
+        # would make a richer acquisition hash equal to a bare one.
+        # ``signature`` stays excluded on purpose (see ``base_models.py``): it
+        # is a provider attestation over content already hashed here.
+        and not block.metadata
+        and not block.web_constructs
+        and block.is_error is None
+        and block.exit_code is None
+        and block.tool_outcome is None
+        and not block.outcome_unknown_reason
+        and block.file_edit is None
     )
 
 

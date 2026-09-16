@@ -1481,14 +1481,20 @@ def raw_frontier_blocked_source_paths(
         projection.cursor_ahead_count or projection.cursor_authority_gap_count
     ):
         unattributed.append(projection.cursor_ahead_reason)
+    blocked_logical_keys: set[str] = set()
     for ahead in projection.cursor_ahead_samples:
         paths.add(ahead.source_path)
+        if ahead.logical_source_key:
+            blocked_logical_keys.add(ahead.logical_source_key)
+    for sample in projection.broken_head_samples:
+        if sample.logical_source_key:
+            blocked_logical_keys.add(sample.logical_source_key)
     for gap in projection.cursor_authority_gap_samples:
         if gap.source_path is None:
             unattributed.append(gap.reason)
         else:
             gap_paths.add(gap.source_path)
-    if projection.broken_head_samples:
+    if projection.broken_head_samples or blocked_logical_keys:
         raw_ids = {sample.accepted_raw_id for sample in projection.broken_head_samples}
         source_db_path = archive_root / "source.db"
         try:
@@ -1500,9 +1506,17 @@ def raw_frontier_blocked_source_paths(
         else:
             try:
                 by_raw = _source_paths_for_raw_ids(conn, raw_ids)
+                # Refuse by logical source key, not by the one physical path
+                # a sample named: every sibling path of a violated logical
+                # source is refused too. The reported refusal count stays
+                # per-path so a caller still sees which files were held back.
+                sibling_paths = (
+                    _source_paths_for_logical_keys(conn, blocked_logical_keys) if blocked_logical_keys else set()
+                )
             except sqlite3.Error as exc:
                 unattributed.append(f"source raw path lookup failed: {exc}")
                 by_raw = {}
+                sibling_paths = set()
             finally:
                 conn.close()
             for sample in projection.broken_head_samples:
@@ -1511,6 +1525,7 @@ def raw_frontier_blocked_source_paths(
                     unattributed.append(f"broken head {sample.accepted_raw_id} has no source path")
                 else:
                     paths.add(path)
+            paths.update(sibling_paths)
     return RawFrontierBlockedPaths(
         frozenset(paths),
         "; ".join(unattributed) or None,
@@ -1997,6 +2012,30 @@ def _source_paths_for_raw_ids(conn: sqlite3.Connection, raw_ids: set[str]) -> di
         ).fetchall()
         for row in rows:
             result[str(row[0])] = str(row[1])
+    return result
+
+
+def _source_paths_for_logical_keys(conn: sqlite3.Connection, logical_keys: set[str]) -> set[str]:
+    """Every durable source path that carries one of ``logical_keys``.
+
+    A logical source is reachable through more than one physical path
+    (rotated/resumed session files, ZIP-expanded members). Refusing only the
+    path a violation sample happened to name would admit a sibling path whose
+    logical frontier is still violated, so the gate would not be an isolation
+    boundary.
+    """
+    result: set[str] = set()
+    pending = set(logical_keys)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"SELECT DISTINCT source_path FROM raw_sessions WHERE logical_source_key IN ({placeholders})", batch
+        ).fetchall()
+        for row in rows:
+            if row[0] is not None:
+                result.add(str(row[0]))
     return result
 
 

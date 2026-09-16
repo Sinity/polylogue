@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from collections.abc import Mapping
 from typing import TypeGuard
 
@@ -371,6 +372,20 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
     # synthetic id also folds a repeated envelope projection into that row.
     matched_native_ids: set[str] = set()
     cross_route_matches: dict[str, str] = {}
+    # Descriptor index, so an unmatched candidate costs its own cohort rather
+    # than a rescan of every merged row. Browser-captured content is
+    # untrusted, and the previous full rescan made N same-descriptor rows
+    # cost O(N^2) full-byte compares at parse time.
+    #
+    # The key is the pair ``_claude_attachment_cross_route_match`` requires to
+    # be equal outright. ``size_bytes`` is deliberately NOT in the key: that
+    # predicate only requires size equality when BOTH sides declare one, so
+    # keying on it would drop legitimate matches where one side has no
+    # declared size. It stays a predicate check inside the cohort.
+    cohort: dict[tuple[str | None, str], list[str]] = defaultdict(list)
+    for provider_attachment_id, native in merged.items():
+        if native.name:
+            cohort[(native.message_provider_id, native.name)].append(provider_attachment_id)
     for candidate in envelope_attachments:
         existing = merged.get(candidate.provider_attachment_id)
         if existing is None:
@@ -380,9 +395,11 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
             else:
                 cross_route_ids = [
                     provider_attachment_id
-                    for provider_attachment_id, native in merged.items()
+                    for provider_attachment_id in (
+                        cohort.get((candidate.message_provider_id, candidate.name), ()) if candidate.name else ()
+                    )
                     if provider_attachment_id not in matched_native_ids
-                    and _claude_attachment_cross_route_match(native, candidate)
+                    and _claude_attachment_cross_route_match(merged[provider_attachment_id], candidate)
                 ]
                 if cross_route_ids:
                     matched_id = cross_route_ids[0]
@@ -391,6 +408,8 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
                     existing = merged[matched_id]
                 else:
                     merged[candidate.provider_attachment_id] = candidate
+                    if candidate.name:
+                        cohort[(candidate.message_provider_id, candidate.name)].append(candidate.provider_attachment_id)
                     continue
         # The native row remains authoritative for provider identity and file
         # metadata. The browser projection contributes acquired bytes and can

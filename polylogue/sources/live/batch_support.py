@@ -862,7 +862,7 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
         # transcript directory, so location cannot outrank its provenance.
         from polylogue.sources.origin_specs import recognize_source_class
 
-        recognition = recognize_source_class(provider, path)
+        recognition = recognize_source_class(provider, path, source_size_bytes=_path_size(path))
         if recognition is not None and recognition.source_class != "session":
             return False
         path_classification = classify_artifact_path(path, provider=provider)

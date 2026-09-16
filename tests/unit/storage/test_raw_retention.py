@@ -3508,3 +3508,64 @@ def test_frontier_from_connections_reports_unknown_when_the_index_reader_fails(t
     assert snapshot.overall_status == "unknown"
     assert snapshot.broken_head_status == "unknown"
     assert "unreadable" in snapshot.broken_head_reason
+
+
+# -----------------------------------------------------------------------------
+# CURSOR AUTHORITY REFUSES BY LOGICAL SOURCE KEY (bd polylogue-d9t8u)
+# -----------------------------------------------------------------------------
+
+
+def test_cursor_authority_refuses_every_path_of_a_violated_logical_source(tmp_path: Path) -> None:
+    """A sibling path of a violated logical source is refused too.
+
+    The refusal reduced a violation to the one physical source path its sample
+    named. Where one logical source is reachable through more than one path
+    (rotated/resumed session files, ZIP-expanded members) the sibling path was
+    admitted while its logical frontier was still violated, so the gate was
+    not an isolation boundary. The per-path refusal count still reports both.
+
+    Anti-vacuity: drop ``_source_paths_for_logical_keys`` from
+    ``raw_frontier_blocked_source_paths`` and ``rotated.jsonl`` disappears from
+    ``source_paths`` while ``selected.jsonl`` stays -- the admitted sibling.
+    """
+    initialize_active_archive_root(tmp_path)
+    violated = tmp_path / "selected.jsonl"
+    sibling = tmp_path / "rotated.jsonl"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="selected",
+            source_path=violated,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-0",
+            generation=0,
+            blob_size=10,
+        )
+        # The same logical source, acquired through a second physical path.
+        _insert_revision_raw(
+            conn,
+            raw_id="rotated",
+            source_path=sibling,
+            acquired_at_ms=2,
+            kind="full",
+            source_revision="revision-1",
+            generation=0,
+            blob_size=10,
+        )
+    _seed_index_authority(
+        tmp_path / "index.db",
+        session_raw_id="selected",
+        accepted_raw_id="selected",
+        accepted_revision="revision-0",
+        generation=0,
+        frontier=10,
+        append_end_offset=None,
+    )
+    # Cursor committed past the accepted byte frontier: a real violation.
+    _seed_ops_cursor(tmp_path / "ops.db", source_path=violated, byte_offset=11)
+
+    blocked = raw_frontier_blocked_source_paths(tmp_path, {})
+
+    assert str(violated) in blocked.source_paths
+    assert str(sibling) in blocked.source_paths

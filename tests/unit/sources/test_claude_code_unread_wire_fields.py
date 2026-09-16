@@ -681,3 +681,84 @@ def test_unknown_stop_reason_remains_evidence_without_entering_constrained_colum
     assert len(parsed.messages) == 1
     assert parsed.messages[0].stop_reason is None
     assert any(event.payload.get("stop_reason") == "new_provider_reason" for event in parsed.session_events)
+
+
+# -----------------------------------------------------------------------------
+# PROVIDER BILLING BLOCK AND REFUSAL EVIDENCE (bd polylogue-vabba)
+# -----------------------------------------------------------------------------
+
+
+def _assistant_usage_record(**top_level: object) -> dict[str, object]:
+    """The real shape: top-level keys on a type:"assistant" record with usage.
+
+    Measured over ~/.claude/projects (15,215 session files, 2026-09-16): all
+    182,187 ``apiBlockIndex`` and all 222 ``quotaLimits`` occurrences sit on
+    ``type:"assistant"`` records that carry ``message.usage``, which is the
+    gate ``_message_usage_event_payload`` runs behind.
+    """
+    record: dict[str, object] = {
+        "type": "assistant",
+        "uuid": "d0b1f4a2-0000-4000-8000-000000000001",
+        "sessionId": "billing-block-session",
+        "timestamp": "2026-01-01T00:00:00.000Z",
+        "requestId": "req_011CabcD",
+        "message": {
+            "id": "msg_01",
+            "role": "assistant",
+            "model": "claude-opus-4",
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 12, "output_tokens": 3},
+        },
+    }
+    record.update(top_level)
+    return record
+
+
+def _message_usage_payload(record: dict[str, object]) -> dict[str, object]:
+    parsed = parse_code([record], "billing-block-session")
+    events = [event for event in parsed.session_events if event.event_type == "message_usage"]
+    assert len(events) == 1, "the assistant/usage gate must produce exactly one message_usage event"
+    return dict(events[0].payload)
+
+
+def test_api_block_index_rides_the_message_usage_payload() -> None:
+    """``apiBlockIndex`` is captured beside ``request_id``.
+
+    Anti-vacuity: delete the ``api_block_index`` read in
+    ``_message_usage_event_payload`` and this assertion fails -- the payload
+    carries ``request_id`` but nothing naming the billing block the call was
+    charged to.
+    """
+    payload = _message_usage_payload(_assistant_usage_record(apiBlockIndex=2))
+    assert payload["request_id"] == "req_011CabcD"
+    assert payload["api_block_index"] == 2
+
+
+def test_quota_limits_are_captured_as_refusal_evidence() -> None:
+    """``quotaLimits`` records why a turn was refused: limit type and reset.
+
+    Anti-vacuity: delete the ``quota_limits`` read and the payload carries no
+    trace of the refusal, which is the corpus's only evidence of it.
+    """
+    payload = _message_usage_payload(
+        _assistant_usage_record(
+            quotaLimits={
+                "status": "rejected",
+                "resetsAt": 1787464800,
+                "rateLimitType": "seven_day",
+                "unifiedRateLimitFallbackAvailable": False,
+            }
+        )
+    )
+    assert payload["quota_limits"] == {
+        "rate_limit_type": "seven_day",
+        "resets_at": 1787464800,
+        "status": "rejected",
+    }
+
+
+def test_absent_billing_fields_add_no_payload_keys() -> None:
+    """An ordinary turn stays unchanged: neither key is invented."""
+    payload = _message_usage_payload(_assistant_usage_record())
+    assert "api_block_index" not in payload
+    assert "quota_limits" not in payload

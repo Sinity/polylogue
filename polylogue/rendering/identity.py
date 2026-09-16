@@ -42,10 +42,27 @@ SEGMENT_SEPARATORS = ":/"
 #: is worth more than the same width of fragment.
 TAIL_SNAP = 8
 
+#: Declared maximum identifier display length. Provider session ids arrive as
+#: unrestricted strings from untrusted exports and are stored verbatim, so the
+#: ladder below would otherwise step once per character of the longest id in
+#: the frame -- a one-megabyte native id costs ~10^6 * N renders on every
+#: query that returns it, for as long as the session exists. Past this length
+#: an identifier is displayed truncated with :data:`OVERLONG_MARKER` instead,
+#: which also bounds the ladder.
+MAXIMUM_DISPLAY_LENGTH = 256
+
+#: Appended to a display that hit :data:`MAXIMUM_DISPLAY_LENGTH`, so a reader
+#: can see the cell is not the whole identifier and must not be copied as one.
+#: Kept at or below :data:`MINIMUM_TAIL` characters so the tail the ladder
+#: keeps always contains the whole marker.
+OVERLONG_MARKER = "⋯trunc"
+
 __all__ = [
     "ELLIPSIS",
     "HEAD_BUDGET",
+    "MAXIMUM_DISPLAY_LENGTH",
     "MINIMUM_TAIL",
+    "OVERLONG_MARKER",
     "IdentityFrame",
     "identity_frame",
 ]
@@ -58,6 +75,17 @@ def _context_head(identifier: str) -> str:
     if 0 <= cut < HEAD_BUDGET:
         return identifier[: cut + 1]
     return identifier[:HEAD_BUDGET]
+
+
+def _bounded(identifier: str) -> str:
+    """Return the identifier an overlong display stands in for.
+
+    Truncation happens once, before the ladder, so both the ladder cost and
+    every rendered cell are bounded by ``MAXIMUM_DISPLAY_LENGTH``.
+    """
+    if len(identifier) <= MAXIMUM_DISPLAY_LENGTH:
+        return identifier
+    return identifier[:MAXIMUM_DISPLAY_LENGTH] + OVERLONG_MARKER
 
 
 def _render(identifier: str, tail: int) -> str:
@@ -91,7 +119,7 @@ class IdentityFrame:
         An identifier outside the frame has no cohort to be distinguished
         against, so it renders in full rather than being shortened blind.
         """
-        text = str(identifier)
+        text = _bounded(str(identifier))
         return self.displays.get(text, text)
 
 
@@ -103,7 +131,7 @@ def identity_frame(identifiers: Iterable[object], *, tail: int | None = None) ->
     frame context instead of deriving it, for a continuation that must render
     an unchanged frame the same way.
     """
-    unique = sorted({str(identifier) for identifier in identifiers if str(identifier)})
+    unique = sorted({_bounded(str(identifier)) for identifier in identifiers if str(identifier)})
     if not unique:
         return IdentityFrame(displays=MappingProxyType({}), tail=tail or MINIMUM_TAIL, column_width=0)
 

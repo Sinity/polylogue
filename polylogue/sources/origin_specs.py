@@ -586,18 +586,58 @@ def _looks_like_extracted_transcript_corpus_path(
     return looks_like_extracted_transcript_corpus(dict_items)
 
 
+#: Ceiling on the whole-document read this structural probe is allowed to
+#: perform. Admission runs over semi-trusted provider roots, so a candidate
+#: larger than any real Hermes/Antigravity artifact is refused on its stat
+#: size rather than loaded to decide a source class. Peak here is several
+#: multiples of the file (bytes, decoded text, parsed tree), so the ceiling
+#: bounds the reader's working set, not the input.
+SOURCE_CLASS_JSON_PROBE_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _bounded_jsonl_records(path: Path, *, limit: int, max_record_bytes: int) -> list[object]:
+    """Parse at most ``limit`` JSONL records, never holding more than one record.
+
+    A record longer than ``max_record_bytes`` is skipped rather than read: the
+    structural signatures below are decided by a record's leading keys, so an
+    unbounded line buys no classification accuracy.
+    """
+    records: list[object] = []
+    with path.open(encoding="utf-8") as handle:
+        while len(records) < limit:
+            chunk = handle.readline(max_record_bytes + 1)
+            if not chunk:
+                break
+            if len(chunk) > max_record_bytes:
+                # Drain the rest of this oversized record in bounded steps so
+                # the next readline starts at a real record boundary.
+                while True:
+                    tail = handle.readline(max_record_bytes)
+                    if not tail or tail.endswith("\n"):
+                        break
+                continue
+            if chunk.strip():
+                records.append(json.loads(chunk))
+    return records
+
+
 def recognize_source_class(
     provider: Provider,
     source_path: str | Path,
     *,
     payload: object | None = None,
     source_only: bool = False,
+    source_size_bytes: int | None = None,
 ) -> SourceClassRecognition | None:
     """Classify broad-root candidates before provider-session admission.
 
     Keep this dispatch declaration-owned and structural; callers may still
     enumerate cheaply by suffix, but may not assign a provider session from
     that suffix alone.
+
+    ``source_size_bytes`` is the candidate's already-observed stat size. When
+    given, a whole-document probe above
+    :data:`SOURCE_CLASS_JSON_PROBE_MAX_BYTES` is refused instead of performed.
     """
     if provider is Provider.UNKNOWN:
         if source_only and Path(source_path).suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
@@ -672,15 +712,17 @@ def recognize_source_class(
     if payload is None:
         try:
             if path.suffix.lower() in {".jsonl", ".ndjson"}:
-                records: list[object] = []
-                with path.open(encoding="utf-8") as handle:
-                    for line in handle:
-                        if line.strip():
-                            records.append(json.loads(line))
-                        if len(records) >= 32:
-                            break
-                payload = records
+                # Imported lazily: ``archive.raw_payload`` imports
+                # ``sources.dispatch``, which imports this module back.
+                from polylogue.archive.raw_payload.decode import JSONL_RECORD_INSPECTION_BYTES
+
+                payload = _bounded_jsonl_records(path, limit=32, max_record_bytes=JSONL_RECORD_INSPECTION_BYTES)
             else:
+                if source_size_bytes is not None and source_size_bytes > SOURCE_CLASS_JSON_PROBE_MAX_BYTES:
+                    return SourceClassRecognition(
+                        "unsupported",
+                        "candidate exceeds the structural source-class inspection ceiling",
+                    )
                 payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return SourceClassRecognition("unsupported", "Hermes candidate is not readable JSON")

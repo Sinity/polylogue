@@ -3697,8 +3697,11 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
         "application/pdf",
         "1234",
     ):
-        attachment_hash.update(part.encode("utf-8", errors="surrogatepass"))
-        attachment_hash.update(b"\0")
+        # Length-prefixed framing (bd polylogue-irtix): a NUL separator let
+        # two different field splits produce one hash.
+        encoded = part.encode("utf-8", errors="surrogatepass")
+        attachment_hash.update(len(encoded).to_bytes(8, "big"))
+        attachment_hash.update(encoded)
     attachment_id = attachment_hash.hexdigest()
     message_id = f"{session_id}:n:m1"
 
@@ -5853,5 +5856,120 @@ def test_fresh_archive_reads_back_attachment_provenance_through_the_envelope(tmp
         model_direction, model_producer = provenance["chart.png"]
         assert model_direction == "model_output"
         assert model_producer is not None
+    finally:
+        conn.close()
+
+
+# -----------------------------------------------------------------------------
+# HASH FRAMING, HOOK PARENT AMBIGUITY, HERMES PARENT REBIND
+# -----------------------------------------------------------------------------
+
+
+def test_hash_bytes_framing_separates_embedded_nul_field_splits() -> None:
+    """Two field splits that collided under NUL framing now hash differently.
+
+    Imported message and tool content legitimately contains U+0000, so a
+    single-byte separator made the encoding non-injective: ("a\\x00b", "c")
+    and ("a", "b\\x00c") serialize to the identical NUL-joined stream.
+
+    Anti-vacuity: restore ``digest.update(part); digest.update(b"\\0")`` and
+    these two calls return the same digest, which is the dedup collision.
+    """
+    from polylogue.storage.sqlite.archive_tiers.write import _hash_bytes
+
+    left = _hash_bytes("a\x00b", "c")
+    right = _hash_bytes("a", "b\x00c")
+    assert left != right
+    # The framing must still be deterministic for one input.
+    assert left == _hash_bytes("a\x00b", "c")
+
+
+def test_hermes_observer_parent_resolves_across_profile_roots(tmp_path: Path) -> None:
+    """An observer's parent key rebinds onto the conversational session by raw id.
+
+    Every ATIF/ATOF observer session composes its parent key from its OWN
+    artifact's profile root. On an install where the runtime spans and the
+    state db were acquired from different profile directories the key names a
+    session that does not exist, and the edge can never resolve (12 such
+    ``method=parser-parent`` branch edges measured in the live archive). The
+    raw Hermes session id is the join key; the profile qualifier is a
+    tie-break.
+
+    Anti-vacuity: remove the ``_resolved_hermes_parent_native_id`` rebind and
+    ``resolved_dst_session_id`` stays NULL, which is the unresolved edge this
+    fixes.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conversational = ParsedSession(
+            source_name=Provider.HERMES,
+            provider_session_id="20260714_190039_4abb53@profile-7ff44102c8e5",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="c1",
+                    role=Role.USER,
+                    text="conversation",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="conversation")],
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, conversational)
+
+        observer = ParsedSession(
+            source_name=Provider.HERMES,
+            provider_session_id="observer:atof:20260714_190039_4abb53@profile-9cc2ec93471f",
+            # The observer artifact was acquired from a DIFFERENT profile root.
+            parent_session_provider_id="20260714_190039_4abb53@profile-9cc2ec93471f",
+            branch_type=BranchType.FORK,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="o1",
+                    role=Role.SYSTEM,
+                    text="Hermes ATOF observer stream",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hermes ATOF observer stream")],
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, observer)
+
+        row = conn.execute(
+            "SELECT resolved_dst_session_id FROM session_links WHERE src_session_id LIKE '%observer:atof%'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "hermes-session:20260714_190039_4abb53@profile-7ff44102c8e5"
+    finally:
+        conn.close()
+
+
+def test_hermes_observer_refuses_the_literal_events_artifact_name_as_a_parent(tmp_path: Path) -> None:
+    """``events`` is a file stem, never a session id, so no edge is asserted.
+
+    The shared ATOF ``events.jsonl`` stream's own stem reached
+    ``session_links`` as a parent raw id, asserting an edge to a session that
+    cannot exist.
+
+    Anti-vacuity: drop ``_HERMES_NON_SESSION_PARENT_RAW_IDS`` and a
+    permanently unresolvable row is written for this child again.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        observer = ParsedSession(
+            source_name=Provider.HERMES,
+            provider_session_id="observer:atof:events@profile-9cc2ec93471f",
+            parent_session_provider_id="events@profile-9cc2ec93471f",
+            branch_type=BranchType.FORK,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="o1",
+                    role=Role.SYSTEM,
+                    text="Hermes ATOF observer stream",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hermes ATOF observer stream")],
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, observer)
+
+        rows = conn.execute("SELECT 1 FROM session_links WHERE src_session_id LIKE '%observer:atof:events%'").fetchall()
+        assert rows == []
     finally:
         conn.close()

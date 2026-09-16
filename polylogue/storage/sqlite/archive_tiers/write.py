@@ -77,6 +77,7 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
+from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.blob_store import get_blob_store
@@ -4634,9 +4635,13 @@ class _HookParentClaim:
 
     ``evidence`` is merged into ``session_links.evidence_json`` so the row
     itself records which hook fields decided it.
+
+    ``parent_native_id`` is ``None`` when the hook evidence is present but
+    self-contradictory. That is not silence: no parent is adopted, and the
+    evidence explaining the refusal is still retained on the row.
     """
 
-    parent_native_id: str
+    parent_native_id: str | None
     evidence: Mapping[str, object]
 
 
@@ -4850,10 +4855,33 @@ def _claude_agent_dispatch_parent_claim(
         agent_type = fields.get("agent_type")
         if agent_type is not None and agent_id not in agent_types:
             agent_types[agent_id] = agent_type
+    # One tool_use_id belongs to exactly one agent instance. Two hook records
+    # attributing the same id to different agents is a contradiction in the
+    # evidence itself, and the sorted iteration below would otherwise resolve
+    # it by arbitrary agent-id order. Flag the ambiguity instead: no parent is
+    # adopted, and the contested ids are retained as the reason.
+    claimants_by_tool_use_id: dict[str, set[str]] = defaultdict(set)
+    for agent_id, ids in tool_use_ids.items():
+        for tool_use_id in ids:
+            claimants_by_tool_use_id[tool_use_id].add(agent_id)
+    contested = {tool_use_id for tool_use_id, owners in claimants_by_tool_use_id.items() if len(owners) > 1}
     for agent_id in agent_ids:
         matches = _child_tool_use_id_matches(conn, child_session_id, sorted(tool_use_ids.get(agent_id, ())))
         if not matches:
             continue
+        contested_ids = sorted(tool_use_ids.get(agent_id, set()) & contested)
+        contested_matches = contested_ids if _child_tool_use_id_matches(conn, child_session_id, contested_ids) else []
+        if contested_matches:
+            return _HookParentClaim(
+                None,
+                {
+                    "claude_hook_parent_ambiguity": "one tool_use_id is claimed by more than one agent instance",
+                    "claude_hook_contested_tool_use_ids": contested_matches,
+                    "claude_hook_contested_agent_ids": sorted(
+                        {owner for tool_use_id in contested_matches for owner in claimants_by_tool_use_id[tool_use_id]}
+                    ),
+                },
+            )
         return _HookParentClaim(
             parent_candidate,
             {
@@ -5124,6 +5152,11 @@ def _write_session_link(
     # Match exact stored provider identities and parser-emitted aliases after
     # the same normalization used for session native ids.
     parent_native_id = _sqlite_text((session.parent_session_provider_id or "").strip()) or None
+    if origin == Origin.HERMES_SESSION.value and parent_native_id is not None:
+        parent_native_id = _resolved_hermes_parent_native_id(conn, origin, parent_native_id)
+        session = session.model_copy(update={"parent_session_provider_id": parent_native_id})
+        if parent_native_id is None:
+            return
     hook_claim = _authoritative_parent_claim(
         conn,
         source_conn,
@@ -5172,6 +5205,10 @@ def _write_session_link(
     parent_tool_use_block_id = dispatch.block_id
     method = dispatch.method or "parser-parent"
     evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
+    if hook_claim is not None and hook_parent is None:
+        # Hook evidence spoke and contradicted itself. Retain it on the row
+        # rather than degrading to silence, so the refusal is inspectable.
+        evidence.update(hook_evidence)
     if origin == Origin.AISTUDIO_DRIVE.value and branch_point_message_id is None:
         evidence["branch_point_resolution"] = "unresolved-source-no-local-message-id"
     # A parser-asserted branch point is the only branch point available when
@@ -8414,6 +8451,49 @@ def _branch_point_content_address_matches(
     return row[1] is not None and bytes(row[0]) == bytes(row[1])
 
 
+#: Artifact stems a Hermes observer batch can carry that are file names rather
+#: than session ids. The shared ``events.jsonl`` ATOF stream is the measured
+#: case: its own stem reached ``session_links`` as a parent raw id, asserting
+#: an edge to a session that cannot exist.
+_HERMES_NON_SESSION_PARENT_RAW_IDS = frozenset({"events"})
+
+
+def _resolved_hermes_parent_native_id(conn: sqlite3.Connection, origin_value: str, parent_native_id: str) -> str | None:
+    """Rebind a Hermes observer's parent key onto the conversational session.
+
+    Every ATIF/ATOF observer session composes its parent key from its OWN
+    artifact's profile root. On an install where the runtime spans and the
+    state db were acquired from different profile directories, that key names
+    a session that does not exist and the edge can never resolve. The raw
+    Hermes session id is the real join key; the profile qualifier is a
+    tie-break, the same shape
+    ``context/hermes_lifecycle_reconciliation.py`` already uses.
+
+    Returns ``None`` when nothing may be asserted, preserving the fail-closed
+    rule in ``hermes_spans.py``'s docstring: no edge is safer than a wrong one.
+    """
+    raw_id, _profile_key = split_qualified_session_id(parent_native_id)
+    if not raw_id or raw_id in _HERMES_NON_SESSION_PARENT_RAW_IDS:
+        return None
+    exact = conn.execute(
+        "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1",
+        (archive_session_id(origin_value, parent_native_id),),
+    ).fetchone()
+    if exact is not None:
+        return parent_native_id
+    rows = conn.execute(
+        """SELECT native_id FROM sessions
+           WHERE origin = ? AND (native_id = ? OR native_id LIKE ? || '@profile-%')
+           ORDER BY native_id""",
+        (origin_value, raw_id, raw_id),
+    ).fetchall()
+    # Exactly one conversational session carries this raw id, so the qualifier
+    # mismatch was an acquisition-path artifact, not a real ambiguity. Two or
+    # more is the genuine cross-install collision the qualifier exists to keep
+    # apart: leave the parser's own key, which stays visibly unresolved.
+    return str(rows[0][0]) if len(rows) == 1 else parent_native_id
+
+
 def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession, origin_value: str) -> str | None:
     parent_provider_id = session.parent_session_provider_id
     if not parent_provider_id:
@@ -9430,10 +9510,20 @@ def _write_attachment_native_ids(conn: sqlite3.Connection, ref_id: str, attachme
 
 
 def _hash_bytes(*parts: str) -> bytes:
+    """Digest an ordered field tuple under an unambiguous framing.
+
+    Each part is length-prefixed rather than NUL-separated. Imported message
+    and tool content legitimately contains U+0000, so a single-byte separator
+    lets two different field splits serialize to the same byte stream and so
+    to the same content-identity hash -- a dedup collision an attacker or an
+    ordinary provider export can both produce. A fixed 8-byte big-endian
+    length makes the encoding injective over any byte content.
+    """
     digest = hashlib.sha256()
     for part in parts:
-        digest.update(part.encode("utf-8", errors="surrogatepass"))
-        digest.update(b"\0")
+        encoded = part.encode("utf-8", errors="surrogatepass")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
     return digest.digest()
 
 

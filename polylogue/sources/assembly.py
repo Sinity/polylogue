@@ -43,6 +43,11 @@ class _CodexSidecarData(TypedDict, total=False):
     # never by CodexAssemblySpec.discover_sidecars itself (file-system only,
     # no DB access). See assembly_codex.py's ladder step 3b.
     retained_state_titles: CodexHistoryTitles
+    # Count of ``state_5.sqlite`` thread titles the bounded read refused to
+    # materialize (row cap reached, or an over-long title). A short title map
+    # is only honest when the shortfall is counted, so this rides the
+    # assembly result rather than being logged and lost.
+    state_title_truncation_count: int
 
 
 class _ClaudeAISidecarData(TypedDict, total=False):
