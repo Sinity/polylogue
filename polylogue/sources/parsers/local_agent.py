@@ -409,7 +409,8 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
     # checkpoint file is the only place its counts exist -- ``tokens`` is the
     # evidence that the turn happened, so the message is kept without blocks
     # and carries the counts into the cost rollup.
-    if not text and not content_blocks and not _reports_wire_tokens(record):
+    display_text = _content_text(record.get("displayContent"))
+    if not text and not content_blocks and not display_text and not _reports_wire_tokens(record):
         return None
     token_usage = _token_usage_fields(record)
     gemini_role = _role(_string(record.get("type")) or "unknown", assistant_aliases={"gemini", "model"})
@@ -426,7 +427,6 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
     # only it loses the user's own words inside a payload that can be three
     # orders of magnitude larger. Appended after the message type is resolved
     # so a rendered form never reclassifies a tool turn.
-    display_text = _content_text(record.get("displayContent"))
     if display_text and display_text != text:
         matching_index = next(
             (

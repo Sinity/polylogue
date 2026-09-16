@@ -1653,3 +1653,29 @@ def test_hermes_snapshot_without_source_path_stays_unqualified() -> None:
     [session] = parse_payload("hermes", _hermes_snapshot_payload(), "fallback")
 
     assert session.provider_session_id == "hermes-root"
+
+
+def test_gemini_cli_display_only_user_turn_is_kept() -> None:
+    """polylogue-54a31 (4): a turn with empty ``content`` but a typed prompt survives.
+
+    Anti-vacuity: guard on ``content`` alone and the user's typed prompt is
+    dropped before ``displayContent`` is read.
+    """
+    payload: JSONDocument = {
+        "sessionId": "gemini-session-4",
+        "projectHash": "project-hash",
+        "kind": "chat",
+        "messages": [
+            {
+                "id": "u1",
+                "timestamp": "2026-04-08T20:45:01.000Z",
+                "type": "user",
+                "content": "",
+                "displayContent": "summarize @notes.md",
+            },
+        ],
+    }
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+
+    assert [block.text for block in session.messages[0].blocks] == ["summarize @notes.md"]

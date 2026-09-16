@@ -8504,3 +8504,29 @@ def test_json_session_admission_does_not_depend_on_file_size(
 
     monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
     assert _parse_path_as_session_artifact(target, provider=provider) is True
+
+
+def test_codex_state_filename_alone_does_not_route_a_foreign_file_to_codex_acquisition(tmp_path: Path) -> None:
+    """polylogue-bzx7h: the Codex state-db branch requires the Codex fallback provider.
+
+    A file merely named ``state_5.sqlite`` under a non-Codex source used to be
+    acquired as Codex SQLite state before generic detection ran.
+    """
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "inbox"
+    state_db = root / "state_5.sqlite"
+    _write_plain_sqlite_db(state_db)
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="inbox", root=root, suffixes=(".sqlite",)),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([state_db], source_name="inbox")
+
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        origins = [row[0] for row in conn.execute("SELECT origin FROM raw_sessions").fetchall()]
+    assert not any(str(origin).startswith("codex") for origin in origins)

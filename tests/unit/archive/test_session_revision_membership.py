@@ -1377,3 +1377,82 @@ def test_anchor_free_event_pairing_does_not_degrade_on_a_single_shared_key() -> 
         f"collapsing {cohort} events onto one anchor-free key cost "
         f"{collapsed / control:.2f}x the distinct-key control; pairing is not O(1) per match"
     )
+
+
+def test_message_axis_relation_matches_reference_over_shared_identities() -> None:
+    """polylogue-iaffn: the single-pass content index equals the per-identity scan.
+
+    Reference oracle: a port of the pre-change function, whose shared-identity
+    loop rescanned every key once per identity. Anti-vacuity: the fixture
+    exercises shared identities with equal, differing and mutable content and
+    asymmetric multiplicities, so a lookup that dropped a content value or a
+    mutable exemption changes at least one relation.
+    """
+    import random
+
+    from polylogue.archive.session_revision_membership import _message_axis_relation
+
+    def reference(
+        contents_a: frozenset[tuple[bytes, bytes, int]],
+        contents_b: frozenset[tuple[bytes, bytes, int]],
+        mutable: frozenset[bytes],
+    ) -> str:
+        counts_a = {(i, c): m for i, c, m in contents_a}
+        counts_b = {(i, c): m for i, c, m in contents_b}
+        ic_a: dict[bytes, int] = {}
+        ic_b: dict[bytes, int] = {}
+        for (i, _c), m in counts_a.items():
+            ic_a[i] = ic_a.get(i, 0) + m
+        for (i, _c), m in counts_b.items():
+            ic_b[i] = ic_b.get(i, 0) + m
+        ids_a = frozenset(i for i, _c, _m in contents_a)
+        ids_b = frozenset(i for i, _c, _m in contents_b)
+        for identity in ids_a & ids_b:
+            va = {c for (i, c) in counts_a if i == identity}
+            vb = {c for (i, c) in counts_b if i == identity}
+            if identity in mutable:
+                continue
+            if va != vb:
+                return "conflict"
+
+        def has_extra(
+            side: dict[tuple[bytes, bytes], int],
+            other: dict[tuple[bytes, bytes], int],
+            side_ic: dict[bytes, int],
+            other_ic: dict[bytes, int],
+        ) -> bool:
+            for key, count in side.items():
+                identity = key[0]
+                if identity in mutable:
+                    if side_ic.get(identity, 0) > other_ic.get(identity, 0):
+                        return True
+                elif count > other.get(key, 0):
+                    return True
+            return False
+
+        a_richer = bool(ids_a - ids_b) or has_extra(counts_a, counts_b, ic_a, ic_b)
+        b_richer = bool(ids_b - ids_a) or has_extra(counts_b, counts_a, ic_b, ic_a)
+        if a_richer and b_richer:
+            return "conflict"
+        if a_richer:
+            return "a_contains_b"
+        if b_richer:
+            return "b_contains_a"
+        return "equal"
+
+    rng = random.Random(4171)
+    seen: set[str] = set()
+    for _ in range(200):
+        ids = [bytes([n]) for n in range(rng.randint(1, 6))]
+
+        def pick(identities: list[bytes]) -> frozenset[tuple[bytes, bytes, int]]:
+            return frozenset(
+                (i, bytes([rng.randint(0, 2)]), rng.randint(1, 2)) for i in identities if rng.random() < 0.8
+            )
+
+        a, b = pick(ids), pick(ids)
+        mutable = frozenset(i for i in ids if rng.random() < 0.3)
+        expected = reference(a, b, mutable)
+        seen.add(expected)
+        assert _message_axis_relation(a, b, mutable_identities=mutable) == expected
+    assert seen == {"equal", "a_contains_b", "b_contains_a", "conflict"}

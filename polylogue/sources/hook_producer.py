@@ -135,12 +135,32 @@ def reject_duplicated_transcript(payload: dict[str, object]) -> None:
     unreachable -- see ``sources/live/hook_tool_response.py``.
     """
     for key in TRANSCRIPT_LIKE_KEYS:
-        value = payload.get(key)
-        if isinstance(value, str) and len(value) > MAX_TRANSCRIPT_LIKE_FIELD_CHARS:
+        size = transcript_like_chars(payload.get(key))
+        if size > MAX_TRANSCRIPT_LIKE_FIELD_CHARS:
             raise HookSpoolRecordError(
                 f"hook spool payload field {key!r} looks like a duplicated transcript "
-                f"({len(value)} chars > {MAX_TRANSCRIPT_LIKE_FIELD_CHARS})"
+                f"({size} chars > {MAX_TRANSCRIPT_LIKE_FIELD_CHARS})"
             )
+
+
+TRANSCRIPT_LIKE_MAX_DEPTH = 6
+
+
+def transcript_like_chars(value: object, *, depth: int = 0) -> int:
+    """Characters of string content reachable under ``value``, depth-capped.
+
+    A bare ``isinstance(value, str)`` check let ``{"messages": ["<1 MB>"]}``
+    spool a transcript verbatim into durable source.db.
+    """
+    if isinstance(value, str):
+        return len(value)
+    if depth >= TRANSCRIPT_LIKE_MAX_DEPTH:
+        return 0
+    if isinstance(value, dict):
+        return sum(transcript_like_chars(item, depth=depth + 1) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(transcript_like_chars(item, depth=depth + 1) for item in value)
+    return 0
 
 
 def timestamp_ms(value: str) -> int:

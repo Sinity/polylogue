@@ -1078,3 +1078,20 @@ def test_same_timestamp_document_only_turns_keep_every_attachment_owned(
         rows = conn.execute("SELECT message_id, attachment_id FROM attachment_refs ORDER BY message_id").fetchall()
     assert len(rows) == 4
     assert len({message_id for message_id, _attachment_id in rows}) == 4
+
+
+def test_drive_parent_chain_orders_by_instant_not_by_timestamp_text() -> None:
+    """polylogue-54a31 (1): '+02:00' sorts by its instant, not after every 'Z' string."""
+    from polylogue.sources.parsers.drive import _sort_instant
+
+    later_text_earlier_instant = "2026-01-01T09:00:00Z"  # 09:00Z
+    earlier_text_later_instant = "2026-01-01T10:00:00+02:00"  # 08:00Z
+    assert sorted([later_text_earlier_instant, earlier_text_later_instant]) == [
+        later_text_earlier_instant,
+        earlier_text_later_instant,
+    ]
+    assert sorted([later_text_earlier_instant, earlier_text_later_instant], key=_sort_instant) == [
+        earlier_text_later_instant,
+        later_text_earlier_instant,
+    ]
+    assert _sort_instant(None) <= _sort_instant("garbage") < _sort_instant(earlier_text_later_instant)

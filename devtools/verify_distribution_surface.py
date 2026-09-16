@@ -24,7 +24,9 @@ RUNTIME_IMPORT_PROBES = (
     "polylogue.mcp.cli",
     "polylogue.archive.query.expression",
 )
-PACKAGE_RESOURCES = (("polylogue.operations", "historical-source-continuity-operation-20260807.json"),)
+# The one-shot historical continuity recovery operation and its packaged
+# resource were deleted; the runtime ships no data-file resources today.
+PACKAGE_RESOURCES: tuple[tuple[str, str], ...] = ()
 
 
 class DistributionVerificationError(RuntimeError):

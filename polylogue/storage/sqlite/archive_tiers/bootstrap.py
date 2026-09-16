@@ -654,6 +654,14 @@ def initialize_archive_database(
                     f"version {required_version}; run an explicit durable-tier migration with a verified backup "
                     "manifest"
                 )
+            if current_version > required_version and tier in DURABLE_MIGRATION_TIERS:
+                # Durable state ahead of the runtime is a stale runtime, never
+                # a reason to move irreplaceable data aside.
+                raise RuntimeError(
+                    f"{path.name} schema version {current_version} is newer than this Polylogue runtime expects "
+                    f"for the {tier.value} tier ({required_version}). Update the installed Polylogue runtime to "
+                    "the build that created the database before opening it; do not move the database aside."
+                )
             rebuild_command = (
                 "polylogue ops reset --index && polylogued run"
                 if tier is ArchiveTier.INDEX

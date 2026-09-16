@@ -13,9 +13,6 @@ from .metadata import ScenarioMetadata
 
 class ScenarioProjectionSourceKind(str, Enum):
     VALIDATION_LANE = "validation-lane"
-    MUTATION_CAMPAIGN = "mutation-campaign"
-    BENCHMARK_CAMPAIGN = "benchmark-campaign"
-    SYNTHETIC_BENCHMARK = "synthetic-benchmark"
     INFERRED_CORPUS = "inferred-corpus"
     INFERRED_CORPUS_SCENARIO = "inferred-corpus-scenario"
 
