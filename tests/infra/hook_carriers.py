@@ -66,7 +66,7 @@ def _carrier_sources(spool_root: Path) -> tuple[WatchSource, ...]:
 
     return tuple(
         WatchSource(
-            name=provider,
+            name=f"{provider}-hooks",
             root=hook_carrier_provider_dir(provider, spool_root),
             suffixes=(".ndjson",),
             source_id=f"primary-hook-spool:{provider}",
