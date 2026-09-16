@@ -87,6 +87,11 @@ _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
     "anthropic": "claude-ai",
     "claude-code-todos": "claude-code",
     "claude-code-history": "claude-code",
+    # Hook-carrier watch sources: named apart from the harness session source
+    # (two sources may not share a name) but owned by the same provider.
+    "claude-code-hooks": "claude-code",
+    "codex-hooks": "codex",
+    "hermes-hooks": "hermes",
     "openai": "chatgpt",
     "google": "gemini",
     "google-gemini": "gemini",

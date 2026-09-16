@@ -1232,6 +1232,25 @@ def test_workspace_env_isolates_typed_default_source_roots(workspace_env: dict[s
     assert roots_by_name["hermes"] == home_dir / ".hermes"
 
 
+def test_hook_carrier_sources_are_named_apart_but_owned_by_their_provider(workspace_env: dict[str, Path]) -> None:
+    """A carrier source never shadows its harness's session source by name.
+
+    Anti-vacuity: name the carrier source after the bare harness again and the
+    two ``claude-code`` entries collapse to one in the by-name mapping, so the
+    first assertion sees the carriers root; drop the alias and the second one
+    resolves the carrier source to no provider.
+    """
+    from polylogue.core.provider_identity import normalize_provider_token
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.sources.live.watcher import HOOK_CARRIER_PROVIDERS
+
+    names = [source.name for source in daemon_cli.default_sources()]
+    assert len(names) == len(set(names)), names
+    for provider in HOOK_CARRIER_PROVIDERS:
+        assert f"{provider}-hooks" in names
+        assert normalize_provider_token(f"{provider}-hooks") == provider
+
+
 def test_additional_root_excludes_provider_state_suffixes(workspace_env: dict[str, Path]) -> None:
     from polylogue.daemon import cli as daemon_cli
 
