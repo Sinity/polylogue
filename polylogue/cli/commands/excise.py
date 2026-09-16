@@ -219,12 +219,27 @@ def excise_command(
                 f"  source.db raw rows: {plan.source_raw_rows}"
                 + (f" (including {plan.source_fact_rows} fact/plan snapshot row(s))" if plan.source_fact_rows else ""),
                 f"  source.db hook events: {plan.source_hook_events}",
+                f"  source.db telemetry spans: {plan.source_otlp_spans}",
+                f"  source.db container members: {plan.source_container_members}"
+                + (
+                    f" (releasing {plan.source_container_items} container item(s))"
+                    if plan.source_container_items
+                    else ""
+                ),
                 f"  source.db blob refs: {plan.source_blob_refs}",
                 f"  index.db sessions: {plan.index_sessions}",
                 f"  index.db messages: {plan.index_messages}",
                 f"  index.db blocks: {plan.index_blocks}",
                 f"  embeddings.db vectors: {plan.embeddings_vectors}",
                 f"  user.db assertions: {plan.user_assertions}",
+                *(
+                    [
+                        "  WARNING container(s) retained for other live sessions, still holding these "
+                        f"bytes: {', '.join(plan.retained_source_containers)}"
+                    ]
+                    if plan.retained_source_containers
+                    else []
+                ),
                 *(
                     [f"  already excised blob hashes: {', '.join(plan.already_excised_blob_hashes)}"]
                     if plan.already_excised_blob_hashes
@@ -331,6 +346,16 @@ def excise_command(
         detail_message += (
             f"; INCOMPLETE: {len(retained_hook_events)} hook event(s) for this session were NOT excised "
             "and remain readable in source.db"
+        )
+    retained_containers: tuple[str, ...] = tuple(
+        str(item) for item in cast("list[object]", domain_receipt.get("retained_source_containers", ()))
+    )
+    if retained_containers:
+        # The container blob still holds this session's bytes because another
+        # session's member of the same export is still live (polylogue-q4f6d).
+        detail_message += (
+            f"; INCOMPLETE: {len(retained_containers)} source container(s) still hold this session's "
+            f"bytes for other live sessions: {', '.join(retained_containers)}"
         )
     _emit(
         env,
