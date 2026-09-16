@@ -1303,6 +1303,34 @@ def _message_usage_event_payload(
         advisor_model = record.get("advisorModel")
         if isinstance(advisor_model, str) and advisor_model:
             payload["advisor_model"] = advisor_model
+        # apiBlockIndex names the provider-side billing/quota block this call
+        # fell in -- the block the subscription accounting is computed over,
+        # and the same class of cross-reference key as requestId beside it.
+        # Corpus measurement (2026-09-16, 15,215 session files): 182,187
+        # occurrences, every one on a type:"assistant" record carrying
+        # message.usage, so this gate is always satisfied where the field
+        # exists. It is nullable on the wire; only an integer is recorded.
+        api_block_index = record.get("apiBlockIndex")
+        if isinstance(api_block_index, int) and not isinstance(api_block_index, bool):
+            payload["api_block_index"] = api_block_index
+        # quotaLimits is the only corpus evidence of *why* a turn was refused.
+        # Same measurement: 222 occurrences, all on assistant records carrying
+        # message.usage. Recorded as refusal evidence -- the limit type and
+        # the reset instant -- rather than the whole provider sub-object.
+        quota_limits = record.get("quotaLimits")
+        if isinstance(quota_limits, dict):
+            quota_evidence: dict[str, object] = {}
+            rate_limit_type = quota_limits.get("rateLimitType")
+            if isinstance(rate_limit_type, str) and rate_limit_type:
+                quota_evidence["rate_limit_type"] = rate_limit_type
+            resets_at = quota_limits.get("resetsAt")
+            if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool):
+                quota_evidence["resets_at"] = resets_at
+            status = quota_limits.get("status")
+            if isinstance(status, str) and status:
+                quota_evidence["status"] = status
+            if quota_evidence:
+                payload["quota_limits"] = quota_evidence
     return payload
 
 

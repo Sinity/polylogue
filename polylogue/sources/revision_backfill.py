@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pickle
 import shutil
@@ -983,6 +984,17 @@ class RawRevisionReplayResourceBlockedError(RuntimeError):
         self.limit_bytes = limit_bytes
         self.total_bytes = total_bytes
         super().__init__(f"{len(raw_ids)} raw revision(s) total {total_bytes} bytes exceed replay limit {limit_bytes}")
+
+
+class AntigravityTrajectoryDriftError(RuntimeError):
+    """The live ``.pb`` trajectory no longer matches the retained blob.
+
+    Antigravity replay cannot decode retained bytes on its own (protobuf
+    decoding needs a live language-server client), so it re-reads the file.
+    When that file has drifted, replaying it would bind current content to an
+    older revision's ``raw_id``. This refusal counts as a replay degradation
+    exactly the way the other replay ``RuntimeError``s do.
+    """
 
 
 class RebuildDeadlineExceededError(RuntimeError):
@@ -4563,6 +4575,25 @@ def _parse_one_raw(
         if trajectory_path.parent.name != "conversations" or not trajectory_path.is_file():
             raise RuntimeError(
                 f"Antigravity raw replay requires its original conversations/<cascade_id>.pb trajectory: {source_path}"
+            )
+        # Antigravity decoding needs a live language-server client, so this
+        # replay re-derives from the file on disk rather than from the
+        # retained bytes. Antigravity rewrites conversations/<cascade_id>.pb
+        # in place, so an unchecked replay would return CURRENT content under
+        # an OLDER revision's raw_id -- rebuildable state derived from mutable
+        # source instead of from the archived bytes. Existence and session
+        # count do not detect that; only the bytes do. A drifted file is a
+        # typed refusal, never a silent substitution.
+        try:
+            live_bytes = trajectory_path.read_bytes()
+        except OSError as exc:
+            raise AntigravityTrajectoryDriftError(
+                f"Antigravity trajectory is unreadable for replay: {source_path}: {exc}"
+            ) from exc
+        if hashlib.sha256(live_bytes).digest() != hashlib.sha256(payload).digest():
+            raise AntigravityTrajectoryDriftError(
+                "Antigravity trajectory on disk no longer matches the retained blob for this revision; "
+                f"refusing to replay current content under the retained raw id: {source_path}"
             )
         cascade_id = trajectory_path.stem
         sessions = list(antigravity.iter_language_server_exports(root, only_cascade_ids=frozenset({cascade_id})))

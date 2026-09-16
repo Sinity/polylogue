@@ -265,9 +265,29 @@ class TestClaudeCodeRecordTextContent2:
         record = ClaudeCodeRecord(type="user" if message is None else "assistant", message=message)
         assert record.text_content == expected
 
-    def test_top_level_content_field_for_summary_records(self) -> None:
-        """Summary/system records with top-level content field return it as text."""
-        record = ClaudeCodeRecord.model_validate({"type": "summary", "content": "Compacted session context"})
+    def test_top_level_summary_field_for_summary_records(self) -> None:
+        """A type:"summary" record reads its text from the top-level ``summary`` key.
+
+        Real key-set, measured over ~/.claude/projects: every summary record
+        is exactly {leafUuid, summary, type} -- no ``content`` key exists.
+        Anti-vacuity: reverting ``text_content`` to read ``content`` here (or
+        swapping this key-set with the system one below) returns "" and turns
+        this red.
+        """
+        record = ClaudeCodeRecord.model_validate(
+            {"type": "summary", "leafUuid": "4b1f0d7e-0000-4000-8000-000000000001", "summary": "Session recap"}
+        )
+        assert record.text_content == "Session recap"
+
+    def test_top_level_content_field_for_system_records(self) -> None:
+        """A system/compact_boundary record reads its text from top-level ``content``.
+
+        Anti-vacuity: routing system records through the ``summary`` key
+        returns "" and turns this red.
+        """
+        record = ClaudeCodeRecord.model_validate(
+            {"type": "system", "subtype": "compact_boundary", "content": "Compacted session context"}
+        )
         assert record.text_content == "Compacted session context"
 
 

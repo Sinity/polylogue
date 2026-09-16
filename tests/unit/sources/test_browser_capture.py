@@ -4,20 +4,29 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.archive.message.roles import Role
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
-from polylogue.core.enums import Provider, TitleSource
+from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.sources.dispatch import detect_provider, parse_payload
+from polylogue.sources.parsers.base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+)
 from polylogue.sources.parsers.browser_capture import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
+    _merge_envelope_attachments,
 )
 from polylogue.sources.parsers.browser_capture import (
     parse as parse_browser_capture,
@@ -1639,3 +1648,80 @@ def test_browser_capture_claude_fallback_turn_blocks_produce_typed_tool_blocks()
     assert tool_message.blocks[0].tool_id == "toolu_1"
     assert tool_message.blocks[0].is_error is False
     assert tool_message.parent_message_provider_id == "a1"
+
+
+# -----------------------------------------------------------------------------
+# ENVELOPE ATTACHMENT MERGE INDEX (bd polylogue-l3zva)
+# -----------------------------------------------------------------------------
+
+
+def _claude_envelope_with_attachments(attachments: list[dict[str, object]]) -> BrowserCaptureEnvelope:
+    payload = _capture_payload()
+    payload["capture_id"] = "claude:conv-merge"
+    session = cast(dict[str, object], payload["session"])
+    session["provider"] = "claude"
+    session["provider_session_id"] = "conv-merge"
+    session["turns"] = [{"provider_turn_id": "u1", "role": "user", "text": "here they are", "ordinal": 0}]
+    session["attachments"] = attachments
+    return BrowserCaptureEnvelope.model_validate(payload)
+
+
+def test_envelope_attachment_merge_matches_same_descriptor_rows_by_bytes() -> None:
+    """Same owner, name and size; only the last byte differs -- each keeps its own row.
+
+    The merge previously rescanned every merged row for every unmatched
+    candidate and full-byte-compared each one, so N same-descriptor rows cost
+    O(N^2 * size) at parse time on untrusted browser-captured content. The
+    descriptor index must not change which rows reconcile.
+
+    Anti-vacuity: key the index on ``provider_attachment_id`` instead of the
+    descriptor and no cross-route match is ever found, so the native rows lose
+    their acquired bytes; drop the byte compare inside the cohort and the two
+    last-byte-differing envelope rows collapse onto one native row.
+    """
+    import base64 as _b64
+
+    native = [
+        ParsedAttachment(
+            provider_attachment_id=f"native-{index}",
+            message_provider_id="u1",
+            name="same.bin",
+            size_bytes=4,
+            inline_bytes=b"abc" + bytes([index]),
+        )
+        for index in range(2)
+    ]
+    parsed = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="conv-merge",
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                text="here they are",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="here they are")],
+            )
+        ],
+        attachments=native,
+    )
+    envelope = _claude_envelope_with_attachments(
+        [
+            {
+                "provider_attachment_id": f"claude-attachment:env-{index}",
+                "message_provider_id": "u1",
+                "name": "same.bin",
+                "size_bytes": 4,
+                "inline_base64": _b64.b64encode(b"abc" + bytes([index])).decode("ascii"),
+            }
+            for index in range(2)
+        ]
+    )
+
+    merged = _merge_envelope_attachments(parsed, envelope)
+
+    by_id = {attachment.provider_attachment_id: attachment for attachment in merged.attachments}
+    # Each envelope row folded into the native row carrying its exact bytes,
+    # and no extra synthetic row survived.
+    assert sorted(by_id) == ["native-0", "native-1"]
+    assert by_id["native-0"].inline_bytes == b"abc\x00"
+    assert by_id["native-1"].inline_bytes == b"abc\x01"

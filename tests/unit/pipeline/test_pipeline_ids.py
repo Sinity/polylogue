@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, Provider, WebConstructType
 from polylogue.core.hashing import hash_payload
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.pipeline.ids import (
@@ -22,6 +22,7 @@ from polylogue.pipeline.ids import (
     attachment_identity_hash,
     event_base_identity_hash,
     event_canonical_identity_hash,
+    message_content_identity,
     message_identity_hash,
     session_content_hash,
     session_id,
@@ -29,7 +30,7 @@ from polylogue.pipeline.ids import (
     validate_semantic_hash_partition,
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.sources.parsers.base_models import ParsedSessionEvent
+from polylogue.sources.parsers.base_models import ParsedSessionEvent, ParsedWebConstruct
 
 
 def _parsed_message(provider_message_id: str, role: str, text: str, timestamp: str | None) -> ParsedMessage:
@@ -643,3 +644,68 @@ def test_event_canonical_identity_hash_folds_base_and_content() -> None:
     # (this is precisely what lets two distinct same-type-same-anchor events
     # coexist as separate set entries -- polylogue-aggz).
     assert folded_a != folded_b
+
+
+# -----------------------------------------------------------------------------
+# REDUNDANT TEXT-ONLY BLOCK COLLAPSE (bd polylogue-ig9tt)
+# -----------------------------------------------------------------------------
+
+
+def _single_text_block_message(block: ParsedContentBlock) -> ParsedMessage:
+    """One message whose single TEXT block repeats ``message.text`` exactly."""
+    return ParsedMessage(
+        provider_message_id="m1",
+        role=Role.ASSISTANT,
+        text="same text",
+        timestamp="2026-01-01T00:00:00Z",
+        blocks=[block],
+    )
+
+
+@pytest.mark.parametrize(
+    "rich_block",
+    [
+        pytest.param(
+            ParsedContentBlock(
+                type=BlockType.TEXT,
+                text="same text",
+                web_constructs=[
+                    ParsedWebConstruct(
+                        construct_type=WebConstructType.CONTENT_REFERENCE,
+                        provider_key="citations",
+                        url="https://example.invalid/a",
+                    )
+                ],
+            ),
+            id="web_constructs",
+        ),
+        pytest.param(
+            ParsedContentBlock(
+                type=BlockType.TEXT,
+                text="same text",
+                metadata={"reasoning_title": "Weighing the options"},
+            ),
+            id="metadata",
+        ),
+    ],
+)
+def test_evidence_bearing_text_block_is_not_collapsed(rich_block: ParsedContentBlock) -> None:
+    """A single TEXT block carrying evidence hashes differently from a bare one.
+
+    ``_is_redundant_text_only_block`` exists to absorb a parser-shape artifact
+    (blocks == [] vs one bare echo of ``message.text``). A block that also
+    carries citations or parser metadata is a second content axis, so
+    collapsing it to the empty sentinel would make a richer acquisition hash
+    equal to a poorer one and drop it as a duplicate.
+
+    Anti-vacuity: drop the ``not block.web_constructs`` / ``not
+    block.metadata`` conjuncts from the predicate and both parametrizations go
+    red, because the payload becomes ``_EMPTY_SENTINEL`` in both cases.
+    ``message.text`` is identical across the pair, so nothing but the block's
+    own evidence can be producing the difference.
+    """
+    bare = _single_text_block_message(ParsedContentBlock(type=BlockType.TEXT, text="same text"))
+    rich = _single_text_block_message(rich_block)
+
+    assert bare.text == rich.text
+    assert message_content_identity(bare) != message_content_identity(rich)

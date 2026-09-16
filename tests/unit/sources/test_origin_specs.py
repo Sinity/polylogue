@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 import sys
 from dataclasses import replace
@@ -1174,3 +1175,59 @@ class TestSemanticSourceClosureMemo:
 
         assert alpha == ((roots[0] / "polylogue" / "sources" / "emitter.py").resolve(),)
         assert beta == ((roots[1] / "polylogue" / "sources" / "emitter.py").resolve(),)
+
+
+# -----------------------------------------------------------------------------
+# BOUNDED ADMISSION PROBES (bd polylogue-dhkuu, finding B)
+# -----------------------------------------------------------------------------
+
+
+def test_hermes_json_probe_refuses_above_the_inspection_ceiling(tmp_path: Path) -> None:
+    """A candidate larger than the ceiling is refused on its stat size, unread.
+
+    ``recognize_source_class`` runs in the daemon's normal mode over
+    semi-trusted provider roots and previously did
+    ``json.loads(path.read_text())`` with no ceiling. The caller already holds
+    ``stat().st_size``, so the size decides before any read.
+
+    Anti-vacuity: drop the ``source_size_bytes`` gate and this call reads and
+    parses the file, returning the structural signature instead of the typed
+    refusal.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.origin_specs import SOURCE_CLASS_JSON_PROBE_MAX_BYTES, recognize_source_class
+
+    candidate = tmp_path / "trajectory.json"
+    candidate.write_text("{}", encoding="utf-8")
+
+    recognition = recognize_source_class(
+        Provider.HERMES, candidate, source_size_bytes=SOURCE_CLASS_JSON_PROBE_MAX_BYTES + 1
+    )
+
+    assert recognition is not None
+    assert recognition.source_class == "unsupported"
+    assert "inspection ceiling" in recognition.reason
+
+
+def test_hermes_jsonl_probe_skips_an_oversized_record(tmp_path: Path) -> None:
+    """One over-long JSONL record is skipped, not read whole.
+
+    The 32-record cap left each ``json.loads(line)`` unbounded. A record above
+    ``JSONL_RECORD_INSPECTION_BYTES`` buys no classification accuracy (the
+    signature is decided by leading keys), so it is skipped and the next real
+    record still classifies the file.
+
+    Anti-vacuity: restore the plain ``for line in handle`` loop and the
+    oversized record is parsed in full before the recognizer ever sees the
+    ATOF record that decides the answer.
+    """
+    from polylogue.archive.raw_payload.decode import JSONL_RECORD_INSPECTION_BYTES
+    from polylogue.sources.origin_specs import _bounded_jsonl_records
+
+    candidate = tmp_path / "events.jsonl"
+    huge = json.dumps({"pad": "x" * (JSONL_RECORD_INSPECTION_BYTES * 2)})
+    candidate.write_text(huge + "\n" + json.dumps({"kept": True}) + "\n", encoding="utf-8")
+
+    records = _bounded_jsonl_records(candidate, limit=32, max_record_bytes=JSONL_RECORD_INSPECTION_BYTES)
+
+    assert records == [{"kept": True}]

@@ -692,3 +692,41 @@ class TestIdentityFrameContract:
 
         for session_id in session_ids:
             assert len(frame.display(session_id)) <= len(session_id)
+
+
+# -----------------------------------------------------------------------------
+# BOUNDED IDENTIFIER DISPLAY (bd polylogue-m8yd5)
+# -----------------------------------------------------------------------------
+
+
+def test_identity_frame_bounds_an_overlong_identifier() -> None:
+    """A megabyte-long native id renders bounded and marked, not character-laddered.
+
+    ``identity_frame`` tried every tail length from ``MINIMUM_TAIL`` to the
+    longest identifier in the frame, rendering every identifier at each step.
+    Provider session ids are unrestricted strings from untrusted exports and
+    are stored verbatim, so one such id made every later CLI render of any
+    result set containing it cost ~10^6 * N renders, on every query, forever.
+
+    Anti-vacuity: remove ``_bounded`` from ``identity_frame``/``display`` and
+    the marker disappears, the cell grows past
+    ``MAXIMUM_DISPLAY_LENGTH + len(OVERLONG_MARKER)``, and the ladder runs to
+    the full identifier length again.
+    """
+    from polylogue.rendering.identity import (
+        MAXIMUM_DISPLAY_LENGTH,
+        OVERLONG_MARKER,
+        identity_frame,
+    )
+
+    overlong = "codex-session:" + ("f" * 1_000_000)
+    ordinary = "codex-session:0000aaaa"
+
+    frame = identity_frame([overlong, ordinary])
+
+    rendered = frame.display(overlong)
+    assert OVERLONG_MARKER in rendered
+    assert len(rendered) <= MAXIMUM_DISPLAY_LENGTH + len(OVERLONG_MARKER)
+    assert frame.tail <= MAXIMUM_DISPLAY_LENGTH + len(OVERLONG_MARKER)
+    # The frame stays injective and the ordinary identifier is unaffected.
+    assert rendered != frame.display(ordinary)

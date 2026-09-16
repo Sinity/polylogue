@@ -4403,3 +4403,33 @@ def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path, mon
     # ordering shortcut cannot make these manifests agree by luck.
     assert lineage_manifest["session_links"] == lexicographic_manifest["session_links"]
     assert lineage_manifest == lexicographic_manifest
+
+
+# -----------------------------------------------------------------------------
+# ANTIGRAVITY .pb REPLAY DRIFT (bd polylogue-t1vl6)
+# -----------------------------------------------------------------------------
+
+
+def test_antigravity_pb_replay_refuses_a_drifted_trajectory(tmp_path: Path) -> None:
+    """A rewritten ``.pb`` is a typed refusal, not a silent substitution.
+
+    Antigravity decoding needs a live language-server client, so replay
+    re-derives from the file on disk. Antigravity rewrites
+    ``conversations/<cascade_id>.pb`` in place, so the existence and
+    session-count guards both pass for a CHANGED file and current content
+    would be replayed under an older revision's ``raw_id``.
+
+    Anti-vacuity: remove the content-hash comparison and this call no longer
+    raises -- it proceeds into ``iter_language_server_exports`` against bytes
+    that are not the retained blob.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.revision_backfill import AntigravityTrajectoryDriftError, _parse_one_raw
+
+    conversations = tmp_path / "conversations"
+    conversations.mkdir(parents=True)
+    trajectory = conversations / "cascade-1.pb"
+    trajectory.write_bytes(b"live bytes after an in-place rewrite")
+
+    with pytest.raises(AntigravityTrajectoryDriftError):
+        _parse_one_raw(Provider.ANTIGRAVITY, b"retained bytes", str(trajectory))
