@@ -170,9 +170,20 @@ def check_annotation_coverage(schema: Mapping[str, object] | SchemaNode) -> Chec
     )
 
 
-def check_cross_provider_consistency(schemas: Mapping[str, Mapping[str, object] | SchemaNode]) -> CheckResult:
-    """Check consistency across all provider schemas."""
+def check_cross_provider_consistency(
+    schemas: Mapping[str, Mapping[str, object] | SchemaNode],
+    *,
+    sample_counts: Mapping[str, int | None] | None = None,
+) -> CheckResult:
+    """Check consistency across all provider schemas.
+
+    Sample counts come from the package manifest, not from the element
+    schema document: committed element schemas are content-only projections
+    (see :func:`check_schema_staleness`), so the generation route publishes
+    the denominator in ``package.json`` instead.
+    """
     issues: list[str] = []
+    counts = sample_counts or {}
 
     for provider, schema in schemas.items():
         root = json_document(schema)
@@ -180,8 +191,8 @@ def check_cross_provider_consistency(schemas: Mapping[str, Mapping[str, object] 
         if not roles:
             issues.append(f"{provider}: no semantic roles")
 
-        if not root.get("x-polylogue-sample-count"):
-            issues.append(f"{provider}: missing sample count")
+        if not counts.get(provider):
+            issues.append(f"{provider}: package manifest records no sample count")
 
     if issues:
         return CheckResult(
@@ -198,37 +209,46 @@ def check_cross_provider_consistency(schemas: Mapping[str, Mapping[str, object] 
     )
 
 
-def check_schema_staleness(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
-    """Check whether the committed schema is stale via its generated-at timestamp."""
+def check_schema_staleness(observed_at: str | None) -> CheckResult:
+    """Report when the committed package was last observed against its source.
+
+    ``observed_at`` is the package manifest's ``last_seen``. The committed
+    element schema document deliberately carries no ``x-polylogue-generated-at``
+    field: ``SchemaRegistry.write_package`` gzips each element with ``mtime=0``
+    and sorted keys so an unchanged structure regenerates to byte-identical
+    output, and that byte equality is the evidence a regeneration run uses to
+    prove a package unchanged. A wall-clock timestamp inside the document would
+    make every regeneration diff against itself, so the generation route
+    (``polylogue.schemas.generation.workflow``) keeps observation time in the
+    manifest instead. Do not re-add the field to published elements.
+
+    Age is reported, never failed. A package does not stop describing its
+    source because the calendar advanced, and no repository edit can clear a
+    date-triggered warning, so an age threshold is not a gate invariant. A
+    manifest with no usable observation time is a real defect and warns.
+    """
     from datetime import UTC, datetime
 
-    root = json_document(schema)
-    generated_at = root.get("x-polylogue-generated-at")
-    if not generated_at or not isinstance(generated_at, str):
+    if not observed_at or not isinstance(observed_at, str):
         return CheckResult(
             name="schema_staleness",
             status=OutcomeStatus.WARNING,
-            summary="Schema has no x-polylogue-generated-at timestamp",
+            summary="Package manifest records no observation time",
         )
     try:
-        gen_time = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
-        age_days = (datetime.now(UTC) - gen_time).days
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        age_days = (datetime.now(UTC) - observed).days
     except ValueError:
         return CheckResult(
             name="schema_staleness",
             status=OutcomeStatus.WARNING,
-            summary=f"Unparseable generated-at timestamp: {generated_at!r}",
+            summary=f"Unparseable manifest observation time: {observed_at!r}",
         )
-    if age_days > 90:
-        return CheckResult(
-            name="schema_staleness",
-            status=OutcomeStatus.WARNING,
-            summary=f"Schema may be stale — generated {age_days} days ago",
-        )
+    suffix = " — refresh from current source material when a generation run is authorized" if age_days > 90 else ""
     return CheckResult(
         name="schema_staleness",
         status=OutcomeStatus.OK,
-        summary=f"Schema generated {age_days} days ago",
+        summary=f"Package last observed {age_days} days ago{suffix}",
     )
 
 
