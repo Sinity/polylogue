@@ -16,11 +16,23 @@ def test_verify_wheel_surface_accepts_runtime_scripts(tmp_path: Path) -> None:
     surface._verify_wheel_surface(wheel)
 
 
-def test_verify_wheel_surface_requires_historical_operation_resource(tmp_path: Path) -> None:
+def test_verify_wheel_surface_requires_declared_package_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declared package resource missing from the wheel is a refusal.
+
+    The runtime ships no data-file resources today (polylogue-877es), so the
+    declaration is exercised with a synthetic entry. Anti-vacuity: the probe
+    loop over PACKAGE_RESOURCES is what raises; an empty declaration passes.
+    """
+    monkeypatch.setattr(surface, "PACKAGE_RESOURCES", (("polylogue.operations", "declared-resource.json"),))
     wheel = _write_wheel(tmp_path, entry_points=_runtime_entry_points(), include_resources=False)
 
-    with pytest.raises(surface.DistributionVerificationError, match="historical-source-continuity-operation"):
+    with pytest.raises(surface.DistributionVerificationError, match="declared-resource.json"):
         surface._verify_wheel_surface(wheel)
+
+    monkeypatch.setattr(surface, "PACKAGE_RESOURCES", ())
+    surface._verify_wheel_surface(wheel)
 
 
 def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
@@ -57,7 +69,7 @@ def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
     import_probes = [call for call in calls if len(call) >= 4 and call[1:3] == ("-I", "-c")]
     assert len(import_probes) == 2
     assert all("polylogue.archive.query.expression" in call[3] for call in import_probes)
-    assert all("historical-source-continuity-operation-20260807.json" in call[3] for call in import_probes)
+    assert all("resources_to_read = ()" in call[3] for call in import_probes)
     smoke_commands = [" ".join(call) for call in calls]
     assert sum("polylogue --plain ops diagnostics workload --json" in call for call in smoke_commands) == 2
     assert sum("polylogue --plain ops diagnostics space --json" in call for call in smoke_commands) == 2
@@ -117,7 +129,6 @@ def _write_wheel(
         archive.writestr("polylogue/_build_info.py", 'BUILD_COMMIT = "deadbeef"\nBUILD_DIRTY = False\n')
         if include_resources:
             archive.writestr("polylogue/operations/__init__.py", "")
-            archive.writestr("polylogue/operations/historical-source-continuity-operation-20260807.json", "{}\n")
         archive.writestr("polylogue-0.1.0.dist-info/entry_points.txt", entry_points)
         for name, content in (extra_files or {}).items():
             archive.writestr(name, content)
