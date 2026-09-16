@@ -33,6 +33,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
+from polylogue.core.schema_subjects import inference_exclusion_reason
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.schemas.generation.evidence import SchemaEvidence
 from polylogue.schemas.observation import extract_schema_units_from_payload, resolve_provider_config
@@ -83,6 +84,15 @@ _DECLARED_PRODUCER_VERSION = re.compile(r"v?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z]
 
 class SourceInferenceError(RuntimeError):
     """Source inference could not form a complete source observation."""
+
+
+class SchemaSubjectExcludedError(SourceInferenceError, ValueError):
+    """The subject is declared outside the schema-inference denominator.
+
+    Also a ``ValueError`` so an argument-parsing caller refuses the token the
+    same way it refuses a malformed ``provider=path`` input: an excluded
+    subject is a bad *argument*, not a failed observation.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,13 +502,22 @@ def _spooled_contributions(path: Path) -> Iterator[_SourceContribution]:
         spool.close()
 
 
-_EXPLICIT_SCHEMA_SUBJECTS = frozenset({"browser-capture"})
-
-
 def _canonical_schema_provider(value: str) -> str:
+    """Canonicalize a schema subject token, refusing declared exclusions.
+
+    A subject declared outside the inference denominator
+    (:func:`inference_exclusion_reason`) is refused here, at the only door
+    into this module, rather than being admitted and then refused member by
+    member. That is what makes its denominator zero *by declaration*: no
+    candidate for it can be inventoried, counted, sampled or reported as
+    eligible-then-unsupported, because the token never becomes an input.
+    """
     normalized = value.strip().lower()
-    if normalized in _EXPLICIT_SCHEMA_SUBJECTS:
-        return normalized
+    excluded = inference_exclusion_reason(normalized)
+    if excluded is not None:
+        raise SchemaSubjectExcludedError(
+            f"{normalized} is declared outside the schema-inference denominator: {excluded}"
+        )
     return Provider.from_string(normalized).value
 
 
@@ -594,8 +613,6 @@ def _candidate_byte_count(path: Path) -> int:
 def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
     """Refuse source classes that lack a source-evidence adapter before reading bytes."""
     byte_count = _candidate_byte_count(candidate.path)
-    if candidate.provider == "browser-capture":
-        return SourceTerminal("unsupported", byte_count, reason="browser_capture_adapter_unavailable")
     provider = Provider.from_string(candidate.provider)
     if provider is Provider.ANTIGRAVITY and candidate.path.suffix.lower() == ".pb":
         return SourceTerminal("unsupported", byte_count, reason="antigravity_protobuf_adapter_unavailable")
@@ -659,7 +676,6 @@ def _terminal_reason_code(terminal: SourceTerminal) -> str | None:
     if terminal.reason in {
         "antigravity_markdown_sidecar",
         "antigravity_protobuf_adapter_unavailable",
-        "browser_capture_adapter_unavailable",
         "sqlite_value_inference_not_supported",
         "source_class_non_session",
         "source_class_unsupported",
@@ -2723,6 +2739,7 @@ def infer_sources(
 
 __all__ = [
     "SchemaSourceInput",
+    "SchemaSubjectExcludedError",
     "SourceContributionCache",
     "SourceInferenceError",
     "SourceInferenceResult",

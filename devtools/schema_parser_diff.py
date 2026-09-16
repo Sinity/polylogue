@@ -76,13 +76,6 @@ PROVIDER_PARSERS: dict[str, tuple[str, ...]] = {
     ),
     "hermes": ("hermes_state.py", "hermes_spans.py", "hermes_lifecycle.py", "hermes_verification.py", "local_agent.py"),
     "antigravity": ("antigravity.py",),
-    # ``browser_capture/models.py`` lives outside sources/parsers/ (a
-    # separate top-level package the parser module builds on) but is where
-    # BrowserLLMSessionEnvelope's Pydantic fields -- capture_id,
-    # polylogue_capture_kind, schema_version, provider_meta,
-    # raw_provider_payload -- actually get read. Omitting it produced 8
-    # false-positive "unread" rows (browser-capture triage, 2026-07-29).
-    "browser-capture": ("browser_capture.py", "../../browser_capture/models.py"),
 }
 
 

@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Final
 
 from polylogue.core.hashing import hash_file, hash_payload
+from polylogue.core.schema_subjects import inference_exclusion_reason
 from polylogue.schemas.source_inference import (
     SchemaSourceInput,
     SourceInferenceError,
@@ -391,6 +392,16 @@ def frontier_from_payload(payload: object) -> SchemaFrontier:
             raise SchemaFrontierError("each subject needs a token")
         if not isinstance(roots_payload, list) or not roots_payload:
             raise SchemaFrontierError(f"subject {token} declares no roots")
+        excluded = inference_exclusion_reason(token)
+        if excluded is not None:
+            # A subject declared outside the inference denominator cannot carry
+            # a declared root or a recorded baseline: its denominator is zero by
+            # declaration, and a recorded member list would be exactly the
+            # "eligible material we then refused" the exclusion denies exists.
+            raise SchemaFrontierError(
+                f"subject {token} is declared outside the schema-inference denominator and must not "
+                f"declare source roots: {excluded}"
+            )
         subjects.append(FrontierSubject(token, tuple(_root_from_payload(row) for row in roots_payload)))
     baselines_payload = payload.get("baselines")
     baselines: list[RootBaseline] = []
@@ -403,6 +414,12 @@ def frontier_from_payload(payload: object) -> SchemaFrontier:
             members_payload = item.get("members")
             if not isinstance(subject_token, str) or not isinstance(root, str):
                 raise SchemaFrontierError("each baseline needs a subject and a root")
+            excluded_baseline = inference_exclusion_reason(subject_token)
+            if excluded_baseline is not None:
+                raise SchemaFrontierError(
+                    f"subject {subject_token} is declared outside the schema-inference denominator and must not "
+                    f"carry a recorded baseline: {excluded_baseline}"
+                )
             if not isinstance(members_payload, list):
                 raise SchemaFrontierError(f"baseline {subject_token}:{root} needs a member list")
             members = tuple(_member_from_payload(row) for row in members_payload)
