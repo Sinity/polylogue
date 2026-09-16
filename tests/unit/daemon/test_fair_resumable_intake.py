@@ -20,6 +20,11 @@ from typing import Any, cast
 
 import pytest
 
+# Bound before any test monkeypatches ``storage.derived.raw.RawObservationDerivation``:
+# ``operations.raw_observation_derivation`` reads ``RawObservationDerivation.recipe_version``
+# at module scope, so a first import that happens under a patched fake class raises
+# AttributeError. Which test imports it first depends on the pytest-randomly seed.
+import polylogue.operations.raw_observation_derivation as _raw_observation_derivation  # noqa: F401
 from polylogue.core.enums import Provider
 from polylogue.daemon.derivation import DerivationFrame
 from polylogue.daemon.intake import (

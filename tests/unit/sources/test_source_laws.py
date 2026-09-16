@@ -3217,9 +3217,13 @@ def test_sniff_zip_provider_picks_the_dominant_member_not_the_first(tmp_path: Pa
                     }
                 ],
             }
-            for index in range(40)
+            for index in range(5)
         ]
     )
+    # Detection reads only the first 8 KB of a member, so the dominant member
+    # must still be decodable inside that prefix; it is heavier than the
+    # one-line fragment either way.
+    assert len(conversations.encode()) < 8192
     archive_path = tmp_path / "export.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         # Written first, so it is first in central-directory order.
