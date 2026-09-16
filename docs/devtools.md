@@ -102,6 +102,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
+| `devtools bench parser-census` | Parse a recorded source denominator with no archive and diff the result against the last census. |
 | `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 

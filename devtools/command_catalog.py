@@ -387,6 +387,26 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "bench parser-census",
+        "benchmarking",
+        "Parse a recorded source denominator with no archive and diff the result against the last census.",
+        "devtools.parser_census",
+        json_flag=True,
+        flags=(
+            ("--no-baseline", "Record the census without comparing it to the previous one."),
+            ("--no-write", "Do not persist the census."),
+        ),
+        use_when=(
+            "Prove a parser change against the real corpus instead of fixtures alone: exits non-zero on a new "
+            "parse failure, a member the denominator stopped naming, an origin that stopped classifying, or a "
+            "digest that moved with identical bytes and an unchanged parser fingerprint."
+        ),
+        examples=(
+            "devtools bench parser-census --source claude-code=tests/fixtures/corpus --no-baseline",
+            "devtools bench parser-census --subject codex --workers 8",
+        ),
+    ),
+    CommandSpec(
         "bench slo",
         "benchmarking",
         "Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements.",
