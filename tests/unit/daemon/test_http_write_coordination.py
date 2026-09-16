@@ -52,8 +52,13 @@ class _RecordingBridge:
 
 
 def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
-    def allow_auth(required_scope: WebCredentialScope = "read", *, allow_web: bool = True) -> bool:
-        del required_scope, allow_web
+    def allow_auth(
+        required_scope: WebCredentialScope = "read",
+        *,
+        allow_web: bool = True,
+        refuse: object = None,
+    ) -> bool:
+        del required_scope, allow_web, refuse
         return True
 
     def allow_host(*, credential_request: bool = False) -> bool:
@@ -66,8 +71,8 @@ def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
     object.__setattr__(handler, "_parse_path", lambda: (path, {}))
     object.__setattr__(handler, "_check_host_admission", allow_host)
     object.__setattr__(handler, "_check_auth", allow_auth)
-    object.__setattr__(handler, "_check_cross_origin", lambda: True)
-    object.__setattr__(handler, "_send_error", lambda *_args: timeline.append("error"))
+    object.__setattr__(handler, "_check_cross_origin", lambda **_kwargs: True)
+    object.__setattr__(handler, "_send_error", lambda *_args, **_kwargs: timeline.append("error"))
     return handler
 
 
@@ -1113,3 +1118,50 @@ def test_inline_gated_write_presents_the_grant_on_the_request_thread() -> None:
     finally:
         handler.server.execution_kernel.shutdown(wait=True)
         stop()
+
+
+def test_tcp_pre_dispatch_refusal_is_marked_rejected_not_indeterminate() -> None:
+    """A TCP ``/api/operation`` refusal before dispatch carries the pre-dispatch marker.
+
+    polylogue-ji49p: the UDS transport marks its refusals and
+    ``DaemonClient.operation`` raises ``DaemonOperationRejectedError`` for ANY
+    envelope with ``protocol``/``outcome == "rejected"``/``pre_dispatch``. The
+    TCP route answered with the bare ``{"ok": false, "error": ...}`` shape, so
+    a write refused before it ever ran was reported to the caller as a
+    possibly-committed (indeterminate) mutation.
+
+    Anti-vacuity: restore ``self._send_error(...)`` at the route's
+    pre-dispatch refusals (or drop any one of the four marker fields from
+    ``_reject_operation``) and the client-side predicate asserted below is
+    false again, which is exactly the indeterminate-mutation fall-through.
+    The runtime assertion fails if a refusal is emitted after dispatch.
+    """
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
+
+    timeline: list[str] = []
+    body = _preview_operation_body(["codex-session:marked"])
+    handler = _operation_handler(timeline, body)
+    # ``Message.__setitem__`` APPENDS; the helper already set a JSON
+    # Content-Type, and ``.get()`` would keep returning that first value.
+    del handler.headers["Content-Type"]
+    handler.headers["Content-Type"] = "text/plain"
+    assert handler.headers.get("Content-Type") == "text/plain"
+    # Restore the production error envelope builder over the stub, so this
+    # asserts the real serialized refusal rather than a recording lambda.
+    object.__setattr__(handler, "_send_error", DaemonAPIHandler._send_error.__get__(handler))
+    sent: list[tuple[object, dict[str, object]]] = []
+    object.__setattr__(handler, "_send_json", lambda status, payload, **_kwargs: sent.append((status, payload)))
+
+    handler._do_post_impl()
+
+    assert not any(item.startswith("runtime:") for item in timeline)
+    assert len(sent) == 1
+    status, payload = sent[0]
+    assert status == HTTPStatus.UNSUPPORTED_MEDIA_TYPE
+    assert payload["ok"] is False
+    # The exact predicate DaemonClient.operation uses to refuse without
+    # calling the mutation indeterminate.
+    assert payload["protocol"] == DAEMON_OPERATION_PROTOCOL
+    assert payload["outcome"] == "rejected"
+    assert payload["pre_dispatch"] is True
+    assert payload["error"] == {"code": "unsupported_media_type", "detail": None, "retryable": False}

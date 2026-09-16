@@ -87,6 +87,50 @@ def test_embedding_composition_defers_disabled_without_constructing_provider(
     assert provider_calls == []
 
 
+def test_scoped_foreground_convergence_honors_the_monthly_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scoped (ingest-foreground) call obeys the same cap as the periodic pass.
+
+    Foreground ingest embedding runs through the very composition the periodic
+    backlog uses (``compose_embedding_convergence``; see
+    ``converge_ingest_embeddings`` in ``polylogue/daemon/cli.py`` and
+    ``periodic_embedding_backlog_check``), so a scope argument cannot buy work
+    the monthly cap has already spent (polylogue-liwst).
+
+    Anti-vacuity: a foreground path that skips the cap check goes on to build a
+    frame from the stub adapter below and raises instead of returning the
+    ``monthly_cost_cap`` deferral.
+    """
+
+    class _StubAdapter:
+        domain = "embedding"
+
+    async def exercise() -> embedding_owner.EmbeddingConvergenceResult:
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+        bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
+        monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: _EmbeddingConfig())
+        monkeypatch.setattr(
+            "polylogue.operations.embedding_derivation.make_embedding_derivation",
+            lambda *_args, **_kwargs: _StubAdapter(),
+        )
+        # The month's estimated spend already exceeds embedding_max_cost_usd.
+        monkeypatch.setattr(
+            embedding_backlog,
+            "_archive_embedding_catchup_estimated_cost_this_month",
+            lambda _ops_db: 999.0,
+        )
+        composed = embedding_owner.compose_embedding_convergence(
+            tmp_path / "index.db",
+            compute_adapter=BoundedComputeAdapter(max_workers=1),
+            write_bridge=bridge,
+        )
+        # A scoped call is exactly what ingest foreground convergence makes.
+        return await composed(["claude-code-session:s1"])
+
+    result = asyncio.run(exercise())
+    assert result.deferred_reason == "monthly_cost_cap"
+    assert result.report is None
+
+
 def test_embedding_startup_marks_running_catchup_receipts_interrupted(tmp_path: Path) -> None:
     from polylogue.core.enums import OperationStatus
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -111,6 +155,30 @@ def test_embedding_startup_marks_running_catchup_receipts_interrupted(tmp_path: 
         (run,) = list_embedding_catchup_runs(conn)
     assert run.status == "interrupted"
     assert run.finished_at_ms is not None
+
+
+def test_catchup_receipt_recovery_sweeps_every_non_terminal_status() -> None:
+    """Startup recovery is defined as the complement of the terminal statuses.
+
+    A catch-up receipt only ever transitions out of ``running``, so a row
+    parked in any other non-terminal state is permanent debt unless the
+    startup sweep covers it (polylogue-f7bf9).
+
+    Anti-vacuity: replacing the derived sweep set with a hardcoded IN-list --
+    or classifying a new non-terminal ``OperationStatus`` member as terminal --
+    leaves that member out of ``UNFINISHED_CATCHUP_RECEIPT_STATUSES`` and this
+    comparison fails.
+    """
+    from polylogue.core.enums import OperationStatus
+
+    expected = {
+        status.value
+        for status in OperationStatus
+        if status.value not in embedding_backlog.TERMINAL_CATCHUP_RECEIPT_STATUSES
+    }
+    assert set(embedding_backlog.UNFINISHED_CATCHUP_RECEIPT_STATUSES) == expected
+    assert OperationStatus.RUNNING.value in embedding_backlog.UNFINISHED_CATCHUP_RECEIPT_STATUSES
+    assert OperationStatus.COMPLETED.value not in embedding_backlog.UNFINISHED_CATCHUP_RECEIPT_STATUSES
 
 
 def test_daemon_status_lines_include_latest_embedding_catchup() -> None:

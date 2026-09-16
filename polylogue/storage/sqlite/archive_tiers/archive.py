@@ -122,7 +122,11 @@ from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.digest import REFERENCE, canonical_bytes
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.errors import ArchiveTierUnavailableError
+from polylogue.core.errors import (
+    ArchiveTierUnavailableError,
+    PostFilterAfterLimitError,
+    UnsupportedInsightFilterError,
+)
 from polylogue.core.json import require_json_value
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
@@ -622,6 +626,12 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
 
     def discard_pending(self) -> None:
         return None
+
+
+#: Declared ceiling on how many candidate sessions ``list_session_cost_insights``
+#: may scan when a ``status`` filter must be evaluated before the page is cut.
+#: Beyond it the route refuses by name instead of silently post-filtering a page.
+COST_STATUS_FILTER_CANDIDATE_CAP = 20_000
 
 
 class ArchiveStore:
@@ -2881,9 +2891,20 @@ class ArchiveStore:
         limit: int | None = 50,
         offset: int = 0,
     ) -> list[SessionCostInsight]:
-        """List archive session cost insights from sessions plus session_profiles."""
+        """List archive session cost insights from sessions plus session_profiles.
+
+        ``model`` has no SQL reduction on this route and is refused rather than
+        silently ignored. ``status`` is derived per row after the query, so it
+        is evaluated over the whole matched scope *before* the page is cut:
+        post-filtering a page would answer "of the newest N, the matching ones"
+        while reporting it as "the newest N matching".
+        """
         if model is not None:
-            return []
+            raise UnsupportedInsightFilterError(
+                filter_name="model",
+                route="list_session_cost_insights",
+                detail="the route selects one dominant model per session and cannot filter on it",
+            )
         where: list[str] = []
         params: list[object] = []
         if session_id is not None:
@@ -2907,8 +2928,14 @@ class ArchiveStore:
             where.append("s.sort_key_ms <= ?")
             params.append(until_ms)
         clause = "WHERE " + " AND ".join(where) if where else ""
-        pagination = "" if limit is None else " LIMIT ? OFFSET ?"
-        if limit is not None:
+        # A ``status`` filter is decided per row below, so the SQL page must not
+        # be cut first. Scan the matched scope (bounded by a declared cap) and
+        # paginate after filtering.
+        post_filter_status = status is not None
+        pagination = "" if limit is None or post_filter_status else " LIMIT ? OFFSET ?"
+        if post_filter_status:
+            pagination = f" LIMIT {COST_STATUS_FILTER_CANDIDATE_CAP + 1}"
+        elif limit is not None:
             params.extend([max(int(limit), 0), max(int(offset), 0)])
         rows = self._conn.execute(
             f"""
@@ -2939,7 +2966,16 @@ class ArchiveStore:
             for row in rows
         ]
         if status is not None:
+            if len(rows) > COST_STATUS_FILTER_CANDIDATE_CAP:
+                raise PostFilterAfterLimitError(
+                    filter_name="status",
+                    route="list_session_cost_insights",
+                    candidate_count=len(rows),
+                    cap=COST_STATUS_FILTER_CANDIDATE_CAP,
+                )
             insights = [insight for insight in insights if insight.estimate.status == status]
+            start = max(int(offset), 0)
+            insights = insights[start:] if limit is None else insights[start : start + max(int(limit), 0)]
         return insights
 
     def list_cost_rollup_insights(
@@ -3609,20 +3645,28 @@ class ArchiveStore:
     def find_stuck_session_latency_profile_insights(
         self,
         *,
+        session_id: str | None = None,
         origin: str | None = None,
         tag: str | None = None,
         repo: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
+        offset: int = 0,
     ) -> list[SessionLatencyProfileInsight]:
         """Return archive latency profiles with stuck tools.
 
         currently lacks session event start/end pairs, so stuck
         tool detection remains conservative and this returns only profiles
         whose projected stuck count is non-zero.
+
+        ``session_id`` and ``offset`` are forwarded to the general list route
+        rather than dropped: a scoped request that silently widened to the whole
+        archive, or a second page that silently re-served page one, answers a
+        question the caller never asked.
         """
         return self.list_session_latency_profile_insights(
+            session_id=session_id,
             origin=origin,
             tag=tag,
             repo=repo,
@@ -3630,7 +3674,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             limit=limit,
-            offset=0,
+            offset=offset,
         )
 
     def _fetch_session_profile_row(self, session_id: str) -> sqlite3.Row | None:

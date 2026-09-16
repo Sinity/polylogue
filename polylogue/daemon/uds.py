@@ -107,14 +107,32 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
             return
 
     def _reject(self, status: int, code: str, detail: str) -> None:
-        self._send(
-            status,
-            {
-                "protocol": DAEMON_OPERATION_PROTOCOL,
-                "outcome": "rejected",
-                "error": {"code": code, "detail": detail, "retryable": False},
-            },
-        )
+        """Refuse before dispatch, marking the refusal so no client can call it indeterminate.
+
+        Every path here runs before ``operation_runtime.call``, so the actuator
+        provably never ran. The ``pre_dispatch`` marker states that fact on the
+        envelope itself instead of leaving the client to whitelist refusal
+        codes one at a time and fail open into ``indeterminate`` for the rest.
+        The correlating ``operation``/``request_id`` are echoed whenever the
+        request parsed far enough to carry them.
+        """
+
+        payload: dict[str, object] = {
+            "protocol": DAEMON_OPERATION_PROTOCOL,
+            "outcome": "rejected",
+            "pre_dispatch": True,
+            "error": {"code": code, "detail": detail, "retryable": False},
+        }
+        if self._request_identity is not None:
+            operation, request_id = self._request_identity
+            payload["operation"] = operation
+            if request_id is not None:
+                payload["request_id"] = request_id
+        self._send(status, payload)
+
+    #: Correlating identity of the in-flight request, once the body parsed.
+    #: ``None`` while a refusal can only be framing- or transport-level.
+    _request_identity: tuple[str, str | None] | None = None
 
     def do_GET(self) -> None:
         self._reject(405, "method_not_allowed", "machine operations require POST")
@@ -136,6 +154,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         started = monotonic()
+        self._request_identity = None
         if self.request_version != "HTTP/1.1":
             self._reject(505, "unsupported_http_version", "machine operations require HTTP/1.1")
             return
@@ -175,6 +194,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, RecursionError, UnicodeDecodeError, TimeoutError) as exc:
             self._reject(400, "invalid_request", str(exc))
             return
+        self._request_identity = (request.operation, request.request_id)
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
         if length > spec.max_body_bytes:
@@ -270,6 +290,7 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
                     {
                         "protocol": DAEMON_OPERATION_PROTOCOL,
                         "outcome": "rejected",
+                        "pre_dispatch": True,
                         "error": {
                             "code": "connection_backpressure",
                             "detail": "machine connection capacity is exhausted",

@@ -1416,7 +1416,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         )
         self._send_error(status, decision.state, extra_headers=decision.response_headers())
 
-    def _check_auth(self, required_scope: WebCredentialScope = "read", *, allow_web: bool = True) -> bool:
+    def _check_auth(
+        self,
+        required_scope: WebCredentialScope = "read",
+        *,
+        allow_web: bool = True,
+        refuse: Callable[[HTTPStatus, str], None] | None = None,
+    ) -> bool:
         """Validate a machine bearer or a scoped first-party web credential.
 
         When no token is configured the API is open. This server object only
@@ -1431,13 +1437,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         Native ``EventSource`` receives the same HttpOnly cookie as fetch, so
         no credential is ever accepted from a query parameter.
         """
+        deny = refuse if refuse is not None else self._send_error
         auth_header = self.headers.get("Authorization", "")
         if not self._auth_token:
             return True
         if auth_header:
             result = _check_auth_logic(self._auth_token, self._client_host, auth_header)
             if not result.allowed:
-                self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
+                deny(HTTPStatus.UNAUTHORIZED, "unauthorized")
             return result.allowed
         if allow_web and self._web_credential_token():
             decision = self._web_credential_decision(required_scope)
@@ -1456,7 +1463,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             self._send_web_credential_error(decision)
             return False
-        self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
+        deny(HTTPStatus.UNAUTHORIZED, "unauthorized")
         return False
 
     def _cli_mutation_principal(self, capability: str) -> MutationPrincipal:
@@ -1665,6 +1672,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if extra_payload:
             payload.update(extra_payload)
         self._send_json(status, payload, extra_headers=extra_headers)
+
+    def _reject_operation(self, status: HTTPStatus, code: str, detail: str | None = None) -> None:
+        """Refuse a machine operation before dispatch, marked so no client calls it indeterminate.
+
+        A pre-dispatch refusal on ``/api/operation`` proves nothing ran, so it
+        must never be read as "the mutation may have happened". The UDS
+        transport marks its refusals with ``pre_dispatch`` and clients key off
+        that marker (polylogue-ji49p); the TCP route's plain ``_send_error``
+        envelope carried no protocol/outcome fields, so every one of its
+        refusals degraded into an indeterminate mutation at the client.
+        """
+        from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
+
+        self._send_error(
+            status,
+            code,
+            detail,
+            extra_payload={
+                "protocol": DAEMON_OPERATION_PROTOCOL,
+                "outcome": "rejected",
+                "pre_dispatch": True,
+                "error": {"code": code, "detail": detail, "retryable": False},
+            },
+        )
 
     def _parse_path(self) -> tuple[list[str], dict[str, list[str]]]:
         parsed = urlparse(self.path)
@@ -2003,7 +2034,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         )
         return True
 
-    def _check_cross_origin(self) -> bool:
+    def _check_cross_origin(self, *, refuse: Callable[[HTTPStatus, str], None] | None = None) -> bool:
         """Reject browser cross-origin POSTs to mutating endpoints.
 
         Returns True if the request is allowed, sends 403 and returns
@@ -2012,7 +2043,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "")
         if exact_origin_allowed(origin, self.headers.get("Host", "")):
             return True
-        self._send_error(HTTPStatus.FORBIDDEN, "cross_origin_denied")
+        (refuse if refuse is not None else self._send_error)(HTTPStatus.FORBIDDEN, "cross_origin_denied")
         return False
 
     def _check_shell_bootstrap_access(self) -> bool:
@@ -5609,21 +5640,26 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             daemon_operation_spec,
         )
 
-        if not self._check_auth(allow_web=False) or not self._check_cross_origin():
+        # Every refusal below happens before the runtime is entered, so each
+        # one is marked pre-dispatch (polylogue-ji49p): an unmarked refusal is
+        # converted by the client into an indeterminate mutation.
+        if not self._check_auth(allow_web=False, refuse=self._reject_operation) or not self._check_cross_origin(
+            refuse=self._reject_operation
+        ):
             return
         if self.headers.get("Transfer-Encoding") is not None:
-            self._send_error(HTTPStatus.BAD_REQUEST, "unsupported_transfer_encoding")
+            self._reject_operation(HTTPStatus.BAD_REQUEST, "unsupported_transfer_encoding")
             return
         lengths = self.headers.get_all("Content-Length", [])
         if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdecimal():
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_content_length")
+            self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return
         length = int(lengths[0])
         if length <= 0 or length > MAX_DECLARED_OPERATION_BODY_BYTES:
-            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
+            self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
             return
         if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
-            self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
+            self._reject_operation(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
             return
         self.connection.settimeout(5.0)
         try:
@@ -5632,12 +5668,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 raise ValueError("partial body")
             request = DaemonOperationRequest.from_dict(json.loads(body))
         except (ValueError, TypeError, TimeoutError, OSError):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
         if length > spec.max_body_bytes:
-            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
+            self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
             return
         self._send_daemon_operation(self._execute_daemon_operation(request))
 

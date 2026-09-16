@@ -149,3 +149,49 @@ def test_a_raised_size_protocol_error_is_reported_as_an_oversized_result() -> No
             OperationRequest("cli.query", {})
         )
     assert exc_info.value.code == "result_too_large"
+
+
+@pytest.mark.parametrize(
+    ("envelope", "code", "detail"),
+    [
+        (
+            {
+                "outcome": "timed-out",
+                "error": {"code": "QueryTimeoutError", "detail": "archive read exceeded deadline (call call-1)"},
+            },
+            "QueryTimeoutError",
+            "archive read exceeded deadline (call call-1)",
+        ),
+        (
+            {
+                "outcome": "cancelled",
+                "error": {"code": "QueryCancelledError", "detail": "archive read cancelled (call call-1)"},
+            },
+            "QueryCancelledError",
+            "archive read cancelled (call call-1)",
+        ),
+    ],
+)
+def test_deadline_and_cancellation_aborts_keep_their_code_and_call_id(
+    envelope: dict[str, object], code: str, detail: str
+) -> None:
+    """A deadline or cancellation abort reaches the surface typed and with its call id.
+
+    The executor raises ``QueryTimeoutError``/``QueryCancelledError`` and the
+    daemon renders each as a ``timed-out``/``cancelled`` envelope whose error
+    body carries the code and the call id. The kernel must hand both on: a
+    surface cannot name the deadline, the call id or a remedy it never
+    received, and the raw sqlite ``interrupted`` text is not one of them.
+
+    Anti-vacuity: the cancelled branch previously preferred the envelope's
+    (absent) ``result`` body over its ``error`` body, which dropped the code and
+    the call id and left only "<operation> was cancelled" -- that turns both
+    assertions red.
+    """
+    with pytest.raises((OperationFailedError, OperationCancelledError)) as raised:
+        OperationKernel(lambda _request: envelope).execute(OperationRequest("cli.query", {}))
+    abort = raised.value
+    assert isinstance(abort, OperationFailedError | OperationCancelledError)
+    assert abort.code == code
+    assert str(abort.detail) == detail
+    assert "interrupted" not in str(abort.detail)

@@ -374,10 +374,14 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
         (
             DerivationFrame(str(tmp_path), "index-v1", recipe_versions={"raw_observation": "recipe-v1"}),
             DerivationFrame(str(tmp_path), "index-v1", recipe_versions={"raw_observation": "recipe-v1"}),
+            DerivationFrame(str(tmp_path), "index-v1", recipe_versions={"raw_observation": "recipe-v1"}),
             DerivationFrame(str(tmp_path), "index-v2", recipe_versions={"raw_observation": "recipe-v1"}),
         )
     )
     cursors: list[str | None] = []
+    # The continuation only passes keys the output relation reports as done,
+    # so the fake must publish a key once the pass that offered it is over.
+    materialized: set[str] = set()
 
     class FakeRawObservationDerivation:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -390,7 +394,7 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
             return ((first,), first) if cursor is None else ((second,), None)
 
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
-            return dict.fromkeys(keys, "missing")
+            return {key: "valid" if key in materialized else "missing" for key in keys}
 
     monkeypatch.setattr(
         "polylogue.operations.raw_observation_derivation.raw_observation_frame",
@@ -400,9 +404,65 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
     discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
 
     assert discovery.discover_pending_raw_ids(1)[0][0] == first
+    materialized.add(first)
+    assert discovery.discover_pending_raw_ids(1) == ()
     assert discovery.discover_pending_raw_ids(1)[0][0] == second
-    assert discovery.discover_pending_raw_ids(1)[0][0] == first
-    assert cursors == [None, first, None]
+    materialized.add(second)
+    assert discovery.discover_pending_raw_ids(1) == ()
+    assert cursors == [None, None, first, None]
+
+
+def test_raw_discovery_cursor_stays_behind_ids_the_dispatcher_never_admitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partly-admitted page keeps its continuation until the page is drained.
+
+    The dispatcher walks the offered items only while its class budget lasts,
+    so a producer that advances over the whole inspected page drops the tail
+    for a whole sweep -- the shape ``DerivationRunner.run_domain`` avoids with
+    its ``stopped_at`` offset.
+
+    Anti-vacuity: restore the unconditional ``self._cursor = next_cursor`` and
+    the second pass resumes at ``page-1``: ``b`` and ``c`` are never offered
+    again until the traversal wraps. Drop the no-progress release instead and
+    the never-admitted ``c`` pins the cursor forever, so ``d`` is never
+    reached.
+    """
+    bootstrap_archive_root(tmp_path)
+    cursors: list[str | None] = []
+    materialized: set[str] = set()
+
+    class FakeRawObservationDerivation:
+        # ``raw_observation_derivation`` binds this at import time.
+        recipe_version = "recipe-v1"
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def required_page(
+            self, _frame: object, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
+            cursors.append(cursor)
+            if cursor is None:
+                return (("a", "b", "c"), "page-1")
+            return (("d",), None)
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
+            return {key: "valid" if key in materialized else "missing" for key in keys}
+
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+
+    assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["a", "b", "c"]
+    materialized.add("a")  # the class budget covered exactly one admission
+    assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["b", "c"]
+    materialized.add("b")
+    assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["c"]
+    # ``c`` is isolated by the dispatcher and never becomes valid. A pass that
+    # makes no progress releases the hold and moves on within the same call,
+    # rather than starving the rest of the traversal behind it.
+    assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["d"]
+    assert cursors == [None, None, None, None, "page-1"]
 
 
 def test_raw_discovery_restarts_for_a_new_raw_before_its_cursor(tmp_path: Path) -> None:

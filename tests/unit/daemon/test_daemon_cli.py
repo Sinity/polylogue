@@ -396,6 +396,79 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     assert debt_after == []
 
 
+@pytest.mark.contract
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
+def test_drain_convergence_debt_preserves_error_for_unimplemented_stage(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    """A stage with no registered implementation leaves its debt row untouched.
+
+    ``lineage_prefix_recompose`` debt names the identity contradiction that
+    truncated a child's lineage. No convergence stage implements it, so the
+    drain measures nothing about the row; re-recording it would overwrite that
+    diagnostic with a note about the missing stage (polylogue-ia88n).
+
+    Anti-vacuity: restoring the ``convergence retry stage unavailable: ...``
+    re-record replaces ``last_error`` on the first drain pass and this
+    assertion fails.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "index.db"
+    cursor = CursorStore(db)
+    cursor.record_convergence_debt(
+        stage="lineage_prefix_recompose",
+        subject_type="session_id",
+        subject_id="claude-code-session:child-1",
+        error="alias collision truncated child prefix at message 42",
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+        conn.commit()
+    stage = ConvergenceStage(
+        name="unrelated_stage",
+        description="retry test",
+        check=lambda _candidate: False,
+        execute=lambda _candidate: False,
+    )
+    with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
+        retried = daemon_cli._drain_convergence_debt_once(db)
+        debt_after = cursor.list_convergence_debt()
+
+    assert retried == 0
+    assert len(debt_after) == 1
+    row = debt_after[0]
+    assert row.stage == "lineage_prefix_recompose"
+    assert row.last_error == "alias collision truncated child prefix at message 42"
+
+
+def test_no_default_sources_makes_root_the_complete_watch_set(tmp_path: Path) -> None:
+    """``--no-default-sources`` drops the typed defaults; the default stays additive.
+
+    Anti-vacuity: keeping ``default_sources()`` in the list when
+    ``include_defaults=False`` leaves the hermes/inbox/browser-capture roots in
+    the watch set, so the isolated-root assertion fails; dropping them
+    unconditionally makes the additive assertion fail.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    isolated = tmp_path / "isolated"
+    isolated.mkdir()
+
+    with patch("polylogue.paths.archive_root", return_value=tmp_path / "archive"):
+        additive = daemon_cli._watch_sources_from_roots((isolated,))
+        exclusive = daemon_cli._watch_sources_from_roots((isolated,), include_defaults=False)
+
+    assert len(additive) > 1
+    assert isolated in {source.root for source in additive}
+    assert [source.root for source in exclusive] == [isolated]
+
+    # The flag is wired onto the daemon entry points, not just the helper.
+    for command in (daemon_cli.run_command, daemon_cli.watch_command):
+        assert "no_default_sources" in {param.name for param in command.params}
+
+
 def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 

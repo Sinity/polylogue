@@ -21,6 +21,7 @@ from polylogue.daemon.convergence_debt_alert import (
     watchsource_name_to_family,
 )
 from polylogue.daemon.convergence_debt_status import (
+    ConvergenceDebtFamilySummary,
     ConvergenceDebtItem,
     ConvergenceDebtSummary,
     convergence_debt_summary_info,
@@ -47,11 +48,35 @@ def _item(
     )
 
 
-def _summary(items: list[ConvergenceDebtItem]) -> ConvergenceDebtSummary:
+def _summary(
+    items: list[ConvergenceDebtItem], *, recent: list[ConvergenceDebtItem] | None = None
+) -> ConvergenceDebtSummary:
+    """Build a summary the way the production projection does.
+
+    ``family_summaries`` is rolled up from the COMPLETE ``items`` set while
+    ``recent`` stays the bounded display window, so tests can hand the two
+    different contents (the polylogue-c1dx2 eviction case) without inventing
+    a shape the projection never produces.
+    """
+    family_counts: dict[str, dict[str, int]] = {}
+    for item in items:
+        family = source_family_for_subject(item.subject_type, item.subject_id)
+        counts = family_counts.setdefault(family, {"failed": 0, "deferred": 0})
+        if item.status in counts:
+            counts[item.status] += 1
     return ConvergenceDebtSummary(
-        failed_count=len(items),
+        failed_count=sum(1 for it in items if it.status == "failed"),
+        deferred_count=sum(1 for it in items if it.status == "deferred"),
         retry_due_count=sum(1 for it in items if it.retry_due),
-        recent=items,
+        family_summaries=[
+            ConvergenceDebtFamilySummary(
+                family=family,
+                failed_count=counts["failed"],
+                deferred_count=counts["deferred"],
+            )
+            for family, counts in sorted(family_counts.items())
+        ],
+        recent=items if recent is None else recent,
     )
 
 
@@ -441,6 +466,59 @@ def test_aggregate_debt_by_family_buckets_subjects() -> None:
     # Both paths and the session-id all bucket to "unknown" in this
     # synthetic test because the paths don't live under any real watch root.
     assert counts["unknown"] == 3
+
+
+def test_deferred_rows_evicting_recent_do_not_zero_the_family_count() -> None:
+    """Ten newer deferred rows must not make a still-failing family read as clear.
+
+    Anti-vacuity: restoring the ``summary.recent`` iteration in
+    ``aggregate_debt_by_family`` makes this family count 0, and
+    ``evaluate_convergence_debt`` then emits a severity-ok RESOLUTION alert
+    for a family whose failure is still on the ledger.
+    """
+    failed = [_item(subject_id="/x/y/stuck.jsonl")]
+    deferred = [
+        _item(subject_id=f"/x/y/deferred-{n}.jsonl").model_copy(update={"status": "deferred", "retry_due": False})
+        for n in range(10)
+    ]
+    # The bounded display window is ordered updated_at_ms DESC, so the ten
+    # newer deferred rows fill it and the failure is not visible there.
+    summary = _summary(failed + deferred, recent=deferred)
+
+    assert aggregate_debt_by_family(summary) == {"unknown": 1}
+
+    # The family stayed above its warning threshold, so the periodic loop
+    # re-states the incident once per dedup window -- it must never report it
+    # as cleared.
+    state = AlertDedupState()
+    state.last_emit_at["unknown"] = (HealthSeverity.WARNING.value, 0.0)
+    alerts = evaluate_convergence_debt(
+        summary,
+        thresholds=ConvergenceDebtThresholds(default_warning=1, default_error=10),
+        state=state,
+        now=10_000.0,
+    )
+    assert [alert.severity for alert in alerts] == [HealthSeverity.WARNING]
+    assert "1 item(s)" in alerts[0].message
+    assert HealthSeverity.OK not in {alert.severity for alert in alerts}
+
+
+def test_unreadable_debt_ledger_emits_no_resolution_alert() -> None:
+    """An unavailable summary is unmeasured, never a cleared family.
+
+    Anti-vacuity: dropping the ``summary.available`` guard in
+    ``evaluate_convergence_debt`` makes the previously-warning family read as
+    count 0 and emit a severity-ok alert from a ledger that could not be read.
+    """
+    state = AlertDedupState()
+    state.last_emit_at["unknown"] = (HealthSeverity.WARNING.value, 0.0)
+    alerts = evaluate_convergence_debt(
+        ConvergenceDebtSummary(available=False, error="convergence debt status unavailable: disk I/O error"),
+        thresholds=ConvergenceDebtThresholds(default_warning=1, default_error=10),
+        state=state,
+        now=10_000.0,
+    )
+    assert alerts == []
 
 
 # ---------------------------------------------------------------------------

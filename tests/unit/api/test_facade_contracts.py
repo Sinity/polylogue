@@ -6574,3 +6574,209 @@ async def test_resolve_ref_actions_quote_archive_derived_refs(tmp_path: Path) ->
             assert shlex.join(tokens) == command, command
     finally:
         await archive.close()
+
+
+# ---------------------------------------------------------------------------
+# Honest denominators on the read facades
+# ---------------------------------------------------------------------------
+
+
+async def test_pathology_report_counts_unreadable_sessions_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A matched session whose digest cannot be read is reported as failed,
+    never folded into the analyzed count (polylogue-dvhe7).
+
+    Anti-vacuity: revert the ``failed`` bookkeeping in
+    ``PolylogueArchiveMixin.pathology_report`` -- i.e. let a ``None`` digest
+    simply be skipped -- and the report claims ``matched=2, analyzed=1`` with
+    nothing naming the missing session, so an unmeasured session renders as a
+    measured pathology-free one. The assertion that the three counts conserve
+    the matched denominator is what fails.
+    """
+    archive = _archive(tmp_path)
+    try:
+        await _seed_two_sessions(archive.config.db_path)
+        summaries = await archive.list_summaries()
+        assert len(summaries) == 2
+        unreadable = str(summaries[0].id)
+
+        from polylogue.api.archive import PolylogueArchiveMixin
+
+        original = PolylogueArchiveMixin._session_digest
+
+        async def _digest(self: PolylogueArchiveMixin, session_id: str) -> object:
+            if session_id == unreadable:
+                return None
+            return await original(self, session_id)
+
+        monkeypatch.setattr(PolylogueArchiveMixin, "_session_digest", _digest)
+
+        report = await archive.pathology_report()
+
+        assert report.matched_session_count == 2
+        assert report.failed_session_count == 1
+        assert report.analyzed_session_count == 1
+        assert report.dropped_session_count == 0
+        assert (
+            report.analyzed_session_count + report.failed_session_count + report.dropped_session_count
+            == report.matched_session_count
+        )
+    finally:
+        await archive.close()
+
+
+async def test_facets_denominator_ignores_page_limit_and_names_truncation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Facet buckets roll the whole matched scope, and a capped scope stops
+    reporting its families as complete (polylogue-8374p).
+
+    Anti-vacuity: let ``spec.limit`` reach the scope query again and the first
+    assertion reads ``total_sessions == 1`` for a two-session archive; drop the
+    ``scope_gaps`` signal and the capped response still lists every family in
+    ``complete_families`` with outcome ``ok``, which is a truncated count
+    rendered as a measured complete one.
+    """
+    from polylogue.archive.query.spec import SessionQuerySpec
+
+    archive = _archive(tmp_path)
+    try:
+        await _seed_two_sessions(archive.config.db_path)
+
+        spec = SessionQuerySpec(query_terms=("body",), limit=1)
+        response = await archive.facets(spec, include_idf=False, include_deferred=False)
+        assert response.scoped_to_query is True
+        assert response.total_sessions == 2, "a page size must never become the facet denominator"
+        assert response.complete_families
+        assert response.family_errors == {}
+
+        monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_SESSION_CAP", 1)
+        capped = await archive.facets(spec, include_idf=False, include_deferred=False)
+
+        assert capped.complete_families == ()
+        assert capped.family_errors, "a truncated scope must name the gap"
+        assert all(reason.startswith("facet_scope_truncated:") for reason in capped.family_errors.values())
+        assert capped.outcome.state == "degraded"
+    finally:
+        await archive.close()
+
+
+async def test_stuck_latency_route_forwards_session_id_and_offset(tmp_path: Path) -> None:
+    """The stuck-latency route forwards ``session_id`` and ``offset`` to the
+    general list route instead of widening to the archive and page one
+    (polylogue-o90gu).
+
+    Anti-vacuity: restore the previous body (no ``session_id`` parameter,
+    ``offset=0`` hard-coded) and the recorded kwargs lose the scoped session id
+    and carry ``offset=0`` for a second-page request, so a scoped request is
+    answered with other sessions.
+    """
+    recorded: dict[str, object] = {}
+
+    def _record(self: ArchiveStore, **kwargs: object) -> list[object]:
+        recorded.update(kwargs)
+        return []
+
+    with ArchiveStore(tmp_path) as store:
+        original = ArchiveStore.list_session_latency_profile_insights
+        try:
+            ArchiveStore.list_session_latency_profile_insights = _record  # type: ignore[assignment,method-assign]
+            store.find_stuck_session_latency_profile_insights(
+                session_id="codex-session:scoped",
+                origin=Origin.CODEX_SESSION.value,
+                limit=10,
+                offset=20,
+            )
+        finally:
+            ArchiveStore.list_session_latency_profile_insights = original  # type: ignore[method-assign]
+
+    assert recorded["session_id"] == "codex-session:scoped"
+    assert recorded["offset"] == 20
+    assert recorded["limit"] == 10
+    assert recorded["only_stuck"] is True
+
+
+async def test_cost_insight_filters_refuse_or_precede_the_limit(tmp_path: Path) -> None:
+    """``list_session_cost_insights`` refuses an unimplemented ``model`` filter
+    and evaluates ``status`` over the matched scope before the page is cut
+    (polylogue-3zvsd).
+
+    Anti-vacuity: restore ``if model is not None: return []`` and the refusal
+    assertion fails -- an unwired filter would again be indistinguishable from
+    "nothing matches". Move the ``status`` filter back after the SQL
+    ``LIMIT``/``OFFSET`` and the second assertion fails: with ``limit=1`` the
+    SQL page holds only the newest (non-matching) session, so the matching
+    older session disappears from a query that asked for it.
+    """
+    import sqlite3
+
+    from polylogue.core.errors import UnsupportedInsightFilterError
+    from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
+
+    newer_unpriced = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="cost-filter-newer",
+        title="Newer unpriced",
+        created_at="2026-03-02T00:00:00Z",
+        updated_at="2026-03-02T00:05:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="unpriced")],
+            )
+        ],
+    )
+    older_priced = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="cost-filter-older",
+        title="Older priced",
+        reported_cost_usd=2.5,
+        created_at="2026-03-01T00:00:00Z",
+        updated_at="2026-03-01T00:05:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="claude-sonnet-4-5",
+                input_tokens=1_000,
+                output_tokens=500,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="priced")],
+            )
+        ],
+    )
+
+    with ArchiveStore(tmp_path) as store:
+        write_index_session(store, newer_unpriced)
+        priced_id = write_index_session(store, older_priced)
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        upsert_session_profile_costs(
+            conn,
+            priced_id,
+            cost_usd=2.5,
+            cost_credits=25.0,
+            cost_is_estimated=False,
+            cost_provenance="priced",
+            priced_with="cost-filter-test",
+            priced_at_ms=1_772_000_000_000,
+        )
+
+    with ArchiveStore(tmp_path) as store:
+        with pytest.raises(UnsupportedInsightFilterError):
+            store.list_session_cost_insights(model="claude-sonnet-4-5")
+
+        everything = store.list_session_cost_insights(limit=None)
+        assert [insight.session_id for insight in everything][0] != priced_id, (
+            "the priced session must not be the newest row, or the page-cut regression is untestable"
+        )
+        priced_status = next(insight.estimate.status for insight in everything if insight.session_id == priced_id)
+        newest_status = everything[0].estimate.status
+        assert newest_status != priced_status, (
+            "the two seeded sessions must differ in cost status, or the filter is untested"
+        )
+
+        paged = store.list_session_cost_insights(status=priced_status, limit=1)
+
+    assert [insight.session_id for insight in paged] == [priced_id]

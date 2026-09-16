@@ -64,11 +64,17 @@ class OperationIndeterminateError(OperationKernelError):
 
 
 class OperationCancelledError(OperationKernelError):
-    """The operation reached a cancelled terminal state."""
+    """The operation reached a cancelled terminal state.
 
-    def __init__(self, operation: str, detail: object = None) -> None:
+    ``code`` carries the executor's own name for the abort when it supplied one
+    (``QueryCancelledError`` for a deadline/cancellation abort) so a surface can
+    render the typed refusal rather than re-deriving one from the class.
+    """
+
+    def __init__(self, operation: str, detail: object = None, code: str | None = None) -> None:
         self.operation = operation
         self.detail = detail
+        self.code = code or "operation_cancelled"
         super().__init__(f"{operation} was cancelled" if detail is None else f"{operation} was cancelled: {detail}")
 
 
@@ -145,9 +151,17 @@ class OperationKernel:
                 raise OperationIndeterminateError(
                     f"{request.operation} requires receipt recovery for request {envelope.get('request_id')}"
                 )
-            if outcome in {"cancelled", OperationStatus.INTERRUPTED.value}:
-                raise OperationCancelledError(request.operation, envelope.get("result") or envelope.get("detail"))
             error = envelope.get("error")
+            if outcome in {"cancelled", OperationStatus.INTERRUPTED.value}:
+                # The abort's own error body names the deadline, the call id and
+                # the executor's typed code; preferring the (usually absent)
+                # result body dropped all three and left "<op> was cancelled".
+                aborted = error if isinstance(error, Mapping) else {}
+                raise OperationCancelledError(
+                    request.operation,
+                    aborted.get("detail") or envelope.get("result") or envelope.get("detail"),
+                    code=str(aborted.get("code")) if aborted.get("code") else None,
+                )
             if isinstance(error, Mapping):
                 code = error.get("code")
                 data = error.get("data")
