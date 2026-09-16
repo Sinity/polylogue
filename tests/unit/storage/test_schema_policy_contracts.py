@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -669,3 +670,38 @@ def test_admitted_missing_message_fts_refuses_block_search_with_a_typed_error(tm
     with ArchiveStore.open_existing(root, read_only=True) as store:
         with pytest.raises(DatabaseError, match="Search index"):
             store.search_blocks("needle")
+
+
+def test_transient_sqlite_failure_reading_the_manifest_is_retryable_not_a_rebuild(tmp_path: Path) -> None:
+    """polylogue-z5bu7: a failed *read* of the schema is not evidence about the schema.
+
+    A busy/locked/I-O error while inspecting the on-disk shape (after
+    ``user_version`` already read as current) must not be reported as a
+    permanent ``SchemaVersionMismatchError`` prescribing ``rebuild_index``:
+    that sends an operator to destroy a sound index over a transient fault.
+
+    Anti-vacuity: widen ``assert_readable_archive_layout``'s ``sqlite3.Error``
+    branch back into the ``rebuild_index`` refusal and ``lifecycle_action``
+    reads ``rebuild_index`` instead of ``retry``.
+    """
+    db_path = _planted_db(tmp_path, planted_version=SCHEMA_VERSION)
+    conn = sqlite3.connect(db_path)
+
+    real_execute = conn.execute
+
+    def failing_execute(sql: str, *args: Any) -> sqlite3.Cursor:
+        if "sqlite_master" in sql or "table_info" in sql:
+            raise sqlite3.OperationalError("database is locked")
+        return real_execute(sql, *args)
+
+    try:
+        conn.execute = failing_execute  # type: ignore[method-assign]
+        with pytest.raises(SchemaVersionMismatchError) as caught:
+            assert_readable_archive_layout(conn)
+    finally:
+        conn.close()
+
+    error = caught.value
+    assert error.lifecycle_action == "retry"
+    assert "was not inspected" in str(error)
+    assert isinstance(error.__cause__, sqlite3.OperationalError)
