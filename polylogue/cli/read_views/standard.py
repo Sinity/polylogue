@@ -51,15 +51,12 @@ def _warn_on_written_file_secret_candidates(env: AppEnv, out_path: str | None) -
     """
     if out_path is None:
         return
-    from polylogue.security.secret_scan import describe_secret_candidate_spans, scan_path_for_secret_candidates
+    from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
 
-    spans = scan_path_for_secret_candidates(Path(out_path))
-    if not spans:
+    notice = describe_path_scan_result(scan_path_for_secret_candidates(Path(out_path)))
+    if notice is None:
         return
-    env.ui.console.print(
-        f"[yellow]secret-scan: {out_path}: {describe_secret_candidate_spans(spans)} -- "
-        "review before sharing this file (candidate detector, not proof of a real secret).[/yellow]"
-    )
+    env.ui.console.print(f"[yellow]{notice}[/yellow]")
 
 
 def _record_temporal_phase(

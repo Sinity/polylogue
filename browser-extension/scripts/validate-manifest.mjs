@@ -40,8 +40,18 @@ const ALLOWED_HOST_GLOBS = [
   /^https:\/\/x\.com\/\*$/,
   /^https:\/\/twitter\.com\/\*$/,
   /^https:\/\/gemini\.google\.com\/\*$/,
-  /^http:\/\/127\.0\.0\.1\/\*$/,
+  // Port-scoped to the receiver's own default. The unscoped
+  // http://127.0.0.1/* also covers the unauthenticated archive API on 8766,
+  // and extension fetches are not subject to CORS (2026-07-31 leak audit L7,
+  // polylogue-tztk), so the broad loopback grant moved to
+  // optional_host_permissions: a non-default receiver port now needs an
+  // explicit operator grant from the popup.
+  /^http:\/\/127\.0\.0\.1:\d+\/\*$/,
 ];
+
+//: Loopback origins the operator may grant at runtime but which are not
+//: granted at install time.
+const ALLOWED_OPTIONAL_HOST_GLOBS = [/^http:\/\/127\.0\.0\.1\/\*$/];
 
 function fail(errors) {
   process.stderr.write(`manifest validation failed (${errors.length} issues):\n`);
@@ -86,8 +96,18 @@ function validate(manifestPath) {
     if (host === "<all_urls>" || host === "*://*/*") {
       errors.push(`host permission "${host}" is too broad`);
     }
+    if (host === "http://127.0.0.1/*") {
+      errors.push('host_permission "http://127.0.0.1/*" must be optional, not granted at install');
+    }
     const ok = ALLOWED_HOST_GLOBS.some((re) => re.test(host));
     if (!ok) errors.push(`host_permission "${host}" not in declared allowlist`);
+  }
+  for (const host of manifest.optional_host_permissions ?? []) {
+    if (host === "<all_urls>" || host === "*://*/*") {
+      errors.push(`optional host permission "${host}" is too broad`);
+    }
+    const ok = ALLOWED_OPTIONAL_HOST_GLOBS.some((re) => re.test(host));
+    if (!ok) errors.push(`optional_host_permission "${host}" not in declared allowlist`);
   }
 
   const sw = manifest.background?.service_worker;

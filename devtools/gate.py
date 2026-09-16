@@ -199,6 +199,14 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
+        "schema-provider-identity",
+        "Verify no committed schema package contains an element whose $id names another subject.",
+        "module",
+        ("devtools.verify_schema_provider_identity",),
+        label="gate schema-provider-identity",
+        in_quick=True,
+    ),
+    Gate(
         "atlas",
         "Check that every atlas citation resolves to an existing file and line range.",
         "module",

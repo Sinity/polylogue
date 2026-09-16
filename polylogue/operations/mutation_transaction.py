@@ -1420,7 +1420,7 @@ def recover_interrupted_operations(archive_root: Path) -> None:
                 audit.record_recovery_disposition(operation.operation_id, unreadable)
 
 
-def make_target_ref(kind: Literal["session", "message", "block", "source", "index"], value: object) -> str:
+def make_target_ref(kind: Literal["session", "message", "block", "source", "index", "path"], value: object) -> str:
     """Return a stable ``kind:value`` target ref, the shared vocabulary for plans/receipts."""
 
     return f"{kind}:{value}"

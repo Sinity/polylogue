@@ -11,6 +11,11 @@ let stored;
 let sessionStored;
 let fetchCalls;
 let tabs;
+//: Loopback origins the mocked browser reports as granted. The manifest
+//: grants only the receiver's default port at install; anything else is an
+//: optional permission the operator must grant (leak audit L7), so tests
+//: that configure another port declare it here.
+let grantedOrigins;
 
 let mockGeneration = 0;
 
@@ -34,6 +39,7 @@ function installChromeMock(storagePatch = {}) {
   alarmListener = null;
   fetchCalls = [];
   sessionStored = {};
+  grantedOrigins = new Set(["http://127.0.0.1:8765/*", "http://127.0.0.1:8875/*"]);
   tabs = [{ id: 42, url: "https://chatgpt.com/?temporary-chat=true", title: "ChatGPT" }];
   globalThis.chrome = {
     // The worker captures this per-instance seam. A stale instance must not
@@ -45,6 +51,9 @@ function installChromeMock(storagePatch = {}) {
     action: {
       setBadgeBackgroundColor: vi.fn(async () => undefined),
       setBadgeText: vi.fn(async () => undefined),
+    },
+    permissions: {
+      contains: vi.fn(async ({ origins = [] } = {}) => origins.every((origin) => grantedOrigins.has(origin))),
     },
     alarms: {
       create: vi.fn(async () => undefined),
@@ -3455,6 +3464,7 @@ describe("receiver health probe", () => {
       },
     });
 
+    grantedOrigins.add("http://127.0.0.1:8876/*");
     await sendRuntimeMessage({
       type: "polylogue.configureReceiver",
       receiverBaseUrl: "http://127.0.0.1:8876",
@@ -3472,6 +3482,39 @@ describe("receiver health probe", () => {
     });
 
     expect(stored.polylogueReceiverPairing).toMatchObject({ dev_override: false });
+  });
+
+  it("refuses a receiver origin the extension does not hold permission for", async () => {
+    // polylogue-tztk (leak audit L7): the manifest used to grant
+    // http://127.0.0.1/*, which also covers the unauthenticated archive API
+    // on 8766, and extension fetches bypass CORS. Anti-vacuity: drop the
+    // loopbackOriginIsGranted check in saveReceiverSettings and the settings
+    // are stored, making both assertions below red.
+    await loadBackground();
+    const before = stored.receiverBaseUrl;
+
+    const response = await sendRuntimeMessage({
+      type: "polylogue.configureReceiver",
+      receiverBaseUrl: "http://127.0.0.1:8766",
+      receiverAuthToken: "token-1",
+    });
+
+    expect(response).toMatchObject({ ok: false, error: "receiver_origin_not_permitted" });
+    expect(stored.receiverBaseUrl).toBe(before);
+  });
+
+  it("accepts a non-default receiver origin once the operator has granted it", async () => {
+    await loadBackground();
+    grantedOrigins.add("http://127.0.0.1:8766/*");
+
+    const response = await sendRuntimeMessage({
+      type: "polylogue.configureReceiver",
+      receiverBaseUrl: "http://127.0.0.1:8766",
+      receiverAuthToken: "token-1",
+    });
+
+    expect(response).toMatchObject({ ok: true });
+    expect(stored.receiverBaseUrl).toBe("http://127.0.0.1:8766");
   });
 
   it("resets only the pairing key and preserves pending work", async () => {

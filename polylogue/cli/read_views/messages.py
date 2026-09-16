@@ -171,14 +171,11 @@ def _write_messages_file(
                 fh.write(f'  "offset": {offset}\n')
                 fh.write("}\n")
 
-        from polylogue.security.secret_scan import describe_secret_candidate_spans, scan_path_for_secret_candidates
+        from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
 
-        spans = scan_path_for_secret_candidates(out_path)
-        if spans:
-            click.echo(
-                f"secret-scan: {out_path}: {describe_secret_candidate_spans(spans)} -- "
-                "review before sharing this file (candidate detector, not proof of a real secret)."
-            )
+        notice = describe_path_scan_result(scan_path_for_secret_candidates(out_path))
+        if notice is not None:
+            click.echo(notice)
         click.echo(f"Wrote to {out_path}")
 
     run_coroutine_sync(_run())

@@ -41,7 +41,21 @@ SCHEMA_SUBJECTS: Final[tuple[SchemaSubjectSpec, ...]] = (
         requires_package=False,
         package_not_required_reason="Reserved origin with no admitted Beads session wire format",
     ),
-    SchemaSubjectSpec("grok", "grok", "grok", ("grok-export",)),
+    SchemaSubjectSpec(
+        "grok",
+        "grok",
+        "grok",
+        ("grok-export",),
+        requires_package=False,
+        package_not_required_reason=(
+            "No admitted Grok export evidence. The package committed under this subject was "
+            "Claude.ai's export folded in by a source-selection defect -- its elements carried "
+            "$id polylogue://schemas/claude-ai/... and Claude.ai's document shape (chat_messages, "
+            "uuid, account, project) -- so it was removed rather than relabelled (polylogue-n61h5). "
+            "Regenerate from real Grok artifacts to restore a package; "
+            "`devtools gate schema-provider-identity` refuses another subject's elements landing here."
+        ),
+    ),
     SchemaSubjectSpec(
         "browser-capture",
         "browser-capture",

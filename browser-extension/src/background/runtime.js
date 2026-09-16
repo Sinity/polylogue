@@ -522,9 +522,38 @@ async function receiverSettings() {
   };
 }
 
+// The manifest grants http://127.0.0.1:8765/* at install time and nothing
+// wider. The unscoped loopback grant it used to carry also covered the
+// unauthenticated archive API on 8766, and extension fetches are not subject
+// to CORS (2026-07-31 leak audit L7, polylogue-tztk), so a non-default
+// receiver port is now an optional permission the operator grants from the
+// popup. This is the enforcement point: settings that name an origin the
+// extension does not hold are refused rather than stored, so a wedged or
+// hostile configure message cannot point the capture stream at another
+// loopback service.
+async function loopbackOriginIsGranted(baseUrl) {
+  let origin;
+  try {
+    origin = `${new URL(baseUrl).origin}/*`;
+  } catch {
+    return false;
+  }
+  if (!runtimeChrome.permissions?.contains) return false;
+  try {
+    return Boolean(await runtimeChrome.permissions.contains({ origins: [origin] }));
+  } catch {
+    return false;
+  }
+}
+
 async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "") {
   trustedReceiverHealthCache = null;
   const normalizedBaseUrl = String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "") || DEFAULT_RECEIVER;
+  if (normalizedBaseUrl !== DEFAULT_RECEIVER && !(await loopbackOriginIsGranted(normalizedBaseUrl))) {
+    const error = new Error("receiver_origin_not_permitted");
+    error.origin = normalizedBaseUrl;
+    throw error;
+  }
   await runtimeChrome.storage.local.set({
     receiverAuthToken: String(receiverAuthToken || ""),
     receiverBaseUrl: normalizedBaseUrl,
@@ -3310,7 +3339,13 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.configureReceiver") {
-      const settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
+      let settings;
+      try {
+        settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
+      } catch (error) {
+        sendResponse({ ok: false, error: error?.message || "configure_receiver_failed" });
+        return;
+      }
       sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, authConfigured: Boolean(settings.authToken) });
       return;
     }

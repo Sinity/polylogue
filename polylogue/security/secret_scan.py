@@ -259,6 +259,56 @@ class SecretScanResult:
         }
 
 
+#: Text columns outside ``blocks`` that carry operator- or provider-supplied
+#: prose and can therefore carry a credential (polylogue-97o2z). Scanning
+#: only ``blocks`` missed the system prompt entirely, which is exactly where
+#: an operator pastes an API key into a project instruction file.
+_SESSION_TEXT_COLUMNS = ("instructions_text", "title", "git_repository_url")
+
+
+def _scan_targets_for_session(conn: sqlite3.Connection, session_id: str) -> tuple[list[tuple[str, str]], int]:
+    """Every ``(target_ref, text)`` pair the scanner must cover for a session.
+
+    The single-session and archive-wide sweeps share this so a column can
+    never be covered by one route and not the other. Returns the pairs plus
+    the block count (the number reported as ``blocks_scanned``).
+
+    Refs are the same vocabulary ``excision._target_refs`` resolves --
+    ``session:``/``message:``/``block:`` -- so an excision of the session
+    still clears every candidate this records.
+    """
+    block_rows = conn.execute(
+        "SELECT block_id, COALESCE(text, ''), COALESCE(tool_input, '') FROM blocks "
+        "WHERE session_id = ? ORDER BY message_id, position",
+        (session_id,),
+    ).fetchall()
+    targets: list[tuple[str, str]] = []
+    for block_id, text, tool_input in block_rows:
+        combined = f"{text} {tool_input}".strip()
+        if combined:
+            targets.append((f"block:{block_id}", combined))
+
+    columns = ", ".join(f"COALESCE({name}, '')" for name in _SESSION_TEXT_COLUMNS)
+    session_row = conn.execute(
+        f"SELECT {columns} FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if session_row is not None:
+        session_text = " ".join(str(value) for value in session_row if value).strip()
+        if session_text:
+            targets.append((f"session:{session_id}", session_text))
+
+    message_rows = conn.execute(
+        "SELECT message_id, COALESCE(user_context_text, '') FROM messages "
+        "WHERE session_id = ? AND COALESCE(user_context_text, '') != '' ORDER BY message_id",
+        (session_id,),
+    ).fetchall()
+    for message_id, user_context_text in message_rows:
+        targets.append((f"message:{message_id}", str(user_context_text)))
+
+    return targets, len(block_rows)
+
+
 def scan_session_for_secret_candidates(
     archive_root: Path,
     session_id: str,
@@ -269,7 +319,8 @@ def scan_session_for_secret_candidates(
 
     Reads each block's ``text`` and ``tool_input`` (tool-call arguments,
     where secrets often show up as ``key=value`` pairs or env assignments)
-    from ``index.db``, runs them through
+    from ``index.db``, plus the session/message prose columns listed in
+    ``_scan_targets_for_session`` (the system prompt above all), runs them through
     :func:`scan_text_for_secret_candidates`, and persists any hits as
     non-injectable ``SECRET_CANDIDATE`` assertions in ``user.db`` via
     :func:`record_secret_candidates` -- keyed ``block:<block_id>`` so a
@@ -292,11 +343,7 @@ def scan_session_for_secret_candidates(
         session_row = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         if session_row is None:
             return SecretScanResult(session_id=session_id, found=False)
-        rows = conn.execute(
-            "SELECT block_id, COALESCE(text, ''), COALESCE(tool_input, '') FROM blocks "
-            "WHERE session_id = ? ORDER BY message_id, position",
-            (session_id,),
-        ).fetchall()
+        targets, blocks_scanned = _scan_targets_for_session(conn, session_id)
     finally:
         conn.close()
 
@@ -309,17 +356,14 @@ def scan_session_for_secret_candidates(
     written: list[str] = []
     try:
         with user_conn:
-            for block_id, text, tool_input in rows:
-                combined = f"{text} {tool_input}".strip()
-                if not combined:
-                    continue
-                spans = scan_text_for_secret_candidates(combined)
+            for target_ref, content in targets:
+                spans = scan_text_for_secret_candidates(content)
                 if not spans:
                     continue
                 written.extend(
                     record_secret_candidates(
                         user_conn,
-                        target_ref=f"block:{block_id}",
+                        target_ref=target_ref,
                         spans=spans,
                         now_ms=timestamp,
                     )
@@ -330,7 +374,7 @@ def scan_session_for_secret_candidates(
     return SecretScanResult(
         session_id=session_id,
         found=True,
-        blocks_scanned=len(rows),
+        blocks_scanned=blocks_scanned,
         candidates_found=len(written),
         written_assertion_ids=tuple(written),
     )
@@ -351,13 +395,14 @@ def scan_session_for_secret_candidates(
 # sweep can never leave a session "covered" without its candidates durably
 # recorded, or vice versa.
 
-#: Bump when ``_PATTERN_RULES`` changes in a way that could surface new
-#: candidates in previously-scanned content (new rule, widened regex, changed
-#: entropy threshold). Every existing ``secret_scan_status`` row is written at
+#: Bump when ``_PATTERN_RULES`` or ``_scan_targets_for_session`` changes in a
+#: way that could surface new candidates in previously-scanned content (new
+#: rule, widened regex, changed entropy threshold, newly covered column).
+#: Version 2 added the session/message text columns (polylogue-97o2z). Every existing ``secret_scan_status`` row is written at
 #: the version current when it was scanned, so a bump makes every prior row
 #: stale and schedules an intentional rescan on the next sweep -- mirrors
 #: ``EmbeddingRecipe``'s model/dimension versioning for the embed backlog.
-SECRET_SCAN_VERSION = 1
+SECRET_SCAN_VERSION = 2
 
 #: Default bounded page size for one bulk-scan call (CLI ``--limit`` default,
 #: daemon sweep window). A large archive is covered incrementally across
@@ -591,24 +636,17 @@ def scan_archive_for_secret_candidates(
     try:
         for session_id in pending_ids:
             try:
-                rows = index_conn.execute(
-                    "SELECT block_id, COALESCE(text, ''), COALESCE(tool_input, '') FROM blocks "
-                    "WHERE session_id = ? ORDER BY message_id, position",
-                    (session_id,),
-                ).fetchall()
+                targets, blocks_in_session = _scan_targets_for_session(index_conn, session_id)
                 written: list[str] = []
                 with user_conn:
-                    for block_id, text, tool_input in rows:
-                        combined = f"{text} {tool_input}".strip()
-                        if not combined:
-                            continue
-                        spans = scan_text_for_secret_candidates(combined)
+                    for target_ref, content in targets:
+                        spans = scan_text_for_secret_candidates(content)
                         if not spans:
                             continue
                         written.extend(
                             record_secret_candidates(
                                 user_conn,
-                                target_ref=f"block:{block_id}",
+                                target_ref=target_ref,
                                 spans=spans,
                                 now_ms=timestamp,
                             )
@@ -619,7 +657,7 @@ def scan_archive_for_secret_candidates(
                         session_id=session_id,
                         scanner_version=scanner_version,
                         now_ms=timestamp,
-                        blocks_scanned=len(rows),
+                        blocks_scanned=blocks_in_session,
                         candidates_found=len(written),
                     )
             except sqlite3.Error:
@@ -627,7 +665,7 @@ def scan_archive_for_secret_candidates(
                 errors += 1
                 continue
             sessions_scanned += 1
-            blocks_scanned_total += len(rows)
+            blocks_scanned_total += blocks_in_session
             candidates_found_total += len(written)
             scanned_ids.append(session_id)
     finally:
@@ -652,7 +690,34 @@ def scan_archive_for_secret_candidates(
     )
 
 
-def scan_path_for_secret_candidates(path: Path, *, max_bytes: int = 20_000_000) -> list[SecretCandidateSpan]:
+@dataclass(frozen=True, slots=True)
+class PathScanResult:
+    """Outcome of scanning an already-written export file.
+
+    Distinguishes "read the whole file and found nothing" from "never read
+    the file" (polylogue-xv0pf). The old API returned ``[]`` for both, so an
+    over-cap or unreadable export -- exactly the large, most-shareable case
+    the streaming writers produce -- was reported to the operator as clean.
+
+    ``scanned`` is False only when ``unscanned_reason`` is set; callers must
+    surface that reason rather than treating no spans as a clean bill.
+    """
+
+    path: Path
+    scanned: bool
+    spans: tuple[SecretCandidateSpan, ...] = ()
+    unscanned_reason: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "path": str(self.path),
+            "scanned": self.scanned,
+            "candidates_found": len(self.spans),
+            "unscanned_reason": self.unscanned_reason,
+        }
+
+
+def scan_path_for_secret_candidates(path: Path, *, max_bytes: int = 20_000_000) -> PathScanResult:
     """Scan a file already written to disk for credential-shaped spans.
 
     Companion to :func:`scan_text_for_secret_candidates` for render/export
@@ -660,17 +725,59 @@ def scan_path_for_secret_candidates(path: Path, *, max_bytes: int = 20_000_000) 
     building it in memory first (e.g. ``read --view transcript --to file``'s
     non-lineage fast path, ``polylogue/cli/read_views/streaming_markdown.py``)
     -- those still need a scan chokepoint after the fact
-    (polylogue-t9xd). Silently returns no findings for anything above
-    ``max_bytes`` or unreadable as UTF-8: scanning multi-GB exports
-    byte-for-byte would defeat the point of a streaming writer.
+    (polylogue-t9xd).
+
+    Anything above ``max_bytes``, or unreadable as UTF-8, comes back as
+    ``scanned=False`` with a reason instead of an empty finding list: a file
+    the scanner never read is *unscanned*, not clean (polylogue-xv0pf).
+    Scanning multi-GB exports byte-for-byte would defeat the point of a
+    streaming writer, so the cap stays -- what changes is that the operator
+    is told the cap fired.
     """
     try:
-        if path.stat().st_size > max_bytes:
-            return []
+        size = path.stat().st_size
+    except OSError as exc:
+        return PathScanResult(
+            path=path,
+            scanned=False,
+            unscanned_reason=f"could not be read ({type(exc).__name__})",
+        )
+    if size > max_bytes:
+        return PathScanResult(
+            path=path,
+            scanned=False,
+            unscanned_reason=f"{size} bytes exceeds the {max_bytes}-byte scan cap",
+        )
+    try:
         text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return []
-    return scan_text_for_secret_candidates(text)
+    except OSError as exc:
+        return PathScanResult(
+            path=path,
+            scanned=False,
+            unscanned_reason=f"could not be read ({type(exc).__name__})",
+        )
+    except UnicodeDecodeError:
+        return PathScanResult(path=path, scanned=False, unscanned_reason="is not valid UTF-8")
+    return PathScanResult(path=path, scanned=True, spans=tuple(scan_text_for_secret_candidates(text)))
+
+
+def describe_path_scan_result(result: PathScanResult) -> str | None:
+    """Operator-facing one-line notice for a written export, or None when the
+    file was scanned and came back clean.
+
+    Shared by both CLI export callers so the unscanned wording cannot drift
+    between them; never reproduces a matched literal.
+    """
+    if not result.scanned:
+        return (
+            f"secret-scan: {result.path}: NOT SCANNED -- {result.unscanned_reason}; review this file before sharing it."
+        )
+    if not result.spans:
+        return None
+    return (
+        f"secret-scan: {result.path}: {describe_secret_candidate_spans(result.spans)} -- "
+        "review before sharing this file (candidate detector, not proof of a real secret)."
+    )
 
 
 def describe_secret_candidate_spans(spans: Sequence[SecretCandidateSpan]) -> str:
@@ -688,10 +795,12 @@ def describe_secret_candidate_spans(spans: Sequence[SecretCandidateSpan]) -> str
 __all__ = [
     "BulkSecretScanResult",
     "DEFAULT_SECRET_SCAN_PAGE_SIZE",
+    "PathScanResult",
     "SECRET_SCAN_VERSION",
     "SecretCandidateSpan",
     "SecretScanResult",
     "count_pending_secret_scan_sessions",
+    "describe_path_scan_result",
     "describe_secret_candidate_spans",
     "record_secret_candidates",
     "scan_archive_for_secret_candidates",

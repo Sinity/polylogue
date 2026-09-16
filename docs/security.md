@@ -154,7 +154,14 @@ warranted, excise.
 `polylogue ops scan-secrets --session <id>` is the production entrypoint
 (`scan_session_for_secret_candidates`, `polylogue/cli/commands/
 scan_secrets.py`): it reads the session's block text/tool-input from
-`index.db`, scans it, and writes candidates into `user.db`. Without this
+`index.db`, scans it, and writes candidates into `user.db`. Coverage is not
+block-only: `_scan_targets_for_session` also scans `sessions.instructions_text`
+(the system prompt), `sessions.title`, `sessions.git_repository_url` and
+`messages.user_context_text`, recorded under `session:`/`message:` refs that
+excision already resolves (polylogue-97o2z). Both the single-session and
+archive-wide sweeps go through that one helper, so a column cannot be covered
+by one route and missed by the other; `SECRET_SCAN_VERSION` was bumped to 2 so
+existing coverage rows rescan. Without this
 caller the regex/entropy rules and the write path exist but nothing in the
 running archive ever invokes them (fix-round note, 2026-07-14).
 
@@ -194,6 +201,13 @@ directly, reusing the same never-log-the-literal invariant:
   streaming fast paths, immediately after) the file lands on disk, and a
   finding prints the same warning to the console. Still not a hard block —
   same rationale as the pre-commit gate.
+
+`scan_path_for_secret_candidates` returns a typed `PathScanResult`, not a
+bare finding list: a file above the 20 MB cap, unreadable, or not valid UTF-8
+comes back `scanned=False` with a reason, and the CLI prints an explicit
+`NOT SCANNED … review this file before sharing it` notice. Returning `[]` for
+those cases reported the largest and most shareable exports — exactly the
+streaming case the chokepoint exists for — as clean (polylogue-xv0pf).
 
 Coverage: `tests/unit/security/test_precommit_scan.py`,
 `tests/unit/security/test_secret_scan.py::TestScanPathForSecretCandidates`,
