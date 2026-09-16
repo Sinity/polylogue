@@ -24,7 +24,7 @@ from polylogue.sources.parsers.claude import parse_ai
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
 from tests.infra.identity import archive_message_id
 
 
@@ -347,7 +347,10 @@ async def test_orphaned_attachment_ref_is_swept_not_left_unreachable(
         mime_type="text/plain",
         inline_bytes=b"will be orphaned",
     )
-    attachment_id = _attachment_id_for_test(attachment)
+    # The production identity function, not a local mirror: a copy of the
+    # field tuple here silently drifted from write.py's framing and made this
+    # test look up an attachment_id the writer never stores.
+    attachment_id = _attachment_id("", attachment)
 
     db_path = tmp_path / "index.db"
     conn = _connect(db_path)
@@ -406,28 +409,3 @@ async def test_orphaned_attachment_ref_is_swept_not_left_unreachable(
     assert all(record.attachment_id != attachment_id for record in records), (
         "get_attachments (the production session-attachment read path) must never surface the orphaned attachment"
     )
-
-
-def _attachment_id_for_test(attachment: ParsedAttachment) -> str:
-    """Mirror ``write.py:_attachment_id`` (identity hash, session-independent)
-    without importing the private helper across module boundaries.
-    """
-    import hashlib as _hashlib
-
-    def _hash_bytes(*parts: str) -> bytes:
-        digest = _hashlib.sha256()
-        for part in parts:
-            digest.update(part.encode("utf-8", errors="surrogatepass"))
-            digest.update(b"\0")
-        return digest.digest()
-
-    return _hash_bytes(
-        "attachment",
-        attachment.provider_attachment_id,
-        attachment.provider_file_id or "",
-        attachment.provider_drive_id or "",
-        attachment.path or "",
-        attachment.name or "",
-        attachment.mime_type or "",
-        str(attachment.size_bytes or 0),
-    ).hex()
