@@ -6,10 +6,6 @@ remain in their owning tiers and are linked by typed receipt references.
 
 from __future__ import annotations
 
-from typing import get_args
-
-from polylogue.core.enums import PrincipalSurface
-from polylogue.storage.sqlite.archive_tiers.common import literal_check
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
 AUDIT_SCHEMA_VERSION = 3
@@ -47,8 +43,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_machine_request_parts_authorization
 ON machine_request_parts(authorization_ref) WHERE authorization_ref IS NOT NULL;
 """
 
-_PRINCIPAL_SURFACE_CHECK = literal_check("principal_surface", *get_args(PrincipalSurface))
-
 AUDIT_DDL = """
 CREATE TABLE IF NOT EXISTS archive_authority (
     archive_instance_id TEXT PRIMARY KEY,
@@ -74,7 +68,9 @@ CREATE TABLE IF NOT EXISTS operation_previews (
     )),
     required_capability_count  INTEGER NOT NULL CHECK(required_capability_count >= 0),
     principal_actor_ref        TEXT NOT NULL,
-    principal_surface          TEXT NOT NULL CHECK(__PRINCIPAL_SURFACE_CHECK__),
+    principal_surface          TEXT NOT NULL CHECK(principal_surface IN (
+        'cli', 'api', 'mcp', 'daemon', 'maintenance', 'internal'
+    )),
     role_label                 TEXT,
     state                      TEXT NOT NULL CHECK(state IN (
         'prepared', 'consumed', 'expired', 'stale', 'cancelled'
@@ -270,10 +266,6 @@ INSERT OR IGNORE INTO audit_continuity_head(
 """
 
 AUDIT_DDL = AUDIT_DDL.replace("__AUDIT_CONTINUITY_GENESIS_HEAD__", AUDIT_CONTINUITY_GENESIS_HEAD_SHA256)
-# polylogue-ir1wn: the same tokens as PrincipalSurface, generated from it
-# rather than hand-written a second time. Values are unchanged, so this is
-# not a durable migration.
-AUDIT_DDL = AUDIT_DDL.replace("__PRINCIPAL_SURFACE_CHECK__", _PRINCIPAL_SURFACE_CHECK)
 AUDIT_DDL += MACHINE_REQUEST_DDL
 
 __all__ = ["AUDIT_DDL", "AUDIT_SCHEMA_VERSION"]

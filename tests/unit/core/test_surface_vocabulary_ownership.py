@@ -33,11 +33,20 @@ def _check_line(ddl: str, column: str) -> str:
     raise AssertionError(f"no CHECK on {column}")
 
 
-def test_audit_principal_surface_check_is_generated_from_the_literal() -> None:
-    line = _check_line(AUDIT_DDL, "principal_surface")
-    for value in get_args(PrincipalSurface):
-        assert f"'{value}'" in line, value
-    assert line.count("'") == 2 * len(PRINCIPAL_SURFACE_VALUES)
+def test_audit_principal_surface_check_matches_the_literal() -> None:
+    """The durable audit CHECK is hand-written (durable DDL carries no
+    enum-generated CHECK; a vocabulary edit must not silently become a
+    migration), so it is pinned to ``PrincipalSurface`` here instead.
+
+    Anti-vacuity: add a member to ``PrincipalSurface`` without editing the
+    audit DDL, or the reverse, and the two sets diverge.
+    """
+    import re
+
+    match = re.search(r"principal_surface\s+TEXT NOT NULL CHECK\(principal_surface IN \(([^)]*)\)\)", AUDIT_DDL)
+    assert match is not None, "no CHECK on principal_surface"
+    declared = set(re.findall(r"'([^']*)'", match.group(1)))
+    assert declared == set(get_args(PrincipalSurface))
 
 
 def test_ops_surface_check_is_generated_from_the_literal() -> None:
