@@ -65,7 +65,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from polylogue.analysis.archive_models import ArchiveInsightModel
-from polylogue.sources.parsers.hermes_state import HermesFidelityStatus
+from polylogue.core.enums import SourceFidelityStatus
 
 if TYPE_CHECKING:
     from polylogue.storage.runtime.archive.records import SessionEventRecord
@@ -96,7 +96,7 @@ class HermesArtifactObservation(ArchiveInsightModel):
     session_id: str
     available: bool
     event_count: int = 0
-    fidelity_status: HermesFidelityStatus | None = None
+    fidelity_status: SourceFidelityStatus | None = None
     caveats: tuple[str, ...] = ()
 
 
@@ -151,7 +151,7 @@ def _observe_artifact(artifact: HermesArtifactKind, artifact_input: HermesArtifa
         return HermesArtifactObservation(artifact=artifact, session_id=artifact_input.session_id, available=False)
 
     caveats: list[str] = []
-    fidelity_status: HermesFidelityStatus = "exact" if events else "absent"
+    fidelity_status: SourceFidelityStatus = "exact" if events else "absent"
     if artifact == "atof":
         unpaired_scopes = sum(1 for event in events if event.event_type == "hermes_atof_unpaired_scope")
         if unpaired_scopes:

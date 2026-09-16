@@ -35,6 +35,7 @@ from polylogue.core.enums import (
     AssertionVisibility,
     DelegationMappingState,
     DelegationResultStatus,
+    SourceFidelityStatus,
 )
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import delegation_edge_object_id, normalize_object_ref_text, normalize_public_ref_text
@@ -303,13 +304,10 @@ class ImportSkippedRowPayload(SurfacePayloadModel):
     raw_ref: str | None = None
 
 
-ImportFidelityStatus: TypeAlias = Literal["exact", "absent", "redacted", "degraded", "inferred"]
-
-
 class ImportFidelityCapabilityPayload(SurfacePayloadModel):
     """Coverage and fidelity for one source capability."""
 
-    status: ImportFidelityStatus
+    status: SourceFidelityStatus
     observed: int = 0
     expected: int = 0
     counts: Mapping[str, int] = Field(default_factory=dict)
@@ -4448,7 +4446,7 @@ __all__ = [
     "ImportDetectorEvidencePayload",
     "ImportFidelityCapabilityPayload",
     "ImportFidelityDeclarationPayload",
-    "ImportFidelityStatus",
+    "SourceFidelityStatus",
     "ImportExplainEntryPayload",
     "ImportExplainPayload",
     "ImportProducedRowsPayload",

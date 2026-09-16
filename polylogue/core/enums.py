@@ -906,6 +906,17 @@ spelled the daemon HTTP route ``daemon-web``, a token no writer ever produced.
 TELEMETRY_SURFACE_VALUES: frozenset[TelemetrySurface] = frozenset(get_args(TelemetrySurface))
 
 
+SourceFidelityStatus = Literal["exact", "absent", "redacted", "degraded", "inferred"]
+"""How faithfully one source capability survived acquisition.
+
+Declared once (polylogue-jglh): ``sources/parsers/hermes_state`` and
+``surfaces/payloads`` each carried a byte-identical five-member Literal for
+this, under two names, with nothing keeping them in step.
+"""
+
+SOURCE_FIDELITY_STATUS_VALUES: frozenset[SourceFidelityStatus] = frozenset(get_args(SourceFidelityStatus))
+
+
 __all__ = [
     "ActionResultState",
     "AssertionKind",
@@ -934,7 +945,9 @@ __all__ = [
     "RawAuthorityVerdict",
     "Role",
     "SemanticBlockType",
+    "SOURCE_FIDELITY_STATUS_VALUES",
     "SessionRefKind",
+    "SourceFidelityStatus",
     "StopReason",
     "TERMINAL_STATE_VALUES",
     "TerminalState",
