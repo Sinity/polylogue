@@ -758,7 +758,7 @@ def _archive_source_path_churn(
         conn = open_readonly_connection(index_db)
         try:
             conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
-            if not table_exists(conn, "sessions") or not table_exists(conn, "raw_sessions"):
+            if not table_exists(conn, "sessions") or not table_exists(conn, "raw_sessions", schema="source_tier"):
                 return []
             rows = conn.execute(
                 f"""
@@ -1417,7 +1417,11 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
         if source_db.exists():
             conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
             source_attached = True
-            source_check_available = table_exists(conn, "raw_sessions")
+            # ``raw_sessions`` lives in the attached source tier, never in the
+            # index connection's ``main``. An unqualified probe here always
+            # answers False, and every raw-artifact surface below then reports
+            # ``source_tier_unavailable`` for a perfectly readable source.db.
+            source_check_available = table_exists(conn, "raw_sessions", schema="source_tier")
         measured_counts = _archive_derived_counts(
             conn, source_check_available=source_check_available, exact_counts=exact_counts
         )
@@ -2398,7 +2402,7 @@ def _archive_query_plans(root: Path) -> dict[str, Any]:
         conn = open_readonly_connection(index_db)
         try:
             conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
-            if table_exists(conn, "sessions") and table_exists(conn, "raw_sessions"):
+            if table_exists(conn, "sessions") and table_exists(conn, "raw_sessions", schema="source_tier"):
                 source_row = conn.execute(
                     "SELECT source_path FROM source_tier.raw_sessions WHERE source_path IS NOT NULL LIMIT 1"
                 ).fetchone()
