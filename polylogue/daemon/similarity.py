@@ -49,6 +49,7 @@ from polylogue.core.errors import DatabaseError
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.introspection import table_exists
 
 # Hard server-side cap on requested result count. A pathological client
 # asking for ``limit=10**6`` still receives at most this many rows.
@@ -106,11 +107,6 @@ def _fetch_archive_session_exists(conn: sqlite3.Connection, session_id: str) -> 
     return row is not None
 
 
-def _vec_table_exists(conn: sqlite3.Connection) -> bool:
-    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_embeddings'").fetchone()
-    return row is not None
-
-
 def _clamp_limit(requested: int | None) -> int:
     if requested is None:
         return SIMILAR_RESULTS_DEFAULT
@@ -148,7 +144,7 @@ def _build_archive_similar_payload(
             envelope["limit"] = bounded_limit
             return envelope
         with open_readonly_connection(embeddings_db, timeout_class="interactive-read") as conn:
-            if not _vec_table_exists(conn):
+            if not table_exists(conn, "message_embeddings"):
                 envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
                 envelope["session_id"] = session_id
                 envelope["limit"] = bounded_limit

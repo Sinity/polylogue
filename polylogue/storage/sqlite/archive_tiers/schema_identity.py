@@ -8,6 +8,8 @@ import sqlite3
 import sys
 from enum import StrEnum
 
+from polylogue.storage.introspection import table_exists
+
 
 def _normalize_schema_sql(value: str | None) -> str:
     """Normalize one sqlite_master SQL definition for semantic comparison."""
@@ -205,18 +207,10 @@ def read_schema_identity(conn: sqlite3.Connection, tier: DerivedTier) -> str | N
     try:
         row = conn.execute("SELECT identity FROM schema_identity WHERE tier = ?", (tier.value,)).fetchone()
     except sqlite3.OperationalError:
-        if not _table_exists(conn, "schema_identity"):
+        if not table_exists(conn, "schema_identity"):
             return None
         raise
     return None if row is None else str(row[0])
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (name,),
-    ).fetchone()
-    return row is not None
 
 
 __all__ = [

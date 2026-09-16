@@ -40,6 +40,7 @@ from polylogue.core.evidence_value import (
 from polylogue.core.refs import ObjectRef
 from polylogue.core.timestamps import to_epoch_ms
 from polylogue.storage.fts.derivation import FtsDerivationAdapter
+from polylogue.storage.introspection import relation_exists
 from polylogue.storage.sqlite.connection_profile import READ_PROFILES, open_readonly_connection
 
 _RAW_AUTHORITY_OWNER: Final = "polylogue-lkrc"
@@ -371,11 +372,9 @@ class _ReadonlyDatabase(AbstractContextManager["_ReadonlyDatabase"]):
         return rows[0] if rows else None
 
     def table_exists(self, table: str) -> bool:
-        row = self.one(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
-            (table,),
-        )
-        return row is not None
+        """Table or view, through the one shared primitive (polylogue-grdt)."""
+        self.receipt.query_count += 1
+        return relation_exists(self._connection(), table)
 
     def columns(self, table: str) -> frozenset[str]:
         if not _safe_identifier(table):

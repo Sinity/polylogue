@@ -35,7 +35,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
 
 
@@ -109,13 +109,8 @@ class HookPayloadRefMatchStage:
 
 
 def _temporary_table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
+    """Probe the connection's ``temp`` schema through the shared primitive."""
+    return table_exists(conn, table, schema="temp")
 
 
 def _clear_match_stage(conn: sqlite3.Connection) -> None:
@@ -625,7 +620,7 @@ def plan_hook_payload_ref_reconciliation(conn: sqlite3.Connection) -> HookPayloa
     Read-only: issues only ``SELECT`` statements. Safe against a read-only
     connection.
     """
-    if not _table_exists(conn, "blob_refs") or not _table_exists(conn, "raw_hook_events"):
+    if not table_exists(conn, "blob_refs") or not table_exists(conn, "raw_hook_events"):
         return HookPayloadRefReconciliationPlan(scanned_count=0, matched=(), unmatched_count=0)
 
     scanned_count, matched_count, _matched_bytes, _ambiguous_count = _create_match_stage(conn)

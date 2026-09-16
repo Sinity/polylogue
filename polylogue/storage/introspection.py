@@ -92,13 +92,51 @@ def table_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -
 
 
 def relation_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -> bool:
-    """Check if a table or view exists in the given schema."""
+    """Check if a table or view exists in the given schema.
+
+    Use this, not :func:`table_exists`, wherever a query-time view (``actions``,
+    ``threads``) is a valid answer: a table-only probe silently omits them
+    (polylogue-grdt).
+    """
+    if not _schema_attached(conn, schema):
+        return False
     cursor = conn.execute(
         f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master "
         "WHERE type IN ('table', 'view') AND name=? LIMIT 1",
         (name,),
     )
     return cursor.fetchone() is not None
+
+
+def view_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -> bool:
+    """Check if a view -- and only a view -- exists in the given schema."""
+    if not _schema_attached(conn, schema):
+        return False
+    cursor = conn.execute(
+        f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master WHERE type='view' AND name=? LIMIT 1",
+        (name,),
+    )
+    return cursor.fetchone() is not None
+
+
+def trigger_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -> bool:
+    """Check if a trigger exists in the given schema."""
+    if not _schema_attached(conn, schema):
+        return False
+    cursor = conn.execute(
+        f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master WHERE type='trigger' AND name=? LIMIT 1",
+        (name,),
+    )
+    return cursor.fetchone() is not None
+
+
+async def trigger_exists_async(conn: aiosqlite.Connection, name: str, *, schema: str = "main") -> bool:
+    """Check if a trigger exists in the given schema (async SQLite)."""
+    cursor = await conn.execute(
+        f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master WHERE type='trigger' AND name=? LIMIT 1",
+        (name,),
+    )
+    return await cursor.fetchone() is not None
 
 
 async def table_exists_async(conn: aiosqlite.Connection, name: str, *, schema: str = "main") -> bool:
@@ -185,6 +223,9 @@ async def column_exists_async(conn: aiosqlite.Connection, table: str, column: st
 
 
 __all__ = [
+    "view_exists",
+    "trigger_exists",
+    "trigger_exists_async",
     "table_exists",
     "table_exists_async",
     "index_exists",

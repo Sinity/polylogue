@@ -25,6 +25,7 @@ from polylogue.logging import get_logger
 from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.introspection import view_exists
 from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_detail_query_handle
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1621,19 +1622,6 @@ def _safe_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _schema_object_exists(conn: sqlite3.Connection, name: str, *, types: tuple[str, ...]) -> bool:
-    placeholders = ", ".join("?" for _ in types)
-    row = conn.execute(
-        f"SELECT 1 FROM sqlite_master WHERE type IN ({placeholders}) AND name = ? LIMIT 1",
-        (*types, name),
-    ).fetchone()
-    return row is not None
-
-
-def _view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
-    return _schema_object_exists(conn, view_name, types=("view",))
-
-
 def _action_readiness_counts(conn: sqlite3.Connection) -> dict[str, Any]:
     """Return exact, non-vacuous evidence for the derived ``actions`` view."""
     tool_use_block_count = (
@@ -1641,7 +1629,7 @@ def _action_readiness_counts(conn: sqlite3.Connection) -> dict[str, Any]:
         if _table_exists(conn, "blocks")
         else 0
     )
-    actions_view_present = _view_exists(conn, "actions")
+    actions_view_present = view_exists(conn, "actions")
     action_count = 0
     actions_view_error: str | None = None
     if actions_view_present:
