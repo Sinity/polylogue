@@ -175,3 +175,31 @@ def test_a_second_write_of_one_session_under_fresh_mode_is_refused(tmp_path: Pat
         write_parsed_session_to_archive(archive._conn, session, fresh_build=True, fresh_build_batch=batch)
         with pytest.raises(AssertionError, match="fresh_build requires an absent session_id"):
             write_parsed_session_to_archive(archive._conn, session, fresh_build=True, fresh_build_batch=batch)
+
+
+def test_the_cold_build_boundary_never_commits_an_open_transaction(tmp_path: Path) -> None:
+    """The boundary must not change what a pass persists.
+
+    ``ArchiveStore.close()`` closes the connection without committing, so an
+    open transaction is rolled back. A boundary that commits would persist
+    work the ordinary (non-cold) path discards -- which is how a cold-shape
+    boundary could silently change what an ingest pass defers.
+
+    Anti-vacuity: putting ``self._conn.commit()`` back at the top of
+    ``finish_active_cold_build`` makes this red, because the uncommitted row
+    below then survives the close.
+    """
+    with ArchiveStore.open_active_cold_build(tmp_path) as archive:
+        assert archive.active_cold_build_engaged is True
+        archive._conn.execute("BEGIN")
+        archive._conn.execute(
+            "INSERT INTO sessions (session_id, native_id, origin, content_hash) VALUES (?, ?, ?, ?)",
+            ("test:boundary-uncommitted", "boundary-uncommitted", "test", b"\x00" * 32),
+        )
+        assert archive._conn.in_transaction is True
+        archive.finish_active_cold_build()
+        assert archive._conn.in_transaction is True
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        rows = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    assert rows == 0

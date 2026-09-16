@@ -980,6 +980,14 @@ class ArchiveStore:
         hand it back to live readers if anything is dangling. Then restores
         the live durability pragmas and truncates the WAL the raised
         autocheckpoint threshold let grow.
+
+        This boundary deliberately **never commits**. ``close()`` closes the
+        connection without committing, so an open transaction is rolled back;
+        committing here would persist work the ordinary path discards, which
+        is exactly how a boundary could change what a pass defers. The
+        foreign-key check reads this connection's own view, so it is valid
+        with a transaction open; the WAL truncation is not, and is skipped
+        while one is.
         """
         self._require_writable("finish an active cold build")
         if not self._active_cold_build_engaged:
@@ -989,7 +997,6 @@ class ArchiveStore:
             write_connection_pragma_statements,
         )
 
-        self._conn.commit()
         violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)
         if violations:
             raise RuntimeError(
@@ -998,7 +1005,8 @@ class ArchiveStore:
             )
         for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
             self._conn.execute(statement)
-        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        if not self._conn.in_transaction:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self._active_cold_build_engaged = False
 
     def restore_deferred_secondary_indexes(self) -> None:
