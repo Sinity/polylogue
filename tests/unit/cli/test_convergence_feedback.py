@@ -97,3 +97,33 @@ def test_convergence_warning_line_reports_undetermined_when_probe_raises(
     warning = convergence_warning_line()
 
     assert warning == "Archive convergence state could not be determined; results may be partial."
+
+
+def test_convergence_warning_line_reports_undetermined_when_snapshot_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ``available: False`` snapshot renders the caveat, carrying its own reason.
+
+    The probe signals "I could not check" by RETURNING ``{"available": False,
+    "error": ...}``, not by raising -- a missing source/index tier, an
+    unreadable ops tier, a schema drift. The existing ``except`` arm therefore
+    never fires for it, and ``_raw_materialization_warning`` returned ``None``,
+    which the function's own contract defines as "checked, and results are
+    complete". Every caller then printed nothing and presented a possibly
+    incomplete page as a complete one, discarding the snapshot's reason.
+
+    Anti-vacuity: restore the bare ``return None`` for an unavailable snapshot
+    and ``warning`` is ``None``, so both assertions go red.
+    """
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
+    monkeypatch.setattr(
+        "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+        lambda _root: {"available": False, "error": "source.db or index.db missing"},
+    )
+
+    warning = convergence_warning_line()
+
+    assert warning is not None
+    assert warning == (
+        "Archive convergence state could not be determined; results may be partial. (source.db or index.db missing)"
+    )

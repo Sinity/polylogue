@@ -1162,18 +1162,19 @@ def _optional_int(value: object) -> int | None:
 
 
 def _limit(params: dict[str, object]) -> int:
-    """Resolve the page size under the one declared public ceiling.
+    """Resolve the page size: refuse a nonpositive request, clamp to the ceiling.
 
-    ``--limit`` used to be returned verbatim whenever it was a positive int,
-    so an explicit CLI limit was the single read route that could request a
-    page above ``MAX_QUERY_LIMIT`` while MCP, daemon HTTP and the operation
-    route all clamped (polylogue-fawr7).  Non-positive and non-integer input
-    keeps falling back to the list default exactly as before -- ``clamp_query_limit``
-    applies the same rule -- so this narrows the ceiling without widening
-    anything.
+    ``--limit 0`` used to fall through to ``DEFAULT_SESSION_LIST_LIMIT``, so a
+    caller asking for nothing silently got a default-sized read; a nonpositive
+    limit is a usage fault, not a default (polylogue-45pkf). A positive limit
+    used to be returned verbatim, making the explicit CLI limit the one read
+    route that could exceed ``MAX_QUERY_LIMIT`` while MCP, daemon HTTP and the
+    operation route all clamped (polylogue-fawr7).
     """
     value = params.get("limit")
-    if isinstance(value, int) and value > 0:
+    if isinstance(value, int):
+        if value <= 0:
+            raise click.UsageError("--limit must be a positive integer.")
         return clamp_query_limit(value, default=DEFAULT_SESSION_LIST_LIMIT)
     return DEFAULT_SESSION_LIST_LIMIT
 

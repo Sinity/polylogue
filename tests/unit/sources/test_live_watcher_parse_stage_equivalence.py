@@ -321,3 +321,50 @@ async def test_unknown_mixed_jsonl_prefetch_falls_back_to_strict_decode(tmp_path
     lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
     assert lifecycle.terminal == 1
     assert lifecycle.unexplained == 0
+
+
+@pytest.mark.uses_real_clock("a real ThreadPoolExecutor worker must outlast warm()'s real timeout")
+def test_a_timed_out_prefetch_worker_discards_its_own_shard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-nfr2u: a worker abandoned by warm()'s timeout cleans up its shard.
+
+    Anti-vacuity: the sealed shard path is captured from the worker itself, so
+    the assertion cannot pass by observing the directory before the worker got
+    there. A shard file surviving a forced timeout is the red condition --
+    remove the done-callback the timeout path attaches and this shard stays on
+    disk until ``shutdown()`` sweeps it, which runs only after the assertion.
+    """
+    from polylogue.sources.live import parse_prefetch
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    shard_directory = tmp_path / "parse-shards"
+    real_worker = parse_prefetch.live_parse_and_shard_worker
+    sealed: list[Path] = []
+
+    def slow_worker(*args: Any, **kwargs: Any) -> Any:
+        # Outlast warm()'s timeout, then seal a real shard exactly as production does.
+        time.sleep(0.5)
+        result = real_worker(*args, **kwargs)
+        shard_name = result[3]
+        assert shard_name is not None
+        sealed.append(Path(shard_name))
+        return result
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_and_shard_worker", slow_worker)
+    stage = LiveParseStage(
+        max_workers=1, max_inflight_bytes=10_000_000, shard_directory=shard_directory, warm_timeout_seconds=0.05
+    )
+    try:
+        candidates = _live_parse_stage_candidates(paths, fallback_provider=Provider.CODEX)
+        # The timeout fires before the worker finishes: nothing is cached.
+        assert stage.warm(candidates) == 0
+
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and not sealed:
+            time.sleep(0.02)
+        assert sealed, "the abandoned worker never sealed a shard; the test would be vacuous"
+        orphan = sealed[0]
+        while time.monotonic() < deadline and orphan.exists():
+            time.sleep(0.02)
+        assert not orphan.exists(), f"timed-out worker orphaned its shard: {orphan}"
+    finally:
+        stage.shutdown()

@@ -454,3 +454,57 @@ async def test_read_embedding_stats_async_can_skip_retrieval_band_status(
 
     assert stats.pending_sessions == 2
     assert stats.retrieval_bands == {}
+
+
+def test_payload_reports_unknown_coverage_when_no_session_is_eligible() -> None:
+    """polylogue-xtcdz: sessions exist but none is embedded, pending or blocked.
+
+    The eligible denominator is zero, so nothing was weighed. The payload must
+    say so (``status='unknown'``, null coverage) rather than advertise a
+    ``complete``/100.0% archive that was never measured, and an archive with no
+    sessions at all must still report the honest ``empty``.
+
+    Anti-vacuity: restoring ``_coverage_percent``'s
+    ``return 100.0 if total_sessions > 0 else 0.0`` zero-denominator branch, or
+    dropping ``_embedding_status``'s ``embedded_sessions <= 0`` guard, turns
+    this red on ``embedding_coverage_percent``/``status`` respectively.
+    """
+
+    from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
+    from polylogue.storage.embeddings.status_payload import (
+        EmbeddingStatusSettings,
+        _payload_from_stats,
+    )
+
+    settings = EmbeddingStatusSettings(
+        config_enabled=True,
+        has_voyage_api_key=True,
+        configured_model="voyage-4",
+        configured_dimension=1024,
+        monthly_cost_cap_usd=None,
+    )
+
+    payload = _payload_from_stats(
+        settings=settings,
+        total_sessions=8,
+        stats=EmbeddingStatsSnapshot(embedded_sessions=0, embedded_messages=0, pending_sessions=0),
+        latest_catchup_run=None,
+        latest_material_catchup_run=None,
+        pending_messages_exact=True,
+    )
+
+    assert payload["coverage_measurable"] is True
+    assert payload["embedding_coverage_percent"] is None
+    assert payload["status"] == "unknown"
+
+    empty = _payload_from_stats(
+        settings=settings,
+        total_sessions=0,
+        stats=EmbeddingStatsSnapshot(embedded_sessions=0, embedded_messages=0, pending_sessions=0),
+        latest_catchup_run=None,
+        latest_material_catchup_run=None,
+        pending_messages_exact=True,
+    )
+
+    assert empty["status"] == "empty"
+    assert empty["embedding_coverage_percent"] is None

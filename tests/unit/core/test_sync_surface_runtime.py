@@ -303,3 +303,27 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
     archive.list_tool_usage_insights.assert_called_once()
     archive.list_session_cost_insights.assert_called()  # also called by cost-rollup derivation
     archive.list_archive_debt_insights.assert_called_once()
+
+
+def test_sync_list_summaries_refuses_a_nonpositive_limit() -> None:
+    """``limit=0`` is a usage error, not a silent default-sized read.
+
+    ``SyncSessionQueriesMixin.list_summaries`` gated the filter with
+    ``if limit:``, so ``limit=0`` -- a caller asking for nothing as cheap
+    validation, or an arithmetic result that collapsed to zero -- skipped
+    ``filt.limit(...)`` entirely and read the facade's default page instead.
+
+    Anti-vacuity: restore the ``if limit:`` truthiness gate and the call
+    returns ``"summaries-coro"`` with no ``("limit", 0)`` in ``filter_stub``
+    rather than raising, so this ``pytest.raises`` goes red.
+    """
+    filter_stub = _FilterStub()
+    facade = SimpleNamespace(filter=lambda: filter_stub)
+    archive = _SyncHarness()
+    archive._facade = facade
+
+    with patch("polylogue.api.sync.sessions.run_coroutine_sync", side_effect=lambda coro: coro):
+        with pytest.raises(ValueError, match="limit must be a positive integer"):
+            archive.list_summaries(limit=0)
+
+    assert filter_stub.calls == []

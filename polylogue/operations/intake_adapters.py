@@ -33,7 +33,7 @@ from polylogue.sources.hooks import (
     read_hook_spool_record,
 )
 from polylogue.sources.live.source_selection import deepest_source_for_path
-from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 
 _T = TypeVar("_T")
@@ -275,6 +275,21 @@ class FileIntakeAdapter(IntakeAdapter):
                 return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"source admission failed: {path}")
             succeeded = int(getattr(metrics, "succeeded_file_count", 0) or 0)
             if not succeeded:
+                # This route calls ``_ingest_files`` directly, so the watcher's
+                # own ``_log_ingest_metrics`` never runs for it and the
+                # "admitted nothing" line was invisible on the intake path.
+                _log_ingest_metrics(f"live.intake: {self.class_name}", metrics)
+                excluded = int(getattr(metrics, "excluded_file_count", 0) or 0)
+                if excluded:
+                    # polylogue-onbz3: a durable refusal is not "already
+                    # admitted under this identity". Reporting DUPLICATE here
+                    # advanced the cursor and counted the pass as progress.
+                    reasons = getattr(metrics, "excluded_reasons", {}) or {}
+                    return AdmissionResult(
+                        AdmissionOutcome.EXCLUDED,
+                        reason=f"source admission excluded {path}: {sorted(reasons)}",
+                        actual_cost=item.estimated_cost,
+                    )
                 return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item.estimated_cost)
             converge_embeddings = getattr(self.context.watcher, "_converge_embeddings_off_writer", None)
             if callable(converge_embeddings):

@@ -62,6 +62,17 @@ class AdmissionOutcome(str, Enum):
     DUPLICATE = "duplicate"
     """Already admitted under this identity; acknowledging again is safe."""
 
+    EXCLUDED = "excluded"
+    """The domain durably refused this item; acknowledging is safe, but it is
+    not progress.
+
+    Distinct from :attr:`DUPLICATE` (polylogue-onbz3): a refused item was never
+    admitted under any identity, so reporting it as a duplicate turns a pass
+    that admitted nothing into one that claims to have re-seen prior work. The
+    exclusion is durable (``live_cursor.excluded``), so the queue entry is
+    released and the item is not retried, but it does not count toward
+    :attr:`IntakePass.progressed`."""
+
     RETRYABLE = "retryable"
     """This attempt failed; the item may succeed later."""
 
@@ -81,7 +92,11 @@ class AdmissionResult:
     @property
     def acknowledgeable(self) -> bool:
         """Whether the item's queue entry may be released."""
-        return self.outcome in (AdmissionOutcome.ADMITTED, AdmissionOutcome.DUPLICATE)
+        return self.outcome in (
+            AdmissionOutcome.ADMITTED,
+            AdmissionOutcome.DUPLICATE,
+            AdmissionOutcome.EXCLUDED,
+        )
 
 
 @runtime_checkable
@@ -136,6 +151,9 @@ class IntakeClassReport:
     name: str
     admitted: int = 0
     duplicates: int = 0
+    excluded: int = 0
+    """Items the domain durably refused. Acknowledged, never counted as progress."""
+
     retried: int = 0
     isolated: int = 0
     """Terminal items set aside for the remainder of this process."""
@@ -293,7 +311,7 @@ class FairIntakeDispatcher:
             )
             return IntakeClassReport(name=spec.name, reason=f"discovery failed: {exc}")
 
-        admitted = duplicates = retried = isolated = 0
+        admitted = duplicates = excluded = retried = isolated = 0
         estimated_cost = actual_cost = 0
         for item in page:
             if runtime.deficit <= 0:
@@ -310,7 +328,7 @@ class FairIntakeDispatcher:
             # still gets one bounded admission attempt; otherwise a large
             # but valid source would wait forever while its siblings consume
             # the deficit in later passes.
-            if runtime.deficit < item_cost and (admitted or duplicates or retried or isolated):
+            if runtime.deficit < item_cost and (admitted or duplicates or excluded or retried or isolated):
                 break
             # Charge the estimate before admission. An adapter cannot hide a
             # large item behind a cheap synthetic page identity.
@@ -323,6 +341,7 @@ class FairIntakeDispatcher:
                     name=spec.name,
                     admitted=admitted,
                     duplicates=duplicates,
+                    excluded=excluded,
                     retried=retried,
                     isolated=isolated,
                     discovered=len(page),
@@ -343,6 +362,8 @@ class FairIntakeDispatcher:
                 runtime.deficit -= item_actual_cost - item_cost
                 if result.outcome is AdmissionOutcome.ADMITTED:
                     admitted += 1
+                elif result.outcome is AdmissionOutcome.EXCLUDED:
+                    excluded += 1
                 else:
                     duplicates += 1
                 continue
@@ -382,6 +403,7 @@ class FairIntakeDispatcher:
             name=spec.name,
             admitted=admitted,
             duplicates=duplicates,
+            excluded=excluded,
             retried=retried,
             isolated=isolated,
             discovered=len(page),
@@ -440,6 +462,7 @@ class FairIntakeDispatcher:
                     {
                         "admitted": report.admitted,
                         "duplicates": report.duplicates,
+                        "excluded": report.excluded,
                         "retried": report.retried,
                         "isolated": report.isolated,
                         "discovered": report.discovered,

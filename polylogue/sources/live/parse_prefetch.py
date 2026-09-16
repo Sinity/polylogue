@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -179,6 +179,26 @@ class LiveParsedEntry:
 
     sessions: list[ParsedSession]
     shard_path: Path | None
+
+
+def _discard_orphaned_shard(
+    future: Future[tuple[str, list[ParsedSession] | None, BaseException | None, str | None]],
+) -> None:
+    """Discard the shard sealed by a worker nobody is waiting on any more.
+
+    Runs on the worker's own thread once it finishes. A worker abandoned by a
+    ``warm()`` timeout still seals a shard, and its ``shard_name`` is never
+    returned to a consumer, so without this the file survives until the stage
+    shuts down. Failure to parse, or to remove, is not the caller's problem:
+    the shard is already unreferenced either way.
+    """
+    if future.cancelled():
+        return
+    if future.exception() is not None:
+        return
+    shard_name = future.result()[3]
+    if shard_name is not None:
+        discard_session_shard(Path(shard_name))
 
 
 def live_parse_and_shard_worker(
@@ -410,6 +430,16 @@ class LiveParseStage:
                     warmed += 1
         except TimeoutError:
             pending_count = len(futures) - completed
+            # polylogue-nfr2u: an unfinished worker still runs to completion and
+            # still seals a shard under the archive's parse-shards directory.
+            # Nobody consumes its returned ``shard_name`` after the timeout, so
+            # the file was orphaned until ``shutdown()`` swept the directory.
+            # Attach the discard to each unfinished future instead, so the
+            # worker cleans up after itself as soon as it finishes.
+            for future in futures:
+                if future.done():
+                    continue
+                future.add_done_callback(_discard_orphaned_shard)
             logger.warning(
                 "live watcher parse-stage prefetch: warm() timed out after %.0fs waiting on %d of %d file(s); "
                 "leaving unfinished file(s) uncached for the writer-held pass to reparse normally",

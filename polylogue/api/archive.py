@@ -3144,7 +3144,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             compile_postmortem_bundle,
         )
 
-        cap = limit if limit is not None and limit > 0 else 200
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        cap = limit if limit is not None else 200
         summaries = await run_archive_read(
             _active_archive_root(self.config),
             operation="insights.postmortem.scope",
@@ -3225,7 +3227,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """
         from polylogue.analysis.pathology import compile_pathology_report
 
-        cap = limit if limit is not None and limit > 0 else 200
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        cap = limit if limit is not None else 200
         summaries = await run_archive_read(
             _active_archive_root(self.config),
             operation="insights.pathology.scope",
@@ -3311,7 +3315,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         )
         from polylogue.analysis.postmortem import PostmortemScope
 
-        cap = limit if limit is not None and limit > 0 else 200
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        cap = limit if limit is not None else 200
         summaries = await run_archive_read(
             _active_archive_root(self.config),
             operation="insights.portfolio.scope",

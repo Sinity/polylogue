@@ -429,12 +429,21 @@ class TestLimit:
         result = _limit({})
         assert result == 20
 
-    def test_default_when_non_positive(self) -> None:
-        """Default 20 when limit is non-positive."""
-        result = _limit({"limit": 0})
-        assert result == 20
-        result = _limit({"limit": -1})
-        assert result == 20
+    def test_non_positive_is_a_usage_error(self) -> None:
+        """A nonpositive ``--limit`` is refused, never widened to the default page.
+
+        ``--limit 0`` used to return ``DEFAULT_SESSION_LIST_LIMIT``: a caller
+        asking for no rows (cheap validation, or an arithmetic result that
+        collapsed to zero) silently got a default-sized read back.
+
+        Anti-vacuity: restore the ``and value > 0`` guard so nonpositive values
+        fall through to ``DEFAULT_SESSION_LIST_LIMIT`` and both
+        ``pytest.raises`` blocks go red.
+        """
+        with pytest.raises(click.UsageError, match="--limit must be a positive integer"):
+            _limit({"limit": 0})
+        with pytest.raises(click.UsageError, match="--limit must be a positive integer"):
+            _limit({"limit": -1})
 
     def test_default_when_non_int(self) -> None:
         """Default 20 when limit is non-int."""

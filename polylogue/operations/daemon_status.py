@@ -63,7 +63,11 @@ def produce_direct_status(
         component_from_raw_materialization_readiness,
         normalize_raw_frontier_status_payload,
     )
-    from polylogue.readiness.claim_guard import DerivedDomainReadiness, derive_claim_guard
+    from polylogue.readiness.claim_guard import (
+        DerivedDomainReadiness,
+        derive_claim_guard,
+        search_unmeasured_reason,
+    )
     from polylogue.storage.archive_readiness import archive_readiness_status_from_connections
 
     index_conn = _required_index_connection(archive)
@@ -225,9 +229,9 @@ def produce_direct_status(
         derived_domains=derived_domains,
         search_ready=search_component.get("state") == "ready",
         search_summary=str(search_component.get("summary", "unknown")),
-        active_writer=not bool(workload.get("available"))
-        or bool(workload.get("actively_ingesting"))
-        or bool(workload.get("running_count")),
+        search_unmeasured=search_unmeasured_reason(_search_indexable_count(search_component)),
+        active_writer=bool(workload.get("actively_ingesting")) or bool(workload.get("running_count")),
+        active_writer_determinate=bool(workload.get("available")),
         active_writer_summary=(
             "ingest workload inspection unavailable; cannot rule out a concurrent archive writer"
             if not workload.get("available")
@@ -698,6 +702,15 @@ def _components(
             session_digest_transform_version=SESSION_DIGEST_TRANSFORM_VERSION,
         ).to_dict()
     return components
+
+
+def _search_indexable_count(search_component: Mapping[str, object]) -> int | None:
+    """Read the FTS denominator the search claim is measured against."""
+    counts = search_component.get("counts")
+    if not isinstance(counts, Mapping):
+        return None
+    value = counts.get("message_indexable_count")
+    return int(value) if isinstance(value, int) else None
 
 
 def _search_component(index_conn: sqlite3.Connection) -> Any:

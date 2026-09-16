@@ -140,6 +140,25 @@ def raw_materialization_unmeasured_reason(readiness: Mapping[str, Any] | object 
     return None
 
 
+def search_unmeasured_reason(indexable_count: int | None) -> str | None:
+    """Name the gap when FTS coverage has a zero denominator.
+
+    ``messages_ready`` is the invariant "every indexable row is indexed". At
+    zero indexable rows that is vacuously true, so an archive with nothing in
+    it published ``search_ready: true`` beside ``message_indexable_count: 0``
+    (polylogue-o6oct). ``daemon/fts_status`` already treats the same zero
+    denominator as unmeasured (``coverage_pct = None``); this is the claim-level
+    counterpart, shared by both status producers so they cannot disagree.
+
+    Only an explicit zero is classified here: a producer that did not report a
+    count keeps its own verdict rather than having a real refutation (a missing
+    FTS surface beside populated blocks) masked into "unknown".
+    """
+    if indexable_count == 0:
+        return "no indexable rows: fts coverage is undefined at a zero denominator, not complete"
+    return None
+
+
 def derive_claim_guard(
     *,
     archive_schema_ready: bool,
@@ -148,8 +167,10 @@ def derive_claim_guard(
     derived_domains: Sequence[DerivedDomainReadiness],
     search_ready: bool,
     search_summary: str,
+    search_unmeasured: str | None = None,
     active_writer: bool,
     active_writer_summary: str = "",
+    active_writer_determinate: bool = True,
 ) -> ClaimGuard:
     """Derive the claim-guard block from already-computed readiness signals.
 
@@ -211,19 +232,24 @@ def derive_claim_guard(
 
     search = ClaimGuardEntry(
         claim="search_ready",
-        value=search_ready,
-        reason=search_summary,
+        value=None if search_unmeasured is not None else search_ready,
+        reason=search_unmeasured if search_unmeasured is not None else search_summary,
         signal="component_readiness.search (FTS freshness)",
     )
 
-    if active_writer:
+    if not active_writer_determinate:
+        # The writer evidence itself could not be read. "I could not look" is
+        # not "nothing is writing", and it is not a refutation either
+        # (polylogue-g88v4): withhold the claim and name the gap.
+        perf_reason = active_writer_summary or "concurrent-writer evidence could not be read"
+    elif active_writer:
         perf_reason = active_writer_summary or "an archive write/rebuild is in flight"
     else:
         perf_reason = "no concurrent archive write/rebuild detected"
 
     perf = ClaimGuardEntry(
         claim="perf_measurable",
-        value=not active_writer,
+        value=None if not active_writer_determinate else not active_writer,
         reason=perf_reason,
         signal="live_ingest_attempts.running_count",
     )
@@ -236,5 +262,6 @@ __all__ = [
     "ClaimGuardEntry",
     "DerivedDomainReadiness",
     "derive_claim_guard",
+    "search_unmeasured_reason",
     "raw_materialization_unmeasured_reason",
 ]

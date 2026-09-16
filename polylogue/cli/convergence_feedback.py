@@ -33,12 +33,25 @@ def convergence_warning_line(active_archive: Path | None = None) -> str | None:
         return _raw_materialization_warning(raw_readiness)
     except Exception:
         logger.warning("convergence warning probe failed; reporting readiness as undetermined", exc_info=True)
-        return "Archive convergence state could not be determined; results may be partial."
+        return _UNDETERMINED
+
+
+#: The caveat every undeterminable readiness check renders, whether the probe
+#: raised or returned an ``available: False`` snapshot.
+_UNDETERMINED = "Archive convergence state could not be determined; results may be partial."
 
 
 def _raw_materialization_warning(readiness: dict[str, object]) -> str | None:
     if not readiness.get("available", False):
-        return None
+        # An unavailable snapshot returns NORMALLY (a missing source/index
+        # tier, an unreadable ops tier, a schema drift), so the caller's
+        # ``except`` arm never fires for it. Returning ``None`` here claimed
+        # "checked, and results are complete" for a check that never ran, and
+        # discarded the reason the snapshot carried.
+        detail = readiness.get("error") or readiness.get("reason")
+        if detail:
+            return f"{_UNDETERMINED} ({detail})"
+        return _UNDETERMINED
     rows = (
         _safe_int(readiness.get("actionable")) + _safe_int(readiness.get("blocked")) + _safe_int(readiness.get("open"))
     )

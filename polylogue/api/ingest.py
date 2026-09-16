@@ -45,13 +45,19 @@ class PolylogueIngestMixin:
     async def parse_sources(
         self,
         sources: list[Source] | None = None,
-        *,
-        download_assets: bool = True,
     ) -> ParseResult:
+        """Parse the configured sources into the archive source/index tiers.
+
+        There is no ``download_assets`` switch: this route fetches no assets to
+        disable. The parameter existed, was accepted, and was ``del``'d on the
+        next line, so a caller passing ``download_assets=False`` configured
+        nothing while believing asset handling had been turned off. Removed
+        rather than honoured -- the lower route's blob publisher carries raw
+        capture and sidecar publication, which cannot be skipped.
+        """
         if sources is None:
             sources = self.config.sources
 
-        del download_assets
         from polylogue.config import active_archive_root as _active_archive_root
         from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 

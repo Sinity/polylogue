@@ -383,9 +383,11 @@ class _McpCallLogDispatcher:
             try:
                 delivery = _read_spooled_delivery(path, config)
             except Exception:
-                with self._state_lock:
-                    self._delivery_failures += 1
+                # An unreadable record can never become deliverable, so leaving
+                # it pending would keep the root scanned forever. Settle it
+                # through the same durable quarantine as a permanent rejection.
                 logger.warning("Invalid MCP call-log outbox record %s", path, exc_info=True)
+                self._quarantine(path, reason="unparseable_record")
                 continue
             try:
                 _post_call_log(delivery)
@@ -394,7 +396,7 @@ class _McpCallLogDispatcher:
                     # A permanent 4xx (conflict, or a record this daemon will
                     # never accept) must not block every later record in the
                     # root: quarantine it and keep draining.
-                    self._quarantine_permanent(path, exc.code)
+                    self._quarantine(path, reason="permanent_rejection", status_code=exc.code)
                     continue
                 with self._state_lock:
                     self._delivery_failures += 1
@@ -425,7 +427,8 @@ class _McpCallLogDispatcher:
                 self._retry_state.pop(root, None)
             path.unlink(missing_ok=True)
 
-    def _quarantine_permanent(self, path: Path, code: int) -> None:
+    def _quarantine(self, path: Path, *, reason: str, status_code: int | None = None) -> None:
+        """Durably settle one record that can never be delivered as spooled."""
         quarantine = path.parent.parent / "quarantine"
         quarantine.mkdir(mode=0o700, parents=True, exist_ok=True)
         _fsync_directory(quarantine.parent)
@@ -451,8 +454,8 @@ class _McpCallLogDispatcher:
             "mcp.call_log.record_quarantined",
             WARNING,
             outcome="degraded",
-            reason="permanent_rejection",
-            status_code=code,
+            reason=reason,
+            status_code=status_code,
             path=str(target),
         )
 

@@ -139,7 +139,11 @@ def render_embedding_stats(payload: EmbeddingStatusPayload, *, json_output: bool
         _render_field("Embedded sessions", payload["embedded_sessions"])
         _render_field("Blocked sessions", payload["blocked_sessions"])
         _render_field("Embedded messages", payload["embedded_messages"])
-        _render_field("Session coverage", f"{payload['embedding_coverage_percent']:.1f}%")
+        session_coverage = payload["embedding_coverage_percent"]
+        _render_field(
+            "Session coverage",
+            "unknown (no eligible sessions)" if session_coverage is None else f"{session_coverage:.1f}%",
+        )
     candidate_prose_messages = payload.get("candidate_prose_messages")
     message_coverage_percent = payload.get("message_coverage_percent")
     if candidate_prose_messages is not None and message_coverage_percent is not None:

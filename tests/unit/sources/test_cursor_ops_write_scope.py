@@ -31,6 +31,11 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import (
+    UnleasedWriteError,
+    arm_write_lease_enforcement,
+    write_lease,
+)
 
 
 @pytest.fixture
@@ -140,3 +145,24 @@ def test_stage_event_commit_false_defers_the_row(tmp_path: Path) -> None:
     with sqlite3.connect(ops_path) as reader:
         rows = reader.execute("SELECT stage FROM daemon_stage_events WHERE event_id = ?", (event_id,)).fetchall()
     assert [row[0] for row in rows] == ["deferred"]
+
+
+def test_scope_refuses_an_unleased_entrant(store: CursorStore) -> None:
+    """polylogue-vgxkk: the shared ops.db scope asserts the writer lease at entry.
+
+    Anti-vacuity: delete the ``require_write_lease`` call at the top of
+    ``ops_write_scope`` and an unserialized entrant enters the shared-connection
+    scope silently again, so this raises nothing and the test goes red. The
+    concurrent-ingest shape this refuses is two ``ingest_files`` calls on one
+    event loop landing in the same thread-local scope, where one caller's commit
+    would commit the other's in-flight statement.
+    """
+    with arm_write_lease_enforcement():
+        with pytest.raises(UnleasedWriteError, match="live ingest ops write scope"):
+            with store.ops_write_scope():
+                pass
+
+        # The scope is entered normally by the serialized writer that holds it.
+        with write_lease("test-writer"):
+            with store.ops_write_scope():
+                pass
