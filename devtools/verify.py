@@ -588,13 +588,48 @@ def _pytest_report_path(command: Sequence[str]) -> Path:
 
 
 def _copy_pytest_report(command: Sequence[str], artifacts: Any) -> dict[str, Any]:
-    report = _read_json(_pytest_report_path(command))
+    source = _pytest_report_path(command)
+    report = _read_json(source)
     metadata: dict[str, Any] = {}
     if report is not None:
         destination = artifacts.step_dir / PYTEST_CANONICAL_REPORT_NAME
-        shutil.copyfile(_pytest_report_path(command), destination)
+        if source.resolve() != destination.resolve():
+            shutil.copyfile(source, destination)
         metadata["report_path"] = str(destination.relative_to(ROOT))
     return metadata
+
+
+def _bind_pytest_reports_to_step(command: Sequence[str], artifacts: Any) -> list[str]:
+    """Rebind this run's report and junit output into its own step directory.
+
+    The checkout-global report path is shared by every concurrent caller in one
+    checkout: preparing a second run clears the first run's open spool, and the
+    first run then assembles an incomplete report for tests that passed. Bind
+    them per run; the global path stays as a last-writer-wins projection
+    written after completion.
+    """
+    prefix = f"{REPORT_FILE_OPTION}="
+    step_report = artifacts.step_dir / PYTEST_CANONICAL_REPORT_NAME
+    step_junit = artifacts.step_dir / "pytest-junit.xml"
+    rebound: list[str] = []
+    for argument in command:
+        if argument.startswith(prefix):
+            rebound.append(report_file_argument(step_report))
+        elif argument.startswith("--junitxml="):
+            rebound.append(f"--junitxml={step_junit}")
+        else:
+            rebound.append(argument)
+    return rebound
+
+
+def _project_latest_pytest_report(command: Sequence[str]) -> None:
+    """Publish the completed run's report at the shared interactive path."""
+    source = _pytest_report_path(command)
+    destination = ROOT / PYTEST_REPORT_PATH
+    if source.resolve() == destination.resolve() or not source.is_file():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
 
 
 def _subprocess_env() -> dict[str, str]:
@@ -631,6 +666,7 @@ def _run(
     slot = None
     metadata_receipt = None
     if pytest_step:
+        command = _bind_pytest_reports_to_step(command, artifacts)
         _clear_pytest_report(command)
         _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
@@ -691,6 +727,7 @@ def _run(
                 metadata["diagnosis"] = "gate_passed"
                 completed = subprocess.CompletedProcess(command, 0)
         metadata.update(_copy_pytest_report(command, artifacts))
+        _project_latest_pytest_report(command)
         copy_current_pytest_artifacts(
             ROOT,
             artifacts,
