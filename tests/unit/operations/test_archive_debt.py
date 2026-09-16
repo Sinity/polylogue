@@ -741,6 +741,38 @@ def test_archive_debt_raw_materialization_reports_native_id_aliases(tmp_path: Pa
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
 
 
+def test_archive_debt_reports_an_alias_whose_own_raw_blob_is_missing(tmp_path: Path) -> None:
+    """A native-id alias must not retire a row whose own blob payload is gone.
+
+    Anti-vacuity: classify the alias without checking this row's blob and the
+    surface emits an ``info``/``classified`` ``materialized-alias`` row, so a
+    genuinely lost newer snapshot is reported as satisfied work.
+    """
+    _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET native_id = ? WHERE raw_id = ?",
+            ("aistudio-native", "raw-parsed-no-session"),
+        )
+    # The row's own content-addressed blob no longer exists.
+    (tmp_path / "blob" / "bb" / ("bb" * 31)).unlink()
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
+            ("aistudio-drive:aistudio-native", "aistudio-drive", "aistudio-native", "older-raw"),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    refs = {row.debt_ref: row for row in payload.rows}
+    assert "debt:raw-materialization:aistudio-drive:materialized-alias" not in refs
+    owed = refs["debt:raw-materialization:aistudio-drive:materialized-alias-blob-missing"]
+    assert owed.severity == "critical"
+    assert owed.status in {"actionable", "blocked"}
+    assert owed.actions != ()
+    assert "blob payload is missing" in owed.summary
+
+
 def test_archive_debt_raw_materialization_reports_source_path_native_aliases(tmp_path: Path) -> None:
     _source_db, index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
     source_path = tmp_path / "drive-cache" / "gemini" / "native-alias_1.jsonl.txt.json"

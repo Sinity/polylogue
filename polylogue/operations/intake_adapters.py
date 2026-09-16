@@ -522,6 +522,9 @@ class RawMaterializationDiscovery:
         self._max_payload_bytes = max_payload_bytes
         self._binding: _RawDiscoveryBinding | None = None
         self._cursor: str | None = None
+        #: The continuation start of the page currently being offered, and how
+        #: many of its keys were still unprocessed when it was last inspected.
+        self._held_page: tuple[str | None, int] | None = None
 
     def _raw_frontier(self) -> int:
         """Return the durable high-water mark for admitted raw observations.
@@ -569,24 +572,49 @@ class RawMaterializationDiscovery:
         if binding != self._binding:
             self._binding = binding
             self._cursor = None
+            self._held_page = None
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
         adapter = RawObservationDerivation(self._archive_root, max_payload_bytes=self._max_payload_bytes)
-        page, next_cursor = adapter.required_page(frame, cursor=self._cursor, limit=inspected_limit)
-        # Store the continuation even when no candidate is returned. A valid
-        # page is still progress through the required-key space. ``None`` is
-        # the completed-traversal marker; the following pass starts a fresh
-        # sweep so new work before this cursor is eventually revisited.
-        self._cursor = next_cursor
-        if not page:
-            return ()
-        statuses = adapter.inspect(frame, page)
-        selected = tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
-        if not selected:
-            return ()
-        with open_operation_read(self._archive_root) as pinned:
-            sizes = pinned.archive.raw_payload_sizes(selected)
-        return tuple((raw_id, max(1, int(sizes.get(raw_id, 1)))) for raw_id in selected)
+        # At most one released page is skipped per call, so a stalled head
+        # costs one extra bounded page read rather than the whole cycle.
+        for _attempt in range(2):
+            page_cursor = self._cursor
+            page, next_cursor = adapter.required_page(frame, cursor=page_cursor, limit=inspected_limit)
+            # An empty or fully valid page is progress through the required-key
+            # space. ``None`` is the completed-traversal marker; the following
+            # pass starts a fresh sweep so new work before this cursor is
+            # eventually revisited.
+            selected: tuple[str, ...] = ()
+            if page:
+                statuses = adapter.inspect(frame, page)
+                selected = tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+            if not selected:
+                self._cursor = next_cursor
+                self._held_page = None
+                return ()
+            held = self._held_page
+            if held is not None and held[0] == page_cursor and len(selected) >= held[1]:
+                # Re-inspected the same page and nothing moved: the blockage is
+                # not budget pressure, so stop pinning the traversal behind it
+                # and go on to the next page in this same call.
+                self._cursor = next_cursor
+                self._held_page = None
+                continue
+            # Hold the continuation over keys this page still owes. The
+            # dispatcher admits the offered items only until its class budget
+            # is spent, so advancing over the whole inspected page moves the
+            # cursor past obligations nobody took -- the same
+            # producer-advances-past-the-consumer shape
+            # ``DerivationRunner.run_domain`` avoids with its ``stopped_at``
+            # offset. The authority for "processed" is the output relation
+            # re-inspected on the next pass.
+            self._held_page = (page_cursor, len(selected))
+            self._cursor = page_cursor
+            with open_operation_read(self._archive_root) as pinned:
+                sizes = pinned.archive.raw_payload_sizes(selected)
+            return tuple((raw_id, max(1, int(sizes.get(raw_id, 1)))) for raw_id in selected)
+        return ()
 
 
 def discover_pending_raw_ids(archive_root: Path, limit: int, max_payload_bytes: int) -> tuple[tuple[str, int], ...]:

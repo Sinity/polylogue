@@ -955,6 +955,7 @@ def build_facets_response(
     elapsed_s: float | None,
     include_idf: bool,
     post_filter_gap: str | None = None,
+    scope_gaps: Sequence[str] = (),
 ) -> FacetsResponse:
     """Assemble the one canonical facets envelope.
 
@@ -997,8 +998,16 @@ def build_facets_response(
 
     availability = facets_availability(include_deferred=include_deferred, elapsed_s=elapsed_s)
     active = scoped_buckets if scoped_to_query else global_buckets
-    complete_families = _FACET_COMPLETE_FAMILIES if include_deferred else _FACET_CORE_FAMILIES
+    complete_families: tuple[str, ...] = _FACET_COMPLETE_FAMILIES if include_deferred else _FACET_CORE_FAMILIES
     deferred_families = {} if include_deferred else dict.fromkeys(_FACET_DEFERRED_FAMILIES, "deferred_by_default")
+    # A scope that hit its session cap produced buckets over a truncated
+    # denominator. Every family rolled from that scope is then partial, so it
+    # must leave ``complete_families`` -- a truncated count reported as
+    # complete is an unmeasured value rendered as a measured one.
+    truncated_families: dict[str, str] = {}
+    if scope_gaps:
+        truncated_families = dict.fromkeys(complete_families, scope_gaps[0])
+        complete_families = ()
     # A projection that missed its budget or lost a prerequisite is a named
     # gap: without it, zero facet rows at live scale reads identically to a
     # genuinely empty archive. Deferral is declared scope, not a gap.
@@ -1007,6 +1016,7 @@ def build_facets_response(
         facet_gaps.append(f"facets_{availability.state}")
     if post_filter_gap is not None:
         facet_gaps.append(post_filter_gap)
+    facet_gaps.extend(scope_gaps)
     return FacetsResponse.model_validate(
         {
             "outcome": decide_outcome(matched=active.total_sessions, degraded=facet_gaps),
@@ -1021,12 +1031,19 @@ def build_facets_response(
             "availability": availability,
             "complete_families": complete_families,
             "deferred_families": deferred_families,
-            "family_errors": {},
+            "family_errors": dict(truncated_families),
             "family_status": {
                 **{family: _family_status_payload(family, state="complete") for family in complete_families},
                 **{
                     family: _family_status_payload(family, state="deferred", reason=reason)
                     for family, reason in deferred_families.items()
+                },
+                **{
+                    family: {
+                        **_family_status_payload(family, state="error", reason=reason),
+                        "error": reason,
+                    }
+                    for family, reason in truncated_families.items()
                 },
             },
             "origins": dict(active.origins),
@@ -1047,22 +1064,41 @@ def build_facets_response(
     )
 
 
+#: Declared ceiling on how many sessions one facet aggregation rolls up.
+#: ``spec.limit`` is deliberately *not* an aggregate input (a page size must
+#: never become the denominator), so the only bound left is this cap.
+FACET_SCOPE_SESSION_CAP = 1_000_000
+
+
 def _archive_facet_buckets(
     archive: Any,
     spec: SessionQuerySpec | None,
     *,
     include_deferred: bool = True,
+    scope_gaps: list[str] | None = None,
 ) -> Any:
+    """Roll facet buckets over the whole matched scope.
+
+    ``spec.limit``/``spec.offset`` are stripped before the scope query: a
+    caller's page size is a display bound, not a denominator. When the scope
+    itself reaches :data:`FACET_SCOPE_SESSION_CAP` the buckets are derived from
+    a truncated set, and ``scope_gaps`` (when supplied) collects the named gap
+    so the envelope reports the families as truncated instead of complete.
+    """
     from polylogue.archive.query.facets import FacetBuckets
 
     if spec is None:
-        summaries = cast(list[ArchiveSessionSummary], archive.list_summaries(limit=1_000_000))
+        summaries = cast(list[ArchiveSessionSummary], archive.list_summaries(limit=FACET_SCOPE_SESSION_CAP))
     else:
         from dataclasses import replace
 
         summaries = _archive_list_summaries_for_spec(
-            archive, replace(spec, limit=None, offset=0), default_limit=1_000_000
+            archive, replace(spec, limit=None, offset=0), default_limit=FACET_SCOPE_SESSION_CAP
         )
+    if scope_gaps is not None and len(summaries) >= FACET_SCOPE_SESSION_CAP:
+        gap = f"facet_scope_truncated:{FACET_SCOPE_SESSION_CAP}"
+        if gap not in scope_gaps:
+            scope_gaps.append(gap)
     origins: dict[str, int] = {}
     tags: dict[str, int] = {}
     total_messages = 0
@@ -3225,10 +3261,25 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 skipped=matched - cap,
             )
         projections = []
+        failed = 0
         for sid in analyzed_ids:
             digest = await self._session_digest(sid)
-            if digest is not None:
-                projections.append(digest.run_projection)
+            if digest is None:
+                # A session inside the analyzed slice whose digest is missing
+                # was never examined. Counting it as analyzed would report an
+                # unmeasured session as a measured pathology-free one.
+                failed += 1
+                continue
+            projections.append(digest.run_projection)
+        if failed:
+            emit(
+                "archive.pathology_report.digest_unavailable",
+                level=WARNING,
+                outcome="degraded",
+                reason="session_digest_unavailable",
+                considered=len(analyzed_ids),
+                failed=failed,
+            )
         report = compile_pathology_report(projections)
         return report.model_copy(
             update={
@@ -3236,6 +3287,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 "analyzed_session_count": len(projections),
                 "truncated": matched > cap,
                 "dropped_session_count": max(0, matched - cap),
+                "failed_session_count": failed,
             }
         )
 
@@ -6149,22 +6201,25 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         scoped_to_query = spec is not None and spec.has_filters()
         started_at = time.perf_counter()
 
-        def _facet_work(archive: Any) -> tuple[Any, Any, str | None]:
+        def _facet_work(archive: Any) -> tuple[Any, Any, str | None, list[str]]:
             # A scope too large to post-filter is a named gap, not a silently
             # shortened bucket set: the caller must be able to tell "no rows"
             # from "the exclusion could not be evaluated over this scope".
-            global_b = _archive_facet_buckets(archive, None, include_deferred=include_deferred)
+            scope_gaps: list[str] = []
+            global_b = _archive_facet_buckets(archive, None, include_deferred=include_deferred, scope_gaps=scope_gaps)
             if not scoped_to_query:
-                return global_b, global_b, None
+                return global_b, global_b, None, scope_gaps
             try:
-                scoped_b = _archive_facet_buckets(archive, spec, include_deferred=include_deferred)
+                scoped_b = _archive_facet_buckets(
+                    archive, spec, include_deferred=include_deferred, scope_gaps=scope_gaps
+                )
             except PostFilterScopeTooLargeError as exc:
                 from polylogue.archive.query.facets import FacetBuckets
 
-                return global_b, FacetBuckets(), exc.gap_reason
-            return global_b, scoped_b, None
+                return global_b, FacetBuckets(), exc.gap_reason, scope_gaps
+            return global_b, scoped_b, None, scope_gaps
 
-        global_buckets, scoped_buckets, post_filter_gap = await run_archive_read(
+        global_buckets, scoped_buckets, post_filter_gap, scope_gaps = await run_archive_read(
             _active_archive_root(self.config),
             operation="archive.facets",
             arguments={"spec": spec, "include_deferred": include_deferred},
@@ -6180,6 +6235,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             elapsed_s=time.perf_counter() - started_at,
             include_idf=include_idf,
             post_filter_gap=post_filter_gap,
+            scope_gaps=scope_gaps,
         )
 
     async def health_check(self) -> ReadinessReport:

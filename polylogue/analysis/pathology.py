@@ -92,6 +92,10 @@ class PathologyReport(ArchiveInsightModel):
     analyzed_session_count: int | None = None
     truncated: bool = False
     dropped_session_count: int = 0
+    #: Sessions inside the analyzed slice whose digest could not be read. They
+    #: contributed no findings, so folding them into ``analyzed_session_count``
+    #: would report an unmeasured session as a measured clean one.
+    failed_session_count: int = 0
     detector_version: int = PATHOLOGY_DETECTOR_VERSION
 
 

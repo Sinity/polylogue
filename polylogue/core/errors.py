@@ -182,15 +182,61 @@ class InsightMaintenanceRequiresDaemonError(PolylogueError):
         )
 
 
+class UnsupportedInsightFilterError(PolylogueError):
+    """A read surface accepted an insight filter it cannot evaluate.
+
+    Returning an empty list for a plumbed-but-unimplemented filter makes
+    "this filter is not wired" indistinguishable from "nothing matches" — the
+    caller reads an unmeasured state as a measured zero. Refusing names the
+    filter and the route instead.
+    """
+
+    code = "unsupported_insight_filter"
+    http_status_code: int = HTTPStatus.BAD_REQUEST
+
+    def __init__(self, *, filter_name: str, route: str, detail: str | None = None) -> None:
+        self.filter_name = filter_name
+        self.route = route
+        super().__init__(
+            f"{route} cannot evaluate the '{filter_name}' filter"
+            + (f": {detail}" if detail else "; it is accepted but not implemented")
+        )
+
+
+class PostFilterAfterLimitError(PolylogueError):
+    """A post-filtered read scope is too large to evaluate before its page.
+
+    A filter with no SQL reduction must be applied over the whole matched set
+    before the page is cut, or the page becomes the denominator ("of the newest
+    N, the matching ones"). Above the declared candidate cap the honest answer
+    is a named refusal, not a quietly mis-scoped page.
+    """
+
+    code = "post_filter_scope_too_large"
+    http_status_code: int = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+
+    def __init__(self, *, filter_name: str, route: str, candidate_count: int, cap: int) -> None:
+        self.filter_name = filter_name
+        self.route = route
+        self.candidate_count = candidate_count
+        self.cap = cap
+        super().__init__(
+            f"{route} must evaluate '{filter_name}' over {candidate_count} candidate sessions, "
+            f"above the declared cap of {cap}; narrow the scope (origin:, since/until) and retry"
+        )
+
+
 __all__ = [
     "ArchiveTierUnavailableError",
     "InsightMaintenanceRequiresDaemonError",
     "DatabaseError",
     "EmbeddingRetrievalNotReadyError",
     "PolylogueError",
+    "PostFilterAfterLimitError",
     "RawCASFrontierError",
     "SchemaRefusalError",
     "SchemaVersionMismatchError",
     "SchemaSkew",
     "SchemaSkewError",
+    "UnsupportedInsightFilterError",
 ]

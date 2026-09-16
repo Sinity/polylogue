@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import sqlite3
 import sys
 from datetime import timedelta
@@ -1843,7 +1844,8 @@ def test_build_daemon_status_claim_guard_keeps_registry_debt_health_separate(
     monkeypatch.setattr(status_module, "check_health", lambda **_: DaemonHealth())
 
     specs = status_module._daemon_status_component_specs(
-        checked_health=lambda: DaemonHealth(),
+        checked_health=lambda _tiers: DaemonHealth(),
+        health_tiers=lambda: {HealthTier.FAST},
         include_raw_replay_backlog=False,
         include_exact_raw_materialization_readiness=False,
     )
@@ -2978,3 +2980,123 @@ def test_status_payload_projects_blob_publication_reservations(monkeypatch: pyte
     assert projected["unresolved_count"] == 3
     assert projected["total_reserved_count"] == 7
     assert projected["unresolved_oldest_age_s"] == 1234.5
+
+
+def test_medium_health_tier_is_not_re_run_by_wal_fingerprint_churn() -> None:
+    """MEDIUM health probes follow ``health_check_interval_s``, not the 10s WAL fingerprint.
+
+    polylogue-s4tkf: one ``health`` component had to carry a single ``ttl_s``
+    and a single fingerprint for both tiers. The fingerprint hashes index/ops
+    WAL mtimes, which change continuously during ingest, so the MEDIUM probes
+    (``fts_invariant_snapshot_sync``, a full-relation scan) were forced on
+    essentially every 10s status tick.
+
+    Anti-vacuity: collapse the two specs back into one 10s-TTL,
+    fingerprinted ``health`` component and the MEDIUM tier is collected twice
+    here (and ``health_fast``/``health_medium`` stop existing), so this fails.
+    The merge assertions fail if the split leaks a second health component or
+    drops either tier's alerts from the consumer payload.
+    """
+    from polylogue.operations.status_protocol import StatusComponentRegistry
+
+    configured = {HealthTier.FAST, HealthTier.MEDIUM}
+    asked: list[frozenset[HealthTier]] = []
+    churn = itertools.count()
+
+    def _checked_health(tiers: set[HealthTier]) -> DaemonHealth:
+        asked.append(frozenset(tiers))
+        tier = next(iter(tiers)) if tiers else HealthTier.FAST
+        severity = HealthSeverity.WARNING if tier is HealthTier.MEDIUM else HealthSeverity.OK
+        return DaemonHealth(
+            overall_status=severity,
+            checked_at=f"2026-01-01T00:00:0{1 if tier is HealthTier.FAST else 0}+00:00",
+            alerts=[
+                HealthAlert(
+                    check_name=f"{tier.value}_probe",
+                    tier=tier,
+                    severity=severity,
+                    message=f"{tier.value} probe",
+                    checked_at="2026-01-01T00:00:00+00:00",
+                )
+            ],
+            tier_summary={tier.value: {"ok": 0, "warning": 1 if severity is HealthSeverity.WARNING else 0}},
+        )
+
+    specs = {
+        spec.name: spec
+        for spec in status_module._daemon_status_component_specs(
+            checked_health=_checked_health,
+            health_tiers=lambda: configured,
+            include_raw_replay_backlog=False,
+            include_exact_raw_materialization_readiness=False,
+            # Stands in for the real WAL-mtime fingerprint under active ingest:
+            # a different value on every single observation.
+            fingerprint=lambda: str(next(churn)),
+        )
+    }
+    fast_spec = specs["health_fast"]
+    medium_spec = specs["health_medium"]
+
+    assert fast_spec.ttl_s == 10.0
+    assert fast_spec.fingerprint is not None
+    assert medium_spec.ttl_s == status_module._configured_health_check_interval_s()
+    assert medium_spec.ttl_s > fast_spec.ttl_s
+    assert medium_spec.fingerprint is None
+
+    registry = StatusComponentRegistry([fast_spec, medium_spec])
+    names = ["health_fast", "health_medium"]
+    registry.collect(names=names)
+    merged = status_module._merge_health_snapshots(registry.collect(names=names))
+
+    # The cheap tier may be re-collected as often as the fingerprint churns;
+    # the expensive tier must have been asked exactly once.
+    assert asked.count(frozenset({HealthTier.MEDIUM})) == 1
+    assert frozenset({HealthTier.FAST}) in asked
+
+    # Consumers still see exactly one merged ``health`` component.
+    assert set(merged) == {"health"}
+    health = merged["health"].value
+    assert isinstance(health, DaemonHealth)
+    assert {alert.check_name for alert in health.alerts} == {"fast_probe", "medium_probe"}
+    assert health.overall_status is HealthSeverity.WARNING
+    assert set(health.tier_summary) == {"fast", "medium"}
+    # The oldest of the two ``checked_at`` values: a stale MEDIUM result is
+    # never advertised with the FAST probe's newer timestamp.
+    assert health.checked_at == "2026-01-01T00:00:00+00:00"
+
+
+def test_archive_debt_scan_failure_is_distinguishable_from_feature_off() -> None:
+    """A failed archive-debt scan is logged and reasoned apart from an excluded one.
+
+    polylogue-8ifs (status half): both paths return ``available: False`` with
+    zero rows, so ``reason`` plus the warning event are the only things that
+    tell "the scan broke" from "the caller never asked for it".
+
+    Anti-vacuity: drop the ``emit()`` in ``_archive_debt_status_summary`` and
+    the log assertion is red; return the excluded payload from its ``except``
+    branch (or reuse one reason for both) and the reason assertions are red.
+    """
+    import sqlite3 as _sqlite3
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise _sqlite3.OperationalError("database is locked")
+
+    with (
+        patch("polylogue.operations.archive_debt.archive_debt_list", side_effect=_boom),
+        plog.capture() as records,
+    ):
+        failed = status_module._archive_debt_status_summary()
+
+    excluded = status_module._excluded_archive_debt_status_summary()
+
+    assert failed["available"] is False
+    assert excluded["available"] is False
+    assert failed["reason"] == "archive_debt_scan_failed"
+    assert excluded["reason"] == "excluded_from_bounded_status_snapshot"
+
+    failures = [r for r in records if r["event"] == "daemon.status.query_failed"]
+    assert [r["reason"] for r in failures] == ["archive_debt_scan_failed"]
+    assert failures[0]["level"] == "warning"
+    assert failures[0]["outcome"] == "degraded"
+    assert failures[0]["error_type"] == "OperationalError"
+    assert "database is locked" in str(failures[0]["error_detail"])

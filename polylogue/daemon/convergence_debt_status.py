@@ -267,7 +267,7 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
                 key=lambda stage: (-(failed_by_stage.get(stage, 0) + deferred_by_stage.get(stage, 0)), stage),
             )
         ]
-        return _summary_from_parts(stage_summaries=stage_summaries, recent=recent)
+        return _summary_from_parts(stage_summaries=stage_summaries, recent=recent, items=items)
     except Exception as exc:
         emit(
             "daemon.convergence_debt.projection_failed",
@@ -285,16 +285,22 @@ def _summary_from_parts(
     *,
     stage_summaries: list[ConvergenceDebtStageSummary],
     recent: list[ConvergenceDebtItem],
+    items: list[ConvergenceDebtItem],
 ) -> ConvergenceDebtSummary:
-    # Per-family rollup over the recent items so polylogue ops status and the
-    # /health envelope show which source family the debt belongs to. This
+    # Per-family rollup over the COMPLETE debt set so polylogue ops status and
+    # the /health envelope show which source family the debt belongs to. This
     # is the same view the convergence-debt alert (see
     # polylogue/daemon/convergence_debt_alert.py) thresholds against, so
     # operators can correlate alert messages with status output directly.
+    #
+    # It is deliberately not computed over ``recent``: that window is bounded
+    # at ten rows ordered by updated_at_ms, so ten deferred rows newer than a
+    # failure pushed every failed row out of it and the alert read the
+    # resulting absence as a family whose debt had cleared (polylogue-c1dx2).
     from polylogue.daemon.convergence_debt_alert import source_family_for_subject
 
     family_counts: dict[str, dict[str, int]] = {}
-    for item in recent:
+    for item in items:
         family = source_family_for_subject(item.subject_type, item.subject_id)
         counts = family_counts.setdefault(family, {"failed": 0, "deferred": 0})
         if item.status in counts:

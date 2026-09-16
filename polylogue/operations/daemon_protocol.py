@@ -1021,6 +1021,13 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         capability="archive.identity_reset",
         deadline_s=300.0,
         progress=True,
+        # IdentityResetRequest declares session_ids up to 10_000 and a 4 KiB
+        # reason. At ~60 bytes per JSON-quoted session id that is ~600 KiB, so
+        # the default 64 KiB body cap would refuse ~1,100 ids as
+        # ``request_too_large`` while the contract still advertised 10_000 --
+        # and cli/commands/reset.py submits exactly that payload. The bound the
+        # request contract already promises is the honest one to admit.
+        max_body_bytes=8 * 1024 * 1024,
         request_contract="mutation.identity-reset.request/v1",
         result_contract="mutation.result/v1",
         request_type="IdentityResetRequest",

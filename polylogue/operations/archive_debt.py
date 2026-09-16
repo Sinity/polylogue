@@ -23,6 +23,7 @@ from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.sources.parsers.local_agent import gemini_cli_chat_identity
+from polylogue.storage.archive_readiness import RAW_ALIAS_BLOB_MISSING_CATEGORY
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw_convergence import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
@@ -267,7 +268,16 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
             if can_reconcile_alias and (
                 _raw_materialized_by_native_id(conn, row) or _raw_materialized_by_source_path_native(conn, row)
             ):
-                category = "materialized-alias"
+                # An alias only reconciles the row when this artifact's own
+                # durable bytes still exist. Otherwise a newer snapshot whose
+                # blob is genuinely gone would be retired by an older indexed
+                # snapshot of the same provider session, and the loss would
+                # stop being reported at all.
+                category = (
+                    "materialized-alias"
+                    if _raw_blob_path(archive_root, row).exists()
+                    else RAW_ALIAS_BLOB_MISSING_CATEGORY
+                )
             elif _raw_materialized_by_embedded_session_ids(conn, row):
                 continue
             else:
@@ -641,7 +651,25 @@ def _raw_materialization_debt_row(
     details: str
     actions: tuple[ArchiveDebtActionPayload, ...]
 
-    if category == "missing-blob":
+    if category == RAW_ALIAS_BLOB_MISSING_CATEGORY:
+        severity = "critical"
+        status = "actionable" if source_available else "blocked"
+        stage = "raw-blob"
+        summary = f"{count} {origin} raw artifact(s) alias an indexed session but their own blob payload is missing"
+        details = (
+            f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
+            "The same logical session is present by provider native id or by a source-path-derived native id, but "
+            "this artifact's content-addressed blob is absent, so the indexed session is a different (usually "
+            "older) snapshot. The alias does not reconcile these rows; re-acquire from source to recover the bytes."
+        )
+        actions = (
+            ArchiveDebtActionPayload(
+                label="Re-import source artifacts",
+                command=("polylogue", "import"),
+                description="Pass one of the sampled source paths to re-acquire the missing raw blob.",
+            ),
+        )
+    elif category == "missing-blob":
         severity = "critical"
         stage = "raw-blob"
         summary = f"{count} {origin} raw artifact(s) reference missing blob payloads"

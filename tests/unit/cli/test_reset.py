@@ -289,9 +289,6 @@ class TestResetCommandDeletion:
             archive_root / "index.db",
             archive_root / "index.db-wal",
             archive_root / "index.db-shm",
-            archive_root / "embeddings.db",
-            archive_root / "embeddings.db-wal",
-            archive_root / "embeddings.db-shm",
             archive_root / "ops.db",
         ]
         user_db = archive_root / "user.db"
@@ -316,9 +313,6 @@ class TestResetCommandDeletion:
             archive_root / "index.db",
             archive_root / "index.db-wal",
             archive_root / "index.db-shm",
-            archive_root / "embeddings.db",
-            archive_root / "embeddings.db-wal",
-            archive_root / "embeddings.db-shm",
             archive_root / "ops.db",
         ]
         return archive_root / "source.db", [path for path in candidates if path.exists()], archive_root / "user.db"
@@ -400,6 +394,28 @@ class TestResetCommandDeletion:
         assert user_db.exists(), "user.db is irreplaceable and must survive a plain --database reset"
         assert "Preserving source.db" in result.output
         assert "Preserving user.db" in result.output
+
+    def test_reset_database_preserves_the_expensive_embeddings_tier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``reset --database`` must not delete embeddings.db, and must say so.
+
+        Anti-vacuity: re-adding ``embeddings.db`` to the reset target list --
+        in the CLI preview or in the daemon's ``_reset_targets``, which is what
+        actually unlinks -- deletes the file and turns the existence assertion
+        red; dropping the preservation line turns the output assertion red.
+        Nothing replays those vectors from source.db, so a silent delete is a
+        repurchase billed to the operator, not a rebuild.
+        """
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            embeddings_db = stack.archive_root / "embeddings.db"
+            assert embeddings_db.exists(), "fixture must bootstrap the embeddings tier"
+            result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert embeddings_db.exists(), "embeddings.db is expensive_rebuild and must survive --database"
+        assert "Preserving embeddings.db" in result.output
+        assert "embedding-preservation" in result.output
 
     def test_reset_database_include_source_and_user_db_deletes_everything(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

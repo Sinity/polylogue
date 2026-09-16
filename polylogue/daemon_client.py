@@ -279,21 +279,17 @@ class DaemonClient:
             return None
         status, response = raw
         if (
-            status in {401, 503}
-            and isinstance(response, dict)
+            isinstance(response, dict)
             and response.get("protocol") == DAEMON_OPERATION_PROTOCOL
             and response.get("outcome") == "rejected"
+            and response.get("pre_dispatch") is True
             and isinstance(response.get("error"), dict)
-            and (status, response["error"].get("code"))
-            in {
-                (401, "unauthorized"),
-                (401, "peer_authentication_unavailable"),
-                (503, "connection_backpressure"),
-            }
         ):
-            # The bounded ingress rejects these requests before dispatch. This
-            # is a known refusal, not absence or a possibly committed mutation.
-            raise DaemonOperationRejectedError(str(response["error"]["code"]))
+            # The bounded ingress refused before dispatch and said so on the
+            # envelope. A marked refusal is a known refusal for every code,
+            # not absence and never a possibly committed mutation; whitelisting
+            # codes one at a time failed open into the most expensive outcome.
+            raise DaemonOperationRejectedError(str(response["error"].get("code") or "rejected"))
         try:
             return self._validate_operation_response(request, status, response)
         except DaemonOperationProtocolError as exc:

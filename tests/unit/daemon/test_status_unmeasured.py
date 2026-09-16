@@ -14,7 +14,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.daemon import status as status_module
-from polylogue.daemon.health import DaemonHealth
+from polylogue.daemon.health import DaemonHealth, HealthTier
 from polylogue.daemon.status import build_daemon_status
 from polylogue.operations.status_protocol import StatusComponentRegistry
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
@@ -107,7 +107,8 @@ def _patch_healthy_collectors(
 
 def _build(**kwargs: Any) -> Any:
     specs = status_module._daemon_status_component_specs(
-        checked_health=lambda: DaemonHealth(),
+        checked_health=lambda _tiers: DaemonHealth(),
+        health_tiers=lambda: {HealthTier.FAST},
         include_raw_replay_backlog=False,
         include_exact_raw_materialization_readiness=False,
     )

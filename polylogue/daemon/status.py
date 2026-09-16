@@ -40,7 +40,14 @@ from polylogue.daemon.cursor_lag_status import CursorLagSummary as CursorLagSumm
 from polylogue.daemon.cursor_lag_status import cursor_lag_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import FTSReadiness, fts_readiness_info
-from polylogue.daemon.health import DaemonHealth, HealthAlert, HealthSeverity, HealthTier, check_health
+from polylogue.daemon.health import (
+    DaemonHealth,
+    HealthAlert,
+    HealthSeverity,
+    HealthTier,
+    _compute_overall_health,
+    check_health,
+)
 from polylogue.daemon.live_ingest_attempt_models import (
     LiveIngestAttemptState,
 )
@@ -124,6 +131,110 @@ def _configured_health_tiers(*, include_expensive: bool = False) -> set[HealthTi
     if include_expensive:
         tiers.add(HealthTier.EXPENSIVE)
     return tiers
+
+
+_HEALTH_FAST_COMPONENT = "health_fast"
+_HEALTH_MEDIUM_COMPONENT = "health_medium"
+_HEALTH_COMPONENT = "health"
+_HEALTH_FAST_TTL_S = 10.0
+_DEFAULT_HEALTH_CHECK_INTERVAL_S = 300.0
+
+
+def _configured_health_check_interval_s() -> float:
+    """Return the operator-declared cadence for the non-FAST health tiers."""
+    from polylogue.config import load_polylogue_config
+
+    try:
+        interval = float(load_polylogue_config().health_check_interval_s)
+    except Exception:
+        return _DEFAULT_HEALTH_CHECK_INTERVAL_S
+    return interval if interval > 0 else _DEFAULT_HEALTH_CHECK_INTERVAL_S
+
+
+# Collection states that mean "this component did not complete a measurement
+# for this call", worst last. Merging the two health components must not let
+# a fresh FAST result hide a MEDIUM collector that timed out.
+_HEALTH_STATE_RANK: dict[str, int] = {
+    "fresh": 0,
+    "stale": 1,
+    "refreshing": 2,
+    "timed_out": 3,
+    "degraded": 4,
+    "unavailable": 5,
+}
+
+
+def _merge_health_snapshots(snapshots: dict[str, ComponentSnapshot]) -> dict[str, ComponentSnapshot]:
+    """Fold the FAST and MEDIUM health components into one ``health`` snapshot.
+
+    The health probes are collected as two components so the expensive
+    non-FAST tier can carry the operator's ``health_check_interval_s`` cadence
+    (and no WAL-mtime fingerprint) while the cheap FAST tier keeps its 10s TTL
+    and change detection (polylogue-s4tkf). Consumers keep seeing exactly one
+    ``health`` component with one merged :class:`DaemonHealth` payload: the
+    union of both tiers' alerts, the worst overall severity, the merged tier
+    summary, and the OLDEST ``checked_at`` of the two -- a stale MEDIUM result
+    must never be advertised with the FAST probe's fresh timestamp.
+    """
+    fast = snapshots.pop(_HEALTH_FAST_COMPONENT, None)
+    medium = snapshots.pop(_HEALTH_MEDIUM_COMPONENT, None)
+    present = [snap for snap in (fast, medium) if snap is not None]
+    if not present:
+        return snapshots
+    base = fast if fast is not None else present[0]
+    worst = max(present, key=lambda snap: _HEALTH_STATE_RANK.get(snap.state, 0))
+    values = [snap.value for snap in present if isinstance(snap.value, DaemonHealth)]
+    merged_value: DaemonHealth | None
+    if values:
+        # Union, not concatenation: the two collectors are tier-disjoint in
+        # production, but a failure of the health backend itself is observed
+        # by BOTH of them and must still be reported as one alert -- a single
+        # broken check must never inflate ``alert_count``/``checks_run``.
+        # ``checked_at`` is deliberately outside the key so two observations
+        # of the same condition a moment apart still collapse.
+        alerts: list[HealthAlert] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for value in values:
+            for alert in value.alerts:
+                key = (alert.check_name, alert.tier.value, alert.severity.value, alert.message)
+                if key in seen:
+                    continue
+                seen.add(key)
+                alerts.append(alert)
+        # Union by tier, never a sum: the two collectors are tier-disjoint, so
+        # a tier reported by both is the same observation seen twice (a
+        # backend failure, or a collector that ignores the requested tiers) and
+        # summing it would inflate the per-tier counts.
+        tier_summary: dict[str, dict[str, int]] = {}
+        for value in values:
+            for tier_name, counts in value.tier_summary.items():
+                bucket = tier_summary.setdefault(tier_name, {})
+                for severity, count in counts.items():
+                    bucket[severity] = max(bucket.get(severity, 0), count)
+        checked_at = min((value.checked_at for value in values if value.checked_at), default="")
+        merged_value = DaemonHealth(
+            overall_status=_compute_overall_health(alerts),
+            checked_at=checked_at,
+            alerts=alerts,
+            tier_summary=tier_summary,
+        )
+    else:
+        merged_value = None
+    errors = [snap.error for snap in present if snap.error]
+    last_good = [snap.last_good_at for snap in present if snap.last_good_at]
+    snapshots[_HEALTH_COMPONENT] = ComponentSnapshot(
+        name=_HEALTH_COMPONENT,
+        scope=base.scope,
+        state=worst.state,
+        value=merged_value,
+        captured_at=base.captured_at,
+        age_s=max(snap.age_s for snap in present),
+        deadline_s=max(snap.deadline_s for snap in present),
+        fingerprint=base.fingerprint,
+        error="; ".join(errors) or None,
+        last_good_at=min(last_good) if last_good else None,
+    )
+    return snapshots
 
 
 def _health_tier_states(health: DaemonHealth, configured: set[HealthTier]) -> dict[str, str]:
@@ -2394,10 +2505,12 @@ def _sinex_publication_status_info() -> dict[str, object]:
 
 def _daemon_status_component_specs(
     *,
-    checked_health: Callable[[], DaemonHealth],
+    checked_health: Callable[[set[HealthTier]], DaemonHealth],
+    health_tiers: Callable[[], set[HealthTier]],
     include_raw_replay_backlog: bool,
     include_exact_raw_materialization_readiness: bool,
     fingerprint: Callable[[], str] | None = None,
+    medium_health_ttl_s: float | None = None,
 ) -> list[StatusComponentSpec]:
     """Component declarations shared by the ephemeral per-call path and the
     persistent periodic-refresh registry (polylogue-20d.17).
@@ -2523,13 +2636,35 @@ def _daemon_status_component_specs(
             cost_class="moderate",
             fingerprint=fingerprint,
         ),
+        # polylogue-s4tkf: health is collected as two components, not one.
+        # A single spec had to carry one ttl_s and one fingerprint for both
+        # tiers, and the WAL-mtime fingerprint changes continuously during
+        # ingest -- so the MEDIUM probes (``fts_invariant_snapshot_sync``, a
+        # full-relation scan) were forced to re-run on essentially every 10s
+        # status tick, defeating both the TTL and the declared
+        # ``health_check_interval_s`` cadence. FAST keeps the 10s TTL and the
+        # fingerprint (a cheap probe must observe a changed tier promptly);
+        # the non-FAST tiers get the configured interval as their TTL and NO
+        # fingerprint, so WAL churn cannot force them. The two snapshots are
+        # folded back into one ``health`` component by
+        # :func:`_merge_health_snapshots` before any consumer sees them.
         StatusComponentSpec(
-            name="health",
+            name=_HEALTH_FAST_COMPONENT,
             scope="daemon",
-            collector=checked_health,
+            collector=lambda: checked_health(health_tiers() & {HealthTier.FAST}),
             deadline_s=1.5,
             cost_class="moderate",
             fingerprint=fingerprint,
+            ttl_s=_HEALTH_FAST_TTL_S,
+        ),
+        StatusComponentSpec(
+            name=_HEALTH_MEDIUM_COMPONENT,
+            scope="daemon",
+            collector=lambda: checked_health(health_tiers() - {HealthTier.FAST}),
+            deadline_s=3.0,
+            cost_class="expensive",
+            fingerprint=None,
+            ttl_s=(medium_health_ttl_s if medium_health_ttl_s is not None else _configured_health_check_interval_s()),
         ),
     ]
 
@@ -2571,9 +2706,9 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
     with _PERIODIC_STATUS_REGISTRY_LOCK:
         if _PERIODIC_STATUS_REGISTRY is None:
 
-            def _checked_health() -> DaemonHealth:
+            def _checked_health(tiers: set[HealthTier]) -> DaemonHealth:
                 try:
-                    return check_health(tiers=_configured_health_tiers())
+                    return check_health(tiers=tiers)
                 except Exception as exc:
                     emit(
                         "daemon.status.health_check_failed",
@@ -2599,6 +2734,7 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
 
             specs = _daemon_status_component_specs(
                 checked_health=_checked_health,
+                health_tiers=_configured_health_tiers,
                 include_raw_replay_backlog=False,
                 include_exact_raw_materialization_readiness=False,
                 fingerprint=lambda: _daemon_status_fingerprint(_active_status_db_path()),
@@ -2674,9 +2810,9 @@ def build_daemon_status(
     # ``check_tiers = "fast"`` configuration remains an explicit opt-out.
     health_tiers = _configured_health_tiers(include_expensive=include_expensive_health)
 
-    def _checked_health() -> DaemonHealth:
+    def _checked_health(tiers: set[HealthTier]) -> DaemonHealth:
         try:
-            return check_health(tiers=health_tiers)
+            return check_health(tiers=tiers)
         except Exception as exc:
             # DaemonHealth() alone defaults to overall_status=OK with zero
             # alerts — the single most misleading fallback possible for a
@@ -2716,11 +2852,14 @@ def build_daemon_status(
     # blocking the healthy facts sitting behind it in a call chain.
     specs = _daemon_status_component_specs(
         checked_health=_checked_health,
+        health_tiers=lambda: health_tiers,
         include_raw_replay_backlog=include_raw_replay_backlog,
         include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
     )
-    snapshots = (registry if registry is not None else StatusComponentRegistry(specs)).collect(
-        names=[spec.name for spec in specs]
+    snapshots = _merge_health_snapshots(
+        (registry if registry is not None else StatusComponentRegistry(specs)).collect(
+            names=[spec.name for spec in specs]
+        )
     )
 
     # A snapshot in one of these states did not complete a collection for this
@@ -2817,7 +2956,7 @@ def build_daemon_status(
         raw_lifecycle_reason = "raw failure lifecycle evidence is unavailable"
     blob_publication_reservations = _v("blob_publication_reservations", BlobPublicationReservationStatus())
     embedding_info: dict[str, object] = _v("embedding_readiness", {})
-    health = _v("health", _checked_health())
+    health = _v("health", _checked_health(health_tiers))
     # Health is a separate projection.  It must not claim to be clean when
     # its own collector could not complete, but an unrelated optional status
     # detail being unavailable does not invalidate an otherwise measured

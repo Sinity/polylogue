@@ -3803,3 +3803,45 @@ class TestDeclaredRouteExamples:
         with _running_server(workspace_env) as (_, base_url):
             status, _ = _get_json_ex(base_url, request_path)
         assert status == 400
+
+
+def test_full_session_read_route_aborts_when_the_client_disconnects(workspace_env: dict[str, Path]) -> None:
+    """An abandoned full (unbounded) session read releases its slot instead of composing.
+
+    polylogue-lr47v: the bounded routes ran through
+    ``_run_archive_bounded_query`` (SQLite progress handler + disconnect
+    probe) while the ``limit=None`` composition did not, so a browser that
+    navigated away mid-read still paid for the whole transcript.
+
+    Anti-vacuity: call ``archive.read_session(session_id)`` directly in the
+    ``limit is None`` branch of ``_do_archive_get_session`` (the pre-fix
+    shape) and the disconnected read returns a full envelope instead of
+    raising, so the first assertion fails. The live-peer half of the test
+    fails if the guard is made unconditional.
+    """
+    from polylogue.daemon.http import DaemonAPIHandler
+    from tests.infra.storage_records import SessionBuilder, db_setup
+
+    db_path = db_setup(workspace_env)
+    builder = (
+        SessionBuilder(db_path, "abandoned-full-read")
+        .provider("codex")
+        .title("Abandoned full read")
+        .add_message("m-1", role="user", text="compose the whole transcript")
+    )
+    builder.save()
+    archive_root = db_path.parent
+    session_id = builder.native_session_id()
+
+    handler = object.__new__(DaemonAPIHandler)
+    handler.path = f"/api/sessions/{session_id}"
+
+    handler._client_disconnected = lambda: True  # type: ignore[method-assign]
+    with pytest.raises(ConnectionAbortedError):
+        handler._do_archive_get_session(archive_root, session_id)
+
+    # With a live peer the same unbounded call still composes the transcript.
+    handler._client_disconnected = lambda: False  # type: ignore[method-assign]
+    payload = handler._do_archive_get_session(archive_root, session_id)
+    assert isinstance(payload, dict)
+    assert payload["message_count"] == 1

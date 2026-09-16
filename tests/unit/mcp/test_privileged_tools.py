@@ -1174,6 +1174,44 @@ class TestMaintenanceConfirmGates:
             assert "polylogued run" in message
             assert "maintenance.insights.rebuild" in message
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "dimension",
+        ["origin", "source_family", "source_root", "since", "until", "failure_kind", "parser_version"],
+    )
+    async def test_maintenance_refuses_every_scope_dimension_it_cannot_apply(
+        self, tmp_path: Path, dimension: str
+    ) -> None:
+        """An unappliable narrowing dimension is refused, never accepted and echoed back.
+
+        polylogue-3ahdg: the maintenance envelope used to accept origin,
+        source_family, source_root, time_range, failure_kind and parser_version,
+        forward only session_ids, and still echo all of them in the persisted
+        snapshot -- so a caller filtering by origin was told a whole-archive
+        rebuild was scoped. The envelope now declares only dimensions it
+        forwards, so each of these is refused at the call boundary.
+
+        Anti-vacuity: re-add any of these as an accepted parameter that is
+        merely echoed and this call stops raising. Asserting only on
+        ``session_ids`` leaves that regression green.
+        """
+
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with installed_runtime_services(archive_root):
+            with pytest.raises(TypeError, match=dimension):
+                await invoke_surface_async(
+                    maintenance_fn,
+                    operation="rebuild_insights",
+                    confirm=True,
+                    **{dimension: "codex-session"},
+                )
+
 
 class TestQuerySessionsProjection:
     @pytest.mark.asyncio

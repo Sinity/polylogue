@@ -149,10 +149,14 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
             raise ValueError("reset is unsafe for a managed active generation")
         names = [("index database", "index.db")] if flags["index"] else []
         if flags["database"]:
+            # ``embeddings.db`` is absent deliberately: bootstrap classifies it
+            # ``expensive_rebuild`` because nothing replays its vectors from
+            # source.db -- they are re-purchased from the embedding provider.
+            # Deleting it is a repurchase, not a reset, so ``--database`` keeps
+            # it and the CLI names the embedding-preservation route instead.
             names = [
                 ("source database", "source.db"),
                 ("index database", "index.db"),
-                ("embeddings database", "embeddings.db"),
                 ("ops database", "ops.db"),
             ]
             if not bool(payload.get("include_source_db", False)):

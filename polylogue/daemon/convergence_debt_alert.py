@@ -211,22 +211,22 @@ def source_family_for_subject(subject_type: str, subject_id: str) -> str:
 
 
 def aggregate_debt_by_family(summary: ConvergenceDebtSummary) -> dict[str, int]:
-    """Bucket the recent-debt items by source family.
+    """Bucket failed debt by source family over the COMPLETE debt set.
 
-    The summary's ``recent`` list is bounded (10 items by default) but it
-    is the only per-subject view the status payload carries. That is
-    sufficient to ground a per-family threshold check because the alert
-    fires on the visible failed/retry-due counts, not on long-tail
-    rollups: the operator-visible severity follows what an operator
-    would see in ``polylogue ops status`` or ``/health``.
+    ``summary.family_summaries`` is rolled up from every convergence-debt
+    row, not from the bounded ``recent`` window. Reading ``recent`` here was
+    a measurement gap, not a cheaper approximation: that window holds ten
+    rows ordered by ``updated_at_ms``, deferred and failed share it, so ten
+    deferred rows newer than a failure evicted every failed row and this
+    function returned zero for a family that was still broken. The alert
+    aggregator reads a zero as RESOLVED, so an unmeasured family fired a
+    resolution alert (polylogue-c1dx2).
     """
-    counts: dict[str, int] = {}
-    for item in summary.recent:
-        if item.status != "failed":
-            continue
-        family = source_family_for_subject(item.subject_type, item.subject_id)
-        counts[family] = counts.get(family, 0) + 1
-    return counts
+    return {
+        family_summary.family: family_summary.failed_count
+        for family_summary in summary.family_summaries
+        if family_summary.failed_count
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +253,10 @@ def evaluate_convergence_debt(
     """
     now_ts = now if now is not None else time.time()
     iso_now = datetime.fromtimestamp(now_ts, tz=UTC).isoformat()
+    if not summary.available:
+        # An unreadable debt ledger measures nothing. Emitting from it would
+        # read every family as count 0 and fire spurious resolutions.
+        return []
     family_counts = aggregate_debt_by_family(summary)
 
     alerts: list[HealthAlert] = []

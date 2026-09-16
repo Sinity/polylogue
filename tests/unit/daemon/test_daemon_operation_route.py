@@ -1002,3 +1002,48 @@ def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -
     envelope = envelopes[0]
     assert envelope["outcome"] == "cancelled"
     assert envelope.get("error") is None
+
+
+def test_skewed_write_refusal_is_pre_dispatch_not_an_indeterminate_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-dispatch refusal the client cannot self-detect must not become receipt recovery.
+
+    A newer CLI against a resident older daemon sends a body its own spec table
+    admits and the daemon's does not; the daemon refuses at the ingress with
+    413 ``request_too_large`` before dispatching anything. That refusal carries
+    no ``operation`` or ``request_id`` to correlate against, so only the
+    envelope's ``pre_dispatch`` marker tells the client the actuator provably
+    never ran. Only the daemon's spec lookup is skewed here -- the client, the
+    socket, and the whole ingress path are the production ones.
+
+    Anti-vacuity: drop ``pre_dispatch`` from ``MachineOperationHandler._reject``
+    (or restore the three-code refusal whitelist in ``DaemonClient.operation``)
+    and this write raises ``DaemonMutationIndeterminateError`` instead, steering
+    the operator into recovery adjudication for a mutation that never started.
+    """
+    import polylogue.daemon.uds as uds_module
+    from polylogue.operations.daemon_protocol import DaemonOperationSpec, daemon_operation_spec
+
+    skewed = "mutation.session.mark"
+
+    def _older_daemon_spec(name: str) -> DaemonOperationSpec | None:
+        spec = daemon_operation_spec(name)
+        if spec is not None and name == skewed:
+            return replace(spec, max_body_bytes=256)
+        return spec
+
+    monkeypatch.setattr(uds_module, "daemon_operation_spec", _older_daemon_spec)
+
+    session_ids = [f"claude-code-session:{index:040d}" for index in range(8)]
+    payload: dict[str, object] = {"session_ids": session_ids, "add_marks": ["reviewed"]}
+    client_spec = daemon_operation_spec(skewed)
+    assert client_spec is not None
+    # The client's own bound admits this body; only the resident daemon refuses.
+    assert 256 < len(json.dumps(payload).encode()) <= client_spec.max_body_bytes
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        with pytest.raises(DaemonOperationRejectedError) as rejected:
+            stack.client.operation(skewed, payload, archive_root=str(stack.archive_root))
+        assert rejected.value.outcome == "request_too_large"
+        assert not stack.runtime._exchanges
