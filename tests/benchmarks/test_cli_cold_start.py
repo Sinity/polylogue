@@ -69,8 +69,6 @@ def test_bench_cli_status_cold(
         record_metrics(
             benchmark,
             cold_start_ms=elapsed_ms,
-            first_byte_ms=elapsed_ms,
-            full_render_ms=elapsed_ms,
             peak_rss_kib=max(0, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss - before_rss),
             imported_modules=imported_modules,
             bytes=len(result.stdout),
