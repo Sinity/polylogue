@@ -1333,6 +1333,11 @@ async def test_a_page_never_splits_below_one_file_and_stops_at_the_class_share(t
         async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
             return self._items[:limit]
 
+        async def admit(self, item: IntakeItem) -> AdmissionResult:
+            # An adapter still owes the per-item entry point: the dispatcher
+            # falls back to it whenever a page-shaped one is absent.
+            return (await self.admit_page((item,)))[item.item_id]
+
         async def admit_page(self, items: Sequence[IntakeItem]) -> dict[str, AdmissionResult]:
             batches.append([cast(Path, item.payload) for item in items])
             return {item.item_id: AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=1) for item in items}
