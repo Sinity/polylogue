@@ -285,7 +285,8 @@ async def test_default_periodic_health_schedule_runs_medium_probes_and_records_c
             raise asyncio.CancelledError
 
     async def _immediate_sleep(interval: float) -> None:
-        assert interval == 300
+        # The runner jitters each tick; the configured cadence is the floor.
+        assert 300 <= interval <= 330
 
     monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: _OneTickCoordinator())
     monkeypatch.setattr("polylogue.daemon.cli.asyncio.sleep", _immediate_sleep)

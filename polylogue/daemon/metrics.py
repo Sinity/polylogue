@@ -90,6 +90,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from http import HTTPStatus
 from pathlib import Path
 from typing import Protocol, TypedDict
@@ -201,6 +202,65 @@ def _format_value(value: float | int) -> str:
     if value != value:  # NaN
         return "NaN"
     return repr(float(value))
+
+
+def _emit_periodic_loop_metrics(lines: list[str]) -> None:
+    """Expose every daemon cadence loop's last run, due time and failures.
+
+    Before the shared runner there was nothing here at all: a loop that had
+    silently stopped ticking was indistinguishable from one whose archive had
+    no work (polylogue-74wvj).
+    """
+    from polylogue.daemon.periodic import daemon_periodic_runner
+
+    states = daemon_periodic_runner().snapshot()
+    now = time.time()
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_periodic_loop_interval_seconds",
+        help_text="Declared cadence of each daemon periodic loop.",
+        metric_type="gauge",
+        samples=[({"loop": state.name}, state.interval_s) for state in states],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_periodic_loop_age_seconds",
+        help_text="Seconds since each daemon periodic loop last completed a pass.",
+        metric_type="gauge",
+        samples=[
+            ({"loop": state.name}, now - state.last_run_completed_at)
+            for state in states
+            if state.last_run_completed_at is not None
+        ],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_periodic_loop_due_in_seconds",
+        help_text="Seconds until each daemon periodic loop's next scheduled pass.",
+        metric_type="gauge",
+        samples=[({"loop": state.name}, state.next_run_at - now) for state in states if state.next_run_at is not None],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_periodic_loop_runs_total",
+        help_text="Completed passes per daemon periodic loop since process start.",
+        metric_type="counter",
+        samples=[({"loop": state.name}, state.runs) for state in states],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_periodic_loop_failures_total",
+        help_text="Recorded failures per daemon periodic loop since process start.",
+        metric_type="counter",
+        samples=[({"loop": state.name}, state.failures) for state in states],
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_periodic_loop_blocked",
+        help_text="1 while a daemon periodic loop is waiting on a named startup gate.",
+        metric_type="gauge",
+        samples=[({"loop": state.name}, 1 if state.blocked_on else 0) for state in states],
+    )
 
 
 def _emit_metric(
@@ -1111,6 +1171,8 @@ def format_metrics(
         metric_type="counter",
         samples=[(None, int(detached_writer_failures) if isinstance(detached_writer_failures, (int, float)) else 0)],
     )
+
+    _emit_periodic_loop_metrics(lines)
 
     if not db.exists():
         ops_body = _format_ops_only_metrics(lines, configured_root / "ops.db")

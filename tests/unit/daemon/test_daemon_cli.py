@@ -476,14 +476,15 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     db = tmp_path / "index.db"
     db.touch()
 
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+    def fake_drain(_db: Path) -> int:
         raise sqlite3.OperationalError("database is locked")
 
     with (
+        patch.object(daemon_cli, "_drain_convergence_debt_once", fake_drain),
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
-            return_value=SimpleNamespace(run_sync=fake_run_sync),
+            return_value=SimpleNamespace(run_sync=None),
         ),
         capture() as records,
     ):
@@ -641,13 +642,13 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
 
     db = tmp_path / "index.db"
     db.touch()
-    actors: list[str] = []
+    drains: list[Path] = []
     fts_scopes: list[object] = []
     profile_scopes: list[tuple[str, ...] | None] = []
     drained = asyncio.Event()
 
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        actors.append(_actor)
+    def fake_drain(drain_db: Path) -> int:
+        drains.append(drain_db)
         return 0
 
     async def fake_session_profiles(scope: tuple[str, ...] | None) -> object:
@@ -665,8 +666,9 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
         monkeypatch.setattr(
             daemon_cli,
             "daemon_write_coordinator",
-            lambda: SimpleNamespace(run_sync=fake_run_sync),
+            lambda: SimpleNamespace(run_sync=None),
         )
+        monkeypatch.setattr(daemon_cli, "_drain_convergence_debt_once", fake_drain)
         monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
         task = asyncio.create_task(
             daemon_cli._periodic_convergence_check(
@@ -677,7 +679,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
             )
         )
         await asyncio.sleep(0)
-        assert actors == []
+        assert drains == []
         assert profile_scopes == []
         catch_up_complete.set()
         await asyncio.wait_for(drained.wait(), timeout=1)
@@ -687,7 +689,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
 
     asyncio.run(exercise())
 
-    assert actors == ["maintenance.convergence_debt"]
+    assert drains == [db]
     assert fts_scopes == [None]
     assert profile_scopes == [None]
 
@@ -698,14 +700,17 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     db = tmp_path / "index.db"
     db.touch()
 
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+    def fake_drain(_db: Path) -> int:
         raise RuntimeError("unexpected convergence retry failure")
 
+    # The drain itself runs off the writer lease (polylogue-ssplv); the
+    # coordinator is reached only by the admission each stage's write uses.
     with (
+        patch.object(daemon_cli, "_drain_convergence_debt_once", fake_drain),
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
-            return_value=SimpleNamespace(run_sync=fake_run_sync),
+            return_value=SimpleNamespace(run_sync=None),
         ),
         capture() as records,
     ):
@@ -3349,7 +3354,13 @@ def test_periodic_schema_preflight_recheck_exits_on_recovery(
     async def fake_sleep(seconds: float) -> None:
         nonlocal sleeps
         sleeps += 1
-        assert seconds == daemon_cli._SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS
+        # The runner jitters each tick, so the declared cadence is the floor
+        # of the wait, not its exact value (polylogue-74wvj).
+        assert (
+            daemon_cli._SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS
+            <= seconds
+            <= (daemon_cli._SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS * 1.1)
+        )
 
     monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", lambda: schedule.pop(0))
     with (
@@ -3387,7 +3398,11 @@ def test_periodic_raw_materialization_wakes_fair_intake_without_legacy_scan(
         return False
 
     async def stop_after_one_tick(seconds: float) -> None:
-        assert seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
+        assert (
+            daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
+            <= seconds
+            <= (daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS * 1.1)
+        )
         assert wakeup.is_set()
         raise asyncio.CancelledError
 
@@ -3443,7 +3458,11 @@ def test_periodic_raw_materialization_respects_catch_up_gate(
             catch_up_complete.set()
 
             async def stop_after_one_tick(seconds: float) -> None:
-                assert seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
+                assert (
+                    daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
+                    <= seconds
+                    <= (daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS * 1.1)
+                )
                 raise asyncio.CancelledError
 
             with patch(

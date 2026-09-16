@@ -157,6 +157,7 @@ async def test_flush_pending_requeues_when_archive_is_busy(
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> None:
         calls.append((paths, queued_file_count, skipped_file_count))
         raise sqlite3.OperationalError("database is locked")
@@ -192,6 +193,7 @@ async def test_flush_pending_requeues_forced_and_concurrent_paths_after_lock(
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> None:
         del queued_file_count, skipped_file_count
         calls.append(paths)
@@ -230,6 +232,7 @@ async def test_flush_pending_reraises_unexpected_sqlite_errors(
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> None:
         del paths, queued_file_count, skipped_file_count
         raise sqlite3.OperationalError("disk I/O error")
@@ -265,6 +268,7 @@ async def test_ingest_files_serializes_batch_processor_calls(
         skipped_file_count: int = 0,
         max_pass_seconds: float | None = None,
         whole_archive_convergence: bool = True,
+        **_kwargs: object,
     ) -> None:
         del queued_file_count, skipped_file_count, max_pass_seconds, whole_archive_convergence
         nonlocal active, max_active

@@ -271,6 +271,7 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
         check_many=check_many,
         execute_many=execute_many,
         whole_archive=True,
+        writer_admission="bridged",
     )
 
 
@@ -331,6 +332,7 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
         check_many=check_many,
         execute_many=execute_many,
         whole_archive=True,
+        writer_admission="bridged",
     )
 
 
@@ -421,6 +423,7 @@ def make_sinex_publication_stage(
         barrier_check_many=barrier_many,
         barrier_check_sessions=service.blocking_object_ids,
         status=lambda: service.status().as_dict(),
+        writer_admission="bridged",
     )
 
 

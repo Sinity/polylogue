@@ -14,17 +14,21 @@ from polylogue.archive.write_gateway import WriteOperation
 from polylogue.storage.sqlite.connection import open_connection
 
 
-def test_registry_declares_the_three_canonical_effects_in_order() -> None:
+def test_registry_declares_the_canonical_effects_in_order() -> None:
     """The registry is the single source of truth for effect order and phase."""
     assert [effect.name for effect in WRITE_EFFECT_REGISTRY] == [
         "ensure_fts_triggers",
         "repair_message_fts",
         "invalidate_search_cache",
+        "announce_ingest_committed",
         "invalidate_session_insights",
     ]
     assert [effect.phase for effect in WRITE_EFFECT_REGISTRY] == [
         "in-transaction",
         "in-transaction",
+        "post-commit",
+        # The bus announcement is post-commit on purpose: a subscriber woken by
+        # an uncommitted write could read rows that still roll back.
         "post-commit",
         "async-deferred",
     ]
@@ -32,6 +36,7 @@ def test_registry_declares_the_three_canonical_effects_in_order() -> None:
         "abort",
         "abort",
         "abort",
+        "log-and-continue",
         "log-and-continue",
     ]
 

@@ -30,6 +30,7 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.logging import get_logger
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
@@ -152,7 +153,11 @@ def materialize_claude_workflow_archive(archive_root: Path) -> ClaudeWorkflowMat
         )
         graphs.append(graph)
 
-    _replace_graph_family(archive_root / "index.db", graphs)
+    # The projection above is archive-wide compute; only this replacement is
+    # a write, so it is the only part that enters the daemon writer.
+    admit_stage_write(
+        "convergence.stage.claude_workflow.publish", lambda: _replace_graph_family(archive_root / "index.db", graphs)
+    )
     return _summarize(prepared, graphs)
 
 

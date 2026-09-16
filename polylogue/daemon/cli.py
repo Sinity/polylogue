@@ -17,9 +17,10 @@ import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
+from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
 from uuid import uuid4
 
 import click
@@ -30,12 +31,18 @@ from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_serv
 from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.json import JSONDocument, dumps, json_document, loads
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
+from polylogue.core.stage_admission import (
+    StageWriteAdmission,
+    admit_stage_write,
+    stage_write_admission,
+)
 from polylogue.daemon.api_auth import (
     API_ALLOW_NO_AUTH_ENV,
     api_command,
     resolve_api_auth_token,
 )
 from polylogue.daemon.browser_capture import browser_capture_command
+from polylogue.daemon.event_bus import IngestCommitted, daemon_event_bus
 from polylogue.daemon.execution import publish_daemon_compute_adapter
 from polylogue.daemon.health import (
     HealthSeverity,
@@ -50,6 +57,7 @@ from polylogue.daemon.intake import AdmissionOutcome, AdmissionResult, FairIntak
 from polylogue.daemon.lineage_startup import (
     ensure_lineage_startup_readiness_sync as _ensure_lineage_startup_readiness_sync,
 )
+from polylogue.daemon.periodic import catch_up_gate, daemon_periodic_runner
 from polylogue.daemon.service_halt import HaltRegistry
 from polylogue.daemon.services import (
     PRODUCTION_PROFILE,
@@ -104,6 +112,7 @@ if TYPE_CHECKING:
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.session_profile_composition import SessionProfileCallback
     from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
+    from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import EmbeddingConvergenceOwner
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
@@ -112,6 +121,8 @@ _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 #: Debt rows one retry tick inspects, shared by the admitted pass and the
 #: lease-free embedding pass that precedes it so both see the same window.
 _CONVERGENCE_DEBT_RETRY_LIMIT = 100
+
+T = TypeVar("T")
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
 _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
 
@@ -178,6 +189,13 @@ async def _run_startup_lineage_readiness(coordinator: DaemonWriteCoordinator) ->
 _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 _SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS = 60
+#: Cadences that used to be bare literals inside their own ``while True``.
+#: They live here so the runner, the service registry and a reader of this
+#: module see one value per loop (polylogue-74wvj).
+_WAL_CHECKPOINT_INTERVAL_SECONDS = 300
+_STATUS_SNAPSHOT_REFRESH_INTERVAL_SECONDS = 10
+_HEARTBEAT_INTERVAL_SECONDS = 900
+_DB_OPTIMIZE_INTERVAL_SECONDS = 86_400
 
 # polylogue-5xxmc: ``catch_up_complete`` sequences a maintenance loop behind
 # the live watcher's initial source catch-up (see ``_bridge_catch_up_complete``
@@ -190,6 +208,18 @@ _SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS = 60
 # maintenance loops frozen, convergence_debt retries stalled since 2026-07-31
 # with zero journal signal beyond the periodic schema_version health line.
 _CATCH_UP_GATE_TIMEOUT_SECONDS = 1800.0  # 30 minutes
+
+
+def _archive_root_exists() -> bool:
+    from polylogue.paths import archive_root
+
+    return archive_root().exists()
+
+
+def _health_check_interval_s() -> float:
+    from polylogue.config import load_polylogue_config
+
+    return float(load_polylogue_config().health_check_interval_s)
 
 
 async def _await_catch_up_gate(
@@ -260,17 +290,26 @@ async def _periodic_schema_preflight_recheck() -> None:
     so the supervisor restarts the daemon into a healthy boot — the
     startup sequence is the only sanctioned way to construct the watcher.
     """
-    while True:
-        await asyncio.sleep(_SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS)
-        alert = _check_schema_version_fast()
-        if alert.severity != HealthSeverity.CRITICAL:
-            emit(
-                "daemon.schema_preflight.recovered",
-                outcome="ok",
-                reason="restart_required",
-                error_detail=alert.message,
-            )
-            raise RuntimeError("schema preflight recovered; restart required to start the live watcher")
+    await daemon_periodic_runner().run(
+        "schema_preflight_recheck",
+        _schema_preflight_recheck_once,
+        interval_s=_SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS,
+        # The recovery signal *is* an exception: it must reach the supervisor
+        # so the daemon restarts into a healthy boot.
+        on_error="propagate",
+    )
+
+
+async def _schema_preflight_recheck_once() -> None:
+    alert = _check_schema_version_fast()
+    if alert.severity != HealthSeverity.CRITICAL:
+        emit(
+            "daemon.schema_preflight.recovered",
+            outcome="ok",
+            reason="restart_required",
+            error_detail=alert.message,
+        )
+        raise RuntimeError("schema preflight recovered; restart required to start the live watcher")
 
 
 # Track the pidfile path for atexit cleanup.
@@ -524,25 +563,21 @@ async def _periodic_fts_merge() -> None:
     performance stays good without ever paying the full merge cost in a
     single write transaction.
     """
+    await daemon_periodic_runner().run(
+        "fts_merge",
+        _fts_merge_once,
+        interval_s=_FTS_MERGE_INTERVAL_SECONDS,
+        precondition=lambda: _active_index_db_path().exists(),
+        error_event="daemon.fts_merge.failed",
+    )
+
+
+async def _fts_merge_once() -> None:
     from polylogue.daemon.fts_automerge import run_periodic_fts_merge_sync
 
-    while True:
-        await asyncio.sleep(_FTS_MERGE_INTERVAL_SECONDS)
-        db = _active_index_db_path()
-        if not db.exists():
-            continue
-        try:
-            await daemon_write_coordinator().run_sync("maintenance.fts_merge", run_periodic_fts_merge_sync, db)
-        except Exception as exc:
-            emit(
-                "daemon.fts_merge.failed",
-                level=WARNING,
-                outcome="error",
-                loop="fts merge",
-                path=db,
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
+    await daemon_write_coordinator().run_sync(
+        "maintenance.fts_merge", run_periodic_fts_merge_sync, _active_index_db_path()
+    )
 
 
 async def _periodic_wal_checkpoint() -> None:
@@ -558,75 +593,64 @@ async def _periodic_wal_checkpoint() -> None:
     attributed to checkpointing and measured against
     ``CHECKPOINT_HOLD_BUDGET_S`` rather than absorbed into a publication hold.
     """
+    await daemon_periodic_runner().run(
+        "wal_checkpoint",
+        _wal_checkpoint_once,
+        interval_s=_WAL_CHECKPOINT_INTERVAL_SECONDS,
+        precondition=_archive_root_exists,
+        error_event="daemon.wal_checkpoint.failed",
+    )
+
+
+async def _wal_checkpoint_once() -> None:
     from polylogue.paths import archive_root
     from polylogue.storage.sqlite.connection_profile import CHECKPOINT_HOLD_BUDGET_S
     from polylogue.storage.sqlite.wal_checkpoint import checkpoint_archive_wals
 
-    while True:
-        await asyncio.sleep(300)
-        root = archive_root()
-        if not root.exists():
+    root = archive_root()
+    observations = await daemon_write_coordinator().run_sync(
+        WAL_CHECKPOINT_ACTOR,
+        checkpoint_archive_wals,
+        root,
+        reason="periodic",
+        escalation="recurring",
+        collect_blockers=True,
+    )
+    for observation in observations:
+        if not observation.ran and observation.error is None:
             continue
-        try:
-            observations = await daemon_write_coordinator().run_sync(
-                WAL_CHECKPOINT_ACTOR,
-                checkpoint_archive_wals,
-                root,
-                reason="periodic",
-                escalation="recurring",
-                collect_blockers=True,
-            )
-            for observation in observations:
-                if not observation.ran and observation.error is None:
-                    continue
-                failed = observation.error is not None
-                blockers = ",".join(observation.blocking_processes[:5])
-                emit(
-                    "daemon.wal_checkpoint.observed",
-                    level=WARNING if failed else INFO,
-                    outcome="error" if failed else ("degraded" if observation.busy_pages else "ok"),
-                    reason="checkpoint_error"
-                    if failed
-                    else ("reader_held_frames" if observation.busy_pages else "clean"),
-                    loop="wal checkpoint",
-                    mode=str(observation.mode),
-                    bytes_before=observation.wal_bytes_before,
-                    bytes_after=observation.wal_bytes_after,
-                    busy_pages=observation.busy_pages,
-                    checkpointed_pages=observation.checkpointed_pages,
-                    duration_ms=round(observation.elapsed_s * 1000, 3),
-                    budget_ms=round(CHECKPOINT_HOLD_BUDGET_S * 1000, 3),
-                    error_detail=f"{observation.error or ''} blockers={blockers}".strip(),
-                )
-        except Exception as exc:
-            emit(
-                "daemon.wal_checkpoint.failed",
-                level=WARNING,
-                outcome="error",
-                loop="wal checkpoint",
-                root=root,
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
+        failed = observation.error is not None
+        blockers = ",".join(observation.blocking_processes[:5])
+        emit(
+            "daemon.wal_checkpoint.observed",
+            level=WARNING if failed else INFO,
+            outcome="error" if failed else ("degraded" if observation.busy_pages else "ok"),
+            reason="checkpoint_error" if failed else ("reader_held_frames" if observation.busy_pages else "clean"),
+            loop="wal checkpoint",
+            mode=str(observation.mode),
+            bytes_before=observation.wal_bytes_before,
+            bytes_after=observation.wal_bytes_after,
+            busy_pages=observation.busy_pages,
+            checkpointed_pages=observation.checkpointed_pages,
+            duration_ms=round(observation.elapsed_s * 1000, 3),
+            budget_ms=round(CHECKPOINT_HOLD_BUDGET_S * 1000, 3),
+            error_detail=f"{observation.error or ''} blockers={blockers}".strip(),
+        )
 
 
 async def _periodic_status_snapshot_refresh() -> None:
     """Refresh the rich daemon status snapshot outside request handlers."""
     from polylogue.daemon.status_snapshot import refresh_status_snapshot
 
-    while True:
-        try:
-            await asyncio.to_thread(refresh_status_snapshot)
-        except Exception as exc:
-            emit(
-                "daemon.status_snapshot.refresh_failed",
-                level=WARNING,
-                outcome="error",
-                loop="status snapshot refresh",
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-        await asyncio.sleep(10)
+    await daemon_periodic_runner().run(
+        "status_snapshot_refresh",
+        lambda: asyncio.to_thread(refresh_status_snapshot),
+        interval_s=_STATUS_SNAPSHOT_REFRESH_INTERVAL_SECONDS,
+        # Every surface reads this snapshot: publish one before the first sleep
+        # so a fresh daemon is never serving an absent snapshot for a cadence.
+        run_first=True,
+        error_event="daemon.status_snapshot.refresh_failed",
+    )
 
 
 async def _run_drive_source_catchup_once(
@@ -739,44 +763,45 @@ async def _periodic_drive_source_catchup(
     gets the single archive writer before remote download/index work.  The
     gate is deliberately absent for maintenance-only callers.
     """
-    await _await_catch_up_gate(catch_up_complete, loop_name="drive source catch-up")
 
-    while True:
+    async def once() -> None:
         changed = await _run_drive_source_catchup_safely(session_profile_callback)
         if changed:
             emit("daemon.drive_catchup.refreshed", outcome="ok", loop="drive source catch-up", changed=changed)
-        await asyncio.sleep(_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS)
+
+    await daemon_periodic_runner().run(
+        "drive_source_catchup",
+        once,
+        interval_s=_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS,
+        gate=catch_up_gate(catch_up_complete),
+        run_first=True,
+    )
 
 
 async def _periodic_heartbeat(*, sources: tuple[WatchSource, ...] = ()) -> None:
     """Log daemon heartbeat with archive stats every 15 minutes."""
     if not sources:
         sources = default_sources()
-    while True:
-        await asyncio.sleep(900)  # 15 minutes
+
+    async def once() -> None:
         db = _active_index_db_path()
-        if not db.exists():
-            continue
-        try:
-            n_sessions, n_messages, _noun = await asyncio.to_thread(_heartbeat_counts, db)
-            emit(
-                "daemon.heartbeat.indexed",
-                outcome="ok",
-                loop="heartbeat",
-                sessions=n_sessions,
-                messages=n_messages,
-            )
-        except Exception as exc:
-            emit(
-                "daemon.heartbeat.query_failed",
-                level=WARNING,
-                outcome="error",
-                loop="heartbeat",
-                path=db,
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
+        n_sessions, n_messages, _noun = await asyncio.to_thread(_heartbeat_counts, db)
+        emit(
+            "daemon.heartbeat.indexed",
+            outcome="ok",
+            loop="heartbeat",
+            sessions=n_sessions,
+            messages=n_messages,
+        )
         await asyncio.to_thread(_log_spool_depth_if_notable)
+
+    await daemon_periodic_runner().run(
+        "heartbeat",
+        once,
+        interval_s=_HEARTBEAT_INTERVAL_SECONDS,
+        precondition=lambda: _active_index_db_path().exists(),
+        error_event="daemon.heartbeat.query_failed",
+    )
 
 
 _BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP = 2000
@@ -850,24 +875,19 @@ async def _periodic_lifecycle_heartbeat(*, interval_s: float | None = None) -> N
     from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_INTERVAL_SECONDS
 
     interval = DAEMON_HEARTBEAT_INTERVAL_SECONDS if interval_s is None else interval_s
-    while True:
-        await asyncio.sleep(interval)
+
+    async def once() -> None:
         lifecycle = _daemon_lifecycle
-        if lifecycle is None:
-            continue
-        try:
-            await daemon_write_coordinator().run_sync("daemon.lifecycle.heartbeat", lifecycle.heartbeat)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            emit(
-                "daemon.lifecycle_heartbeat.write_failed",
-                level=WARNING,
-                outcome="error",
-                loop="lifecycle heartbeat",
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
+        assert lifecycle is not None  # guarded by the precondition below
+        await daemon_write_coordinator().run_sync("daemon.lifecycle.heartbeat", lifecycle.heartbeat)
+
+    await daemon_periodic_runner().run(
+        "lifecycle_heartbeat",
+        once,
+        interval_s=interval,
+        precondition=lambda: _daemon_lifecycle is not None,
+        error_event="daemon.lifecycle_heartbeat.write_failed",
+    )
 
 
 async def _periodic_db_optimize() -> None:
@@ -883,40 +903,36 @@ async def _periodic_db_optimize() -> None:
     from polylogue.paths import archive_root
     from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
 
-    while True:
-        await asyncio.sleep(86_400)  # 24 hours; no startup optimize.
+    async def once() -> None:
         root = archive_root()
-        if not root.exists():
-            continue
-        try:
-            observations = await daemon_write_coordinator().run_sync(
-                "maintenance.db_optimize",
-                maybe_optimize_archive_tiers,
-                root,
-                reason="periodic",
-            )
-            ran = sum(1 for observation in observations if observation.ran)
-            errors = [observation.error for observation in observations if observation.error]
-            emit(
-                "daemon.db_optimize.completed",
-                level=WARNING if errors else INFO,
-                outcome="degraded" if errors else "ok",
-                reason="tier_errors" if errors else "complete",
-                loop="db optimize",
-                tiers=ran,
-                errors=len(errors),
-                error_detail="; ".join(str(error) for error in errors) if errors else "",
-            )
-        except Exception as exc:
-            emit(
-                "daemon.db_optimize.failed",
-                level=WARNING,
-                outcome="error",
-                loop="db optimize",
-                root=root,
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
+        observations = await daemon_write_coordinator().run_sync(
+            "maintenance.db_optimize",
+            maybe_optimize_archive_tiers,
+            root,
+            reason="periodic",
+        )
+        ran = sum(1 for observation in observations if observation.ran)
+        errors = [observation.error for observation in observations if observation.error]
+        emit(
+            "daemon.db_optimize.completed",
+            level=WARNING if errors else INFO,
+            outcome="degraded" if errors else "ok",
+            reason="tier_errors" if errors else "complete",
+            loop="db optimize",
+            tiers=ran,
+            errors=len(errors),
+            error_detail="; ".join(str(error) for error in errors) if errors else "",
+        )
+
+    await daemon_periodic_runner().run(
+        "db_optimize",
+        once,
+        # Deliberately no startup optimize: a large archive must not pay broad
+        # read IO at the moment live catch-up needs the disk.
+        interval_s=_DB_OPTIMIZE_INTERVAL_SECONDS,
+        precondition=_archive_root_exists,
+        error_event="daemon.db_optimize.failed",
+    )
 
 
 async def _periodic_convergence_check(
@@ -935,14 +951,21 @@ async def _periodic_convergence_check(
     chunks.
     """
     db = _active_index_db_path()
-    await _await_catch_up_gate(catch_up_complete, loop_name="convergence debt retry")
-    while True:
+
+    async def once() -> None:
         await _retry_convergence_debt_once(db)
         if catch_up_active is None or not catch_up_active():
             await fts_owner.converge()
             if session_profile_callback is not None:
                 await session_profile_callback(None)
-        await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
+
+    await daemon_periodic_runner().run(
+        "convergence_check",
+        once,
+        interval_s=_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS,
+        gate=catch_up_gate(catch_up_complete),
+        run_first=True,
+    )
 
 
 async def _retry_convergence_debt_once(db: Path) -> None:
@@ -965,10 +988,14 @@ async def _retry_convergence_debt_once(db: Path) -> None:
         span("daemon.convergence_debt.pass", loop="convergence debt retry", path=db) as pass_span,
     ):
         try:
-            repaired = await daemon_write_coordinator().run_sync(
-                "maintenance.convergence_debt",
-                _drain_convergence_debt_once,
-                db,
+            # The drain builds the stage set (which resolves the configured
+            # Sinex transport) and walks it. Neither may happen under the
+            # writer lease (polylogue-ssplv): each stage bridges its own short
+            # write back through the admission bound here.
+            repaired = await asyncio.to_thread(
+                _run_with_stage_admission,
+                _daemon_stage_write_admission(),
+                partial(_drain_convergence_debt_once, db),
             )
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
@@ -993,26 +1020,24 @@ async def _periodic_raw_materialization_convergence(
     raw_intake_discovery: Any | None = None,
 ) -> None:
     """Wake the canonical bounded raw-observation intake after catch-up."""
-    await _await_catch_up_gate(catch_up_complete, loop_name="raw materialization convergence")
     if raw_observation_owner is None or raw_intake_wakeup is None or raw_intake_discovery is None:
         raise RuntimeError("raw materialization requires the canonical observation owner, discovery, and intake wakeup")
-    while True:
+
+    async def once() -> None:
         raw_intake_wakeup.set()
-        try:
-            await _maybe_run_raw_materialization_whale_pass(
-                raw_observation_owner=raw_observation_owner,
-                raw_intake_discovery=raw_intake_discovery,
-            )
-        except Exception as exc:
-            emit(
-                "daemon.raw_materialization.whale_schedule_failed",
-                level=WARNING,
-                outcome="error",
-                loop="raw materialization convergence",
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-        await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
+        await _maybe_run_raw_materialization_whale_pass(
+            raw_observation_owner=raw_observation_owner,
+            raw_intake_discovery=raw_intake_discovery,
+        )
+
+    await daemon_periodic_runner().run(
+        "raw_observation_convergence",
+        once,
+        interval_s=_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS,
+        gate=catch_up_gate(catch_up_complete),
+        run_first=True,
+        error_event="daemon.raw_materialization.whale_schedule_failed",
+    )
 
 
 async def _bridge_catch_up_complete(
@@ -1587,6 +1612,28 @@ def _browser_capture_spool_has_pending_files() -> bool:
     return False
 
 
+def _daemon_stage_write_admission() -> StageWriteAdmission:
+    """Admission that hands one stage's write section to the daemon writer.
+
+    The ``None`` timeout is deliberate: the coordinator owns the worker thread
+    until the transaction really returns, so a caller-side timeout can never
+    admit a second archive writer for the same partition.
+    """
+    coordinator = daemon_write_coordinator()
+    loop = asyncio.get_running_loop()
+
+    def admission(actor: str, work: Callable[[], Any]) -> Any:
+        return asyncio.run_coroutine_threadsafe(coordinator.run_sync(actor, work), loop).result()
+
+    return admission
+
+
+def _run_with_stage_admission(admission: StageWriteAdmission, work: Callable[[], T]) -> T:
+    """Run ``work`` on this thread with the stage writer admission bound."""
+    with stage_write_admission(admission):
+        return work()
+
+
 def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT) -> int:
     """Retry due derived convergence debt without rereading source payloads.
 
@@ -1597,7 +1644,6 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     """
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
-    from polylogue.sources.live.convergence_debt import is_deferred_stage_state
     from polylogue.sources.live.cursor import CursorStore
 
     cursor = CursorStore(db)
@@ -1658,6 +1704,20 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
             subject_states.update(
                 ((stage_name, "session_id", session_id), state) for session_id, state in session_states.items()
             )
+
+    return admit_stage_write(
+        "maintenance.convergence_debt.ledger",
+        partial(_record_convergence_debt_retries, cursor, due_debt, subject_states),
+    )
+
+
+def _record_convergence_debt_retries(
+    cursor: CursorStore,
+    due_debt: Sequence[Any],
+    subject_states: dict[tuple[str, str, str], object],
+) -> int:
+    """Update the ops debt ledger for one drained pass. The only write here."""
+    from polylogue.sources.live.convergence_debt import is_deferred_stage_state
 
     retried = 0
     for debt in due_debt:
@@ -1749,34 +1809,29 @@ async def _periodic_health_check() -> None:
     Health check tiers and interval are read from PolylogueConfig.
     Notifications are sent through the configured notification backend.
     """
-    while True:
+
+    async def once() -> None:
         from polylogue.config import load_polylogue_config
+        from polylogue.daemon.health import check_health
+        from polylogue.daemon.notifications import send_notifications
 
         cfg = load_polylogue_config()
-        interval = cfg.health_check_interval_s
-        tiers = resolve_health_tiers(cfg.health_check_tiers)
+        health = await daemon_write_coordinator().run_sync(
+            "maintenance.health_check",
+            check_health,
+            tiers=resolve_health_tiers(cfg.health_check_tiers),
+        )
+        if health.overall_status != "ok":
+            send_notifications(health.alerts, config=cfg.raw)
 
-        await asyncio.sleep(interval)
-        try:
-            from polylogue.daemon.health import check_health
-            from polylogue.daemon.notifications import send_notifications
-
-            health = await daemon_write_coordinator().run_sync(
-                "maintenance.health_check",
-                check_health,
-                tiers=tiers,
-            )
-            if health.overall_status != "ok":
-                send_notifications(health.alerts, config=cfg.raw)
-        except Exception as exc:
-            emit(
-                "daemon.health_check.failed",
-                level=WARNING,
-                outcome="error",
-                loop="health check",
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
+    await daemon_periodic_runner().run(
+        "health_check",
+        once,
+        # The cadence is operator config and may change while the daemon runs,
+        # so it is re-read each tick rather than captured at registration.
+        interval_s=_health_check_interval_s,
+        error_event="daemon.health_check.failed",
+    )
 
 
 def _acquire_pidfile(pidfile: Path) -> int:
@@ -2723,6 +2778,20 @@ async def _run_daemon_services_under_active_writer_lease(
                 )
             catch_up_complete_gate = asyncio.Event() if enable_watch else None
             gate = catch_up_complete_gate
+            # One real producer/consumer pair on the in-process bus
+            # (polylogue-14t7): the post-commit write effect announces a
+            # committed ingest, and the embedding backlog loop wakes on it
+            # instead of sleeping out its whole poll interval. The publish
+            # happens on the writer's worker thread, so the hand-off to the
+            # loop must go through the event loop rather than touch the
+            # asyncio.Event directly.
+            ingest_wakeup = asyncio.Event()
+            _loop = asyncio.get_running_loop()
+
+            def _wake_on_ingest(_event: IngestCommitted) -> None:
+                _loop.call_soon_threadsafe(ingest_wakeup.set)
+
+            daemon_event_bus().subscribe(IngestCommitted, _wake_on_ingest)
             periodic_services: tuple[tuple[str, Callable[[], Coroutine[Any, Any, None]]], ...] = (
                 (
                     "convergence_check",
@@ -2749,7 +2818,9 @@ async def _run_daemon_services_under_active_writer_lease(
                 (
                     "embedding_backlog",
                     lambda: periodic_embedding_backlog_check(
-                        catch_up_complete=gate, converge=embedding_convergence.callback
+                        catch_up_complete=gate,
+                        converge=embedding_convergence.callback,
+                        wakeup=ingest_wakeup,
                     ),
                 ),
                 (

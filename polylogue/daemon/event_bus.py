@@ -181,6 +181,29 @@ class EventBus:
         return len(self._subscribers.get(event_type, ()))
 
 
+_BUS: EventBus | None = None
+
+
+def daemon_event_bus() -> EventBus:
+    """The one bus shared for this daemon process' lifetime.
+
+    A process-global accessor rather than a threaded argument because the
+    producer is a declared archive write effect: the write choke point has no
+    daemon composition object to receive an injected bus, and publishing is
+    best-effort by contract, so an absent daemon simply has no subscribers.
+    """
+    global _BUS
+    if _BUS is None:
+        _BUS = EventBus()
+    return _BUS
+
+
+def reset_daemon_event_bus() -> None:
+    """Drop the process bus. For daemon composition and tests only."""
+    global _BUS
+    _BUS = None
+
+
 __all__ = [
     "BlobLeaseReleased",
     "ConvergenceStateChanged",
@@ -190,4 +213,6 @@ __all__ = [
     "EventBus",
     "EventHandler",
     "IngestCommitted",
+    "daemon_event_bus",
+    "reset_daemon_event_bus",
 ]

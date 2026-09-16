@@ -41,7 +41,13 @@ Session counters share one thirteen-measure declaration. Canonical writes recomp
 
 The generic stage engine remains for optional Sinex publication, raw-authority cache warming, attachment acquisition, Claude workflow, delegation evidence and standing queries. It still has path/session callbacks, barriers and stage state. Removing these requires moving each surviving product responsibility to its owner; the domain adoption does not establish complete stage retirement (`polylogue/daemon/convergence_stages.py:526-563`; `polylogue/daemon/convergence.py:733-764`).
 
+The stage walk itself runs off the writer lease. Each stage declares how it reaches the writer: `bridged` means it computes, downloads and drains outside admission and brackets only its short publication with `admit_stage_write`; `whole_execute` is the named residual for a stage that has not split compute from publication yet, and the engine holds the writer across its whole `execute`. Read the field, not the caller's control flow, to know which a stage is (`polylogue/daemon/convergence.py:704-712`; `polylogue/daemon/convergence.py:778-785`; `polylogue/core/stage_admission.py:59-70`). The live-ingest and catch-up callers defer the pass until their coordinated region has released the writer (`polylogue/sources/live/watcher.py:2428-2440`).
+
 `convergence_debt` remains disposable retry state for those surviving stage callers. FTS, embeddings, raw parsing and session profiles no longer use its stage rows as publication authority (`polylogue/daemon/cli.py:1614-1636`; `polylogue/sources/live/convergence_outcome.py:1`).
+
+## Cadence loops
+
+Every declared `PERIODIC` service runs through one runner rather than its own `while True`. The runner owns the sleep order (`run_first`), the existence guard (`precondition`, a recorded skip rather than a silent `continue`), the error policy (`record` keeps the cadence, `propagate` lets a schema-recovery signal reach the supervisor), jitter, and the startup gate. Per-loop last-run, next-due, last-error, skip and wakeup counts are the payload the status and metrics surfaces render, so an idle loop and a frozen one are distinguishable from outside the process (`polylogue/daemon/periodic.py:131-146`; `polylogue/daemon/periodic.py:159-171`). A loop given a `wakeup` event shortens its wait when the in-process bus announces a committed write; the declared interval stays as its reconciliation tick, because bus delivery is an optimization and never authority (`polylogue/daemon/event_bus.py:29-46`).
 
 ## Readiness and intake
 
