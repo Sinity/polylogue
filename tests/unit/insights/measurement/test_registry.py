@@ -104,10 +104,9 @@ def test_composition_rejects_fake_evidence_payloads() -> None:
 
 
 def test_production_registry_contains_existing_measure_families() -> None:
-    assert len(DEFAULT_MEASURE_REGISTRY) >= 5
+    assert len(DEFAULT_MEASURE_REGISTRY) >= 4
     assert {spec.name for spec in DEFAULT_MEASURE_REGISTRY} >= {
         "session_cost_usd",
-        "plan_completion_rate",
         "tool_calls",
         "message_count",
         "wall_duration_ms",

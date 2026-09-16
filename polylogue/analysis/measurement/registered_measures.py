@@ -42,13 +42,6 @@ SESSION_COST_MEASURE = _measure(
     authority=("provider-reported", "catalog-estimated"),
     tier="mixed provider/catalog",
 )
-PLAN_COMPLETION_MEASURE = _measure(
-    "plan_completion_rate",
-    "completed items divided by planned Claude Code TODO items",
-    "ratio",
-    "todo_states",
-    "mean",
-)
 TOOL_CALLS_MEASURE = _measure("tool_calls", "structural tool calls per logical session", "count", "actions", "count")
 MESSAGE_COUNT_MEASURE = _measure("message_count", "messages per logical session", "count", "messages", "count")
 WALL_DURATION_MEASURE = _measure(
@@ -59,7 +52,6 @@ WALL_DURATION_MEASURE = _measure(
 DEFAULT_MEASURE_REGISTRY = MeasureRegistry()
 for _spec in (
     SESSION_COST_MEASURE,
-    PLAN_COMPLETION_MEASURE,
     TOOL_CALLS_MEASURE,
     MESSAGE_COUNT_MEASURE,
     WALL_DURATION_MEASURE,
@@ -70,7 +62,6 @@ for _spec in (
 __all__ = [
     "DEFAULT_MEASURE_REGISTRY",
     "MESSAGE_COUNT_MEASURE",
-    "PLAN_COMPLETION_MEASURE",
     "SESSION_COST_MEASURE",
     "TOOL_CALLS_MEASURE",
     "WALL_DURATION_MEASURE",
