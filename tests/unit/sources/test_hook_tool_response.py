@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider, Role
 from polylogue.sources.live.hook_tool_response import (
     BASH_STDOUT_CAP_CHARS,
@@ -297,3 +299,30 @@ def test_a_session_with_no_truncation_is_returned_untouched(tmp_path: Path) -> N
     """
     session = _session(_tool_result("toolu_DONE", "the sidecar join already put the whole output here"))
     assert recover_persisted_tool_results(session, archive_root=tmp_path / "absent") is session
+
+
+def test_failed_hook_recovery_is_reported_not_swallowed_at_debug(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    """A failed tool-result recovery changes the durable content hash.
+
+    ``_with_hook_recovered_tool_results`` returns the un-recovered session on
+    failure and ``session_content_hash`` is taken from whatever it returns, so
+    a swallowed failure stores a different hash than the recovered path would
+    with nothing to say why (polylogue-3r36h). Restoring the debug-level
+    swallow turns this red.
+    """
+    import polylogue.pipeline.services.ingest_worker as ingest_worker
+    import polylogue.sources.live.hook_tool_response as hook_tool_response
+
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("hook spool unreadable")
+
+    monkeypatch.setattr(hook_tool_response, "recover_persisted_tool_results", refuse)
+    convo = _session(_tool_result("tool-1", _truncated_inline("/tmp/whatever")))
+
+    with caplog.at_level("WARNING"):
+        recovered = ingest_worker._with_hook_recovered_tool_results(convo, archive_root=tmp_path)
+
+    assert recovered is convo
+    assert "hook tool_response recovery failed" in caplog.text

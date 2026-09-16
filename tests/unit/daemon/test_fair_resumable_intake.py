@@ -23,6 +23,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.daemon.derivation import DerivationFrame
 from polylogue.daemon.intake import (
+    UNMEASURABLE_INTAKE_COST_BYTES,
     AdmissionOutcome,
     AdmissionResult,
     FairIntakeDispatcher,
@@ -32,6 +33,7 @@ from polylogue.daemon.intake import (
 from polylogue.daemon.observation import ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 from polylogue.operations.intake_adapters import (
+    CallbackIntakeAdapter,
     DaemonIntakeContext,
     FileIntakeAdapter,
     RawMaterializationDiscovery,
@@ -952,3 +954,118 @@ def test_discovery_refusal_is_counted_on_the_class_report() -> None:
     assert report.discovered == 0
     assert report.reason is not None
     assert "/srv/locked" in report.reason
+
+
+def test_raw_discovery_is_an_empty_page_before_the_raw_tier_exists(tmp_path: Path) -> None:
+    """A fresh archive root reports no pending raw work instead of raising.
+
+    polylogue-f7pdm: the daemon used to decide raw-materialization
+    availability once, at startup, from ``source.db`` existing. On the
+    declared build route that file does not exist yet, so the class was never
+    registered for the process lifetime and the whale pass logged a failure
+    every thirty seconds. Discovery owns the absence now.
+
+    Anti-vacuity: removing the missing-tier guard makes this raise
+    ``sqlite3.OperationalError`` rather than return an empty page.
+    """
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+
+    assert not (tmp_path / "source.db").exists()
+    assert discovery.discover_pending_raw_ids(4) == ()
+
+
+def test_raw_discovery_admits_work_once_the_tier_appears_without_a_restart(tmp_path: Path) -> None:
+    """One long-lived discovery re-evaluates availability every pass.
+
+    Anti-vacuity: latching availability at construction -- the startup-only
+    check this bead replaces -- keeps the second call empty and makes this
+    test red.
+    """
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    assert discovery.discover_pending_raw_ids(4) == ()
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"raw-after-bootstrap",
+            source_path="late.json",
+            acquired_at_ms=1,
+        )
+
+    assert [found for found, _cost in discovery.discover_pending_raw_ids(4)] == [raw_id]
+
+
+@pytest.mark.asyncio
+async def test_an_unmeasurable_callback_class_reserves_a_budget_share() -> None:
+    """A remote sync cannot buy a whole pass for one byte.
+
+    polylogue-swicx: ``CallbackIntakeAdapter`` charged the literal ``1``
+    while the deficit is denominated in payload bytes, so an arbitrarily
+    large Drive sync starved its byte-denominated siblings.
+
+    Anti-vacuity: restoring ``estimated_cost=1`` drops the charged estimate
+    to one byte and makes this assertion red.
+    """
+    adapter = CallbackIntakeAdapter("configured_remote", lambda: 1)
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="configured_remote", adapter=cast(Any, adapter))])
+
+    result = await dispatcher.run_once()
+
+    report = result.require_report("configured_remote")
+    assert report.admitted == 1
+    assert report.estimated_cost == UNMEASURABLE_INTAKE_COST_BYTES
+
+
+@pytest.mark.asyncio
+async def test_a_pass_of_only_duplicates_is_not_progress() -> None:
+    """A static source must back off to the idle delay, not spin.
+
+    polylogue-swicx: ``DaemonIntakeService`` sleeps 0.05 s when a pass
+    progressed, so counting re-recognised duplicates as progress re-ran
+    discovery about twenty times a second on a source with nothing new.
+
+    Anti-vacuity: restoring ``admitted or duplicates`` in ``progressed``
+    makes this assertion red.
+    """
+    adapter = FakeAdapter(
+        "codex",
+        ["x0"],
+        outcome_for=lambda _item: AdmissionResult(AdmissionOutcome.DUPLICATE),
+    )
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="codex", adapter=cast(Any, adapter))])
+
+    result = await dispatcher.run_once()
+
+    assert result.require_report("codex").duplicates == 1
+    assert result.progressed is False
+
+
+@pytest.mark.asyncio
+async def test_a_raising_discovery_is_published_unmeasured_not_as_zeros() -> None:
+    """A class that could not look is never a real reading of nothing.
+
+    polylogue-swicx: the dispatcher published the failed class through the
+    measured branch with admitted=duplicates=discovered=0, so status could
+    not distinguish a broken spool from an idle one and the reason was lost.
+
+    Anti-vacuity: publishing this report through ``Observation.measured``
+    again leaves the state ``MEASURED`` and makes this test red.
+    """
+
+    class BrokenAdapter(FakeAdapter):
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+            raise OSError("spool directory vanished")
+
+    board = ObservationBoard()
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="broken", adapter=cast(Any, BrokenAdapter("broken", [])))],
+        board=board,
+    )
+
+    result = await dispatcher.run_once()
+
+    assert result.require_report("broken").discovery_failed is True
+    observation = board.snapshot()["intake.broken"]
+    assert observation.state is ObservationState.FAILED
+    assert "spool directory vanished" in (observation.reason or "")

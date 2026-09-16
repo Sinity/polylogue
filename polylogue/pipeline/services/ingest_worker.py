@@ -31,7 +31,7 @@ from polylogue.archive.raw_payload.decode import (
 )
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.enums import IngestOutcome, Provider, ValidationMode, ValidationStatus
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ingest_outcomes import (
@@ -853,8 +853,18 @@ def _with_hook_recovered_tool_results(convo: ParsedSession, *, archive_root: Pat
     except Exception:
         # Recovery is a best-effort third fallback over evidence the parse
         # itself does not depend on; the un-recovered session is still a
-        # correct parse of the transcript.
-        logger.debug("hook tool_response recovery failed", exc_info=True)
+        # correct parse of the transcript. It is not silent, though: the
+        # session content hash is taken from whichever session this returns,
+        # so a failure here durably stores a different hash than the
+        # recovered path would have, and only this line says why
+        # (polylogue-3r36h).
+        emit(
+            "pipeline.hook_tool_response.recovery_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="the un-recovered session is stored, so its durable content hash is the un-recovered one",
+            session_id=convo.provider_session_id,
+        )
         return convo
 
 

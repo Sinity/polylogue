@@ -53,7 +53,14 @@ from pathlib import Path
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import WARNING, emit
-from polylogue.sources.live.tool_result_sidecars import SidecarDebt, SidecarJoinResult, SidecarMatch
+from polylogue.sources.live.tool_result_sidecars import (
+    _MAX_SIDECAR_AGGREGATE_BYTES,
+    _MAX_SIDECAR_FILE_BYTES,
+    _SIDECAR_SIZE_EXCEEDED,
+    SidecarDebt,
+    SidecarJoinResult,
+    SidecarMatch,
+)
 from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope
 
 # The envelope's pointer line, and the bare path as it also appears inside the
@@ -200,6 +207,7 @@ def join_gemini_tool_output_sidecars(payload: JSONDocument, scope: RetainedSidec
     matched: list[SidecarMatch] = []
     debt: list[SidecarDebt] = []
     present: set[str] = set()
+    aggregate_bytes = 0
     for entry in sorted(scope.files, key=lambda candidate: candidate.filename):
         present.add(entry.filename)
         byte_size = entry.byte_size
@@ -218,6 +226,19 @@ def join_gemini_tool_output_sidecars(payload: JSONDocument, scope: RetainedSidec
             )
             continue
 
+        # polylogue-9k62p: bound the read on the retained row's declared size
+        # rather than materializing whatever the file turns out to hold.
+        if byte_size > _MAX_SIDECAR_FILE_BYTES or aggregate_bytes + byte_size > _MAX_SIDECAR_AGGREGATE_BYTES:
+            debt.append(
+                SidecarDebt(
+                    filename=entry.filename,
+                    byte_size=byte_size,
+                    reason=_SIDECAR_SIZE_EXCEEDED,
+                    file_mtime_ms=file_mtime_ms,
+                )
+            )
+            continue
+
         try:
             full_text = entry.read_text()
         except OSError as exc:
@@ -231,12 +252,13 @@ def join_gemini_tool_output_sidecars(payload: JSONDocument, scope: RetainedSidec
             )
             continue
 
+        aggregate_bytes += byte_size
         inline_len, masked = by_tool_id[tool_id]
         matched.append(
             SidecarMatch(
                 tool_use_id=tool_id,
                 filename=entry.filename,
-                byte_size=len(full_text.encode("utf-8")),
+                byte_size=byte_size,
                 content_hash=hash_text(full_text),
                 was_truncated=masked or len(full_text) > inline_len,
                 full_text=full_text,

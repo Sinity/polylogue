@@ -122,6 +122,25 @@ class QuarantinedAcceptedRawRepairItem:
     repaired: bool = False
 
 
+BROWSER_ORIGIN_READ_FAILED_STATUS = "read_failed"
+
+
+class RawEvidenceReadError(Exception):
+    """A durable blob could not be read or parsed, so nothing was proven.
+
+    polylogue-roaof: a failed read is not a refutation. Swallowing it into the
+    same ``False``/``None`` an exact-mismatch proof returns let an unread blob
+    be reported as "canonical logical source has an incompatible accepted head",
+    from which the reconciler wrote a durable
+    ``conflicting_authority_needs_judgment`` override for a conflict nobody
+    established. This is the retryable channel instead.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 @dataclass(frozen=True, slots=True)
 class BrowserCaptureOriginRepairItem:
     raw_id: str
@@ -215,6 +234,10 @@ class BrowserCanonicalAuthorityConflictReport:
     conflict_count: int
     resolved_count: int
     items: tuple[BrowserCanonicalAuthorityConflictWitness, ...]
+    # polylogue-roaof: raws whose durable evidence could not be read. They are
+    # carried in ``items`` with ``status == BROWSER_ORIGIN_READ_FAILED_STATUS``
+    # and excluded from ``conflict_count`` -- an unread blob proves no conflict.
+    read_failure_count: int = 0
 
 
 def _quarantined_raw_item(raw_id: str, reason: str) -> QuarantinedAcceptedRawRepairItem:
@@ -1351,7 +1374,9 @@ def _canonical_browser_origin_head_is_exact(
             error_type=type(exc).__name__,
             error=str(exc),
         )
-        return False
+        raise RawEvidenceReadError(
+            f"canonical head evidence could not be read or parsed: {type(exc).__name__}: {exc}"
+        ) from exc
     if (
         hashlib.sha256(payload).digest() != blob_hash
         or len(sessions) != 1
@@ -1528,8 +1553,10 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         from polylogue.sources.revision_backfill import _parse_one
 
         sessions = _parse_one(provider, payload, str(raw["source_path"]), archive_root=archive_root)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RawEvidenceReadError(
+            f"semantic canonical head evidence could not be read or parsed: {type(exc).__name__}: {exc}"
+        ) from exc
     membership = memberships[0]
     selected_applications = [application for application in applications if str(application["raw_id"]) == raw_id]
     historical_supersessions = [application for application in applications if str(application["raw_id"]) != raw_id]
@@ -1648,8 +1675,10 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
             historical_sessions = _parse_one(
                 historical_provider, historical_payload, str(historical_raw["source_path"])
             )
-        except (OSError, ValueError, json.JSONDecodeError):
-            return None
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise RawEvidenceReadError(
+                f"historical canonical head evidence could not be read or parsed: {type(exc).__name__}: {exc}"
+            ) from exc
         if (
             len(historical_payload) != historical_blob_size
             or hashlib.sha256(historical_payload).digest() != historical_blob_hash
@@ -2310,13 +2339,23 @@ def _inspect_browser_capture_origin_strategy(
         and envelope["native_id"] is None
         and envelope["revision_authority"] == RawRevisionAuthority.BYTE_PROVEN.value
     )
-    return _inspect_browser_capture_origin_mismatch(
-        archive_root,
-        raw_id,
-        conn=conn,
-        allow_legacy_null_native_id=legacy_null,
-        allow_byte_proven_null_native_id_rekey=byte_proven_null,
-    )
+    try:
+        return _inspect_browser_capture_origin_mismatch(
+            archive_root,
+            raw_id,
+            conn=conn,
+            allow_legacy_null_native_id=legacy_null,
+            allow_byte_proven_null_native_id_rekey=byte_proven_null,
+        )
+    except RawEvidenceReadError as failure:
+        # polylogue-roaof: retryable, and deliberately not ``ineligible`` --
+        # an unread blob refutes nothing, so no caller may derive a durable
+        # judgment from it.
+        return BrowserCaptureOriginRepairItem(
+            raw_id=raw_id,
+            status=BROWSER_ORIGIN_READ_FAILED_STATUS,
+            reason=failure.reason,
+        )
 
 
 def inspect_browser_capture_origin_mismatches(
@@ -2606,6 +2645,7 @@ def inspect_browser_canonical_authority_conflicts(
 
     items: list[BrowserCanonicalAuthorityConflictWitness] = []
     resolved_count = 0
+    read_failure_count = 0
     with closing(open_readonly_connection(index_db)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
@@ -2624,9 +2664,24 @@ def inspect_browser_canonical_authority_conflicts(
             # nothing to roll back -- COMMIT just releases the read lock.
             conn.execute("BEGIN DEFERRED")
             try:
-                base = _inspect_browser_capture_origin_mismatch(
-                    archive_root, raw_id, conn=conn, allow_byte_proven_null_native_id_rekey=True
-                )
+                try:
+                    base = _inspect_browser_capture_origin_mismatch(
+                        archive_root, raw_id, conn=conn, allow_byte_proven_null_native_id_rekey=True
+                    )
+                except RawEvidenceReadError as failure:
+                    # polylogue-roaof: nothing was read, so nothing is proven.
+                    # Report it as its own retryable status rather than as an
+                    # ineligible raw whose reason reads like a proven conflict.
+                    read_failure_count += 1
+                    items.append(
+                        BrowserCanonicalAuthorityConflictWitness(
+                            raw_id=raw_id,
+                            status=BROWSER_ORIGIN_READ_FAILED_STATUS,
+                            reason=failure.reason,
+                            divergence_note="durable evidence was unreadable; retry after the blob is available",
+                        )
+                    )
+                    continue
                 if base.status != "ineligible":
                     resolved_count += 1
                     continue
@@ -2635,9 +2690,10 @@ def inspect_browser_canonical_authority_conflicts(
                 conn.execute("COMMIT")
     return BrowserCanonicalAuthorityConflictReport(
         requested_count=len(raw_ids),
-        conflict_count=len(items),
+        conflict_count=len(items) - read_failure_count,
         resolved_count=resolved_count,
         items=tuple(items),
+        read_failure_count=read_failure_count,
     )
 
 

@@ -17,6 +17,7 @@ from typing import Any, TypeVar, cast
 
 from polylogue.daemon.intake import (
     DEFAULT_INTAKE_BYTE_BUDGET,
+    UNMEASURABLE_INTAKE_COST_BYTES,
     AdmissionOutcome,
     AdmissionResult,
     FairIntakeDispatcher,
@@ -422,14 +423,21 @@ def _persist_hook_record(archive_root: Path, path: Path, record: dict[str, objec
 
 
 class CallbackIntakeAdapter(IntakeAdapter):
-    """One-shot bounded remote/raw adapter around an existing domain route."""
+    """One-shot bounded remote/raw adapter around an existing domain route.
+
+    The wrapped route reports a changed-row count, not payload bytes, so it
+    has no honest estimate in the dispatcher's unit. It therefore charges
+    ``UNMEASURABLE_INTAKE_COST_BYTES`` -- a full budget share -- rather than
+    the literal one byte that let a large remote sync starve its siblings
+    (polylogue-swicx).
+    """
 
     def __init__(
         self,
         class_name: str,
         callback: Callable[[], Awaitable[AdmissionResult | int] | AdmissionResult | int],
         *,
-        estimated_cost: int = 1,
+        estimated_cost: int = UNMEASURABLE_INTAKE_COST_BYTES,
         persistent: bool = True,
     ) -> None:
         self.class_name = class_name
@@ -554,6 +562,14 @@ class RawMaterializationDiscovery:
         rows rather than guessed by the adapter.
         """
         if limit <= 0:
+            return ()
+        if not (self._archive_root / "source.db").exists():
+            # polylogue-f7pdm: a fresh archive root simply has no raw tier
+            # yet. That is an empty page, not a failure: the tier appears as
+            # soon as the first acquisition commits and the next pass
+            # discovers it. Reporting it as an error here is what made the
+            # daemon latch raw materialization off for its whole lifetime and
+            # log a whale-schedule warning every 30 s on an empty root.
             return ()
         from polylogue.operations.operation_context import open_operation_read
         from polylogue.operations.raw_observation_derivation import raw_observation_frame

@@ -110,6 +110,20 @@ _HOOK_FILE_PREFIX = "hook-"
 #: lost" looks like from the transcript's side (polylogue-cq1ql).
 _EXPECTED_SIDECAR_ABSENT = "expected_sidecar_not_retained"
 
+#: A retained sidecar whose declared size exceeds the join's read bounds.
+#: polylogue-9k62p: the join used to read every matched file with no ceiling,
+#: so a single pathological sidecar (or a directory of them) was materialized
+#: in full -- durably re-triggered on every replay of the retained raw. An
+#: oversize sidecar is now a named, retryable gap instead of an allocation.
+_SIDECAR_SIZE_EXCEEDED = "size_exceeded"
+
+#: Read bounds on one join. Sized well above real Claude Code sidecars (the
+#: live corpus tops out in the low tens of MiB across a whole session) and far
+#: below the per-member acquisition ceiling, so ordinary evidence still joins
+#: and only a pathological input is refused.
+_MAX_SIDECAR_FILE_BYTES = 64 * 1024 * 1024
+_MAX_SIDECAR_AGGREGATE_BYTES = 256 * 1024 * 1024
+
 
 @dataclass(frozen=True)
 class SidecarMatch:
@@ -346,9 +360,8 @@ def _session_scoped_join(
             for basename, tool_use_id in sibling_by_name.items():
                 union_by_name.setdefault(basename, tool_use_id)
 
-        union_result = _join_from_index(union_by_id, union_by_name, scope, own_by_name)
-        matched = tuple(match for match in union_result.matched if match.tool_use_id in own_by_id)
-        return SidecarJoinResult(matched=matched, debt=union_result.debt)
+        union_result = _join_from_index(union_by_id, union_by_name, scope, own_by_name, owned_by_tool_use_id=own_by_id)
+        return union_result
 
     # A subagent transcript doesn't own the shared scope: it never originates
     # file-level debt for files it doesn't recognize, only matches for its own.
@@ -366,6 +379,8 @@ def _join_from_index(
     by_persisted_name: dict[str, str],
     scope: RetainedSidecarScope,
     expected_by_persisted_name: dict[str, str],
+    *,
+    owned_by_tool_use_id: dict[str, tuple[int, bool]] | None = None,
 ) -> SidecarJoinResult:
     """Join one ownership index against the files ``scope`` retained.
 
@@ -376,6 +391,17 @@ def _join_from_index(
     ``expected_sidecar_not_retained`` outcome rather than silence. Reported
     only when the scope resolved at all -- an unresolved scope is "we never
     observed this directory", which is not evidence that anything is missing.
+
+    ``owned_by_tool_use_id`` is the index of the transcript being parsed, used
+    to decide which files this pass *reads*. polylogue-9k62p: the root
+    transcript used to join against the sibling union -- reading and retaining
+    every matched file -- and only then drop the ones it did not own. Union
+    membership now decides debt classification only; a file owned by a sibling
+    is skipped unread, and its id still suppresses that sibling's expected
+    pointer debt. Reads are additionally bounded by
+    ``_MAX_SIDECAR_FILE_BYTES``/``_MAX_SIDECAR_AGGREGATE_BYTES`` against the
+    retained row's declared ``byte_size``, so an oversize sidecar is recorded
+    as ``size_exceeded`` debt rather than materialized.
     """
     if not scope.available:
         return SidecarJoinResult()
@@ -383,6 +409,10 @@ def _join_from_index(
     matched: list[SidecarMatch] = []
     debt: list[SidecarDebt] = []
     present: set[str] = set()
+    # Ids whose file was located in this scope, whether or not this transcript
+    # read it: a pointer whose call resolved anywhere is not missing evidence.
+    resolved_ids: set[str] = set()
+    aggregate_bytes = 0
 
     for entry in sorted(scope.files, key=lambda candidate: candidate.filename):
         name = entry.filename
@@ -406,6 +436,23 @@ def _join_from_index(
             )
             continue
 
+        resolved_ids.add(tool_use_id)
+        if owned_by_tool_use_id is not None and tool_use_id not in owned_by_tool_use_id:
+            # Owned by a sibling transcript: it is neither this transcript's
+            # match nor its debt, so it is never read here.
+            continue
+
+        if byte_size > _MAX_SIDECAR_FILE_BYTES or aggregate_bytes + byte_size > _MAX_SIDECAR_AGGREGATE_BYTES:
+            debt.append(
+                SidecarDebt(
+                    filename=name,
+                    byte_size=byte_size,
+                    reason=_SIDECAR_SIZE_EXCEEDED,
+                    file_mtime_ms=file_mtime_ms,
+                )
+            )
+            continue
+
         try:
             full_text = entry.read_text()
         except OSError as exc:
@@ -419,12 +466,13 @@ def _join_from_index(
             )
             continue
 
+        aggregate_bytes += byte_size
         inline_len, is_truncated = by_tool_use_id[tool_use_id]
         matched.append(
             SidecarMatch(
                 tool_use_id=tool_use_id,
                 filename=name,
-                byte_size=len(full_text.encode("utf-8")),
+                byte_size=byte_size,
                 content_hash=hash_text(full_text),
                 was_truncated=is_truncated or len(full_text) > inline_len,
                 full_text=full_text,
@@ -432,11 +480,10 @@ def _join_from_index(
             )
         )
 
-    matched_ids = {match.tool_use_id for match in matched}
     for expected_name, expected_tool_use_id in sorted(expected_by_persisted_name.items()):
         if expected_name in present or expected_name.startswith(_HOOK_FILE_PREFIX):
             continue
-        if expected_tool_use_id in matched_ids:
+        if expected_tool_use_id in resolved_ids:
             # The same call's output was recovered under the name the provider
             # actually wrote. A preview can cite a spelling that was never a
             # file, so a pointer whose call already resolved is not evidence

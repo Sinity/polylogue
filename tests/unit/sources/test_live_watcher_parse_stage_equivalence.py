@@ -321,3 +321,68 @@ async def test_unknown_mixed_jsonl_prefetch_falls_back_to_strict_decode(tmp_path
     lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
     assert lifecycle.terminal == 1
     assert lifecycle.unexplained == 0
+
+
+def test_shard_build_failure_is_counted_not_only_logged_per_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A systematic shard-build failure must be countable, not per-file noise.
+
+    Every failed shard build falls back to per-row binding, which is correct
+    but silently removes the polylogue-bp12n.6 benefit; only a counter makes a
+    systematic failure distinguishable from an occasional one
+    (polylogue-3r36h). Restoring the count-free fallback (dropping
+    ``shard_build_failure_count``) turns this red.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    def refuse_shard(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("shard build refused")
+
+    monkeypatch.setattr(parse_prefetch, "prepare_session_shard", refuse_shard)
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=3)
+    stage = LiveParseStage(max_workers=2, max_inflight_bytes=10_000_000, shard_directory=tmp_path / "parse-shards")
+    try:
+        candidates = _live_parse_stage_candidates(paths, fallback_provider=Provider.CODEX)
+        assert stage.warm(candidates) == len(paths)
+    finally:
+        stage.shutdown()
+
+    assert stage.shard_build_failure_count == len(paths)
+
+
+def test_warm_timeout_cancels_the_workers_it_stopped_waiting_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A timed-out warm() must not leave its unstarted work queued.
+
+    ``warm()`` used to return on timeout without cancelling or draining its
+    futures, so unstarted workers still ran later against a cache nobody was
+    waiting for (polylogue-3r36h). Removing the cancellation turns this red:
+    the log reports ``cancelled 0 unstarted worker(s)``.
+    """
+    import threading
+
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    release = threading.Event()
+    real_worker = parse_prefetch.live_parse_and_shard_worker
+
+    def blocking_worker(*args: object, **kwargs: object) -> object:
+        release.wait(30.0)
+        return real_worker(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_and_shard_worker", blocking_worker)
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=3)
+    stage = LiveParseStage(max_workers=1, max_inflight_bytes=10_000_000, warm_timeout_seconds=0.2)
+    try:
+        candidates = _live_parse_stage_candidates(paths, fallback_provider=Provider.CODEX)
+        with caplog.at_level("WARNING"):
+            assert stage.warm(candidates) == 0
+    finally:
+        release.set()
+        stage.shutdown()
+
+    assert "cancelled 2 unstarted worker(s)" in caplog.text
