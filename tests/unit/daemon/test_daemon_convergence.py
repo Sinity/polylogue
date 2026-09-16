@@ -363,9 +363,12 @@ def test_converge_batch_chunk_scope_skips_whole_archive_stages(tmp_path: Path) -
     assert archive_wide_checks == []
     assert archive_wide_runs == []
     assert scoped_runs == [tuple(paths)]
-    assert all(state.stages["graph"] is StageState.SKIPPED for state in chunk_states.values())
+    assert all(state.stages["graph"] is StageState.NOT_RUN for state in chunk_states.values())
     assert all(state.stages["derived"] is StageState.DONE for state in chunk_states.values())
-    assert all(state.converged for state in chunk_states.values())
+    # polylogue-tjtua: a stage this pass deliberately did not run is not a
+    # converged stage. Anti-vacuity: restoring ``StageState.SKIPPED`` here (or
+    # admitting NOT_RUN into ``FileState.converged``) makes this red.
+    assert not any(state.converged for state in chunk_states.values())
     assert "graph" not in chunk_timings
     assert "derived.check" in chunk_timings
 

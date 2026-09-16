@@ -1248,7 +1248,12 @@ class LiveBatchProcessor:
                     current_path=source_paths[0] if source_paths else None,
                 )
                 convergence_debt: list[ConvergenceDebt] = []
-                if full_result.changed_session_count and not defer_convergence:
+                # Clearing convergence debt is only honest when a convergence
+                # pass actually ran: a re-observed file with no session changes
+                # executes zero stages, and recording an empty outcome would
+                # delete every stage's debt for the path (polylogue-zbzxs).
+                convergence_ran = bool(full_result.changed_session_count) and not defer_convergence
+                if convergence_ran:
                     _converged_paths, elapsed, timings, convergence_debt = await self._run_sync(
                         "watcher.live_ingest.full_convergence",
                         self._converge_paths,
@@ -1280,7 +1285,7 @@ class LiveBatchProcessor:
                     )
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
-                    if not defer_convergence and not _source_tier_acquisition_required():
+                    if convergence_ran and not _source_tier_acquisition_required():
                         self._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
                 for path in full_result.failed:
                     failed_paths.append(str(path))

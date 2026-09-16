@@ -44,6 +44,10 @@ def convergence_debt_from_states(paths: Iterable[Path], states: object) -> list[
     return debt
 
 
+#: Stage states that mean "work still owed" without meaning "something broke".
+_DEFERRED_STAGE_STATES = frozenset({"pending", "not_run"})
+
+
 def stage_state_value(value: object) -> str:
     """Normalize a ``StageState`` (or its plain string mirror) to its value."""
     return str(getattr(value, "value", value))
@@ -55,10 +59,12 @@ def is_deferred_stage_state(value: object) -> bool:
     ``StageState.PENDING`` (``daemon/convergence.py``) is set only for two
     non-failure reasons: a ``false_means_pending`` stage returned ``False``
     after doing bounded successful work, or a downstream stage is queued
-    behind an unfinished barrier stage. Neither is an error, so debt rows
-    carrying this state should read as "deferred", not "failed".
+    behind an unfinished barrier stage. ``StageState.NOT_RUN`` is the third:
+    a whole-archive stage that a deliberately narrowed batch pass did not
+    execute. None of the three is an error, so debt rows carrying these
+    states should read as "deferred", not "failed".
     """
-    return stage_state_value(value) == "pending"
+    return stage_state_value(value) in _DEFERRED_STAGE_STATES
 
 
 def convergence_debt_from_state(path: Path, state: object) -> list[ConvergenceDebt]:
@@ -76,7 +82,7 @@ def convergence_debt_from_state(path: Path, state: object) -> list[ConvergenceDe
                 path=path,
                 stage=str(stage_name),
                 error=optional_error(last_error) or f"stage state: {state_value}",
-                deferred=state_value == "pending",
+                deferred=state_value in _DEFERRED_STAGE_STATES,
             )
         )
     if not debts:
