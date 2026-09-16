@@ -2561,7 +2561,9 @@ def _legacy_data_home_inbox_sources() -> tuple[WatchSource, ...]:
     legacy_root = data_home() / "inbox"
     if legacy_root.resolve() == (archive_root() / "inbox").resolve():
         return ()
-    return (WatchSource(name="inbox", root=legacy_root, suffixes=INBOX_SOURCE_SUFFIXES),)
+    # Named apart from the archive inbox: two watch sources may not share a
+    # name, or every by-name lookup silently sees only the last one.
+    return (WatchSource(name="inbox-legacy", root=legacy_root, suffixes=INBOX_SOURCE_SUFFIXES),)
 
 
 def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ...]:

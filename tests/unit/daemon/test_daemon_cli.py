@@ -1193,7 +1193,7 @@ def test_default_sources_watch_the_legacy_data_home_inbox(workspace_env: dict[st
     """
     from polylogue.daemon import cli as daemon_cli
 
-    inbox_roots = {source.root for source in daemon_cli.default_sources() if source.name == "inbox"}
+    inbox_roots = {source.root for source in daemon_cli.default_sources() if source.name in {"inbox", "inbox-legacy"}}
 
     assert inbox_roots == {
         workspace_env["archive_root"] / "inbox",
