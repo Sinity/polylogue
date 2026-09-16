@@ -295,6 +295,21 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
             return delegation_work_evidence_materialization_needed(archive_root())
         except FileNotFoundError:
             return False
+        except Exception as exc:
+            # A probe that cannot answer (a locked or skewed archive, say) is
+            # not evidence that there is no work: assume work and let execute
+            # report the real terminal outcome, rather than propagating out of
+            # the check and aborting the whole convergence pass.
+            emit(
+                "daemon.stage.check_failed",
+                level=WARNING,
+                outcome="degraded",
+                stage="delegation_work_evidence",
+                reason="probe_failed_assuming_work",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            return True
 
     def execute(path: Path) -> StageExecuteReturn:
         del path
