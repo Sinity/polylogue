@@ -37,6 +37,8 @@ from polylogue.logging import get_logger
 
 __all__ = [
     "UnleasedWriteError",
+    "declared_unguarded_write",
+    "install_archive_write_guard",
     "WriteHoldExceededError",
     "WriteLease",
     "WriteLeaseDelegation",
@@ -443,3 +445,14 @@ def write_lease(
                 f"writer {actor} held the lease {lease.held_seconds:.3f}s against a declared "
                 f"{lease.max_hold_seconds:.3f}s budget; every other writer waited behind it"
             )
+
+
+# The connection-level half of this boundary. ``write_guard`` intercepts
+# ``sqlite3.connect`` so a writable archive-tier open that never touched a
+# declared factory is refused too; it is re-exported here because the lease and
+# the guard are one authority and callers should not have to know which module
+# holds which half.
+from polylogue.storage.sqlite.write_guard import (  # noqa: E402
+    declared_unguarded_write,
+    install_archive_write_guard,
+)

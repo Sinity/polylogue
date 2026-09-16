@@ -50,8 +50,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from polylogue.storage.sqlite.write_lease import require_write_lease
-
 __all__ = [
     "ARCHIVE_TIER_FILENAMES",
     "archive_write_guard_installed",
@@ -144,6 +142,11 @@ def _guarded_connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connec
     original = _ORIGINAL_CONNECT
     assert original is not None
     if not _bypassed():
+        # Imported here, not at module scope: ``write_lease`` re-exports this
+        # module's installer so the guard has a static production consumer,
+        # and a module-level import back would close that cycle.
+        from polylogue.storage.sqlite.write_lease import require_write_lease
+
         path = guarded_archive_tier_path(database, uri=bool(kwargs.get("uri", False)))
         if path is not None:
             # No ``archive_root``: the guard asserts that *a* lease is held by

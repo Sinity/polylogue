@@ -2110,11 +2110,10 @@ async def run_daemon_services(
     those routes can run, and the daemon must prevent a rebuild from starting
     until its writer coordinator has drained.
     """
-    from polylogue.core.write_lease import arm_write_lease_enforcement
+    from polylogue.core.write_lease import arm_write_lease_enforcement, install_archive_write_guard
     from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.paths import archive_root
     from polylogue.storage.sqlite.connection_profile import arm_recurring_checkpoint_owner
-    from polylogue.storage.sqlite.write_guard import install_archive_write_guard
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -2262,6 +2261,7 @@ async def _run_daemon_services_under_active_writer_lease(
     # One stable archive ownership lock is shared with offline maintenance.
     # The pidfile below remains process metadata only and is never the
     # authority used to exclude a concurrent migration or startup.
+    from polylogue.core.write_lease import write_lease
     from polylogue.operations.durable_change_train import (
         acquire_durable_archive_ownership,
         reconcile_durable_change_trains_on_startup,
@@ -2269,7 +2269,16 @@ async def _run_daemon_services_under_active_writer_lease(
 
     archive_owner = acquire_durable_archive_ownership(archive_root_path, owner_id=f"daemon:{os.getpid()}")
     try:
-        recovered_train_paths = reconcile_durable_change_trains_on_startup(archive_root_path)
+        # Startup durable-change-train reconciliation opens the durable tiers
+        # ``mode=rw`` and migrates them. Exclusive archive ownership already
+        # excludes another *process*; the lease is what puts this writer inside
+        # the daemon's own single-writer boundary rather than beside it, so it
+        # is one authority and not a declared bypass (polylogue-8qm4k).
+        with write_lease(
+            "daemon.durable_change_train.startup",
+            archive_root=archive_root_path,
+        ):
+            recovered_train_paths = reconcile_durable_change_trains_on_startup(archive_root_path)
         if recovered_train_paths:
             emit(
                 "daemon.change_train.reconciled",

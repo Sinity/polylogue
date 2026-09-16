@@ -35,6 +35,24 @@ def bind_write_lease_thread(grant: Any) -> None:
 
 
 @contextmanager
+def install_archive_write_guard() -> Iterator[None]:
+    """Intercept writable archive-tier opens for the duration of the block.
+
+    The guard itself lives with SQLite storage; this adapter keeps the daemon's
+    arming site ring-neutral, exactly as the lease functions above do.
+    """
+    with importlib.import_module("polylogue.storage.sqlite.write_guard").install_archive_write_guard():
+        yield
+
+
+@contextmanager
+def declared_unguarded_write(reason: str) -> Iterator[None]:
+    """Run a declared non-daemon archive authority outside the guard."""
+    with importlib.import_module("polylogue.storage.sqlite.write_guard").declared_unguarded_write(reason):
+        yield
+
+
+@contextmanager
 def arm_write_lease_enforcement(*, armed: bool = True, process_wide: bool = False) -> Iterator[None]:
     with _implementation().arm_write_lease_enforcement(armed=armed, process_wide=process_wide):
         yield
