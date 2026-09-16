@@ -19,7 +19,11 @@ from polylogue.logging import WARNING, emit
 from polylogue.version import VERSION_INFO
 
 _LOCAL_ARCHIVE_OWNERS_LOCK = threading.RLock()
-_LOCAL_ARCHIVE_OWNERS: dict[tuple[int, int], tuple[int, int, int, str]] = {}
+#: In-process owners, keyed on the *durable anchor* directory identity --
+#: never on the configured root's (polylogue-81v76). See
+#: ``OwnedArchiveLocation.acquire``. Value: (lock fd, root fd, anchor fd,
+#: reference count, owner id).
+_LOCAL_ARCHIVE_OWNERS: dict[tuple[int, int], tuple[int, int, int, int, str]] = {}
 
 #: The archive's own path vocabulary. The active index is selected by a
 #: pointer file, so ``root/index.db`` may be a 77-byte stub while the real
@@ -393,6 +397,35 @@ def assert_writable_archive_identity(*, configured_root: Path, active_root: Path
     return active
 
 
+def durable_anchor_directory(location: ArchiveLocation) -> Path:
+    """The directory that actually holds this archive's durable tiers.
+
+    polylogue-81v76: ownership used to be proved by flocking
+    ``configured_root/.archive-ownership.lock`` and keying the in-process
+    owner map on the configured root directory's ``(st_dev, st_ino)``. The
+    thing that needs exclusivity is the durable tier set, not the directory
+    that names it. ``ArchiveLocation.resolve`` deliberately admits a symlink
+    farm -- and the product manufactures one on every promotion, since each
+    ``.index-generations/gen-*/`` holds absolute symlinks back to the root's
+    ``source.db``/``user.db``/``embeddings.db``/``ops.db``/``blob`` beside its
+    own real ``index.db``. Both directories are distinct inodes with distinct
+    lock files while resolving to the *same* durable inodes, so both could be
+    owned at once and both writers wrote the same ``source.db``.
+    ``assert_writable_archive_identity`` cannot catch it either: its
+    ``conflicts_with`` check requires *distinct* indexes.
+
+    Anchoring on the resolved ``source.db``'s parent makes the farm and the
+    root contend on one lock file and one owner-map key. For an ordinary
+    root (no symlinks) the resolved source path's parent *is* the configured
+    root, so nothing changes. A root whose ``source.db`` does not exist yet
+    resolves to ``root/source.db`` under ``resolve(strict=False)``, so a
+    fresh archive also anchors on its own root.
+    """
+    source_path = location.configured_tier("source").resolved_path
+    anchor = source_path.parent
+    return anchor if anchor.is_dir() else location.configured_root
+
+
 class ArchiveOwnershipError(RuntimeError):
     """A maintenance/campaign writer could not prove exclusive ownership of an archive location."""
 
@@ -410,8 +443,8 @@ class OwnedArchiveLocation:
     authorization to write.
 
     Acquisition is a pure filesystem preflight: it takes an exclusive
-    ``flock`` on a lock file under the configured root and never opens a
-    sqlite3 connection.  A location already owned by another live process
+    ``flock`` on a lock file beside the *resolved* ``source.db`` and never
+    opens a sqlite3 connection.  A location already owned by another live process
     therefore fails closed -- ``ArchiveOwnershipError`` -- before any tier
     file is created or touched, rather than surfacing later as a confusing
     runtime error against an already-open writer connection (or, worse, two
@@ -421,13 +454,27 @@ class OwnedArchiveLocation:
     for that generation.
     """
 
-    def __init__(self, location: ArchiveLocation, *, root_fd: int, root_identity: tuple[int, int]) -> None:
+    def __init__(
+        self,
+        location: ArchiveLocation,
+        *,
+        root_fd: int,
+        root_identity: tuple[int, int],
+        anchor_dir: Path,
+        anchor_fd: int,
+        anchor_identity: tuple[int, int],
+    ) -> None:
         self.location = location
-        self.lock_path = location.configured_root / ".archive-ownership.lock"
+        #: The lock lives beside the resolved durable tiers, not beside the
+        #: directory that names them (polylogue-81v76).
+        self.lock_path = anchor_dir / ".archive-ownership.lock"
         self.owner_id: str | None = None
         self._fd: int | None = None
         self._root_fd = root_fd
         self.root_identity = root_identity
+        self.anchor_dir = anchor_dir
+        self.anchor_identity = anchor_identity
+        self._anchor_fd = anchor_fd
 
     @property
     def directory_fd(self) -> int:
@@ -455,24 +502,38 @@ class OwnedArchiveLocation:
         owner = owner_id or f"pid={os.getpid()} host={socket.gethostname()} token={uuid.uuid4().hex}"
         root_fd = _open_archive_root_fd(location.configured_root)
         root_metadata = os.fstat(root_fd)
+        anchor_dir = durable_anchor_directory(location)
+        anchor_fd = _open_archive_root_fd(anchor_dir)
+        anchor_metadata = os.fstat(anchor_fd)
         instance = cls(
             location,
             root_fd=root_fd,
             root_identity=(root_metadata.st_dev, root_metadata.st_ino),
+            anchor_dir=anchor_dir,
+            anchor_fd=anchor_fd,
+            anchor_identity=(anchor_metadata.st_dev, anchor_metadata.st_ino),
         )
-        root_key = instance.root_identity
+        anchor_key = instance.anchor_identity
         with _LOCAL_ARCHIVE_OWNERS_LOCK:
             try:
-                existing = _LOCAL_ARCHIVE_OWNERS.get(root_key)
+                existing = _LOCAL_ARCHIVE_OWNERS.get(anchor_key)
                 if existing is None or not allow_reentrant:
-                    fd = _acquire_ownership_lock_fd(instance.lock_path, owner=owner, dir_fd=root_fd)
-                    _LOCAL_ARCHIVE_OWNERS[root_key] = (fd, root_fd, 1, owner)
+                    fd = _acquire_ownership_lock_fd(instance.lock_path, owner=owner, dir_fd=anchor_fd)
+                    _LOCAL_ARCHIVE_OWNERS[anchor_key] = (fd, root_fd, anchor_fd, 1, owner)
                     instance.owner_id = owner
                 else:
-                    fd, existing_root_fd, references, existing_owner = existing
+                    fd, existing_root_fd, existing_anchor_fd, references, existing_owner = existing
                     os.close(root_fd)
+                    os.close(anchor_fd)
                     instance._root_fd = existing_root_fd
-                    _LOCAL_ARCHIVE_OWNERS[root_key] = (fd, existing_root_fd, references + 1, existing_owner)
+                    instance._anchor_fd = existing_anchor_fd
+                    _LOCAL_ARCHIVE_OWNERS[anchor_key] = (
+                        fd,
+                        existing_root_fd,
+                        existing_anchor_fd,
+                        references + 1,
+                        existing_owner,
+                    )
                     instance.owner_id = existing_owner
                 instance._fd = fd
                 _assert_archive_root_identity(
@@ -480,30 +541,44 @@ class OwnedArchiveLocation:
                     instance.directory_fd,
                     instance.root_identity,
                 )
+                _assert_archive_root_identity(instance.anchor_dir, instance._anchor_fd, instance.anchor_identity)
             except BaseException:
                 if instance._fd is not None:
                     instance.release()
-                elif instance._root_fd >= 0:
-                    os.close(instance._root_fd)
-                    instance._root_fd = -1
+                else:
+                    if instance._root_fd >= 0:
+                        os.close(instance._root_fd)
+                        instance._root_fd = -1
+                    if instance._anchor_fd >= 0:
+                        os.close(instance._anchor_fd)
+                        instance._anchor_fd = -1
                 raise
         return instance
 
     def release(self) -> None:
         if self._fd is not None:
             with _LOCAL_ARCHIVE_OWNERS_LOCK:
-                existing = _LOCAL_ARCHIVE_OWNERS.get(self.root_identity)
+                existing = _LOCAL_ARCHIVE_OWNERS.get(self.anchor_identity)
                 if existing is not None and existing[0] == self._fd:
-                    fd, root_fd, references, owner = existing
+                    fd, root_fd, anchor_fd, references, owner = existing
                     if references <= 1:
-                        _LOCAL_ARCHIVE_OWNERS.pop(self.root_identity, None)
+                        _LOCAL_ARCHIVE_OWNERS.pop(self.anchor_identity, None)
                         fcntl.flock(fd, fcntl.LOCK_UN)
                         os.close(fd)
                         os.close(root_fd)
+                        if anchor_fd != root_fd:
+                            os.close(anchor_fd)
                     else:
-                        _LOCAL_ARCHIVE_OWNERS[self.root_identity] = (fd, root_fd, references - 1, owner)
+                        _LOCAL_ARCHIVE_OWNERS[self.anchor_identity] = (
+                            fd,
+                            root_fd,
+                            anchor_fd,
+                            references - 1,
+                            owner,
+                        )
             self._fd = None
             self._root_fd = -1
+            self._anchor_fd = -1
 
     def __enter__(self) -> OwnedArchiveLocation:
         return self

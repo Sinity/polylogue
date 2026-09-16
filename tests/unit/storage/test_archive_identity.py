@@ -482,3 +482,71 @@ def test_assert_owns_archive_location_rejects_stale_generation_after_pointer_rot
             assert_owns_archive_location(owned, rotated)
     finally:
         owned.release()
+
+
+def test_a_symlink_farm_generation_cannot_be_owned_beside_its_own_root(tmp_path: Path) -> None:
+    """polylogue-81v76: ownership must anchor on the durable tiers, not the
+    directory that names them.
+
+    Every promoted ``.index-generations/gen-*/`` the product writes is a
+    symlink farm back to the root's durable tiers beside its own real
+    ``index.db``. Keying on the root *directory's* ``(st_dev, st_ino)`` made
+    the two roots distinct owners of the same ``source.db``.
+
+    Anti-vacuity: revert ``OwnedArchiveLocation.acquire`` to keying on
+    ``root_identity`` and locking ``configured_root/.archive-ownership.lock``
+    and the second ``acquire`` below succeeds, so the ``pytest.raises`` fails.
+    """
+    root = tmp_path / "archive"
+    _touch_tiers(root)
+    (root / "blob").mkdir()
+    generation = root / ".index-generations" / "gen-1-aaaa"
+    generation.mkdir(parents=True)
+    for name in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
+        (generation / name).symlink_to(root / name)
+    (generation / "index.db").touch()
+
+    root_location = ArchiveLocation.resolve(root)
+    generation_location = ArchiveLocation.resolve(generation)
+    # The defect's precondition: the two roots really do resolve to the same
+    # durable inode, so this is not vacuously refusing unrelated archives.
+    assert root_location.configured_tier("source").stable_id == generation_location.configured_tier("source").stable_id
+
+    owned = OwnedArchiveLocation.acquire(root_location)
+    try:
+        with pytest.raises(ArchiveOwnershipError, match="already owned"):
+            OwnedArchiveLocation.acquire(generation_location)
+    finally:
+        owned.release()
+
+
+def test_two_independent_roots_are_still_separately_ownable(tmp_path: Path) -> None:
+    """The anchor must not over-collapse: distinct durable sets stay distinct."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    _touch_tiers(first)
+    _touch_tiers(second)
+
+    owned_first = OwnedArchiveLocation.acquire(ArchiveLocation.resolve(first))
+    try:
+        owned_second = OwnedArchiveLocation.acquire(ArchiveLocation.resolve(second))
+        owned_second.release()
+    finally:
+        owned_first.release()
+
+
+def test_the_ownership_lock_lands_beside_the_resolved_durable_tiers(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _touch_tiers(root)
+    generation = root / ".index-generations" / "gen-2-bbbb"
+    generation.mkdir(parents=True)
+    for name in ("source.db", "user.db", "embeddings.db", "ops.db"):
+        (generation / name).symlink_to(root / name)
+    (generation / "index.db").touch()
+
+    owned = OwnedArchiveLocation.acquire(ArchiveLocation.resolve(generation))
+    try:
+        assert owned.lock_path == root / ".archive-ownership.lock"
+        assert not (generation / ".archive-ownership.lock").exists()
+    finally:
+        owned.release()
