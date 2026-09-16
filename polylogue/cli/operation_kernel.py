@@ -48,10 +48,21 @@ class OperationEnvelopeError(OperationKernelError):
 class OperationFailedError(OperationKernelError):
     """The selected executor returned a typed operation error."""
 
-    def __init__(self, code: str, detail: object = None, data: Mapping[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        detail: object = None,
+        data: Mapping[str, object] | None = None,
+        *,
+        request_id: str | None = None,
+    ) -> None:
         self.code = code
         self.detail = detail
         self.data: Mapping[str, object] = data or {}
+        #: The transport's call id when it reported one. A daemon-side failure
+        #: is correlated with the daemon log by this id, so the adapter that
+        #: renders the refusal can name it (polylogue-jtrtj).
+        self.request_id = request_id
         super().__init__(f"{code}: {detail}" if detail else code)
 
 
@@ -69,12 +80,22 @@ class OperationCancelledError(OperationKernelError):
     ``code`` carries the executor's own name for the abort when it supplied one
     (``QueryCancelledError`` for a deadline/cancellation abort) so a surface can
     render the typed refusal rather than re-deriving one from the class.
+    ``request_id`` carries the transport's call id so the operator-facing
+    refusal can name the call to correlate in the daemon log.
     """
 
-    def __init__(self, operation: str, detail: object = None, code: str | None = None) -> None:
+    def __init__(
+        self,
+        operation: str,
+        detail: object = None,
+        code: str | None = None,
+        *,
+        request_id: str | None = None,
+    ) -> None:
         self.operation = operation
         self.detail = detail
         self.code = code or "operation_cancelled"
+        self.request_id = request_id
         super().__init__(f"{operation} was cancelled" if detail is None else f"{operation} was cancelled: {detail}")
 
 
@@ -142,6 +163,8 @@ class OperationKernel:
         except Exception as exc:
             raise OperationFailedError("daemon_transport_error", str(exc)) from exc
         if envelope is not None:
+            raw_call_id = envelope.get("request_id")
+            call_id = str(raw_call_id) if raw_call_id else None
             if envelope.get("operation") not in (None, request.operation):
                 raise OperationEnvelopeError("daemon returned a different operation")
             outcome = envelope.get("outcome", OperationStatus.COMPLETED.value)
@@ -161,6 +184,7 @@ class OperationKernel:
                     request.operation,
                     aborted.get("detail") or envelope.get("result") or envelope.get("detail"),
                     code=str(aborted.get("code")) if aborted.get("code") else None,
+                    request_id=call_id,
                 )
             if isinstance(error, Mapping):
                 code = error.get("code")
@@ -169,13 +193,17 @@ class OperationKernel:
                     str(code or "operation_failed"),
                     error.get("detail"),
                     data if isinstance(data, Mapping) else None,
+                    request_id=call_id,
                 )
             if error is not None:
                 raise OperationEnvelopeError("daemon returned a malformed error envelope")
             if outcome not in {OperationStatus.COMPLETED.value, OperationStatus.ACCEPTED.value}:
                 result = envelope.get("result")
                 raise OperationFailedError(
-                    str(outcome), envelope.get("detail"), result if isinstance(result, Mapping) else None
+                    str(outcome),
+                    envelope.get("detail"),
+                    result if isinstance(result, Mapping) else None,
+                    request_id=call_id,
                 )
             if "result" not in envelope:
                 raise OperationEnvelopeError("daemon response omitted the operation result")

@@ -255,7 +255,7 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     from polylogue.cli.onboarding import render_guided_path
     from polylogue.cli.operation_kernel import OperationKernelError
     from polylogue.cli.root_request import RootModeRequest
-    from polylogue.cli.session_rows import query_session_rows
+    from polylogue.cli.session_rows import query_session_rows_with_authority
     from polylogue.cli.shared.helpers import load_effective_config
 
     config = load_effective_config(env)
@@ -269,12 +269,17 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     # imports the index schema constant to talk to one.
     daemon_disabled = bool(ctx.params.get("no_daemon"))
     try:
-        rows = query_session_rows(config, RootModeRequest.from_params({}), limit=5, daemon_disabled=daemon_disabled)
+        rows, source = query_session_rows_with_authority(
+            config, RootModeRequest.from_params({}), limit=5, daemon_disabled=daemon_disabled
+        )
     except OperationKernelError:
         click.echo(ctx.get_help())
         return True
-    source = "direct" if daemon_disabled else "daemon"
 
+    # The authority the *result* reports, never the request's intent: the
+    # kernel falls back to the in-process reader when no socket answers, so
+    # "(daemon)" inferred from "--no-daemon was not passed" was a provenance
+    # claim the result did not support (polylogue-jfabc).
     click.echo(f"Archive: ready ({source})")
     click.echo("Recent sessions:")
     if rows:

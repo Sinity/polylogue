@@ -175,7 +175,13 @@ def _assert_typed_outcome(command: str, result: Result) -> None:
     if result.exit_code == 0:
         return
     output = result.output or ""
-    assert result.exit_code == 2, f"{command!r} exited {result.exit_code}: {output}"
+    # 2 is the empty outcome; 1 is a typed read failure (an unavailable
+    # retrieval lane, a dropped daemon, a refused request).  Both are typed
+    # terminals with an explanation -- what this asserts is that neither is a
+    # parse failure.  Before polylogue-jtrtj every typed read failure was also
+    # re-classed as 2, which is exactly the conflation that bead removed, so
+    # pinning 2 alone would now re-assert it.
+    assert result.exit_code in (1, 2), f"{command!r} exited {result.exit_code}: {output}"
     for fragment in _PARSE_FAILURES:
         assert fragment not in output, f"{command!r} no longer parses: {output}"
 

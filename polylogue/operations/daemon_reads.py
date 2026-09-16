@@ -99,6 +99,30 @@ _SESSION_READ_WINDOW = 200
 _SESSION_READ_PROJECTION = "session-read-v1"
 
 
+def page_next_offset(*, offset: int, returned: int, total: int | None, limit: int) -> int | None:
+    """Decide the next page offset for one bounded read, in one place.
+
+    Both the list page (``cli.query`` unranked) and the ranked search envelope
+    answer the same client question -- "is there another page, and where does
+    it start?" -- so they must answer it identically.  Deciding it per payload
+    is how the list page came to omit the key entirely, which silently ended
+    ``query_complete_session_ids``' walk after one page and let
+    ``delete --all`` act on the first page only (#1873 regression, polylogue-w3s0q).
+
+    ``total`` may be an honest ``None`` (a vector lane exposes a bounded
+    nearest-neighbour page, not an archive-wide cardinality).  Without a total
+    the only evidence that more rows exist is a page that filled its own
+    bound, so a full page continues and a short page terminates.
+    """
+
+    if returned <= 0:
+        return None
+    nxt = offset + returned
+    if total is None:
+        return nxt if limit > 0 and returned >= limit else None
+    return nxt if nxt < total else None
+
+
 def execute_read_operation(
     name: str,
     payload: dict[str, object],
@@ -285,6 +309,10 @@ def _query_payload(
         ),
         "limit": limit,
         "offset": offset,
+        # Decided by the same helper the ranked envelope uses: a client that
+        # must see every match (mutating-verb cardinality) walks this key, and
+        # its absence read as "complete" after one page.
+        "next_offset": page_next_offset(offset=offset, returned=len(summaries), total=total, limit=limit),
     }
 
 
@@ -507,6 +535,12 @@ def _search_payload(
     # The envelope keeps its own explicit nulls -- a vector page's ``total`` is
     # an honest ``None`` and dropping the key would read as "not reported".
     envelope["hits"] = [hit.model_dump(mode="json", exclude_none=True) for hit in hit_payloads]
+    # The ranked envelope's own continuation is ``next_cursor``; ``next_offset``
+    # is the offset-shaped answer the list page also gives, decided by the one
+    # helper so a client walking pages cannot see the two paths disagree.
+    envelope["next_offset"] = page_next_offset(
+        offset=spec.offset, returned=len(hit_payloads), total=total, limit=display_limit
+    )
     return envelope
 
 

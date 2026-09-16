@@ -1279,9 +1279,20 @@ class TestDaemonSearchEnvelopeHonestPagination:
         return captured
 
     def test_clamped_page_reports_the_next_offset(self) -> None:
-        """Anti-vacuity: hard-code ``next_offset`` to None and this goes red."""
+        """The renderer reports the continuation the operation decided.
+
+        The operation owns this decision (``daemon_reads.page_next_offset``) so
+        the list and ranked pages cannot disagree about it; the renderer only
+        carries it out. Anti-vacuity: make ``_page_envelope`` drop or recompute
+        ``next_offset`` and this goes red.
+        """
         envelope = self._emit(
-            {"hits": [{"session_id": f"s:{n}"} for n in range(10)], "total": 42, "limit": 10},
+            {
+                "hits": [{"session_id": f"s:{n}"} for n in range(10)],
+                "total": 42,
+                "limit": 10,
+                "next_offset": 10,
+            },
             limit=10,
             offset=0,
         )
@@ -1289,9 +1300,24 @@ class TestDaemonSearchEnvelopeHonestPagination:
         assert envelope["total"] == 42
         assert envelope["next_offset"] == 10
 
+    def test_renderer_never_invents_a_continuation(self) -> None:
+        """A page whose operation reported no continuation is final.
+
+        Anti-vacuity: restore ``offset + len(rows) if total > offset + len(rows)``
+        in ``_page_envelope`` and this goes red, because the renderer would
+        re-derive ``10`` from a full page the operation called complete.
+        """
+        envelope = self._emit(
+            {"hits": [{"session_id": f"s:{n}"} for n in range(10)], "total": 42, "limit": 10, "next_offset": None},
+            limit=10,
+            offset=0,
+        )
+
+        assert envelope["next_offset"] is None
+
     def test_final_page_reports_no_next_offset(self) -> None:
         envelope = self._emit(
-            {"hits": [{"session_id": f"s:{n}"} for n in range(2)], "total": 42, "limit": 10},
+            {"hits": [{"session_id": f"s:{n}"} for n in range(2)], "total": 42, "limit": 10, "next_offset": None},
             limit=10,
             offset=40,
         )

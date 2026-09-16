@@ -7,7 +7,6 @@ from types import SimpleNamespace, TracebackType
 from typing import cast
 from unittest.mock import MagicMock, patch
 
-import click
 import pytest
 
 from polylogue.cli.messages import run_messages, run_raw, run_session_events
@@ -649,34 +648,50 @@ def test_read_hooks_renders_yaml_when_asked(tmp_path: Path, capsys: pytest.Captu
     _ui_print(yaml_env).assert_not_called()
 
 
-def test_read_hooks_refuses_rather_than_rendering_an_empty_summary(tmp_path: Path) -> None:
+def test_read_hooks_refuses_rather_than_rendering_an_empty_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """A refused read exits non-zero instead of reading as "no hook events".
 
-    Anti-vacuity: swallow the refusal and print an empty body, or let the
-    exception escape untyped, and this turns red.
+    Anti-vacuity: swallow the refusal and print an empty body, let the
+    exception escape untyped, or re-class it as ``click.UsageError`` (exit 2,
+    the *empty* status), and this turns red.
     """
 
     from polylogue.cli.operation_kernel import OperationFailedError
+    from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, FAILED_READ_EXIT_CODE
 
     env = _env()
     with patch("polylogue.cli.operation_kernel.dispatch") as dispatch:
         dispatch.side_effect = OperationFailedError("invalid_request", "session not found: missing")
-        with pytest.raises(click.UsageError, match="session not found: missing"):
+        with pytest.raises(SystemExit) as caught:
             run_read_hooks(env, _request(tmp_path), _hooks_invocation())
+    assert caught.value.code == FAILED_READ_EXIT_CODE
+    assert caught.value.code != EMPTY_EXIT_CODE
+    assert "session not found: missing" in capsys.readouterr().err
 
 
-def test_read_hooks_names_the_daemon_refusal_without_a_traceback(tmp_path: Path) -> None:
-    """Anti-vacuity: class an unavailable daemon as a usage mistake, or let it
-    escape as a traceback, and this turns red."""
+def test_read_hooks_names_the_daemon_refusal_without_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Anti-vacuity: class an unavailable daemon as a usage mistake (exit 2,
+    which is the empty status), or let it escape as a traceback, and this turns
+    red."""
 
     from polylogue.cli.operation_kernel import OperationUnavailableError
+    from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, FAILED_READ_EXIT_CODE
 
     env = _env()
     with patch("polylogue.cli.operation_kernel.dispatch") as dispatch:
         dispatch.side_effect = OperationUnavailableError("daemon is unavailable for operation: session.read")
-        with pytest.raises(click.ClickException, match="daemon is unavailable") as caught:
+        with pytest.raises(SystemExit) as caught:
             run_read_hooks(env, _request(tmp_path), _hooks_invocation())
-    assert not isinstance(caught.value, click.UsageError)
+    assert caught.value.code == FAILED_READ_EXIT_CODE
+    assert caught.value.code != EMPTY_EXIT_CODE
+    err = capsys.readouterr().err
+    assert "daemon is unavailable" in err
+    assert "polylogue run" in err  # the remedy, not just the fault
+    assert "Usage:" not in err
 
 
 def test_run_session_events_emits_json_and_missing_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
