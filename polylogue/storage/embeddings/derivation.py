@@ -278,7 +278,7 @@ class EmbeddingDerivationAdapter:
         with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as conn:
             if not table_exists(conn, "messages"):
                 return (), None
-            relation = archive_embeddable_messages_relation(conn, alias="desired", model=self._recipe.model)
+            relation = archive_embeddable_messages_relation(conn, alias="desired", recipe=self._recipe)
             params: list[object] = []
             predicates: list[str] = []
             if cursor is not None:
@@ -313,7 +313,7 @@ class EmbeddingDerivationAdapter:
             conn.execute("ATTACH DATABASE ? AS embeddings", (str(self._embeddings_path),))
             if not table_exists(conn, "message_embedding_refs", schema="embeddings"):
                 return (), None
-            relation = archive_embeddable_messages_relation(conn, alias="desired", model=self._recipe.model)
+            relation = archive_embeddable_messages_relation(conn, alias="desired", recipe=self._recipe)
             params: list[object] = []
             predicates: list[str] = []
             if cursor is not None:

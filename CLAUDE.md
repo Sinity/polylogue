@@ -78,7 +78,7 @@ ingest and full replay/reindex.
 | `index.db` | rebuildable | parsed tree, FTS, links, costs, materialized insights |
 | `embeddings.db` | expensive to rebuild | vectors, meta, status; preserve reusable vectors before replacement |
 | `user.db` | durable, irreplaceable | unified `assertions`, settings, annotation schemas/provenance |
-| `audit.db` | durable, append-only | previews, authorizations, attempts, continuity |
+| `audit.db` | durable, continuity-chained | previews, authorizations, attempts, continuity |
 | `ops.db` | disposable | cursors, attempts, convergence debt, daemon telemetry |
 
 A mutable SQLite source is the one material that is not its own bytes: a

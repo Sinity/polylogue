@@ -72,12 +72,17 @@ def preserve_command(copy_path: Path, root: Path | None, immutable: bool, output
 @click.option("--output-format", "output_format", type=click.Choice(["plain", "json"]), default="plain")
 def restore_command(copy_path: Path, root: Path | None, model: str | None, output_format: str) -> None:
     """Import the preserved vectors the rebuilt archive is about to ask for."""
-    from polylogue.maintenance.embedding_preservation import recomputed_vector_hashes, restore_embedding_vectors
+    from polylogue.maintenance.embedding_preservation import (
+        configured_vector_recipe,
+        recomputed_vector_hashes,
+        restore_embedding_vectors,
+    )
     from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
 
     embeddings_db, index_db = _tier_paths(root)
-    resolved = _resolved_model(model)
-    wanted = recomputed_vector_hashes(index_db, model=resolved)
+    resolved_recipe = configured_vector_recipe(model)
+    resolved = resolved_recipe.model
+    wanted = recomputed_vector_hashes(index_db, recipe=resolved_recipe)
     archive_root_path = (root if root is not None else archive_root()).absolute()
     # Restoration mutates the rebuilt embeddings tier and must be the explicit
     # offline owner of the archive for the whole destination-binding and
@@ -132,13 +137,15 @@ def verify_command(
     from polylogue.maintenance.embedding_preservation import (
         DEFAULT_MINIMUM_HIT_RATE,
         ac2_receipt_path,
+        configured_vector_recipe,
         recomputed_vector_hashes,
         verify_embedding_reuse,
     )
 
     embeddings_db, index_db = _tier_paths(root)
-    resolved = _resolved_model(model)
-    recomputed = recomputed_vector_hashes(index_db, model=resolved)
+    resolved_recipe = configured_vector_recipe(model)
+    resolved = resolved_recipe.model
+    recomputed = recomputed_vector_hashes(index_db, recipe=resolved_recipe)
     verification = verify_embedding_reuse(
         embeddings_db,
         copy_path,

@@ -514,13 +514,20 @@ def _collect_table_status_best_effort(
     (`no such table: ...`), continue with the integrity checks that can be
     answered from the opened archive.
     """
+    from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
 
     if probe_only and not deep:
         return {}
     try:
         return collect_derived_model_statuses_sync(conn, verify_full=deep)
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        # An empty mapping reads as "this archive has no derived models".
+        # Contention and corruption prove nothing of the sort, so they are
+        # raised for the caller to report as a degraded condition rather than
+        # laundered into absence.
+        if is_transient_sqlite_lock(exc) or is_corrupt_sqlite_database(exc):
+            raise
         return {}
 
 
@@ -666,9 +673,23 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
 
         # Run table-dependent collectors best-effort so archive integrity
         # probes above always register.
-        derived_statuses = _collect_table_status_best_effort(conn, deep=deep, probe_only=probe_only or not deep)
-        checks.extend(_derived_model_checks(derived_statuses))
-        checks.extend(_transcript_embedding_checks(derived_statuses))
+        try:
+            derived_statuses = _collect_table_status_best_effort(conn, deep=deep, probe_only=probe_only or not deep)
+        except sqlite3.OperationalError as exc:
+            # Contention or corruption: the collector answered nothing, so the
+            # report says so instead of reporting an archive with no derived
+            # models.
+            derived_statuses = {}
+            checks.append(
+                ReadinessCheck(
+                    "derived_models",
+                    VerifyStatus.ERROR,
+                    summary=f"Derived-model statuses are unavailable, not absent: {exc}",
+                )
+            )
+        else:
+            checks.extend(_derived_model_checks(derived_statuses))
+            checks.extend(_transcript_embedding_checks(derived_statuses))
 
     # --- source checks ---
     checks.extend(_build_source_readiness_checks(config))

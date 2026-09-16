@@ -2,16 +2,12 @@
   "archive_root": "/path/to/demo-archive",
   "cross_origin_attachment_count": 0,
   "reconciliation": {
-    "attachment_acquisition_debt_command": {
+    "attachment_coverage_scan": {
       "acquired_count": 1,
       "acquired_missing_blob_count": 0,
       "acquired_missing_blob_sample": [],
-      "acquired_reachable_count": 1,
+      "acquired_unowned_count": 0,
       "acquired_unreachable_count": 0,
-      "acquired_unreachable_sample": [],
-      "mode": "attachment_acquisition_debt",
-      "mutates": false,
-      "ok": true,
       "total_attachments": 1,
       "unavailable_count": 0,
       "unfetched_count": 0

@@ -101,3 +101,49 @@ def test_redact_report_hashes_evidence_prose_but_preserves_refs_and_counts() -> 
 def test_redact_report_is_deterministic() -> None:
     document: JSONDocument = {"label": "same text twice"}
     assert mcr.redact_report(document) == mcr.redact_report(dict(document))
+
+
+def test_an_all_blank_scenario_selection_is_a_usage_error_not_a_vacuous_pass() -> None:
+    """One malformed --scenario value must not certify an unchecked lane.
+
+    Anti-vacuity: with ``_scenario_names`` returning ``()`` again, the parse
+    below succeeds and ``check_discovery_coverage(())`` reports "pass" with
+    ``checked_steps == 0`` -- a full-green discovery certification over zero
+    route steps.  Both assertions go red only while the parser refuses and the
+    zero denominator fails.
+    """
+    import argparse
+
+    from devtools.continuity_evidence import _scenario_names, check_discovery_coverage
+
+    for blank in (" ", ",", " , ", ""):
+        with pytest.raises(argparse.ArgumentTypeError, match="selects no scenario"):
+            _scenario_names(blank)
+
+    assert _scenario_names("all") is None
+
+    empty = check_discovery_coverage(())
+    assert empty.checked_steps == 0
+    assert empty.status == "fail"
+
+    # The honest denominator still passes, so the zero-check is not a blanket
+    # failure of the coverage lane.
+    populated = check_discovery_coverage(CONTINUITY_SCENARIOS)
+    assert populated.checked_steps > 0
+    assert populated.status == "pass"
+
+
+def test_replay_and_coverage_lanes_share_none_vs_empty_semantics() -> None:
+    """An explicit empty selection is empty in both lanes, never "run everything".
+
+    Anti-vacuity: restoring ``tuple(scenario_names or (...))`` in
+    ``replay_archive`` makes the empty tuple expand to every scenario id, so
+    the first assertion is red.
+    """
+    import inspect
+
+    from devtools import continuity_replay
+
+    source = inspect.getsource(continuity_replay.replay_archive)
+    assert "scenario_names is None" in source
+    assert "scenario_names or (" not in source

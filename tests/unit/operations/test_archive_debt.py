@@ -6,6 +6,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1072,3 +1073,36 @@ def test_archive_debt_keeps_ungoverned_quarantine_default_as_parse_pending(tmp_p
     pending = by_ref["debt:raw-materialization:codex-session:parse-pending"]
     assert pending.status == "actionable"
     assert pending.actions[0].command == ("polylogued", "run")
+
+
+def test_tier_version_read_reports_schema_skew_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The diagnostic user_version read must not validate the schema it diagnoses.
+
+    Anti-vacuity: the stub raises SchemaSkew (a Polylogue DatabaseError, not a
+    sqlite3.Error) whenever validation is requested.  Restoring the default
+    ``validate_schema=True`` -- or narrowing the except clause back to
+    ``sqlite3.Error`` -- makes this call propagate instead of returning a
+    version, so both assertions are red.
+    """
+
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.storage.sqlite import connection_profile
+
+    path = tmp_path / "index.db"
+    _write_tier_version(path, 3)
+
+    calls: list[bool] = []
+    real_open = connection_profile.open_readonly_connection
+
+    def _recording_open(target: Path, **kwargs: Any) -> sqlite3.Connection:
+        validate = bool(kwargs.get("validate_schema", True))
+        calls.append(validate)
+        if validate:
+            raise SchemaSkew("index.db", expected=45, found=3)
+        return real_open(target, **kwargs)
+
+    monkeypatch.setattr(module, "open_readonly_connection", _recording_open)
+    assert module._read_user_version(path) == 3
+    assert calls == [False]

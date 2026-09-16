@@ -226,12 +226,6 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "Classify missing referenced blobs without mutating the archive.",
     ),
     _command(
-        "blob-reference-liveness",
-        "_blob_integrity",
-        "blob_reference_liveness_command",
-        "Classify source-tier orphan refs; apply only with backup and receipt.",
-    ),
-    _command(
         "blob-conservation",
         "_blob_conservation",
         "blob_conservation_command",

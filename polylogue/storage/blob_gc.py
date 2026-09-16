@@ -52,7 +52,7 @@ import stat
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack, closing, contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -64,12 +64,7 @@ from polylogue.storage.blob_liveness import (
     LivenessState,
     inspect_blob_liveness,
     inspect_blob_reservation,
-    validated_blob_ref_liveness_joins,
 )
-from polylogue.storage.blob_liveness import (
-    blob_refs_has_ref_type_column as _blob_refs_has_ref_type_column,
-)
-from polylogue.storage.hook_payload_ref_reconciliation import HookPayloadRefMatchStage, prepare_match_stage
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import (
     open_connection,
@@ -685,8 +680,6 @@ def _final_gc_member_liveness(
     source_conn: sqlite3.Connection,
     index_conn: sqlite3.Connection | None,
     blob_hash: str,
-    *,
-    legacy_hook_stage: HookPayloadRefMatchStage,
 ) -> tuple[BlobLiveness, BlobLiveness]:
     """Production seam for fault injection around GC's final locked recheck."""
     return (
@@ -695,7 +688,6 @@ def _final_gc_member_liveness(
             blob_hash,
             index_conn=index_conn,
             require_index=True,
-            legacy_hook_stage=legacy_hook_stage,
         ),
         inspect_blob_reservation(source_conn, blob_hash),
     )
@@ -728,7 +720,6 @@ def _inspect_gc_protection(
     index_conn: sqlite3.Connection | None,
     blob_hash: str,
     *,
-    legacy_hook_stage: HookPayloadRefMatchStage,
     final_recheck: bool,
     index_authority_blocker: str | None = None,
 ) -> _GCProtection:
@@ -738,7 +729,6 @@ def _inspect_gc_protection(
             source_conn,
             index_conn,
             blob_hash,
-            legacy_hook_stage=legacy_hook_stage,
         )
         if liveness.state is LivenessState.UNREFERENCED and index_authority_blocker is not None:
             # The seam keeps its historical signature so fault-injection doubles
@@ -751,7 +741,6 @@ def _inspect_gc_protection(
             blob_hash,
             index_conn=index_conn,
             require_index=True,
-            legacy_hook_stage=legacy_hook_stage,
             index_authority_blocker=index_authority_blocker,
         )
         reservation = inspect_blob_reservation(source_conn, blob_hash)
@@ -817,14 +806,6 @@ def _execute_gc_generation_members(
             index_conn=recheck_index,
         )
         try:
-            legacy_hook_stage = prepare_match_stage(source_conn)
-        except Exception as exc:
-            report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
-            _emit_gc_refusal(
-                report.blocked_reason, phase="execute", deleted=deleted_now, reclaimed_bytes=reclaimed_bytes_now
-            )
-            return deleted_now, reclaimed_bytes_now
-        try:
             with _open_blob_namespace(blob_root, namespace_identity=namespace_identity) as namespace:
                 for blob_hash in members:
                     if not source_conn.in_transaction:
@@ -833,7 +814,6 @@ def _execute_gc_generation_members(
                         source_conn,
                         recheck_index,
                         blob_hash,
-                        legacy_hook_stage=legacy_hook_stage,
                         final_recheck=True,
                         index_authority_blocker=index_authority_blocker,
                     )
@@ -855,7 +835,6 @@ def _execute_gc_generation_members(
                             detail="canonical liveness or publication reservation became live",
                         )
                         source_conn.commit()
-                        legacy_hook_stage = replace(legacy_hook_stage, total_changes=source_conn.total_changes)
                         evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
                         evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
                         continue
@@ -871,7 +850,6 @@ def _execute_gc_generation_members(
                                 detail="blob absent in readable namespace",
                             )
                             source_conn.commit()
-                            legacy_hook_stage = replace(legacy_hook_stage, total_changes=source_conn.total_changes)
                             evidence.skipped_missing += 1
                             continue
                         try:
@@ -890,9 +868,6 @@ def _execute_gc_generation_members(
                                         detail="blob changed during final unlink",
                                     )
                                     source_conn.commit()
-                                    legacy_hook_stage = replace(
-                                        legacy_hook_stage, total_changes=source_conn.total_changes
-                                    )
                                     evidence.skipped_unlink_error += 1
                                     continue
                             _commit_gc_member_outcome(
@@ -903,7 +878,6 @@ def _execute_gc_generation_members(
                                 detail="blob disappeared in readable namespace",
                             )
                             source_conn.commit()
-                            legacy_hook_stage = replace(legacy_hook_stage, total_changes=source_conn.total_changes)
                             evidence.skipped_missing += 1
                             continue
                         except OSError as exc:
@@ -915,7 +889,6 @@ def _execute_gc_generation_members(
                                 detail=str(exc),
                             )
                             source_conn.commit()
-                            legacy_hook_stage = replace(legacy_hook_stage, total_changes=source_conn.total_changes)
                             evidence.skipped_unlink_error += 1
                             continue
                         _commit_gc_member_outcome(
@@ -925,7 +898,6 @@ def _execute_gc_generation_members(
                             outcome="removed",
                         )
                         source_conn.commit()
-                        legacy_hook_stage = replace(legacy_hook_stage, total_changes=source_conn.total_changes)
                         deleted_now += 1
                         reclaimed_bytes_now += observed.size_bytes
         except _BlobNamespaceUnavailableError as exc:
@@ -1068,7 +1040,6 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                     index_path=index_db_path,
                     index_conn=index_conn,
                 )
-                legacy_hook_stage = prepare_match_stage(source_conn)
                 for blob_hash in sorted(blob_hashes):
                     size_bytes, namespace_blockers = _read_blob_object(
                         blob_root, blob_hash, namespace_identity=namespace_identity
@@ -1084,7 +1055,6 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                         source_conn,
                         index_conn=index_conn,
                         index_authority_blocker=index_authority_blocker,
-                        legacy_hook_stage=legacy_hook_stage,
                         blob_hash=blob_hash,
                         final_recheck=False,
                     )
@@ -1181,14 +1151,12 @@ def unlink_unreferenced_blob_hashes_without_generation_ledger(
             index_conn=index_conn,
             record=not dry_run,
         )
-        legacy_hook_stage = prepare_match_stage(source_conn)
         for blob_hash in sorted(candidates):
             protection = _inspect_gc_protection(
                 source_conn,
                 index_conn=index_conn,
                 index_authority_blocker=index_authority_blocker,
                 blob_hash=blob_hash,
-                legacy_hook_stage=legacy_hook_stage,
                 final_recheck=True,
             )
             if protection.blockers:
@@ -1422,12 +1390,6 @@ def run_blob_gc_report(
             index_conn=planning_index,
             record=not dry_run,
         )
-        try:
-            planning_legacy_hook_stage = prepare_match_stage(planning_source)
-        except Exception as exc:
-            report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
-            _emit_gc_refusal(report.blocked_reason, phase="preflight")
-            return report
         for blob_hash, mtime in candidates:
             if len(shortlist) >= max_batch:
                 break
@@ -1436,7 +1398,6 @@ def run_blob_gc_report(
                 planning_source,
                 index_conn=planning_index,
                 index_authority_blocker=planning_index_authority_blocker,
-                legacy_hook_stage=planning_legacy_hook_stage,
                 blob_hash=blob_hash,
                 final_recheck=False,
             )
@@ -1530,19 +1491,12 @@ def run_blob_gc_report(
             report.blocked_reason = "; ".join(recheck_preflight.blockers)
             _emit_gc_refusal(report.blocked_reason, phase="final_recheck")
             return report
-        try:
-            recheck_legacy_hook_stage = prepare_match_stage(conn)
-        except Exception as exc:
-            report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
-            _emit_gc_refusal(report.blocked_reason, phase="final_recheck")
-            return report
 
         for blob_hash, _mtime in shortlist:
             protection = _inspect_gc_protection(
                 conn,
                 index_conn=recheck_index,
                 index_authority_blocker=planning_index_authority_blocker,
-                legacy_hook_stage=recheck_legacy_hook_stage,
                 blob_hash=blob_hash,
                 final_recheck=False,
             )
@@ -1730,87 +1684,6 @@ def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRo
     ]
 
 
-@dataclass(frozen=True, slots=True)
-class OrphanedBlobRefCensus:
-    """Standing count of ``blob_refs`` rows whose referent no longer exists.
-
-    A "orphaned" row here is exactly the shape blob GC's liveness join
-    (``_blob_refs_still_live``) treats as dead: its ``ref_type`` names a
-    referent table, but no row in that table has the ``ref_id`` this row
-    claims. Their *count* is operator-relevant evidence of how much write-time
-    drift (deleted rows, since-fixed bugs like the hook-payload one this census
-    was built for) has accumulated. Unavailable schemas and unknown ref types
-    are counted as dispositions rather than treated as dead. Intended to be
-    read by a daemon health/expensive tier; wiring that in is left to the
-    caller (polylogue-tfzw0 explicitly defers "wire into health tiers" as
-    optional).
-    """
-
-    total: int
-    by_ref_type: dict[str, int]
-    scanned_count: int = 0
-    ref_type_counts: dict[str, int] | None = None
-    unknown_ref_types: dict[str, int] | None = None
-    unavailable_ref_types: dict[str, int] | None = None
-    schema_unavailable_count: int = 0
-    deferred_by_ref_type: dict[str, int] | None = None
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "scanned_count": self.scanned_count,
-            "ref_type_counts": dict(self.ref_type_counts or {}),
-            "total": self.total,
-            "by_ref_type": dict(self.by_ref_type),
-            "unknown_ref_types": dict(self.unknown_ref_types or {}),
-            "unavailable_ref_types": dict(self.unavailable_ref_types or {}),
-            "schema_unavailable_count": self.schema_unavailable_count,
-            "deferred_by_ref_type": dict(self.deferred_by_ref_type or {}),
-        }
-
-    def to_privacy_safe_dict(self) -> dict[str, object]:
-        """Serialize aggregate counts without exposing database-derived names."""
-        payload = self.to_dict()
-        known_ref_types = {ref_type for ref_type, _table, _column in validated_blob_ref_liveness_joins()}
-        ref_type_counts = self.ref_type_counts or {}
-        payload["ref_type_counts"] = {
-            ref_type: count for ref_type, count in ref_type_counts.items() if ref_type in known_ref_types
-        }
-        payload.pop("unknown_ref_types", None)
-        payload["unknown_ref_type_count"] = sum(
-            count for ref_type, count in ref_type_counts.items() if ref_type not in known_ref_types
-        )
-        return payload
-
-
-def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus:
-    """Project the canonical blob-ref classifier into the GC census surface."""
-    if not _table_exists(conn, "blob_refs") or not _blob_refs_has_ref_type_column(conn):
-        count = (
-            int(conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0]) if _table_exists(conn, "blob_refs") else 0
-        )
-        return OrphanedBlobRefCensus(total=0, by_ref_type={}, schema_unavailable_count=count)
-    from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
-
-    classification = classify_blob_ref_liveness(conn)
-    ref_type_counts = classification.ref_type_counts
-    unknown_ref_types = {ref_type: ref_type_counts[ref_type] for ref_type in classification.unknown_ref_types}
-    unavailable_ref_types = {ref_type: ref_type_counts[ref_type] for ref_type in classification.unavailable_ref_types}
-    deferred_by_ref_type = (
-        {"raw_payload": classification.rekeyable_hook_payload_count}
-        if classification.rekeyable_hook_payload_count
-        else {}
-    )
-    return OrphanedBlobRefCensus(
-        total=classification.orphaned_count,
-        by_ref_type=classification.orphaned_by_ref_type,
-        scanned_count=classification.scanned_count,
-        ref_type_counts=ref_type_counts,
-        unknown_ref_types=unknown_ref_types,
-        unavailable_ref_types=unavailable_ref_types,
-        deferred_by_ref_type=deferred_by_ref_type,
-    )
-
-
 __all__ = [
     "BlobGCResult",
     "LegacyBlobUnlinkResult",
@@ -1820,8 +1693,6 @@ __all__ = [
     "GCGenerationAbandonmentState",
     "PendingGCGeneration",
     "GCRunEvidence",
-    "OrphanedBlobRefCensus",
-    "census_orphaned_blob_refs",
     "inspect_blob_liveness",
     "inspect_gc_generation_abandonment",
     "inspect_pending_gc_generations",

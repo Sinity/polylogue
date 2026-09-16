@@ -430,6 +430,22 @@ class OwnedArchiveLocation:
         self.root_identity = root_identity
 
     @property
+    def holds_ownership(self) -> bool:
+        """Whether this token actually acquired the lock and still holds it.
+
+        The public constructor leaves ``_fd`` None and ``release()`` returns an
+        acquired instance to that same state, so the field is the only witness
+        that distinguishes a real proof from a shaped-like-one token.  The
+        process-local registry must still name this descriptor: a second token
+        that released the last reference has already unlocked and closed it.
+        """
+        if self._fd is None or self._root_fd < 0:
+            return False
+        with _LOCAL_ARCHIVE_OWNERS_LOCK:
+            existing = _LOCAL_ARCHIVE_OWNERS.get(self.root_identity)
+        return existing is not None and existing[0] == self._fd
+
+    @property
     def directory_fd(self) -> int:
         """Return the descriptor that pins the owned archive-root directory."""
         if self._root_fd < 0:
@@ -528,6 +544,10 @@ def assert_owns_archive_location(owned: OwnedArchiveLocation, location: ArchiveL
     promotion) must fail here rather than let the caller silently write
     against tiers it never actually claimed.
     """
+    if not owned.holds_ownership:
+        raise ArchiveOwnershipError(
+            f"archive ownership proof was never acquired or has been released: root={owned.location.configured_root}"
+        )
     if owned.location.configured_root != location.configured_root:
         raise ArchiveOwnershipError(
             "archive ownership proof does not cover this location: "

@@ -603,7 +603,7 @@ def _authoritative_archive_embedding_state(
             counts=None,
             reason=f"sqlite_vec_unavailable: {error}" if error is not None else "sqlite_vec_unavailable",
         )
-    relation = archive_embeddable_messages_relation(conn, alias="desired", model=recipe.model)
+    relation = archive_embeddable_messages_relation(conn, alias="desired", recipe=recipe)
     sql = f"""
         WITH desired_messages AS (
             SELECT message_id, session_id, content_hash, vector_derivation_hash FROM {relation}
@@ -1186,8 +1186,11 @@ def _archive_embedding_status_payload(
                 conn,
                 timeout_ms=candidate_prose_timeout_ms,
             )
-            configured_model = settings.configured_model or ""
-            messages_ref = archive_embeddable_messages_relation(conn, alias="m", model=configured_model)
+            configured_recipe = EmbeddingRecipe.current(
+                model=settings.configured_model or "",
+                dimensions=settings.configured_dimension or 0,
+            )
+            messages_ref = archive_embeddable_messages_relation(conn, alias="m", recipe=configured_recipe)
             meta_join = (
                 f"LEFT JOIN {meta_table} em ON em.vector_derivation_hash = r.vector_derivation_hash" if has_meta else ""
             )

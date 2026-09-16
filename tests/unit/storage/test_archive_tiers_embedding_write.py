@@ -315,3 +315,61 @@ def test_acknowledging_retryable_failure_stops_auto_requeue_but_stays_blocked(tm
     after = read_embedding_status(conn, "codex-session:flaky")
     assert after.needs_reindex is False
     assert after.error_message == "Embedding generation timed out"
+
+
+def test_sql_and_python_vector_addresses_agree_at_a_non_1024_dimension(tmp_path: Path) -> None:
+    """Selection-time (SQL) and embed-time (Python) addresses use the same recipe.
+
+    ``_vector_derivation_hash_sql`` used to rebuild ``EmbeddingRecipe.current``
+    with a hardcoded ``dimensions=1024``, so at any other configured dimension
+    the address the selection relation computed never matched the address the
+    embed path stored: every message stayed pending and re-embedded forever.
+
+    Anti-vacuity: the recipe below is deliberately 512-dimensional.  Restoring
+    the hardcoded 1024 makes the SQL address differ from
+    ``vector_derivation_hash(recipe=...)`` and the equality assertion is red,
+    while the inequality assertion proves the two dimensions really do address
+    differently (so the test is not comparing a dimension-blind hash to
+    itself).
+    """
+    from polylogue.storage.embeddings.identity import (
+        EmbeddingRecipe,
+        register_embedding_identity_sql,
+        vector_derivation_hash,
+    )
+    from polylogue.storage.embeddings.materialization import archive_embeddable_messages_relation
+
+    text = "a deterministic prose body"
+    recipe_512 = EmbeddingRecipe.current(model="voyage-4", dimensions=512)
+    recipe_1024 = EmbeddingRecipe.current(model="voyage-4", dimensions=1024)
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        register_embedding_identity_sql(conn, recipe=recipe_512)
+        register_embedding_identity_sql(conn, recipe=recipe_1024)
+        sql_512 = conn.execute(
+            "SELECT polylogue_vector_derivation_hash(?, ?)", (recipe_512.recipe_hash, text)
+        ).fetchone()[0]
+        sql_1024 = conn.execute(
+            "SELECT polylogue_vector_derivation_hash(?, ?)", (recipe_1024.recipe_hash, text)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    assert bytes(sql_512) == vector_derivation_hash(recipe=recipe_512, input_text=text)
+    assert bytes(sql_1024) == vector_derivation_hash(recipe=recipe_1024, input_text=text)
+    assert bytes(sql_512) != bytes(sql_1024)
+
+    # The generated relation carries the recipe hash, not a model name, so the
+    # selection SQL cannot address with a different recipe than the one the
+    # embed path was configured with.
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute(
+            "CREATE TABLE messages (message_id TEXT, session_id TEXT, role TEXT, text TEXT, content_hash BLOB)"
+        )
+        relation = archive_embeddable_messages_relation(conn, alias="m", recipe=recipe_512)
+    finally:
+        conn.close()
+    assert recipe_512.recipe_hash.hex() in relation
+    assert recipe_1024.recipe_hash.hex() not in relation

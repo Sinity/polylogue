@@ -482,3 +482,37 @@ def test_assert_owns_archive_location_rejects_stale_generation_after_pointer_rot
             assert_owns_archive_location(owned, rotated)
     finally:
         owned.release()
+
+
+def test_assert_owns_archive_location_rejects_a_never_acquired_or_released_token(tmp_path: Path) -> None:
+    """Ownership validation proves acquisition happened and still holds.
+
+    Anti-vacuity: both tokens here satisfy every other check the function
+    makes -- same configured root, same root identity, same active generation.
+    Only the acquisition witness separates them from a real proof, so deleting
+    the ``holds_ownership`` gate makes both assertions pass.
+    """
+
+    root = tmp_path / "a"
+    _touch_tiers(root)
+    location = ArchiveLocation.resolve(root)
+
+    # 1. Constructed directly: the public constructor never takes the lock.
+    root_fd = archive_identity._open_archive_root_fd(location.configured_root)
+    try:
+        metadata = os.fstat(root_fd)
+        unacquired = OwnedArchiveLocation(location, root_fd=root_fd, root_identity=(metadata.st_dev, metadata.st_ino))
+        assert unacquired.holds_ownership is False
+        with pytest.raises(ArchiveOwnershipError, match="never acquired or has been released"):
+            assert_owns_archive_location(unacquired, location)
+    finally:
+        os.close(root_fd)
+
+    # 2. Acquired then released: the token returns to the same shape.
+    owned = OwnedArchiveLocation.acquire(location)
+    assert owned.holds_ownership is True
+    assert_owns_archive_location(owned, location)
+    owned.release()
+    assert owned.holds_ownership is False
+    with pytest.raises(ArchiveOwnershipError, match="never acquired or has been released"):
+        assert_owns_archive_location(owned, location)

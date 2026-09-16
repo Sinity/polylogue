@@ -496,3 +496,53 @@ def test_reopening_a_current_tier_does_not_reapply_its_whole_ddl(tmp_path: Path)
 
     reapplied = {name: count for name, count in archive_tier_init_counts().items() if name.endswith(".ddl_reapply")}
     assert reapplied == {}
+
+
+def test_same_version_embeddings_open_loads_sqlite_vec(tmp_path: Path) -> None:
+    """A reopened embeddings tier gets the extension the fresh-init path loads.
+
+    sqlite-vec state is connection-local, so a same-version open that skipped
+    loading returned a connection on which every ``vec0`` query fails with
+    "no such module".  Anti-vacuity: deleting the EMBEDDINGS branch from
+    ``converge_same_version_tier`` makes the vec0 query below raise
+    ``sqlite3.OperationalError`` instead of returning a row count.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        archive_tier_spec,
+        initialize_active_archive_root,
+        open_initialized_tier_connection,
+    )
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+
+    path = root / archive_tier_spec(ArchiveTier.EMBEDDINGS).filename
+    connection = open_initialized_tier_connection(path, ArchiveTier.EMBEDDINGS)
+    try:
+        connection.execute("CREATE VIRTUAL TABLE temp.vec_probe USING vec0(embedding float[2])")
+        assert connection.execute("SELECT COUNT(*) FROM temp.vec_probe").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_same_version_embeddings_open_refuses_without_sqlite_vec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same-version path refuses like the fresh-init path when the extension is absent.
+
+    Anti-vacuity: without the EMBEDDINGS branch the open silently succeeds and
+    hands back an unusable connection, so ``pytest.raises`` is red.
+    """
+    from polylogue.storage.sqlite.archive_tiers import bootstrap as bootstrap_module
+
+    root = tmp_path / "archive"
+    bootstrap_module.initialize_active_archive_root(root)
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "try_load_sqlite_vec",
+        lambda conn: (False, RuntimeError("sqlite-vec unavailable")),
+    )
+    path = root / bootstrap_module.archive_tier_spec(ArchiveTier.EMBEDDINGS).filename
+    with pytest.raises(RuntimeError, match="requires sqlite-vec"):
+        bootstrap_module.open_initialized_tier_connection(path, ArchiveTier.EMBEDDINGS)

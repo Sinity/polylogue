@@ -249,10 +249,24 @@ def vector_derivation_hash(
     return EmbeddingRequestSpec(recipe=recipe, input_text=input_text).vector_derivation_hash
 
 
-def _vector_derivation_hash_sql(model: object, input_text: object) -> bytes | None:
-    if model is None or input_text is None:
+# Recipes registered for SQL-side vector addressing, keyed by their own
+# recipe hash. The SQL function receives that hash as a literal rather than a
+# model name, so selection-time addresses are built from the *whole* configured
+# recipe -- model, dimensions and request shape -- exactly as the embed path
+# builds them. Addressing by model alone forced a hardcoded ``dimensions=1024``
+# here, so at any other configured dimension selection and embed disagreed and
+# every message stayed pending forever (polylogue-crcst).
+_SQL_RECIPES_BY_HASH: dict[bytes, EmbeddingRecipe] = {}
+
+
+def _vector_derivation_hash_sql(recipe_hash: object, input_text: object) -> bytes | None:
+    if recipe_hash is None or input_text is None:
         return None
-    return vector_derivation_hash(model=str(model), input_text=str(input_text))
+    key = _identity_bytes(recipe_hash)
+    recipe = _SQL_RECIPES_BY_HASH.get(key)
+    if recipe is None:
+        raise ValueError(f"no embedding recipe registered for recipe_hash {key.hex()}")
+    return vector_derivation_hash(recipe=recipe, input_text=str(input_text))
 
 
 def sql_string_literal(value: str) -> str:
@@ -312,8 +326,16 @@ class _EmbeddingSourceHashAggregate:
         return digest.digest()
 
 
-def register_embedding_identity_sql(conn: sqlite3.Connection) -> None:
-    """Install deterministic identity helpers used by the shared stale predicate."""
+def register_embedding_identity_sql(conn: sqlite3.Connection, *, recipe: EmbeddingRecipe | None = None) -> None:
+    """Install deterministic identity helpers used by the shared stale predicate.
+
+    ``recipe`` is the configured embedding recipe whose addresses the generated
+    SQL will build.  It is registered by its own recipe hash so the SQL carries
+    the whole recipe, not just its model name.
+    """
+
+    if recipe is not None:
+        _SQL_RECIPES_BY_HASH[recipe.recipe_hash] = recipe
 
     # typeshed's _AggregateProtocol.step is narrowly typed for the single-int-arg
     # case; sqlite3 itself accepts any step arity matching n_arg (1 here).

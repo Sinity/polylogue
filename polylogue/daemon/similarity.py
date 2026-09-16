@@ -46,6 +46,7 @@ from typing import Final, cast
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.errors import DatabaseError
+from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -168,8 +169,20 @@ def _build_archive_similar_payload(
         try:
             query_result = run_coroutine_sync(query())
         except (DatabaseError, ValueError) as exc:
-            status = "unavailable" if "extension" in str(exc).lower() else "not_embedded"
-            envelope = _empty_envelope(status, reason="sqlite_vec_not_loaded" if status == "unavailable" else None)
+            # "not_embedded" is a measured negative content fact. Only a
+            # condition that actually proves absence may be reported as one:
+            # retryable contention and unreadable storage are typed
+            # unavailable, because the question was never answered.
+            cause = exc.__cause__ if isinstance(exc.__cause__, BaseException) else exc
+            if is_transient_sqlite_lock(exc) or is_transient_sqlite_lock(cause):
+                status, reason = "unavailable", "sqlite_contention"
+            elif is_corrupt_sqlite_database(exc) or is_corrupt_sqlite_database(cause):
+                status, reason = "unavailable", "embeddings_db_unreadable"
+            elif "extension" in str(exc).lower():
+                status, reason = "unavailable", "sqlite_vec_not_loaded"
+            else:
+                status, reason = "not_embedded", None
+            envelope = _empty_envelope(status, reason=reason)
             envelope["session_id"] = session_id
             envelope["limit"] = bounded_limit
             return envelope

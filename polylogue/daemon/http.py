@@ -35,7 +35,7 @@ from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
-from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
 from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
@@ -623,6 +623,15 @@ def _session_list_state(outcome: OutcomeEnvelope, *, filtered: bool) -> tuple[Ro
 
 
 def _search_index_degraded_reason(exc: BaseException) -> str | None:
+    # A corrupt or contended database raised against ``messages_fts`` matches
+    # the same substrings as a genuinely missing FTS table.  Reporting it as
+    # ordinary missing-index degradation tells the operator to reindex when
+    # the storage itself is unreadable or merely busy, so both are classified
+    # by SQLite's result metadata first and named for what they are.
+    if is_corrupt_sqlite_database(exc):
+        return "Search index unavailable: the archive database is unreadable (corrupt or I/O error)."
+    if is_transient_sqlite_lock(exc):
+        return "Search index unavailable: the archive database is busy; retry shortly."
     text = str(exc).lower()
     if "search index" in text or "messages_fts" in text or "fts" in text:
         return "Search index unavailable: message FTS table is missing or degraded."

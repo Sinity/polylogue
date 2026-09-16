@@ -127,35 +127,6 @@ reset**. Reset is the only one that destroys primary data.
 
 ## Subcommands
 
-### `polylogue ops maintenance blob-reference-liveness` - historical blob-ref reconciliation
-
-Read-only by default. It classifies source-tier `blob_refs` rows with the
-actual referent join for each `ref_type`; source-tier `attachment` refs join
-`raw_sessions.raw_id` because they are keyed by the parent raw acquisition,
-not by index-tier `attachment_refs` or `raw_artifacts.artifact_id`.
-`hook_payload` refs join `raw_hook_events.hook_event_id`. Unknown or unavailable
-ref types are counted as explicit census dispositions and block an apply; blob
-GC also retains their bytes until a typed disposition is available. The
-command never deletes blob files. Use `--census-only` for the privacy-safe
-production census. It returns counts and dispositions only, without reference
-identifiers, source paths, hashes, or unknown reference-type names.
-
-```bash
-polylogue ops maintenance blob-reference-liveness --output-format json
-polylogue ops maintenance blob-reference-liveness --census-only --output-format json
-polylogue ops maintenance blob-reference-liveness --apply \
-  --backup-manifest /path/to/verified-source-backup-manifest.json \
-  --receipt-file /path/to/new/blob-ref-liveness.jsonl \
-  --output-format json
-```
-
-The apply command requires the daemon and all archive writers to be stopped,
-an existing verified backup manifest covering the current `source.db`, and a
-new receipt path that does not already exist. It revalidates the backup and
-reclassifies under `BEGIN IMMEDIATE` before fsyncing the prepared receipt and
-deleting the exact candidate set. Review the receipt's final `committed` line
-before treating the pass as complete.
-
 ### `polylogue ops maintenance blob-disposition` — physical namespace disposition
 
 One-time transition tooling for the blob-store maneuver. `plan` is read-only:

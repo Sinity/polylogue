@@ -1239,12 +1239,10 @@ def _load_revision_applications(
             if "raw_id" not in columns:
                 return (), False
             selected = [name if name in columns else f"NULL AS {name}" for name in ("raw_id", "decision", "detail")]
-            observed_candidates = [
-                name
-                for name in ("applied_at_ms", "observed_at_ms", "created_at_ms", "updated_at_ms")
-                if name in columns
-            ]
-            observed_expr = f"COALESCE({', '.join(observed_candidates)}, 0)" if observed_candidates else "rowid"
+            # ``decided_at_ms`` is the table's only timestamp column
+            # (RAW_REVISION_APPLICATIONS_SPEC); rowid is the insertion-order
+            # fallback for an index.db that predates it.
+            observed_expr = "decided_at_ms" if "decided_at_ms" in columns else "rowid"
             selected.append(f"{observed_expr} AS observed_at_ms")
             sql = (
                 f"SELECT {', '.join(selected)} FROM raw_revision_applications "
