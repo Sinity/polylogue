@@ -37,7 +37,12 @@ from polylogue.maintenance.blob_disposition_apply import (
     restore_plan_members,
     write_receipt,
 )
-from polylogue.sources.hooks import read_hook_spool_record
+from polylogue.sources.hooks import (
+    append_hook_event,
+    hook_carrier_dir,
+    hook_carrier_provider_dir,
+    validated_hook_record,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -58,10 +63,9 @@ def _hook_envelope(event_id: str = "event-1", *, text: str = "ran a tool") -> di
     }
 
 
-def _stored_bytes(envelope: dict[str, object], tmp_path: Path) -> bytes:
-    scratch = tmp_path / f"scratch-{envelope['event_id']}.json"
-    scratch.write_text(json.dumps(envelope, sort_keys=True), encoding="utf-8")
-    return json.dumps(read_hook_spool_record(scratch), ensure_ascii=False, sort_keys=True, indent=1).encode("utf-8")
+def _stored_bytes(envelope: dict[str, object]) -> bytes:
+    """Serialize the validated record the way acquisition stored it."""
+    return json.dumps(validated_hook_record(envelope), ensure_ascii=False, sort_keys=True, indent=1).encode("utf-8")
 
 
 def _capture_bytes(
@@ -116,12 +120,23 @@ def _revision_pair(session_id: str) -> tuple[bytes, bytes]:
 _EARLIER_CAPTURE, _LATER_CAPTURE = _revision_pair("conv-revised")
 
 
-def _write_spool_file(root: Path, envelope: dict[str, object]) -> Path:
-    target = root / "pending" / "2026-07-15"
-    target.mkdir(parents=True, exist_ok=True)
-    path = target / f"{envelope['event_id']}.json"
-    path.write_text(json.dumps(envelope, ensure_ascii=False, sort_keys=True, indent=4), encoding="utf-8")
-    return path
+def _append_carrier(root: Path, envelope: dict[str, object]) -> Path:
+    """Append one event to a spool root's carriers, as a producer would."""
+    return append_hook_event(
+        root=root,
+        event_id=str(envelope["event_id"]),
+        event_type=str(envelope["event_type"]),
+        session_id=str(envelope["session_id"]),
+        provider=str(envelope["provider"]),
+        timestamp=str(envelope["timestamp"]),
+        payload=dict(envelope["payload"]),  # type: ignore[arg-type]
+    )
+
+
+def _carrier_lines(carrier: Path) -> list[dict[str, object]]:
+    payload = carrier.read_bytes()
+    assert payload.endswith(b"\n"), payload
+    return [json.loads(line) for line in payload.splitlines()]
 
 
 def _stub_archive(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
@@ -246,7 +261,7 @@ def test_restoration_publishes_into_the_ordinary_spool_and_keeps_the_carrier(tmp
     archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
     store = BlobStore(blob_root)
     envelope = _hook_envelope("sole-copy")
-    blob_hash, _ = store.write_from_bytes(_stored_bytes(envelope, tmp_path))
+    blob_hash, _ = store.write_from_bytes(_stored_bytes(envelope))
     plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
     assert plan.members[0].disposition is BlobDisposition.RESTORE_REQUIRED
 
@@ -261,31 +276,35 @@ def test_restoration_publishes_into_the_ordinary_spool_and_keeps_the_carrier(tmp
     assert result.outcome is RestorationOutcome.RESTORED
     restored = Path(result.spool_path)
     assert restored.is_file()
-    assert read_hook_spool_record(restored) == json.loads(store.blob_path(blob_hash).read_bytes())
+    assert restored.is_relative_to(hook_carrier_dir(hooks_root))
+    (line,) = _carrier_lines(restored)
+    assert line == json.loads(store.blob_path(blob_hash).read_bytes())
     assert store.blob_path(blob_hash).is_file()
 
 
 def test_restoration_is_idempotent_by_logical_identity(tmp_path: Path) -> None:
-    """Anti-vacuity: matching only today's day shard double-delivers a retry.
+    """Anti-vacuity: looking only in the carrier this process would append to
+    double-delivers a retry.
 
-    ``enqueue_hook_event`` refuses a collision inside the current day's shard
-    only, so a resident event spooled on any other day must be found by
-    identity or the retry writes a second carrier of the same event.
+    A restored event lands in whatever carrier the publishing process owned
+    that day. A second pass -- another process, another day -- must find it by
+    identity anywhere under ``carriers/`` or it appends a second line of the
+    same event.
     """
     archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
     store = BlobStore(blob_root)
     envelope = _hook_envelope("sole-copy")
-    store.write_from_bytes(_stored_bytes(envelope, tmp_path))
+    store.write_from_bytes(_stored_bytes(envelope))
     plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
 
     (first,) = restore_plan_members(
         plan, context=context, hook_spool_root=hooks_root, browser_capture_spool=capture_spool, dry_run=False
     )
-    # Relocate the restored carrier into another day's shard: the retry must
-    # still recognize it rather than publish a second copy.
-    relocated = hooks_root / "pending" / "2026-07-15"
+    # Relocate the restored carrier into another process's day shard: the
+    # retry must still recognize it rather than publish a second copy.
+    relocated = hook_carrier_provider_dir("claude-code", hooks_root) / "2026-07-15"
     relocated.mkdir(parents=True, exist_ok=True)
-    Path(first.spool_path).rename(relocated / "sole-copy.json")
+    Path(first.spool_path).rename(relocated / "999999.ndjson")
 
     (second,) = restore_plan_members(
         plan, context=context, hook_spool_root=hooks_root, browser_capture_spool=capture_spool, dry_run=False
@@ -293,20 +312,22 @@ def test_restoration_is_idempotent_by_logical_identity(tmp_path: Path) -> None:
 
     assert first.outcome is RestorationOutcome.RESTORED
     assert second.outcome is RestorationOutcome.RESTORATION_ALREADY_PRESENT
-    assert [path.name for path in hooks_root.rglob("*.json")] == ["sole-copy.json"]
+    carriers = sorted(hook_carrier_dir(hooks_root).rglob("*.ndjson"))
+    assert [path.name for path in carriers] == ["999999.ndjson"]
+    assert len(_carrier_lines(carriers[0])) == 1
 
 
 def test_an_acknowledged_receipt_does_not_count_as_a_restored_copy(tmp_path: Path) -> None:
     """Anti-vacuity: an rglob over the whole spool root reports this already present.
 
     The event would then be recorded as restored while living only in
-    ``acknowledged/``, which no drain and no watcher reads -- and the carrier
-    becomes deletable on that report.
+    ``acknowledged/``, which the legacy fold retired and nothing acquires --
+    and the blob becomes deletable on that report.
     """
     archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
     store = BlobStore(blob_root)
     envelope = _hook_envelope("acknowledged-only")
-    store.write_from_bytes(_stored_bytes(envelope, tmp_path))
+    store.write_from_bytes(_stored_bytes(envelope))
     receipt = hooks_root / "acknowledged" / "2026-07-15"
     receipt.mkdir(parents=True)
     (receipt / "acknowledged-only.json").write_text(
@@ -320,8 +341,9 @@ def test_an_acknowledged_receipt_does_not_count_as_a_restored_copy(tmp_path: Pat
 
     assert result.outcome is RestorationOutcome.RESTORED
     restored = Path(result.spool_path)
-    assert restored.is_relative_to(hooks_root / "pending")
-    assert read_hook_spool_record(restored) == read_hook_spool_record(receipt / "acknowledged-only.json")
+    assert restored.is_relative_to(hook_carrier_dir(hooks_root))
+    (line,) = _carrier_lines(restored)
+    assert line == validated_hook_record(json.loads((receipt / "acknowledged-only.json").read_text()))
     assert (receipt / "acknowledged-only.json").is_file()
 
 
@@ -329,12 +351,8 @@ def test_restoration_blocks_on_a_hostile_collision(tmp_path: Path) -> None:
     """Anti-vacuity: overwriting on identity collision loses the resident event."""
     archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
     store = BlobStore(blob_root)
-    store.write_from_bytes(_stored_bytes(_hook_envelope("collide", text="the stored call"), tmp_path))
-    resident = hooks_root / "pending" / "2026-07-15"
-    resident.mkdir(parents=True)
-    (resident / "collide.json").write_text(
-        json.dumps(_hook_envelope("collide", text="a different call"), sort_keys=True), encoding="utf-8"
-    )
+    store.write_from_bytes(_stored_bytes(_hook_envelope("collide", text="the stored call")))
+    resident = _append_carrier(hooks_root, _hook_envelope("collide", text="a different call"))
     plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
 
     (result,) = restore_plan_members(
@@ -343,7 +361,9 @@ def test_restoration_blocks_on_a_hostile_collision(tmp_path: Path) -> None:
 
     assert result.outcome is RestorationOutcome.BLOCKED
     assert "different event" in result.detail
-    assert json.loads((resident / "collide.json").read_text())["payload"]["detail"] == "a different call"
+    # The resident line is untouched and no second line of the identity landed.
+    (line,) = _carrier_lines(resident)
+    assert line["payload"] == {"tool_name": "Bash", "detail": "a different call"}
 
 
 def test_material_a_configured_source_already_holds_is_not_published_twice(tmp_path: Path) -> None:
@@ -359,11 +379,11 @@ def test_material_a_configured_source_already_holds_is_not_published_twice(tmp_p
     legacy_root.mkdir()
     store = BlobStore(blob_root)
     envelope = _hook_envelope("late-arrival")
-    store.write_from_bytes(_stored_bytes(envelope, tmp_path))
+    store.write_from_bytes(_stored_bytes(envelope))
     plan, _ = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
     assert plan.members[0].disposition is BlobDisposition.RESTORE_REQUIRED
 
-    resident = _write_spool_file(legacy_root, envelope)
+    resident = _append_carrier(legacy_root, envelope)
     _, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
 
     (result,) = restore_plan_members(
@@ -372,7 +392,7 @@ def test_material_a_configured_source_already_holds_is_not_published_twice(tmp_p
 
     assert result.outcome is RestorationOutcome.RESTORATION_ALREADY_PRESENT
     assert Path(result.spool_path) == resident
-    assert list(hooks_root.rglob("*.json")) == []
+    assert list(hooks_root.rglob("*.ndjson")) == []
 
 
 def test_restoration_proceeds_while_other_members_are_unresolved(tmp_path: Path) -> None:
@@ -383,7 +403,7 @@ def test_restoration_proceeds_while_other_members_are_unresolved(tmp_path: Path)
     """
     archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
     store = BlobStore(blob_root)
-    sole_hash, _ = store.write_from_bytes(_stored_bytes(_hook_envelope("sole-copy"), tmp_path))
+    sole_hash, _ = store.write_from_bytes(_stored_bytes(_hook_envelope("sole-copy")))
     mystery_hash, _ = store.write_from_bytes(b"%PDF-1.5\nunexplained\n")
     _stub_reference(archive_root / "source.db", mystery_hash)
     plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
@@ -402,9 +422,9 @@ def test_a_stale_authorized_digest_refuses_before_any_effect(tmp_path: Path) -> 
     archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
-    _write_spool_file(legacy_root, envelope)
+    _append_carrier(legacy_root, envelope)
     store = BlobStore(blob_root)
-    blob_hash, _ = store.write_from_bytes(_stored_bytes(envelope, tmp_path))
+    blob_hash, _ = store.write_from_bytes(_stored_bytes(envelope))
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
 
     receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False, authorized_digest="0" * 64)
@@ -420,9 +440,9 @@ def test_an_active_writer_refuses_an_active_apply(tmp_path: Path) -> None:
     archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
-    _write_spool_file(legacy_root, envelope)
+    _append_carrier(legacy_root, envelope)
     store = BlobStore(blob_root)
-    blob_hash, _ = store.write_from_bytes(_stored_bytes(envelope, tmp_path))
+    blob_hash, _ = store.write_from_bytes(_stored_bytes(envelope))
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
 
     receipt = _apply(
@@ -447,12 +467,8 @@ def test_a_blocked_restoration_keeps_its_carrier_in_the_namespace(tmp_path: Path
     verified copy of the material must be in a spool before the blob may go.
     """
     archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
-    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(_hook_envelope("collide", text="stored"), tmp_path))
-    resident = hooks_root / "pending" / "2026-07-15"
-    resident.mkdir(parents=True)
-    (resident / "collide.json").write_text(
-        json.dumps(_hook_envelope("collide", text="a different call"), sort_keys=True), encoding="utf-8"
-    )
+    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(_hook_envelope("collide", text="stored")))
+    _append_carrier(hooks_root, _hook_envelope("collide", text="a different call"))
     plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
     assert plan.members[0].disposition is BlobDisposition.RESTORE_REQUIRED
 
@@ -698,8 +714,8 @@ def test_a_referenced_member_is_never_deleted(tmp_path: Path) -> None:
     archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
-    _write_spool_file(legacy_root, envelope)
-    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope, tmp_path))
+    _append_carrier(legacy_root, envelope)
+    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope))
     _reference(archive_root, blob_hash)
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
     assert plan.members[0].disposition is BlobDisposition.SOURCE_PRESENT and plan.members[0].referenced
@@ -750,8 +766,8 @@ def test_a_referenced_unresolved_member_stays_while_the_rest_is_applied(tmp_path
     archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
-    _write_spool_file(legacy_root, envelope)
-    proven_hash, proven_path = _store_aged(blob_root, _stored_bytes(envelope, tmp_path))
+    _append_carrier(legacy_root, envelope)
+    proven_hash, proven_path = _store_aged(blob_root, _stored_bytes(envelope))
     mystery_hash, mystery_path = _store_aged(blob_root, b"%PDF-1.5\nunexplained\n")
     _reference(archive_root, mystery_hash)
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
@@ -830,9 +846,9 @@ def test_a_dry_rehearsal_is_inert_and_reports_the_active_totals(tmp_path: Path) 
     archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     proven = _hook_envelope("proven")
-    _write_spool_file(legacy_root, proven)
-    proven_hash, proven_path = _store_aged(blob_root, _stored_bytes(proven, tmp_path))
-    sole_hash, sole_path = _store_aged(blob_root, _stored_bytes(_hook_envelope("sole-copy"), tmp_path))
+    _append_carrier(legacy_root, proven)
+    proven_hash, proven_path = _store_aged(blob_root, _stored_bytes(proven))
+    sole_hash, sole_path = _store_aged(blob_root, _stored_bytes(_hook_envelope("sole-copy")))
     stray = blob_root / "ab"
     stray.mkdir(exist_ok=True)
     (stray / "index.db-wal").write_bytes(b"stale write-ahead log\n")
@@ -843,7 +859,7 @@ def test_a_dry_rehearsal_is_inert_and_reports_the_active_totals(tmp_path: Path) 
     assert rehearsal.ok and rehearsal.dry_run
     assert proven_path.is_file() and sole_path.is_file()
     assert (stray / "index.db-wal").is_file()
-    assert list(hooks_root.rglob("*.json")) == []
+    assert list(hooks_root.rglob("*.ndjson")) == []
 
     active = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
 
@@ -866,8 +882,8 @@ def test_a_second_pass_reports_what_a_previous_pass_already_deleted(tmp_path: Pa
     archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
-    _write_spool_file(legacy_root, envelope)
-    _store_aged(blob_root, _stored_bytes(envelope, tmp_path))
+    _append_carrier(legacy_root, envelope)
+    _store_aged(blob_root, _stored_bytes(envelope))
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
 
     first = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
@@ -883,9 +899,9 @@ def test_receipt_totals_and_cohorts_derive_from_member_outcomes(tmp_path: Path) 
     """Anti-vacuity: a summary counter maintained beside the members can drift."""
     archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
-    _write_spool_file(legacy_root, _hook_envelope("proven"))
-    _store_aged(blob_root, _stored_bytes(_hook_envelope("proven"), tmp_path))
-    _store_aged(blob_root, _stored_bytes(_hook_envelope("sole-copy"), tmp_path))
+    _append_carrier(legacy_root, _hook_envelope("proven"))
+    _store_aged(blob_root, _stored_bytes(_hook_envelope("proven")))
+    _store_aged(blob_root, _stored_bytes(_hook_envelope("sole-copy")))
     mystery_hash, mystery_path = _store_aged(blob_root, b"%PDF-1.5\nunexplained\n")
     _reference(archive_root, mystery_hash)
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
@@ -921,8 +937,8 @@ def test_a_source_tier_without_the_gc_ledger_unlinks_unreferenced_candidates_dir
     archive_root, blob_root, hooks_root, capture_spool = _archive_without_gc_generation_ledger(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
-    _write_spool_file(legacy_root, envelope)
-    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope, tmp_path))
+    _append_carrier(legacy_root, envelope)
+    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope))
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
 
     receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
@@ -942,8 +958,8 @@ def test_legacy_fallback_keeps_an_index_only_attachment_in_dry_and_active_runs(t
     archive_root, blob_root, hooks_root, capture_spool = _archive_without_gc_generation_ledger(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
-    _write_spool_file(legacy_root, envelope)
-    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope, tmp_path))
+    _append_carrier(legacy_root, envelope)
+    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope))
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
     with sqlite3.connect(archive_root / "index.db") as conn:
         conn.execute(
@@ -964,8 +980,8 @@ def test_legacy_fallback_refuses_when_index_liveness_evidence_is_unavailable(tmp
     archive_root, blob_root, hooks_root, capture_spool = _archive_without_gc_generation_ledger(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
-    _write_spool_file(legacy_root, envelope)
-    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope, tmp_path))
+    _append_carrier(legacy_root, envelope)
+    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope))
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
     with sqlite3.connect(archive_root / "index.db") as conn:
         conn.execute("DROP TABLE attachments")

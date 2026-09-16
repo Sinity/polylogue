@@ -30,17 +30,29 @@ from polylogue.hooks import (
     resolve_events,
     settings_path,
 )
-from polylogue.sources.hook_producer import enqueue_event
-from polylogue.sources.hooks import pending_hook_spool_dir
+from polylogue.sources.hook_producer import append_event, day_shard
+from polylogue.sources.hooks import hook_carrier_dir, hook_carrier_provider_dir
 
 # Every module the producer may import, module scope or nested. ``uuid``,
-# ``re`` and ``contextlib`` are absent deliberately -- each costs more to
-# import than it saves, and each has a cheaper equivalent already in use.
-# ``pathlib`` and ``tempfile`` are in because they carry the durable-write
-# shapes the ``patterns`` gate recognizes.
-_ALLOWED_IMPORTS = frozenset({"__future__", "datetime", "json", "os", "pathlib", "sys", "tempfile", "types"})
+# ``re``, ``contextlib`` and ``tempfile`` are absent deliberately -- each
+# costs more to import than it saves, and each has a cheaper equivalent
+# already in use. ``tempfile`` left when the producer stopped publishing by
+# temp-file-and-rename: a carrier line is one ``O_APPEND`` write, so nothing
+# on this path needs it any more.
+_ALLOWED_IMPORTS = frozenset({"__future__", "datetime", "json", "os", "pathlib", "sys", "types"})
 
 _PAYLOAD = '{"session_id":"producer-session","permission_mode":"bypassPermissions","tool_name":"Bash"}'
+
+
+def _carriers(root: Path, provider: str = "claude-code") -> list[Path]:
+    return sorted(hook_carrier_provider_dir(provider, root).rglob("*.ndjson"))
+
+
+def _carrier_records(carrier: Path) -> list[dict[str, object]]:
+    """Decode a carrier the way acquisition does: whole newline-terminated lines."""
+    payload = carrier.read_bytes()
+    assert payload.endswith(b"\n"), payload
+    return [json.loads(line) for line in payload.splitlines()]
 
 
 @pytest.fixture
@@ -125,19 +137,21 @@ def test_installed_command_records_an_event_without_importing_polylogue(isolated
         assert expensive not in loaded, f"{expensive} back on the capture path: {loaded}"
 
     sidecar = Path(argv[argv.index("--sidecar-dir") + 1])
-    pending = list(pending_hook_spool_dir(sidecar).rglob("*.json"))
-    assert len(pending) == 1
-    record = json.loads(pending[0].read_text(encoding="utf-8"))
+    (carrier,) = _carriers(sidecar)
+    # One carrier per producer process per UTC day per harness: the provider
+    # and the day are directory segments and the pid is the file name, so
+    # acquisition never opens a carrier to learn which provider wrote it.
+    assert carrier.relative_to(hook_carrier_dir(sidecar)).parts[:2] == ("claude-code", day_shard())
+    assert carrier.stem.isdigit(), carrier.name
+    (record,) = _carrier_records(carrier)
     assert record["event_type"] == "SessionStart"
     assert record["provider"] == "claude-code"
     assert record["session_id"] == "producer-session"
 
 
-def test_installed_command_and_library_enqueue_write_the_same_envelope(
-    isolated_hook_home: Path, tmp_path: Path
-) -> None:
-    """One implementation: the exec-cheap command and the in-process enqueue
-    agree on every envelope field the drain reads back."""
+def test_installed_command_and_library_append_write_the_same_envelope(isolated_hook_home: Path, tmp_path: Path) -> None:
+    """One implementation: the exec-cheap command and the in-process append
+    agree on every envelope field materialization reads back."""
 
     command = _install_session_start()
     argv = shlex.split(command)
@@ -145,19 +159,20 @@ def test_installed_command_and_library_enqueue_write_the_same_envelope(
     assert result.returncode == 0, result.stderr
 
     sidecar = Path(argv[argv.index("--sidecar-dir") + 1])
-    spooled = json.loads(next(iter(pending_hook_spool_dir(sidecar).rglob("*.json"))).read_text(encoding="utf-8"))
+    (spooled,) = _carrier_records(_carriers(sidecar)[0])
 
     library_root = tmp_path / "library-spool"
-    library_path = enqueue_event(
+    library_path = append_event(
         event_type="SessionStart",
         session_id="producer-session",
         provider="claude-code",
-        timestamp=spooled["timestamp"],
+        timestamp=str(spooled["timestamp"]),
         payload=json.loads(_PAYLOAD),
         root=str(library_root),
-        event_id=spooled["event_id"],
+        event_id=str(spooled["event_id"]),
     )
-    assert json.loads(Path(library_path).read_text(encoding="utf-8")) == spooled
+    (library_record,) = _carrier_records(Path(library_path))
+    assert library_record == spooled
 
 
 def test_console_script_commands_installed_earlier_are_still_owned(isolated_hook_home: Path) -> None:
@@ -240,7 +255,7 @@ def test_producer_refuses_a_payload_that_duplicates_transcript_content(isolated_
     assert "duplicated transcript" in result.stderr
     assert "Traceback" not in result.stderr
     sidecar = Path(argv[argv.index("--sidecar-dir") + 1])
-    assert list(pending_hook_spool_dir(sidecar).rglob("*.json")) == []
+    assert list(hook_carrier_dir(sidecar).rglob("*.ndjson")) == []
 
 
 @pytest.mark.parametrize(

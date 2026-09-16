@@ -1010,11 +1010,27 @@ def write_source_hook_event_batch(
     with conn if manage_transaction else nullcontext():
         for carried in events:
             require_vocabulary(carried.event.origin, Origin, field="hook_event.origin")
-            _insert_hook_event(conn, carried.event, blob_hash=carrier_blob_hash)
+            coordinate = hook_carrier_coordinate(carrier_relative_path, carried.byte_offset)
+            # A carrier grows, so a later revision retains a superset of an
+            # earlier one's bytes under a different blob hash. The event is the
+            # same evidence either way, and its FIRST-observed carrier blob is
+            # what the archive already recorded -- exactly the convention
+            # source-tier v36 set when it added this relation. Re-materializing
+            # therefore keeps the recorded blob rather than conflicting on it;
+            # a genuine disagreement about the event's own content still raises
+            # from _insert_hook_event.
+            observed_blob_hash = _first_observed_hook_blob_hash(
+                conn,
+                hook_event_id=carried.event.hook_event_id,
+                source_id=carrier_source_id,
+                relative_path=coordinate,
+            )
+            blob_hash = observed_blob_hash or carrier_blob_hash
+            _insert_hook_event(conn, carried.event, blob_hash=blob_hash)
             _insert_blob_ref(
                 conn,
                 ArchiveSourceBlobRef(
-                    blob_hash=carrier_blob_hash,
+                    blob_hash=blob_hash,
                     raw_id=carried.event.hook_event_id,
                     ref_type="hook_payload",
                     source_path=carrier_source_path,
@@ -1026,14 +1042,33 @@ def write_source_hook_event_batch(
             _insert_hook_event_carrier(
                 conn,
                 source_id=carrier_source_id,
-                relative_path=hook_carrier_coordinate(carrier_relative_path, carried.byte_offset),
+                relative_path=coordinate,
                 hook_event=carried.event,
-                blob_hash=carrier_blob_hash,
+                blob_hash=blob_hash,
                 role=carrier_role,
                 admitted_at_ms=acquired_at_ms,
             )
             written += 1
     return written
+
+
+def _first_observed_hook_blob_hash(
+    conn: sqlite3.Connection,
+    *,
+    hook_event_id: str,
+    source_id: str,
+    relative_path: str,
+) -> bytes | None:
+    """The carrier blob this event was first recorded against, if it was."""
+
+    row = conn.execute("SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = ?", (hook_event_id,)).fetchone()
+    if row is not None and row[0] is not None:
+        return bytes(row[0])
+    carrier = conn.execute(
+        "SELECT blob_hash FROM hook_event_carriers WHERE source_id = ? AND relative_path = ?",
+        (source_id, relative_path),
+    ).fetchone()
+    return bytes(carrier[0]) if carrier is not None else None
 
 
 def delete_source_hook_event(

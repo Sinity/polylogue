@@ -10,11 +10,11 @@ bytes match Hermes" is proven only against the fixture in this repository
 against a real Hermes build.
 
 Implementation: `polylogue/schemas/hermes_export_contract.py` (the export
-schema), `polylogue/sources/hooks.py` (the durable local event spool, general
+schema), `polylogue/sources/hooks.py` (the local event carriers, general
 across Claude Code/Codex/Hermes), `polylogue/sources/parsers/hermes_lifecycle.py`
 (the runtime lifecycle-event taxonomy and snapshot reconciliation). Tests:
 `tests/unit/sources/test_hermes_export_contract.py`,
-`tests/unit/sources/test_hook_spool.py` (Hermes parametrizations),
+`tests/unit/sources/test_hook_carriers.py` (Hermes parametrizations),
 `tests/unit/sources/parsers/test_hermes_lifecycle.py`.
 
 ## Why two channels, not one
@@ -28,7 +28,7 @@ never means lost history:
    consistent read transaction. This is the recovery source of record — if
    every runtime event for a session were lost, re-exporting the snapshot
    still reconstructs the full session.
-2. **Runtime lifecycle-event spool** (`sources/hooks.py`,
+2. **Runtime lifecycle-event carriers** (`sources/hooks.py`,
    `sources/parsers/hermes_lifecycle.py`): low-latency, high-frequency
    evidence about *what happened during* a session — model attempts/retries/
    fallbacks, tool start/finish/failure/denial, approvals, subagent start/
@@ -87,35 +87,30 @@ turn ends many times per session, but a session finalizes once. Conflating
 the two would make "session ended" ambiguous evidence for every consumer
 downstream (forensics, cost reconciliation, recall auditing).
 
-## Delivery: durable local spool, with file-watch fallback
+## Delivery: append-only local carriers, acquired like any other source
 
-Producers call `polylogue.sources.hooks.enqueue_hook_event(provider="hermes",
-...)` — the same atomic-enqueue-then-idempotent-drain contract Claude
-Code/Codex hooks already use (`_SUPPORTED_PROVIDERS`, extended for fs1.7).
-The write is a durable, immutable JSON file placed in `pending/` via
-temp-file-plus-`os.replace`-plus-`fsync` (`_atomic_json_write`); the daemon
-only moves a file into `acknowledged/` after its `raw_hook_events` row has
-committed. Killing Polylogue mid-delivery and restarting drains the spool
-**exactly once** — proven by
-`test_hermes_hook_spool_replay_is_idempotent_after_interrupted_acknowledgement`.
+Producers call `polylogue.sources.hooks.append_hook_event(provider="hermes",
+...)` — the same contract Claude Code/Codex hooks already use
+(`SUPPORTED_PROVIDERS`, extended for fs1.7). The write is one
+newline-terminated JSON line appended with a single `O_APPEND` write to the
+producer process's own carrier under
+`carriers/hermes/<UTC day>/<pid>.ndjson`. There is no temp file, no rename and
+no fsync on the producer path: the archive acquires the carrier's bytes as an
+ordinary raw-only artifact and the `hook_events` derivation materializes its
+events out of those retained bytes. Killing Polylogue mid-delivery and
+restarting materializes **exactly once**, because both identities involved are
+content-derived: the producer's own `event_id`, and the event's carrier
+coordinate (the file plus the byte offset of its line).
 
-**File-watch fallback**: if the synchronous producer path is unavailable (the
-hook binary can't run, or a batch of events needs to be replayed after an
-outage), the daemon's `LiveWatcher` already watches the same
-`pending_hook_spool_dir()` via `watchfiles` and drains anything it finds —
-this is not a new mechanism, it is the existing live-watch path
-(`polylogue/sources/live/watcher.py`) pointed at the Hermes spool directory
-exactly like it already is for Claude Code/Codex
-(`test_live_watcher_drains_the_configured_hook_spool_root`,
-`test_live_watcher_observes_a_spool_created_after_startup`). A Hermes
-integration that cannot wire a synchronous hook call at all can instead
-periodically write batched envelopes into `pending/` from a cron job or
-post-session export step and rely on this same watcher/drain path — no
-separate "batch mode" needs to be built.
+**Batch delivery** needs no separate mechanism. A Hermes integration that
+cannot wire a synchronous hook call at all can write batched envelopes into a
+carrier from a cron job or a post-session export step; the same watcher and
+the same derivation pick it up, because a carrier is just an append-only
+JSONL file in a watched directory.
 
 ## Two working local prototypes (not a verified Hermes integration)
 
-Both are genuine, tested producers of this exact spool format — not stubs —
+Both are genuine, tested producers of this exact carrier format — not stubs —
 but neither is confirmed against Hermes's own hook invocation contract (no
 local checkout of the Hermes hook source was available while writing this):
 
@@ -128,7 +123,7 @@ local checkout of the Hermes hook source was available while writing this):
   `polylogue` distribution.
 
 Both are exercised end-to-end (subprocess, not mocked) in
-`tests/unit/sources/test_hook_spool.py::test_published_hook_adapters_spool_then_materialize`
+`tests/unit/sources/test_hook_carriers.py::test_published_hook_adapters_append_then_materialize`
 and `::test_published_hook_adapters_refuse_duplicated_transcript_payloads`.
 
 ## What is explicitly NOT done here

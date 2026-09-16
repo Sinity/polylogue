@@ -35,7 +35,7 @@ Operators can inspect and record the same census, without applying plans, with `
 ## Auto-Discovery
 
 The daemon watches typed provider sources, the archive inbox, browser-capture
-spool, and hook spools by default. Custom roots add ordinary export sources;
+spool, and hook-event carriers by default. Custom roots add ordinary export sources;
 they do not replace those defaults:
 
 Examples include:

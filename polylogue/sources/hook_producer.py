@@ -338,35 +338,13 @@ MAX_COMPACTED_CARRIER_BYTES = 64 * 1024 * 1024
 ACKNOWLEDGED_DIRNAME = "acknowledged"
 
 
-def derived_event_id(record: dict[str, object]) -> str:
-    """Content-derived id for a legacy envelope that carries none.
-
-    The 383 root-level ``<provider>-<session>.jsonl`` mirrors predate
-    ``event_id`` entirely. An ordinal would renumber every later event when a
-    mirror gains or loses a line, so the id is a digest of the envelope's own
-    declared fields: the same event folded twice yields the same id and the
-    source-tier write is idempotent, which is exactly what a one-shot fold
-    that may be interrupted and re-run needs.
-    """
-
-    import hashlib
-
-    material = json.dumps(
-        {key: record.get(key) for key in ("event_type", "session_id", "timestamp", "provider", "payload")},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
-
-
 class _CompactionSink:
     """Append folded envelopes to size-bounded compacted carriers."""
 
     def __init__(self, root: Path, *, max_bytes: int = MAX_COMPACTED_CARRIER_BYTES) -> None:
         self._root = root
         self._max_bytes = max_bytes
-        self._open: dict[tuple[str, str], tuple[Path, int, int]] = {}
+        self._open: dict[tuple[str, str], tuple[Path | None, int, int]] = {}
         self.carriers: list[Path] = []
 
     def append(self, record: dict[str, object]) -> Path:
@@ -376,7 +354,7 @@ class _CompactionSink:
             day = day_shard()
         key = (provider, day)
         line = carrier_line(record)
-        path, index, size = self._open.get(key, (None, 0, 0))  # type: ignore[assignment]
+        path, index, size = self._open.get(key, (None, 0, 0))
         if path is None or size + len(line) > self._max_bytes:
             index = index + 1 if path is not None else 0
             directory = self._root / CARRIERS_DIRNAME / provider / day
@@ -404,8 +382,19 @@ class _CompactionSink:
 
 
 def _retire(path: Path, root: Path, bucket: str) -> None:
+    """Move one folded envelope aside, without fsyncing the directory entry.
+
+    Nothing depends on this rename surviving a power failure: the carrier the
+    envelope was folded into is already fsynced before any retirement happens,
+    so a lost rename costs a re-fold, and a re-folded envelope is the same
+    content-derived event the archive already holds. Paying a directory fsync
+    per file here would put back exactly the per-file cost this fold exists to
+    remove.
+    """
+
     acknowledged = root / ACKNOWLEDGED_DIRNAME / bucket
     acknowledged.mkdir(parents=True, exist_ok=True)
+    # ast-grep-ignore: replace-without-parent-fsync
     os.replace(path, acknowledged / path.name)
 
 
@@ -464,32 +453,16 @@ def compact_legacy_spool(root: Path, *, max_bytes: int = MAX_COMPACTED_CARRIER_B
         folded += 1
         retire.append((path, day_shard()))
 
+    # The root-level ``<provider>-<session>.jsonl`` per-session journals are
+    # the one remaining unowned member of the retired spool tree (k8wv AC6).
+    # They are NOT folded: a journal record carries no event identity, every
+    # record in one is already enveloped in the spool under its producer's own
+    # ``event_id``, and deriving an id here would mint a second identity for
+    # an event the archive already holds. Naming the refusal is what AC6 asks
+    # for; reversing it is a decision, not a compaction detail.
     for path in sorted(root.glob("*.jsonl")):
-        if not path.is_file():
-            continue
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            refuse("unreadable")
-            continue
-        accepted = 0
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                value = json.loads(line)
-                if not isinstance(value, dict):
-                    raise HookSpoolRecordError("envelope must be an object")
-                value.setdefault("event_id", derived_event_id(value))
-                record = validated_record(value)
-            except (json.JSONDecodeError, HookSpoolRecordError) as exc:
-                refuse(f"invalid mirror line: {type(exc).__name__}")
-                continue
-            sink.append(record)
-            accepted += 1
-        folded += accepted
-        if accepted:
-            retire.append((path, "mirrors"))
+        if path.is_file():
+            refuse("per-session journal mirror is not an ingest surface (docs/hooks.md)")
 
     sink.seal()
     for path, bucket in retire:
@@ -566,8 +539,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if "--compact" in args:
         sidecar = _option_value(args, "--sidecar-dir")
-        root = Path(os.path.expanduser(sidecar) if sidecar else default_sidecar_dir())
-        print(json.dumps(compact_legacy_spool(root), sort_keys=True))
+        compact_root = Path(os.path.expanduser(sidecar) if sidecar else default_sidecar_dir())
+        print(json.dumps(compact_legacy_spool(compact_root), sort_keys=True))
         return 0
 
     event_type = args[0]

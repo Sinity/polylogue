@@ -52,12 +52,19 @@ def _hook_envelope(event_id: str = "event-1", *, text: str = "ran a tool") -> di
     }
 
 
-def _write_spool_file(root: Path, envelope: dict[str, object], *, indent: int | None = None) -> Path:
-    target = root / "pending" / "2026-07-15"
-    target.mkdir(parents=True, exist_ok=True)
-    path = target / f"{envelope['event_id']}.json"
-    path.write_text(json.dumps(envelope, ensure_ascii=False, sort_keys=True, indent=indent), encoding="utf-8")
-    return path
+def _append_carrier(root: Path, envelope: dict[str, object]) -> Path:
+    """Append one event to the spool root's carriers, as a producer would."""
+    from polylogue.sources.hooks import append_hook_event
+
+    return append_hook_event(
+        root=root,
+        event_id=str(envelope["event_id"]),
+        event_type=str(envelope["event_type"]),
+        session_id=str(envelope["session_id"]),
+        provider=str(envelope["provider"]),
+        timestamp=str(envelope["timestamp"]),
+        payload=dict(envelope["payload"]),  # type: ignore[arg-type]
+    )
 
 
 def _publish_blob(store: BlobStore, payload: bytes) -> str:
@@ -65,11 +72,11 @@ def _publish_blob(store: BlobStore, payload: bytes) -> str:
     return blob_hash
 
 
-def _stored_envelope_bytes(spool_file: Path) -> bytes:
+def _stored_envelope_bytes(envelope: dict[str, object]) -> bytes:
     """Serialize the validated record the way acquisition stored it."""
-    from polylogue.sources.hooks import read_hook_spool_record
+    from polylogue.sources.hooks import validated_hook_record
 
-    record = read_hook_spool_record(spool_file)
+    record = validated_hook_record(envelope)
     return json.dumps(record, ensure_ascii=False, sort_keys=True, indent=1).encode("utf-8")
 
 
@@ -127,10 +134,10 @@ def test_hook_envelope_is_source_present_despite_differing_bytes(tmp_path: Path)
     """
     spool_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope()
-    spool_file = _write_spool_file(spool_root, envelope, indent=4)
+    carrier = _append_carrier(spool_root, envelope)
     store = BlobStore(tmp_path / "blob")
-    blob_hash = _publish_blob(store, _stored_envelope_bytes(spool_file))
-    assert store.blob_path(blob_hash).read_bytes() != spool_file.read_bytes()
+    blob_hash = _publish_blob(store, _stored_envelope_bytes(envelope))
+    assert store.blob_path(blob_hash).read_bytes() != carrier.read_bytes()
 
     context = _context(tmp_path, hook_roots=(("legacy-hook-spool-0", spool_root),))
     plan = compile_disposition_plan(
@@ -144,19 +151,17 @@ def test_hook_envelope_is_source_present_despite_differing_bytes(tmp_path: Path)
     assert member.disposition is BlobDisposition.SOURCE_PRESENT
     assert member.proof is not None
     assert member.proof.mode is SourceProofMode.SEMANTIC_EQUIVALENT
-    assert member.proof.source_path == str(spool_file)
+    assert member.proof.source_path == str(carrier)
     assert plan.accepted
 
 
-def test_hook_envelope_without_a_spool_file_is_restore_required(tmp_path: Path) -> None:
+def test_hook_envelope_absent_from_every_carrier_is_restore_required(tmp_path: Path) -> None:
     """Anti-vacuity: accepting an absent source would delete the only carrier."""
     spool_root = tmp_path / "legacy-hooks"
     spool_root.mkdir()
     envelope = _hook_envelope("orphan-event")
-    scratch = tmp_path / "scratch.json"
-    scratch.write_text(json.dumps(envelope, sort_keys=True), encoding="utf-8")
     store = BlobStore(tmp_path / "blob")
-    _publish_blob(store, _stored_envelope_bytes(scratch))
+    _publish_blob(store, _stored_envelope_bytes(envelope))
 
     context = _context(tmp_path, hook_roots=(("legacy-hook-spool-0", spool_root),))
     plan = compile_disposition_plan(
@@ -173,19 +178,21 @@ def test_hook_envelope_without_a_spool_file_is_restore_required(tmp_path: Path) 
 def test_an_acknowledged_only_envelope_is_not_a_source_proof(tmp_path: Path) -> None:
     """Anti-vacuity: walking the whole spool root makes this SOURCE_PRESENT and deletes it.
 
-    ``acknowledged/`` holds the drain's commit receipts for the source.db that
-    consumed each event. No drain and no watcher reads that directory, so a
-    rebuilt archive re-ingests nothing from it: the bytes exist, the event is
-    unreachable, and the carrier is the only copy acquisition can still use.
+    ``acknowledged/`` holds what the one-shot legacy fold already folded into
+    a carrier and then retired. Only ``carriers/`` is acquired, so an event
+    living there alone is unreachable: the bytes exist, a rebuilt archive
+    re-ingests nothing from them, and the blob is the only copy acquisition
+    could still use.
     """
     spool_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("acknowledged-only")
     receipt = spool_root / "acknowledged" / "2026-07-15"
     receipt.mkdir(parents=True)
-    spool_file = receipt / "acknowledged-only.json"
-    spool_file.write_text(json.dumps(envelope, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    (receipt / "acknowledged-only.json").write_text(
+        json.dumps(envelope, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+    )
     store = BlobStore(tmp_path / "blob")
-    _publish_blob(store, _stored_envelope_bytes(spool_file))
+    _publish_blob(store, _stored_envelope_bytes(envelope))
 
     context = _context(tmp_path, hook_roots=(("legacy-hook-spool-0", spool_root),))
     plan = compile_disposition_plan(
@@ -203,11 +210,9 @@ def test_an_acknowledged_only_envelope_is_not_a_source_proof(tmp_path: Path) -> 
 def test_same_event_id_with_different_content_is_not_a_source_proof(tmp_path: Path) -> None:
     """Anti-vacuity: matching on identity alone would discard divergent material."""
     spool_root = tmp_path / "legacy-hooks"
-    _write_spool_file(spool_root, _hook_envelope(text="a completely different tool call"))
-    scratch = tmp_path / "scratch.json"
-    scratch.write_text(json.dumps(_hook_envelope(text="the stored call"), sort_keys=True), encoding="utf-8")
+    _append_carrier(spool_root, _hook_envelope(text="a completely different tool call"))
     store = BlobStore(tmp_path / "blob")
-    _publish_blob(store, _stored_envelope_bytes(scratch))
+    _publish_blob(store, _stored_envelope_bytes(_hook_envelope(text="the stored call")))
 
     context = _context(tmp_path, hook_roots=(("legacy-hook-spool-0", spool_root),))
     plan = compile_disposition_plan(
@@ -361,9 +366,10 @@ def test_invalid_namespace_entries_block_acceptance(tmp_path: Path) -> None:
 def test_denominator_counts_the_complete_population(tmp_path: Path) -> None:
     """Anti-vacuity: a sampled census would not reconcile against the walk."""
     spool_root = tmp_path / "legacy-hooks"
-    spool_file = _write_spool_file(spool_root, _hook_envelope("counted"))
+    counted = _hook_envelope("counted")
+    _append_carrier(spool_root, counted)
     store = BlobStore(tmp_path / "blob")
-    _publish_blob(store, _stored_envelope_bytes(spool_file))
+    _publish_blob(store, _stored_envelope_bytes(counted))
     mystery = _publish_blob(store, b"%PDF-1.5\nunexplained\n")
 
     context = _context(tmp_path, hook_roots=(("legacy-hook-spool-0", spool_root),), referenced=(mystery,))
@@ -409,11 +415,11 @@ def test_reclaimable_total_excludes_members_a_reference_pins(tmp_path: Path) -> 
     spool_root = tmp_path / "legacy-hooks"
     free = _hook_envelope("free")
     pinned = _hook_envelope("pinned", text="a much longer detail string to separate the byte totals")
-    free_file = _write_spool_file(spool_root, free, indent=4)
-    pinned_file = _write_spool_file(spool_root, pinned, indent=4)
+    _append_carrier(spool_root, free)
+    _append_carrier(spool_root, pinned)
     store = BlobStore(tmp_path / "blob")
-    free_hash = _publish_blob(store, _stored_envelope_bytes(free_file))
-    pinned_hash = _publish_blob(store, _stored_envelope_bytes(pinned_file))
+    free_hash = _publish_blob(store, _stored_envelope_bytes(free))
+    pinned_hash = _publish_blob(store, _stored_envelope_bytes(pinned))
     source_db = _empty_source_db(tmp_path / "source.db")
     _empty_index_db(tmp_path)
     with sqlite3.connect(source_db) as conn:

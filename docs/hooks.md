@@ -11,11 +11,16 @@ post-hoc session JSONL with events that are otherwise unavailable there.
 1. The AI agent invokes the capture command on each hook event, passing the
    event payload on stdin as JSON.
 2. The command validates the event, enriches it with metadata (provider,
-   timestamp, session_id), and atomically writes one immutable envelope to the
-   hook spool's `pending/` directory.
-3. The daemon watches that directory, persists the envelope in
-   `source.db.raw_hook_events`, and moves it to `acknowledged/` only after the
-   source-tier transaction commits. Failed writes remain pending for retry.
+   timestamp, session_id), and appends it as one newline-terminated JSON line
+   to its own carrier — one file per producer process per UTC day per harness
+   — with a single `O_APPEND` write and no fsync.
+3. The archive acquires that carrier like any other append-only source: an
+   ordinary watched directory, an ordinary raw-only artifact, one raw
+   acquisition per carrier revision.
+4. The `hook_events` derivation materializes the events out of the retained
+   carrier bytes into `source.db.raw_hook_events`, one transaction per
+   carrier. Nothing is acknowledged or moved; the carrier bytes stay put and
+   the rows are recomputable from them.
 
 A harness fires two hooks per tool call, so step 1 runs twice per tool call
 per concurrent agent. `polylogue hooks install` therefore renders the command
@@ -92,40 +97,60 @@ agent on stdin. The wrapper fields (`event_type`, `session_id`, `timestamp`,
 
 ```
 <archive_root>/hooks/                   # Default archive root: ~/.local/share/polylogue
-├── pending/
-│   └── <YYYY-MM-DD>/<event-id>.json    # Atomic producer envelopes, day-sharded
+├── carriers/
+│   └── <provider>/<YYYY-MM-DD>/<pid>.ndjson  # Append-only producer carriers
 ├── acknowledged/
-│   └── <YYYY-MM-DD>/<event-id>.json    # Source-tier receipt after commit
+│   └── <YYYY-MM-DD>/<event-id>.json    # Retired spool, folded by --compact
 ├── claude-code-<session-id>.jsonl      # Retired journal — not an ingest surface
 └── codex-<session-id>.jsonl            # Retired journal — not an ingest surface
 ```
 
-`pending/` is the only ingest surface. `drain_hook_event_spool` and the live
-watcher both read it and nothing else, so an event reaches `source.db` only
-from there. An `acknowledged/` file is a commit receipt for the `source.db`
-that consumed it: a rebuilt archive re-ingests nothing from that directory,
-and an envelope that exists only there needs restoring into `pending/` before
-the rebuild (`polylogue maintenance blob-disposition restore`).
+`carriers/` is the only ingest surface. The watcher exposes one directory per
+harness, the declared `hook_event_carrier` artifact rule makes the path
+terminal and raw-only, and the fair-intake dispatcher's ordinary file adapter
+admits it — so an event reaches `source.db` only by way of a carrier whose
+bytes the archive retained. An `acknowledged/` file is a record of what
+`polylogue-hook --compact` already folded into a carrier: a rebuilt archive
+re-ingests nothing from that directory, and an envelope that exists only there
+needs restoring into a carrier before the rebuild
+(`polylogue maintenance blob-disposition restore`).
 
-The per-session `*.jsonl` journals are not an ingest surface either. Their
-envelope carries no `event_id`, and the spool's idempotence is keyed on one
-(`hook:<event_id>` is the source-tier key a replay reuses), so the drain
-refuses the shape. No journal record is the only copy of its event: measured
+One file per producer process per day is what makes a bare `O_APPEND` write
+safe. The earlier objection to an append-only journal was real — a concurrent
+append is only atomic below `PIPE_BUF`, and hook payloads (tool output
+previews) are not reliably under that bound — but it assumed one shared
+journal. Two harness processes never share a carrier, so there is no
+concurrent appender to interleave with, and a short write can only ever be
+completed by the process that started it.
+
+The per-session `*.jsonl` journals are not an ingest surface. Their envelope
+carries no `event_id`, and idempotence is keyed on one (`hook:<event_id>` is
+the source-tier key a replay reuses), so both the validator and `--compact`
+refuse the shape. No journal record is the only copy of its event: measured
 2026-09-07 across both declared roots, 635 journals holding 995,699 records,
-995,697 have a content-identical envelope in `pending/` or `acknowledged/`
-(identity `sha256(session_id + event_type + timestamp + canonical payload)`,
-both sides canonically re-serialized). The remaining two are one torn
-concurrent append each — two records interleaved into one line — and the
-spool carries all four of their events intact under their own ids. Those torn
-lines are why the spool is file-per-event: an append-only journal cannot
-guarantee atomic concurrent appends above `PIPE_BUF`, and hook payloads are
-not reliably under it.
+995,697 have a content-identical envelope in the spool (identity
+`sha256(session_id + event_type + timestamp + canonical payload)`, both sides
+canonically re-serialized). The remaining two are one torn concurrent append
+each — two records interleaved into one line, from the era when the journals
+were written by many processes to one file — and the spool carries all four of
+their events intact under their own ids.
+
+### Folding the retired spool
+
+`polylogue-hook --compact [--sidecar-dir PATH]` is the one bridge from the
+retired file-per-event spool to the carriers. It reads every
+`pending/**/*.json`, appends each as a carrier line, fsyncs the carriers, and
+only then retires the originals under `acknowledged/` — durable carrier first,
+retirement second, so an interrupted fold re-folds at worst a prefix and a
+re-folded envelope is the same content-derived event. Hidden atomic-write
+tempnames, zero-byte files and the per-session journals are counted refusals
+reported in its JSON summary, never silent drops. It needs no daemon.
 
 The hooks sidecar directory always lives under the resolved archive root
 (`POLYLOGUE_ARCHIVE_ROOT`, default `~/.local/share/polylogue`), the same as
 every other archive-scoped path — a scratch/test archive root gets its own
-hook spool, never the real one. The daemon creates and watches the pending
-spool directory on startup, so the first hook event after a cold start is
+hook carriers, never the real ones. The daemon creates and watches the carrier
+directories on startup, so the first hook event after a cold start is
 captured automatically.
 
 `polylogue hooks install` resolves the current archive root's hooks
@@ -141,7 +166,7 @@ install` after changing the archive root to rebake the path.
 
 ### polylogue.toml
 
-Only set this if the hook spool genuinely needs to live somewhere other than
+Only set this if the hook carriers genuinely need to live somewhere other than
 `<archive_root>/hooks`; the default already tracks the archive root:
 
 ```toml
@@ -153,13 +178,13 @@ hook_sidecar_dir = "/home/user/.local/share/polylogue/hooks"
 
 | Variable | Description |
 |----------|-------------|
-| `POLYLOGUE_ARCHIVE_ROOT` | Overrides the archive root, and therefore the hook spool (`<archive_root>/hooks`) along with every other archive-scoped path |
+| `POLYLOGUE_ARCHIVE_ROOT` | Overrides the archive root, and therefore the hook carriers (`<archive_root>/hooks/carriers`) along with every other archive-scoped path |
 | `POLYLOGUE_HOOK_PROVIDER` | Force provider detection to `claude-code` or `codex` |
 
 There is no separate `POLYLOGUE_HOOK_SIDECAR_DIR` producer/daemon override
 env var: it was a manual escape hatch that had to be remembered on top of
 `POLYLOGUE_ARCHIVE_ROOT` and repeatedly wasn't (polylogue-o7hx). Use the
-`hook_sidecar_dir` config key below only if the hook spool genuinely needs
+`hook_sidecar_dir` config key below only if the hook carriers genuinely need
 to live somewhere other than `<archive_root>/hooks`.
 
 ### PolylogueConfig Properties
@@ -180,9 +205,9 @@ The capture command is available in three forms:
 
 The `polylogue-hooks` package is the recommended path for environments where
 you do not want the full polylogue runtime closure (for example, inside the AI
-coding agent's own Python environment). Each form atomically writes the same
-pending envelope; the Polylogue daemon performs the source-tier receipt and
-acknowledgement. The version is kept in sync with the main package via
+coding agent's own Python environment). Each form appends the same carrier
+line; the archive performs the acquisition and the source-tier
+materialization. The version is kept in sync with the main package via
 release-please (#1309).
 
 The main `polylogue` distribution installs the same producer as the

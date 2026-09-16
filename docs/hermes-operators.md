@@ -88,10 +88,10 @@ Claude web/Gemini, so a Hermes artifact cannot be misclassified as one of
 those looser shapes.
 
 **A separate, always-on channel is not scoped to this root at all**: the
-durable hook-event spool (`polylogue/sources/hooks.py`, drained by the daemon
-component `watcher.hook_spool.drain`) accepts lifecycle events from any
-configured origin, including Hermes, through `$XDG_DATA_HOME/polylogue/hooks/pending`
-by default. It only carries events if you additionally install a Hermes-side
+hook-event carriers (`polylogue/sources/hooks.py`, acquired by the ordinary
+file-intake route and materialized by the `hook_events` derivation) accept
+lifecycle events from any configured origin, including Hermes, through
+`$XDG_DATA_HOME/polylogue/hooks/carriers` by default. It only carries events if you additionally install a Hermes-side
 hook emitter (the versioned export contract in
 [`docs/design/hermes-archival-export-contract.md`](design/hermes-archival-export-contract.md)
 describes the wire format); pointing `sources.hermes.root` at your install
@@ -514,7 +514,7 @@ because none of them branch on origin — see
   that text *is* the evidence, not conversational content) — see the
   per-artifact sections above for exactly which fields round-trip.
 - **You control the root.** Nothing is watched outside the resolved
-  `sources.hermes.root` (or the general, separately-configured hook spool,
+  `sources.hermes.root` (or the general, separately-configured hook carriers,
   which requires its own opt-in Hermes-side hook install).
 
 ## Try it yourself

@@ -358,6 +358,7 @@ def carrier_hook_events(
     lines: Sequence[CarrierLine],
     *,
     source_path: str,
+    base_offset: int = 0,
 ) -> tuple[CarrierHookEvent, ...]:
     """Build the source-tier rows one carrier's decoded lines materialize into.
 
@@ -368,6 +369,12 @@ def carrier_hook_events(
     content-less session shells (polylogue-31r1). ``origin`` and
     ``session_native_id`` travel on every row so session excision reaches hook
     evidence by construction (polylogue-14ucm).
+
+    ``base_offset`` is where these bytes begin in the whole carrier. An append
+    revision retains only the delta, so its own offsets start at zero; adding
+    the revision's start offset is what keeps every coordinate absolute in the
+    file. Without it the first event of every append would claim the
+    coordinate of the carrier's very first event.
     """
 
     from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent, CarrierHookEvent
@@ -380,7 +387,7 @@ def carrier_hook_events(
             raise HookSpoolRecordError("hook carrier line has an invalid observed timestamp")
         built.append(
             CarrierHookEvent(
-                byte_offset=line.byte_offset,
+                byte_offset=base_offset + line.byte_offset,
                 line_bytes=line.line_bytes,
                 event=ArchiveHookEvent(
                     hook_event_id=f"hook:{record['event_id']}",

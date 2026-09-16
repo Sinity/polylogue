@@ -1320,9 +1320,10 @@ async def test_correlate_hermes_context_deliveries_resolves_via_the_facade(tmp_p
 
     from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_snapshot_record_from_image
     from polylogue.core.refs import EvidenceRef
-    from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+    from polylogue.sources.hooks import append_hook_event
     from polylogue.sources.parsers.hermes_lifecycle import CONTEXT_INJECTED
     from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
+    from tests.infra.hook_carriers import materialize_hook_carriers
 
     image = ContextImage(
         spec=ContextSpec(seed_refs=("hermes-session:hermes-conv-1@profile-abc",), read_views=(), max_tokens=2000),
@@ -1353,7 +1354,7 @@ async def test_correlate_hermes_context_deliveries_resolves_via_the_facade(tmp_p
         conn.commit()
 
     spool_root = tmp_path / "hooks"
-    enqueue_hook_event(
+    append_hook_event(
         event_id="ctx-inject-facade-1",
         provider="hermes",
         event_type=CONTEXT_INJECTED,
@@ -1362,7 +1363,7 @@ async def test_correlate_hermes_context_deliveries_resolves_via_the_facade(tmp_p
         payload={"snapshot_ref": written.snapshot_ref},
         root=spool_root,
     )
-    assert drain_hook_event_spool(tmp_path, root=spool_root).acknowledged == 1
+    assert materialize_hook_carriers(tmp_path) == 1
 
     try:
         correlations = await archive.correlate_hermes_context_deliveries("hermes-conv-1")
@@ -1389,8 +1390,9 @@ async def test_reconcile_hermes_session_lifecycle_resolves_via_the_facade(tmp_pa
     unpaired ``tool_start`` and an event referencing a message id absent
     from the snapshot.
     """
-    from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+    from polylogue.sources.hooks import append_hook_event
     from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, TOOL_START
+    from tests.infra.hook_carriers import materialize_hook_carriers
 
     archive = _archive(tmp_path)
     with sqlite3.connect(tmp_path / "index.db") as index_conn:
@@ -1406,7 +1408,7 @@ async def test_reconcile_hermes_session_lifecycle_resolves_via_the_facade(tmp_pa
         index_conn.commit()
 
     spool_root = tmp_path / "hooks"
-    enqueue_hook_event(
+    append_hook_event(
         event_id="lifecycle-facade-1",
         provider="hermes",
         event_type=TOOL_START,
@@ -1415,7 +1417,7 @@ async def test_reconcile_hermes_session_lifecycle_resolves_via_the_facade(tmp_pa
         payload={"tool_call_id": "call-1", "message_id": "m1"},
         root=spool_root,
     )
-    enqueue_hook_event(
+    append_hook_event(
         event_id="lifecycle-facade-2",
         provider="hermes",
         event_type=DURABLE_FINALIZE,
@@ -1424,7 +1426,7 @@ async def test_reconcile_hermes_session_lifecycle_resolves_via_the_facade(tmp_pa
         payload={"message_id": "message-not-in-snapshot"},
         root=spool_root,
     )
-    assert drain_hook_event_spool(tmp_path, root=spool_root).acknowledged == 2
+    assert materialize_hook_carriers(tmp_path) == 2
 
     try:
         report = await archive.reconcile_hermes_session_lifecycle("hermes-conv-1")

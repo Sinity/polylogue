@@ -81,6 +81,7 @@ class HookEventsReplacement:
     blob_hash: str
     source_path: str
     acquired_at_ms: int
+    base_offset: int = 0
     empty: bool = False
 
 
@@ -176,9 +177,18 @@ class HookEventsDerivation:
         self._decoded[blob_hash] = decoded
         return decoded
 
-    def _descriptor(self, conn: sqlite3.Connection, key: str) -> tuple[str, str, int] | None:
+    def _descriptor(self, conn: sqlite3.Connection, key: str) -> tuple[str, str, int, int] | None:
+        """One acquired carrier revision: where it came from and where it starts.
+
+        ``append_start_offset`` is the fourth value and it is load-bearing. An
+        append revision retains only the bytes that arrived, so its own byte
+        offsets restart at zero; the coordinates the source tier records must
+        be absolute in the carrier file or the first event of every append
+        collides with the carrier's very first event.
+        """
+
         row = conn.execute(
-            "SELECT source_path, blob_hash, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
+            "SELECT source_path, blob_hash, acquired_at_ms, append_start_offset FROM raw_sessions WHERE raw_id = ?",
             (key,),
         ).fetchone()
         if row is None:
@@ -188,6 +198,7 @@ class HookEventsDerivation:
             str(row["source_path"]),
             blob_hash.hex() if isinstance(blob_hash, (bytes, bytearray)) else str(blob_hash),
             int(row["acquired_at_ms"] or 0),
+            int(row["append_start_offset"] or 0),
         )
 
     # -- kernel surface ---------------------------------------------------
@@ -238,7 +249,7 @@ class HookEventsDerivation:
         descriptor = self._descriptor(conn, key)
         if descriptor is None:
             return "stale"
-        source_path, blob_hash, _acquired_at_ms = descriptor
+        source_path, blob_hash, _acquired_at_ms, base_offset = descriptor
         try:
             identity = carrier_identity(source_path)
         except HookCarrierTopologyError:
@@ -259,7 +270,7 @@ class HookEventsDerivation:
                 (identity.source_id, f"{identity.relative_path}#%"),
             )
         }
-        expected = {hook_carrier_coordinate(identity.relative_path, line.byte_offset) for line in lines}
+        expected = {hook_carrier_coordinate(identity.relative_path, base_offset + line.byte_offset) for line in lines}
         return "valid" if expected <= recorded else "stale"
 
     def _binding(self, conn: sqlite3.Connection, identity: HookCarrierIdentity, blob_hash: str) -> str:
@@ -279,14 +290,14 @@ class HookEventsDerivation:
             descriptor = self._descriptor(conn, key)
             if descriptor is None:
                 raise ValueError(f"hook carrier raw is not acquired: {key}")
-            source_path, blob_hash, acquired_at_ms = descriptor
+            source_path, blob_hash, acquired_at_ms, base_offset = descriptor
             identity = carrier_identity(source_path)
             binding = self._binding(conn, identity, blob_hash)
         if not BlobStore(self.archive_root / "blob").verify(blob_hash):
             raise ValueError(f"retained hook carrier does not match its identity: {key}")
         lines, _refused = self._carrier_lines(blob_hash)
         try:
-            events = carrier_hook_events(lines, source_path=source_path)
+            events = carrier_hook_events(lines, source_path=source_path, base_offset=base_offset)
         except HookSpoolRecordError as exc:
             raise ValueError(f"hook carrier holds an unmaterializable line: {exc}") from exc
         return HookEventsReplacement(
@@ -297,6 +308,7 @@ class HookEventsDerivation:
             blob_hash=blob_hash,
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
+            base_offset=base_offset,
             empty=not events,
         )
 
