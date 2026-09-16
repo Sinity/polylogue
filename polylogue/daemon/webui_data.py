@@ -94,8 +94,31 @@ class LibraryEntry:
         }
 
 
-def build_library_payload(entries: Iterable[LibraryEntry], *, total: int) -> dict[str, object]:
-    return {"items": [entry.to_dict() for entry in entries], "total": total}
+def build_library_payload(
+    entries: Iterable[LibraryEntry],
+    *,
+    total: int | None,
+    total_is_exact: bool = True,
+    matched_so_far: int | None = None,
+) -> dict[str, object]:
+    """Shape the attachment-library page with an honest total.
+
+    polylogue-q54dt: the producing walk stops as soon as the page is full, so
+    its running counter is the page size, not the archive's match count.
+    Publishing that counter as ``total`` told a reader with 10,000 matches
+    that it had seen all 200 of them. An unknown total is published as
+    ``null`` with ``total_is_exact=false`` and the lower bound the walk did
+    establish, never as a plausible-looking figure.
+    """
+
+    payload: dict[str, object] = {
+        "items": [entry.to_dict() for entry in entries],
+        "total": total,
+        "total_is_exact": total_is_exact,
+    }
+    if matched_so_far is not None:
+        payload["total_lower_bound"] = matched_so_far
+    return payload
 
 
 @dataclass(frozen=True)
@@ -128,8 +151,23 @@ class PasteBrowserEntry:
         }
 
 
-def build_paste_browser_payload(entries: Iterable[PasteBrowserEntry], *, total: int) -> dict[str, object]:
-    return {"items": [entry.to_dict() for entry in entries], "total": total}
+def build_paste_browser_payload(
+    entries: Iterable[PasteBrowserEntry],
+    *,
+    total: int | None,
+    total_is_exact: bool = True,
+    matched_so_far: int | None = None,
+) -> dict[str, object]:
+    """Shape the paste-browser page with an honest total (polylogue-q54dt)."""
+
+    payload: dict[str, object] = {
+        "items": [entry.to_dict() for entry in entries],
+        "total": total,
+        "total_is_exact": total_is_exact,
+    }
+    if matched_so_far is not None:
+        payload["total_lower_bound"] = matched_so_far
+    return payload
 
 
 def detect_paste_spans(text: str) -> list[dict[str, object]]:
@@ -158,7 +196,34 @@ def detect_paste_spans(text: str) -> list[dict[str, object]]:
 
 
 def envelope_paste_spans(text: str | None, *, has_paste: bool) -> list[dict[str, object]]:
+    """Return the localizable paste spans the reader can highlight.
+
+    ``has_paste`` is the stored per-message evidence flag; this derivation
+    only localizes unified-diff hunks. The two disagree for marker, size,
+    base64 and fence pastes, which is why callers must publish
+    :func:`paste_span_localization` alongside the list rather than let an
+    empty list read as "this message contains no paste" (polylogue-7mgx).
+    """
+
     return detect_paste_spans(text or "")
+
+
+#: How to read an ``envelope_paste_spans`` result against the stored flag.
+#:
+#: ``localized`` — spans were derived and can be highlighted.
+#: ``none`` — the message carries no paste evidence and no spans.
+#: ``unlocalized`` — stored evidence says this message contains a paste that
+#: the reader's diff derivation cannot place. The empty span list is a gap,
+#: not an absence, and the reader must not render it as "no paste here".
+PasteSpanLocalization = str
+
+
+def paste_span_localization(spans: list[dict[str, object]], *, has_paste: bool) -> str:
+    """Name what an empty span list means for this message."""
+
+    if spans:
+        return "localized"
+    return "unlocalized" if has_paste else "none"
 
 
 def snippet_for_paste(text: str, spans: list[dict[str, object]], *, limit: int = 160) -> str:
