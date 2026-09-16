@@ -8530,3 +8530,147 @@ def test_codex_state_filename_alone_does_not_route_a_foreign_file_to_codex_acqui
     with sqlite3.connect(tmp_path / "source.db") as conn:
         origins = [row[0] for row in conn.execute("SELECT origin FROM raw_sessions").fetchall()]
     assert not any(str(origin).startswith("codex") for origin in origins)
+
+
+def _live_processor(tmp_path: Path, root: Path, *, source_name: str) -> tuple[LiveBatchProcessor, CursorStore]:
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name=source_name, root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    return processor, cursor
+
+
+def test_undeclared_large_json_document_is_refused_visibly_and_stays_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A large ``.json`` session for an undeclared provider must leave a trace.
+
+    Above ``_STREAMING_FULL_INGEST_BYTES`` admission is decided from the path
+    alone, so a provider outside ``_LARGE_JSON_DOCUMENT_PROVIDERS`` used to have
+    its cursor advanced to EOF and quarantined with no failure count and no
+    debt row -- invisible to ``list_retry_records`` and to status
+    (polylogue-dznyt). Restoring that silent exclusion (marking the path
+    excluded at EOF instead of refusing it) turns this red: the cursor would be
+    excluded with ``byte_offset`` at EOF, no retry record and no debt row.
+    """
+    monkeypatch.setattr("polylogue.sources.live.batch_support._LARGE_JSON_DOCUMENT_PROVIDERS", frozenset())
+    root = tmp_path / "chats"
+    source = root / "session-2026-03-16T09-40-5c12869b.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        json.dumps(_gemini_cli_checkpoint("y" * (_STREAMING_FULL_INGEST_BYTES + 1024))),
+        encoding="utf-8",
+    )
+    assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
+    processor, cursor = _live_processor(tmp_path, root, source_name="gemini-cli")
+
+    result = asyncio.run(processor.ingest_files([source], emit_event=False))
+
+    assert result.ingested_session_count == 0
+    assert result.excluded_file_count == 1
+    reason = next(iter(result.excluded_reasons))
+    assert reason.startswith("large JSON document provider not declared for streaming ingest")
+
+    record = cursor.get_record(source)
+    assert record is not None
+    assert not record.excluded
+    assert record.failure_count == 1
+    assert record.byte_offset == 0
+    assert [Path(retry.source_path) for retry in cursor.list_retry_records()] == [source]
+
+    with sqlite3.connect(cursor._ops_db_path) as conn:
+        debt = conn.execute(
+            "SELECT stage, target_id, last_error FROM convergence_debt WHERE stage = 'live_ingest_admission'"
+        ).fetchall()
+    assert len(debt) == 1
+    assert debt[0][1] == str(source)
+    assert debt[0][2].startswith("large JSON document provider not declared for streaming ingest")
+
+
+def test_hold_budget_spent_after_the_commit_still_records_the_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A committed batch's cursor is durable even when the hold is spent.
+
+    The ``archive_write_complete`` checkpoint sits after the archive commit and
+    before ``_record_full_cursor``, so raising there wrote the session and left
+    the cursor unrecorded, and every later pass re-parsed and re-wrote the same
+    file forever (polylogue-3ijaa). Restoring the raise at that checkpoint turns
+    this red: ``ingest_files`` propagates ``WriteHoldBudgetError`` with the
+    session written and ``get_record`` returning ``None``.
+    """
+    from polylogue.core.write_hold import WriteHoldBudgetError
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "hold-budget.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"hold-budget"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    processor, cursor = _live_processor(tmp_path, root, source_name="codex")
+
+    def spend_only_the_post_commit_checkpoint(checkpoint: str) -> None:
+        if checkpoint == "archive_write_complete":
+            raise WriteHoldBudgetError(actor="test", checkpoint=checkpoint, hold_seconds=99.0, budget_s=30.0)
+
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.check_write_hold_budget",
+        spend_only_the_post_commit_checkpoint,
+    )
+
+    first = asyncio.run(processor.ingest_files([path], emit_event=False))
+
+    assert first.succeeded_file_count == 1
+    assert first.ingested_session_count == 1
+    record = cursor.get_record(path)
+    assert record is not None
+    assert record.byte_offset == path.stat().st_size
+    assert record.content_fingerprint is not None
+    assert not record.excluded
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE native_id = 'hold-budget'").fetchone() == (1,)
+
+
+def test_a_deferred_append_records_deferred_debt_not_only_a_failed_receipt_count(
+    tmp_path: Path,
+) -> None:
+    """A deferral must be readable as a deferral, not as a failure or a no-op.
+
+    The attempt receipt folds deferred paths into ``failed_file_count`` and
+    ``LiveBatchMetrics`` counts them nowhere, so a deferred pass was
+    distinguishable from neither failure nor success (polylogue-3r36h).
+    Dropping the ``live_ingest_deferred`` debt row turns this red.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "deferred.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"deferred-append"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    processor, cursor = _live_processor(tmp_path, root, source_name="codex")
+    assert asyncio.run(processor.ingest_files([path], emit_event=False)).succeeded_file_count == 1
+
+    # A partial trailing record carries no complete-newline frontier, so the
+    # append planner defers instead of admitting it.
+    with path.open("ab") as handle:
+        handle.write(b'{"type":"response_item","payload":{"type":"message","id":"message-1"')
+
+    deferred = asyncio.run(processor.ingest_files([path], emit_event=False))
+
+    assert deferred.succeeded_file_count == 0
+    with sqlite3.connect(cursor._ops_db_path) as conn:
+        rows = conn.execute(
+            "SELECT target_id, status FROM convergence_debt WHERE stage = 'live_ingest_deferred'"
+        ).fetchall()
+    assert rows == [(str(path), "deferred")]

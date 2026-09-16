@@ -69,7 +69,7 @@ from polylogue.core.raw_failure_evidence import (
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
     IngestAttemptDisposition,
@@ -132,6 +132,7 @@ from polylogue.sources.live.batch_support import (
     file_prefix_sha256,
     fingerprint_file,
     jsonl_complete_prefix,
+    large_json_document_refusal_reason,
     last_complete_newline_from_tail,
     sha256_range_from_path,
     tail_hash_from_path,
@@ -608,6 +609,13 @@ class _ArchiveFullWriteResult:
     # untouched file.
     skipped_raw_ids: set[str] = field(default_factory=set)
     time_budget_exceeded: bool = False
+    # polylogue-3ijaa: the writer hold was already past its declared bound when
+    # this pass finished writing. The archive is committed, so this is reported
+    # rather than raised -- raising after the commit would leave the session
+    # written and its cursor unrecorded, and every later pass would re-parse
+    # and re-write the same bytes forever. The caller records its cursors and
+    # then stops taking new work.
+    write_hold_exhausted: bool = False
 
 
 class LiveBatchProcessor:
@@ -1298,6 +1306,20 @@ class LiveBatchProcessor:
                     parse_elapsed,
                     len(full_result.succeeded) / max(parse_elapsed, 0.01),
                 )
+                if full_result.write_hold_exhausted:
+                    # The cursors above are durable now, so ending the unit
+                    # here costs this pass its remaining groups and nothing
+                    # else -- the alternative, raising before the cursor
+                    # write, re-parsed the same bytes on every later pass
+                    # forever (polylogue-3ijaa).
+                    emit(
+                        "live.ingest.write_hold_spent_after_commit",
+                        level=WARNING,
+                        outcome="degraded",
+                        source_id=source_name,
+                        reason="writer hold spent after the archive commit; the batch ends with its cursors recorded",
+                    )
+                    break
 
         summary_stage_payload = _single_route_stage_payload(
             append_file_count=append_file_count,
@@ -1332,6 +1354,20 @@ class LiveBatchProcessor:
                 sorted(succeeded_paths),
             )
 
+        for deferred_path in deferred_paths:
+            # The attempt receipt folds these into ``failed_file_count`` and
+            # ``LiveBatchMetrics`` does not count them at all, so a deferral
+            # was readable neither as a failure nor as a success
+            # (polylogue-3r36h). Record it as what it is: deliberate
+            # bounded-backpressure debt, which lands as
+            # ``convergence_debt.status = 'deferred'``.
+            self._cursor.record_convergence_debt(
+                stage="live_ingest_deferred",
+                subject_type="source_path",
+                subject_id=str(deferred_path),
+                error="ingest deferred: no new authority-relevant append this pass",
+                deferred=True,
+            )
         retry_paths = failed_paths + [str(path) for path in deferred_paths]
         excluded_reasons: dict[str, int] = {}
         for reason in excluded_by_path.values():
@@ -1925,12 +1961,34 @@ class LiveBatchProcessor:
                 # this batch's sessions so the scan is bounded by the batch,
                 # not by the archive's whole hook history.
                 t_paste = time.perf_counter()
+                paste_session_ids = tuple(dict.fromkeys(session_ids))
                 try:
                     from polylogue.sources.live.hook_paste_enrichment import enrich_paste_from_hooks
 
-                    enrich_paste_from_hooks(self._cursor._db_path, session_ids=tuple(dict.fromkeys(session_ids)))
-                except Exception:
-                    logger.debug("hook_paste: enrichment failed (non-fatal)", exc_info=True)
+                    enrich_paste_from_hooks(self._cursor._db_path, session_ids=paste_session_ids)
+                except Exception as exc:
+                    # A debug line made this indistinguishable from success:
+                    # the stage still recorded its elapsed time and nothing
+                    # else said the sessions in it never got their paste
+                    # evidence (polylogue-3r36h). Record the same
+                    # convergence debt any other unconverged stage records so
+                    # the sessions stay re-derivable.
+                    emit(
+                        "live.ingest.hook_paste_enrichment_failed",
+                        level=WARNING,
+                        outcome="error",
+                        reason="hook paste enrichment raised; the affected sessions carry convergence debt",
+                        count=len(paste_session_ids),
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
+                    )
+                    for paste_session_id in paste_session_ids:
+                        self._cursor.record_convergence_debt(
+                            stage="hook_paste_enrichment",
+                            subject_type="session",
+                            subject_id=str(paste_session_id),
+                            error=str(exc),
+                        )
                 batch_stage_timings["hook_paste_enrichment"] = time.perf_counter() - t_paste
                 return (
                     batch_completed,
@@ -2798,13 +2856,23 @@ class LiveBatchProcessor:
                 provider = _detect_provider_from_path_sample(path, fallback_provider)
                 source_name = provider.value
                 if not _parse_path_as_session_artifact(path, provider=provider):
-                    self._mark_excluded_cursor(
-                        path,
-                        stat,
-                        source_name=source_name,
-                        reason="path rule refuses session parsing",
-                        excluded=excluded_paths,
-                    )
+                    undeclared_large_document = large_json_document_refusal_reason(path, provider=provider)
+                    if undeclared_large_document is not None:
+                        self._mark_refused_cursor(
+                            path,
+                            stat,
+                            source_name=source_name,
+                            reason=undeclared_large_document,
+                            excluded=excluded_paths,
+                        )
+                    else:
+                        self._mark_excluded_cursor(
+                            path,
+                            stat,
+                            source_name=source_name,
+                            reason="path rule refuses session parsing",
+                            excluded=excluded_paths,
+                        )
                     continue
                 try:
                     if heartbeat is not None:
@@ -2924,6 +2992,7 @@ class LiveBatchProcessor:
         summary: _IngestBatchSummary | None = None
         skipped_paths: set[Path] = set()
         time_budget_exceeded = acquisition_time_budget_exceeded
+        write_hold_exhausted = False
         if raw_records:
             blob_store.flush()
             available_records = [record for record in raw_records if record.raw_id in raw_payloads]
@@ -3009,6 +3078,7 @@ class LiveBatchProcessor:
                 stage_timings_s=archive_write.stage_timings_s,
             )
             time_budget_exceeded = time_budget_exceeded or archive_write.time_budget_exceeded
+            write_hold_exhausted = write_hold_exhausted or archive_write.write_hold_exhausted
 
         failed_set = set(failed)
         raw_fingerprints = {path: raw_id for raw_id, path in raw_by_id.items()}
@@ -3041,6 +3111,7 @@ class LiveBatchProcessor:
             captured_file_observations=captured_file_observations,
             summary=summary,
             time_budget_exceeded=time_budget_exceeded,
+            write_hold_exhausted=write_hold_exhausted,
         )
         raw_records.clear()
         raw_by_id.clear()
@@ -3133,15 +3204,33 @@ class LiveBatchProcessor:
                 # guarantee, same shape as de2a's raw-materialization
                 # checkpoint and qlae's drive-catchup batch checkpoint) --
                 # only records after the first are ever skipped for time.
-                if record_index > 0 and _ingest_pass_exhausted(
-                    max_pass_seconds=max_pass_seconds,
-                    pass_started=pass_clock_started,
-                    checkpoint="archive_write_record",
-                ):
-                    for remaining in records[record_index:]:
-                        result.skipped_raw_ids.add(remaining.raw_id)
-                    result.time_budget_exceeded = True
-                    break
+                if record_index > 0:
+                    try:
+                        pass_exhausted = _ingest_pass_exhausted(
+                            max_pass_seconds=max_pass_seconds,
+                            pass_started=pass_clock_started,
+                            checkpoint="archive_write_record",
+                        )
+                    except WriteHoldBudgetError as exc:
+                        # Earlier records in this pass already committed, so
+                        # raising here would strand their cursors exactly the
+                        # way the post-commit checkpoint used to
+                        # (polylogue-3ijaa). The remaining records become
+                        # ordinary unattempted backlog instead.
+                        emit(
+                            "live.ingest.write_hold_spent_mid_pass",
+                            level=WARNING,
+                            outcome="degraded",
+                            reason="remaining records stay backlog with their cursors intact",
+                            error_detail=str(exc),
+                        )
+                        result.write_hold_exhausted = True
+                        pass_exhausted = True
+                    if pass_exhausted:
+                        for remaining in records[record_index:]:
+                            result.skipped_raw_ids.add(remaining.raw_id)
+                        result.time_budget_exceeded = True
+                        break
                 provider: Provider | None = None
                 source_raw_id: str | None = None
                 acquired_at_ms = 0
@@ -3871,8 +3960,22 @@ class LiveBatchProcessor:
             if result.session_ids:
                 repair_message_fts_index_sync(archive._conn, list(dict.fromkeys(result.session_ids)))
         # The loop checks before each later record, but a one-record pass has
-        # no such boundary. Make the final record obey the same hard bound.
-        check_write_hold_budget("archive_write_complete")
+        # no such boundary, so the final record is checked here. This
+        # checkpoint sits AFTER the archive commit: raising would produce a
+        # committed-and-failed batch whose cursor never lands (polylogue-3ijaa),
+        # so an overrun is reported on the result instead. The caller records
+        # the cursor the commit earned and ends the unit.
+        try:
+            check_write_hold_budget("archive_write_complete")
+        except WriteHoldBudgetError as exc:
+            emit(
+                "live.ingest.write_hold_spent_after_archive_commit",
+                level=WARNING,
+                outcome="degraded",
+                reason="the committed batch records its cursor before ending the unit",
+                error_detail=str(exc),
+            )
+            result.write_hold_exhausted = True
         return result
 
     def _parse_raw_revision_chain(
@@ -4290,6 +4393,58 @@ class LiveBatchProcessor:
             st_ino=getattr(stat, "st_ino", None),
             mtime_ns=getattr(stat, "st_mtime_ns", None),
             excluded=True,
+        )
+
+    def _mark_refused_cursor(
+        self,
+        path: Path,
+        stat: object,
+        *,
+        source_name: str,
+        reason: str,
+        excluded: dict[Path, str] | None = None,
+    ) -> None:
+        """Record a typed admission refusal a later rule change must revisit.
+
+        Unlike :meth:`_mark_excluded_cursor` this neither advances the cursor
+        to EOF nor quarantines the path: the refusal is a property of the
+        current admission rules, not of the bytes (polylogue-dznyt). The
+        cursor keeps a counted failure with no content fingerprint, so
+        ``list_retry_records`` surfaces it, and a durable ``convergence_debt``
+        row names the reason. Every later pass re-evaluates the same path and
+        re-records the same refusal, so declaring the provider -- or building
+        a streaming route for it -- admits the file with no operator step.
+        """
+        if excluded is not None:
+            excluded[path] = reason
+        st_size = int(getattr(stat, "st_size", 0))
+        emit(
+            "live.ingest.file_refused",
+            level=WARNING,
+            outcome="refused",
+            source_path=str(path),
+            reason=reason,
+        )
+        self._cursor.set(
+            path,
+            st_size,
+            byte_offset=0,
+            last_complete_newline=0,
+            parser_fingerprint=self._current_parser_fingerprint(),
+            content_fingerprint=None,
+            source_name=source_name,
+            st_dev=getattr(stat, "st_dev", None),
+            st_ino=getattr(stat, "st_ino", None),
+            mtime_ns=getattr(stat, "st_mtime_ns", None),
+            failure_count=1,
+            excluded=False,
+            allow_backward=True,
+        )
+        self._cursor.record_convergence_debt(
+            stage="live_ingest_admission",
+            subject_type="source_path",
+            subject_id=str(path),
+            error=reason,
         )
 
     def _resynthesize_cursor_from_source(self, path: Path) -> CursorRecord | None:

@@ -401,3 +401,33 @@ def test_revised_hook_claim_supersedes_the_previous_authoritative_edge(tmp_path:
     assert links[_HOOK_PARENT]["method"] == HOOK_SUPERSEDED_LINK_METHOD
     assert links[_HOOK_PARENT]["status"] == TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
     assert links[_HOOK_PARENT]["resolved_dst_session_id"] is None
+
+
+def test_unreadable_spawn_edge_projection_is_reported_not_silently_rootless(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A projection read that fails must say so before the child lands as a root.
+
+    ``_codex_spawn_edge_parent_claim`` swallowed the failure into
+    ``projected_parent = None``, so an unreadable projection archived a Codex
+    child with no parent edge and no warning -- indistinguishable from a child
+    that genuinely has no parent evidence (polylogue-3r36h). Restoring the
+    silent ``except`` turns this red.
+
+    Note the sibling swallow this test does NOT cover:
+    ``codex_state_projection.read_parent_thread_id`` catches ``sqlite3.Error``
+    at debug level itself, so a broken projection TABLE never reaches the
+    handler here. That module is outside this change's scope.
+    """
+    import sys
+
+    from polylogue.storage.sqlite.archive_tiers.write import _codex_spawn_edge_parent_claim
+
+    conn = _index_conn(tmp_path / "index.db")
+    monkeypatch.setitem(sys.modules, "polylogue.sources.codex_state_projection", None)
+
+    with caplog.at_level("WARNING"):
+        claim = _codex_spawn_edge_parent_claim(conn, None, child_native_id="child-thread")
+
+    assert claim is None
+    assert "parent projection unavailable for child child-thread" in caplog.text

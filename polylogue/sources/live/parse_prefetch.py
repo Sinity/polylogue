@@ -38,7 +38,7 @@ from io import BytesIO
 from pathlib import Path
 
 from polylogue.core.enums import Provider
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedSession
@@ -356,6 +356,11 @@ class LiveParseStage:
         # directory's contents: a shard lives from the worker that sealed it
         # to the writer that copied it, and nothing outlives ``shutdown``.
         self._shard_directory = shard_directory
+        #: Workers that parsed successfully but handed back no shard
+        #: (polylogue-3r36h). A systematic shard-build failure otherwise
+        #: removes the writer-side benefit with nothing but a per-file
+        #: warning to show for it.
+        self.shard_build_failure_count = 0
         if shard_directory is not None:
             shard_directory.mkdir(parents=True, exist_ok=True)
             # Anything already here belongs to a process that died before it
@@ -404,9 +409,12 @@ class LiveParseStage:
         }
         warmed = 0
         completed = 0
+        shard_build_failures = 0
+        consumed: set[Future[tuple[str, list[ParsedSession] | None, BaseException | None, str | None]]] = set()
         try:
             for future in as_completed(futures, timeout=self._warm_timeout_seconds):
                 completed += 1
+                consumed.add(future)
                 candidate = futures[future]
                 try:
                     result = future.result()
@@ -426,26 +434,56 @@ class LiveParseStage:
                     if shard_path is not None:
                         discard_session_shard(shard_path)
                     continue
+                if shard_directory is not None and sessions and shard_path is None:
+                    shard_build_failures += 1
                 if self.cache.try_admit(cache_key, sessions, payload=candidate.payload, shard_path=shard_path):
                     warmed += 1
         except TimeoutError:
             pending_count = len(futures) - completed
-            # polylogue-nfr2u: an unfinished worker still runs to completion and
-            # still seals a shard under the archive's parse-shards directory.
-            # Nobody consumes its returned ``shard_name`` after the timeout, so
-            # the file was orphaned until ``shutdown()`` swept the directory.
-            # Attach the discard to each unfinished future instead, so the
-            # worker cleans up after itself as soon as it finishes.
+            # Leaving the futures alone kept unstarted work queued behind the
+            # next warm() and let a late worker's shard sit unreferenced on
+            # disk (polylogue-3r36h). Cancel what has not started, discard the
+            # shards of what finished unread, and attach the discard to what
+            # is still running so the worker cleans up after itself as soon
+            # as it finishes (polylogue-nfr2u): a thread cannot be preempted,
+            # and nobody consumes its ``shard_name`` after the timeout.
+            cancelled = 0
+            drained = 0
             for future in futures:
-                if future.done():
+                if future in consumed:
                     continue
-                future.add_done_callback(_discard_orphaned_shard)
+                if future.cancel():
+                    cancelled += 1
+                    continue
+                if not future.done():
+                    future.add_done_callback(_discard_orphaned_shard)
+                    continue
+                if future.exception() is not None:
+                    continue
+                _cache_key, _sessions, _error, shard_name = future.result()
+                if shard_name is not None:
+                    discard_session_shard(Path(shard_name))
+                    drained += 1
             logger.warning(
                 "live watcher parse-stage prefetch: warm() timed out after %.0fs waiting on %d of %d file(s); "
+                "cancelled %d unstarted worker(s), discarded %d unread shard(s); "
                 "leaving unfinished file(s) uncached for the writer-held pass to reparse normally",
                 self._warm_timeout_seconds,
                 pending_count,
                 len(futures),
+                cancelled,
+                drained,
+            )
+        if shard_build_failures:
+            self.shard_build_failure_count += shard_build_failures
+            emit(
+                "live.parse_prefetch.shard_build_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="parsed files produced no shard; the writer binds those rows itself",
+                count=shard_build_failures,
+                total=len(futures),
+                cumulative_count=self.shard_build_failure_count,
             )
         return warmed
 

@@ -4744,7 +4744,21 @@ def _codex_spawn_edge_parent_claim(
         from polylogue.sources.codex_state_projection import read_parent_thread_id
 
         projected_parent = read_parent_thread_id(conn, child_native_id)
-    except (ImportError, sqlite3.Error):
+    except (ImportError, sqlite3.Error) as exc:
+        # Silence here archives a child as a root with no parent edge and no
+        # trace that the projection was ever consulted (polylogue-3r36h). The
+        # spool fallback below may still supply the edge; when it does not,
+        # this line is the only evidence the lineage was lost to a failure
+        # rather than to absent evidence.
+        emit(
+            "storage.codex_spawn_edge.parent_projection_unavailable",
+            level=WARNING,
+            outcome="degraded",
+            reason="the child is archived as a root because its parent projection could not be read",
+            session_id=child_native_id,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         projected_parent = None
     if projected_parent is not None:
         return _HookParentClaim(projected_parent, {"codex_thread_spawn_edge_parent": projected_parent})

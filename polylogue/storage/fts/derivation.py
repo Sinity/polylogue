@@ -36,6 +36,17 @@ class FtsKeyStatus(StrEnum):
 
 GLOBAL_PARTITION = "__global__"
 
+# Rowids per ``IN`` list.  Bounded by the connection's own variable limit,
+# which is 999 on a default SQLite build and must never be assumed larger.
+_MAX_ROWID_BATCH = 500
+
+
+def _rowid_batches(conn: sqlite3.Connection, rowids: Sequence[int]) -> Iterable[tuple[int, ...]]:
+    """Yield rowid batches no larger than this connection's bind-variable limit."""
+    size = max(1, min(_MAX_ROWID_BATCH, conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)))
+    for index in range(0, len(rowids), size):
+        yield tuple(rowids[index : index + size])
+
 
 @dataclass(frozen=True, slots=True)
 class FtsInputRow:
@@ -576,11 +587,10 @@ class FtsDerivationAdapter:
                         (*_session_block_id_range(computed.key), computed.key),
                     )
                 )
-                if rowids:
-                    placeholders = ", ".join("?" for _ in rowids)
-                    params = tuple(sorted(rowids))
-                    conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({placeholders})", params)
-                    conn.execute(f"DELETE FROM messages_fts_identity WHERE rowid IN ({placeholders})", params)
+                for batch in _rowid_batches(conn, sorted(rowids)):
+                    placeholders = ", ".join("?" for _ in batch)
+                    conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({placeholders})", batch)
+                    conn.execute(f"DELETE FROM messages_fts_identity WHERE rowid IN ({placeholders})", batch)
                 self._insert_rows(conn, computed.key)
             if owns_transaction:
                 conn.execute("COMMIT")

@@ -339,6 +339,11 @@ class _FullIngestResult:
     # ``succeeded`` and ``failed`` in that case were never attempted this
     # pass -- they remain ordinary backlog for the caller's next tick.
     time_budget_exceeded: bool = False
+    # polylogue-3ijaa: True when the archive write finished past the declared
+    # writer-hold bound. The writes are committed, so the caller records this
+    # group's cursors first and only then stops taking new work -- a batch is
+    # never left committed-and-failed with its cursor unrecorded.
+    write_hold_exhausted: bool = False
 
 
 def _full_ingest_result_from_summary(
@@ -357,6 +362,7 @@ def _full_ingest_result_from_summary(
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     summary: object | None,
     time_budget_exceeded: bool = False,
+    write_hold_exhausted: bool = False,
 ) -> _FullIngestResult:
     return _FullIngestResult(
         succeeded=succeeded,
@@ -378,6 +384,7 @@ def _full_ingest_result_from_summary(
         changed_session_ids=tuple(getattr(summary, "changed_session_ids", ()) or ()) if summary is not None else (),
         stage_timings_s=dict(getattr(summary, "stage_timings_s", {})) if summary is not None else {},
         time_budget_exceeded=time_budget_exceeded,
+        write_hold_exhausted=write_hold_exhausted,
     )
 
 
@@ -903,6 +910,35 @@ def _large_non_jsonl_path_can_stream(path: Path, *, provider: Provider) -> bool:
     if path.suffix.lower() != ".json":
         return False
     return provider in _LARGE_JSON_DOCUMENT_PROVIDERS
+
+
+def large_json_document_refusal_reason(path: Path, *, provider: Provider) -> str | None:
+    """Why an oversized ``.json`` path was refused, when only this rule refused it.
+
+    ``_parse_path_as_session_artifact`` collapses every refusal to ``False``,
+    but this one is a property of the current admission rules rather than of
+    the bytes: declaring the provider in ``_LARGE_JSON_DOCUMENT_PROVIDERS``, or
+    building a streaming route for it, admits the same file unchanged. The
+    caller therefore records a retryable typed refusal instead of advancing the
+    cursor to EOF and quarantining the path (polylogue-dznyt).
+
+    ``None`` means some other rule refused the path (or nothing did), and the
+    caller keeps its ordinary exclusion.
+    """
+    if provider in _LARGE_JSON_DOCUMENT_PROVIDERS:
+        return None
+    if path.suffix.lower() != ".json":
+        return None
+    if is_jsonl_source_path(str(path)):
+        return None
+    if _path_size(path) <= _STREAMING_FULL_INGEST_BYTES:
+        return None
+    if strong_path_classification(path, provider=provider) is not None:
+        return None
+    browser_capture, _browser_provider = _browser_capture_prefix_probe(path)
+    if browser_capture:
+        return None
+    return f"large JSON document provider not declared for streaming ingest: {provider.value}"
 
 
 def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:

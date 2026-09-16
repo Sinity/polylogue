@@ -6030,3 +6030,39 @@ def test_message_usage_request_id_and_thinking_budget_survive_the_write(tmp_path
         ).fetchall()
     ]
     assert budgets == [31999]
+
+
+def test_thread_source_high_water_mark_compares_instants_not_storage_types(test_conn: sqlite3.Connection) -> None:
+    """Anti-vacuity: without the unixepoch normalisation the threads view mixes
+    ISO TEXT and raw epoch-ms INTEGER in one MAX(). SQLite orders INTEGER before
+    TEXT, so the older ISO-text parent row wins over the later epoch-ms child and
+    source_updated_at reads back as the 2020 profile timestamp."""
+    parent_ms = 1_577_836_800_000  # 2020-01-01T00:00:00Z
+    child_ms = 1_767_225_600_000  # 2026-01-01T00:00:00Z
+    test_conn.execute(
+        "INSERT INTO sessions(native_id, origin, title, content_hash, created_at_ms, updated_at_ms) "
+        "VALUES ('hwm-root', 'unknown-export', 'root', ?, ?, ?)",
+        (b"r" * 32, parent_ms, parent_ms),
+    )
+    test_conn.execute(
+        "INSERT INTO sessions(native_id, origin, title, content_hash, created_at_ms, updated_at_ms, "
+        "parent_session_id, root_session_id) "
+        "VALUES ('hwm-child', 'unknown-export', 'child', ?, ?, ?, 'unknown-export:hwm-root', "
+        "'unknown-export:hwm-root')",
+        (b"c" * 32, child_ms, child_ms),
+    )
+    # Only the parent carries a profile, so its ISO TEXT source_updated_at meets
+    # the child's raw epoch-ms updated_at_ms inside the same MAX().
+    test_conn.execute(
+        "INSERT INTO session_profiles(session_id, source_name, source_updated_at) "
+        "VALUES ('unknown-export:hwm-root', 'unknown-export', '2020-01-01T00:00:00+00:00')"
+    )
+    test_conn.commit()
+
+    row = test_conn.execute(
+        "SELECT source_updated_at, input_high_water_mark FROM threads WHERE thread_id = ?",
+        ("unknown-export:hwm-root",),
+    ).fetchone()
+
+    assert row["source_updated_at"] == "2026-01-01T00:00:00Z"
+    assert row["input_high_water_mark"] == "2026-01-01T00:00:00Z"

@@ -32,6 +32,7 @@ from polylogue.logging import capture
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+from polylogue.storage.derived.raw import RawObservationScope
 from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
@@ -2893,7 +2894,17 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                         "SELECT decision, revision_authority FROM raw_session_memberships WHERE logical_source_key = ?",
                         (session_id,),
                     ).fetchall()
-                assert sum(report.done == 1 for report in kernel_reports) == expected_versions, str(
+                # polylogue-f7pdm: on a fresh root the raw-materialization
+                # intake class used to be latched off for the daemon's whole
+                # lifetime, so every kernel report here was a session-profile
+                # one. The class now registers and converges the raw
+                # observations its own admissions produce, so the session
+                # count is taken from the session-scoped reports and the raw
+                # ones are asserted separately rather than folded in.
+                session_reports = [
+                    report for report in kernel_reports if not isinstance(report.frame.scope, RawObservationScope)
+                ]
+                assert sum(report.done == 1 for report in session_reports) == expected_versions, str(
                     ([(report.frame.scope, report.done) for report in kernel_reports], admission_metrics, evidence)
                 )
                 with sqlite3.connect(archive_root / "index.db") as conn:
@@ -4367,3 +4378,40 @@ def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_p
     supervisor = supervisors[0]
     assert supervisor.state("raw_observation_convergence") is ServiceState.SKIPPED
     assert supervisor.state("lifecycle_heartbeat") is ServiceState.STOPPED
+
+
+def test_whale_pass_on_an_empty_root_is_quiet_not_a_repeating_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A fresh archive root has no raw tier yet, and that is not an error.
+
+    polylogue-f7pdm: the periodic whale pass ran discovery against a
+    non-existent ``source.db`` and logged
+    ``daemon.raw_materialization.whale_schedule_failed`` at WARNING every
+    thirty seconds for the daemon's whole lifetime on the declared build
+    route.
+
+    Anti-vacuity: removing the missing-tier guard in
+    ``RawMaterializationDiscovery.discover_pending_raw_ids`` makes this raise
+    ``sqlite3.OperationalError`` instead of returning ``False``.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.operations.intake_adapters import RawMaterializationDiscovery
+
+    monkeypatch.setattr(daemon_cli, "archive_root", lambda: tmp_path, raising=False)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+
+    async def no_outbox() -> None:
+        return None
+
+    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", no_outbox)
+
+    assert not (tmp_path / "source.db").exists()
+    attempted = asyncio.run(
+        daemon_cli._maybe_run_raw_materialization_whale_pass(
+            raw_observation_owner=object(),
+            raw_intake_discovery=RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024),
+        )
+    )
+
+    assert attempted is False

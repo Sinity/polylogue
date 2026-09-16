@@ -351,3 +351,46 @@ def test_session_partition_retires_fts_rows_whose_block_was_deleted(
     assert test_conn.execute("SELECT 1 FROM messages_fts_docsize WHERE id = ?", (second_rowid,)).fetchone() is None
     assert test_conn.execute("SELECT 1 FROM messages_fts_identity WHERE rowid = ?", (second_rowid,)).fetchone() is None
     assert adapter.inspect_partition(test_conn, session_id).valid
+
+
+def _seed_blocks(conn: sqlite3.Connection, native_id: str, count: int) -> str:
+    """Seed one session carrying ``count`` searchable blocks."""
+    conn.execute(
+        "INSERT INTO sessions(native_id, origin, title, content_hash) VALUES (?, 'unknown-export', 'test', ?)",
+        (native_id, bytes([count % 251]) * 32),
+    )
+    session_id = f"unknown-export:{native_id}"
+    conn.execute(
+        "INSERT INTO messages(session_id, native_id, position, role, message_type, content_hash) "
+        "VALUES (?, 'm0', 0, 'user', 'message', ?)",
+        (session_id, b"m" * 32),
+    )
+    message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
+    for position in range(count):
+        conn.execute(
+            "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_hash) "
+            "VALUES (?, ?, ?, 'text', ?, ?)",
+            (message_id, session_id, position, f"derivation input {position}", bytes([position % 251]) * 32),
+        )
+    conn.commit()
+    return session_id
+
+
+def test_partition_publish_chunks_rowids_under_the_connection_variable_limit(
+    test_conn: sqlite3.Connection, test_db: Path
+) -> None:
+    """Anti-vacuity: with the connection's bind-variable limit lowered below the
+    partition's block count, an unchunked ``rowid IN (...)`` list raises
+    sqlite3.OperationalError('too many SQL variables') and this publish fails."""
+    session_id = _seed_blocks(test_conn, "over-the-variable-limit", 6)
+    adapter = _adapter(test_db)
+    computed = adapter.input_for(test_conn, session_id)
+    previous_limit = test_conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    test_conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 4)
+    try:
+        assert adapter.publish_partition(test_conn, computed) is True
+    finally:
+        test_conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous_limit)
+
+    assert adapter.inspect_partition(test_conn, session_id).valid
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 6

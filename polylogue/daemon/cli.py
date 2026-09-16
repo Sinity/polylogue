@@ -2908,7 +2908,15 @@ async def _run_daemon_services_under_active_writer_lease(
                         from polylogue.config import get_config
 
                         drive_sources_configured = any(source.is_drive for source in get_config().sources)
-                    raw_materialization_available = not watcher_blocked and (archive_root_path / "source.db").exists()
+                    # polylogue-f7pdm: availability is re-evaluated per
+                    # discovery pass, not latched at startup. On a fresh root
+                    # ``source.db`` does not exist yet, and a one-shot
+                    # existence check left the raw class unregistered for the
+                    # whole daemon lifetime. ``RawMaterializationDiscovery``
+                    # returns an empty page while the tier is absent, so
+                    # registering here costs nothing and the class starts
+                    # admitting as soon as the first acquisition commits.
+                    raw_materialization_available = not watcher_blocked
                     adapter_pairs = build_intake_adapters(
                         DaemonIntakeContext(
                             archive_root=archive_root_path,

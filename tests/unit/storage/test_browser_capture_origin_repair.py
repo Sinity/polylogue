@@ -12,6 +12,7 @@ from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import AssertionStatus, Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
+from polylogue.sources import revision_backfill
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import resolve_raw_authority_blocker
@@ -1060,3 +1061,47 @@ def test_inspect_conflicts_rejects_duplicate_and_malformed_ids(tmp_path: Path) -
         inspect_browser_canonical_authority_conflicts(_config(tmp_path), ["not-a-raw-id"])
     with pytest.raises(ValueError, match="1..100 entries"):
         inspect_browser_canonical_authority_conflicts(_config(tmp_path), [])
+
+
+def test_unreadable_canonical_evidence_is_retryable_not_a_durable_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-roaof: an unread blob must never become a judgment row.
+
+    Same seed as the equivalent-canonical-head restore above, except reading and
+    parsing the canonical head's retained evidence raises. Nothing is proven, so
+    the census must not report ``conflicting_authority_needs_judgment`` and must
+    not record a judgment candidate. Anti-vacuity: restoring the ``return False`` on
+    the blob-read/parse failure path in ``_canonical_browser_origin_head_is_exact``
+    makes control fall through to "canonical logical source has an incompatible
+    accepted head", and the census writes the conflict row again.
+    """
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
+    original_parse_one = revision_backfill._parse_one
+
+    def _unreadable_canonical(provider: Any, payload: bytes, source_path: str, **kwargs: Any) -> Any:
+        if source_path.endswith("canonical.json"):
+            raise ValueError("retained canonical evidence could not be parsed")
+        return original_parse_one(provider, payload, source_path, **kwargs)
+
+    monkeypatch.setattr(revision_backfill, "_parse_one", _unreadable_canonical)
+
+    strategy = inspect_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])[0]
+    assert strategy.status == "read_failed"
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    item = next(entry for entry in census.items if entry.raw_id == mismatched_raw_id)
+    assert item.state is not RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT
+    assert item.actuator is not RawAuthorityActuator.REQUEST_JUDGMENT
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert (
+            source.execute(
+                "SELECT count(*) FROM raw_authority_blockers "
+                "WHERE json_extract(observed_json, '$.judgment_assertion_id') IS NOT NULL"
+            ).fetchone()[0]
+            == 0
+        )
+    with closing(sqlite3.connect(tmp_path / "user.db")) as user:
+        assert user.execute("SELECT count(*) FROM assertions").fetchone()[0] == 0
