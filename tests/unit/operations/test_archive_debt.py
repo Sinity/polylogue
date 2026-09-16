@@ -11,9 +11,12 @@ from typing import Any
 import pytest
 
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.maintenance.raw_authority import (
+    RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
+    RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
+)
 from polylogue.operations import archive_debt as module
 from polylogue.operations.archive_debt import archive_debt_list
-from polylogue.storage.raw_convergence import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
@@ -550,7 +553,7 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
 def test_archive_debt_blocks_oversized_raw_materialization_replay(tmp_path: Path) -> None:
     _source_db, _index_db, source_file = _init_raw_materialization_fixture(tmp_path)
-    oversized_size = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1
+    oversized_size = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES + 1
     blob = tmp_path / "blob" / "14" / ("14" * 31)
     blob.parent.mkdir(exist_ok=True)
     blob.write_bytes(b"{}")
@@ -583,8 +586,11 @@ def test_archive_debt_blocks_oversized_raw_materialization_replay(tmp_path: Path
     row = by_ref["debt:raw-materialization:claude-code-session:parse-pending"]
     assert row.status == "blocked"
     assert row.affected_count == 1
-    assert "Actual replay is blocked by the 1.0 GiB" in (row.details or "")
-    assert "raw-materialization execution limit" in (row.details or "")
+    # The threshold reported is the one an executor enforces: the ordinary
+    # raw-materialization limit, because the whale escalation refuses a
+    # non-stream-safe component at any size (polylogue-6kur.3).
+    assert "Actual replay is blocked by the 64.0 MiB" in (row.details or "")
+    assert "ordinary raw-materialization limit" in (row.details or "")
     assert row.actions[0].label == "Explain parser output"
     assert payload.totals.affected_blocked == 1
 
@@ -593,7 +599,7 @@ def test_archive_debt_marks_oversized_stream_raw_materialization_actionable(tmp_
     _source_db, _index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
     source_file = tmp_path / "claude-code.jsonl"
     source_file.write_text("{}", encoding="utf-8")
-    oversized_size = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1
+    oversized_size = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES + 1
     blob = tmp_path / "blob" / "15" / ("15" * 31)
     blob.parent.mkdir(exist_ok=True)
     blob.write_bytes(b"{}")
@@ -1106,3 +1112,51 @@ def test_tier_version_read_reports_schema_skew_instead_of_raising(
     monkeypatch.setattr(module, "open_readonly_connection", _recording_open)
     assert module._read_user_version(path) == 3
     assert calls == [False]
+
+
+def test_archive_debt_blocks_a_stream_safe_row_past_the_whale_envelope(tmp_path: Path) -> None:
+    """A stream-record source larger than the whale envelope is still blocked.
+
+    The whale escalation is bounded: it retries a stream-record-safe component
+    at ``RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES`` and no further. A row
+    past it converges through nothing, so reporting it as actionable
+    ("run daemon convergence") sends the operator to a route that will refuse
+    it every pass.
+
+    Anti-vacuity: dropping the whale-envelope clause from
+    ``stream_safe_oversized_rows`` classifies this row as stream-safe and
+    makes the ``blocked`` status red.
+    """
+    _source_db, _index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    source_file = tmp_path / "claude-code-whale.jsonl"
+    source_file.write_text("{}", encoding="utf-8")
+    blob = tmp_path / "blob" / "16" / ("16" * 31)
+    blob.parent.mkdir(exist_ok=True)
+    blob.write_bytes(b"{}")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error, validated_at_ms,
+                validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                "raw-oversized-beyond-whale",
+                "claude-code-session",
+                "beyond-whale-native",
+                str(source_file),
+                bytes.fromhex("16" * 32),
+                RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES + 1,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+    row = {r.debt_ref: r for r in payload.rows}["debt:raw-materialization:claude-code-session:parse-pending"]
+    assert row.status == "blocked"
+    assert "whale" in (row.details or "")

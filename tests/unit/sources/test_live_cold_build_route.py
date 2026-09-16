@@ -65,7 +65,7 @@ def test_an_empty_generation_gives_the_live_pass_the_cold_build_shape(tmp_path: 
     original = ArchiveStore.open_active_cold_build.__func__  # type: ignore[attr-defined]
 
     def recording(cls: type[ArchiveStore], archive_root: Path) -> ArchiveStore:
-        store = original(cls, archive_root)
+        store = cast(ArchiveStore, original(cls, archive_root))
         engaged.append(store.active_cold_build_engaged)
         return store
 
@@ -99,7 +99,7 @@ def test_a_populated_generation_falls_back_to_the_live_shape(tmp_path: Path) -> 
     original = ArchiveStore.open_active_cold_build.__func__  # type: ignore[attr-defined]
 
     def recording(cls: type[ArchiveStore], archive_root: Path) -> ArchiveStore:
-        store = original(cls, archive_root)
+        store = cast(ArchiveStore, original(cls, archive_root))
         engaged.append(store.active_cold_build_engaged)
         return store
 
