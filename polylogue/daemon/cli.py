@@ -2874,6 +2874,52 @@ async def _run_daemon_services_under_active_writer_lease(
                         # only because the canonical output relation said so.
                         return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=1)
 
+                    async def discover_hook_events(limit: int) -> Sequence[tuple[str, int]]:
+                        from polylogue.operations.hook_event_derivation import discover_pending_hook_carriers
+
+                        submitted = daemon_compute.submit(
+                            propagate(functools.partial(discover_pending_hook_carriers, archive_root_path, limit)),
+                            admission_class="incremental-background",
+                        )
+                        return await asyncio.wrap_future(submitted.future)
+
+                    async def admit_hook_events(raw_id: str) -> AdmissionResult:
+                        """Materialize exactly one acquired carrier's events.
+
+                        The domain publishes under its own writer lease, so
+                        this must not run inside the daemon's. The kernel's
+                        own verdicts decide the outcome: a refusal that a
+                        later pass could resolve is retryable, a carrier that
+                        is already materialized is a duplicate.
+                        """
+
+                        from polylogue.daemon.derivation import Outcome
+                        from polylogue.operations.hook_event_derivation import converge_hook_carriers
+
+                        submitted = daemon_compute.submit(
+                            propagate(
+                                functools.partial(converge_hook_carriers, archive_root_path, raw_ids=(raw_id,), limit=1)
+                            ),
+                            admission_class="incremental-background",
+                        )
+                        report = await asyncio.wrap_future(submitted.future)
+                        outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key == raw_id)
+                        failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
+                        if failed is not None:
+                            return AdmissionResult(
+                                AdmissionOutcome.RETRYABLE,
+                                reason=failed.error or "hook event derivation failed",
+                            )
+                        pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
+                        if pending is not None:
+                            return AdmissionResult(
+                                AdmissionOutcome.RETRYABLE,
+                                reason=pending.reason.value if pending.reason is not None else "hook events pending",
+                            )
+                        if report.done:
+                            return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=1)
+                        return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=1)
+
                     drive_sources_configured = False
                     with contextlib.suppress(Exception):
                         from polylogue.config import get_config
@@ -2900,6 +2946,8 @@ async def _run_daemon_services_under_active_writer_lease(
                         else None,
                         raw_callback=admit_raw_intake if raw_materialization_available else None,
                         raw_discover=discover_raw_intake if raw_materialization_available else None,
+                        hook_events_callback=admit_hook_events if raw_materialization_available else None,
+                        hook_events_discover=discover_hook_events if raw_materialization_available else None,
                     )
                     dispatcher = FairIntakeDispatcher(
                         tuple(IntakeClassSpec(name=name, adapter=adapter) for name, adapter in adapter_pairs),

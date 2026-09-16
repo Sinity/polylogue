@@ -668,8 +668,11 @@ def build_intake_adapters(
     remote_callback: Callable[[], Awaitable[int] | int] | None = None,
     raw_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
     raw_discover: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]] | None = None,
+    hook_events_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
+    hook_events_discover: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]]
+    | None = None,
 ) -> tuple[tuple[str, IntakeAdapter], ...]:
-    """Compose browser, hook, local, remote, and admitted-raw classes."""
+    """Compose browser, hook, local, remote, admitted-raw and hook-event classes."""
 
     result: list[tuple[str, IntakeAdapter]] = []
     local: list[FileIntakeAdapter] = []
@@ -704,4 +707,17 @@ def build_intake_adapters(
                 return value
 
             result.append(("raw_materialization", RawMaterializationIntakeAdapter(raw_discover, admit_raw)))
+    if hook_events_callback is not None and hook_events_discover is not None:
+        # Hook-event materialization is keyed by carrier raw id exactly as raw
+        # materialization is keyed by session raw id, so it reuses the same
+        # adapter rather than a second one that would have to re-derive the
+        # same retry, isolation and cost accounting.
+
+        async def admit_hook_carrier(raw_id: str) -> AdmissionResult | int:
+            value = hook_events_callback(raw_id)
+            if isinstance(value, Awaitable):
+                value = await value
+            return value
+
+        result.append(("hook_events", RawMaterializationIntakeAdapter(hook_events_discover, admit_hook_carrier)))
     return tuple(result)
