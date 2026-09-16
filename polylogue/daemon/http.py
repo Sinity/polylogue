@@ -85,6 +85,7 @@ from polylogue.daemon.write_coordinator import (
 from polylogue.logging import DEBUG, ERROR, WARNING, emit, propagate
 from polylogue.logging import span as log_span
 from polylogue.operations.authority import authority_for_config, authority_for_reader
+from polylogue.operations.origin_filters import unknown_origin_filter_tokens
 from polylogue.rendering.semantic_card_placement import (
     SemanticCardPlacement,
     semantic_card_placement_for_messages,
@@ -1220,6 +1221,23 @@ def _build_query_spec_params(
     """
     spec_params: dict[str, object] = {}
 
+    origins = _csv_values(params, "origin")
+    excluded_origins = _csv_values(params, "exclude_origin")
+    # polylogue-01fe: an unrecognized ``?origin=`` used to reach the lenient
+    # wire-token normalizer and answer HTTP 200 with ``total: 0``, so a
+    # mistyped or near-miss origin was reported as "no data" while the CLI
+    # rejected the same token and MCP returned the unfiltered aggregate.
+    # ``QuerySpecError`` carries http_status_code=400 and ``daemon_safe_handler``
+    # renders it as the QueryErrorPayload-shaped 400 the other surfaces return,
+    # so all three surfaces now answer this input class the same way. The gate
+    # runs before anything is parsed: a request naming an origin that does not
+    # exist has no valid interpretation to build a spec from.
+    unknown = unknown_origin_filter_tokens([*origins, *excluded_origins])
+    if unknown:
+        from polylogue.archive.query.spec import QuerySpecError
+
+        raise QuerySpecError("origin", ", ".join(unknown))
+
     for key in (
         "query",
         "contains",
@@ -1245,10 +1263,8 @@ def _build_query_spec_params(
     # as well as comma-joined values (``?key=a,b``) rather than only the
     # first query-string occurrence, matching the archive route's historical
     # ``_csv_values``/``_archive_origin_filter`` behavior.
-    origins = _csv_values(params, "origin")
     if origins:
         spec_params["origin"] = origins
-    excluded_origins = _csv_values(params, "exclude_origin")
     if excluded_origins:
         spec_params["exclude_origin"] = excluded_origins
 
