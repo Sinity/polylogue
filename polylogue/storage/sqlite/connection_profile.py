@@ -280,8 +280,16 @@ COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     role="write",
     timeout_seconds=DB_TIMEOUT,
     busy_timeout_ms=DB_TIMEOUT * 1000,
-    cache_size_kib=BULK_BUILD_CACHE_SIZE_KIB,
-    mmap_size_bytes=BULK_BUILD_MMAP_SIZE_BYTES,
+    # The live writer's cache and mmap budget, NOT the bulk build's. The bulk
+    # profile's 512 MiB / 4 GiB window is sized for a throwaway single-purpose
+    # process that owns the machine; this connection is the daemon's own live
+    # writer, sharing a cgroup budget with its readers (see the mapped-bytes
+    # note below). Measured 2026-09-16 on a 500-file synthetic cold build
+    # through the dispatcher: the bulk sizes cost 433 MiB peak RSS against the
+    # live profile's 261 MiB, for a shape whose window on this route is a
+    # single intake page.
+    cache_size_kib=WRITE_CACHE_SIZE_KIB,
+    mmap_size_bytes=WRITE_MMAP_SIZE_BYTES,
     foreign_keys=False,
     journal_mode="WAL",
     synchronous="OFF",
