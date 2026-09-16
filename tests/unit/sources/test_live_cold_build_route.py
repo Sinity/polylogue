@@ -158,9 +158,11 @@ def test_the_cold_build_boundary_survives_an_open_transaction(tmp_path: Path) ->
     with ArchiveStore.open_active_cold_build(tmp_path) as archive:
         assert archive.active_cold_build_engaged is True
         archive._conn.execute("BEGIN")
+        # session_id is a generated column (origin || ':' || native_id), so it
+        # is never inserted directly -- see the identity model in CLAUDE.md.
         archive._conn.execute(
-            "INSERT INTO sessions (session_id, native_id, origin, content_hash) VALUES (?, ?, ?, ?)",
-            ("test:open-txn", "open-txn", "test", b"\x00" * 32),
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("open-txn", "codex-session", b"\x00" * 32),
         )
         assert archive._conn.in_transaction is True
         archive.finish_active_cold_build()
