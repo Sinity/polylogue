@@ -1362,26 +1362,23 @@ async def test_a_page_never_splits_below_one_file_and_stops_at_the_class_share(t
 
 
 def _linked_export_source(tmp_path: Path) -> tuple[WatchSource, Path]:
-    """A source root whose export tree is reachable only through a symlink."""
+    """A source root whose export tree is reached through an in-root link."""
 
-    export = tmp_path / "elsewhere" / "export"
-    export.mkdir(parents=True)
-    session = export / "session.json"
-    session.write_text("{}")
     root = tmp_path / "root"
-    root.mkdir()
-    (root / "mounted").symlink_to(export, target_is_directory=True)
-    return WatchSource(name="capture", root=root, suffixes=(".json",)), root / "mounted" / "session.json"
+    export = root / "store" / "2026-09"
+    export.mkdir(parents=True)
+    (export / "session.json").write_text("{}")
+    (root / "current").symlink_to(export, target_is_directory=True)
+    return WatchSource(name="capture", root=root, suffixes=(".json",)), root / "current" / "session.json"
 
 
 @pytest.mark.asyncio
 async def test_a_symlinked_export_tree_is_discovered_and_admitted(tmp_path: Path) -> None:
-    """polylogue-lu1dk: a source root mounted through a symlink is acquired.
+    """polylogue-lu1dk: an export tree behind an in-root link is acquired.
 
     Anti-vacuity: restore ``entry.is_dir(follow_symlinks=False)`` as the only
     directory test in ``_ordered_children`` and the walk never enters
-    ``mounted/``, so discovery emits nothing, the dispatcher reports zero
-    admitted items, and the source is silently unacquired.
+    ``current/``, so the linked path is never discovered and never ingested.
     """
 
     source, linked_session = _linked_export_source(tmp_path)
@@ -1416,8 +1413,8 @@ async def test_a_symlinked_export_tree_is_discovered_and_admitted(tmp_path: Path
 
     result = await dispatcher.run_once(budget=64)
 
-    assert result.require_report("capture").discovered == 1
-    assert ingested == [linked_session]
+    assert result.require_report("capture").discovered >= 1
+    assert linked_session in ingested
 
 
 def test_a_symlink_cycle_terminates_and_is_reported_once(tmp_path: Path) -> None:
@@ -1425,8 +1422,8 @@ def test_a_symlink_cycle_terminates_and_is_reported_once(tmp_path: Path) -> None
 
     Anti-vacuity: drop the ``visited_real_paths`` check in
     ``_admit_linked_directory`` and this walk descends ``loop/loop/loop/...``
-    until the recursion limit or the page limit hides the real files; drop the
-    fault emission and the cycle becomes silent.
+    until the recursion limit; drop the fault emission and the cycle is
+    silent.
     """
 
     root = tmp_path / "root"
@@ -1469,23 +1466,27 @@ def test_a_dangling_symlink_is_a_fault_not_a_crash(tmp_path: Path) -> None:
     assert faults[0]["event"] == "daemon.intake.discovery_failed"
 
 
-def test_discovery_does_not_follow_a_link_into_the_archive_root(tmp_path: Path) -> None:
-    """A link pointing at the archive never feeds the archive to itself.
+def test_a_directory_symlink_escaping_the_source_root_is_refused(tmp_path: Path) -> None:
+    """Containment outranks following: an escaping link is a fault, not material.
 
-    Anti-vacuity: drop the ``archive_root`` guard and ``source.db`` under the
-    archive root is discovered as intake material.
+    Anti-vacuity: drop the containment check in ``_admit_linked_directory``
+    and ``outside/secret.json`` -- a tree this source was never configured to
+    read -- is discovered as intake material.
     """
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    (archive_root / "sidecar.json").write_text("{}")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.json").write_text("{}")
     root = tmp_path / "root"
     root.mkdir()
     kept = root / "session.json"
     kept.write_text("{}")
-    (root / "archive-link").symlink_to(archive_root, target_is_directory=True)
+    (root / "escape").symlink_to(outside, target_is_directory=True)
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
 
-    found = _bounded_source_paths(source, (source,), limit=32, after=None, archive_root=archive_root)
+    with capture() as records:
+        found = _bounded_source_paths(source, (source,), limit=32, after=None)
 
     assert found == [kept]
+    escapes = [record for record in records if record.get("reason") == "escaping_symlink"]
+    assert [record["path"] for record in escapes] == [str(root / "escape")]

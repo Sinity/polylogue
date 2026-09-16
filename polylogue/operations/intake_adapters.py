@@ -110,12 +110,20 @@ def _admit_linked_directory(
     path: Path,
     *,
     visited_real_paths: set[str] | None,
-    archive_root: Path | None,
 ) -> bool:
-    """Whether a directory symlink may be descended into on this walk."""
+    """Whether a directory symlink may be descended into on this walk.
+
+    Containment is the standing rule the live watcher already enforces
+    through ``deepest_source_for_path``: a link whose resolved target lies
+    outside the source root is rejected, never admitted. Only a link that
+    stays inside the root is followed, which is what makes a
+    ``current -> 2026-09`` style export pointer discoverable without letting
+    a link hand intake material the source was never configured to read.
+    """
 
     try:
         real = _real_path(path)
+        root_real = _real_path(source.root)
     except OSError as exc:
         _emit_discovery_fault(
             source,
@@ -123,12 +131,13 @@ def _admit_linked_directory(
             reason="unresolvable_symlink",
         )
         return False
-    if archive_root is not None:
-        archive_real = _real_path(archive_root)
-        if real == archive_real or real.startswith(archive_real + os.sep):
-            # A link back into the archive would feed the archive's own
-            # storage tiers to intake as if they were export material.
-            return False
+    if real != root_real and not real.startswith(root_real + os.sep):
+        _emit_discovery_fault(
+            source,
+            WalkFault(path, f"symlink target {real} escapes the source root"),
+            reason="escaping_symlink",
+        )
+        return False
     if visited_real_paths is not None:
         if real in visited_real_paths:
             _emit_discovery_fault(
@@ -148,7 +157,6 @@ def _ordered_children(
     scandir: Callable[[Path], Any] = os.scandir,
     *,
     visited_real_paths: set[str] | None = None,
-    archive_root: Path | None = None,
 ) -> list[tuple[str, Path, bool]]:
     """Siblings of ``directory``, reverse-sorted so a stack pops them in order.
 
@@ -156,8 +164,8 @@ def _ordered_children(
     through a symlink configured a real source root, and refusing to enter it
     made the source silently unacquired. Following links needs the two guards
     below -- ``visited_real_paths`` (resolved real paths already entered on
-    this walk) terminates cycles, and ``archive_root`` keeps a link that
-    points back at the archive from feeding the archive to itself.
+    this walk) terminates cycles, and a resolved target outside the source
+    root is rejected rather than followed.
     """
 
     children: list[tuple[str, Path, bool]] = []
@@ -186,7 +194,6 @@ def _ordered_children(
                         source,
                         path,
                         visited_real_paths=visited_real_paths,
-                        archive_root=archive_root,
                     ):
                         continue
                     key = _walk_entry_key(path, is_dir=True)
@@ -251,7 +258,6 @@ def _bounded_source_paths(
     limit: int,
     after: str | None,
     scandir: Callable[[Path], Any] = os.scandir,
-    archive_root: Path | None = None,
 ) -> list[Path]:
     """Collect at most ``limit`` files, stopping as soon as it is full.
 
@@ -264,9 +270,10 @@ def _bounded_source_paths(
     ``limit`` early exit safe -- the next pass resumes at exactly the key
     the previous one stopped on, mid-directory or not.
 
-    Directory symlinks are followed, so a source root whose export tree is
-    mounted through a link is discovered. Every directory entered on this
-    walk records its resolved real path, which is what terminates a cycle.
+    Directory symlinks whose target stays inside the source root are
+    followed, so an export tree mounted behind a link is discovered. Every
+    directory entered on this walk records its resolved real path, which is
+    what terminates a cycle.
     """
 
     if limit <= 0:
@@ -289,7 +296,6 @@ def _bounded_source_paths(
             after,
             scandir,
             visited_real_paths=visited_real_paths,
-            archive_root=archive_root,
         )
     ]
     while stack and len(found) < limit:
@@ -307,7 +313,6 @@ def _bounded_source_paths(
                     after,
                     scandir,
                     visited_real_paths=visited_real_paths,
-                    archive_root=archive_root,
                 )
             )
             continue
@@ -371,13 +376,7 @@ class FileIntakeAdapter(IntakeAdapter):
         # session. Revisiting an already-admitted file is explicitly harmless
         # (durable cursor/raw identity, see above), so the conservative
         # direction here is to re-discover, never to skip.
-        paths = _bounded_source_paths(
-            self.source,
-            self.context.sources,
-            limit=limit,
-            after=self._after,
-            archive_root=self.context.archive_root,
-        )
+        paths = _bounded_source_paths(self.source, self.context.sources, limit=limit, after=self._after)
         items: list[IntakeItem] = []
         for path in paths:
             try:
