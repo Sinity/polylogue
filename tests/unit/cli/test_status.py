@@ -791,6 +791,26 @@ class TestCanonicalStatusOperation:
         }
         assert payload["archive_readiness"]["reason"] == "direct_status_default_skips_exact_archive_readiness"
 
+    def test_direct_operation_withholds_search_ready_on_a_zero_denominator(self, tmp_path: Path) -> None:
+        """An empty archive cannot claim search-readiness it never measured.
+
+        ``messages_ready`` is "every indexable row is indexed", which is
+        vacuously true at zero indexable rows: a pristine archive published
+        ``search_ready: true`` beside ``message_indexable_count: 0``
+        (polylogue-o6oct). Anti-vacuity: restoring the pass-through bool in
+        ``derive_claim_guard``, or dropping ``search_unmeasured`` from this
+        producer, turns the entry determinate-true again and this red.
+        """
+        bootstrap_archive_root(tmp_path)
+        payload = cast(dict[str, Any], self._direct_status(tmp_path))
+
+        search_component = payload["component_readiness"]["search"]
+        assert search_component["counts"]["message_indexable_count"] == 0
+        search_claim = payload["claim_guard"]["search_ready"]
+        assert search_claim["value"] is None
+        assert search_claim["determinate"] is False
+        assert "zero denominator" in str(search_claim["reason"])
+
     def test_direct_operation_fails_closed_for_missing_ops_frontier_authority(self, tmp_path: Path) -> None:
         """A missing ops cursor cannot produce a green direct claim.
 
@@ -979,7 +999,12 @@ class TestStatusDiagnosticIntegration:
         assert converged["determinate"] is False
         assert converged["reason"] != "ready"
         assert "raw_materialization" in converged["signal"]
-        assert payload["claim_guard"]["perf_measurable"]["value"] is False
+        # An unreadable attempt ledger is not proof that nothing is writing
+        # (polylogue-g88v4): the perf claim is withheld, not asserted either way.
+        perf = payload["claim_guard"]["perf_measurable"]
+        assert perf["value"] is None
+        assert perf["determinate"] is False
+        assert "cannot rule out" in str(perf["reason"])
 
     @pytest.mark.integration
     def test_status_subprocess_malformed_ingest_attempts_human_keeps_convergence_healthy(self, tmp_path: Path) -> None:

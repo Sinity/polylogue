@@ -189,7 +189,7 @@ class TestPolylogueParsing:
             Source(name="claude-ai", path=sample_claude_file),
         ]
 
-        result = await archive.parse_sources(sources=sources, download_assets=False)
+        result = await archive.parse_sources(sources=sources)
 
         # Verify both sources were ingested
         assert result.counts["sessions"] >= 2

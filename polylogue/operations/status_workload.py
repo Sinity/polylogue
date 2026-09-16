@@ -137,8 +137,7 @@ def _ops_workload_status_from_ready_connection(
         )
     throughput_row = conn.execute(
         f"""
-        SELECT COUNT(*), COALESCE(SUM(parsed_raw_count), 0), COALESCE(SUM(materialized_count), 0),
-               COALESCE(SUM(finished_at_ms - started_at_ms), 0)
+        SELECT COUNT(*), COALESCE(SUM(parsed_raw_count), 0), COALESCE(SUM(materialized_count), 0)
         FROM {schema}.ingest_attempts
         WHERE status = 'completed' AND finished_at_ms >= ?
         """,
@@ -147,7 +146,11 @@ def _ops_workload_status_from_ready_connection(
     batches = int(throughput_row[0] or 0) if throughput_row is not None else 0
     files = int(throughput_row[1] or 0) if throughput_row is not None else 0
     materialized = int(throughput_row[2] or 0) if throughput_row is not None else 0
-    busy_ms = int(throughput_row[3] or 0) if throughput_row is not None else 0
+    # Throughput is a rate over the advertised wall window.  Summing per-attempt
+    # busy time double-counts concurrent attempts (``running_count`` exists
+    # because concurrency is expected) and understates the rate by exactly the
+    # concurrency factor.
+    window_seconds = _WORKLOAD_THROUGHPUT_WINDOW_MS / 1000.0
     cursor: dict[str, int] = {}
     if _table_exists(conn, schema, "ingest_cursor"):
         cursor = {
@@ -177,7 +180,7 @@ def _ops_workload_status_from_ready_connection(
             "batches": batches,
             "files": files,
             "materialized": materialized,
-            "files_per_second": round(files / (busy_ms / 1000.0), 2) if busy_ms else 0.0,
+            "files_per_second": round(files / window_seconds, 2) if window_seconds > 0 else None,
         },
         "cursor": cursor,
         "debt": {"total": sum(debt.values()), "by_status": debt},

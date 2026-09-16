@@ -49,6 +49,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
+from polylogue.storage.sqlite.write_lease import require_write_lease
 
 _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
 # Upper bound on stage events buffered inside one ``ops_write_scope``. Reaching
@@ -380,7 +381,16 @@ class CursorStore:
         exit path, including an exception or a cancellation. Nothing is carried
         across a chunk boundary -- the failure shape of polylogue-5llcz (#5098)
         was an obligation deferred past the boundary that an interrupt then lost.
+
+        Sharing one connection makes the scope a cross-ingest sharing path
+        (polylogue-vgxkk): two concurrent ``ingest_files`` calls on one event
+        loop run on one thread, so they would land in the same thread-local
+        scope and one caller's commit would commit the other's in-flight
+        statement. The scope therefore asserts the writer lease it has always
+        implicitly relied on, so a second, unserialized entrant raises
+        :class:`UnleasedWriteError` instead of silently interleaving commits.
         """
+        require_write_lease("live ingest ops write scope")
         state = self._ops_scope
         if getattr(state, "conn", None) is not None:
             state.depth += 1

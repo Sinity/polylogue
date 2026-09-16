@@ -172,6 +172,10 @@ class SyncSessionQueriesMixin:
         origin: str | None = None,
         limit: int | None = None,
     ) -> list[SessionSummary]:
+        # A truthiness test here made ``limit=0`` indistinguishable from
+        # ``limit=None``, so asking for nothing read a default-sized page.
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be a positive integer")
         filt = self._facade.filter()
         if origin:
             filt = filt.origin(origin)

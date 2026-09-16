@@ -6574,3 +6574,60 @@ async def test_resolve_ref_actions_quote_archive_derived_refs(tmp_path: Path) ->
             assert shlex.join(tokens) == command, command
     finally:
         await archive.close()
+
+
+def test_open_rejects_unknown_keyword_arguments(tmp_path: Path) -> None:
+    """A misspelled construction keyword is a ``TypeError``, not a silent no-op.
+
+    ``Polylogue.open`` took ``**kwargs``, read exactly ``archive_root`` and
+    ``db_path`` out of it, and dropped the rest. ``open(archive_roots=...)``
+    therefore returned a facade bound to the ambient resolved runtime while
+    the caller believed it had pointed the facade at their directory.
+
+    Anti-vacuity: restore the ``**kwargs: object`` signature with the two
+    ``kwargs.get(...)`` lookups and the call below returns a ``Polylogue``
+    instead of raising, so the ``pytest.raises`` goes red.
+    """
+    with pytest.raises(TypeError):
+        Polylogue.open(archive_roots=tmp_path)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("method_name", ["postmortem_bundle", "pathology_report", "portfolio_bundle"])
+async def test_analysis_scope_refuses_a_nonpositive_limit(tmp_path: Path, method_name: str) -> None:
+    """A nonpositive analysis cap is a typed usage error, not the 200-session default.
+
+    Each scope resolved its cap as ``limit if limit is not None and limit > 0
+    else 200``, so ``limit=0`` -- asking for no sessions -- silently compiled
+    digests for up to 200 of them, the most expensive read on the surface.
+
+    Anti-vacuity: restore the ``and limit > 0`` fallback and the call returns a
+    bundle computed over the default cap instead of raising, so this
+    ``pytest.raises`` goes red.
+    """
+    archive = _archive(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="limit must be a positive integer"):
+            await getattr(archive, method_name)(limit=0)
+    finally:
+        await archive.close()
+
+
+async def test_parse_sources_does_not_accept_a_download_assets_switch(tmp_path: Path) -> None:
+    """The removed ``download_assets`` flag refuses loudly instead of no-opping.
+
+    ``parse_sources`` accepted ``download_assets`` and ``del``'d it on the next
+    statement: the archive ingest route it delegates to fetches no assets and
+    has no switch to forward the flag to, so ``download_assets=False`` promised
+    a behaviour change and delivered none. Removing the parameter makes the
+    request fail where it is made.
+
+    Anti-vacuity: re-add ``download_assets: bool = True`` to the signature and
+    this call succeeds (parsing an empty source list) instead of raising
+    ``TypeError``, so the assertion goes red.
+    """
+    archive = _archive(tmp_path)
+    try:
+        with pytest.raises(TypeError):
+            await archive.parse_sources(sources=[], download_assets=False)  # type: ignore[call-arg]
+    finally:
+        await archive.close()

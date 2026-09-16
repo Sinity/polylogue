@@ -6,6 +6,8 @@ import sqlite3
 from pathlib import Path
 from typing import TypedDict, cast
 
+import pytest
+
 from polylogue.operations.daemon_status import produce_direct_status
 from polylogue.operations.operation_context import open_operation_read, prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_schema_drift_sample
@@ -252,3 +254,51 @@ def test_active_archive_root_match_is_compared_not_asserted(tmp_path: Path) -> N
     assert redirected["active_archive_root_matches_configured"] is False
     assert redirected["active_archive_root"] == str(tmp_path / "generations" / "g2")
     assert redirected["archive_root"] == str(tmp_path)
+
+
+def test_ops_workload_throughput_rate_uses_the_advertised_wall_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-i6p4x: concurrent attempts must not deflate files_per_second.
+
+    Four attempts each run the full 60s wall window and parse 60 files apiece,
+    so the archive really ingested 240 files in 60 seconds: 4.0 files/s. The
+    old denominator summed per-attempt busy time (240s) and reported 1.0 --
+    understated by exactly the concurrency factor, while the sibling
+    ``window_minutes`` key advertised a wall window.
+
+    Anti-vacuity: restore ``SUM(finished_at_ms - started_at_ms)`` as the
+    denominator and this reports 1.0 instead of 4.0.
+    """
+
+    from polylogue.operations import status_workload
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    monkeypatch.setattr(status_workload, "_WORKLOAD_THROUGHPUT_WINDOW_MS", 60_000)
+
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    now_ms = 1_800_000_000_000
+    conn = sqlite3.connect(ops_db)
+    try:
+        for index in range(4):
+            record_ingest_attempt(
+                conn,
+                status="completed",
+                source_path=f"/synthetic/source-{index}.jsonl",
+                started_at_ms=now_ms - 60_000,
+                finished_at_ms=now_ms,
+                parsed_raw_count=60,
+            )
+        conn.commit()
+
+        payload = status_workload.ops_workload_status_from_connection(conn, now_ms=now_ms, schema="main")
+    finally:
+        conn.close()
+
+    throughput = cast(dict[str, object], payload["throughput"])
+    assert throughput["window_minutes"] == 1
+    assert throughput["files"] == 240
+    assert throughput["files_per_second"] == 4.0

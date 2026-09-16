@@ -490,9 +490,15 @@ def _archive_index_path(db_path: Path) -> Path | None:
     return index_db if index_db.exists() else None
 
 
-def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int, total_sessions: int) -> float:
+def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int) -> float | None:
+    """Return session coverage, or ``None`` when nothing was eligible.
+
+    A zero denominator is a measurement gap, not full coverage: no session was
+    weighed, so neither 100.0 nor 0.0 is a fact about this archive.
+    """
+
     if eligible_sessions <= 0:
-        return 100.0 if total_sessions > 0 else 0.0
+        return None
     return embedded_sessions / eligible_sessions * 100
 
 
@@ -670,6 +676,11 @@ def _embedding_status(
     if total_sessions <= 0:
         return "empty"
     if pending_sessions <= 0 and blocked_sessions <= 0:
+        if embedded_sessions <= 0:
+            # Sessions exist but none is embedded, pending or blocked: nothing
+            # was eligible, so coverage was never measured.  "complete" would
+            # advertise a full archive that was never weighed.
+            return "unknown"
         return "complete"
     if embedded_sessions <= 0 and blocked_sessions <= 0:
         return "none"
@@ -853,6 +864,14 @@ def _payload_from_stats(
         # present and intact.
         status = "unknown"
         retrieval_ready = False
+    coverage_percent = (
+        _coverage_percent(
+            embedded_sessions=embedded_sessions or 0,
+            eligible_sessions=eligible_sessions or 0,
+        )
+        if measurable
+        else None
+    )
     message_coverage = _message_coverage_percent(
         embedded_messages=stats.embedded_messages,
         candidate_prose_messages=stats.candidate_prose_messages,
@@ -881,18 +900,7 @@ def _payload_from_stats(
         "pending_messages_exact": pending_messages_exact and measurable,
         "candidate_prose_messages": stats.candidate_prose_messages,
         "candidate_prose_messages_exact": stats.candidate_prose_messages_exact,
-        "embedding_coverage_percent": (
-            round(
-                _coverage_percent(
-                    embedded_sessions=embedded_sessions or 0,
-                    eligible_sessions=eligible_sessions or 0,
-                    total_sessions=total_sessions,
-                ),
-                1,
-            )
-            if measurable
-            else None
-        ),
+        "embedding_coverage_percent": (round(coverage_percent, 1) if coverage_percent is not None else None),
         "embedding_coverage_basis": "sessions",
         "message_coverage_percent": (
             round(message_coverage, 1) if (measurable and message_coverage is not None) else None

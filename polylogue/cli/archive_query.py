@@ -1149,8 +1149,17 @@ def _optional_int(value: object) -> int | None:
 
 
 def _limit(params: dict[str, object]) -> int:
+    """Resolve the page size, refusing a nonpositive request.
+
+    ``--limit 0`` used to fall through to ``DEFAULT_SESSION_LIST_LIMIT``: a
+    caller asking for nothing (cheap validation, an arithmetic result that
+    collapsed to zero) silently got a default-sized read instead. A
+    nonpositive limit is a usage fault, not a default.
+    """
     value = params.get("limit")
-    if isinstance(value, int) and value > 0:
+    if isinstance(value, int):
+        if value <= 0:
+            raise click.UsageError("--limit must be a positive integer.")
         return value
     return DEFAULT_SESSION_LIST_LIMIT
 

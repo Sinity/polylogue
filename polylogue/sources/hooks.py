@@ -110,7 +110,27 @@ def hook_spool_sources(
     from polylogue.paths import data_home, hooks_sidecar_dir
 
     primary = (primary_root or hooks_sidecar_dir()).expanduser().resolve()
-    configured_legacy = tuple(legacy_roots) if legacy_roots is not None else (data_home() / "hooks",)
+    if legacy_roots is not None:
+        configured_legacy: tuple[Path, ...] = tuple(Path(root) for root in legacy_roots)
+    else:
+        # polylogue-e9y76: the global XDG spool is an *implicit* legacy root
+        # only for the archive that owns it. ``hooks_sidecar_dir`` tracks
+        # ``archive_root()``, so for any archive rooted elsewhere this default
+        # silently admitted the operator's global hook spool with no opt-in and
+        # mixed evidence across archives. An archive that wants it says so
+        # through ``legacy_roots``.
+        default_legacy = (data_home() / "hooks").expanduser().resolve()
+        if primary == default_legacy:
+            configured_legacy = (default_legacy,)
+        else:
+            configured_legacy = ()
+            emit(
+                "source.hook_spool.implicit_legacy_root_skipped",
+                outcome="ok",
+                legacy_root=str(default_legacy),
+                primary_root=str(primary),
+                reason="primary is not the default XDG hook spool",
+            )
     sources = [HookSpoolSourceSpec("primary-hook-spool", "primary-writable", primary)]
     for index, root_value in enumerate(configured_legacy):
         root = Path(root_value).expanduser().resolve()

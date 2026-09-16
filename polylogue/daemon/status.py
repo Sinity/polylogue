@@ -69,6 +69,7 @@ from polylogue.readiness.claim_guard import (
     DerivedDomainReadiness,
     derive_claim_guard,
     raw_materialization_unmeasured_reason,
+    search_unmeasured_reason,
 )
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
@@ -1324,7 +1325,16 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
     if ((index_db is not None and index_db.exists()) or not dbf.exists()) and ops_summary is not None:
         return ops_summary
     if not dbf.exists():
-        return ops_summary if ops_summary is not None else LiveIngestAttemptSummary()
+        # No index tier and no ops ledger: the writer evidence was never read,
+        # which is not the same as a measured "nothing running" (polylogue-g88v4).
+        return (
+            ops_summary
+            if ops_summary is not None
+            else LiveIngestAttemptSummary(
+                available=False,
+                unavailable_reason="no live_ingest_attempt evidence available to read",
+            )
+        )
     try:
         conn = open_readonly_connection(dbf, validate_schema=False)
         try:
@@ -2034,7 +2044,7 @@ def _daemon_claim_guard(
     # direct path's ``ingest_workload.available`` branch in
     # operations.daemon_status, which this producer had drifted away from.
     writer_measurable = live_ingest_attempts.available
-    active_writer = not writer_measurable or bool(live_ingest_attempts.running_count)
+    active_writer = bool(live_ingest_attempts.running_count)
     writer_parts: list[str] = []
     if not writer_measurable:
         writer_parts.append("ingest workload inspection unavailable; cannot rule out a concurrent archive writer")
@@ -2086,8 +2096,10 @@ def _daemon_claim_guard(
         derived_domains=derived_domains,
         search_ready=fts_readiness.messages_ready,
         search_summary=fts_component.summary,
+        search_unmeasured=search_unmeasured_reason(fts_readiness.message_indexable_count),
         active_writer=active_writer,
         active_writer_summary="; ".join(writer_parts),
+        active_writer_determinate=writer_measurable,
     )
     return cast(dict[str, object], guard.to_dict())
 

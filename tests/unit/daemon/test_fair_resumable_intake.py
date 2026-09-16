@@ -952,3 +952,66 @@ def test_discovery_refusal_is_counted_on_the_class_report() -> None:
     assert report.discovered == 0
     assert report.reason is not None
     assert "/srv/locked" in report.reason
+
+
+@pytest.mark.asyncio
+async def test_a_durably_excluded_file_is_not_reported_as_a_duplicate(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """polylogue-onbz3: a refused intake file is EXCLUDED, never DUPLICATE progress.
+
+    Anti-vacuity: restore the ``AdmissionOutcome.DUPLICATE`` return for a pass
+    that admitted nothing and this goes red three ways -- the outcome is
+    ``duplicate``, the class report counts a duplicate so ``IntakePass.progressed``
+    claims progress for a pass that admitted nothing, and the "admitted nothing
+    for N planned path(s)" line stays absent from the intake path.
+    """
+
+    capture = tmp_path / "capture.json"
+    capture.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+
+    class ExcludingWatcher:
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            assert paths == [capture]
+            return SimpleNamespace(
+                succeeded_file_count=0,
+                failed_file_count=0,
+                stale_cursor_write_count=0,
+                excluded_file_count=1,
+                excluded_reasons={"unsupported_shape": 1},
+                source_payload_read_bytes=len("{}"),
+            )
+
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=ExcludingWatcher(), sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    item = IntakeItem(item_id=f"file:{capture.resolve()}", class_name="capture", payload=capture, estimated_cost=2)
+
+    with caplog.at_level("INFO"):
+        result = await adapter.admit(item)
+
+    assert result.outcome is AdmissionOutcome.EXCLUDED
+    assert result.acknowledgeable is True
+    assert "admitted nothing for 1 planned path(s)" in caplog.text
+
+    class OneFileAdapter:
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+            return (item,) if limit else ()
+
+        async def admit(self, _item: IntakeItem) -> AdmissionResult:
+            return result
+
+        async def acknowledge(self, _item: IntakeItem) -> None:
+            return None
+
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=OneFileAdapter(), page_size=4)])
+    intake_pass = await dispatcher.run_once(budget=8)
+
+    report = intake_pass.require_report("capture")
+    assert (report.excluded, report.duplicates, report.admitted) == (1, 0, 0)
+    assert intake_pass.progressed is False

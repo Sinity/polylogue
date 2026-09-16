@@ -104,3 +104,38 @@ def test_hook_carriers_preserve_two_coordinates_and_reject_coordinate_conflict(t
         assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone() == (2,)
         assert conn.execute("SELECT source_path FROM raw_hook_events").fetchone() == (event.source_path,)
+
+
+def test_a_non_default_archive_does_not_implicitly_acquire_the_global_hook_spool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-e9y76: the XDG hook spool is implicit only for the archive that owns it.
+
+    Anti-vacuity: restore the unconditional ``data_home()/'hooks'`` default and
+    the global spool reappears as a legacy source for an archive rooted
+    elsewhere, so the single-source assertion goes red. The skip is reported,
+    never silent.
+    """
+    data_home = tmp_path / "xdg" / "polylogue"
+    global_spool = data_home / "hooks"
+    global_spool.mkdir(parents=True)
+    monkeypatch.setattr("polylogue.paths.data_home", lambda: data_home)
+
+    elsewhere = tmp_path / "other-archive" / "hooks"
+    elsewhere.mkdir(parents=True)
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr("polylogue.sources.hooks.emit", lambda event, **fields: events.append((event, fields)))
+    specs = hook_spool_sources(primary_root=elsewhere)
+
+    assert [(spec.role, spec.root) for spec in specs] == [("primary-writable", elsewhere.resolve())]
+    # The skip is reported as a structured event, never silent.
+    assert [event for event, _ in events] == ["source.hook_spool.implicit_legacy_root_skipped"]
+    assert events[0][1]["legacy_root"] == str(global_spool.resolve())
+    assert events[0][1]["primary_root"] == str(elsewhere.resolve())
+
+    # The archive that IS the global spool still gets it, and an explicit
+    # opt-in still works for any archive.
+    assert [spec.root for spec in hook_spool_sources(primary_root=global_spool)] == [global_spool.resolve()]
+    opted_in = hook_spool_sources(primary_root=elsewhere, legacy_roots=(global_spool,))
+    assert [spec.root for spec in opted_in] == [elsewhere.resolve(), global_spool.resolve()]
