@@ -56,7 +56,7 @@ from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
-from polylogue.core.timestamps import parse_timestamp
+from polylogue.core.timestamps import parse_timestamp, to_epoch_ms
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import (
     MessageContentIdentity,
@@ -2467,7 +2467,7 @@ def _build_message_rows(
             "content_hash": _message_content_hash(session_id, message, position=position, variant_index=variant_index),
             "occurred_at_ms": message.occurred_at_ms
             if message.occurred_at_ms is not None
-            else _timestamp_ms(message.timestamp),
+            else to_epoch_ms(message.timestamp, numeric_unit="seconds"),
             "stop_reason": _enum_value(message.stop_reason),
         }
         content_identity, content_occurrence = content_identities[fallback_position]
@@ -2897,7 +2897,9 @@ def _build_file_edit_rows(
                     _sqlite_text(file_edit.new_string),
                     _sqlite_bool(file_edit.replace_all),
                     _sqlite_bool(file_edit.user_modified),
-                    message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
+                    message.occurred_at_ms
+                    if message.occurred_at_ms is not None
+                    else to_epoch_ms(message.timestamp, numeric_unit="seconds"),
                 )
             )
     return rows
@@ -2940,7 +2942,9 @@ def _write_session_refs(conn: sqlite3.Connection, session_id: str, session: Pars
     every write, not appended incrementally, since the parser always emits
     the complete current set for a session.
     """
-    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+    observed_at_ms = to_epoch_ms(session.updated_at, numeric_unit="seconds") or to_epoch_ms(
+        session.created_at, numeric_unit="seconds"
+    )
     for position, ref in enumerate(session.session_refs):
         conn.execute(
             """
@@ -4565,7 +4569,7 @@ def _write_paste_spans(
                     if evidence.observed_at_ms is not None
                     else message.occurred_at_ms
                     if message.occurred_at_ms is not None
-                    else _timestamp_ms(message.timestamp),
+                    else to_epoch_ms(message.timestamp, numeric_unit="seconds"),
                 ),
             )
 
@@ -5120,7 +5124,11 @@ def _write_session_link(
     authoritative marking on the next reindex.
     """
     origin = origin_from_provider(session.source_name).value
-    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0
+    observed_at_ms = (
+        to_epoch_ms(session.updated_at, numeric_unit="seconds")
+        or to_epoch_ms(session.created_at, numeric_unit="seconds")
+        or 0
+    )
     # Match exact stored provider identities and parser-emitted aliases after
     # the same normalization used for session native ids.
     parent_native_id = _sqlite_text((session.parent_session_provider_id or "").strip()) or None
@@ -6014,7 +6022,7 @@ def _write_session_events(
                     _sqlite_text(event.event_type),
                     _sqlite_text(_event_summary(event) or ""),
                     _json_dumps(event.payload),
-                    _timestamp_ms(event.timestamp),
+                    to_epoch_ms(event.timestamp, numeric_unit="seconds"),
                     event.boundary_start_position + position_offset
                     if event.boundary_start_position is not None
                     else None,
@@ -6031,7 +6039,7 @@ def _write_session_events(
                     _sqlite_text(_payload_string(event.payload, "approval", "approval_policy")),
                     _sqlite_text(_payload_string(event.payload, "sandbox", "sandbox_policy")),
                     _sqlite_text(_payload_string(event.payload, "network", "network_policy")),
-                    _timestamp_ms(event.timestamp),
+                    to_epoch_ms(event.timestamp, numeric_unit="seconds"),
                 ),
             )
         elif event.event_type in {"token_count", "message_usage"} and (
@@ -6132,7 +6140,7 @@ def _provider_usage_event_row(
         total_cache_write,
         total_reasoning,
         total_tokens,
-        _timestamp_ms(event.timestamp),
+        to_epoch_ms(event.timestamp, numeric_unit="seconds"),
     )
 
 
@@ -6974,7 +6982,9 @@ def _write_repo_edges(
     *,
     update_session_observations: bool = True,
 ) -> None:
-    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+    observed_at_ms = to_epoch_ms(session.updated_at, numeric_unit="seconds") or to_epoch_ms(
+        session.created_at, numeric_unit="seconds"
+    )
     raw_root_paths = tuple(path.strip() for path in session.working_directories if path.strip())
     origin_url = (session.git_repository_url or "").strip()
     # polylogue-cijx.4 decision 1: resolve each raw cwd to its git root before
@@ -9134,11 +9144,6 @@ def _paste_boundary(message: ParsedMessage) -> str | None:
 
 def _word_count(text: str | None) -> int:
     return len(text.split()) if text else 0
-
-
-def _timestamp_ms(value: str | None) -> int | None:
-    parsed = parse_timestamp(value) if value else None
-    return int(parsed.timestamp() * 1000) if parsed is not None else None
 
 
 def _event_summary(event: ParsedSessionEvent) -> str | None:

@@ -6,11 +6,11 @@ import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
+from polylogue.core.timestamps import to_epoch_ms
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 from polylogue.storage.blob_store import BlobStore, get_blob_store
@@ -135,16 +135,6 @@ def _blob_hash_text(value: object) -> str | None:
         return value.hex() if len(value) == 32 else None
     text = str(value)
     return text if text else None
-
-
-def _timestamp_ms(value: str | None) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    return int(datetime.fromisoformat(value).timestamp() * 1000)
 
 
 def _active_index_raw_authority(
@@ -2433,7 +2423,7 @@ def _superseded_archive_raw_session_candidates(
     limit: int,
 ) -> list[RawSnapshotCleanupCandidate]:
     source_path_str = str(source_path) if source_path is not None else None
-    min_acquired_at_ms = _timestamp_ms(min_acquired_at)
+    min_acquired_at_ms = to_epoch_ms(min_acquired_at, numeric_unit="milliseconds")
     rows = conn.execute(
         _V1_RAW_CANDIDATE_SQL,
         (

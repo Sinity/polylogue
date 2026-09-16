@@ -34,8 +34,8 @@ from pathlib import Path
 from typing import Final
 
 from polylogue.api.archive import open_readonly_connection
-from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
 from polylogue.core.raw_state import raw_state_authority
+from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.logging import WARNING, emit
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -177,12 +177,12 @@ def _fetch_archive_provenance_row(
         raw_blob_id=raw_blob_id,
         source_path=(str(row["source_path"]) if row["source_path"] is not None else None),
         blob_size=(int(row["blob_size"]) if row["blob_size"] is not None else None),
-        acquired_at=_iso_from_epoch_ms(row["acquired_at_ms"]),
-        file_mtime=_iso_from_epoch_ms(row["file_mtime_ms"]),
-        parsed_at=_iso_from_epoch_ms(row["parsed_at_ms"]),
+        acquired_at=iso_from_epoch_ms(row["acquired_at_ms"]),
+        file_mtime=iso_from_epoch_ms(row["file_mtime_ms"]),
+        parsed_at=iso_from_epoch_ms(row["parsed_at_ms"]),
         parsed_at_ms=(int(row["parsed_at_ms"]) if row["parsed_at_ms"] is not None else None),
         parse_error=(str(row["parse_error"]) if row["parse_error"] is not None else None),
-        validated_at=_iso_from_epoch_ms(row["validated_at_ms"]),
+        validated_at=iso_from_epoch_ms(row["validated_at_ms"]),
         validated_at_ms=(int(row["validated_at_ms"]) if row["validated_at_ms"] is not None else None),
         validation_status=(str(row["validation_status"]) if row["validation_status"] is not None else None),
         validation_error=(str(row["validation_error"]) if row["validation_error"] is not None else None),

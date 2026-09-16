@@ -44,6 +44,7 @@ from pathlib import Path
 
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.stats import percentile
+from polylogue.core.timestamps import to_epoch_ms
 from polylogue.core.write_lease import write_lease
 from polylogue.daemon.cursor_lag_status import CursorLagItem, CursorLagSummary
 from polylogue.logging import WARNING, emit
@@ -108,7 +109,7 @@ def record_cursor_lag_sample(
     if summary.stuck_file_count == 0:
         return 0
     resolved_now = now or datetime.now(UTC)
-    observed_at_ms = _epoch_ms(resolved_now)
+    observed_at_ms = to_epoch_ms(resolved_now, numeric_unit="milliseconds")
     per_family_lags = _bucket_stuck_lags_by_family(summary.stuck)
     if not any(family_summary.stuck_file_count > 0 for family_summary in summary.family_summaries):
         return 0
@@ -281,7 +282,7 @@ def _gc_archive_cursor_lag_samples(
 ) -> int:
     if not ops_db.exists():
         return 0
-    cutoff_ms = _epoch_ms((now or datetime.now(UTC)) - timedelta(days=retention_days))
+    cutoff_ms = to_epoch_ms((now or datetime.now(UTC)) - timedelta(days=retention_days), numeric_unit="milliseconds")
     try:
         with (
             write_lease("daemon.cursor_lag.gc", archive_root=ops_db.parent),
@@ -322,7 +323,7 @@ def _load_archive_family_baseline(
                 FROM cursor_lag_samples
                 WHERE family = ? AND sampled_at_ms >= ?
                 """,
-                (family, _epoch_ms(window_start)),
+                (family, to_epoch_ms(window_start, numeric_unit="milliseconds")),
             ).fetchall()
         finally:
             conn.close()
@@ -356,10 +357,6 @@ def _load_archive_family_baseline(
 
 def _seconds_to_ms(seconds: float) -> int:
     return max(0, int(round(seconds * 1000)))
-
-
-def _epoch_ms(moment: datetime) -> int:
-    return int(moment.timestamp() * 1000)
 
 
 def _database_is_locked(exc: sqlite3.OperationalError) -> bool:

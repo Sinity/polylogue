@@ -11,6 +11,7 @@ import click
 
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
 from polylogue.cli.read_view_registry import MESSAGE_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
     ReadViewInvocation,
@@ -46,7 +47,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     limit = projection.body_limit if projection is not None and projection.body_limit is not None else options.limit
     if options.full:
         limit = None
-    limit = limit if limit is not None else 50
+    limit = limit if limit is not None else DEFAULT_MESSAGE_PAGE_LIMIT
     offset = projection.body_offset if projection is not None and projection.body_offset is not None else options.offset
 
     if invocation.destination == "file" and invocation.output_format in {"json", "ndjson"}:
@@ -191,7 +192,7 @@ def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvo
     options = cast(ReadViewMessageOptions, invocation.options or ReadViewMessageOptions())
     projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
     limit = projection.body_limit if projection is not None and projection.body_limit is not None else options.limit
-    limit = limit if limit is not None else 50
+    limit = limit if limit is not None else DEFAULT_MESSAGE_PAGE_LIMIT
     offset = projection.body_offset if projection is not None and projection.body_offset is not None else options.offset
     output_format = invocation.output_format or "json"
 

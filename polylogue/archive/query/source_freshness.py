@@ -38,6 +38,7 @@ from polylogue.core.evidence_value import (
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
+from polylogue.core.timestamps import to_epoch_ms
 from polylogue.storage.fts.derivation import FtsDerivationAdapter
 from polylogue.storage.sqlite.connection_profile import READ_PROFILES, open_readonly_connection
 
@@ -832,7 +833,7 @@ def _cursor_from_mapping(
     failure_count = _optional_int(row.get("failure_count")) or 0
     excluded_value = row.get("excluded")
     excluded = excluded_value if isinstance(excluded_value, bool) else bool(_optional_int(excluded_value) or False)
-    updated_at_ms = _timestamp_ms(row.get("updated_at"))
+    updated_at_ms = to_epoch_ms(row.get("updated_at"), numeric_unit="milliseconds")
     actual_size = source_stat.size_bytes
     pending_bytes = None if actual_size is None or byte_offset is None else max(actual_size - byte_offset, 0)
     unobserved_growth = None if actual_size is None or observed_size is None else max(actual_size - observed_size, 0)
@@ -1019,9 +1020,9 @@ def _exact_attempt_row(
 def _retry_from_attempt(row: dict[str, object]) -> RetryEvidence:
     observed_at = next(
         (
-            _timestamp_ms(row.get(name))
+            to_epoch_ms(row.get(name), numeric_unit="milliseconds")
             for name in ("heartbeat_at_ms", "finished_at_ms", "started_at_ms")
-            if _timestamp_ms(row.get(name)) is not None
+            if to_epoch_ms(row.get(name), numeric_unit="milliseconds") is not None
         ),
         None,
     )
@@ -1073,11 +1074,12 @@ def _attempt_from_bounded_tail(
             attempt_id=_optional_str(normalized.get("attempt_id")),
             attempt_status=_optional_str(normalized.get("status")),
             attempt_phase=_optional_str(normalized.get("phase")),
-            observed_at_ms=_timestamp_ms(
+            observed_at_ms=to_epoch_ms(
                 normalized.get("heartbeat_at_ms")
                 or normalized.get("finished_at_ms")
                 or normalized.get("started_at_ms")
-                or normalized.get("updated_at")
+                or normalized.get("updated_at"),
+                numeric_unit="milliseconds",
             ),
         )
         if evidence.reason:
@@ -1201,8 +1203,8 @@ def _raw_revision_from_row(row: sqlite3.Row) -> RawRevisionEvidence:
         blob_hash=_blob_hash(row["blob_hash"]),
         validation_status=validation,
         parse_error=_optional_str(row["parse_error"]),
-        parsed_at_ms=_timestamp_ms(row["parsed_at_ms"]),
-        observed_at_ms=_timestamp_ms(row["observed_at_ms"]),
+        parsed_at_ms=to_epoch_ms(row["parsed_at_ms"], numeric_unit="milliseconds"),
+        observed_at_ms=to_epoch_ms(row["observed_at_ms"], numeric_unit="milliseconds"),
         revision_authority=_optional_str(row["revision_authority"]),
         accepted_by_acquisition=accepted,
     )
@@ -1269,7 +1271,7 @@ def _load_revision_applications(
             raw_id=str(row["raw_id"]),
             decision=_optional_str(row["decision"]),
             detail=_optional_str(row["detail"]),
-            observed_at_ms=_timestamp_ms(row["observed_at_ms"]),
+            observed_at_ms=to_epoch_ms(row["observed_at_ms"], numeric_unit="milliseconds"),
         )
         for row in rows[: limits.max_application_rows]
     )
@@ -1346,7 +1348,7 @@ def _load_index_evidence(
     source_ids = tuple(str(row["session_id"]) for row in source_rows[: limits.max_sessions])
     high_water = None
     if source_rows and high_water_column is not None:
-        high_water = _timestamp_ms(source_rows[0]["high_water_ms"])
+        high_water = to_epoch_ms(source_rows[0]["high_water_ms"], numeric_unit="milliseconds")
     broken_head = bool(source_ids) and not bool(accepted_ids)
     reason = None
     if broken_head:
@@ -1763,28 +1765,6 @@ def _quote_identifier(value: str) -> str:
 
 def _safe_identifier(value: str) -> bool:
     return bool(value) and value.replace("_", "a").isalnum() and not value[0].isdigit()
-
-
-def _timestamp_ms(value: object) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            return int(stripped)
-        except ValueError:
-            try:
-                parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
-            except ValueError:
-                return None
-            return int(_as_utc(parsed).timestamp() * 1000)
-    return None
 
 
 def _optional_int(value: object) -> int | None:

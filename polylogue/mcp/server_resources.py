@@ -277,9 +277,12 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
                         "excerpt": True,
                     },
                 ):
+                    from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
                     from polylogue.mcp.archive_support import archive_message_page_payload
 
-                    return hooks.json_payload(archive_message_page_payload(archive, session_id, limit=20, offset=0))
+                    return hooks.json_payload(
+                        archive_message_page_payload(archive, session_id, limit=DEFAULT_MESSAGE_PAGE_LIMIT, offset=0)
+                    )
 
             return await transaction.run(read)
         except sqlite3.OperationalError:

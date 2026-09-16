@@ -22,6 +22,7 @@ from typing import Any, cast
 from polylogue.archive.revision_authority import decided_unresolved_membership_sql
 from polylogue.core.enums import Origin
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.timestamps import iso_from_epoch_ms, to_epoch_ms
 from polylogue.logging import get_logger
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 from polylogue.sources.live.convergence_debt_retry import (
@@ -207,20 +208,8 @@ def _ingest_attempt_source_paths(source_path: object, source_paths_json: object)
     return paths
 
 
-def _epoch_ms(value: str | None) -> int | None:
-    if value is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return int(parsed.timestamp() * 1000)
-
-
 def _required_epoch_ms(value: str | None) -> int:
-    parsed = _epoch_ms(value)
+    parsed = to_epoch_ms(value, numeric_unit="milliseconds")
     if parsed is None:
         return int(datetime.now(UTC).timestamp() * 1000)
     return parsed
@@ -261,10 +250,6 @@ def _origin_value_for_source_name(source_name: str | None) -> str | None:
     return origin_from_provider(Provider.from_string(source_name)).value
 
 
-def _iso_from_epoch_ms(value: object) -> str:
-    return datetime.fromtimestamp(_required_int(value) / 1000, tz=UTC).isoformat()
-
-
 def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> CursorRecord:
     origin = _optional_str(row[14])
     return CursorRecord(
@@ -273,8 +258,8 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
         byte_offset=_required_int(row[2] or 0),
         last_complete_newline=_required_int(row[3] or 0),
         record_count=_required_int(row[4] or 0),
-        updated_at=_iso_from_epoch_ms(row[15]),
-        last_record_ts=_iso_from_epoch_ms(row[5]) if row[5] is not None else None,
+        updated_at=iso_from_epoch_ms(row[15]),
+        last_record_ts=iso_from_epoch_ms(row[5]) if row[5] is not None else None,
         parser_fingerprint=_optional_str(row[6]),
         content_fingerprint=_optional_str(row[7]),
         tail_hash=_optional_str(row[8]),
@@ -461,7 +446,7 @@ class CursorStore:
         fair intake. Rewound file cursors retain acquisition's independent
         obligation to revisit an interrupted input.
         """
-        now_ms = _epoch_ms(datetime.now(UTC).isoformat())
+        now_ms = to_epoch_ms(datetime.now(UTC), numeric_unit="milliseconds")
         interrupted_source_paths: list[str] = []
 
         def write() -> None:
@@ -621,7 +606,7 @@ class CursorStore:
             byte_offset=record.byte_offset,
             last_complete_newline=record.last_complete_newline,
             record_count=record.record_count,
-            last_record_ts_ms=_epoch_ms(record.last_record_ts),
+            last_record_ts_ms=to_epoch_ms(record.last_record_ts, numeric_unit="milliseconds"),
             parser_fingerprint=record.parser_fingerprint,
             content_fingerprint=record.content_fingerprint,
             tail_hash=record.tail_hash,
@@ -1272,9 +1257,9 @@ class CursorStore:
         return [
             LiveIngestAttempt(
                 attempt_id=str(row[0]),
-                started_at=_iso_from_epoch_ms(row[1]),
-                updated_at=_iso_from_epoch_ms(row[2] if row[2] is not None else row[1]),
-                completed_at=_iso_from_epoch_ms(row[3]) if row[3] is not None else None,
+                started_at=iso_from_epoch_ms(row[1]),
+                updated_at=iso_from_epoch_ms(row[2] if row[2] is not None else row[1]),
+                completed_at=iso_from_epoch_ms(row[3]) if row[3] is not None else None,
                 status=str(row[4]),
                 phase=str(row[5]),
                 queued_file_count=int_metric(str(row[0]), "queued_file_count"),
@@ -1796,8 +1781,8 @@ class CursorStore:
                 subject_id=str(row[2]),
                 status=str(row[3]),
                 failure_count=int(row[4] or 0),
-                first_failed_at=_iso_from_epoch_ms(row[5]),
-                last_failed_at=_iso_from_epoch_ms(row[6]),
+                first_failed_at=iso_from_epoch_ms(row[5]),
+                last_failed_at=iso_from_epoch_ms(row[6]),
                 next_retry_at=_optional_str(row[8]),
                 materializer_version=_optional_str(row[9]),
                 last_error=_optional_str(row[7]),
@@ -1843,7 +1828,7 @@ class CursorStore:
             WholeArchiveConvergencePledge(
                 pledge_id=str(row[0]),
                 anchor_path=Path(str(row[1])),
-                created_at=_iso_from_epoch_ms(row[2]),
+                created_at=iso_from_epoch_ms(row[2]),
             )
             for row in rows
         )

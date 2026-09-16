@@ -10,7 +10,95 @@ All operations use UTC to avoid DST ambiguity issues.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
+from typing import Literal, overload
+
+NumericTimestampUnit = Literal["seconds", "milliseconds"]
+"""What a bare number (or an all-digit string) means on a given wire.
+
+The same digits mean two different instants depending on the producer, and the
+choice is not inferable from the value — it is a property of the source format.
+Every caller of :func:`to_epoch_ms` therefore declares it, once, at the call
+site, instead of re-forking a private ``_timestamp_ms`` that silently bakes one
+answer in (polylogue-z3sv: seven private copies disagreed by a factor of 1000
+on the same all-digit string).
+"""
+
+_DIGIT_TIMESTAMP = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+
+# Below this, a bare "seconds" number is far more likely to be a bare year or a
+# counter than an instant, so seconds-unit callers fall through to ISO parsing.
+_MIN_PLAUSIBLE_EPOCH_SECONDS = 86400
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+@overload
+def to_epoch_ms(value: datetime, *, numeric_unit: NumericTimestampUnit) -> int: ...
+
+
+@overload
+def to_epoch_ms(value: object, *, numeric_unit: NumericTimestampUnit) -> int | None: ...
+
+
+def to_epoch_ms(value: object, *, numeric_unit: NumericTimestampUnit) -> int | None:
+    """Coerce a timestamp of any supported shape to epoch milliseconds.
+
+    ``numeric_unit`` declares how numbers and all-digit strings are read;
+    non-numeric strings are parsed as ISO 8601 (a naive one is UTC) and are
+    unaffected by it. Anything unparseable, including ``bool``, returns
+    ``None``.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, datetime):
+        return int(_aware_utc(value).timestamp() * 1000)
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if isinstance(value, (int, float)):
+        return _scaled(float(value), numeric_unit)
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if _DIGIT_TIMESTAMP.match(stripped):
+        number = float(stripped)
+        if numeric_unit == "milliseconds" or abs(number) >= _MIN_PLAUSIBLE_EPOCH_SECONDS:
+            return _scaled(number, numeric_unit)
+    try:
+        parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    try:
+        return int(_aware_utc(parsed).timestamp() * 1000)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _scaled(number: float, numeric_unit: NumericTimestampUnit) -> int | None:
+    scaled = number * 1000 if numeric_unit == "seconds" else number
+    try:
+        return int(scaled)
+    except (OverflowError, ValueError):
+        return None
+
+
+def iso_from_epoch_ms(value: object) -> str | None:
+    """Render epoch milliseconds as a UTC ISO 8601 string, or ``None``."""
+    epoch_ms = to_epoch_ms(value, numeric_unit="milliseconds")
+    if epoch_ms is None:
+        return None
+    try:
+        return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def parse_timestamp(value: str | int | float | None) -> datetime | None:
@@ -159,7 +247,10 @@ def _timestamp_sort_key(ts: str | None) -> float | None:
 
 
 __all__ = [
+    "NumericTimestampUnit",
     "canonical_timestamp_text",
+    "iso_from_epoch_ms",
+    "to_epoch_ms",
     "format_timestamp",
     "parse_timestamp",
     "parse_timestamp_pair",

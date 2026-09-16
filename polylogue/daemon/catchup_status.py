@@ -14,7 +14,7 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
-from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
+from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -258,7 +258,7 @@ def _halted_sources(ops_db: Path) -> list[HaltedSourceStatus]:
             code=_payload_str(payload, "code", default="unknown"),
             message=_payload_str(payload, "message", default=""),
             derived_only=payload.get("derived_only") is True,
-            observed_at=cast(str, _iso_from_epoch_ms(max(_row_int(row[0]), 0))),
+            observed_at=cast(str, iso_from_epoch_ms(max(_row_int(row[0]), 0))),
         )
     return [latest_by_source[name] for name in sorted(latest_by_source)]
 
@@ -356,7 +356,7 @@ def _archive_catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...])
         # Negative epoch_ms values clamp to the epoch floor, matching the
         # previous _epoch_ms_to_iso behavior; the shared helper's int branch
         # then always returns a string, never None.
-        observed_at=cast(str, _iso_from_epoch_ms(max(_row_int(row[2]), 0))),
+        observed_at=cast(str, iso_from_epoch_ms(max(_row_int(row[2]), 0))),
         phase=_payload_str(payload, "phase", default=_required_str(row[3])),
         status=_payload_str(payload, "status", default=_required_str(row[4])),
         queued_file_count=_payload_int(payload, "queued_file_count"),

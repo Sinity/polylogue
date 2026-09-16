@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, get_args
 
 from polylogue.core.provider_identity import canonical_runtime_provider
 
@@ -862,6 +862,29 @@ class RawAuthorityVerdict(PolylogueStrEnum):
         return cls(str(value).strip().lower())
 
 
+TerminalState = Literal[
+    "tool_left",
+    "error_left",
+    "question_left",
+    "refused",
+    "truncated",
+    "unknown",
+]
+"""How a session's process ended, as decided structurally by
+``archive/session/runtime.py::_terminal_state``.
+
+The closed sibling of ``TERMINAL_STATE_METHODS`` (which names *which* rule
+decided). Every consumer table keyed on this vocabulary is typed
+``dict[TerminalState, ...]`` and asserted total at import, so a new member
+cannot silently fall through to a default weight or posture
+(polylogue-hjvow). ``clean_finish`` and ``agent_hanging`` are NOT members:
+the prose-keyword scan that produced them was deleted, so no producer emits
+them.
+"""
+
+TERMINAL_STATE_VALUES: frozenset[TerminalState] = frozenset(get_args(TerminalState))
+
+
 __all__ = [
     "ActionResultState",
     "AssertionKind",
@@ -888,6 +911,8 @@ __all__ = [
     "SemanticBlockType",
     "SessionRefKind",
     "StopReason",
+    "TERMINAL_STATE_VALUES",
+    "TerminalState",
     "TitleSource",
     "ToolResultUnknownReason",
     "ToolOutcome",

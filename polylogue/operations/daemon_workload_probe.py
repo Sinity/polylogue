@@ -24,6 +24,7 @@ from typing import Any
 from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.core.errors import SchemaSkewError
 from polylogue.core.evidence import Empty, Evidence, Measured, Unavailable, measured_or_none, resolve
+from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -450,9 +451,9 @@ def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, A
         attempts.append(
             {
                 "attempt_id": attempt_id,
-                "started_at": _iso_from_epoch_ms(row[1]),
-                "updated_at": _iso_from_epoch_ms(row[2] or row[3] or row[1]),
-                "completed_at": _iso_from_epoch_ms(row[3]),
+                "started_at": iso_from_epoch_ms(row[1]),
+                "updated_at": iso_from_epoch_ms(row[2] or row[3] or row[1]),
+                "completed_at": iso_from_epoch_ms(row[3]),
                 "status": row[4],
                 "phase": row[5],
                 "queued_file_count": _payload_int(payload, "queued_file_count", default=len(source_paths)),
@@ -748,7 +749,7 @@ def _source_path_churn(
                 "session_count": session_count_value,
                 "orphan_raw_count": max(0, raw_count - session_count_value),
                 "total_blob_bytes": int(row[5] or 0),
-                "latest_acquired_at": _iso_from_epoch_ms(row[6]) if acquired_is_ms else row[6],
+                "latest_acquired_at": iso_from_epoch_ms(row[6]) if acquired_is_ms else row[6],
             }
         )
     return items
@@ -816,7 +817,7 @@ def _archive_source_path_churn(
                 "materialized_raw_count": materialized_raw_count,
                 "orphan_raw_count": max(0, raw_count - materialized_raw_count),
                 "total_blob_bytes": int(row[6] or 0),
-                "latest_acquired_at": _iso_from_epoch_ms(row[7]),
+                "latest_acquired_at": iso_from_epoch_ms(row[7]),
             }
         )
     return items
@@ -933,8 +934,8 @@ def _ops_cursor_lag_baselines(ops_db: Path | None) -> dict[str, Any] | None:
                     {
                         "family": family,
                         "sample_count": sample_count,
-                        "first_observed_at": _iso_from_epoch_ms(row[2]),
-                        "last_observed_at": _iso_from_epoch_ms(row[3]),
+                        "first_observed_at": iso_from_epoch_ms(row[2]),
+                        "last_observed_at": iso_from_epoch_ms(row[3]),
                         "max_lag_s_seen": round(float(row[4] or 0.0) / 1000.0, 3),
                         "mean_lag_s": round(float(row[5] or 0.0) / 1000.0, 3),
                         "stuck_file_total": int(row[6] or 0),
@@ -951,17 +952,6 @@ def _ops_cursor_lag_baselines(ops_db: Path | None) -> dict[str, Any] | None:
         finally:
             conn.close()
     except _TIER_UNAVAILABLE_ERRORS:
-        return None
-
-
-def _iso_from_epoch_ms(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, int | float | str | bytes | bytearray):
-        return None
-    try:
-        return datetime.fromtimestamp(int(value) / 1000, tz=UTC).isoformat()
-    except (TypeError, ValueError, OSError):
         return None
 
 

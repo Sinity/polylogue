@@ -57,7 +57,7 @@ from datetime import UTC, datetime
 from typing import Literal, Protocol
 
 from polylogue.analysis.archive_models import ObjectivePosturePayload
-from polylogue.core.enums import AssertionKind, AssertionStatus
+from polylogue.core.enums import TERMINAL_STATE_VALUES, AssertionKind, AssertionStatus, TerminalState
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 
@@ -103,12 +103,21 @@ ASSERTION_TIER_KINDS: tuple[AssertionKind, ...] = (
 # objective was satisfied, only how the tool/turn stream ended (every
 # populated `terminal_state_evidence` entry is `raw_evidence` -- see
 # `_terminal_state`). Claiming completion needs the assertion tier or above.
-_STRUCTURAL_POSTURE_BY_TERMINAL_STATE: dict[str, ObjectivePosture] = {
+_STRUCTURAL_POSTURE_BY_TERMINAL_STATE: dict[TerminalState, ObjectivePosture] = {
     "tool_left": "awaiting_effect",
     "error_left": "blocked",
     "question_left": "ambiguous",
+    # The model declined the turn: the next move is the operator's, and no
+    # effect is pending (polylogue-hjvow -- previously defaulted to ambiguous).
+    "refused": "awaiting_operator",
+    # The stream was cut off mid-turn, so the work is demonstrably unfinished
+    # and nothing downstream has observed its effect.
+    "truncated": "awaiting_effect",
     "unknown": "ambiguous",
 }
+
+if set(_STRUCTURAL_POSTURE_BY_TERMINAL_STATE) != TERMINAL_STATE_VALUES:
+    raise RuntimeError("every terminal state needs a declared structural posture")
 
 # Assertion-kind -> implied posture, in the sub-priority applied when more
 # than one kind is present simultaneously (AC2: multiple simultaneous
