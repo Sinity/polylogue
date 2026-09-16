@@ -776,52 +776,23 @@ async def _periodic_heartbeat(*, sources: tuple[WatchSource, ...] = ()) -> None:
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
-        await asyncio.to_thread(_log_spool_depth_if_notable, sources)
+        await asyncio.to_thread(_log_spool_depth_if_notable)
 
 
-# A healthy hook spool drains at roughly one daemon tick's worth of arrivals
-# (observed ~200/hour); a depth at or above this threshold means the
-# consumer has stopped draining, not that traffic spiked -- exactly the
-# silent-for-17-days failure this alerts on instead of leaving to a human to
-# notice a directory listing.
-_HOOK_SPOOL_DEPTH_ALERT_THRESHOLD = 2000
 _BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP = 2000
 
 
-def _log_spool_depth_if_notable(sources: tuple[WatchSource, ...] = ()) -> None:
+def _log_spool_depth_if_notable() -> None:
     """Log pending-queue depth once per heartbeat when it looks abnormal.
 
-    Bounded/capped counts only (see ``hook_spool_pending_depth`` and the
-    browser-capture count below) -- this must never itself become an O(n)
-    scan of an unboundedly large backlog.
+    Bounded/capped counts only -- this must never itself become an O(n) scan
+    of an unboundedly large backlog. Hook carriers are deliberately absent:
+    they are ordinary watched files whose backlog is the dispatcher's intake
+    backlog, so a second hook-specific depth probe would be a parallel ledger
+    of the same fact (polylogue-k3ahm).
     """
     from polylogue.hooks import hook_install_sidecar_drift
-    from polylogue.sources.hooks import hook_spool_pending_depth
 
-    hook_sources: tuple[WatchSource | None, ...] = tuple(
-        source
-        for source in sources
-        if source.source_id is not None and source.role in {"primary-writable", "legacy-read-only"}
-    )
-    if not hook_sources:
-        hook_sources = tuple(source for source in sources if source.name == "hooks")
-    if not hook_sources:
-        hook_sources = (None,)
-    for source in hook_sources:
-        with contextlib.suppress(Exception):
-            root = None if source is None else (source.root.parent if source.root.name == "pending" else source.root)
-            hook_depth = hook_spool_pending_depth(root=root, cap=_HOOK_SPOOL_DEPTH_ALERT_THRESHOLD * 4)
-            if hook_depth >= _HOOK_SPOOL_DEPTH_ALERT_THRESHOLD:
-                emit(
-                    "daemon.hook_spool.backlog",
-                    level=WARNING,
-                    outcome="degraded",
-                    reason="spool_not_draining",
-                    loop="heartbeat",
-                    source_id="default" if source is None else (source.source_id or source.name),
-                    depth=hook_depth,
-                    limit=_HOOK_SPOOL_DEPTH_ALERT_THRESHOLD,
-                )
     for harness in ("claude-code", "codex"):
         with contextlib.suppress(Exception):
             drift = hook_install_sidecar_drift(harness)
@@ -2903,6 +2874,52 @@ async def _run_daemon_services_under_active_writer_lease(
                         # only because the canonical output relation said so.
                         return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=1)
 
+                    async def discover_hook_events(limit: int) -> Sequence[tuple[str, int]]:
+                        from polylogue.operations.hook_event_derivation import discover_pending_hook_carriers
+
+                        submitted = daemon_compute.submit(
+                            propagate(functools.partial(discover_pending_hook_carriers, archive_root_path, limit)),
+                            admission_class="incremental-background",
+                        )
+                        return await asyncio.wrap_future(submitted.future)
+
+                    async def admit_hook_events(raw_id: str) -> AdmissionResult:
+                        """Materialize exactly one acquired carrier's events.
+
+                        The domain publishes under its own writer lease, so
+                        this must not run inside the daemon's. The kernel's
+                        own verdicts decide the outcome: a refusal that a
+                        later pass could resolve is retryable, a carrier that
+                        is already materialized is a duplicate.
+                        """
+
+                        from polylogue.daemon.derivation import Outcome
+                        from polylogue.operations.hook_event_derivation import converge_hook_carriers
+
+                        submitted = daemon_compute.submit(
+                            propagate(
+                                functools.partial(converge_hook_carriers, archive_root_path, raw_ids=(raw_id,), limit=1)
+                            ),
+                            admission_class="incremental-background",
+                        )
+                        report = await asyncio.wrap_future(submitted.future)
+                        outcomes = tuple(outcome for outcome in report.outcomes if outcome.key.key == raw_id)
+                        failed = next((outcome for outcome in outcomes if outcome.outcome is Outcome.FAILED), None)
+                        if failed is not None:
+                            return AdmissionResult(
+                                AdmissionOutcome.RETRYABLE,
+                                reason=failed.error or "hook event derivation failed",
+                            )
+                        pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
+                        if pending is not None:
+                            return AdmissionResult(
+                                AdmissionOutcome.RETRYABLE,
+                                reason=pending.reason.value if pending.reason is not None else "hook events pending",
+                            )
+                        if report.done:
+                            return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=1)
+                        return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=1)
+
                     drive_sources_configured = False
                     with contextlib.suppress(Exception):
                         from polylogue.config import get_config
@@ -2929,6 +2946,8 @@ async def _run_daemon_services_under_active_writer_lease(
                         else None,
                         raw_callback=admit_raw_intake if raw_materialization_available else None,
                         raw_discover=discover_raw_intake if raw_materialization_available else None,
+                        hook_events_callback=admit_hook_events if raw_materialization_available else None,
+                        hook_events_discover=discover_hook_events if raw_materialization_available else None,
                     )
                     dispatcher = FairIntakeDispatcher(
                         tuple(IntakeClassSpec(name=name, adapter=adapter) for name, adapter in adapter_pairs),

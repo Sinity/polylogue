@@ -1629,6 +1629,29 @@ def _claude_code_spec() -> OriginSpec:
         frontier_kind="claude-header-body",
         artifact_rules=(
             OriginArtifactRule(
+                kind="hook_event_carrier",
+                # ``<archive>/hooks/carriers/claude-code/<UTC day>/<pid>.ndjson``:
+                # the append-only carrier a hook producer writes one line per
+                # event to. The path rule, not the content shape, is the gate
+                # (polylogue-k3ahm): the carrier is acquired as retained bytes
+                # exactly once per revision and its events are materialized
+                # from those bytes by the ``hook_events`` derivation, so a
+                # carrier must never be probed as a session stream no matter
+                # what a tool-output preview inside one happens to look like.
+                path_pattern=r"(?:^|/)hooks/carriers/claude-code/\d{4}-\d{2}-\d{2}/[^/]+\.ndjson$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="hook_event_carrier",
+                fidelity_note=(
+                    "Hook-event carriers are retained verbatim; every event is materialized out of the "
+                    "retained bytes into raw_hook_events, keyed by the carrier coordinate (file plus the "
+                    "byte offset of its line). The carrier is never a session: a hook event is evidence "
+                    "within a session, joined to it by session_native_id."
+                ),
+                path_suffixes=(".ndjson",),
+                watch_suffixes=(".ndjson",),
+            ),
+            OriginArtifactRule(
                 kind="tool_result_sidecar",
                 # ``hook-*`` files under the same directory are a distinct,
                 # already-tracked capture surface (raw hook stdout,
@@ -2176,6 +2199,29 @@ def _codex_spec() -> OriginSpec:
         assembly_spec_path="polylogue/sources/assembly_codex.py:CodexAssemblySpec",
         artifact_rules=(
             OriginArtifactRule(
+                kind="hook_event_carrier",
+                # ``<archive>/hooks/carriers/codex/<UTC day>/<pid>.ndjson``:
+                # the append-only carrier a hook producer writes one line per
+                # event to. The path rule, not the content shape, is the gate
+                # (polylogue-k3ahm): the carrier is acquired as retained bytes
+                # exactly once per revision and its events are materialized
+                # from those bytes by the ``hook_events`` derivation, so a
+                # carrier must never be probed as a session stream no matter
+                # what a tool-output preview inside one happens to look like.
+                path_pattern=r"(?:^|/)hooks/carriers/codex/\d{4}-\d{2}-\d{2}/[^/]+\.ndjson$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="hook_event_carrier",
+                fidelity_note=(
+                    "Hook-event carriers are retained verbatim; every event is materialized out of the "
+                    "retained bytes into raw_hook_events, keyed by the carrier coordinate (file plus the "
+                    "byte offset of its line). The carrier is never a session: a hook event is evidence "
+                    "within a session, joined to it by session_native_id."
+                ),
+                path_suffixes=(".ndjson",),
+                watch_suffixes=(".ndjson",),
+            ),
+            OriginArtifactRule(
                 kind="agent_memory_document",
                 # ``~/.codex/memories/**.md``. Codex keeps its memory
                 # documents in a directory beside ``sessions/``, so the
@@ -2592,6 +2638,29 @@ def _hermes_spec() -> OriginSpec:
         ),
         topology_capabilities=_no_topology_capabilities(Origin.HERMES_SESSION),
         artifact_rules=(
+            OriginArtifactRule(
+                kind="hook_event_carrier",
+                # ``<archive>/hooks/carriers/hermes/<UTC day>/<pid>.ndjson``:
+                # the append-only carrier a hook producer writes one line per
+                # event to. The path rule, not the content shape, is the gate
+                # (polylogue-k3ahm): the carrier is acquired as retained bytes
+                # exactly once per revision and its events are materialized
+                # from those bytes by the ``hook_events`` derivation, so a
+                # carrier must never be probed as a session stream no matter
+                # what a tool-output preview inside one happens to look like.
+                path_pattern=r"(?:^|/)hooks/carriers/hermes/\d{4}-\d{2}-\d{2}/[^/]+\.ndjson$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="hook_event_carrier",
+                fidelity_note=(
+                    "Hook-event carriers are retained verbatim; every event is materialized out of the "
+                    "retained bytes into raw_hook_events, keyed by the carrier coordinate (file plus the "
+                    "byte offset of its line). The carrier is never a session: a hook event is evidence "
+                    "within a session, joined to it by session_native_id."
+                ),
+                path_suffixes=(".ndjson",),
+                watch_suffixes=(".ndjson",),
+            ),
             OriginArtifactRule(
                 kind="skill_asset",
                 # polylogue-6d7fx: the hermes-agent checkout bundled under the

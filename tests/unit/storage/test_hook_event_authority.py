@@ -18,12 +18,12 @@ def _write_event(tmp_path: Path, *, event_id: str = "event-1") -> Path:
         archive.write_hook_event(
             provider=Provider.CLAUDE_CODE,
             payload=b'{"event_id":"event-1"}',
-            source_path="hooks/pending/event-1.json",
+            source_path="hooks/carriers/claude-code/2026-09-06/4242.ndjson",
             acquired_at_ms=100,
             hook_event=ArchiveHookEvent(
                 hook_event_id=f"hook:{event_id}",
                 origin=Origin.CLAUDE_CODE_SESSION,
-                source_path="hooks/pending/event-1.json",
+                source_path="hooks/carriers/claude-code/2026-09-06/4242.ndjson",
                 event_type="SessionStart",
                 payload={"event_id": event_id, "event_type": "SessionStart"},
                 observed_at_ms=100,

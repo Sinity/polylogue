@@ -467,11 +467,10 @@ class HookEventSpoolProver:
     the production-route record, which is what admission would reproduce.
 
     The proposition is that acquisition still reaches the content, not that
-    the bytes exist somewhere under a declared root. Only ``pending/`` is
-    read: ``drain_hook_event_spool`` and ``hook_watch_sources`` both take
-    :func:`pending_hook_spool_dir`, and an ``acknowledged/`` receipt is a
-    commit record for the source.db that consumed it -- a fresh archive
-    re-ingests nothing from there.
+    the bytes exist somewhere under a declared root. Only ``carriers/`` is
+    read: that is the one tree acquisition watches, and an ``acknowledged/``
+    receipt is a record of what the one-shot legacy fold already folded into
+    a carrier -- a fresh archive re-ingests nothing from there.
     """
 
     name = "hook-event-spool"
@@ -479,21 +478,37 @@ class HookEventSpoolProver:
 
     def __init__(self, sources: Sequence[tuple[str, Path]]) -> None:
         self._sources = tuple(sources)
-        self._index: dict[str, tuple[str, Path]] | None = None
+        self._index: dict[str, tuple[str, Path, dict[str, object]]] | None = None
 
-    def _spool_index(self) -> dict[str, tuple[str, Path]]:
+    def _spool_index(self) -> dict[str, tuple[str, Path, dict[str, object]]]:
+        """Index every carrier line by its event id, once per prover.
+
+        A carrier holds many events, so the id can no longer be read off a
+        filename. The whole declared carrier tree is decoded once and the
+        records are held by id; the alternative -- re-reading one carrier per
+        candidate blob -- is quadratic in exactly the case this exists for.
+        """
+
         if self._index is not None:
             return self._index
-        from polylogue.sources.hooks import pending_hook_spool_dir
+        from polylogue.sources.hooks import hook_carrier_dir, read_hook_carrier
 
-        index: dict[str, tuple[str, Path]] = {}
+        index: dict[str, tuple[str, Path, dict[str, object]]] = {}
         for source_id, root in self._sources:
-            for directory, subdirectories, filenames in os.walk(pending_hook_spool_dir(root)):
+            for directory, subdirectories, filenames in os.walk(hook_carrier_dir(root)):
                 subdirectories.sort()
                 for filename in sorted(filenames):
-                    if not filename.endswith(".json"):
+                    if not filename.endswith(".ndjson"):
                         continue
-                    index.setdefault(filename[: -len(".json")], (source_id, Path(directory) / filename))
+                    carrier = Path(directory) / filename
+                    try:
+                        lines, _refusals = read_hook_carrier(carrier.read_bytes())
+                    except OSError:
+                        continue
+                    for line in lines:
+                        event_id = line.record.get("event_id")
+                        if isinstance(event_id, str) and event_id:
+                            index.setdefault(event_id, (source_id, carrier, line.record))
         self._index = index
         return index
 
@@ -507,21 +522,15 @@ class HookEventSpoolProver:
         located = self._spool_index().get(event_id)
         if located is None:
             return None
-        source_id, spool_path = located
-        from polylogue.sources.hooks import HookSpoolRecordError, read_hook_spool_record
-
-        try:
-            record = read_hook_spool_record(spool_path)
-        except HookSpoolRecordError:
-            return None
+        source_id, carrier_path, record = located
         if record != envelope:
             return None
         return SourceProof(
             prover=self.name,
             mode=SourceProofMode.SEMANTIC_EQUIVALENT,
             source_id=source_id,
-            source_path=str(spool_path),
-            detail=f"hook event {event_id} reproduces through the spool read route",
+            source_path=str(carrier_path),
+            detail=f"hook event {event_id} reproduces through the carrier read route",
         )
 
     def restoration_target(self, path: Path) -> RestorationTarget | None:

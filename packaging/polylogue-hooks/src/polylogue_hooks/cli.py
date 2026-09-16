@@ -1,8 +1,10 @@
 """``polylogue-hook`` console-script entrypoint.
 
 Receives a hook event type as ``argv[1]`` and the event payload on stdin as
-JSON. Atomically publishes one enriched envelope to the Polylogue pending spool
-where the daemon records and acknowledges it.
+JSON. Appends one enriched envelope as a single newline-terminated JSON line to
+this process's own carrier under ``carriers/<provider>/<day>/<pid>.ndjson``. The
+archive acquires that carrier's bytes like any other append-only source and
+materializes the events out of them, so the producer does not fsync.
 
 Mirrors the behaviour of ``contrib/polylogue-hook`` in the main repository so
 that ``pip install polylogue-hooks`` provides the same surface without any
@@ -14,7 +16,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -249,33 +250,29 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     sidecar_dir = sidecar_dir_arg or _default_sidecar_dir()
-    pending_dir = sidecar_dir / "pending"
-    pending_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_json_write(pending_dir / f"{record['event_id']}.json", record)
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    carrier = sidecar_dir / "carriers" / provider / day / f"{os.getpid()}.ndjson"
+    os.makedirs(carrier.parent, exist_ok=True)
+    _append_carrier_line(carrier, record)
 
     return 0
 
 
-def _atomic_json_write(path: Path, record: dict[str, object]) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
+def _append_carrier_line(path: Path, record: dict[str, object]) -> None:
+    """Append one newline-terminated JSON line with a single ``O_APPEND`` write.
 
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    ``O_APPEND`` makes the seek-to-end and the write one atomic step, and only
+    this process writes this carrier, so a short write can only ever be
+    completed here. No tempfile, no rename, no fsync: the archive acquires the
+    carrier's retained bytes, so the worst loss is a missing event, never a
+    corrupt one. Mirrors ``polylogue.sources.hook_producer.append_carrier_line``.
+    """
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
-        os.fsync(descriptor)
+        written = 0
+        while written < len(line):
+            written += os.write(descriptor, line[written:])
     finally:
         os.close(descriptor)
 

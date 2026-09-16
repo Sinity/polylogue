@@ -37,9 +37,8 @@ from polylogue.core.write_hold import WriteHoldBudgetError
 from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.sources.hooks import (
     HookSpoolSourceSpec,
-    drain_hook_event_spool,
+    hook_carrier_provider_dir,
     hook_spool_sources,
-    pending_hook_spool_dir,
 )
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
 from polylogue.sources.live.archive_open import _source_tier_acquisition_required
@@ -88,19 +87,6 @@ logger = get_logger(__name__)
 # v3: tool-result outcomes now derive `is_error` from an explicit exit code
 # (#4539), so records parsed under v2 retain a stale unknown outcome.
 _PARSER_FINGERPRINT = "live-batched-v3"
-# One bounded writer hold per hook-spool drain batch; the drain loops until
-# the backlog is gone, releasing the writer between batches.
-_HOOK_SPOOL_DRAIN_BATCH_LIMIT = 250
-# A hook creates a day-shard directory before atomically publishing its first
-# envelope. An added-directory event can therefore precede the child-file
-# event that a recursive watcher is about to install. Poll only that new shard
-# until its first envelope is durably acknowledged, rather than leaving it to
-# periodic catch-up or relying on a scheduler-dependent fixed grace period.
-_HOOK_SPOOL_DIRECTORY_RETRY_POLL_S = 0.05
-# A publish can be delayed by a paused hook process, so this is a poll-interval
-# cap, not a retry lifetime. The task ends only when the shard disappears, its
-# first envelope is acknowledged, or the watcher stops.
-_HOOK_SPOOL_DIRECTORY_RETRY_MAX_POLL_S = 5.0 * 60.0
 # A catch-up writer owns the only archive writer for the whole chunk.  The
 # former 50-file/64-MiB envelope held it for 14+ minutes on the real archive,
 # starving fresh watcher events.  Keep historical convergence fair by
@@ -329,17 +315,33 @@ class WatchSource:
         return path.name in self.ignored_dir_names
 
 
-def hook_watch_sources(specs: Iterable[HookSpoolSourceSpec]) -> tuple[WatchSource, ...]:
-    """Adapt the typed spool topology to the pending directories watcher owns."""
+#: The harnesses that write hook carriers. Each gets its own watched
+#: directory so acquisition is provider-scoped: the origin-spec artifact rule
+#: and the materialized ``origin`` both follow the directory, and a carrier
+#: never has to be opened to learn which harness wrote it.
+HOOK_CARRIER_PROVIDERS: tuple[str, ...] = ("claude-code", "codex", "hermes")
+
+
+def hook_carrier_watch_sources(specs: Iterable[HookSpoolSourceSpec]) -> tuple[WatchSource, ...]:
+    """Watch every declared hook root's carriers as ordinary append-only sources.
+
+    A carrier is acquired, retained and revision-bound exactly like any other
+    growing JSONL source; nothing here is hook-specific beyond the directory.
+    The events inside are materialized later by the ``hook_events`` derivation
+    out of the retained bytes -- the watcher never parses a hook envelope and
+    never writes ``raw_hook_events``.
+    """
+
     return tuple(
         WatchSource(
-            name="hooks",
-            root=pending_hook_spool_dir(spec.root),
-            suffixes=(".json",),
-            source_id=spec.source_id,
+            name=provider,
+            root=hook_carrier_provider_dir(provider, spec.root),
+            suffixes=(".ndjson",),
+            source_id=f"{spec.source_id}:{provider}",
             role=spec.role,
         )
         for spec in specs
+        for provider in HOOK_CARRIER_PROVIDERS
     )
 
 
@@ -494,8 +496,6 @@ class LiveWatcher:
         self._drain_task: asyncio.Task[None] | None = None
         self._failed_retry_task: asyncio.Task[None] | None = None
         self._periodic_catch_up_task: asyncio.Task[None] | None = None
-        self._hook_spool_directory_retry_tasks: dict[Path, asyncio.Task[None]] = {}
-        self._hook_spool_drain_lock = asyncio.Lock()
         self._failed_retry_deadline: float | None = None
         self._last_enqueue_at = 0.0
         self._last_batch_at: float = 0.0
@@ -559,9 +559,9 @@ class LiveWatcher:
         return [source.root for source in self._sources if source.exists()]
 
     async def run(self) -> None:
-        # Hook commands create their first pending envelope lazily.  Ensure the
-        # nested root exists before ``awatch`` snapshots its roots, otherwise a
-        # daemon that starts before the first hook event never sees that file.
+        # Hook commands create their first carrier lazily.  Ensure the nested
+        # root exists before ``awatch`` snapshots its roots, otherwise a daemon
+        # that starts before the first hook event never sees that file.
         for source in self._hook_sources():
             # Untagged single-root callers predate the topology contract and
             # are necessarily the primary.  Tagged legacy roots remain
@@ -602,7 +602,6 @@ class LiveWatcher:
             with suppress(asyncio.CancelledError):
                 await watch_task
             self._cancel_periodic_catch_up()
-            self._cancel_hook_spool_directory_retries()
 
     async def _watch_changes(self, roots: list[Path]) -> None:
         from watchfiles import Change, awatch
@@ -621,14 +620,6 @@ class LiveWatcher:
                     continue
                 observed_path = Path(raw_path)
                 if change is Change.added and observed_path.is_dir():
-                    if self._is_hook_spool_path(observed_path):
-                        needs_first_envelope_retry = self._is_hook_spool_shard_directory(
-                            observed_path
-                        ) and not self._hook_spool_directory_has_envelope(observed_path)
-                        await self._drain_hook_spools()
-                        if needs_first_envelope_retry:
-                            self._schedule_hook_spool_directory_retry(observed_path)
-                        continue
                     self._enqueue_added_directory(observed_path)
                     continue
                 path = self._canonical_watch_path(observed_path)
@@ -636,17 +627,12 @@ class LiveWatcher:
                     continue
                 if not self._source_accepts(path):
                     continue
-                if self._is_hook_spool_path(path):
-                    await self._drain_hook_spools()
-                    self._cancel_hook_spool_directory_retry_if_acknowledged(path.parent)
-                    continue
                 self._enqueue(path)
 
     def stop(self) -> None:
         self._stop.set()
         self._cancel_failed_retry_task()
         self._cancel_periodic_catch_up()
-        self._cancel_hook_spool_directory_retries()
         if self._parse_stage is not None and self._owns_parse_stage:
             self._parse_stage.shutdown()
 
@@ -658,7 +644,6 @@ class LiveWatcher:
         self._pending_scheduled = False
         self._cancel_failed_retry_task()
         self._cancel_periodic_catch_up()
-        self._cancel_hook_spool_directory_retries()
 
     async def _periodic_catch_up(self, _initial_roots: list[Path]) -> None:
         delay_s = _PERIODIC_CATCH_UP_INTERVAL_S
@@ -685,81 +670,6 @@ class LiveWatcher:
         if task is not None and not task.done():
             task.cancel()
         self._periodic_catch_up_task = None
-
-    def _schedule_hook_spool_directory_retry(self, directory: Path) -> None:
-        """Drain a newly added hook shard when its first envelope appears.
-
-        The initial drain above handles an already-published envelope.  This
-        task covers the narrow event-ordering race where the directory arrives
-        first and the recursive watcher misses the first child notification.
-        It does not block subsequent watcher events or start a source-tree
-        catch-up scan.
-        """
-
-        directory = directory.resolve()
-        existing = self._hook_spool_directory_retry_tasks.get(directory)
-        if existing is not None and not existing.done():
-            return
-        task = asyncio.create_task(self._retry_hook_spool_directory_until_populated(directory))
-        self._hook_spool_directory_retry_tasks[directory] = task
-
-        def discard_completed_task(completed: asyncio.Task[None]) -> None:
-            if self._hook_spool_directory_retry_tasks.get(directory) is completed:
-                self._hook_spool_directory_retry_tasks.pop(directory, None)
-            if completed.cancelled():
-                return
-            try:
-                completed.result()
-            except Exception:
-                logger.exception("live.watcher: hook spool directory retry failed for %s", directory)
-
-        task.add_done_callback(discard_completed_task)
-
-    async def _retry_hook_spool_directory_until_populated(self, directory: Path) -> None:
-        """Wait for an added shard's first envelope until it is acknowledged."""
-
-        delay_s = _HOOK_SPOOL_DIRECTORY_RETRY_POLL_S
-        while not self._stop.is_set():
-            try:
-                if not directory.exists():
-                    return
-                if any(directory.glob("*.json")):
-                    # Keep this narrow compatibility seam injectable for
-                    # retry tests/callers; the default implementation invokes
-                    # the topology scheduler.
-                    await self._drain_hook_spool()
-                    if not any(directory.glob("*.json")):
-                        return
-            except sqlite3.OperationalError as exc:
-                # The normal periodic catch-up route retries transient source
-                # tier contention.  A just-created shard must get the same
-                # treatment instead of letting this narrow event-ordering
-                # recovery task die before its envelope is acknowledged.
-                if not is_transient_sqlite_lock(exc):
-                    raise
-                logger.warning("live.watcher: archive busy while draining new hook shard; will retry")
-            except OSError:
-                if not directory.exists():
-                    return
-                logger.warning("live.watcher: unable to inspect new hook shard; will retry")
-            await asyncio.sleep(delay_s)
-            delay_s = min(delay_s * 2, _HOOK_SPOOL_DIRECTORY_RETRY_MAX_POLL_S)
-
-    def _cancel_hook_spool_directory_retry_if_acknowledged(self, directory: Path) -> None:
-        """Release a directory retry once a child-file notification drained it."""
-
-        directory = directory.resolve()
-        if self._hook_spool_directory_has_envelope(directory):
-            return
-        task = self._hook_spool_directory_retry_tasks.get(directory)
-        if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
-
-    def _cancel_hook_spool_directory_retries(self) -> None:
-        for task in tuple(self._hook_spool_directory_retry_tasks.values()):
-            if not task.done():
-                task.cancel()
-        self._hook_spool_directory_retry_tasks.clear()
 
     # ------------------------------------------------------------------
     # Catch-up: batch all changed files
@@ -788,7 +698,6 @@ class LiveWatcher:
             # A quiescent archive still redeems an interrupted cycle's pledge:
             # the owed archive-wide stages are not conditional on new bytes.
             await self._redeem_whole_archive_pledges(())
-            await self._drain_hook_spools()
             return
 
         now = time.time()
@@ -810,7 +719,6 @@ class LiveWatcher:
                 # One plan owns the scan's faults; the second group must not
                 # report them again as if they were fresh evidence.
                 unreadable = ()
-        await self._drain_hook_spools()
 
     async def _catch_up_candidates(
         self,
@@ -1258,87 +1166,17 @@ class LiveWatcher:
             await self._release_whole_archive_pledges(tuple(pledge.pledge_id for pledge in pledges))
 
     def _hook_sources(self) -> tuple[WatchSource, ...]:
-        """Return the declared hook topology, preserving configured order.
+        """Return the declared hook-carrier sources, preserving configured order.
 
-        ``source_id`` is the identity.  The name-only fallback is limited to
-        old callers constructing a single ``WatchSource(name='hooks', ...)``;
-        production defaults below always tag the source explicitly.
+        These are ordinary watched sources in every respect that matters to
+        acquisition; the topology role survives only so the watcher knows
+        which carrier roots it may create and which are strictly read-only.
         """
         return tuple(
             source
             for source in self._sources
             if source.source_id is not None and source.role in {"primary-writable", "legacy-read-only"}
         ) or tuple(source for source in self._sources if source.name == "hooks")
-
-    async def _drain_hook_spools(self) -> None:
-        """Acknowledge hook envelopes only after their source-tier write commits.
-
-        Drains in bounded batches, releasing the writer between them, so a
-        large spool backlog cannot monopolize the single writer against
-        live ingest and catch-up chunks.
-        """
-
-        async with self._hook_spool_drain_lock:
-            try:
-                self._batch_processor.require_cursor_authority()
-            except CursorAuthorityBlockedError as exc:
-                logger.warning("live.watcher: hook-spool drain refused by cursor authority: %s", exc)
-                return
-
-            # One bounded batch per ready root is a round.  The coordinator
-            # call is deliberately outside a loop: returning to the event
-            # loop between roots/batches releases the sole writer and keeps a
-            # continuously busy primary from starving a sibling.
-            total_acknowledged = 0
-            for source in self._hook_sources():
-                root = self._hook_spool_root_for_source(source)
-                result = await self._run_writer_sync(
-                    f"watcher.hook_spool.drain.{source.source_id or source.name}",
-                    drain_hook_event_spool,
-                    Path(self._polylogue.archive_root),
-                    root=root,
-                    limit=_HOOK_SPOOL_DRAIN_BATCH_LIMIT,
-                    source_id=source.source_id or source.name,
-                    role=cast(Any, source.role or "primary-writable"),
-                )
-                total_acknowledged += result.acknowledged
-                if result.unreadable_paths:
-                    # A spool directory that could not be listed hides an
-                    # unknown number of envelopes, so ``remaining`` is a floor
-                    # rather than a measurement. Publish it as durable evidence
-                    # rather than leaving it to a log line.
-                    emit(
-                        "source.hook_spool.unreadable",
-                        level=WARNING,
-                        outcome="degraded",
-                        source_id=source.source_id or source.name,
-                        errors=len(result.unreadable_paths),
-                        path=result.unreadable_paths[0],
-                        error_detail="; ".join(result.unreadable_paths),
-                    )
-                    if self._event_emitter is not None:
-                        await self._run_writer_sync(
-                            "watcher.hook_spool.unreadable.event",
-                            self._event_emitter,
-                            "hook_spool_unreadable",
-                            {
-                                "source_id": source.source_id or source.name,
-                                "unreadable_path_count": len(result.unreadable_paths),
-                                "unreadable_paths": list(result.unreadable_paths),
-                            },
-                        )
-                if result.failed:
-                    logger.warning(
-                        "live.watcher: hook spool source=%s left %d event(s) pending",
-                        source.source_id or source.name,
-                        result.failed,
-                    )
-            if total_acknowledged:
-                logger.info("live.watcher: acknowledged %d hook spool event(s)", total_acknowledged)
-
-    async def _drain_hook_spool(self) -> None:
-        """Compatibility entry point; the scheduler now drains all roots."""
-        await self._drain_hook_spools()
 
     def _scan_catch_up_candidates(
         self,
@@ -1358,8 +1196,6 @@ class LiveWatcher:
         candidates: list[CandidateSourceFile] = []
         for source in self._sources:
             if source.root.resolve() not in root_set:
-                continue
-            if source in self._hook_sources():
                 continue
             if not source.exists():
                 # A configured root that is absent is evidence, not silence:
@@ -2548,47 +2384,6 @@ class LiveWatcher:
         source = deepest_source_for_path(path, self._sources)
         return source.accepts(path) if source is not None else False
 
-    def _is_hook_spool_path(self, path: Path) -> bool:
-        for source in self._hook_sources():
-            try:
-                if path.resolve().is_relative_to(source.root.resolve()):
-                    return True
-            except OSError:
-                continue
-        return False
-
-    def _is_hook_spool_shard_directory(self, path: Path) -> bool:
-        """Return whether ``path`` is a direct day shard beneath ``pending``."""
-
-        for source in self._hook_sources():
-            try:
-                if path.resolve().parent == source.root.resolve():
-                    return True
-            except OSError:
-                continue
-        return False
-
-    @staticmethod
-    def _hook_spool_directory_has_envelope(directory: Path) -> bool:
-        try:
-            return next(directory.glob("*.json"), None) is not None
-        except OSError:
-            return False
-
-    def _hook_spool_root(self) -> Path:
-        """Compatibility accessor for callers that inspect the primary."""
-        primary = next((source for source in self._hook_sources() if source.role == "primary-writable"), None)
-        if primary is None:
-            primary = next(iter(self._hook_sources()), None)
-        if primary is None:
-            raise RuntimeError("no declared hook spool source")
-        return self._hook_spool_root_for_source(primary)
-
-    @staticmethod
-    def _hook_spool_root_for_source(source: WatchSource) -> Path:
-        """Resolve either a pending-dir WatchSource or a typed spool root."""
-        return source.root.parent if source.root.name == "pending" else source.root
-
     def _is_hermes_database(self, path: Path) -> bool:
         resolved = path.resolve()
         for source in self._sources:
@@ -2870,7 +2665,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
         *_legacy_data_home_inbox_sources(),
-        *hook_watch_sources(hook_spool_sources()),
+        *hook_carrier_watch_sources(hook_spool_sources()),
     )
 
 

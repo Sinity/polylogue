@@ -19,8 +19,9 @@ from polylogue.hooks import (
     resolve_events,
     settings_path,
 )
+from polylogue.sources.hook_producer import day_shard
 from polylogue.sources.hook_producer import main as hook_producer_main
-from polylogue.sources.hooks import pending_hook_spool_dir
+from polylogue.sources.hooks import hook_carrier_dir, hook_carrier_provider_dir
 
 
 @pytest.fixture
@@ -236,9 +237,16 @@ def test_hook_runtime_provider_override_records_codex_event(
     # (polylogue-o7hx), which isolated_hook_home points at tmp_path/"archive",
     # not XDG_DATA_HOME.
     archive_root = Path(os.environ["POLYLOGUE_ARCHIVE_ROOT"])
-    pending = list(pending_hook_spool_dir(archive_root / "hooks").rglob("*.json"))
-    assert len(pending) == 1
-    record = json.loads(pending[0].read_text(encoding="utf-8"))
+    spool_root = archive_root / "hooks"
+    (carrier,) = sorted(hook_carrier_provider_dir("codex", spool_root).rglob("*.ndjson"))
+    # The override decides the carrier's provider directory, not just a field
+    # inside the line: acquisition is provider-scoped by directory.
+    assert carrier.relative_to(hook_carrier_dir(spool_root)).parts[:2] == ("codex", day_shard())
+    assert carrier.stem.isdigit(), carrier.name
+    payload = carrier.read_bytes()
+    assert payload.endswith(b"\n"), payload
+    (line,) = payload.splitlines()
+    record = json.loads(line)
     assert record["provider"] == "codex"
     assert record["event_type"] == "SessionStart"
 

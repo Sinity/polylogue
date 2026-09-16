@@ -14,11 +14,12 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.context.hermes_lifecycle_reconciliation import reconcile_hermes_session_lifecycle
-from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+from polylogue.sources.hooks import append_hook_event
 from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, TOOL_FINISH, TOOL_START
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.hook_carriers import materialize_hook_carriers
 
 _HASH = b"x" * 32
 
@@ -51,11 +52,11 @@ def _seed_snapshot(index_conn: sqlite3.Connection, *, qualified_native_id: str, 
 
 def test_complete_paired_stream_against_known_snapshot_message_reconciles_clean(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    spool_root = tmp_path / "hooks"
+    spool_root = archive_root / "hooks"
     index_conn = _index_conn()
     _seed_snapshot(index_conn, qualified_native_id="conv-1@profile-abc", message_native_id="m1")
 
-    enqueue_hook_event(
+    append_hook_event(
         event_id="e1",
         provider="hermes",
         event_type=TOOL_START,
@@ -64,7 +65,7 @@ def test_complete_paired_stream_against_known_snapshot_message_reconciles_clean(
         payload={"tool_call_id": "call-1", "message_id": "m1"},
         root=spool_root,
     )
-    enqueue_hook_event(
+    append_hook_event(
         event_id="e2",
         provider="hermes",
         event_type=TOOL_FINISH,
@@ -73,7 +74,7 @@ def test_complete_paired_stream_against_known_snapshot_message_reconciles_clean(
         payload={"tool_call_id": "call-1", "message_id": "m1"},
         root=spool_root,
     )
-    enqueue_hook_event(
+    append_hook_event(
         event_id="e3",
         provider="hermes",
         event_type=DURABLE_FINALIZE,
@@ -82,7 +83,7 @@ def test_complete_paired_stream_against_known_snapshot_message_reconciles_clean(
         payload={},
         root=spool_root,
     )
-    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 3
+    assert materialize_hook_carriers(archive_root) == 3
 
     source_conn = _source_conn(archive_root)
     report = reconcile_hermes_session_lifecycle(source_conn, index_conn, hermes_session_native_id="conv-1")
@@ -95,11 +96,11 @@ def test_complete_paired_stream_against_known_snapshot_message_reconciles_clean(
 
 def test_unpaired_event_and_unknown_message_reference_are_both_visible(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    spool_root = tmp_path / "hooks"
+    spool_root = archive_root / "hooks"
     index_conn = _index_conn()
     _seed_snapshot(index_conn, qualified_native_id="conv-2@profile-xyz", message_native_id="m1")
 
-    enqueue_hook_event(
+    append_hook_event(
         event_id="e1",
         provider="hermes",
         event_type=TOOL_START,
@@ -108,7 +109,7 @@ def test_unpaired_event_and_unknown_message_reference_are_both_visible(tmp_path:
         payload={"tool_call_id": "call-1", "message_id": "message-not-ingested"},
         root=spool_root,
     )
-    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+    assert materialize_hook_carriers(archive_root) == 1
 
     source_conn = _source_conn(archive_root)
     report = reconcile_hermes_session_lifecycle(source_conn, index_conn, hermes_session_native_id="conv-2")
@@ -124,11 +125,11 @@ def test_raw_unqualified_session_id_resolves_against_profile_qualified_snapshot(
     the snapshot join must still find messages under the qualified native_id."""
 
     archive_root = tmp_path / "archive"
-    spool_root = tmp_path / "hooks"
+    spool_root = archive_root / "hooks"
     index_conn = _index_conn()
     _seed_snapshot(index_conn, qualified_native_id="conv-3@profile-anything", message_native_id="only-message")
 
-    enqueue_hook_event(
+    append_hook_event(
         event_id="e1",
         provider="hermes",
         event_type=TOOL_START,
@@ -137,7 +138,7 @@ def test_raw_unqualified_session_id_resolves_against_profile_qualified_snapshot(
         payload={"tool_call_id": "call-1", "message_id": "only-message"},
         root=spool_root,
     )
-    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+    assert materialize_hook_carriers(archive_root) == 1
 
     source_conn = _source_conn(archive_root)
     report = reconcile_hermes_session_lifecycle(source_conn, index_conn, hermes_session_native_id="conv-3")

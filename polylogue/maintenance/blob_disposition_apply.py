@@ -337,26 +337,6 @@ def _carrier_drift(member: BlobDispositionMember, *, context: BlobDispositionCon
     return None
 
 
-def _resident_hook_event(spool_root: Path, event_id: str) -> Path | None:
-    """Locate an already-acquirable copy of *event_id*, in any day shard.
-
-    ``enqueue_hook_event`` shards by the current day and only refuses a
-    collision inside that shard, so a same-identity event spooled on another
-    day would be delivered twice.
-
-    Only ``pending/`` counts as present. An ``acknowledged/`` file is a commit
-    receipt for the source.db that consumed it, which no drain or watcher
-    reads; treating one as the destination's copy would report a carrier
-    restored while leaving its event unacquirable.
-    """
-    from polylogue.sources.hooks import pending_hook_spool_dir
-
-    for candidate in sorted(pending_hook_spool_dir(spool_root).rglob(f"{event_id}.json")):
-        if candidate.is_file():
-            return candidate
-    return None
-
-
 @dataclass(slots=True)
 class _RehearsedSpools:
     """What the spools would hold once a rehearsal's own restorations landed.
@@ -375,18 +355,16 @@ class _RehearsedSpools:
 
     def hook_event(self, spool_root: Path, event_id: str) -> tuple[dict[str, object] | None, Path | None, str | None]:
         """Return the event this identity finds resident, where, and any read failure."""
-        from polylogue.sources.hooks import HookSpoolRecordError, read_hook_spool_record
+        from polylogue.sources.hooks import find_carrier_event
 
         rehearsed = self.hook_events.get(event_id)
         if rehearsed is not None:
             return rehearsed[0], rehearsed[1], None
-        resident = _resident_hook_event(spool_root, event_id)
-        if resident is None:
+        located = find_carrier_event(spool_root, event_id)
+        if located is None:
             return None, None, None
-        try:
-            return read_hook_spool_record(resident), resident, None
-        except HookSpoolRecordError as exc:
-            return None, resident, f"destination is unreadable: {exc}"
+        carrier, record = located
+        return record, carrier, None
 
     def record_hook_event(self, event_id: str, envelope: dict[str, object], *, path: Path | None = None) -> None:
         self.hook_events[event_id] = (envelope, path)
@@ -459,8 +437,8 @@ def _restore_hook_event(
 ) -> RestorationResult:
     from polylogue.sources.hooks import (
         HookSpoolRecordError,
-        enqueue_hook_event,
-        read_hook_spool_record,
+        append_hook_event,
+        find_carrier_event,
     )
 
     destination = RestorationDestination.HOOK_EVENT_SPOOL.value
@@ -508,20 +486,20 @@ def _restore_hook_event(
             member.blob_hash, RestorationOutcome.RESTORED, f"would restore to {destination}", destination
         )
     try:
-        published = enqueue_hook_event(root=spool_root, **arguments)  # type: ignore[arg-type]
+        published = append_hook_event(root=spool_root, **arguments)  # type: ignore[arg-type]
     except (KeyError, TypeError, HookSpoolRecordError, OSError) as exc:
         return RestorationResult(
             member.blob_hash, RestorationOutcome.BLOCKED, f"ordinary spool admission refused: {exc}", destination
         )
-    # Acquisition derives fields the spool file does not carry and both sides
-    # serialize independently, so the published carrier is verified by the
+    # Materialization derives fields the carrier line does not carry and both
+    # sides serialize independently, so the appended line is verified by the
     # production read route rather than by its bytes.
-    try:
-        restored = read_hook_spool_record(published)
-    except HookSpoolRecordError as exc:
+    located = find_carrier_event(spool_root, event_id)
+    if located is None:
         return RestorationResult(
-            member.blob_hash, RestorationOutcome.BLOCKED, f"restored file does not read back: {exc}", destination
+            member.blob_hash, RestorationOutcome.BLOCKED, "restored line does not read back", destination
         )
+    restored = located[1]
     if restored != envelope:
         return RestorationResult(
             member.blob_hash,
@@ -1028,18 +1006,23 @@ def _residency_refusal(
 
 
 def _hook_residency_refusal(target: Path, payload: bytes) -> str | None:
-    from polylogue.sources.hooks import HookSpoolRecordError, read_hook_spool_record
+    from polylogue.sources.hooks import read_hook_carrier
 
     try:
         envelope = json.loads(payload)
     except json.JSONDecodeError as exc:
         return f"the carrier is not a readable envelope: {exc}"
+    if not isinstance(envelope, dict):
+        return "the carrier envelope is not an object"
     try:
-        resident = read_hook_spool_record(target)
-    except (HookSpoolRecordError, OSError) as exc:
-        return f"the hook spool no longer reads back this event: {exc}"
+        lines, _refusals = read_hook_carrier(target.read_bytes())
+    except OSError as exc:
+        return f"the hook carrier no longer reads back: {exc}"
+    resident = next((line.record for line in lines if line.record.get("event_id") == envelope.get("event_id")), None)
+    if resident is None:
+        return "the hook carrier no longer holds this event"
     if resident != envelope:
-        return "the hook spool holds a different event under this identity"
+        return "the hook carrier holds a different event under this identity"
     return None
 
 

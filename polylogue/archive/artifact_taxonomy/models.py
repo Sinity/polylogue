@@ -81,6 +81,12 @@ class ArtifactKind(StrEnum):
     # shards; they are the metadata the attachment join needs.
     EXPORT_ASSET_INDEX = "export_asset_index"
     HOOK_EVENT = "hook_event"
+    # polylogue-k3ahm: an append-only NDJSON carrier a hook producer writes,
+    # one file per producer process per UTC day per harness. Its bytes are the
+    # durable evidence and are acquired once per carrier revision; the
+    # individual events are materialized out of those retained bytes into
+    # ``raw_hook_events``, never persisted per event at capture time.
+    HOOK_EVENT_CARRIER = "hook_event_carrier"
     # polylogue-hbtj2: a raw payload whose magic bytes are a recognized
     # binary container with no dedicated, content-verified session parser
     # for this exact shape -- refused as session content at the earliest

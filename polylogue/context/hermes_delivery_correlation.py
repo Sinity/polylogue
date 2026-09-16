@@ -77,9 +77,9 @@ def correlate_hermes_context_deliveries(
     for event in events:
         if event.event_type != CONTEXT_INJECTED:
             continue
-        # ``event.payload`` is the full spooled envelope (event_id/event_type/
+        # ``event.payload`` is the full carrier envelope (event_id/event_type/
         # session_id/timestamp/provider/payload/observed_at_ms, see
-        # sources.hooks._persist_record); the producer's own event body is
+        # sources.hooks.carrier_hook_events); the producer's own event body is
         # nested one level deeper under its own "payload" key.
         inner_payload = event.payload.get("payload")
         snapshot_ref = inner_payload.get("snapshot_ref") if isinstance(inner_payload, dict) else None

@@ -13,10 +13,11 @@ from polylogue.context.compiler import (
 )
 from polylogue.context.hermes_delivery_correlation import correlate_hermes_context_deliveries
 from polylogue.core.refs import EvidenceRef
-from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+from polylogue.sources.hooks import append_hook_event
 from polylogue.sources.parsers.hermes_lifecycle import CONTEXT_INJECTED
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL, USER_SCHEMA_VERSION
+from tests.infra.hook_carriers import materialize_hook_carriers
 
 
 def _user_conn() -> sqlite3.Connection:
@@ -52,7 +53,7 @@ def _source_conn(archive_root: Path) -> sqlite3.Connection:
 
 def test_context_injected_event_correlates_with_its_delivery_receipt(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    spool_root = tmp_path / "hooks"
+    spool_root = archive_root / "hooks"
 
     user_conn = _user_conn()
     image = _image()
@@ -66,7 +67,7 @@ def test_context_injected_event_correlates_with_its_delivery_receipt(tmp_path: P
         delivered_at_ms=1_000,
     )
 
-    enqueue_hook_event(
+    append_hook_event(
         event_id="ctx-inject-1",
         provider="hermes",
         event_type=CONTEXT_INJECTED,
@@ -75,7 +76,7 @@ def test_context_injected_event_correlates_with_its_delivery_receipt(tmp_path: P
         payload={"snapshot_ref": written.snapshot_ref},
         root=spool_root,
     )
-    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+    assert materialize_hook_carriers(archive_root) == 1
 
     source_conn = _source_conn(archive_root)
     correlations = correlate_hermes_context_deliveries(source_conn, user_conn, hermes_session_native_id="hermes-conv-1")
@@ -96,10 +97,10 @@ def test_context_injected_event_without_matching_receipt_is_explicit_not_silent(
     """AC: archive outage/missing receipt renders an explicit unavailable state."""
 
     archive_root = tmp_path / "archive"
-    spool_root = tmp_path / "hooks"
+    spool_root = archive_root / "hooks"
     user_conn = _user_conn()
 
-    enqueue_hook_event(
+    append_hook_event(
         event_id="ctx-inject-orphan",
         provider="hermes",
         event_type=CONTEXT_INJECTED,
@@ -108,7 +109,7 @@ def test_context_injected_event_without_matching_receipt_is_explicit_not_silent(
         payload={"snapshot_ref": "context-snapshot:doesnotexist0000"},
         root=spool_root,
     )
-    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+    assert materialize_hook_carriers(archive_root) == 1
 
     source_conn = _source_conn(archive_root)
     correlations = correlate_hermes_context_deliveries(source_conn, user_conn, hermes_session_native_id="hermes-conv-1")
@@ -125,10 +126,10 @@ def test_context_injected_event_missing_snapshot_ref_is_explicit(tmp_path: Path)
     """A malformed producer event (no snapshot_ref) is a visible caveat, not a crash."""
 
     archive_root = tmp_path / "archive"
-    spool_root = tmp_path / "hooks"
+    spool_root = archive_root / "hooks"
     user_conn = _user_conn()
 
-    enqueue_hook_event(
+    append_hook_event(
         event_id="ctx-inject-malformed",
         provider="hermes",
         event_type=CONTEXT_INJECTED,
@@ -137,7 +138,7 @@ def test_context_injected_event_missing_snapshot_ref_is_explicit(tmp_path: Path)
         payload={"turn_id": "turn-1"},  # no snapshot_ref
         root=spool_root,
     )
-    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+    assert materialize_hook_carriers(archive_root) == 1
 
     source_conn = _source_conn(archive_root)
     correlations = correlate_hermes_context_deliveries(source_conn, user_conn, hermes_session_native_id="hermes-conv-1")
@@ -151,10 +152,10 @@ def test_context_injected_event_missing_snapshot_ref_is_explicit(tmp_path: Path)
 
 def test_non_context_injected_hermes_events_are_ignored(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    spool_root = tmp_path / "hooks"
+    spool_root = archive_root / "hooks"
     user_conn = _user_conn()
 
-    enqueue_hook_event(
+    append_hook_event(
         event_id="tool-1",
         provider="hermes",
         event_type="tool_start",
@@ -163,7 +164,7 @@ def test_non_context_injected_hermes_events_are_ignored(tmp_path: Path) -> None:
         payload={"tool_call_id": "call-1"},
         root=spool_root,
     )
-    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+    assert materialize_hook_carriers(archive_root) == 1
 
     source_conn = _source_conn(archive_root)
     correlations = correlate_hermes_context_deliveries(source_conn, user_conn, hermes_session_native_id="hermes-conv-1")

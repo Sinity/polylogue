@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -950,6 +951,126 @@ def write_source_hook_event(
     return raw_id
 
 
+@dataclass(frozen=True, slots=True)
+class CarrierHookEvent:
+    """One hook event and its byte coordinate inside its NDJSON carrier."""
+
+    byte_offset: int
+    line_bytes: int
+    event: ArchiveHookEvent
+
+
+def hook_carrier_coordinate(relative_path: str, byte_offset: int) -> str:
+    """The durable carrier coordinate of one event inside an NDJSON carrier.
+
+    ``hook_event_carriers`` is keyed by ``(source_id, relative_path)`` because
+    a file-per-event spool made the file the event. A carrier holds many
+    events, so the coordinate that identifies one of them is the file *plus*
+    the byte offset its line starts at -- a content position, not an ordinal:
+    a carrier that gains lines cannot renumber the events already recorded
+    before them.
+    """
+
+    return f"{relative_path}#{byte_offset:012d}"
+
+
+def write_source_hook_event_batch(
+    conn: sqlite3.Connection,
+    *,
+    carrier_source_id: str,
+    carrier_relative_path: str,
+    carrier_role: str,
+    carrier_blob_hash: bytes,
+    carrier_source_path: str,
+    events: Sequence[CarrierHookEvent],
+    acquired_at_ms: int,
+    blob_publication_receipt_id: str | None = None,
+    manage_transaction: bool = True,
+    policy_snapshot: ExcisionPolicySnapshot | None = None,
+) -> int:
+    """Persist every hook event carried by one NDJSON carrier, in one transaction.
+
+    The carrier's bytes are already durable -- they were published once as the
+    carrier's own raw acquisition -- so nothing here writes a blob. Each event
+    takes a ``hook_payload`` reference to that one carrier blob, which keeps
+    blob liveness and excision reaching hook evidence exactly as they did when
+    every event had a blob of its own, without paying a blob write, a
+    publication reservation and two fsyncs per event.
+
+    No ``raw_sessions`` row is written for an event: a hook event is evidence
+    within a session, never a session (polylogue-31r1). The carrier itself has
+    a raw row, because the carrier is an acquired artifact.
+    """
+
+    conn.execute("PRAGMA foreign_keys = ON")
+    _assert_excision_policy(carrier_blob_hash, source_path=carrier_source_path, policy_snapshot=policy_snapshot)
+    if is_blob_hash_excised(conn, carrier_blob_hash):
+        raise ContentExcisedError(blob_hash=carrier_blob_hash, source_path=carrier_source_path)
+    written = 0
+    with conn if manage_transaction else nullcontext():
+        for carried in events:
+            require_vocabulary(carried.event.origin, Origin, field="hook_event.origin")
+            coordinate = hook_carrier_coordinate(carrier_relative_path, carried.byte_offset)
+            # A carrier grows, so a later revision retains a superset of an
+            # earlier one's bytes under a different blob hash. The event is the
+            # same evidence either way, and its FIRST-observed carrier blob is
+            # what the archive already recorded -- exactly the convention
+            # source-tier v36 set when it added this relation. Re-materializing
+            # therefore keeps the recorded blob rather than conflicting on it;
+            # a genuine disagreement about the event's own content still raises
+            # from _insert_hook_event.
+            observed_blob_hash = _first_observed_hook_blob_hash(
+                conn,
+                hook_event_id=carried.event.hook_event_id,
+                source_id=carrier_source_id,
+                relative_path=coordinate,
+            )
+            blob_hash = observed_blob_hash or carrier_blob_hash
+            _insert_hook_event(conn, carried.event, blob_hash=blob_hash)
+            _insert_blob_ref(
+                conn,
+                ArchiveSourceBlobRef(
+                    blob_hash=blob_hash,
+                    raw_id=carried.event.hook_event_id,
+                    ref_type="hook_payload",
+                    source_path=carrier_source_path,
+                    size_bytes=carried.line_bytes,
+                    acquired_at_ms=acquired_at_ms,
+                    publication_receipt_id=blob_publication_receipt_id,
+                ),
+            )
+            _insert_hook_event_carrier(
+                conn,
+                source_id=carrier_source_id,
+                relative_path=coordinate,
+                hook_event=carried.event,
+                blob_hash=blob_hash,
+                role=carrier_role,
+                admitted_at_ms=acquired_at_ms,
+            )
+            written += 1
+    return written
+
+
+def _first_observed_hook_blob_hash(
+    conn: sqlite3.Connection,
+    *,
+    hook_event_id: str,
+    source_id: str,
+    relative_path: str,
+) -> bytes | None:
+    """The carrier blob this event was first recorded against, if it was."""
+
+    row = conn.execute("SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = ?", (hook_event_id,)).fetchone()
+    if row is not None and row[0] is not None:
+        return bytes(row[0])
+    carrier = conn.execute(
+        "SELECT blob_hash FROM hook_event_carriers WHERE source_id = ? AND relative_path = ?",
+        (source_id, relative_path),
+    ).fetchone()
+    return bytes(carrier[0]) if carrier is not None else None
+
+
 def delete_source_hook_event(
     conn: sqlite3.Connection,
     hook_event_id: str,
@@ -1665,9 +1786,11 @@ __all__ = [
     "ArchiveSourceArtifact",
     "ArchiveSourceBlobRef",
     "CaptureModeResolution",
+    "CarrierHookEvent",
     "ContentExcisedError",
     "PENDING_RAW_LOGICAL_SOURCE_PREFIX",
     "deterministic_blob_hash",
+    "hook_carrier_coordinate",
     "deterministic_raw_session_id",
     "is_blob_hash_excised",
     "list_hook_events",
@@ -1683,6 +1806,7 @@ __all__ = [
     "upsert_raw_artifact",
     "ReconstructedRawRow",
     "insert_reconstructed_raw_row",
+    "write_source_hook_event_batch",
     "write_source_raw_session",
     "write_source_raw_session_blob_ref",
 ]
