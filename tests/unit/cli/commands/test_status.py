@@ -26,11 +26,11 @@ from polylogue.storage.archive_readiness import (
     _archive_readiness_counts,
     _archive_status_surfaces,
     _fast_count,
-    _view_exists,
     probe_archive_tier,
 )
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.introspection import view_exists as _view_exists
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
