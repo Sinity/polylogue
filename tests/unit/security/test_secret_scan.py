@@ -124,9 +124,10 @@ class TestScanPathForSecretCandidates:
         path = tmp_path / "export.md"
         path.write_text("body text\nAWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n", encoding="utf-8")
 
-        spans = scan_path_for_secret_candidates(path)
+        result = scan_path_for_secret_candidates(path)
 
-        assert any(span.pattern_id == "aws-access-key-id" for span in spans)
+        assert result.scanned is True
+        assert any(span.pattern_id == "aws-access-key-id" for span in result.spans)
 
     def test_clean_file_has_no_findings(self, tmp_path: Path) -> None:
         from polylogue.security.secret_scan import scan_path_for_secret_candidates
@@ -134,20 +135,54 @@ class TestScanPathForSecretCandidates:
         path = tmp_path / "export.md"
         path.write_text("# Session\n\nJust an ordinary rendered transcript.\n", encoding="utf-8")
 
-        assert scan_path_for_secret_candidates(path) == []
+        result = scan_path_for_secret_candidates(path)
 
-    def test_skips_files_above_max_bytes(self, tmp_path: Path) -> None:
-        from polylogue.security.secret_scan import scan_path_for_secret_candidates
+        assert result.scanned is True
+        assert result.spans == ()
+        from polylogue.security.secret_scan import describe_path_scan_result
+
+        assert describe_path_scan_result(result) is None
+
+    def test_file_above_max_bytes_reports_unscanned_not_clean(self, tmp_path: Path) -> None:
+        """Anti-vacuity: restoring the old ``return []`` for the cap makes
+        ``scanned`` True (or the notice None) and this red -- an export the
+        scanner never read must never read as clean (polylogue-xv0pf)."""
+        from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
 
         path = tmp_path / "export.md"
         path.write_text("AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n", encoding="utf-8")
 
-        assert scan_path_for_secret_candidates(path, max_bytes=1) == []
+        result = scan_path_for_secret_candidates(path, max_bytes=1)
 
-    def test_missing_path_returns_no_findings(self, tmp_path: Path) -> None:
+        assert result.scanned is False
+        assert result.spans == ()
+        assert result.unscanned_reason is not None
+        notice = describe_path_scan_result(result)
+        assert notice is not None
+        assert "NOT SCANNED" in notice
+        assert "AKIAABCDEFGHIJKLMNOP" not in notice
+
+    def test_missing_path_reports_unscanned_not_clean(self, tmp_path: Path) -> None:
+        """Anti-vacuity: swallowing the OSError back into an empty finding
+        list makes ``scanned`` True and this red."""
+        from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
+
+        result = scan_path_for_secret_candidates(tmp_path / "does-not-exist.md")
+
+        assert result.scanned is False
+        assert result.unscanned_reason is not None
+        assert "NOT SCANNED" in (describe_path_scan_result(result) or "")
+
+    def test_undecodable_file_reports_unscanned_not_clean(self, tmp_path: Path) -> None:
         from polylogue.security.secret_scan import scan_path_for_secret_candidates
 
-        assert scan_path_for_secret_candidates(tmp_path / "does-not-exist.md") == []
+        path = tmp_path / "export.bin"
+        path.write_bytes(b"\xff\xfe\x00binary")
+
+        result = scan_path_for_secret_candidates(path)
+
+        assert result.scanned is False
+        assert "UTF-8" in (result.unscanned_reason or "")
 
 
 class TestDescribeSecretCandidateSpans:
@@ -326,6 +361,88 @@ class TestScanSessionForSecretCandidates:
         assert result.found is True
         assert result.candidates_found == 0
         assert result.written_assertion_ids == ()
+
+    def _seed_session_with_text_columns(
+        self,
+        tmp_path: Path,
+        *,
+        native_id: str,
+        instructions_text: str = "",
+        user_context_text: str = "",
+    ) -> str:
+        index_db = tmp_path / "index.db"
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
+        conn = sqlite3.connect(index_db)
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            conn.execute(
+                "INSERT INTO sessions (native_id, origin, title, instructions_text, content_hash, "
+                "created_at_ms, updated_at_ms) VALUES (?, 'codex-session', ?, ?, zeroblob(32), 1000, 2000)",
+                (native_id, f"Session {native_id}", instructions_text),
+            )
+            session_id = conn.execute("SELECT session_id FROM sessions WHERE native_id = ?", (native_id,)).fetchone()[0]
+            conn.execute(
+                "INSERT INTO messages (session_id, native_id, position, role, user_context_text, content_hash) "
+                "VALUES (?, 'm1', 0, 'user', ?, zeroblob(32))",
+                (session_id, user_context_text),
+            )
+            message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[
+                0
+            ]
+            conn.execute(
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text) "
+                "VALUES (?, ?, 0, 'text', 'ordinary block prose')",
+                (message_id, session_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return str(session_id)
+
+    def test_scans_the_system_prompt_and_user_context_columns(self, tmp_path: Path) -> None:
+        """polylogue-97o2z: the scanner covered ``blocks`` only, so a key
+        pasted into the system prompt was never surfaced.
+
+        Anti-vacuity: drop ``instructions_text``/``user_context_text`` from
+        ``_scan_targets_for_session`` and no ``session:``/``message:`` ref is
+        recorded, making this red. The block text here is deliberately clean,
+        so a block-only scan finds nothing at all.
+        """
+        session_id = self._seed_session_with_text_columns(
+            tmp_path,
+            native_id="scan-columns",
+            instructions_text="ANTHROPIC_API_KEY=sk-ant-api03-" + "c" * 60,
+            user_context_text="AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP",
+        )
+
+        result = scan_session_for_secret_candidates(tmp_path, session_id)
+
+        assert result.found is True
+        assert result.candidates_found >= 2
+        user_conn = sqlite3.connect(tmp_path / "user.db")
+        try:
+            refs = {
+                row[0]
+                for row in user_conn.execute(
+                    "SELECT target_ref FROM assertions WHERE kind = ?",
+                    (AssertionKind.SECRET_CANDIDATE.value,),
+                ).fetchall()
+            }
+        finally:
+            user_conn.close()
+        assert any(ref.startswith("session:") for ref in refs)
+        assert any(ref.startswith("message:") for ref in refs)
+
+    def test_text_column_candidates_never_persist_the_literal(self, tmp_path: Path) -> None:
+        secret_value = "sk-ant-api03-" + "d" * 60
+        session_id = self._seed_session_with_text_columns(
+            tmp_path, native_id="scan-columns-2", instructions_text=f"ANTHROPIC_API_KEY={secret_value}"
+        )
+
+        result = scan_session_for_secret_candidates(tmp_path, session_id)
+
+        assert result.candidates_found >= 1
+        assert secret_value.encode() not in (tmp_path / "user.db").read_bytes()
 
     def test_rescanning_is_idempotent(self, tmp_path: Path) -> None:
         session_id = self._seed_session_with_block_text(
