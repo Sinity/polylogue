@@ -10,7 +10,7 @@ from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.protocols import ProgressCallback, RawValidationStore
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
-from polylogue.pipeline.services.process_pool import process_pool_executor, resolve_validation_dispatch
+from polylogue.pipeline.services.process_pool import PoolKind, process_pool_executor, resolve_validation_dispatch
 from polylogue.pipeline.services.validation_runtime import _validate_record_sync, _ValidationOutcome
 from polylogue.pipeline.stage_models import ValidatedRawRecord, ValidateResult
 from polylogue.storage.runtime import RawSessionRecord
@@ -179,11 +179,19 @@ async def evaluate_raw_artifacts(
     # See resolve_validation_dispatch's docstring for why this ignores
     # parallel_threads_effective() -- the process-pool preference here is
     # itself the measurement, not a GIL-avoidance workaround.
-    worker_count = resolve_validation_dispatch(record_count=len(raw_artifacts)).worker_count
+    plan = resolve_validation_dispatch(
+        record_count=len(raw_artifacts),
+        total_blob_bytes=sum(record.blob_size for record in raw_artifacts),
+    )
+    worker_count = plan.worker_count
     blob_root_str = str(blob_store_root())
     t_batch = _time.perf_counter()
 
     def _run_batch() -> list[_ValidationOutcome]:
+        if plan.pool_kind is not PoolKind.PROCESS:
+            # A small batch validates in-process: constructing a spawn-based
+            # pool here costs a fresh interpreter per worker (polylogue-oa9w8).
+            return [_validate_record_sync(r, mode, blob_root_str) for r in raw_artifacts]
         try:
             with process_pool_executor(max_workers=worker_count) as executor:
                 return list(

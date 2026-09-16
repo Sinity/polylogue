@@ -461,3 +461,61 @@ class TestOutcomeAggregationProperty:
         reverse = _fold(list(reversed(outcomes)))
         assert forward.counts == reverse.counts
         assert forward.drift_counts == reverse.drift_counts
+
+
+class TestValidationDispatchByteTier:
+    """polylogue-oa9w8: no spawn-based pool per small batch."""
+
+    async def test_a_small_batch_validates_without_constructing_a_process_pool(
+        self, blob_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``validate_raw_ids`` walks raw ids in batches of 50; a corpus-wide
+        pass therefore consulted the dispatch ~863 times and got an
+        unconditional process pool every time, each a fresh interpreter per
+        worker re-importing polylogue.
+
+        Anti-vacuity: drop the byte tier from ``resolve_validation_dispatch``
+        (or stop passing ``total_blob_bytes``) and ``constructed`` is non-zero.
+        """
+        import polylogue.pipeline.services.validation_flow as flow
+
+        constructed: list[int] = []
+        real_executor = flow.process_pool_executor  # type: ignore[attr-defined]
+
+        def counting_executor(*, max_workers: int) -> Any:
+            constructed.append(max_workers)
+            return real_executor(max_workers=max_workers)
+
+        monkeypatch.setattr(flow, "process_pool_executor", counting_executor)
+
+        store = RecordingStore()
+        records = _seed_records(blob_root, 50)
+        assert sum(record.blob_size for record in records) <= 8 * 1024 * 1024
+
+        result = await evaluate_raw_artifacts(
+            repository=store,
+            raw_artifacts=records,
+            persist=True,
+            mode=ValidationMode.ADVISORY,
+        )
+
+        assert constructed == []
+        assert [r.raw_id for r in result.records] == [r.raw_id for r in records]
+
+    def test_a_batch_above_the_byte_tier_still_gets_a_process_pool(self) -> None:
+        from polylogue.pipeline.services.process_pool import (
+            VALIDATION_SEQUENTIAL_BLOB_BYTES,
+            PoolKind,
+            resolve_validation_dispatch,
+        )
+
+        big = resolve_validation_dispatch(record_count=50, total_blob_bytes=VALIDATION_SEQUENTIAL_BLOB_BYTES + 1)
+        assert big.pool_kind is PoolKind.PROCESS
+        assert big.worker_count >= 1
+
+        small = resolve_validation_dispatch(record_count=50, total_blob_bytes=VALIDATION_SEQUENTIAL_BLOB_BYTES)
+        assert small.pool_kind is PoolKind.SEQUENTIAL
+
+        # A caller that cannot weigh its batch keeps the historical answer.
+        unweighed = resolve_validation_dispatch(record_count=50)
+        assert unweighed.pool_kind is PoolKind.PROCESS
