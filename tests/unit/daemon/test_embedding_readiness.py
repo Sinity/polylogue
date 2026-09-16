@@ -427,16 +427,26 @@ def test_readiness_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
 
 
 def test_readiness_failure_branch_counts_error_message_rows(tmp_path: Path) -> None:
-    """Rows with non-null ``error_message`` show up in ``embedding_failure_count``."""
-    db = tmp_path / "status.sqlite"
-    db.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db) as conn:
+    """Rows with non-null ``error_message`` show up in ``embedding_failure_count``.
+
+    This pins the *pre-``embedding_failures``* fallback branch of
+    ``_archive_embedding_status_payload``: when the embeddings tier carries no
+    ``embedding_failures`` relation, the failure counts come from
+    ``embedding_status.error_message`` joined to the index tier's ``sessions``.
+    The embedding relations therefore live in the archive's ``embeddings.db``
+    beside the index -- the readiness payload resolves that tier from the
+    archive root, never from the status anchor it is handed, so a single-file
+    seed exercises nothing.
+
+    Anti-vacuity: drop the ``error_message IS NOT NULL`` fallback COUNT (or
+    point it at the wrong tier) and this reports 0.
+    """
+    archive_index = tmp_path / "index.db"
+    embeddings_db = tmp_path / "embeddings.db"
+    with sqlite3.connect(archive_index) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
         conn.execute("INSERT INTO sessions VALUES ('conv-1')")
         conn.execute("INSERT INTO sessions VALUES ('conv-2')")
-        _seed_embedding_tables(conn, model="voyage-4", dimension=1024, session_ids=("conv-1", "conv-2"))
-        conn.execute("UPDATE embedding_status SET error_message = 'voyage api 429' WHERE session_id = 'conv-1'")
-        conn.execute("CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY)")
         conn.execute(
             """
             CREATE TABLE messages (
@@ -451,12 +461,19 @@ def test_readiness_failure_branch_counts_error_message_rows(tmp_path: Path) -> N
             """
         )
         conn.commit()
+    with sqlite3.connect(embeddings_db) as conn:
+        _seed_embedding_tables(conn, model="voyage-4", dimension=1024, session_ids=("conv-1", "conv-2"))
+        conn.execute("UPDATE embedding_status SET error_message = 'voyage api 429' WHERE session_id = 'conv-1'")
+        conn.execute("CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY)")
+        conn.commit()
 
     cfg = _config(embedding_enabled=True, voyage_api_key="vk-live")
     with patch("polylogue.config.load_polylogue_config", return_value=cfg):
-        info = embedding_readiness_info(db)
+        info = embedding_readiness_info(tmp_path / "status.sqlite")
 
     assert info["embedding_failure_count"] == 1
+    assert info["embedding_terminal_failure_count"] == 1
+    assert info["embedding_retryable_failure_count"] == 0
 
 
 # ── degrade-loudly (polylogue-cpf.4): a query failure must not look like ──
