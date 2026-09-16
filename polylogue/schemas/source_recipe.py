@@ -20,8 +20,8 @@ EvidencePhase = Literal["structure", "statistics"]
 
 @dataclass(frozen=True)
 class SourceEvidenceRecipe:
-    admission_revision: int = 1
-    identity_revision: int = 2
+    admission_revision: int = 2
+    identity_revision: int = 3
     zip_member_revision: int = 2
     structure_revision: int = 2
     statistics_revision: int = 1

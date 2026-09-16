@@ -1,0 +1,48 @@
+{
+  "provider": "claude-design",
+  "version": "v4",
+  "anchor_kind": "session_document",
+  "default_element_kind": "session_document",
+  "first_seen": "2026-09-16T00:38:02.156329+00:00",
+  "last_seen": "2026-09-16T00:38:02.156329+00:00",
+  "bundle_scope_count": 11,
+  "sample_count": 11,
+  "anchor_profile_family_id": "deae516a151d97f9f8953089668fb83909da5fd5c5230d0723a9d475f46cda76",
+  "bundle_scope_identities": [],
+  "profile_family_ids": [],
+  "elements": [
+    {
+      "element_kind": "session_document",
+      "schema_file": "session_document.schema.json.gz",
+      "sample_count": 11,
+      "artifact_count": 11,
+      "supported": true,
+      "first_seen": "2026-09-16T00:38:02.156329+00:00",
+      "last_seen": "2026-09-16T00:38:02.156329+00:00",
+      "bundle_scope_count": 11,
+      "bundle_scope_identities": [],
+      "exact_structure_ids": [
+        "1280db2db2691cd2b39186d7a9ad2e6da620ee4d1949bf194bfaa92b982e3016",
+        "15488e06a512601c0f17b6f0121f085bc06773d23db13e10f43cecc48176fc37",
+        "2c86f0c2801f81dd65e2bfb77aef1061c5af32165680017d746cc6a01cbefc12",
+        "59432003ede938953eef3548a6fe39f46d155a2d5fcd50a715dd66ef2cc03e48",
+        "5a9a43e38c2fb527657eb17f7990926959e3b4f7c06f21a7fe364a9c30946fb9",
+        "6afb8fa30b1e4954d3e60a6c79563cc99ed267dddce14ee37596946eb1d0795d",
+        "8841f5e4ac301c5002547228f9256080dc30d0ae83e0a2806e9bc95133d1d8ba",
+        "a6d36b7dca577cbb8fd66c77437370ca2c926d19d281b14d61952f450122da22",
+        "b073f55fbdaf3b1e7fdb857fb43a2a1dd4194a686666b736100b69ed76eb0ed7",
+        "e409c06c27e1b03948cddc439909f8f694efd4cb844898c0c019007624b2a1ed",
+        "f1b2fb0ea175c335c958d9336d397e99b925ce0a4261b8e40bfbd2fc7852b9c1"
+      ],
+      "publication_omitted_structure_witness_count": 0,
+      "source_evidence_unretained_shape_observation_lower_bound": 0,
+      "profile_family_ids": [],
+      "profile_tokens": [],
+      "observed_artifact_count": 11,
+      "observation_status": "current"
+    }
+  ],
+  "orphan_adjunct_counts": {},
+  "workload_profile_file": null,
+  "observation_status": "current"
+}

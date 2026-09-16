@@ -1057,6 +1057,6 @@
   ],
   "orphan_adjunct_counts": {},
   "workload_profile_file": null,
-  "observation_status": "current",
+  "observation_status": "historical",
   "canonical_anchor_profile_family_id": "073bd3955f0bf477dedde6787f7cc3df01a433493f18a6ab9fb1daa790563a24"
 }
