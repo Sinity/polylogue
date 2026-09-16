@@ -173,7 +173,7 @@ from polylogue.sources.origin_specs import (
     path_declaration_refuses_session,
     recognize_source_class,
 )
-from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
@@ -3427,7 +3427,7 @@ class LiveBatchProcessor:
                         sessions = hermes_state.parse_state_db(
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
-                            profile_root=Path(record.source_path).parent,
+                            profile_root=hermes_identity.profile_root_for_artifact(Path(record.source_path)),
                             immutable=True,
                         )
                     elif provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_db_path(
@@ -3436,7 +3436,7 @@ class LiveBatchProcessor:
                         sessions = hermes_verification.parse_verification_evidence_db(
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
-                            profile_root=Path(record.source_path).parent,
+                            profile_root=hermes_identity.profile_root_for_artifact(Path(record.source_path)),
                             immutable=True,
                         )
                     elif provider is Provider.CODEX and codex_state.is_in_scope_codex_sqlite_path(

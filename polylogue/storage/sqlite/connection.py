@@ -263,9 +263,15 @@ def _build_source_path_scope_filter(
 
     Configured inbox/source roots are filesystem paths, not origins, so raw
     selection must scope on the ``source_path`` column rather than ``origin``.
-    Each root matches an exact ``source_path`` or any descendant beneath it,
-    mirroring the component-bounded LIKE-escape pattern used for path filters
-    in ``queries/filter_builder.py``.
+    Each root matches an exact ``source_path`` or any descendant beneath it.
+
+    polylogue-gzxhi: the boundary is a literal, byte-exact path prefix, not a
+    LIKE pattern. ``LIKE`` folds ASCII case, so a root ``/archive/Foo`` would
+    also claim the distinct sibling ``/archive/foo``; its ``%``/``_``
+    metacharacters would likewise let ``/archive/100%`` claim
+    ``/archive/1000``. The half-open range ``[root + "/", root + "0")`` --
+    ``"0"`` is the byte after ``"/"`` -- selects exactly the root's descendants
+    under the default BINARY collation and stays index-usable.
     """
     if source_paths is None:
         return "", []
@@ -275,9 +281,9 @@ def _build_source_path_scope_filter(
     predicates: list[str] = []
     params: list[str] = []
     for path in source_paths:
-        escaped = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        predicates.append("(source_path = ? OR source_path LIKE ? ESCAPE '\\')")
-        params.extend([path, f"{escaped}/%"])
+        root = path.rstrip("/") or path
+        predicates.append("(source_path = ? OR (source_path >= ? AND source_path < ?))")
+        params.extend([path, f"{root}/", f"{root}0"])
     return "(" + " OR ".join(predicates) + ")", params
 
 

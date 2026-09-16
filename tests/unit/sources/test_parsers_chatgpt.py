@@ -1085,12 +1085,14 @@ def test_chatgpt_thoughts_node_produces_nonempty_thinking_text_end_to_end(test_d
 
     session = chatgpt_parse({"id": "reasoning-only", "mapping": mapping}, "fallback-id")
 
+    # polylogue-4mbya: the step's own header rides above its body.
+    expected_text = f"Weighing options\n{thought_text}"
     assert len(session.messages) == 1
     message = session.messages[0]
-    assert message.text == thought_text
+    assert message.text == expected_text
     thinking_blocks = [block for block in message.blocks if block.type == BlockType.THINKING]
     assert len(thinking_blocks) == 1
-    assert thinking_blocks[0].text == thought_text
+    assert thinking_blocks[0].text == expected_text
 
     session_id = write_session_sync(test_db, session)
     conn = sqlite3.connect(str(test_db))
@@ -3905,3 +3907,93 @@ def test_sandbox_links_under_the_bound_emit_no_degradation() -> None:
 
     assert len([a for a in attachments if a.attachment_kind == "sandbox_file"]) == 2
     assert [event for event, _ in captured if event == "sources.chatgpt.sandbox_links_bounded"] == []
+
+
+def test_chatgpt_thought_step_keeps_its_summary_beside_its_content() -> None:
+    """polylogue-4mbya: a ``thoughts`` step's ``summary`` is the reasoning
+    step's own short title -- the header ChatGPT renders above the step -- not
+    a restatement of ``content``. When both are present both must survive; a
+    step carrying only one of them keeps exactly that one, with no blank
+    heading line.
+
+    Anti-vacuity: restoring the "use ``content``, fall back to ``summary``"
+    rule drops ``Analyzing`` from the first step's text and the first
+    assertion goes red.
+    """
+    mapping: dict[str, object] = {
+        "node1": {
+            "id": "node1",
+            "parent": None,
+            "message": {
+                "id": "reasoning-msg-1",
+                "author": {"role": "assistant"},
+                "content": {
+                    "content_type": "thoughts",
+                    "thoughts": [
+                        {"summary": "Analyzing", "content": "Pulling in details to give the best answer"},
+                        {"summary": "Summary only"},
+                        {"content": "Content only"},
+                    ],
+                },
+                "create_time": 1700000000.0,
+            },
+        }
+    }
+
+    session = chatgpt_parse({"id": "reasoning-summary", "mapping": mapping}, "fallback-id")
+
+    assert session.messages[0].text == (
+        "Analyzing\nPulling in details to give the best answer\nSummary only\nContent only"
+    )
+
+
+def test_tether_quote_construct_keeps_its_url_and_own_title() -> None:
+    """polylogue-pua53: a ``tether_quote``/``sonic_webpage`` record IS a
+    retrieved source -- its ``url`` is its address and its ``title`` its name.
+    The shared branch must conserve both, matching
+    ``_construct_from_reference``; ``domain`` is only the fallback label for a
+    shape carrying no title.
+
+    Anti-vacuity: dropping ``url=`` or replacing the title with ``domain``
+    (the pre-fix shape, which reduced 1,517 tether_quote sources to a bare
+    domain) makes the first assertion go red.
+    """
+    content = {
+        "content_type": "tether_quote",
+        "url": "https://example.test/deep/page?q=1",
+        "title": "The Source's Own Title",
+        "domain": "example.test",
+        "text": "retrieved excerpt body",
+        "tether_id": "tether-1",
+    }
+    mapping = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "tool", "name": "browser"},
+                "content": content,
+                "create_time": None,
+            },
+        },
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+    construct = messages[0].blocks[0].web_constructs[0]
+
+    assert (construct.url, construct.title) == ("https://example.test/deep/page?q=1", "The Source's Own Title")
+
+    # A record with no title of its own still falls back to the domain label.
+    fallback_mapping = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "tool", "name": "browser"},
+                "content": {**content, "title": None},
+                "create_time": None,
+            },
+        },
+    }
+    fallback_messages, _ = extract_messages_from_mapping(fallback_mapping)
+    assert fallback_messages[0].blocks[0].web_constructs[0].title == "example.test"

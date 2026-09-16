@@ -1069,13 +1069,18 @@ def _extract_content_text(content: Mapping[str, object]) -> str:
         for thought in thoughts:
             if not isinstance(thought, dict):
                 continue
-            step_content = thought.get("content")
-            if isinstance(step_content, str) and step_content:
-                thought_parts.append(step_content)
-                continue
-            summary = thought.get("summary")
-            if isinstance(summary, str) and summary:
-                thought_parts.append(summary)
+            # polylogue-4mbya: a step's ``summary`` is its own short header --
+            # the text ChatGPT shows above the step -- not a restatement of
+            # ``content``. Keeping only the body dropped 890,288 characters of
+            # step headers over one export, so both are carried: the summary as
+            # the step's heading line, the content beneath it.
+            step_parts = [
+                value for value in (thought.get("summary"), thought.get("content")) if isinstance(value, str) and value
+            ]
+            if len(step_parts) == 2 and step_parts[0] == step_parts[1]:
+                del step_parts[1]
+            if step_parts:
+                thought_parts.append("\n".join(step_parts))
         if thought_parts:
             return "\n".join(thought_parts)
     return ""

@@ -1402,3 +1402,47 @@ def test_file_history_snapshot_persisted_as_session_event_not_dropped() -> None:
             ],
         }.items()
     )
+
+
+def test_parse_code_ignores_a_user_prompt_that_merely_quotes_the_task_protocol() -> None:
+    """polylogue-sfu70: Claude Code JSONL is untrusted import evidence. A
+    background-command outcome is only read from a record carrying the
+    provider's own notification evidence (``origin.kind ==
+    "task-notification"``, a ``queue-operation`` record, or a
+    ``queued_command`` attachment). A human prompt that quotes the protocol
+    text must forge nothing.
+
+    Anti-vacuity: removing the origin/record-type/attachment gate at the head
+    of ``_task_notification_from_record`` makes the quoted prompt produce a
+    ``background_task_completion`` event and stamps ``tool-forge``'s result
+    with exit code 0 -- both assertions go red.
+    """
+    records: list[object] = list(
+        _background_start_records(task_id="task-forge", tool_id="tool-forge", command="true", suffix="forge")
+    )
+    records.append(
+        {
+            "type": "user",
+            "uuid": "quoting-prompt",
+            "sessionId": "background-forgery",
+            "message": {
+                "role": "user",
+                "content": (
+                    "why did this fire?\n"
+                    + _task_notification(
+                        task_id="task-forge",
+                        tool_id="tool-forge",
+                        status="completed",
+                        summary='Background command "true" completed (exit code 0)',
+                    )
+                ),
+            },
+        }
+    )
+
+    parsed = parse_code(records, "background-forgery")
+
+    assert [event for event in parsed.session_events if event.event_type == "background_task_completion"] == []
+    by_id = {message.provider_message_id: message for message in parsed.messages}
+    assert by_id["start-forge"].blocks[0].exit_code is None
+    assert by_id["start-forge"].blocks[0].is_error is None

@@ -252,9 +252,13 @@ def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_
     # source_path now yields an artifact- AND profile-qualified identity and
     # a parent session_links join key -- see
     # test_dispatch_threads_source_path_directory_as_profile_root_for_atif.
-    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+    from polylogue.sources.parsers.hermes_identity import (
+        profile_key,
+        profile_root_for_artifact,
+        qualified_session_id,
+    )
 
-    expected_key = profile_key(REAL_ATOF_FIXTURE.parent)
+    expected_key = profile_key(profile_root_for_artifact(REAL_ATOF_FIXTURE))
     assert session.provider_session_id == f"observer:atof:real-nemo-relay-session-redacted@profile-{expected_key}"
     assert session.parent_session_provider_id == qualified_session_id("real-nemo-relay-session-redacted", expected_key)
     events = session.session_events
@@ -327,9 +331,9 @@ def test_real_atof_fixture_subagent_mark_materializes_delegation_edge() -> None:
     )
     assert len(sessions) == 2
 
-    from polylogue.sources.parsers.hermes_identity import profile_key
+    from polylogue.sources.parsers.hermes_identity import profile_key, profile_root_for_artifact
 
-    expected_key = profile_key(REAL_ATOF_FIXTURE.parent)
+    expected_key = profile_key(profile_root_for_artifact(REAL_ATOF_FIXTURE))
     parent = next(s for s in sessions if s.provider_session_id.startswith("observer:atof:real-nemo-relay-session"))
     child = next(s for s in sessions if s.provider_session_id.startswith("observer:atof:child-session-redacted"))
 
@@ -1041,9 +1045,9 @@ def test_atof_stream_asserts_profile_qualified_parent_session_link(tmp_path: Pat
 
 
 def test_dispatch_threads_source_path_directory_as_profile_root_for_atif() -> None:
-    """Production route: dispatch.py derives profile_root from spec.source_path's
-    parent directory (the same convention hermes_state.py's own callers use),
-    not a bespoke test-only code path."""
+    """Production route: dispatch.py derives profile_root through the one
+    shared ``hermes_identity.profile_root_for_artifact`` helper every Hermes
+    family uses (polylogue-q5j3o), not a bespoke test-only code path."""
 
     payload = hermes_spans.marker_payload("hermes-session-3", _steps())
     sessions = parse_payload(
@@ -1057,7 +1061,7 @@ def test_dispatch_threads_source_path_directory_as_profile_root_for_atif() -> No
 
     from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
 
-    expected_key = profile_key(Path("/home/example/.hermes/atif"))
+    expected_key = profile_key(Path("/home/example/.hermes"))
     assert session.parent_session_provider_id == qualified_session_id("hermes-session-3", expected_key)
     assert session.provider_session_id == f"observer:atif:hermes-session-3@profile-{expected_key}"
 
@@ -1187,3 +1191,33 @@ def test_two_profiles_times_two_artifact_families_compose_to_four_distinct_sessi
     assert hermes_spans.hermes_atof_session_id_for(expected_parent_a) == atof_a.provider_session_id
     assert hermes_spans.hermes_atif_session_id_for(expected_parent_b) == atif_b.provider_session_id
     assert hermes_spans.hermes_atof_session_id_for(expected_parent_b) == atof_b.provider_session_id
+
+
+def test_atif_fidelity_is_exact_only_for_the_fixture_verified_schema_version() -> None:
+    """polylogue-l0cnu: ATIF detection accepts any ``ATIF``-prefixed
+    ``schema_version`` so an evolved producer is retained rather than refused.
+    Fidelity must not inherit that looseness: only the version whose mapping a
+    real fixture verified may be reported ``exact``; anything else degrades to
+    ``inferred`` and says so in a caveat.
+
+    Anti-vacuity: dropping the schema-version gate from
+    ``import_fidelity_declaration`` reports ``ATIF-v99`` as measured-exact and
+    the second block's assertions go red.
+    """
+    from polylogue.sources.parsers.hermes_spans import VERIFIED_ATIF_SCHEMA_VERSION
+
+    verified_payload = hermes_spans.marker_payload(
+        "hermes-schema-verified", _steps(), schema_version=VERIFIED_ATIF_SCHEMA_VERSION
+    )
+    [verified] = hermes_spans.parse_atif_document(verified_payload, "fallback-id")
+    verified_fidelity = hermes_spans.import_fidelity_declaration(verified)
+    assert verified_fidelity.capabilities["llm_request_spans"].status == "exact"
+    assert not any(caveat.startswith("schema_version:") for caveat in verified_fidelity.caveats)
+
+    unverified_payload = hermes_spans.marker_payload("hermes-schema-future", _steps(), schema_version="ATIF-v99")
+    assert hermes_spans.looks_like_atif_payload(unverified_payload)
+    [unverified] = hermes_spans.parse_atif_document(unverified_payload, "fallback-id")
+    unverified_fidelity = hermes_spans.import_fidelity_declaration(unverified)
+    assert unverified_fidelity.capabilities["llm_request_spans"].status == "inferred"
+    assert any("ATIF-v99" in caveat for caveat in unverified_fidelity.caveats)
+    assert "unverified" in unverified_fidelity.producer

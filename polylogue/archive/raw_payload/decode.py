@@ -589,7 +589,7 @@ def _hermes_sqlite_marker_payload(
     module graph is complete, and delegating here keeps raw inspection on the
     same versioned structural contract as actual parsing.
     """
-    from polylogue.sources.parsers import hermes_state, hermes_verification
+    from polylogue.sources.parsers import hermes_identity, hermes_state, hermes_verification
     from polylogue.sources.sqlite_snapshot import is_declared_logical_export
 
     if source_path is None or not is_declared_logical_export(path, source_path):
@@ -601,7 +601,7 @@ def _hermes_sqlite_marker_payload(
         # content the archive already holds under its logical revision.
         return None
 
-    profile_root = Path(source_path).parent
+    profile_root = hermes_identity.profile_root_for_artifact(Path(source_path))
     if hermes_state.looks_like_state_db_path(path, immutable=immutable):
         return hermes_state.marker_payload(path, profile_root=profile_root, immutable=immutable)
     if hermes_verification.looks_like_verification_evidence_db_path(path, immutable=immutable):

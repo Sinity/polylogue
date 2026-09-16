@@ -32,7 +32,7 @@ from polylogue.sources.dispatch import (
     parse_payload,
     parse_stream_payload,
 )
-from polylogue.sources.parsers import antigravity, hermes_spans, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, hermes_identity, hermes_spans, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_acquisition_components import sniff_zip_provider
 from polylogue.sources.source_walk import _resolve_source_paths
@@ -499,7 +499,9 @@ def _explain_hermes_state_db(path: Path, *, provider_hint: Provider) -> ImportEx
     """Inspect the real Hermes SQLite parser path without writing a raw blob."""
 
     try:
-        sessions = hermes_state.parse_state_db(path, fallback_id=path.stem, profile_root=path.parent)
+        sessions = hermes_state.parse_state_db(
+            path, fallback_id=path.stem, profile_root=hermes_identity.profile_root_for_artifact(path)
+        )
     except (OSError, sqlite3.Error, ValueError) as exc:
         return _skipped_entry(
             path,
@@ -537,7 +539,7 @@ def _explain_hermes_verification_evidence_db(path: Path, *, provider_hint: Provi
 
     try:
         sessions = hermes_verification.parse_verification_evidence_db(
-            path, fallback_id=path.stem, profile_root=path.parent
+            path, fallback_id=path.stem, profile_root=hermes_identity.profile_root_for_artifact(path)
         )
     except (OSError, sqlite3.Error, ValueError) as exc:
         return _skipped_entry(

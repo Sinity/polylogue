@@ -1303,3 +1303,29 @@ def test_a_memoized_closure_still_sees_a_module_that_appeared_later(
     _reset_closure_caches(module)
 
     assert {path.name for path in module._semantic_source_paths(("pkg/a.py",))} == {"a.py", "b.py", "c.py"}
+
+
+def test_hermes_skill_asset_templates_are_not_admitted_as_sessions() -> None:
+    """polylogue-6d7fx: the hermes-agent checkout bundled under the watched
+    Hermes root ships prompt templates that are bare role/content message
+    lists -- message-shaped by construction, so only their path can refuse
+    them. The declared ``skill_asset`` rule must make
+    ``path_declaration_refuses_session`` true for them while leaving a real
+    ``~/.hermes/sessions`` transcript admissible.
+
+    Anti-vacuity: deleting the ``skill_asset`` rule from ``_hermes_spec``
+    (or loosening its ``parse_policy`` off ``raw-only``) makes the first
+    assertion False.
+    """
+    from polylogue.sources.origin_specs import artifact_rule_for_path, path_declaration_refuses_session
+
+    template = "/home/operator/.hermes/hermes-agent/optional-skills/security/godmode/templates/prefill.json"
+    transcript = "/home/operator/.hermes/sessions/2026-09-01-session.json"
+
+    assert path_declaration_refuses_session(Provider.HERMES, template) is True
+    assert path_declaration_refuses_session(Provider.HERMES, transcript) is False
+
+    rule = artifact_rule_for_path(Provider.HERMES, template)
+    assert rule is not None
+    assert rule.kind == "skill_asset"
+    assert rule.parse_policy == "raw-only"

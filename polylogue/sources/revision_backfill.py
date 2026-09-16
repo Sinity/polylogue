@@ -66,7 +66,7 @@ from polylogue.sources.dispatch import (
     require_positive_conversational_evidence,
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
@@ -3194,7 +3194,11 @@ def census_parse_worker(
 #: ``profile_root``/artifact path from ``source_path``
 #: (the retired Antigravity brain-metadata session route);
 #: ``Provider.HERMES``'s ATOF/ATIF/verification-evidence modes likewise
-#: derive ``profile_root`` from ``source_path``. Those three keep the
+#: derive ``profile_root`` from ``source_path``; ``Provider.GROK`` exports
+#: carry no native conversation id, so the parser's
+#: ``provider_session_id`` IS ``Path(source_path).stem``
+#: (polylogue-8t9bj) -- deduping two same-bytes Grok raws across paths
+#: would collapse two distinct sessions into one identity. Those keep the
 #: conservative same-path-only dedup below. ``Provider.UNKNOWN`` (browser
 #: capture / unclassified) is also excluded out of caution -- its identity
 #: derivation is not centrally audited here.
@@ -3207,7 +3211,6 @@ _PATH_INDEPENDENT_PARSE_PROVIDERS: Final[frozenset[Provider]] = frozenset(
         Provider.CODEX,
         Provider.GEMINI,
         Provider.GEMINI_CLI,
-        Provider.GROK,
         Provider.DRIVE,
     }
 )
@@ -4687,14 +4690,14 @@ def _parse_one_raw(
                 return hermes_state.parse_state_db(
                     sqlite_path,
                     fallback_id=fallback_id,
-                    profile_root=Path(source_path).parent,
+                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
                     immutable=True,
                 )
             if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path, immutable=True):
                 return hermes_verification.parse_verification_evidence_db(
                     sqlite_path,
                     fallback_id=fallback_id,
-                    profile_root=Path(source_path).parent,
+                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
                     immutable=True,
                 )
     if provider is Provider.ANTIGRAVITY and looks_like_logical_source_bytes(payload):

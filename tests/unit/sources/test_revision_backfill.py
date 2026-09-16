@@ -4433,3 +4433,59 @@ def test_antigravity_pb_replay_refuses_a_drifted_trajectory(tmp_path: Path) -> N
 
     with pytest.raises(AntigravityTrajectoryDriftError):
         _parse_one_raw(Provider.ANTIGRAVITY, b"retained bytes", str(trajectory))
+
+
+def test_grok_same_bytes_different_paths_stay_two_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-8t9bj: a Grok export carries no native conversation id, so
+    replay derives ``provider_session_id`` from ``Path(source_path).stem``.
+    Two byte-identical Grok raws acquired at different paths are therefore
+    two distinct sessions and must be parsed separately.
+
+    Anti-vacuity: putting ``Provider.GROK`` back into
+    ``_PATH_INDEPENDENT_PARSE_PROVIDERS`` blanks ``dedup_path``, collapses
+    both raws onto one content-cache key, parses once and fans the single
+    session id out to both -- the first two assertions go red.
+    """
+    from polylogue.sources.parsers import grok
+
+    assert Provider.GROK not in revision_backfill._PATH_INDEPENDENT_PARSE_PROVIDERS
+
+    descriptors = {
+        "raw-a": (Provider.GROK, "hash-A", "/exports/conv-a.json", RawRevisionKind.UNKNOWN, 10),
+        "raw-b": (Provider.GROK, "hash-A", "/exports/conv-b.json", RawRevisionKind.UNKNOWN, 10),
+    }
+
+    class FakeArchive:
+        def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+            return descriptors[raw_id]
+
+    parsed: list[str] = []
+
+    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed.append(raw_id)
+        provider, _hash, source_path, kind, size = descriptors[raw_id]
+        # Mirrors the replay fallback at revision_backfill's
+        # ``fallback_id = fallback_id_override or Path(source_path).stem``.
+        session = grok.parse_conversation(
+            {"conversation": {"title": "t"}, "responses": [{"sender": "human", "message": "hi"}]},
+            Path(source_path).stem,
+        )
+        return [session], size, kind
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+
+    results = revision_backfill._parse_retained_raws(
+        FakeArchive(),  # type: ignore[arg-type]
+        ["raw-a", "raw-b"],
+        ingest_workers=1,
+        prefetch_cache=None,
+    )
+
+    assert sorted(parsed) == ["raw-a", "raw-b"]
+    session_ids = {
+        result[0][0].provider_session_id  # type: ignore[index]
+        for result in results.values()
+    }
+    assert session_ids == {"conv-a", "conv-b"}

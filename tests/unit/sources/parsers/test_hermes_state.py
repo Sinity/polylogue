@@ -460,3 +460,56 @@ def test_state_db_marker_without_a_source_path_is_refused(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match="declared logical export"):
         parse_state_db_payload(payload, "fallback")
+
+
+def test_state_db_and_atof_from_one_install_agree_on_the_profile_key(tmp_path: Path) -> None:
+    """polylogue-q5j3o: Hermes writes ``state.db`` at its install root and
+    NeMo Relay ATOF events at ``<root>/observability/nemo-relay/atof/``. Both
+    families must hash the SAME install root, or one logical session gets two
+    profile keys and lands as two archive sessions.
+
+    Anti-vacuity: reverting either family's profile root to the artifact's
+    immediate parent (``Path(source_path).parent``) makes the ATOF key hash
+    ``.../atof`` instead of ``<root>`` and the equality assertion goes red.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.dispatch import parse_stream_payload
+    from polylogue.sources.parsers import hermes_spans
+    from polylogue.sources.parsers.hermes_identity import profile_key, split_qualified_session_id
+
+    root = tmp_path / ".hermes"
+    state_path = root / "state.db"
+    _write_state_db(state_path, tool_contents=[json.dumps({"output": "ok", "exit_code": 0})])
+
+    state_sessions = parse_state_db(state_path)
+    assert len(state_sessions) == 1
+    _raw_id, state_key = split_qualified_session_id(state_sessions[0].provider_session_id)
+
+    atof_path = root / "observability" / "nemo-relay" / "atof" / "events.jsonl"
+    atof_path.parent.mkdir(parents=True, exist_ok=True)
+    records: list[JSONDocument] = [
+        {
+            "atof_version": "0.1",
+            "kind": "scope",
+            "category": "agent",
+            "scope_category": "start",
+            "uuid": "scope-parent",
+            "timestamp": "2026-04-01T00:00:00Z",
+            "name": "hermes-session",
+            "metadata": {"session_id": "s1", "platform": "hermes"},
+        }
+    ]
+    assert hermes_spans.looks_like_atof_payload(records[0])
+    atof_path.write_text("\n".join(json.dumps(record) for record in records))
+
+    atof_sessions = parse_stream_payload(
+        Provider.HERMES,
+        iter(records),
+        "fallback-id",
+        source_path=str(atof_path),
+    )
+    assert atof_sessions
+    _atof_raw, atof_key = split_qualified_session_id(atof_sessions[0].provider_session_id)
+
+    assert state_key == profile_key(root)
+    assert atof_key == state_key

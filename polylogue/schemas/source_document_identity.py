@@ -8,7 +8,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.hermes_identity import (
     profile_key,
-    profile_root_for_session_snapshot,
+    profile_root_for_artifact,
     qualified_session_id,
 )
 from polylogue.sources.parsers.hermes_spans import atif_session_provider_id, looks_like_atif_payload
@@ -33,9 +33,9 @@ def native_document_identity(provider: Provider, payload: JSONDocument, source_p
         session_id = payload.get("session_id")
         if isinstance(session_id, str) and session_id:
             if looks_like_atif_payload(payload):
-                identity = atif_session_provider_id(session_id, profile_key(source_path.parent))
+                identity = atif_session_provider_id(session_id, profile_key(profile_root_for_artifact(source_path)))
             else:
-                identity = qualified_session_id(session_id, profile_key(profile_root_for_session_snapshot(source_path)))
+                identity = qualified_session_id(session_id, profile_key(profile_root_for_artifact(source_path)))
             return f"hermes:{identity}"
     elif provider in {Provider.GEMINI, Provider.DRIVE}:
         session_id = payload.get("id")

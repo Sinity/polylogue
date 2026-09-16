@@ -388,3 +388,75 @@ def test_result_without_any_outcome_evidence_refuses_write(tmp_path: Path) -> No
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_sidecar_execution_evidence_is_per_record_not_per_tool_id(tmp_path: Path) -> None:
+    """polylogue-foi1h: Claude Code's record-level execution sidecar is
+    evidence about the record that carried it. Two tool_result records can
+    share one ``tool_use_id`` while only the second reports an exit code; the
+    first must keep its parser-derived ``not_reported`` unknown rather than
+    inheriting the sibling's verdict.
+
+    Anti-vacuity: keying ``derive_tool_outcomes``' sidecar map on
+    ``tool_use_id`` alone again attributes ``exitCode: 2`` to both records,
+    so the first row becomes ``error``/2 and the assertion goes red.
+    """
+    conn = _connect(tmp_path / "sidecar-per-record.db")
+    try:
+        session = parse_code(
+            [
+                {
+                    "type": "assistant",
+                    "uuid": "use",
+                    "sessionId": "sidecar-siblings",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": "call-1", "name": "run", "input": {}}],
+                    },
+                },
+                {
+                    "type": "user",
+                    "uuid": "result-silent",
+                    "sessionId": "sidecar-siblings",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": "call-1", "content": "no verdict"}],
+                    },
+                },
+                {
+                    "type": "user",
+                    "uuid": "result-reported",
+                    "sessionId": "sidecar-siblings",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": "call-1", "content": "failed"}],
+                    },
+                    "toolUseResult": {"exitCode": 2},
+                },
+            ],
+            "sidecar-siblings",
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+        rows = conn.execute(
+            """
+            SELECT m.native_id, b.tool_outcome, b.tool_result_exit_code, b.tool_result_outcome_unknown_reason
+            FROM blocks b JOIN messages m ON m.message_id = b.message_id
+            WHERE b.session_id = ? AND b.block_type = 'tool_result'
+            ORDER BY m.position, b.position
+            """,
+            (session_id,),
+        ).fetchall()
+        assert [
+            (
+                row["native_id"],
+                row["tool_outcome"],
+                row["tool_result_exit_code"],
+                row["tool_result_outcome_unknown_reason"],
+            )
+            for row in rows
+        ] == [
+            ("result-silent", ToolOutcome.UNKNOWN.value, None, ToolResultUnknownReason.NOT_REPORTED.value),
+            ("result-reported", ToolOutcome.ERROR.value, 2, None),
+        ]
+    finally:
+        conn.close()

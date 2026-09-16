@@ -517,12 +517,24 @@ def _is_message(record: dict[str, object]) -> bool:
     return _is_direct_message(record)
 
 
+#: ``event_msg`` payload types that ARE conversational content. ``parse``
+#: materializes them through ``_codex_event_message``; naming them here is what
+#: lets stream classification agree with the parser (polylogue-1wom1) instead
+#: of refusing a rollout whose only messages arrive in this shape.
+_EVENT_MESSAGE_PAYLOAD_TYPES: frozenset[str] = frozenset({"user_message", "agent_message"})
+
+
 def _message_record(record: dict[str, object]) -> dict[str, object] | None:
     if _is_state(record):
         return None
     if _record_type(record) == "response_item":
         inner = _payload_record(record)
         return inner if inner is not None and _is_message(inner) else None
+    if _record_type(record) == "event_msg":
+        inner = _payload_record(record)
+        if inner is not None and _record_type(inner) in _EVENT_MESSAGE_PAYLOAD_TYPES:
+            return inner
+        return None
     return record if _is_message(record) else None
 
 
@@ -2957,6 +2969,31 @@ def _code_mode_child_use_blocks(envelope: _CodexExecEnvelope) -> list[ParsedCont
     return blocks
 
 
+#: ``world_state.state`` keys deliberately NOT stored (polylogue-w54q3). Each
+#: one is the prompt scaffolding Codex re-sends verbatim on every snapshot --
+#: instruction/context-file bodies, skill catalogs and usage hints -- not
+#: evidence about the session: ``host_skills`` alone measures ~4.6 MB across
+#: 443 observed records and ``agents_md`` ~9.0 MB, both near-identical text
+#: repeated per snapshot. Every OTHER ``state`` key is stored, so a new
+#: upstream key is carried rather than silently dropped, and
+#: ``test_world_state_state_keys_are_stored_or_declared_exempt`` fails loudly
+#: if a key is neither.
+_WORLD_STATE_INSTRUCTION_TEXT_KEYS: frozenset[str] = frozenset(
+    {
+        "agents_md",
+        "apps_instructions",
+        "context_window_guidance",
+        "environments_instructions",
+        "host_skills",
+        "managed_developer_instructions",
+        "multi_agent_usage_hint",
+        "orchestrator_skills",
+        "plugins_instructions",
+        "skills",
+    }
+)
+
+
 # polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
 # ``blocks`` table has no metadata column and the only key the write path
 # reads back out of it is ``language`` (``storage/sqlite/archive_tiers/
@@ -4181,19 +4218,22 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
         # (`state.environments.subagents`) -- outside the
         # session_meta/turn_context/response_item shapes handled above, so
         # they previously fell through the whole dispatch chain unrecorded.
-        # Only `environments` is carried: the other `state` keys on a full
-        # snapshot (agents_md/apps_instructions/skills) are large repeated
-        # context-file text with no ranked evidence of parser blindness yet.
+        # Every `state` key is carried except the declared context-file text
+        # in ``_WORLD_STATE_INSTRUCTION_TEXT_KEYS`` (polylogue-w54q3).
         if _record_type(record) == "world_state":
             world_payload = _payload_record(record) or {}
             state = _dict_record(world_payload.get("state"))
-            environments = _dict_record(state.get("environments")) if state else None
-            if environments:
+            retained = (
+                {key: value for key, value in state.items() if key not in _WORLD_STATE_INSTRUCTION_TEXT_KEYS}
+                if state
+                else {}
+            )
+            if retained:
                 session_events.append(
                     ParsedSessionEvent(
                         event_type="world_state",
                         timestamp=_iso_or_none(_record_timestamp(record)),
-                        payload={"source_index": idx, "environments": dict(environments)},
+                        payload={"source_index": idx, **retained},
                     )
                 )
             continue

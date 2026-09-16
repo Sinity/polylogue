@@ -34,7 +34,7 @@ from .base import (
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
 from .hermes_finish_reason import stop_reason_from_finish_reason as _stop_reason_from_finish_reason
 from .hermes_identity import profile_key as _profile_key
-from .hermes_identity import profile_root_for_session_snapshot as _profile_root_for_session_snapshot
+from .hermes_identity import profile_root_for_artifact as _profile_root_for_artifact
 from .hermes_identity import qualified_session_id as _qualified_session_id
 
 
@@ -216,11 +216,14 @@ def parse_gemini_cli(
 ) -> ParsedSession:
     session_id = _string(payload.get("sessionId")) or fallback_id
     chat_id = gemini_cli_chat_identity(payload, session_id)
+    is_subagent_session = payload.get("kind") == "subagent"
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     models_used: set[str] = set()
     for index, item in enumerate(_list(payload.get("messages")), start=1):
-        parsed = _parse_gemini_message(item, index=index, position=len(messages))
+        parsed = _parse_gemini_message(
+            item, index=index, position=len(messages), is_subagent_session=is_subagent_session
+        )
         if parsed is not None:
             messages.append(parsed)
             if parsed.model_name:
@@ -244,7 +247,7 @@ def parse_gemini_cli(
         created_at=_string(payload.get("startTime")),
         updated_at=_string(payload.get("lastUpdated")),
         messages=messages,
-        branch_type=BranchType.SUBAGENT if payload.get("kind") == "subagent" else None,
+        branch_type=BranchType.SUBAGENT if is_subagent_session else None,
         session_events=session_events,
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
         models_used=sorted(models_used),
@@ -416,11 +419,13 @@ def _hermes_qualified_session_id(raw_session_id: str, source_path: str | Path | 
         return raw_session_id
     return _qualified_session_id(
         raw_session_id,
-        _profile_key(_profile_root_for_session_snapshot(Path(source_path))),
+        _profile_key(_profile_root_for_artifact(Path(source_path))),
     )
 
 
-def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedMessage | None:
+def _parse_gemini_message(
+    item: object, *, index: int, position: int, is_subagent_session: bool = False
+) -> ParsedMessage | None:
     record = json_document(item)
     if not record:
         return None
@@ -499,6 +504,12 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
             gemini_blocks[matching_index] = matching.model_copy(
                 update={"metadata": {**(matching.metadata or {}), "gemini_display_content": True}},
             )
+    classified = classify_material_origin(
+        role=gemini_role,
+        message_type=gemini_message_type,
+        text=text,
+        block_types=tuple(block.type for block in gemini_blocks),
+    )
     return ParsedMessage(
         # polylogue-slshy: no positional fallback -- empty id lets
         # _message_revision_match_id's content-anchor fallback run instead.
@@ -519,18 +530,16 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         duration_ms=_non_negative_int(
             record.get("durationMs") or record.get("duration_ms") or record.get("elapsed_ms")
         ),
-        # polylogue-gzgyl: Gemini CLI has no agent/subagent artifact ambiguity
-        # for a plain user turn -- positive-evidence override for the shared
-        # classify_material_origin no-fallthrough (#2502).
-        material_origin=human_authored_override(
-            gemini_role,
-            gemini_message_type,
-            classify_material_origin(
-                role=gemini_role,
-                message_type=gemini_message_type,
-                text=text,
-                block_types=tuple(block.type for block in gemini_blocks),
-            ),
+        # polylogue-gzgyl: a plain user turn in an ordinary Gemini CLI chat has
+        # no agent/subagent artifact ambiguity -- positive-evidence override for
+        # the shared classify_material_origin no-fallthrough (#2502).
+        # polylogue-670mf: a ``kind == "subagent"`` session is exactly the
+        # ambiguity the override's contract excludes: its user turns are
+        # relayed context, not the operator's own words, so the override is
+        # withheld and the classification stands (UNKNOWN when nothing
+        # positive decides it).
+        material_origin=(
+            classified if is_subagent_session else human_authored_override(gemini_role, gemini_message_type, classified)
         ),
     )
 
