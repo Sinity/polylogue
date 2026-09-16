@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from bisect import bisect_right
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_serializer, field_validator, model_validator
@@ -79,26 +80,85 @@ class AdmissionOutcome(BaseModel):
         return self
 
 
+def _ordinal_in_ranges(ranges: Sequence[tuple[int, int]], ordinal: int) -> bool:
+    """Membership test over sorted, disjoint half-open ordinal ranges."""
+    index = bisect_right(ranges, (ordinal, math.inf))
+    if index == 0:
+        return False
+    start, end = ranges[index - 1]
+    return start <= ordinal < end
+
+
 class ParseAccounting(BaseModel):
     """Closed admission ledger attached to a parsed session.
 
     ``expected`` is the denominator observed by the parser before lowering;
-    ``outcomes`` is the one-and-only-one terminal result for each denominator
-    member. The writer validates this algebra before it mutates index state.
+    every denominator member has exactly one terminal result. The writer
+    validates this algebra before it mutates index state.
+
+    A materialized outcome carries no reason and no evidence beyond its own
+    ordinal, so the overwhelmingly common disposition is held as compact
+    half-open ordinal ranges in ``materialized_ordinals`` rather than as one
+    model instance per input record (polylogue-ro922: an untrusted session of
+    200k outer records otherwise costs hundreds of megabytes of resident
+    Pydantic objects for a proof that is one interval). ``outcomes`` holds the
+    dispositions that do carry evidence -- typed unknowns and typed refusals.
+    A caller that builds the accounting directly may still put materialized
+    outcomes in ``outcomes``; both representations count toward the same
+    conserved denominator and must not name the same ordinal twice.
     """
 
     expected: dict[AdmissionUnit, int] = Field(default_factory=dict)
     outcomes: list[AdmissionOutcome] = Field(default_factory=list)
+    materialized_ordinals: dict[AdmissionUnit, list[tuple[int, int]]] = Field(default_factory=dict)
+
+    def iter_outcomes(self) -> Iterator[AdmissionOutcome]:
+        """Yield every terminal outcome, materialized ranges expanded, in ordinal order per unit."""
+        by_unit: dict[AdmissionUnit, list[AdmissionOutcome]] = {}
+        for outcome in self.outcomes:
+            by_unit.setdefault(outcome.unit, []).append(outcome)
+        units = list(dict.fromkeys((*self.materialized_ordinals, *by_unit)))
+        for unit in units:
+            expanded: list[AdmissionOutcome] = list(by_unit.get(unit, ()))
+            for start, end in self.materialized_ordinals.get(unit, ()):
+                expanded.extend(
+                    AdmissionOutcome(
+                        unit=unit,
+                        ordinal=ordinal,
+                        key=str(ordinal),
+                        disposition=AdmissionDisposition.MATERIALIZED,
+                    )
+                    for ordinal in range(start, end)
+                )
+            expanded.sort(key=lambda item: item.ordinal)
+            yield from expanded
 
     def assert_conserved(self) -> None:
         expected = {unit: int(count) for unit, count in self.expected.items()}
         if any(count < 0 for count in expected.values()):
             raise ValueError("admission denominators cannot be negative")
         actual: dict[AdmissionUnit, int] = {}
+        # Ranges are validated without enumerating their members: sorted,
+        # non-empty, and pairwise disjoint proves the same no-duplicate
+        # property the explicit set below proves for evidence-bearing
+        # outcomes, at a cost that does not grow with the record count.
+        ranges: dict[AdmissionUnit, list[tuple[int, int]]] = {}
+        for unit, raw_ranges in self.materialized_ordinals.items():
+            ordered = sorted((int(start), int(end)) for start, end in raw_ranges)
+            previous_end = 0
+            for start, end in ordered:
+                if end <= start or start < 0:
+                    raise ValueError(f"invalid materialized admission range for {unit.value}: [{start}, {end})")
+                if start < previous_end:
+                    raise ValueError(f"duplicate admission outcome for {unit.value}[{start}]")
+                previous_end = end
+                actual[unit] = actual.get(unit, 0) + (end - start)
+            if ordered:
+                ranges[unit] = ordered
         seen: set[tuple[AdmissionUnit, int]] = set()
         for outcome in self.outcomes:
             identity = (outcome.unit, outcome.ordinal)
-            if identity in seen:
+            if identity in seen or _ordinal_in_ranges(ranges.get(outcome.unit, ()), outcome.ordinal):
                 raise ValueError(f"duplicate admission outcome for {outcome.unit.value}[{outcome.ordinal}]")
             seen.add(identity)
             actual[outcome.unit] = actual.get(outcome.unit, 0) + 1

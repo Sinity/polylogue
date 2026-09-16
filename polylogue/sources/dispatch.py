@@ -1527,6 +1527,18 @@ def _lower_payload_specs(
         record = _single_document_record(shaped_payload)
         if record is not None and local_agent.looks_like_gemini_cli(record):
             return [_local_agent_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
+        # polylogue-8u1p: Gemini CLI's second on-disk shape is a ``.jsonl``
+        # checkpoint *log* -- a session-open stub line followed by one record
+        # per turn/event and ``{"$set": ...}`` envelope patches. It is not a
+        # single document, so the branch above yielded no specs at all and the
+        # file never became a queryable session. Folding the log back into the
+        # document it is a log of keeps one parser and one identity rule for
+        # both shapes; the single-document path above is untouched.
+        stream = _payload_sequence(shaped_payload)
+        if stream is not None:
+            folded = local_agent.fold_gemini_cli_checkpoint_stream(stream)
+            if folded is not None:
+                return [_local_agent_document_spec(runtime_provider, folded, fallback_id, source_path=source_path)]
         return []
     if runtime_provider in DRIVE_LIKE_PROVIDERS:
         return _lower_drive_like_payload(

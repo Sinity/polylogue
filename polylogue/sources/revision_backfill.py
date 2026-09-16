@@ -9,7 +9,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, contextmanager, nullcontext
@@ -2674,7 +2674,11 @@ def backfill_historical_revision_evidence(
         ordered_logical_keys = list(replay_schedule.order)
         decode_prefetcher: _ReplaySpillPrefetcher | None = None
         if effective_pipeline_decode:
-            decode_prefetcher = _ReplaySpillPrefetcher(spill, archive_root=archive_root)
+            decode_prefetcher = _ReplaySpillPrefetcher(
+                spill,
+                archive_root=archive_root,
+                index_db_path=archive.index_db_path if archive.index_connection is not None else None,
+            )
             spill.attach_prefetcher(decode_prefetcher)
             decode_prefetcher.start_phase(ordered_logical_keys, provisional_full_raw_ids)
         try:
@@ -3381,14 +3385,41 @@ def _normalize_retained_parse_sessions(
     return [normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in sessions]
 
 
+#: Counted enrichment degradations, keyed by reason. ``_replay_safe_enrich_sessions``
+#: is the single enrichment entry point for every replay decode path; when a
+#: caller cannot supply the evidence handles the provider's ladder needs, the
+#: shortfall is counted HERE rather than silently falling through to a
+#: parsed-content heuristic. Replay determinism is then auditable: a nonzero
+#: count means some raw's title/assembly came from content, not durable
+#: evidence, and the receipt says so.
+_ENRICHMENT_DEGRADATIONS: Counter[str] = Counter()
+_ENRICHMENT_DEGRADATIONS_LOCK = threading.Lock()
+
+
+def _count_enrichment_degradation(reason: str) -> None:
+    with _ENRICHMENT_DEGRADATIONS_LOCK:
+        _ENRICHMENT_DEGRADATIONS[reason] += 1
+
+
+def replay_enrichment_degradations() -> dict[str, int]:
+    """Snapshot the counted enrichment degradations (test/receipt surface)."""
+    with _ENRICHMENT_DEGRADATIONS_LOCK:
+        return dict(_ENRICHMENT_DEGRADATIONS)
+
+
+def reset_replay_enrichment_degradations() -> None:
+    with _ENRICHMENT_DEGRADATIONS_LOCK:
+        _ENRICHMENT_DEGRADATIONS.clear()
+
+
 def _replay_safe_enrich_sessions(
     *,
     provider: Provider,
     sessions: list[ParsedSession],
-    index_conn: sqlite3.Connection | None = None,
-    source_conn: sqlite3.Connection | None = None,
-    blob_root: Path | None = None,
-    source_path: str | None = None,
+    index_conn: sqlite3.Connection | None,
+    source_conn: sqlite3.Connection | None,
+    blob_root: Path | None,
+    source_path: str | None,
 ) -> list[ParsedSession]:
     """Enrich one retained parse without consulting ambient source files.
 
@@ -3397,6 +3428,14 @@ def _replay_safe_enrich_sessions(
     same curated titles a live ingest does instead of baking in the
     content-heuristic first-prompt fallback. Without an index connection the
     bundle stays empty and only the parsed-content fallbacks apply.
+
+    polylogue-sqy57: every handle is a REQUIRED keyword, with no default. The
+    cache-miss decode paths (the spill prefetcher's reparse and
+    ``_ParsedSessionSpill.for_raw``'s inline reparse) previously omitted them
+    and silently produced heuristic titles, making replay output depend on
+    cache state instead of durable evidence. A caller that genuinely has no
+    handle passes ``None`` and the shortfall is counted by
+    ``replay_enrichment_degradations()``; it is never silent.
     """
     from polylogue.sources.assembly import SidecarData, get_assembly_spec
 
@@ -3404,6 +3443,8 @@ def _replay_safe_enrich_sessions(
     if spec is None:
         return sessions
     sidecar_data = cast("SidecarData", {})
+    if provider is Provider.CODEX and index_conn is None:
+        _count_enrichment_degradation("codex_titles_without_index_conn")
     if provider is Provider.CODEX and index_conn is not None:
         from polylogue.sources.codex_state_projection import read_thread_titles
 
@@ -3411,6 +3452,8 @@ def _replay_safe_enrich_sessions(
         titles = read_thread_titles(index_conn, thread_ids=thread_ids, source_path=source_path)
         if titles:
             sidecar_data = cast("SidecarData", {"retained_state_titles": titles})
+    if source_conn is None or blob_root is None or not source_path:
+        _count_enrichment_degradation("retained_assembly_without_source_evidence")
     if source_conn is not None and blob_root is not None and source_path:
         # polylogue-ximhz: Claude Code index/history and ChatGPT asset maps
         # are retained source artifacts. Replay resolves them from the source
@@ -3768,12 +3811,19 @@ class _ReplaySpillPrefetcher:
         spill: _ParsedSessionSpill,
         *,
         archive_root: Path,
+        index_db_path: Path | None = None,
         max_buffered_tree_bytes: int | None = None,
     ) -> None:
         self._spill = spill
         self._archive_root = archive_root
         self._source_db_path = archive_root / "source.db"
         self._blob_root = archive_root / "blob"
+        # polylogue-sqy57: the worker thread must never touch the writer's
+        # handles (sqlite connections are thread-affine), so it opens its own
+        # read-only index.db snapshot from this path. ``None`` means the
+        # archive holds no index tier at all; the enrichment entry point then
+        # counts the shortfall instead of silently degrading.
+        self._index_db_path = index_db_path
         if max_buffered_tree_bytes is not None:
             self._budget = max_buffered_tree_bytes
         else:
@@ -3879,6 +3929,8 @@ class _ReplaySpillPrefetcher:
             stats["spill_prefetch.reparse_hits"] = float(self.reparse_hits)
             stats["spill_prefetch.consumed"] = float(self.consumed)
             stats["spill_prefetch.decode_concurrent"] = self.decode_seconds
+        for reason, count in replay_enrichment_degradations().items():
+            stats[f"replay_enrichment_degraded.{reason}"] = float(count)
         return stats
 
     def _drop_buffer_locked(self) -> None:
@@ -3900,6 +3952,17 @@ class _ReplaySpillPrefetcher:
         # NOTE: ``with sqlite_connection(...)`` would only manage a
         # transaction, not the connection lifetime -- close explicitly.
         source_conn = sqlite3.connect(f"file:{self._source_db_path}?mode=ro", uri=True, timeout=30.0)
+        # Per-thread read-only index handle (WAL: snapshot reads never block
+        # the writer). Opened and closed entirely on this worker thread so no
+        # connection is ever shared across threads.
+        index_conn: sqlite3.Connection | None = None
+        if self._index_db_path is not None and self._index_db_path.exists():
+            try:
+                index_conn = sqlite3.connect(f"file:{self._index_db_path}?mode=ro", uri=True, timeout=30.0)
+                index_conn.execute("PRAGMA busy_timeout = 30000")
+            except sqlite3.Error:
+                _LOGGER.warning("replay prefetch could not open a read-only index handle", exc_info=True)
+                index_conn = None
         spill_conn: sqlite3.Connection | None = None
         try:
             plan, descriptors = self._build_plan(source_conn, keys, extra_members)
@@ -3920,6 +3983,7 @@ class _ReplaySpillPrefetcher:
                 decoded = self._decode(
                     spill_conn,
                     source_conn,
+                    index_conn,
                     raw_id,
                     descriptors,
                 )
@@ -3939,6 +4003,8 @@ class _ReplaySpillPrefetcher:
         finally:
             if spill_conn is not None:
                 spill_conn.close()
+            if index_conn is not None:
+                index_conn.close()
             source_conn.close()
 
     def _wait_for_budget(self, generation: int, seq: int) -> bool:
@@ -4030,6 +4096,7 @@ class _ReplaySpillPrefetcher:
         self,
         spill_conn: sqlite3.Connection,
         source_conn: sqlite3.Connection,
+        index_conn: sqlite3.Connection | None,
         raw_id: str,
         descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
     ) -> tuple[list[ParsedSession], int, bool] | None:
@@ -4073,6 +4140,10 @@ class _ReplaySpillPrefetcher:
         sessions_or_none = _replay_safe_enrich_sessions(
             provider=provider,
             sessions=sessions_or_none,
+            index_conn=index_conn,
+            source_conn=source_conn,
+            blob_root=self._blob_root,
+            source_path=source_path,
         )
         self.reparse_hits += 1
         self.decode_seconds += time.perf_counter() - started
@@ -4355,11 +4426,14 @@ class _ParsedSessionSpill:
         if rows:
             return [pickle.loads(bytes(row[0])) for row in rows], int(rows[0][1])
         sessions, payload_bytes, _kind = _parse_retained_raw(archive, raw_id)
-        provider, _blob_hash, _source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+        provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
         sessions = _replay_safe_enrich_sessions(
             provider=provider,
             sessions=sessions,
             index_conn=archive.index_connection,
+            source_conn=archive.source_connection,
+            blob_root=Path(archive.archive_root) / "blob",
+            source_path=source_path,
         )
         self.add(raw_id, sessions, payload_bytes=payload_bytes)
         return sessions, payload_bytes

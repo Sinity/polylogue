@@ -299,6 +299,27 @@ logger = get_logger(__name__)
 #                                    counts, the rule
 #                                    ``_bounded_diagnostics_payload`` applies.
 #
+# Three FIELDS on the ``type="system"`` hook-summary record (``subtype``
+# ``*_hook_summary``) get their own disposition (polylogue-3vsoj; counts from
+# the live corpus, 2026-09-16). The record carries no ``message`` and no
+# ``content``, so it previously vanished whole at the empty-content drop:
+#   hookAdditionalContext (7,938)  CONTENT -> a TEXT block on the record's own
+#                                    message, ``material_origin=
+#                                    runtime_context``. These are the strings a
+#                                    hook injected into the model's context
+#                                    window: material the model actually read,
+#                                    present nowhere else in the transcript.
+#                                    See ``_hook_additional_context_text``.
+#   hookErrors (14,528)            MIXED -> ``claude_hook_outcome`` event only
+#                                    when non-empty (187 of 15,206 sampled).
+#                                    The empty list is the absence of a fact
+#                                    and is TRANSIENT, the bar ``mode``/
+#                                    ``atis-latch`` above are held to.
+#   preventedContinuation (14,528) MIXED -> same event, only when true (41 of
+#                                    15,564 sampled). A hook that blocked the
+#                                    model from stopping is unrecoverable from
+#                                    anything else; ``false`` is TRANSIENT.
+#
 # A record type in none of these tables reaches ordinary message parsing,
 # produces no blocks, and would vanish at the empty-content drop; it persists
 # as ``_UNCLASSIFIED_RECORD_EVENT_TYPE`` instead (see below).
@@ -1172,6 +1193,69 @@ def _safe_int(value: object) -> int:
         return int(parsed)
     except (OverflowError, ValueError):
         return 0
+
+
+_HOOK_OUTCOME_EVENT_TYPE = "claude_hook_outcome"
+
+
+def _hook_additional_context_text(item: Mapping[str, object]) -> str | None:
+    """Return the text a hook injected into the model's context, if any.
+
+    ``type="system"`` hook-summary records (``subtype`` ``*_hook_summary``)
+    carry ``hookAdditionalContext``: the strings a hook *added to the model's
+    context window*, i.e. material the model actually read. It is real content
+    that exists nowhere else in the transcript -- the record carries no
+    ``message`` and, absent this, no ``content`` either, so the whole record
+    fell through to the empty-content drop. Corpus shape is a list of strings;
+    a bare string is accepted defensively because the field's wire shape is the
+    provider's, not ours.
+    """
+    if item.get("type") != "system":
+        return None
+    raw = item.get("hookAdditionalContext")
+    if isinstance(raw, str):
+        entries = [raw]
+    elif isinstance(raw, list):
+        entries = [entry for entry in raw if isinstance(entry, str)]
+    else:
+        return None
+    joined = "\n\n".join(entry.strip() for entry in entries if entry.strip())
+    return joined or None
+
+
+def _hook_outcome_payload(item: Mapping[str, object]) -> dict[str, object] | None:
+    """Project a hook-summary record's *failure* facts, and only those.
+
+    ``hookErrors`` and ``preventedContinuation`` ride the same hook-summary
+    record as ``hookAdditionalContext``. On the live corpus they are the
+    no-op values in the overwhelming majority (15,206 records sampled:
+    ``hookErrors`` empty in 15,206-187 of them, ``preventedContinuation``
+    false in 15,523 of 15,564) -- persisting those would add a row per record
+    for the absence of a fact, the same bar that keeps ``mode``/``init``
+    transient in the disposition table above. The residual is not noise: a
+    non-empty ``hookErrors`` is a hook that failed and a true
+    ``preventedContinuation`` is a hook that *blocked the model from
+    stopping*, neither of which is recoverable from anything else in the
+    transcript. So the no-op case is declared transient and only the
+    evidence-bearing case becomes a ``claude_hook_outcome`` event.
+    """
+    if item.get("type") != "system":
+        return None
+    raw_errors = item.get("hookErrors")
+    errors = [entry for entry in raw_errors if isinstance(entry, str) and entry] if isinstance(raw_errors, list) else []
+    prevented = item.get("preventedContinuation") is True
+    if not errors and not prevented:
+        return None
+    payload: dict[str, object] = {}
+    if errors:
+        payload["hook_errors"] = errors
+    if prevented:
+        payload["prevented_continuation"] = True
+    subtype = item.get("subtype")
+    if isinstance(subtype, str) and subtype:
+        payload["subtype"] = subtype
+    payload["summary"] = "hook prevented continuation" if prevented else f"{len(errors)} hook error(s)"
+    return payload
 
 
 def _content_blocks_from_record(message: object, text: str | None) -> list[ParsedContentBlock]:
@@ -2251,6 +2335,23 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     content_blocks = _mark_background_task_start(content_blocks, _background_task_id(item))
     content_blocks = _mark_task_output_outcome(content_blocks, _task_output_outcome(item))
     content_blocks = _attach_file_edit(content_blocks, _file_edit_from_tool_result(item))
+    # Hook-injected context is content the model read; carry it as a real TEXT
+    # block so it survives the empty-content drop below (the hook-summary
+    # record has no ``message``/``content`` of its own).
+    hook_context_text = _hook_additional_context_text(item)
+    if hook_context_text and hook_context_text not in (text or ""):
+        content_blocks = [*content_blocks, ParsedContentBlock(type=BlockType.TEXT, text=hook_context_text)]
+        text = f"{text}\n\n{hook_context_text}" if text else hook_context_text
+    hook_outcome_payload = _hook_outcome_payload(item)
+    if hook_outcome_payload is not None:
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type=_HOOK_OUTCOME_EVENT_TYPE,
+                timestamp=timestamp,
+                source_message_provider_id=record_uuid or None,
+                payload=hook_outcome_payload,
+            )
+        )
     # Classify from the message's own TEXT-block-only prose, not the
     # combined `text`, which folds in THINKING/TOOL_USE/TOOL_RESULT
     # segments via extract_message_text/extract_text_from_segments.
@@ -2287,6 +2388,14 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         )
         if evidenced_origin is not None:
             material_origin = evidenced_origin
+    if hook_context_text:
+        # Hook-injected text is runtime-injected context by construction: a
+        # hook, not a human and not the model, put it in the context window.
+        # ``MaterialOrigin.RUNTIME_CONTEXT`` is exactly that axis value (see
+        # ``core/enums.py``), so no new vocabulary member is warranted; the
+        # hook-ness of the injection is the record's own ``subtype``/event,
+        # not a second authoredness class.
+        material_origin = MaterialOrigin.RUNTIME_CONTEXT
     if not text and not content_blocks and record_type != "summary":
         keep_empty_human_turn = (
             resolved_role is Role.USER

@@ -10,7 +10,7 @@ reader side is pinned separately by
 
 from __future__ import annotations
 
-from polylogue.core.enums import BlockType
+from polylogue.core.enums import BlockType, MaterialOrigin
 from polylogue.sources.parsers.claude import parse_code
 
 
@@ -681,3 +681,80 @@ def test_unknown_stop_reason_remains_evidence_without_entering_constrained_colum
     assert len(parsed.messages) == 1
     assert parsed.messages[0].stop_reason is None
     assert any(event.payload.get("stop_reason") == "new_provider_reason" for event in parsed.session_events)
+
+
+def test_hook_additional_context_becomes_runtime_context_content() -> None:
+    """``hookAdditionalContext`` must reach the archive as a real content block (polylogue-3vsoj).
+
+    The fixture is the live wire shape: a ``type="system"`` hook summary with
+    no ``message`` and no ``content`` of its own, so before this the whole
+    record vanished at the empty-content drop. Anti-vacuity: delete the
+    ``_hook_additional_context_text`` call in ``_fold_code_record`` and the
+    parser yields no message at all -- the injected text is absent and both
+    asserts below go red. Dropping only the ``MaterialOrigin.RUNTIME_CONTEXT``
+    assignment leaves the text present but unclassified, failing the second.
+    """
+    injected = "Synthetic hook context: repository checks are enabled."
+    parsed = parse_code(
+        [
+            {
+                "type": "system",
+                "subtype": "stop_hook_summary",
+                "uuid": "s1",
+                "sessionId": "sess-hook-context",
+                "hookCount": 1,
+                "hookErrors": [],
+                "hookAdditionalContext": [injected],
+                "preventedContinuation": False,
+            },
+        ],
+        "sess-hook-context",
+    )
+    assert len(parsed.messages) == 1
+    message = parsed.messages[0]
+    assert [block.text for block in message.blocks if block.type is BlockType.TEXT] == [injected]
+    assert message.material_origin is MaterialOrigin.RUNTIME_CONTEXT
+
+
+def test_hook_failure_fields_become_an_event_only_when_evidence_bearing() -> None:
+    """``hookErrors``/``preventedContinuation`` are transient when they are no-ops.
+
+    Anti-vacuity: the no-op record must produce no ``claude_hook_outcome``
+    event (a blanket event per hook summary would make the first assert red),
+    and the failing record must produce one carrying both facts (deleting the
+    ``_hook_outcome_payload`` call makes the second red).
+    """
+    quiet = parse_code(
+        [
+            {
+                "type": "system",
+                "subtype": "stop_hook_summary",
+                "uuid": "s1",
+                "sessionId": "sess-hook-quiet",
+                "hookErrors": [],
+                "preventedContinuation": False,
+                "hookAdditionalContext": ["Synthetic injected context."],
+            },
+        ],
+        "sess-hook-quiet",
+    )
+    assert [event for event in quiet.session_events if event.event_type == "claude_hook_outcome"] == []
+
+    noisy = parse_code(
+        [
+            {
+                "type": "system",
+                "subtype": "stop_hook_summary",
+                "uuid": "s1",
+                "sessionId": "sess-hook-noisy",
+                "hookErrors": ["synthetic hook failed"],
+                "preventedContinuation": True,
+                "hookAdditionalContext": ["Synthetic injected context."],
+            },
+        ],
+        "sess-hook-noisy",
+    )
+    events = [event for event in noisy.session_events if event.event_type == "claude_hook_outcome"]
+    assert len(events) == 1
+    assert events[0].payload["hook_errors"] == ["synthetic hook failed"]
+    assert events[0].payload["prevented_continuation"] is True

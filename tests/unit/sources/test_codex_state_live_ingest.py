@@ -738,3 +738,32 @@ async def test_fresh_root_catch_up_completes_every_chunk_with_a_codex_state_snap
     finally:
         watcher.stop()
         await archive.close()
+
+
+def test_codex_state_source_scope_is_lexical_not_process_dependent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The install scope depends only on the retained path text, not on the resolving process.
+
+    Anti-vacuity: restoring ``Path(source_path).expanduser().resolve(strict=False)``
+    makes the relative path resolve against the process CWD (so the two CWDs
+    disagree) and makes the symlinked prefix collapse to its real directory, so
+    the daemon and the CLI compute different scopes for one durable
+    ``raw_sessions.source_path`` and the state-to-rollout join splits.
+    """
+    from polylogue.sources.codex_state_projection import codex_state_source_scope
+
+    relative = "codex-install/sessions/2026/01/rollout.jsonl"
+    monkeypatch.chdir(tmp_path)
+    from_here = codex_state_source_scope(relative)
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    assert codex_state_source_scope(relative) == from_here
+    assert from_here == "codex-install"
+
+    real = tmp_path / "real-install"
+    (real / "sessions").mkdir(parents=True)
+    link = tmp_path / "linked-install"
+    link.symlink_to(real, target_is_directory=True)
+    assert codex_state_source_scope(str(link / "sessions" / "rollout.jsonl")) == str(link)

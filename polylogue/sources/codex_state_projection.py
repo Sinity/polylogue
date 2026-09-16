@@ -13,6 +13,7 @@ as unresolved residue for as long as the archive exists.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -63,10 +64,13 @@ def codex_state_source_scope(source_path: str) -> str:
     """
     # Source paths are retained as diagnostics and may be spelled relative to
     # the watcher, while rollout paths are normally absolute.  Scope identity
-    # must not depend on that presentation detail: normalize the path
-    # lexically (without requiring the source to still exist) before joining
-    # state exports to rollout evidence.
-    path = Path(source_path).expanduser().resolve(strict=False)
+    # must not depend on the resolving process: ``resolve()`` would join a
+    # relative path against the calling process's CWD and follow every
+    # existing symlink prefix, so the same durable ``raw_sessions.source_path``
+    # would yield different scopes in the daemon and in the CLI and split the
+    # state-to-rollout join.  Normalize lexically instead, which needs neither
+    # the source to still exist nor a particular CWD-independent filesystem.
+    path = Path(os.path.normpath(Path(source_path).expanduser()))
     if path.name in thread_state_member_filenames():
         return str(path.parent)
     for parent in path.parents:

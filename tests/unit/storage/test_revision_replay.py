@@ -3187,3 +3187,103 @@ def test_incomplete_cohort_correction_failure_keeps_the_batch_open(tmp_path: Pat
         assert not source_conn.in_transaction
         assert _membership_authority(source_conn) == undecided
         source_conn.execute("DROP TRIGGER temp.reject_incomplete_cohort_correction")
+
+
+def test_prefetch_reparse_enriches_identically_to_the_inline_path(tmp_path: Path) -> None:
+    """Both replay decode paths resolve the same durable Codex evidence.
+
+    polylogue-sqy57: ``_replay_safe_enrich_sessions`` is the one enrichment
+    entry point, but the spill prefetcher's reparse passed it NO connections
+    and ``_ParsedSessionSpill.for_raw`` passed only ``index_conn``. The curated
+    Codex title lives in the projected ``codex_thread_state`` rows, so on those
+    cache-miss paths the title silently degraded to the content heuristic --
+    replay output then depended on cache state, not on durable evidence.
+
+    Anti-vacuity: revert the prefetcher's ``_decode`` to call
+    ``_replay_safe_enrich_sessions`` without ``index_conn`` (as before the fix)
+    and the prefetched title falls back to the first user message, so the
+    equality against the inline path goes red.
+    """
+    import threading
+
+    from polylogue.core.enums import TitleSource
+    from polylogue.sources.codex_state_projection import codex_state_source_scope
+    from polylogue.sources.revision_backfill import (
+        _ParsedSessionSpill,
+        _ReplaySpillPrefetcher,
+    )
+
+    bootstrap_archive_root(tmp_path)
+    source_path = str(tmp_path / "codex" / "sessions" / "rollout-prefetch.jsonl")
+    thread_id = "prefetch-codex-thread"
+    payload = _codex_jsonl(
+        [
+            {"type": "session_meta", "payload": {"id": thread_id, "timestamp": "2026-07-12T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "m1",
+                    "role": "user",
+                    "timestamp": "2026-07-12T00:00:01Z",
+                    "content": [{"type": "input_text", "text": "heuristic first prompt"}],
+                },
+            },
+        ]
+    )
+    logical_key = f"codex-session:{thread_id}"
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=source_path,
+            acquired_at_ms=1,
+            source_index=0,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(logical_key, RawRevisionKind.FULL, "revision-1", 0),
+        )
+        index_conn = archive.index_connection
+        assert index_conn is not None
+        index_conn.execute(
+            "INSERT INTO codex_thread_state (source_scope, thread_id, title, observed_at_ms) VALUES (?, ?, ?, ?)",
+            (codex_state_source_scope(source_path), thread_id, "Curated thread title", 1),
+        )
+        index_conn.commit()
+
+        # Inline path: an empty spill with no prefetcher attached reparses the
+        # retained raw through ``for_raw``'s own fallback.
+        inline_spill = _ParsedSessionSpill(tmp_path, max_cached_payload_bytes=1 << 20)
+        inline_sessions, _payload_bytes = inline_spill.for_raw(archive, raw_id)
+
+        # Prefetch path: the worker thread opens its own connections and must
+        # reach the same evidence.
+        prefetch_spill = _ParsedSessionSpill(tmp_path, max_cached_payload_bytes=1 << 20)
+        prefetcher = _ReplaySpillPrefetcher(
+            prefetch_spill,
+            archive_root=tmp_path,
+            index_db_path=archive.index_db_path,
+        )
+        prefetch_spill.attach_prefetcher(prefetcher)
+        try:
+            prefetcher.start_phase([logical_key], {logical_key: {raw_id}})
+            prefetched = None
+            for _attempt in range(200):
+                prefetched = prefetcher.pop(raw_id)
+                if prefetched is not None:
+                    break
+                threading.Event().wait(0.05)
+            assert prefetched is not None, "the prefetch worker never produced a decode"
+            prefetch_sessions, _prefetch_bytes, from_reparse = prefetched
+        finally:
+            prefetcher.close()
+
+    assert from_reparse, "the prefetch decode must be the reparse path, not a spill hit"
+    assert inline_sessions[0].title == "Curated thread title"
+    assert inline_sessions[0].title_source is TitleSource.ORIGIN
+    assert [session.title for session in prefetch_sessions] == [session.title for session in inline_sessions]
+    assert [session.title_source for session in prefetch_sessions] == [
+        session.title_source for session in inline_sessions
+    ]

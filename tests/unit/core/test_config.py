@@ -1150,3 +1150,30 @@ def test_stderr_proxy_exposes_terminal_capabilities() -> None:
     proxy = _StderrProxy()
     assert isinstance(proxy.isatty(), bool)
     assert isinstance(proxy.fileno(), int)
+
+
+class TestSecurityBooleanBlankRefusal:
+    """A blank value for a security-relevant boolean refuses instead of failing open.
+
+    Anti-vacuity: restoring ``bool(self._data.get("notification_email_use_tls", True))``
+    makes ``PolylogueConfig({"notification_email_use_tls": ""}).notification_email_use_tls``
+    return ``False`` silently -- SMTP TLS off -- and the first test goes red.
+    Dropping ``allow_blank`` from the opt-in booleans makes the second go red.
+    """
+
+    def test_blank_disables_smtp_tls_only_by_refusing(self) -> None:
+        """A blank notification_email_use_tls is a typed refusal, not a silent False."""
+        config = PolylogueConfig({"notification_email_use_tls": ""})
+        with pytest.raises(ConfigError, match="blank"):
+            _ = config.notification_email_use_tls
+        assert PolylogueConfig({}).notification_email_use_tls is True
+        assert PolylogueConfig({"notification_email_use_tls": "off"}).notification_email_use_tls is False
+
+    def test_blank_opt_in_boolean_stays_not_opted_in(self) -> None:
+        """A blank opt-in boolean resolves closed; a typo in one still refuses."""
+        from polylogue.config import SECURITY_OPT_IN_BOOLEANS
+
+        assert "api_allow_no_auth" in SECURITY_OPT_IN_BOOLEANS
+        assert PolylogueConfig({"api_allow_no_auth": ""}).api_allow_no_auth is False
+        with pytest.raises(ConfigError, match="not a recognized boolean"):
+            _ = PolylogueConfig({"api_allow_no_auth": "flase"}).api_allow_no_auth

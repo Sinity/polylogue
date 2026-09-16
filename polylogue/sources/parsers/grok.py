@@ -28,9 +28,14 @@ timestamps, since the shape is reconstructed from secondary sources rather
 than one authoritative spec.
 
 Neither the conversation nor its responses carry a native id in any of the
-confirmed shapes above, so ``provider_session_id`` comes from the dispatch
-fallback and ``provider_message_id`` is content-derived. The resulting ids are
-not provider-native, but they remain stable if a re-export reorders responses.
+confirmed shapes above, so both ``provider_session_id`` and
+``provider_message_id`` are content-derived (``pipeline.ids``'s declared
+``idless_session_identity`` vocabulary, and ``synthetic_message_id`` under a
+constant namespace). The resulting ids are not provider-native, but they are
+intrinsic to the conversation: stable when a re-export reorders responses or
+conversations or lands under a different filename, and distinct between two
+conversations exported from files that happen to share a stem
+(polylogue-31zag).
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.timestamps import canonical_timestamp_text
+from polylogue.pipeline.ids import idless_session_identity
 
 from .base import (
     ParsedContentBlock,
@@ -52,6 +58,13 @@ from .base import (
     parser_admission,
     synthetic_message_id,
 )
+
+#: Namespace for this parser's synthetic message ids. It is deliberately a
+#: constant and not the acquisition fallback id: a message id is already
+#: scoped by its session id (``pipeline.ids.message_id``), so seeding it with
+#: the export filename adds no disambiguation and only makes the id move when
+#: the same conversation is re-exported under a different name.
+_MESSAGE_ID_NAMESPACE = "grok"
 
 _SENDER_ROLE: dict[str, Role] = {
     "human": Role.USER,
@@ -125,6 +138,31 @@ def looks_like_export(payload: object) -> bool:
     return any(looks_like_conversation(item) for item in conversations)
 
 
+def _session_identity(messages: list[ParsedMessage], created_at: str | None, fallback_id: str) -> str:
+    """Derive this conversation's content-derived provider session id.
+
+    The one narrow exception is a conversation that genuinely carries nothing
+    to hash: no admitted response and no ``create_time``. Such an entry has no
+    intrinsic content at all, so there is no content-derived identity to
+    compute and the acquisition fallback id is the only value left. It is not
+    a second identity route for ordinary conversations -- a conversation with
+    a single blank-text response but a ``create_time``, or with responses but
+    no timestamps, still hashes.
+    """
+    # Reorder-stable selection of the opening turn: earliest declared
+    # timestamp, ties broken by the (content-derived) message id. Taking
+    # ``messages[0]`` would reintroduce exactly the array-order sensitivity
+    # this identity exists to remove.
+    opening = min(messages, key=lambda m: (m.timestamp or "", m.provider_message_id)) if messages else None
+    if opening is None and created_at is None:
+        return fallback_id
+    return idless_session_identity(
+        first_message_provider_id=opening.provider_message_id if opening is not None else None,
+        first_message_text=opening.text if opening is not None else None,
+        created_at=created_at,
+    )
+
+
 @parser_admission("grok")
 def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     """Parse a single Grok export conversation entry into a session."""
@@ -147,7 +185,7 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
         grok_role = _role_for_sender(fields.get("sender"))
         timestamp = _timestamp_text(fields.get("create_time"))
         provider_message_id = synthetic_message_id(
-            namespace=fallback_id,
+            namespace=_MESSAGE_ID_NAMESPACE,
             role=grok_role,
             text=text,
             timestamp=timestamp,
@@ -179,9 +217,11 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
     messages = mark_last_occurrence_as_active_leaf(messages)
     updated_at = messages[-1].timestamp if messages and messages[-1].timestamp else created_at
 
+    provider_session_id = _session_identity(messages, created_at, fallback_id)
+
     return ParsedSession(
         source_name=Provider.GROK,
-        provider_session_id=fallback_id,
+        provider_session_id=provider_session_id,
         title=title,
         title_source=TitleSource.ORIGIN if provider_title else None,
         created_at=created_at,

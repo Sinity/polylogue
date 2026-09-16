@@ -397,3 +397,26 @@ def test_console_rendering_leaves_ordinary_values_untouched() -> None:
     rendered = plog.render_console(record)
     assert "daemon.stage.ok" in rendered
     assert "origin=chrome-extension://abcdef" in rendered
+
+
+def test_log_redact_strips_quarantined_fields_from_the_json_storage_form() -> None:
+    """POLYLOGUE_LOG_REDACT reaches the JSON sink, not only the console view.
+
+    Anti-vacuity: restoring ``render_json(record)`` (no ``redact`` argument) in
+    ``make_stream_sink`` leaves ``error_detail`` in the retained JSON line and
+    this goes red. The unredacted assertions keep the fix from degenerating
+    into stripping the field unconditionally.
+    """
+    record = {"ts": "2026-01-01T00:00:00.000000Z", "level": "error", "event": "boom", "error_detail": "secret detail"}
+
+    assert "secret detail" in plog.render_json(record)
+    assert "error_detail" not in plog.render_json(record, redact=True)
+    assert json.loads(plog.render_json(record, redact=True))["event"] == "boom"
+
+    stream = io.StringIO()
+    plog.make_stream_sink(stream, fmt="json", redact=True)(record)
+    assert "error_detail" not in stream.getvalue()
+
+    plain = io.StringIO()
+    plog.make_stream_sink(plain, fmt="json")(record)
+    assert "secret detail" in plain.getvalue()
