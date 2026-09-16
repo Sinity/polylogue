@@ -14,8 +14,9 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
-from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
+from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.logging import WARNING, emit
+from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
@@ -218,10 +219,10 @@ def _halted_sources(ops_db: Path) -> list[HaltedSourceStatus]:
     try:
         conn = open_readonly_connection(ops_db, validate_schema=False)
         try:
-            if not _has_table(conn, "daemon_events"):
+            if not table_exists(conn, "daemon_events"):
                 return []
             floor_ms = 0
-            if _has_table(conn, "daemon_lifecycle"):
+            if table_exists(conn, "daemon_lifecycle"):
                 row = conn.execute("SELECT MAX(started_at_ms) FROM daemon_lifecycle").fetchone()
                 floor_ms = _row_int(row[0]) if row is not None and row[0] is not None else 0
             rows = conn.execute(
@@ -258,13 +259,9 @@ def _halted_sources(ops_db: Path) -> list[HaltedSourceStatus]:
             code=_payload_str(payload, "code", default="unknown"),
             message=_payload_str(payload, "message", default=""),
             derived_only=payload.get("derived_only") is True,
-            observed_at=cast(str, _iso_from_epoch_ms(max(_row_int(row[0]), 0))),
+            observed_at=cast(str, iso_from_epoch_ms(max(_row_int(row[0]), 0))),
         )
     return [latest_by_source[name] for name in sorted(latest_by_source)]
-
-
-def _has_table(conn: sqlite3.Connection, name: str) -> bool:
-    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
 
 
 def _recent_stage_events(dbf: Path, *, ops_db: Path | None = None) -> list[CatchupStageEvent]:
@@ -356,7 +353,7 @@ def _archive_catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...])
         # Negative epoch_ms values clamp to the epoch floor, matching the
         # previous _epoch_ms_to_iso behavior; the shared helper's int branch
         # then always returns a string, never None.
-        observed_at=cast(str, _iso_from_epoch_ms(max(_row_int(row[2]), 0))),
+        observed_at=cast(str, iso_from_epoch_ms(max(_row_int(row[2]), 0))),
         phase=_payload_str(payload, "phase", default=_required_str(row[3])),
         status=_payload_str(payload, "status", default=_required_str(row[4])),
         queued_file_count=_payload_int(payload, "queued_file_count"),

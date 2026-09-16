@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 import click
 
@@ -13,6 +13,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.query.transaction import run_archive_read
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.enums import TelemetrySurface
 from polylogue.rendering.identity import identity_frame
 
 if TYPE_CHECKING:
@@ -895,7 +896,10 @@ async def _tools(
 
 
 @click.command("latency")
-@click.option("--surface", help="Only rows for this surface (cli, mcp, daemon-http, daemon-internal, web).")
+@click.option(
+    "--surface",
+    help="Only rows for this surface (" + ", ".join(get_args(TelemetrySurface)) + ").",
+)
 @click.option("--since-hours", type=float, default=24.0, show_default=True, help="Lookback window in hours.")
 @click.option("--limit", "-l", "-n", type=int, default=1000, help="Max rows read per source table.")
 @click.option(

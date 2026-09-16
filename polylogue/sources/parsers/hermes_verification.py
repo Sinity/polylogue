@@ -80,7 +80,7 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument
 from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
 
@@ -90,7 +90,6 @@ from .hermes_identity import qualified_session_id as _qualified_session_id
 from .hermes_identity import split_qualified_session_id as _split_qualified_session_id
 from .hermes_state import (
     HermesFidelityCapability,
-    HermesFidelityStatus,
     HermesImportFidelity,
     require_declared_export,
 )
@@ -465,7 +464,7 @@ def _parent_session_link_capability(sessions: list[ParsedSession]) -> HermesFide
             counts={},
             detail="No sessions were produced, so no session_links parent edge could be asserted.",
         )
-    status: HermesFidelityStatus
+    status: SourceFidelityStatus
     if linked == len(sessions):
         status = "inferred"
     elif linked:

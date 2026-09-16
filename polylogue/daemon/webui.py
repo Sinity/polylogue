@@ -22,7 +22,7 @@ from typing import Any
 from urllib.parse import quote
 
 from polylogue.archive.query.execution_control import classify_unit_expression_workload
-from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
+from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT, DEFAULT_SESSION_LIST_LIMIT
 from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 from polylogue.logging import WARNING, emit
@@ -308,12 +308,6 @@ def render_archive_overview_page(
 """
 
 
-# Compatibility alias for callers that imported the daemon constant before
-# session-list defaults moved to the shared query specification.
-SESSION_LIST_LIMIT = DEFAULT_SESSION_LIST_LIMIT
-SESSION_READ_MESSAGE_LIMIT = 30
-
-
 def render_session_list_page(
     bundle: WebUIAssetBundle,
     page: Mapping[str, object] | None,
@@ -483,11 +477,11 @@ def render_session_read_page(
     origin = str(session.get("origin") or "unknown-export")
     all_messages = session.get("messages")
     messages = all_messages if isinstance(all_messages, list) else []
-    # The caller already bounds ``messages`` to SESSION_READ_MESSAGE_LIMIT at
+    # The caller already bounds ``messages`` to DEFAULT_MESSAGE_PAGE_LIMIT at
     # the storage layer (read_session_page, polylogue-07g6), so this is
     # already the first page, not a slice of a larger in-memory list.
     # ``message_count`` carries the TRUE composed total either way.
-    first_page = messages[:SESSION_READ_MESSAGE_LIMIT]
+    first_page = messages[:DEFAULT_MESSAGE_PAGE_LIMIT]
     total_messages = session.get("message_count")
     if not isinstance(total_messages, int):
         total_messages = len(messages)
@@ -1884,8 +1878,6 @@ __all__ = [
     "SEARCH_EXAMPLE_QUERIES",
     "SEARCH_RESULT_LIMIT",
     "SESSION_COST_DRILLDOWN_LIMIT",
-    "SESSION_LIST_LIMIT",
-    "SESSION_READ_MESSAGE_LIMIT",
     "USAGE_TIMELINE_LIMIT",
     "WebUIAsset",
     "WebUIAssetBundle",

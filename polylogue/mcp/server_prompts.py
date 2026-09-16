@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 from typing_extensions import TypedDict
 
 from polylogue.archive.query.discovery import render_query_discovery_example
+from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
 from polylogue.archive.query.transaction import run_archive_read
 from polylogue.mcp.archive_support import archive_query_filters, mcp_archive_root
 from polylogue.mcp.payloads import MCPFencedCodeBlock
@@ -142,7 +143,9 @@ def _code_snippet_payload(block: MCPFencedCodeBlock, session_id: str) -> Extract
     }
 
 
-def _archive_prompt_session_page(archive: ArchiveStore, session_id: str, *, limit: int = 20) -> PromptSession:
+def _archive_prompt_session_page(
+    archive: ArchiveStore, session_id: str, *, limit: int = DEFAULT_MESSAGE_PAGE_LIMIT
+) -> PromptSession:
     """Build prompt context from a bounded message projection."""
     summary = archive.read_summary(session_id)
     rows = archive.query_session_messages((session_id,), limit=limit, offset=0)

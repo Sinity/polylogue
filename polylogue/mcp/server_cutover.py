@@ -25,6 +25,7 @@ from polylogue.mcp.payloads import (
     MCPRootPayload,
     session_topology_payload,
 )
+from polylogue.mcp.session_projections import SESSION_LIST_PROJECTIONS
 from polylogue.operations.session_contracts import SessionOperation
 from polylogue.surfaces.outcome import decide_outcome
 
@@ -1298,59 +1299,18 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 if evidence is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
                 return hooks.json_payload(MCPRootPayload(root=evidence.model_dump(mode="json")))
-            if projection == "events" and session_id is not None:
-                events = await hooks.get_polylogue().get_session_events(session_id)
-                if events is None:
+            list_projection = SESSION_LIST_PROJECTIONS.get(projection) if projection is not None else None
+            if list_projection is not None and session_id is not None:
+                rows = await getattr(hooks.get_polylogue(), list_projection.method)(session_id)
+                if rows is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
                 return hooks.json_payload(
                     MCPRootPayload(
                         root={
                             "session_id": session_id,
-                            "total": len(events),
-                            "events": events,
-                            "outcome": decide_outcome(matched=len(events)).to_dict(),
-                        }
-                    )
-                )
-            if projection == "file-edits" and session_id is not None:
-                edits = await hooks.get_polylogue().get_file_edits(session_id)
-                if edits is None:
-                    return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
-                return hooks.json_payload(
-                    MCPRootPayload(
-                        root={
-                            "session_id": session_id,
-                            "total": len(edits),
-                            "file_edits": edits,
-                            "outcome": decide_outcome(matched=len(edits)).to_dict(),
-                        }
-                    )
-                )
-            if projection == "agent-policies" and session_id is not None:
-                policies = await hooks.get_polylogue().get_agent_policies(session_id)
-                if policies is None:
-                    return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
-                return hooks.json_payload(
-                    MCPRootPayload(
-                        root={
-                            "session_id": session_id,
-                            "total": len(policies),
-                            "agent_policies": policies,
-                            "outcome": decide_outcome(matched=len(policies)).to_dict(),
-                        }
-                    )
-                )
-            if projection == "web-content" and session_id is not None:
-                constructs = await hooks.get_polylogue().get_web_content_constructs(session_id)
-                if constructs is None:
-                    return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
-                return hooks.json_payload(
-                    MCPRootPayload(
-                        root={
-                            "session_id": session_id,
-                            "total": len(constructs),
-                            "web_content_constructs": constructs,
-                            "outcome": decide_outcome(matched=len(constructs)).to_dict(),
+                            "total": len(rows),
+                            list_projection.payload_key: rows,
+                            "outcome": decide_outcome(matched=len(rows)).to_dict(),
                         }
                     )
                 )

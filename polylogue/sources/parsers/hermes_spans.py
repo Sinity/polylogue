@@ -169,14 +169,14 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, BranchType, MaterialOrigin, Provider
+from polylogue.core.enums import BlockType, BranchType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument, JSONValue, json_document, json_document_list
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
 from .hermes_identity import qualified_session_id as _qualified_session_id
 from .hermes_identity import split_qualified_session_id as _split_qualified_session_id
-from .hermes_state import HermesFidelityCapability, HermesFidelityStatus, HermesImportFidelity
+from .hermes_state import HermesFidelityCapability, HermesImportFidelity
 
 # Real, externally-published ATIF schema-version prefix (NVIDIA NeMo Relay's
 # Hermes plugin emits e.g. "ATIF-v1.7") -- see module docstring for sources.
@@ -1310,7 +1310,7 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
         *,
         verified_by_real_fixture: bool = False,
     ) -> HermesFidelityCapability:
-        status: HermesFidelityStatus = (
+        status: SourceFidelityStatus = (
             "exact" if observed and verified_by_real_fixture else "inferred" if observed else "absent"
         )
         return HermesFidelityCapability(

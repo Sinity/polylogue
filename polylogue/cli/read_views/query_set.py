@@ -14,7 +14,7 @@ from polylogue.cli.query_contracts import QueryExecutionPlan
 from polylogue.cli.read_views.base import ReadViewInvocation
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-from polylogue.surfaces.projection_spec import QueryProjectionSpec
+from polylogue.surfaces.projection_spec import QueryProjectionSpec, RenderDestination
 
 
 def _dialogue_query_set_renderer(
@@ -74,7 +74,7 @@ def run_query_set_read_view(
         else None
     )
 
-    if destination == "file":
+    if destination == RenderDestination.FILE:
         if not out_path:
             raise click.UsageError("--to file requires --out <path>.")
 
@@ -104,7 +104,7 @@ def run_query_set_read_view(
         env.ui.console.print(f"Wrote to {out_path}")
         return
 
-    if destination in ("clipboard", "browser"):
+    if destination in (RenderDestination.CLIPBOARD, RenderDestination.BROWSER):
         # Query-set rendering writes one document per match. Capture that
         # stream before delivery so clipboard/browser destinations receive the
         # complete set instead of silently falling back to stdout.

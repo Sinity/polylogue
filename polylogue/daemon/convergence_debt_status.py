@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_int as _row_int
-from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
+from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -224,7 +224,7 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
                 failure_count=_row_int(row[4]),
                 # row[5] is pre-coerced to a plain int, so the shared helper's
                 # int branch always returns a string, never None.
-                last_failed_at=cast(str, _iso_from_epoch_ms(_row_int(row[5]))),
+                last_failed_at=cast(str, iso_from_epoch_ms(_row_int(row[5]))),
                 next_retry_at=_optional_str(row[7]),
                 retry_due=False,
                 last_error=_optional_str(row[6]),

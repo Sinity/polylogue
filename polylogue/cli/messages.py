@@ -12,6 +12,7 @@ import click
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.message.models import Message
+from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
 from polylogue.archive.query.transaction import QueryContinuationInvalidError, QueryContinuationStaleError
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
@@ -35,7 +36,7 @@ def run_messages(
     request: RootModeRequest,
     *,
     session_id: str,
-    limit: int = 50,
+    limit: int = DEFAULT_MESSAGE_PAGE_LIMIT,
     offset: int = 0,
     full: bool = False,
     output_format: str | None = None,
@@ -164,7 +165,7 @@ def run_raw(
     request: RootModeRequest,
     *,
     session_id: str,
-    limit: int = 50,
+    limit: int = DEFAULT_MESSAGE_PAGE_LIMIT,
     offset: int = 0,
     output_format: str = "json",
 ) -> None:

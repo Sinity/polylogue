@@ -52,6 +52,7 @@ from pathlib import Path
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.logging import get_logger
+from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.connection_profile import (
     READ_PROFILES,
     open_isolated_write_connection,
@@ -396,10 +397,7 @@ class BulkSecretScanResult:
 
 
 def _attached_secret_scan_status_table_exists(conn: sqlite3.Connection, *, schema: str) -> bool:
-    row = conn.execute(
-        f"SELECT 1 FROM {schema}.sqlite_master WHERE type = 'table' AND name = 'secret_scan_status' LIMIT 1"
-    ).fetchone()
-    return row is not None
+    return table_exists(conn, "secret_scan_status", schema=schema)
 
 
 def select_pending_secret_scan_session_ids(

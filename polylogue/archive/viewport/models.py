@@ -13,8 +13,12 @@ from polylogue.archive.viewport.tools import (
     PATH_PATTERN,
     clean_metadata_path_candidate,
     clean_shell_path_candidate,
+    is_file_operation,
+    is_git_operation,
+    is_subagent_operation,
 )
 from polylogue.core.enums import ActionResultState, Origin
+from polylogue.core.tool_identity import TOOL_PATH_INPUT_KEYS, tool_input_command
 
 
 class ReasoningTrace(BaseModel):
@@ -56,24 +60,20 @@ class ToolCall(BaseModel):
 
     @property
     def is_file_operation(self) -> bool:
-        return self.category in (
-            ToolCategory.FILE_READ,
-            ToolCategory.FILE_WRITE,
-            ToolCategory.FILE_EDIT,
-        )
+        return is_file_operation(self.category)
 
     @property
     def is_git_operation(self) -> bool:
-        return self.category == ToolCategory.GIT
+        return is_git_operation(self.category)
 
     @property
     def is_subagent(self) -> bool:
-        return self.category == ToolCategory.SUBAGENT
+        return is_subagent_operation(self.category)
 
     @property
     def affected_paths(self) -> list[str]:
         paths: list[str] = []
-        for field in ("file_path", "path", "file", "filename"):
+        for field in TOOL_PATH_INPUT_KEYS:
             # Input fields named ``file_path``/``path``/``file``/``filename``
             # *usually* hold a path, but not always — some tool inputs
             # repurpose the names for model versions, Python attribute
@@ -96,8 +96,8 @@ class ToolCall(BaseModel):
                     if value:
                         paths.append(value)
 
-        command = self.input.get("command")
-        if isinstance(command, str):
+        command = tool_input_command(self.input)
+        if command is not None:
             for candidate in PATH_PATTERN.findall(command)[:8]:
                 value = clean_shell_path_candidate(candidate)
                 if value:

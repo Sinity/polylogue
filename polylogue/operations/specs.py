@@ -7,9 +7,10 @@ from enum import Enum
 from functools import lru_cache
 from typing import Literal
 
+from polylogue.core.enums import PrincipalSurface
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document
 from polylogue.core.user_state_targets import TARGET_KIND_NAMES
-from polylogue.operations.mutation_transaction import IdempotencyPolicy, Surface, TargetAuthorityPolicy
+from polylogue.operations.mutation_transaction import IdempotencyPolicy, TargetAuthorityPolicy
 
 Effect = Literal["Pure", "DbRead", "DbWrite", "FileWrite", "Network", "LiveArchive", "Destructive"]
 """Declared runtime effect of an operation.
@@ -65,7 +66,7 @@ class OperationSpec:
     """t46.9 AC1: required (non-``None``) whenever ``mutates_state`` is ``True``."""
     operation_version: int = 1
     capability_family: Literal["write", "judge", "maintenance"] = "write"
-    allowed_surfaces: tuple[Surface, ...] = ()
+    allowed_surfaces: tuple[PrincipalSurface, ...] = ()
     target_authority: tuple[TargetAuthorityPolicy, ...] = ()
     affected_tiers: tuple[str, ...] = ()
     idempotency: IdempotencyPolicy = "none"

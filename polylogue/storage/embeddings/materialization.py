@@ -926,19 +926,21 @@ def _archive_embedding_meta_table_for_status(conn: sqlite3.Connection, status_ta
 
 
 def _qualified_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    """Probe a possibly ``schema.table``-qualified name.
+
+    The schema half is a trusted internal alias, and the shared introspection
+    primitive owns both the identifier quoting and the not-yet-attached case
+    (polylogue-grdt).
+    """
     if "." not in table:
         return _table_exists(conn, table)
     schema, _, name = table.rpartition(".")
     if not schema.replace("_", "").isalnum() or not name.replace("_", "").isalnum():
         return False
     try:
-        row = conn.execute(
-            f"SELECT 1 FROM {schema}.sqlite_master WHERE type = 'table' AND name = ?",
-            (name,),
-        ).fetchone()
+        return _table_exists(conn, name, schema=schema)
     except sqlite3.Error:
         return False
-    return row is not None
 
 
 def _qualified_table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

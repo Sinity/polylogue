@@ -118,7 +118,13 @@ def _bool_param(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _epoch_ms(field: str, value: object) -> int | None:
+def _query_date_ms(field: str, value: object) -> int | None:
+    """Lower one *query-grammar* date expression to epoch milliseconds.
+
+    Deliberately not a timestamp-coercion helper (polylogue-z3sv): the input
+    is grammar text such as ``yesterday``, resolved by
+    :func:`parse_query_date`, not a wire timestamp.
+    """
     if isinstance(value, int):
         return value
     if value is None:
@@ -181,8 +187,8 @@ def query_unit_session_filters(**params: object) -> dict[str, object]:
         "max_messages": optional_int(params.get("max_messages")),
         "min_words": optional_int(params.get("min_words")),
         "max_words": optional_int(params.get("max_words")),
-        "since_ms": int(since_ms) if isinstance(since_ms, int) else _epoch_ms("since", params.get("since")),
-        "until_ms": int(until_ms) if isinstance(until_ms, int) else _epoch_ms("until", params.get("until")),
+        "since_ms": int(since_ms) if isinstance(since_ms, int) else _query_date_ms("since", params.get("since")),
+        "until_ms": int(until_ms) if isinstance(until_ms, int) else _query_date_ms("until", params.get("until")),
     }
 
 

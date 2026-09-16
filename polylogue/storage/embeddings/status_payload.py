@@ -11,12 +11,12 @@ import json
 import shlex
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from typing_extensions import TypedDict
 
+from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.embeddings.materialization import (
     archive_embeddable_message_where,
@@ -384,8 +384,8 @@ def _active_failure_details(
                 "error_message": str(row[7]),
                 "retryable": bool(row[8]),
                 "lifecycle_state": str(row[9]),
-                "created_at": _iso_from_epoch_ms(row[10]),
-                "updated_at": _iso_from_epoch_ms(row[11]),
+                "created_at": iso_from_epoch_ms(row[10]),
+                "updated_at": iso_from_epoch_ms(row[11]),
                 "resolution_action": None if row[12] is None else str(row[12]),
                 "supported_actions": ["acknowledge", "requeue", "supersede"],
                 "resolution_command": (
@@ -486,23 +486,6 @@ def _candidate_prose_message_count(
         timeout_ms=timeout_ms,
     )
     return exact_count, exact_count is not None
-
-
-def _iso_from_epoch_ms(value: object) -> str | None:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        epoch_ms = value
-    elif isinstance(value, float):
-        epoch_ms = int(value)
-    elif isinstance(value, str):
-        try:
-            epoch_ms = int(value)
-        except ValueError:
-            return None
-    else:
-        return None
-    return datetime.fromtimestamp(epoch_ms / 1000.0, UTC).isoformat()
 
 
 def _archive_index_path(db_path: Path) -> Path | None:
@@ -1179,8 +1162,8 @@ def _archive_embedding_status_payload(
                 timeout_ms=metadata_timeout_ms,
             )
             if bounds_rows:
-                oldest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][0])
-                newest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][1])
+                oldest_embedded_at = iso_from_epoch_ms(bounds_rows[0][0])
+                newest_embedded_at = iso_from_epoch_ms(bounds_rows[0][1])
         if include_detail and has_messages:
             candidate_prose_messages, candidate_prose_messages_exact = _candidate_prose_message_count(
                 conn,
@@ -1381,8 +1364,8 @@ def _run_has_material_signal(run: EmbeddingCatchupRunPayload) -> bool:
 def _archive_run_payload(run: _ArchiveEmbeddingRunRow) -> EmbeddingCatchupRunPayload:
     started_at_ms = run.started_at_ms
     finished_at_ms = run.finished_at_ms
-    started_at = _iso_from_epoch_ms(started_at_ms) or ""
-    finished_at = _iso_from_epoch_ms(finished_at_ms)
+    started_at = iso_from_epoch_ms(started_at_ms) or ""
+    finished_at = iso_from_epoch_ms(finished_at_ms)
     return {
         "run_id": run.run_id,
         "started_at": started_at,

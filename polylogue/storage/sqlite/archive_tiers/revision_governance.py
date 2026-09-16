@@ -148,6 +148,7 @@ from polylogue.core.timestamp_authority import (
     normalize_session_timestamps,
     session_evidence_timestamps,
 )
+from polylogue.core.timestamps import to_epoch_ms
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
@@ -199,7 +200,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _json_dumps,
     _next_session_event_position,
     _repair_stale_session_observations,
-    _timestamp_ms,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
@@ -2895,7 +2895,7 @@ def _reconcile_chain_summary_events(
             (
                 _json_dumps(composed.payload),
                 _event_summary(composed) or "",
-                _timestamp_ms(composed.timestamp),
+                to_epoch_ms(composed.timestamp, numeric_unit="seconds"),
                 _next_session_event_position(store._conn, session_id),
                 session_id,
                 event_type,

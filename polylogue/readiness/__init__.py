@@ -36,6 +36,7 @@ from polylogue.readiness.capability import (
 )
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import claude_workflow_materialization_status, raw_materialization_ready
+from polylogue.storage.introspection import relation_exists
 from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_frontier_integrity_projection
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
@@ -241,14 +242,6 @@ def _skipped_index_check(db_error: str) -> ReadinessCheck:
 _MESSAGE_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
 
-def _archive_table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ? LIMIT 1",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
 def _message_fts_triggers_present(conn: sqlite3.Connection) -> bool:
     placeholders = ",".join("?" for _ in _MESSAGE_FTS_TRIGGERS)
     present = {
@@ -267,7 +260,7 @@ def _archive_messages_fts_readiness(conn: sqlite3.Connection, *, exact_counts: b
     The search index is ``messages_fts`` (contentless FTS5 over ``blocks``),
     maintained by ``messages_fts_a{i,d,u}`` triggers.
     """
-    exists = _archive_table_exists(conn, "messages_fts")
+    exists = relation_exists(conn, "messages_fts")
     if not exists:
         return {"exists": False, "indexed_rows": 0, "total_rows": 0, "ready": False, "triggers_present": False}
 
@@ -377,7 +370,7 @@ def _fts_sync_check(conn: sqlite3.Connection) -> ReadinessCheck:
     Reports a warning when the message FTS table is absent (desynced/dropped)
     or when its maintenance triggers are missing.
     """
-    if not _archive_table_exists(conn, "messages_fts"):
+    if not relation_exists(conn, "messages_fts"):
         return ReadinessCheck(
             "fts_sync",
             VerifyStatus.WARNING,

@@ -37,7 +37,7 @@ from polylogue.core.hashing import hash_text_short
 from polylogue.core.json import JSONDecodeError, dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_state import raw_state_authority
-from polylogue.core.timestamps import parse_timestamp
+from polylogue.core.timestamps import to_epoch_ms
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root as default_archive_root
 from polylogue.paths import (
@@ -475,11 +475,6 @@ def _attachment_content_enrichment(
     return added_carrier
 
 
-def _timestamp_ms(value: object) -> int | None:
-    parsed = parse_timestamp(value if isinstance(value, (str, int, float)) else None)
-    return int(parsed.timestamp() * 1000) if parsed is not None else None
-
-
 def _session_update_evidence_ms(envelope: BrowserCaptureEnvelope) -> int | None:
     """Return a session update timestamp only when it is independent evidence.
 
@@ -488,8 +483,8 @@ def _session_update_evidence_ms(envelope: BrowserCaptureEnvelope) -> int | None:
     observed, not when the session changed, so it must not participate in the
     session-timestamp ordering below.
     """
-    updated_at = _timestamp_ms(envelope.session.updated_at)
-    captured_at = _timestamp_ms(envelope.provenance.captured_at)
+    updated_at = to_epoch_ms(envelope.session.updated_at, numeric_unit="seconds")
+    captured_at = to_epoch_ms(envelope.provenance.captured_at, numeric_unit="seconds")
     return None if updated_at is not None and updated_at == captured_at else updated_at
 
 
@@ -772,8 +767,8 @@ def _capture_is_newer_or_richer(incoming: BrowserCaptureEnvelope, existing: Brow
     """Prevent a stale, smaller snapshot from replacing a richer spool item."""
     incoming_updated = _session_update_evidence_ms(incoming)
     existing_updated = _session_update_evidence_ms(existing)
-    incoming_captured = _timestamp_ms(incoming.provenance.captured_at)
-    existing_captured = _timestamp_ms(existing.provenance.captured_at)
+    incoming_captured = to_epoch_ms(incoming.provenance.captured_at, numeric_unit="seconds")
+    existing_captured = to_epoch_ms(existing.provenance.captured_at, numeric_unit="seconds")
     incoming_turns = len(incoming.session.turns)
     existing_turns = len(existing.session.turns)
     if existing_captured is not None and incoming_captured is not None and incoming_captured < existing_captured:
@@ -1039,7 +1034,7 @@ def existing_capture_state(
             raw_updated_at = payload.get("session", {}).get("updated_at")
             capture_id = raw_capture_id if isinstance(raw_capture_id, str) else None
             updated_at = raw_updated_at if isinstance(raw_updated_at, str) else None
-            spooled_updated_at_ms = _timestamp_ms(updated_at)
+            spooled_updated_at_ms = to_epoch_ms(updated_at, numeric_unit="seconds")
         except (OSError, json.JSONDecodeError, AttributeError):
             artifact_readable = False
             latest_failure = "spool_unreadable"

@@ -80,6 +80,13 @@ MAX_QUERY_LIMIT = 1000
 #: MCP, Python API, or daemon HTTP.
 DEFAULT_SESSION_LIST_LIMIT = 20
 
+#: Default page size for the messages of one session when callers omit
+#: ``limit``. Sibling of :data:`DEFAULT_SESSION_LIST_LIMIT`: the CLI, daemon
+#: HTTP/web and MCP surfaces each used to hardcode their own number (50, 30
+#: and 20), so the same session id returned three different row counts
+#: depending on which surface asked (polylogue-bwh3h).
+DEFAULT_MESSAGE_PAGE_LIMIT = 50
+
 
 def clamp_query_limit(limit: object, *, default: int = 10) -> int:
     """Clamp a requested ``limit`` into ``[1, MAX_QUERY_LIMIT]``.
@@ -732,6 +739,8 @@ class SessionQuerySpec:
 
 __all__ = [
     "SessionQuerySpec",
+    "DEFAULT_MESSAGE_PAGE_LIMIT",
+    "DEFAULT_SESSION_LIST_LIMIT",
     "MAX_QUERY_LIMIT",
     "QUERY_ACTION_TYPES",
     "QUERY_RETRIEVAL_LANES",

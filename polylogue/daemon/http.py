@@ -2486,8 +2486,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_webui_html(HTTPStatus.OK, render_session_list_page(bundle, page, filters))
 
     def _serve_webui_session_read(self, session_id: str) -> None:
+        from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
         from polylogue.daemon.webui import (
-            SESSION_READ_MESSAGE_LIMIT,
             WebUIAssetBundle,
             WebUIAssetError,
             render_session_read_page,
@@ -2521,7 +2521,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, body)
             return
         try:
-            session = self._do_archive_get_session(archive_root, session_id, limit=SESSION_READ_MESSAGE_LIMIT, offset=0)
+            session = self._do_archive_get_session(archive_root, session_id, limit=DEFAULT_MESSAGE_PAGE_LIMIT, offset=0)
         except sqlite3.OperationalError as exc:
             emit(
                 "daemon.webui.page_read_failed",

@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field
 
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_int as _row_int
-from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
+from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -207,7 +207,7 @@ def _archive_cursor_lag_summary_info(ops_db: Path, *, now: datetime) -> CursorLa
             row[4],
             # row[5] is pre-coerced to a plain int, so the shared helper's
             # int branch always returns a string, never None.
-            cast(str, _iso_from_epoch_ms(_row_int(row[5]))),
+            cast(str, iso_from_epoch_ms(_row_int(row[5]))),
         )
         for row in rows
     ]

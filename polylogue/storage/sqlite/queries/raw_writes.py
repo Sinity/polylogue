@@ -10,6 +10,7 @@ import aiosqlite
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.timestamps import to_epoch_ms
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
@@ -18,7 +19,6 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionResult,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, pending_raw_logical_source_key
-from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
 
 
 def _revision_values(plan: RawAdmissionPlan) -> tuple[object, ...]:
@@ -259,8 +259,8 @@ async def save_raw_session(
         authority=RawRevisionAuthority.QUARANTINED,
     )
 
-    acquired_at_ms = _timestamp_ms(record.acquired_at) or 0
-    file_mtime_ms = _timestamp_ms(record.file_mtime)
+    acquired_at_ms = to_epoch_ms(record.acquired_at, numeric_unit="seconds") or 0
+    file_mtime_ms = to_epoch_ms(record.file_mtime, numeric_unit="seconds")
 
     # Validate the retained raw identity before any duplicate-side effects.
     # This async compatibility writer is often called inside a caller-owned
@@ -335,9 +335,9 @@ async def save_raw_session(
             int(record.blob_size),
             acquired_at_ms,
             file_mtime_ms,
-            _timestamp_ms(record.parsed_at),
+            to_epoch_ms(record.parsed_at, numeric_unit="seconds"),
             record.parse_error,
-            _timestamp_ms(record.validated_at),
+            to_epoch_ms(record.validated_at, numeric_unit="seconds"),
             require_vocabulary(record.validation_status, ValidationStatus, field="validation_status")
             if record.validation_status is not None
             else None,

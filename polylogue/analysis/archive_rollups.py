@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from typing import cast
 
 from polylogue.analysis.archive import (
     ArchiveInsightProvenance,
@@ -26,18 +27,28 @@ from polylogue.archive.semantic.pricing import (
 )
 from polylogue.archive.session.repo_identity import normalize_repo_names
 from polylogue.archive.session.session_profile import SessionProfile
+from polylogue.core.enums import TERMINAL_STATE_VALUES, TerminalState
 from polylogue.storage.runtime import SessionTagRollupRecord
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 
 # Severity rank for "how badly did this session get left hanging" (#1691).
 # Distinct vocabulary from portfolio.py's pathology _SEVERITY_RANK
 # (high/medium/low) -- this ranks terminal_state values.
-ABANDONMENT_SEVERITY_RANK: dict[str, int] = {
+#: Typed and asserted total against :data:`TerminalState` (polylogue-hjvow):
+#: ``agent_hanging`` was a dead key no producer emits, and ``refused`` /
+#: ``truncated`` were silently ranked 0 (never abandoned) by the ``.get``
+#: default below.
+ABANDONMENT_SEVERITY_RANK: dict[TerminalState, int] = {
+    "unknown": 0,
     "question_left": 1,
-    "error_left": 2,
-    "tool_left": 3,
-    "agent_hanging": 4,
+    "refused": 2,
+    "error_left": 3,
+    "tool_left": 4,
+    "truncated": 5,
 }
+
+if set(ABANDONMENT_SEVERITY_RANK) != TERMINAL_STATE_VALUES:
+    raise RuntimeError("every terminal state needs a declared abandonment severity")
 
 
 @dataclass(slots=True)
@@ -391,14 +402,14 @@ def abandoned_session_items(
     ``min_severity``.
     """
     if min_severity not in ABANDONMENT_SEVERITY_RANK:
-        raise ValueError("min_severity must be one of question_left, error_left, tool_left, agent_hanging")
+        raise ValueError("min_severity must be one of " + ", ".join(sorted(ABANDONMENT_SEVERITY_RANK)))
     min_rank = ABANDONMENT_SEVERITY_RANK[min_severity]
     items: list[dict[str, object]] = []
     for profile in profiles:
         inference = profile.inference
         evidence = profile.evidence
         state = inference.terminal_state if inference is not None else "unknown"
-        if ABANDONMENT_SEVERITY_RANK.get(state, 0) < min_rank:
+        if ABANDONMENT_SEVERITY_RANK.get(cast("TerminalState", state), 0) < min_rank:
             continue
         items.append(
             {
