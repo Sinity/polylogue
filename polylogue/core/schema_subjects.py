@@ -21,12 +21,44 @@ class SchemaSubjectSpec:
     origins: tuple[str, ...]
     requires_package: bool = True
     package_not_required_reason: str | None = None
+    member_prefixes: tuple[str, ...] = ()
+    excluded_member_prefixes: tuple[str, ...] = ()
+
+    def admits_member(self, member_path: str) -> bool:
+        """Decide whether one member of a shared export root belongs to this subject.
+
+        Two subjects can declare the same physical root (the Claude account
+        export ships both GDPR conversations and design chats).  Without a
+        member rule each would fold the other's material and describe the
+        wrong wire format.  ``member_prefixes`` is a positive admission list;
+        ``excluded_member_prefixes`` removes members owned by a sibling
+        subject.  A subject declaring neither admits every member.
+        """
+
+        normalized = member_path.replace("\\", "/").lstrip("/")
+        if any(normalized.startswith(prefix) for prefix in self.excluded_member_prefixes):
+            return False
+        if not self.member_prefixes:
+            return True
+        return any(normalized.startswith(prefix) for prefix in self.member_prefixes)
 
 
 SCHEMA_SUBJECTS: Final[tuple[SchemaSubjectSpec, ...]] = (
     SchemaSubjectSpec("chatgpt", "chatgpt", "chatgpt", ("chatgpt-export",)),
-    SchemaSubjectSpec("claude-ai", "claude-ai", "claude-ai", ("claude-ai-export",)),
-    SchemaSubjectSpec("claude-design", "claude-design", "claude-design", ("claude-design-session",)),
+    SchemaSubjectSpec(
+        "claude-ai",
+        "claude-ai",
+        "claude-ai",
+        ("claude-ai-export",),
+        excluded_member_prefixes=("design_chats/",),
+    ),
+    SchemaSubjectSpec(
+        "claude-design",
+        "claude-design",
+        "claude-design",
+        ("claude-design-session",),
+        member_prefixes=("design_chats/",),
+    ),
     SchemaSubjectSpec("claude-code", "claude-code", "claude-code", ("claude-code-session",)),
     SchemaSubjectSpec("codex", "codex", "codex", ("codex-session",)),
     SchemaSubjectSpec("gemini", "gemini", "gemini", ("aistudio-drive",)),
@@ -63,6 +95,13 @@ CORE_SCHEMA_ORIGINS: Final[tuple[str, ...]] = tuple(
 )
 
 
+def subject_admits_member(token: str, member_path: str) -> bool:
+    """Admit a member for an undeclared subject; enforce the rule for a declared one."""
+
+    subject = schema_subject(token)
+    return True if subject is None else subject.admits_member(member_path)
+
+
 def schema_subject(token: str) -> SchemaSubjectSpec | None:
     """Return the declared subject for a normalized token."""
 
@@ -77,4 +116,5 @@ __all__ = [
     "SCHEMA_SUBJECT_BY_TOKEN",
     "SchemaSubjectSpec",
     "schema_subject",
+    "subject_admits_member",
 ]
