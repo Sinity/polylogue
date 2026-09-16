@@ -110,15 +110,19 @@ def _message_axis_relation(
     counts_b = {(identity, content): multiplicity for identity, content, multiplicity in contents_b}
     identity_counts_a: dict[bytes, int] = {}
     identity_counts_b: dict[bytes, int] = {}
-    for (identity, _content), multiplicity in counts_a.items():
+    contents_by_identity_a: dict[bytes, set[bytes]] = {}
+    contents_by_identity_b: dict[bytes, set[bytes]] = {}
+    for (identity, content), multiplicity in counts_a.items():
         identity_counts_a[identity] = identity_counts_a.get(identity, 0) + multiplicity
-    for (identity, _content), multiplicity in counts_b.items():
+        contents_by_identity_a.setdefault(identity, set()).add(content)
+    for (identity, content), multiplicity in counts_b.items():
         identity_counts_b[identity] = identity_counts_b.get(identity, 0) + multiplicity
+        contents_by_identity_b.setdefault(identity, set()).add(content)
     identities_a = _message_identities(contents_a)
     identities_b = _message_identities(contents_b)
     for identity in identities_a & identities_b:
-        content_values_a = {content for candidate_identity, content in counts_a if candidate_identity == identity}
-        content_values_b = {content for candidate_identity, content in counts_b if candidate_identity == identity}
+        content_values_a = contents_by_identity_a.get(identity, set())
+        content_values_b = contents_by_identity_b.get(identity, set())
         if identity in mutable_identities:
             continue
         if content_values_a != content_values_b:

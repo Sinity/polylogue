@@ -141,13 +141,29 @@ def _detect_provider(payload: dict[str, object], *, event_type: str | None = Non
 def _reject_duplicated_transcript(payload: dict[str, object]) -> str | None:
     """Return an error message if the payload looks like a duplicated transcript."""
     for key in _TRANSCRIPT_LIKE_KEYS:
-        value = payload.get(key)
-        if isinstance(value, str) and len(value) > _MAX_TRANSCRIPT_LIKE_FIELD_CHARS:
+        size = _transcript_like_chars(payload.get(key))
+        if size > _MAX_TRANSCRIPT_LIKE_FIELD_CHARS:
             return (
                 f"polylogue-hook: payload field {key!r} looks like a duplicated transcript "
-                f"({len(value)} chars > {_MAX_TRANSCRIPT_LIKE_FIELD_CHARS})"
+                f"({size} chars > {_MAX_TRANSCRIPT_LIKE_FIELD_CHARS})"
             )
     return None
+
+
+_TRANSCRIPT_LIKE_MAX_DEPTH = 6
+
+
+def _transcript_like_chars(value: object, depth: int = 0) -> int:
+    """Characters of string content under ``value``, depth-capped (mirrors sources/hook_producer.py)."""
+    if isinstance(value, str):
+        return len(value)
+    if depth >= _TRANSCRIPT_LIKE_MAX_DEPTH:
+        return 0
+    if isinstance(value, dict):
+        return sum(_transcript_like_chars(item, depth + 1) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_transcript_like_chars(item, depth + 1) for item in value)
+    return 0
 
 
 def _extract_session_id(payload: dict[str, object]) -> str | None:

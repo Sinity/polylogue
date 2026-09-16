@@ -267,3 +267,25 @@ def test_provider_detection_reads_both_payload_generations(
     monkeypatch.setattr(hook_producer, "_configured_provider", lambda: None)
 
     assert hook_producer.detect_provider(payload) == "claude-code"
+
+
+def test_nested_transcript_payloads_are_rejected() -> None:
+    """polylogue-54a31 (3): a transcript hidden in a list or dict is still a transcript."""
+    import pytest
+
+    from polylogue.sources.hook_producer import (
+        MAX_TRANSCRIPT_LIKE_FIELD_CHARS,
+        HookSpoolRecordError,
+        reject_duplicated_transcript,
+    )
+
+    body = "x" * (MAX_TRANSCRIPT_LIKE_FIELD_CHARS + 1)
+    with pytest.raises(HookSpoolRecordError):
+        reject_duplicated_transcript({"messages": [body]})
+    with pytest.raises(HookSpoolRecordError):
+        reject_duplicated_transcript({"content": {"parts": [{"text": body}]}})
+    # Two small strings that only sum past the cap are still one copy of a transcript.
+    half = "y" * (MAX_TRANSCRIPT_LIKE_FIELD_CHARS // 2 + 1)
+    with pytest.raises(HookSpoolRecordError):
+        reject_duplicated_transcript({"transcript": [half, half]})
+    reject_duplicated_transcript({"messages": ["short"], "tool_name": "Bash"})

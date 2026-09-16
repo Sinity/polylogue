@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from typing import cast
 
 from pydantic import ValidationError
@@ -11,6 +12,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.message_owner import MessageOwnerCoordinate
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
 
@@ -75,6 +77,20 @@ _CHUNK_CONTENT_KEYS = frozenset(
         "isThought",
     }
 )
+
+
+_EPOCH_FLOOR = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _sort_instant(value: str | None) -> datetime:
+    """Chain-ordering key: parsed instant, unparseable/missing floor to the start.
+
+    Sorting the raw strings put '+02:00' offsets after 'Z' instants and
+    reversed a persisted parent chain; position stays the tiebreak so
+    unparseable values keep their original order.
+    """
+    parsed = parse_timestamp(value) if isinstance(value, str) and value else None
+    return parsed if parsed is not None else _EPOCH_FLOOR
 
 
 def _collect_drive_docs(payload: object) -> list[JSONDocument | str]:
@@ -576,7 +592,13 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     # fill_linear_parent_chain chains by LIST POSITION, so it must run
     # against a temporally-sorted view, not the raw chunk-input order.
     by_position = {id(message): position for position, message in enumerate(messages)}
-    temporally_sorted = sorted(messages, key=lambda message: (message.timestamp or "", by_position[id(message)]))
+    temporally_sorted = sorted(
+        messages,
+        key=lambda message: (
+            _sort_instant(message.timestamp),
+            by_position[id(message)],
+        ),
+    )
     filled_sorted = fill_linear_parent_chain(temporally_sorted)
     parent_by_position = {
         message.position: (message.parent_message_provider_id, message.parent_message_position)

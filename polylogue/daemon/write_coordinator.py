@@ -163,8 +163,13 @@ class _PriorityGate:
         while self._waiters:
             _, _, fut = self._waiters[0]
             if fut.done():
-                heapq.heappop(self._waiters)
-                continue
+                if fut.cancelled():
+                    heapq.heappop(self._waiters)
+                    continue
+                # Already granted and not yet resumed: the grant is in flight.
+                # Skipping past it would hand the gate to a second waiter
+                # (asyncio.Lock inspects only the head for the same reason).
+                return
             fut.set_result(None)
             return
 

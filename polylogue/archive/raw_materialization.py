@@ -32,7 +32,10 @@ def parsed_non_session_artifact_reason(
         first_keys = set(leading_objects[0])
         if {"sessionId", "projectHash", "startTime", "lastUpdated", "kind"} <= first_keys:
             return "Claude Code metadata-only session descriptor"
-    if origin == "claude-ai-export" and _claude_ai_empty_conversation(_raw_blob_path(archive_root, blob_hash)):
+    if origin == "claude-ai-export" and _claude_ai_empty_conversation(
+        _raw_blob_path(archive_root, blob_hash),
+        decoded=leading_objects[0] if len(leading_objects) == 1 else None,
+    ):
         return "Claude.ai empty conversation artifact"
     if origin == "codex-session" and set(first_types) == {"session_meta"}:
         return "Codex metadata-only session file"
@@ -86,11 +89,18 @@ def _raw_blob_path(archive_root: Path, blob_hash: bytes | str | None) -> Path:
     return archive_root / "blob" / blob_hash_hex[:2] / blob_hash_hex[2:]
 
 
-def _claude_ai_empty_conversation(path: Path) -> bool:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
-        return False
+def _claude_ai_empty_conversation(path: Path, *, decoded: dict[str, Any] | None = None) -> bool:
+    # A single-line export was already decoded by the leading-objects probe;
+    # reuse it rather than reading and decoding the whole artifact a second
+    # time with the first copy still live. A pretty-printed multi-line export
+    # yields no leading objects and must still take the whole-file path.
+    if decoded is not None:
+        payload: Any = decoded
+    else:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            return False
     if not isinstance(payload, dict):
         return False
     messages = payload.get("chat_messages")

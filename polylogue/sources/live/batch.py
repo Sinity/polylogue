@@ -2508,7 +2508,8 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             elif codex_owned_sqlite_name or (
-                codex_member is not None
+                fallback_provider is Provider.CODEX
+                and codex_member is not None
                 and codex_member.disposition != "out-of-scope"
                 and codex_state.is_in_scope_codex_sqlite_path(path)
             ):

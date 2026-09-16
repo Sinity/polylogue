@@ -194,6 +194,16 @@ def _requires_migration_backup(sql: str) -> bool:
     return first_nonblank != _ADDITIVE_NO_BACKUP_MARKER
 
 
+def migration_sort_key(name: str) -> tuple[int, str]:
+    """Discovery order for migration files: numeric version first.
+
+    A lexicographic sort orders ``1000_x.sql`` before ``999_y.sql`` and the
+    chain check then refuses every migration past 999.
+    """
+    match = _MIGRATION_NAME_RE.match(name)
+    return (int(match.group("version")) if match else -1, name)
+
+
 def _load_migrations(tier: ArchiveTier) -> tuple[MigrationStep, ...]:
     if tier not in DURABLE_MIGRATION_TIERS:
         return ()
@@ -203,7 +213,7 @@ def _load_migrations(tier: ArchiveTier) -> tuple[MigrationStep, ...]:
         return ()
     steps: list[MigrationStep] = []
     claims: list[DurableMigrationClaim] = []
-    for item in sorted(files.iterdir(), key=lambda path: path.name):
+    for item in sorted(files.iterdir(), key=lambda path: migration_sort_key(path.name)):
         if _MIGRATION_NAME_RE.match(item.name) is None:
             continue
         sql = item.read_text(encoding="utf-8")

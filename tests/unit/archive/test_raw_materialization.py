@@ -284,3 +284,54 @@ def test_claude_ai_conversation_with_attachment_content_remains_session_shaped(t
         )
         is None
     )
+
+
+def test_claude_ai_empty_conversation_check_reuses_the_decoded_single_line_export(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """polylogue-i60k5: a single-line export is decoded once, not twice.
+
+    Anti-vacuity: drop the ``decoded=`` hand-off and the blob is read a
+    second time by ``_claude_ai_empty_conversation``.
+    """
+    import polylogue.archive.raw_materialization as module
+
+    blob_hash = _write_blob(
+        tmp_path,
+        "2c" * 32,
+        json.dumps({"uuid": "conversation", "name": "", "chat_messages": []}),
+    )
+    reads: list[Path] = []
+    original = Path.read_text
+
+    def counting_read_text(self: Path, encoding: str | None = None, errors: str | None = None) -> str:
+        reads.append(self)
+        return original(self, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)  # type: ignore[attr-defined]
+    reason = module.parsed_non_session_artifact_reason(
+        archive_root=tmp_path,
+        origin="claude-ai-export",
+        source_path=str(tmp_path / "conversation.json"),
+        blob_hash=blob_hash,
+    )
+    assert reason == "Claude.ai empty conversation artifact"
+    blob_reads = [path for path in reads if path.name == "2c" * 31]
+    assert len(blob_reads) <= 1
+
+
+def test_claude_ai_non_empty_single_line_export_is_a_session(tmp_path: Path) -> None:
+    blob_hash = _write_blob(
+        tmp_path,
+        "2d" * 32,
+        json.dumps({"uuid": "conversation", "name": "", "chat_messages": [{"uuid": "m1", "text": "hello"}]}),
+    )
+    assert (
+        parsed_non_session_artifact_reason(
+            archive_root=tmp_path,
+            origin="claude-ai-export",
+            source_path=str(tmp_path / "conversation.json"),
+            blob_hash=blob_hash,
+        )
+        is None
+    )

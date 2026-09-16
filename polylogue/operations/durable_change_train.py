@@ -1094,7 +1094,10 @@ def _validate_audit_adoption_continuity(
     # the continuity schema, a missing control table remains a hard failure.
     source_path = archive_root / "source.db"
     try:
-        with closing(open_readonly_connection(source_path, immutable=True, validate_schema=False)) as source:
+        # Live database: never immutable=1, which ignores the WAL and can
+        # report the pre-migration image after an unclean shutdown, turning
+        # this continuity check into a silent pass.
+        with closing(open_readonly_connection(source_path, validate_schema=False)) as source:
             source_version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
             has_control = (
                 source.execute(

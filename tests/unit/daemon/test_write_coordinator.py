@@ -1218,3 +1218,47 @@ class TestDeclaredHoldBudgets:
 
         assert active_write_hold() is None
         check_write_hold_budget("item:none")
+
+
+@pytest.mark.asyncio
+async def test_priority_gate_never_grants_twice_when_a_waiter_cancels_during_handoff() -> None:
+    """polylogue-tcear: an in-flight grant is not skipped past.
+
+    ``release()`` completes the head waiter's future before that waiter has
+    resumed. A sibling waiter cancelling in that window ran ``_wake_next``,
+    which popped the already-done head and granted a SECOND waiter, so two
+    ``acquire()`` calls completed against one gate. Anti-vacuity: restore
+    pop-and-continue for done-but-not-cancelled futures and ``acquired``
+    reaches 2.
+    """
+    from polylogue.daemon.write_coordinator import _PriorityGate
+
+    gate = _PriorityGate()
+    await gate.acquire(0)
+    acquired: list[str] = []
+
+    async def waiter(name: str, priority: int) -> None:
+        await gate.acquire(priority)
+        acquired.append(name)
+
+    second = asyncio.create_task(waiter("second", 1))
+    third = asyncio.create_task(waiter("third", 2))
+    fourth = asyncio.create_task(waiter("fourth", 3))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    # Cancel the third waiter, then release, before yielding: the third
+    # waiter's cancellation handler runs before the second waiter resumes.
+    third.cancel()
+    gate.release()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    with pytest.raises(asyncio.CancelledError):
+        await third
+    assert acquired == ["second"]
+    assert gate.locked is True
+    assert not fourth.done()
+    gate.release()
+    await fourth
+    assert acquired == ["second", "fourth"]
+    gate.release()
+    await second
