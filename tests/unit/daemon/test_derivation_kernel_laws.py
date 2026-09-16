@@ -881,3 +881,64 @@ def test_inspection_budget_allows_already_inspected_key_to_publish() -> None:
     assert report.work.discovered == 1
     # Publication certification is counted separately from discovery admission.
     assert report.work.inspected == 2
+
+
+def test_a_failed_bulk_inspect_retry_does_not_report_the_key_as_valid() -> None:
+    """An inspection that raised is absence of evidence, not evidence of validity.
+
+    The kernel retries a failed bulk inspection key by key and records the
+    still-failing key ``FAILED``. It used to *also* write
+    ``statuses[key] = KeyStatus.VALID`` for that key, which is the one status
+    that asserts the output is already up to date (polylogue-tjtua).
+
+    Anti-vacuity: restore that assignment and ``good`` is still published while
+    ``poison`` is reported VALID-by-fiat -- observable here as the excess sweep
+    no longer being able to distinguish it, so assert on the recorded status
+    directly through a domain that publishes on demand.
+    """
+    inspected_alone: list[str] = []
+
+    class KeyPoisoned(RecordingDerivation):
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            if len(keys) == 1:
+                inspected_alone.append(keys[0])
+            if "poison" in keys:
+                raise RuntimeError("cannot read output relation for poison")
+            return super().inspect(frame, keys)
+
+    domain = KeyPoisoned("d", required=("poison", "good"))
+    report = converge(DerivationRegistry([domain]), FRAME)
+
+    # The per-key retry ran for both keys, and only the readable one published.
+    assert set(inspected_alone) >= {"poison", "good"}
+    assert domain.published == ["good"]
+
+    failed = report.by_outcome(Outcome.FAILED)
+    assert [(item.key.domain, item.key.key) for item in failed] == [("d", "poison")]
+    # A key whose authority could not be inspected is not converged.
+    assert report.done == 1
+    assert "poison" not in domain.output
+
+
+def test_the_publication_budget_bounds_attempts_not_certified_publications() -> None:
+    """An adapter that always mis-publishes cannot spin inside one pass.
+
+    ``publish`` returns True but leaves the output relation missing, so
+    post-publication certification records FAILED every time.
+
+    Anti-vacuity: move the ``published`` counter back behind the certification
+    check and this pass issues one ``publish`` call per required key (4) rather
+    than the two the budget allows.
+    """
+
+    class MisPublishing(RecordingDerivation):
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            self.published.append(str(replacement.payload))
+            return True  # lies: nothing is written to ``output``
+
+    domain = MisPublishing("d", required=("a", "b", "c", "d"))
+
+    report = converge(DerivationRegistry([domain]), FRAME, budget=Budget(page=4, publication=2))
+
+    assert domain.published == ["a", "b"]
+    assert report.failed == 2

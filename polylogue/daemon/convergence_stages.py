@@ -223,18 +223,6 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
                 path=path,
             )
             return False
-        except Exception as exc:
-            emit(
-                "daemon.stage.check_failed",
-                level=WARNING,
-                stage="claude_workflow",
-                outcome="degraded",
-                reason="probe_failed_assuming_work",
-                path=path,
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            return True
 
     def execute(path: Path) -> StageExecuteReturn:
         if not relevant(path):
@@ -306,17 +294,6 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
             return delegation_work_evidence_materialization_needed(archive_root())
         except FileNotFoundError:
             return False
-        except Exception as exc:
-            emit(
-                "daemon.stage.check_failed",
-                level=WARNING,
-                stage="delegation_work_evidence",
-                outcome="degraded",
-                reason="probe_failed_assuming_work",
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            return True
 
     def execute(path: Path) -> StageExecuteReturn:
         del path
@@ -454,19 +431,7 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
         return find_raw_authority_verdict_cache_work(db_path.parent)
 
     def check(_path: Path) -> bool:
-        try:
-            discovered = work()
-        except Exception as exc:
-            emit(
-                "daemon.stage.check_failed",
-                level=WARNING,
-                stage="raw_authority_verdict_cache",
-                outcome="degraded",
-                reason="probe_failed_assuming_work",
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            return True
+        discovered = work()
         if discovered is None:
             return False
         return bool(discovered.pending_logical_source_keys)
@@ -474,20 +439,7 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
     def check_many(paths: Sequence[Path]) -> set[Path]:
         if not paths:
             return set()
-        try:
-            discovered = work()
-        except Exception as exc:
-            emit(
-                "daemon.stage.check_failed",
-                level=WARNING,
-                stage="raw_authority_verdict_cache",
-                outcome="degraded",
-                reason="batch_probe_failed_assuming_work",
-                files=len(paths),
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            return set(paths)
+        discovered = work()
         if discovered is None:
             return set()
         return set(paths) if discovered.pending_logical_source_keys else set()

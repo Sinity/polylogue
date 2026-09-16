@@ -12,6 +12,7 @@ from polylogue.agent_integration.spec import (
     TOOL_CONTRACTS,
 )
 from polylogue.mcp.declarations import TARGET_PROMPTS, TARGET_RESOURCES, MCPCapabilities, declared_tool_names
+from polylogue.mcp.declarations.registry import UNBUILT_RESOURCE_OBJECT_KINDS
 from polylogue.version import POLYLOGUE_VERSION
 
 _MANUAL_RESOURCES = (
@@ -19,6 +20,20 @@ _MANUAL_RESOURCES = (
     "polylogue://agent/reference",
     "polylogue://agent/manifest",
 )
+
+
+def live_resource_uri_templates() -> tuple[str, ...]:
+    """Return the URI templates ``server_resources.py`` actually registers.
+
+    Read off a real registration pass rather than restated: this is the half of
+    the resource reconciliation that a hand-maintained declaration cannot see
+    (polylogue-w17k1, where TARGET_RESOURCES was wrong in both directions at
+    once -- seven declared resources did not exist and thirteen live ones were
+    undeclared).
+    """
+    from polylogue.mcp.server_resources import registered_resource_uri_templates
+
+    return registered_resource_uri_templates()
 
 
 def target_tool_names(capabilities: MCPCapabilities = MCPCapabilities()) -> tuple[str, ...]:
@@ -75,6 +90,8 @@ def build_live_manifest(capabilities: MCPCapabilities = MCPCapabilities()) -> di
     schemas_verified = target_contract_schemas_are_live_verified()
     cutover_ready = names_registered and schemas_verified
     allowed_recipes = [recipe.id for recipe in RECIPES]
+    declared_resources = {item.uri_template for item in TARGET_RESOURCES}
+    live_resources = set(live_resource_uri_templates())
     metadata = agent_asset_metadata()
     return {
         "schema_version": 2,
@@ -95,6 +112,11 @@ def build_live_manifest(capabilities: MCPCapabilities = MCPCapabilities()) -> di
         "compatibility_tools_remaining": sorted(runtime_set - target_set),
         "resources": [item.uri_template for item in TARGET_RESOURCES if "{" not in item.uri_template],
         "resource_templates": [item.uri_template for item in TARGET_RESOURCES if "{" in item.uri_template],
+        # Mirrors ``missing_target_tools``: declared resources the live server
+        # does not register, and live registrations no declaration mentions.
+        "missing_target_resources": sorted(declared_resources - live_resources),
+        "undeclared_live_resources": sorted(live_resources - declared_resources),
+        "unbuilt_resource_object_kinds": list(UNBUILT_RESOURCE_OBJECT_KINDS),
         "manual_resources": list(_MANUAL_RESOURCES),
         "prompts": [item.name for item in TARGET_PROMPTS],
         "counts": {
@@ -119,6 +141,7 @@ def manifest_name_sets(payload: dict[str, object]) -> dict[str, set[str]]:
 
 __all__ = [
     "build_live_manifest",
+    "live_resource_uri_templates",
     "declared_runtime_tool_names",
     "manifest_name_sets",
     "target_contract_schemas_are_live_verified",

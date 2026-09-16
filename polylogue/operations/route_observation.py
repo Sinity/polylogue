@@ -27,6 +27,16 @@ from polylogue.logging import get_logger
 logger = get_logger(__name__)
 
 _CONNECT_TIMEOUT_S = 2.0
+#: ``ops.db`` is the disposable tier and a route observation is explicitly
+#: best-effort telemetry, not audit evidence. The default ``synchronous=FULL``
+#: made every observation pay a synchronous fsync on the hot path of the route
+#: it was measuring -- 12.88 ms per insert+commit measured against a real
+#: ops.db (polylogue-5lfcr), which is the opposite of this writer's declared
+#: intent and is three orders of magnitude above the pruning work it does per
+#: call. ``OFF`` keeps the row committed and immediately visible to every
+#: reader of the file; what it drops is the durability guarantee across a host
+#: crash, for a tier whose whole contract is that it can be discarded.
+_OBSERVATION_SYNCHRONOUS = "OFF"
 _GIT_HEAD_TIMEOUT_S = 1.0
 LOW_CONFIDENCE_SAMPLE_FLOOR = 5
 
@@ -109,6 +119,17 @@ def observe_route(
         )
 
 
+def open_observation_connection(ops_db: Path) -> sqlite3.Connection:
+    """Open the best-effort route-observation writer for ``ops_db``."""
+    conn = sqlite3.connect(ops_db, timeout=_CONNECT_TIMEOUT_S)
+    try:
+        conn.execute(f"PRAGMA synchronous = {_OBSERVATION_SYNCHRONOUS}")
+    except sqlite3.Error:
+        conn.close()
+        raise
+    return conn
+
+
 def _emit_best_effort(
     *,
     archive_root: Path | None,
@@ -131,7 +152,7 @@ def _emit_best_effort(
     try:
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_route_observation
 
-        conn = sqlite3.connect(ops_db, timeout=_CONNECT_TIMEOUT_S)
+        conn = open_observation_connection(ops_db)
         try:
             record_route_observation(
                 conn,
@@ -237,4 +258,5 @@ __all__ = [
     "RouteObservationContext",
     "compute_latency_percentiles",
     "observe_route",
+    "open_observation_connection",
 ]
