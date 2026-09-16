@@ -8,6 +8,10 @@ export function createBackgroundAdapters(browser = globalThis.chrome, network = 
     scripting: browser.scripting,
     runtime: browser.runtime,
     action: browser.action,
+    // Optional host permissions (the non-default receiver port, leak audit
+    // L7) are checked through this seam; a browser without the API at all
+    // is treated as ungranted by the caller.
+    permissions: browser.permissions,
     network: (...args) => fetchImpl(...args),
     now: () => clock.now(),
     log: (...args) => console.debug("[polylogue-background]", ...args),

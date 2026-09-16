@@ -292,13 +292,38 @@ def _has_continuation_evidence(
     return cwd_match or repo_match
 
 
+def _redacted_validation_errors(exc: ValidationError) -> str:
+    """Structural summary of a validation failure, carrying no payload content.
+
+    ``str(exc)`` and ``exc.errors()`` both reproduce the rejected input by
+    default. This keeps only each error's ``loc`` (the field path) and
+    ``type`` (the rule that fired), which is what a parse-skip diagnosis
+    needs, and drops ``msg``/``input``/``ctx`` -- ``msg`` can quote the input
+    and ``ctx`` can carry it verbatim.
+    """
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error.get('loc', ()))}: {error.get('type', 'unknown')}"
+        for error in exc.errors(include_url=False, include_context=False, include_input=False)
+    )
+
+
 def _validate_record(item: object, *, index: int, context: str = "record") -> CodexRecord | None:
     if not isinstance(item, dict):
         return None
     try:
         return CodexRecord.model_validate(item)
     except ValidationError as exc:
-        logger.debug("Skipping invalid %s at index %d: %s", context, index, exc)
+        # Never interpolate the ValidationError itself: Pydantic v2's __str__
+        # embeds ``input_value``, i.e. raw captured payload content, into the
+        # log line (2026-07-31 leak audit L13, polylogue-tztk). Only the
+        # structural coordinates -- which field failed and how -- are needed
+        # to diagnose a parse skip, and those carry no content.
+        logger.debug(
+            "Skipping invalid %s at index %d: %s",
+            context,
+            index,
+            _redacted_validation_errors(exc),
+        )
         return None
 
 
