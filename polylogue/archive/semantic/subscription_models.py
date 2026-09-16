@@ -60,7 +60,6 @@ class UsageOutlookPayload(BaseModel):
     priced_session_count: int = 0
     unavailable_session_count: int = 0
     confidence: float = 1.0
-    coverage_pct: float = 100.0
     projection_method: str = "trailing_30d_linear"
 
 

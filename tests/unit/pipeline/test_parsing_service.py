@@ -264,7 +264,22 @@ class TestParsingServiceParseSources:
         assert result.counts["messages"] == 0
         assert len(result.processed_ids) == 0
 
-    async def test_ingest_calls_acquire_then_parse(self) -> None:
+    async def test_parse_sources_pins_acquire_then_parse_call_ordering(self) -> None:
+        """``parse_sources`` acquires first, then parses exactly the acquired raw ids.
+
+        This test pins wiring only: which collaborators run, in what order, and
+        with which arguments. ``parse_from_raw`` is patched, so nothing here can
+        say anything about parse correctness -- real parsing is covered by
+        ``test_parse_from_raw_parses_stored_sessions`` and
+        ``test_ingest_with_real_database`` against a real database, and the
+        count assertions this test used to carry only echoed the patched
+        return value (polylogue-rxfo).
+
+        Anti-vacuity: parsing before acquiring, parsing raw ids other than the
+        ones acquisition returned, or dropping the validation/parse backlog
+        collection makes this test red.
+        """
+
         mock_repository = MagicMock()
         mock_backend = MagicMock()
         mock_repository.backend = mock_backend
@@ -275,9 +290,21 @@ class TestParsingServiceParseSources:
         acquire_result.raw_ids = ["raw-1", "raw-2"]
         acquire_result.acquired = 2
 
+        order: list[str] = []
+
+        async def record_acquire(*args: object, **kwargs: object) -> AcquireResult:
+            del args, kwargs
+            order.append("acquire")
+            return acquire_result
+
+        async def record_parse(*args: object, **kwargs: object) -> ParseResult:
+            del args, kwargs
+            order.append("parse")
+            return ParseResult()
+
         with patch(
             "polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources",
-            new=AsyncMock(return_value=acquire_result),
+            new=AsyncMock(side_effect=record_acquire),
         ) as mock_acquire:
             with patch(
                 "polylogue.pipeline.services.planning.PlanningService.collect_validation_backlog",
@@ -287,16 +314,13 @@ class TestParsingServiceParseSources:
                     "polylogue.pipeline.services.planning.PlanningService.collect_parse_backlog",
                     new=AsyncMock(return_value=[]),
                 ) as mock_collect_parse:
-                    parse_result = ParseResult()
-                    parse_result.counts["sessions"] = 2
-                    parse_result.counts["messages"] = 5
-                    parse_result.processed_ids = {"conv-1", "conv-2"}
                     with patch.object(
-                        service, "parse_from_raw", new_callable=AsyncMock, return_value=parse_result
+                        service, "parse_from_raw", new_callable=AsyncMock, side_effect=record_parse
                     ) as mock_parse:
                         source = Source(name="test-source", path=Path("/tmp/inbox"))
-                        result = await service.parse_sources([source])
+                        await service.parse_sources([source])
 
+        assert order == ["acquire", "parse"]
         mock_acquire.assert_awaited_once_with(
             [Source(name="test-source", path=Path("/tmp/inbox"))],
             ui=None,
@@ -306,12 +330,10 @@ class TestParsingServiceParseSources:
         # In the unified ingest flow, validation backlog is collected as part of parse candidates
         mock_collect_validate.assert_awaited_once()
         mock_collect_parse.assert_awaited_once()
+        # The parse step receives exactly the raw ids acquisition returned.
         mock_parse.assert_awaited_once_with(
             raw_ids=["raw-1", "raw-2"], progress_callback=None, force_write=False, max_pass_seconds=None
         )
-        assert result.counts["sessions"] == 2
-        assert result.counts["messages"] == 5
-        assert result.processed_ids == {"conv-1", "conv-2"}
 
     async def test_ingest_sources_surfaces_batch_diagnostics_only(self) -> None:
         mock_repository = MagicMock()

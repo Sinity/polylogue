@@ -1279,6 +1279,103 @@ print(json.dumps({
 """
 
 
+def _reset_build_id_memo(monkeypatch: pytest.MonkeyPatch) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    monkeypatch.setattr(artifacts, "_BUILD_ID", None)
+
+
+def test_build_id_records_that_the_producing_worktree_was_dirty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A build from a tree with uncommitted tracked changes is marked dirty.
+
+    Anti-vacuity (polylogue-c4a1o): dropping the ``git status`` probe from
+    ``_build_id`` -- the behavior before this change -- makes the dirty build
+    id indistinguishable from the clean one and both assertions collapse to
+    the same value.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    commit = "a" * 40
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if argv[1] == "rev-parse" and argv[2] == "HEAD":
+            return subprocess.CompletedProcess(argv, 0, stdout=commit + "\n", stderr="")
+        if argv[1] == "rev-parse":
+            return subprocess.CompletedProcess(argv, 0, stdout="/worktree/a\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout=" M polylogue/cli/query.py\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _reset_build_id_memo(monkeypatch)
+    dirty = artifacts._build_id()
+
+    def fake_clean_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if argv[1] == "rev-parse" and argv[2] == "HEAD":
+            return subprocess.CompletedProcess(argv, 0, stdout=commit + "\n", stderr="")
+        if argv[1] == "rev-parse":
+            return subprocess.CompletedProcess(argv, 0, stdout="/worktree/a\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_clean_run)
+    _reset_build_id_memo(monkeypatch)
+    clean = artifacts._build_id()
+
+    assert clean == f"git:{commit}"
+    assert dirty.startswith(f"git:{commit}+dirty:")
+    assert dirty != clean
+    assert artifacts._valid_build_id(dirty)
+    assert artifacts._valid_build_id(clean)
+
+
+def test_consumers_refuse_an_artifact_built_from_another_dirty_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dirty-built artifact binds only to the checkout that produced it.
+
+    The shared cache under ``/realm/tmp/polylogue-seeded-artifacts`` is
+    consumed by every worktree, so an artifact whose producing tree carried
+    uncommitted product changes must not be reused elsewhere.
+
+    Anti-vacuity (polylogue-c4a1o): removing the ``_build_id_is_shareable``
+    check from ``_manifest_binds_to_key`` makes the foreign dirty manifest
+    bind, which is exactly the poisoned-cache reuse this pins.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    key = seeded_archive_key(())
+    root = tmp_path / "seeded-probe"
+    archive_id = f"archive:seeded:{root.name}"
+    profile_id = artifacts._profile_id(key)
+
+    def manifest_for(build_id: str) -> CorpusArtifactManifest:
+        receipt = artifacts._canonical_receipt(key=key, archive_id=archive_id, profile_id=profile_id, build_id=build_id)
+        return CorpusArtifactManifest(
+            protocol_version=artifacts._ARTIFACT_PROTOCOL_VERSION,
+            key=key.value,
+            archive_id=archive_id,
+            profile_id=profile_id,
+            build_id=build_id,
+            recipe_id=key.recipe_id,
+            source_semantics_id=key.source_semantics_id,
+            archive_schema_id=key.archive_schema_id,
+            facts=(),
+            files=(),
+            receipt=dict(receipt.to_payload()),
+            resources=ArtifactResourceMeasurement.unmeasured(),
+        )
+
+    clean_id = "git:" + "b" * 40
+    own_dirty_id = "git:" + "b" * 40 + "+dirty:" + "0" * 16
+    foreign_dirty_id = "git:" + "b" * 40 + "+dirty:" + "1" * 16
+
+    monkeypatch.setattr(artifacts, "_build_id", lambda: own_dirty_id)
+
+    assert artifacts._manifest_binds_to_key(manifest_for(clean_id), root, key) is True
+    assert artifacts._manifest_binds_to_key(manifest_for(own_dirty_id), root, key) is True
+    assert artifacts._manifest_binds_to_key(manifest_for(foreign_dirty_id), root, key) is False
+
+
 def test_seeded_archive_key_does_not_carry_the_commit(monkeypatch: pytest.MonkeyPatch) -> None:
     """A new commit must not change the cache key.
 

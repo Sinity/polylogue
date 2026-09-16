@@ -125,6 +125,23 @@ def _seed_delete_authority_archive(root: Path, count: int) -> tuple[str, ...]:
     return tuple(session_ids)
 
 
+def _prepared_work_budget_s(archive_root: Path) -> float:
+    """Client request budget scaled to the sessions this test actually staged.
+
+    Anti-vacuity: replacing this with a constant re-introduces the
+    load-sensitive failure the budget exists to avoid -- a 513-session prepare
+    under host contention exceeds any small constant and surfaces as
+    ``DaemonMutationIndeterminateError`` on the prepare route.
+    """
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        prepared = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+    # Floor covers daemon start-up and the single-session routes; the per-session
+    # term keeps the 513-session prepares inside the budget on a busy host while
+    # staying under the suite-wide 120s pytest guard.
+    return max(15.0, 0.2 * prepared)
+
+
 @contextlib.contextmanager
 def _delete_authority_daemon(
     monkeypatch: pytest.MonkeyPatch,
@@ -138,11 +155,14 @@ def _delete_authority_daemon(
         stack.client.auth_token = "delete-authority-token"
         client = cast(_DeleteDaemonClient, stack.client)
         object.__setattr__(client, "archive_root", archive_root)
-        # These routes delete hundreds of sessions through a real daemon. The
-        # client budget bounds one request, not the test: at two seconds it
-        # measured how loaded the host was. A genuine hang is still caught by
-        # the suite-wide pytest timeout.
-        client.timeout_s = 60.0
+        # These routes delete hundreds of sessions through a real daemon, and
+        # one request's cost is proportional to the prepared archive. A
+        # constant budget measures how loaded the host is, not the route
+        # (polylogue-ga8vn): 2.0s failed under load, and any raised constant
+        # is the same defect with a bigger number. Derive the budget from the
+        # work actually staged in this archive. A genuine hang is still caught
+        # by the suite-wide pytest timeout.
+        client.timeout_s = _prepared_work_budget_s(archive_root)
         yield client
 
 
@@ -601,6 +621,15 @@ def _assert_completed_delete(result: dict[str, object], *, affected: int, chunks
 def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """513 sessions delete through the real daemon route in three chunks.
+
+    Anti-vacuity: restoring the old single-chunk cap (or losing the chunked
+    preview/authorize/execute lifecycle) leaves rows in ``sessions`` and the
+    chunk-count assertions fail. The client budget comes from
+    ``_prepared_work_budget_s`` so the route's behavior, not the host's
+    current load, decides the outcome (polylogue-ga8vn).
+    """
+
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     session_ids = _seed_delete_authority_archive(archive_root, 513)

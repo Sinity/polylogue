@@ -230,3 +230,39 @@ def test_durable_evolution_rejects_deleted_or_modified_required_migrations(
     violations = verify_schema_manifest._durable_ddl_evolution_violations()
 
     assert any("source: required migration was" in violation for violation in violations)
+
+
+def test_benign_ddl_registry_rejects_a_data_producing_create_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A registered ``CREATE TABLE IF NOT EXISTS ... AS SELECT`` is refused.
+
+    These statements run on every same-version open of an already-populated
+    index.db, with no version bump and no reparse, so an idempotent-looking
+    entry with a data-producing tail would silently rewrite derived content on
+    every open. Anti-vacuity: dropping the ``AS``/``SELECT`` tail patterns from
+    the validator admits this seeded entry and turns this red, as does removing
+    the registry from the schema-manifest gate.
+    """
+    from polylogue.storage.sqlite.archive_tiers import index_convergence
+
+    seeded = index_convergence.BenignDDLEntry(
+        name="transform_sessions",
+        sql="CREATE TABLE IF NOT EXISTS session_rollup AS SELECT session_id FROM sessions",
+        reason="test-only data-transforming entry",
+    )
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "INDEX_BENIGN_DDL_REGISTRY",
+        (*index_convergence.INDEX_BENIGN_DDL_REGISTRY, seeded),
+    )
+
+    violations = verify_schema_manifest._benign_ddl_violations()
+
+    assert [violation for violation in violations if violation.startswith("transform_sessions:")] == [
+        "transform_sessions: benign DDL carries a data-transforming tail: AS"
+    ]
+    assert verify_schema_manifest.main([]) == 1
+
+
+def test_live_benign_ddl_registries_are_idempotent_and_non_transforming() -> None:
+    """Every registered same-version statement passes the shape validator."""
+    assert verify_schema_manifest._benign_ddl_violations() == []

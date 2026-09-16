@@ -544,7 +544,7 @@ class TestPolylogueConfigDefaults:
         from polylogue.config import load_polylogue_config
 
         cfg = load_polylogue_config()
-        assert cfg.notification_backend == "log"
+        assert cfg.raw["notification_backend"] == "log"
 
     def test_health_interval_default(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config
@@ -618,7 +618,7 @@ class TestPolylogueConfigEnvOverrides:
 
         monkeypatch.setenv("POLYLOGUE_NOTIFICATION_BACKEND", "stdout")
         cfg = load_polylogue_config()
-        assert cfg.notification_backend == "stdout"
+        assert cfg.raw["notification_backend"] == "stdout"
 
     def test_env_overrides_health_interval(
         self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]

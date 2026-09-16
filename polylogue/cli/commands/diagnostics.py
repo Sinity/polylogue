@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
@@ -13,6 +14,12 @@ from polylogue.archive.query.transaction import run_archive_read
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.rendering.identity import identity_frame
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.ops_write import (
+        ArchiveFtsDriftSample,
+        ArchiveSchemaDriftSample,
+    )
 
 
 @click.group("diagnostics", help="Run archive and daemon diagnostics.")
@@ -1092,3 +1099,145 @@ def codex_title_census_command(
             f"{coverage.unresolved_count} unresolved sessions ({coverage.coverage_fraction:.1%}) "
             "have a projected Codex thread title"
         )
+
+
+@diagnostics_group.command("drift")
+@click.option("--surface", default=None, help="Only FTS drift samples for this surface.")
+@click.option("--origin", default=None, help="Only schema drift samples for this origin.")
+@click.option("--since-hours", type=float, default=168.0, show_default=True, help="Lookback window in hours.")
+@click.option("--limit", "-l", type=int, default=1000, show_default=True, help="Max samples read per ledger.")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
+@click.pass_context
+def drift_command(
+    ctx: click.Context,
+    surface: str | None,
+    origin: str | None,
+    since_hours: float,
+    limit: int,
+    output_format: str,
+) -> None:
+    """Report the FTS and schema drift-magnitude trend from ops-tier ledgers.
+
+    ``fts_drift_samples`` and ``schema_drift_samples`` are written on every
+    convergence pass; status surfaces show only the current boolean freshness
+    state. This is their operator-facing read: magnitude over time per surface,
+    and drift classifications per origin (polylogue-g31s, polylogue-1bkl).
+    """
+    import json as _json
+    import time as _time
+
+    from polylogue.cli.shared.helpers import load_effective_config
+    from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
+    from polylogue.storage.sqlite.archive_tiers.ops_write import (
+        list_fts_drift_samples,
+        list_schema_drift_samples,
+    )
+
+    env: AppEnv = ctx.obj
+    config = load_effective_config(env)
+    ops_db = config.archive_root / "ops.db"
+    since_ms = int((_time.time() - since_hours * 3600) * 1000)
+
+    if not ops_db.exists():
+        if output_format == "json":
+            click.echo(_json.dumps({"fts": [], "schema": [], "unavailable_reason": "ops.db does not exist"}, indent=2))
+        else:
+            env.ui.console.print("[yellow]No ops.db found -- no drift samples have been recorded yet.[/yellow]")
+        return
+
+    with one_shot_diagnostic_read(ops_db) as conn:
+        fts_samples = list_fts_drift_samples(conn, surface=surface, since_ms=since_ms, limit=limit)
+        schema_samples = list_schema_drift_samples(conn, origin=origin, since_ms=since_ms, limit=limit)
+
+    fts_trend = _summarize_fts_drift_trend(fts_samples)
+    schema_trend = _summarize_schema_drift_trend(schema_samples)
+
+    if output_format == "json":
+        click.echo(_json.dumps({"since_hours": since_hours, "fts": fts_trend, "schema": schema_trend}, indent=2))
+        return
+
+    if not fts_trend:
+        env.ui.console.print(f"[yellow]No FTS drift samples in the last {since_hours:g}h.[/yellow]")
+    else:
+        env.ui.console.print("FTS drift trend (magnitude = missing + excess + duplicate + identity mismatch):")
+        header = f"  {'surface':16s}  {'n':>5s}  {'latest':>8s}  {'max':>8s}  {'state':12s}  last sampled"
+        env.ui.console.print(header)
+        for row in fts_trend:
+            env.ui.console.print(
+                f"  {str(row['surface'])[:16]:16s}  {_as_int(row['sample_count']):5d}  "
+                f"{_as_int(row['latest_magnitude']):8d}  {_as_int(row['max_magnitude']):8d}  "
+                f"{str(row['latest_state'])[:12]:12s}  {row['latest_sampled_at']}"
+            )
+
+    if not schema_trend:
+        env.ui.console.print(f"[yellow]No schema drift samples in the last {since_hours:g}h.[/yellow]")
+    else:
+        env.ui.console.print("Schema drift samples by origin and classification:")
+        for row in schema_trend:
+            env.ui.console.print(
+                f"  {str(row['origin'])[:24]:24s}  {str(row['classification'])[:20]:20s}  "
+                f"{_as_int(row['sample_count']):5d}  last {row['latest_observed_at']}"
+            )
+
+
+def _as_int(value: object) -> int:
+    """Narrow one summary-row field back to int for width-formatted output."""
+    return value if isinstance(value, int) else 0
+
+
+def _fts_drift_magnitude(sample: ArchiveFtsDriftSample) -> int:
+    """Total drifted-row count for one FTS drift sample."""
+    return sample.missing_rows + sample.excess_rows + sample.duplicate_rows + sample.identity_mismatch_rows
+
+
+def _iso_ms(value: int) -> str:
+    return datetime.fromtimestamp(value / 1000, tz=UTC).isoformat()
+
+
+def _summarize_fts_drift_trend(samples: tuple[ArchiveFtsDriftSample, ...]) -> list[dict[str, object]]:
+    """Group FTS drift samples by surface into an oldest-to-newest magnitude trend."""
+    grouped: dict[str, list[ArchiveFtsDriftSample]] = {}
+    for sample in samples:
+        grouped.setdefault(sample.surface, []).append(sample)
+    rows: list[dict[str, object]] = []
+    for surface_name, group in sorted(grouped.items()):
+        ordered = sorted(group, key=lambda item: item.sampled_at_ms)
+        latest = ordered[-1]
+        rows.append(
+            {
+                "surface": surface_name,
+                "sample_count": len(ordered),
+                "latest_magnitude": _fts_drift_magnitude(latest),
+                "max_magnitude": max(_fts_drift_magnitude(item) for item in ordered),
+                "latest_state": latest.state,
+                "latest_sampled_at": _iso_ms(latest.sampled_at_ms),
+                "magnitudes": [_fts_drift_magnitude(item) for item in ordered],
+            }
+        )
+    return rows
+
+
+def _summarize_schema_drift_trend(samples: tuple[ArchiveSchemaDriftSample, ...]) -> list[dict[str, object]]:
+    """Group schema drift samples by (origin, classification)."""
+    grouped: dict[tuple[str, str], list[ArchiveSchemaDriftSample]] = {}
+    for sample in samples:
+        grouped.setdefault((sample.origin, sample.classification), []).append(sample)
+    rows: list[dict[str, object]] = []
+    for (origin_name, classification), group in sorted(grouped.items()):
+        rows.append(
+            {
+                "origin": origin_name,
+                "classification": classification,
+                "sample_count": len(group),
+                "latest_observed_at": _iso_ms(max(item.observed_at_ms for item in group)),
+                "element_kinds": sorted({item.element_kind for item in group}),
+            }
+        )
+    return rows

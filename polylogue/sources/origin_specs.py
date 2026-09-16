@@ -3035,7 +3035,7 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             Provider.CLAUDE_AI,
             "accepted",
             detector_paths=("polylogue/sources/parsers/claude/ai_parser.py", "polylogue/sources/dispatch.py"),
-            raw_model_paths=("polylogue/sources/providers/claude_ai.py",),
+            raw_model_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
             parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
             normalizer_paths=("polylogue/sources/parsers/claude/common.py",),
             fixture_paths=("tests/unit/sources/test_parsers_claude_ai_catalog.py",),

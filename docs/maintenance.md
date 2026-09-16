@@ -371,6 +371,26 @@ structural (missing columns, corrupted index file, or a broken write path).
 Stop the daemon, restore or rebuild the affected index tier, and open an issue
 with the probe output attached.
 
+### Reading the drift-magnitude trend
+
+`polylogue ops diagnostics workload` reports the *current* FTS freshness
+state as a boolean. The `fts_drift_samples` and `schema_drift_samples`
+ledgers in `ops.db` record a time series of the same counters on every
+convergence pass; `polylogue ops diagnostics drift` is their operator-facing
+read (polylogue-g31s).
+
+```bash
+# FTS drift magnitude per surface plus schema-drift classifications per origin.
+polylogue ops diagnostics drift --since-hours 168
+
+# Machine-readable, including the per-surface magnitude series.
+polylogue ops diagnostics drift --format json | jq '.fts[].magnitudes'
+```
+
+A magnitude series that is flat and non-zero across many passes means
+convergence is running but not closing the gap; a series that rises means a
+writer is outpacing the index. Both are structural, not transient.
+
 ### Inspecting a raw-authority census
 
 Raw source-to-index convergence records an immutable census in `source.db`.

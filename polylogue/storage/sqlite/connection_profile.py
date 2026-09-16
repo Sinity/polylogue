@@ -1550,7 +1550,6 @@ __all__ = [
     "log_mapped_bytes_budget_check",
     "mapped_bytes_budget",
     "assert_tier_schema_supported",
-    "ISOLATED_TIER_WRITE_PROFILE",
     "open_isolated_write_connection",
     "open_daemon_connection",
     "open_connection",
