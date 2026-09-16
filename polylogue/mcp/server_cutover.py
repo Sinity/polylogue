@@ -460,9 +460,40 @@ _PERSONAL_STATE_PROJECTIONS = frozenset(
     {"marks", "annotations", "saved_views", "recall_packs", "workspaces", "corrections", "blackboard"}
 )
 
-#: ``query(projection=..., ...)`` values that compile a distilled insight
-#: report over a matched session scope, rather than listing content units.
-_INSIGHT_PROJECTIONS = frozenset({"postmortem", "pathologies", "abandoned_sessions", "stuck_sessions", "tool-episodes"})
+#: ``query(projection=..., ...)`` reports the MCP dispatcher compiles itself
+#: over a matched session scope. These are deliberately NOT insight-registry
+#: descriptors: each is a bundle/report built from a session query, not a
+#: listable insight relation, so there is nothing in ``analysis/registry.py``
+#: to derive them from.
+_STANDALONE_INSIGHT_REPORTS = frozenset({"postmortem", "pathologies", "abandoned_sessions", "stuck_sessions"})
+
+
+def registry_insight_projections() -> frozenset[str]:
+    """Every insight-registry descriptor's public projection token.
+
+    Derived, never listed (polylogue-h8l96): the MCP surface used to carry a
+    hand-written frozenset that had drifted to one of the registry's
+    descriptors, so twelve registered insights had no MCP surface at all and
+    nothing failed. The token is the descriptor's resolved CLI command name,
+    which is the same public spelling every other surface uses.
+    """
+    from polylogue.analysis.registry import INSIGHT_REGISTRY
+
+    return frozenset(descriptor.resolved_cli_command_name for descriptor in INSIGHT_REGISTRY.values())
+
+
+def insight_projections() -> frozenset[str]:
+    """Every ``query(projection=...)`` value served as an insight."""
+    return _STANDALONE_INSIGHT_REPORTS | registry_insight_projections()
+
+
+def _registry_descriptor(projection: str) -> Any:
+    from polylogue.analysis.registry import INSIGHT_REGISTRY
+
+    for descriptor in INSIGHT_REGISTRY.values():
+        if descriptor.resolved_cli_command_name == projection:
+            return descriptor
+    return None
 
 
 def _saved_view_payload(row: dict[str, str]) -> Any:
@@ -699,9 +730,57 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
         )
 
 
-# These projections are served from the dispatcher rather than the insight
-# registry, so the terminal outcome is decided here: it is the boundary that
-# knows how many rows the caller actually received.
+async def _query_registry_insight(
+    hooks: ServerCallbacks,
+    descriptor: Any,
+    *,
+    limit: int | None,
+    origin: str | None,
+    tag: str | None,
+    repo: str | None,
+    since: str | None,
+    until: str | None,
+) -> str:
+    """Serve one insight-registry descriptor through its declared contract.
+
+    Bounds a descriptor accepts are passed; bounds it does not declare are
+    dropped rather than refused, because a filter a relation has no column for
+    is not an error in the request -- the same rule ``export_bundles`` applies.
+    The terminal outcome is decided here: this boundary is the one that knows
+    how many rows the caller actually received.
+    """
+    from polylogue.analysis.registry import InsightQueryError, fetch_insights_async, insight_items_payload
+
+    query_model = getattr(descriptor, "query_model", None)
+    if query_model is None:
+        return hooks.error_json(
+            f"insight {descriptor.name!r} declares no query model and cannot be projected",
+            code="unsupported_projection",
+            tool="query",
+        )
+    fields = set(query_model.model_fields)
+    kwargs: dict[str, object] = {}
+    if "limit" in fields:
+        kwargs["limit"] = hooks.clamp_limit(limit if limit is not None else descriptor.mcp_default_limit)
+    if "offset" in fields:
+        kwargs["offset"] = 0
+    for key, value in (("origin", origin), ("tag", tag), ("repo", repo), ("since", since), ("until", until)):
+        if value is not None and key in fields:
+            kwargs[key] = value
+
+    with hooks.response_context(
+        "query",
+        {"projection": descriptor.resolved_cli_command_name, "origin": origin, "tag": tag, "repo": repo},
+    ):
+        try:
+            items = await fetch_insights_async(descriptor, hooks.get_polylogue(), **kwargs)
+        except InsightQueryError as exc:
+            return hooks.error_json(str(exc), code="invalid_argument", tool="query")
+        payload = dict(insight_items_payload(items, descriptor))
+        payload["outcome"] = decide_outcome(matched=len(items)).to_dict()
+        return hooks.json_payload(MCPRootPayload(root=payload), exclude_none=True)
+
+
 async def _query_insight_projection(
     hooks: ServerCallbacks,
     projection: str,
@@ -721,30 +800,24 @@ async def _query_insight_projection(
     the spec to the analysis-capped facade call -- otherwise the shared
     ``build_spec`` page-size default (10) would silently cap the matched scope
     to 10 sessions and defeat the facade's own 200-session analysis cap.
-    """
-    if projection == "tool-episodes":
-        from polylogue.analysis.tool_episodes import ToolEpisodeQuery
 
-        episodes = await hooks.get_polylogue().list_tool_episode_insights(
-            ToolEpisodeQuery(
-                origin=origin,
-                tag=tag,
-                repo=repo,
-                since=since,
-                until=until,
-                limit=hooks.clamp_limit(limit),
-                offset=0,
-            )
-        )
-        return hooks.json_payload(
-            MCPRootPayload(
-                root={
-                    "tool_episodes": [item.model_dump(mode="json") for item in episodes],
-                    "total": len(episodes),
-                    "outcome": decide_outcome(matched=len(episodes)).to_dict(),
-                }
-            ),
-            exclude_none=True,
+    Every other projection is an insight-registry descriptor and is dispatched
+    generically through the registry's own fetch/payload contract, the way the
+    daemon's ``/api/webui/insights/:name`` route already resolves descriptors
+    (polylogue-h8l96). A newly registered descriptor gains an MCP surface with
+    no edit here.
+    """
+    descriptor = _registry_descriptor(projection)
+    if descriptor is not None:
+        return await _query_registry_insight(
+            hooks,
+            descriptor,
+            limit=limit,
+            origin=origin,
+            tag=tag,
+            repo=repo,
+            since=since,
+            until=until,
         )
     from dataclasses import replace
 
@@ -988,7 +1061,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     return hooks.error_json("offset must be non-negative", code="invalid_argument")
                 return await _query_personal_state(hooks, projection, limit=limit, offset=page_offset)
 
-            if projection in _INSIGHT_PROJECTIONS:
+            if projection in insight_projections():
                 if continuation is not None:
                     return hooks.error_json(
                         f"query(projection={projection!r}) does not support continuation yet",
