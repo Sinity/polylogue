@@ -29,9 +29,7 @@ import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from polylogue.logging import get_logger
-
-logger = get_logger(__name__)
+from polylogue.logging import DEBUG, emit
 
 #: Graph-id namespace for runtime-reported thread state.
 GRAPH_PREFIX = "agent-thread-state:"
@@ -126,7 +124,14 @@ def read_provenance(conn: sqlite3.Connection, *, source_scope: str | None = None
                 (thread_state_graph_id(source_scope),),
             ).fetchone()
     except sqlite3.Error as exc:
-        logger.debug("Failed to read the thread-state graph provenance: %s", exc)
+        emit(
+            "storage.agent_thread_state.provenance_unreadable",
+            level=DEBUG,
+            outcome="unmeasured",
+            reason="the index tier is unreadable, so no scope provenance is known",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
     if row is None:
         return None
@@ -383,7 +388,14 @@ def read_thread_titles(
                     ).fetchall()
                 )
     except sqlite3.Error as exc:
-        logger.debug("Failed to read projected thread titles: %s", exc)
+        emit(
+            "storage.agent_thread_state.titles_unreadable",
+            level=DEBUG,
+            outcome="unmeasured",
+            reason="the index tier is unreadable, so the title lane degrades to empty",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return {}
     for row in rows:
         thread_id = thread_id_from_context_ref(str(row[0]))
@@ -408,7 +420,14 @@ def read_spawn_edges(conn: sqlite3.Connection, *, source_scope: str | None = Non
             parameters,
         ).fetchall()
     except sqlite3.Error as exc:
-        logger.debug("Failed to read projected spawn edges: %s", exc)
+        emit(
+            "storage.agent_thread_state.spawn_edges_unreadable",
+            level=DEBUG,
+            outcome="unmeasured",
+            reason="the index tier is unreadable, so no spawn evidence is reported",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return {}
     edges: dict[tuple[str, str], str] = {}
     for row in rows:
@@ -454,7 +473,14 @@ def read_parent_thread_id(
             [*parameters, child_parameter],
         ).fetchone()
     except sqlite3.Error as exc:
-        logger.debug("Failed to read the projected spawn-edge parent: %s", exc)
+        emit(
+            "storage.agent_thread_state.spawn_parent_unreadable",
+            level=DEBUG,
+            outcome="unmeasured",
+            reason="the index tier is unreadable, so the graph is treated as silent about this child",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return None
     if row is None or row[0] is None:
         return None
