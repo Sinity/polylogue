@@ -37,6 +37,7 @@ from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, pa
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.thread_state import seed_thread_titles
 
 
 def _candidate(
@@ -3195,7 +3196,7 @@ def test_prefetch_reparse_enriches_identically_to_the_inline_path(tmp_path: Path
     polylogue-sqy57: ``_replay_safe_enrich_sessions`` is the one enrichment
     entry point, but the spill prefetcher's reparse passed it NO connections
     and ``_ParsedSessionSpill.for_raw`` passed only ``index_conn``. The curated
-    Codex title lives in the projected ``codex_thread_state`` rows, so on those
+    Codex title lives in the projected thread-state graph, so on those
     cache-miss paths the title silently degraded to the content heuristic --
     replay output then depended on cache state, not on durable evidence.
 
@@ -3247,11 +3248,12 @@ def test_prefetch_reparse_enriches_identically_to_the_inline_path(tmp_path: Path
         )
         index_conn = archive.index_connection
         assert index_conn is not None
-        index_conn.execute(
-            "INSERT INTO codex_thread_state (source_scope, thread_id, title, observed_at_ms) VALUES (?, ?, ?, ?)",
-            (codex_state_source_scope(source_path), thread_id, "Curated thread title", 1),
+        seed_thread_titles(
+            index_conn,
+            [(thread_id, "Curated thread title")],
+            source_scope=codex_state_source_scope(source_path),
+            observed_at_ms=1,
         )
-        index_conn.commit()
 
         # Inline path: an empty spill with no prefetcher attached reparses the
         # retained raw through ``for_raw``'s own fallback.

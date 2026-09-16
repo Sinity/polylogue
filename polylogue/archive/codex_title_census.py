@@ -172,7 +172,7 @@ def compare_censuses(before: CodexTitleCensus, after: CodexTitleCensus) -> Codex
 @dataclass(frozen=True, slots=True)
 class CodexRetainedStateTitleCoverage:
     """Lower-bound simulation of what a live reprocess would resolve via the
-    projected ``codex_thread_state`` title lane alone.
+    projected thread-state title lane alone.
 
     A full reprocess also re-reads the higher-priority live-file lanes
     (provider thread name, ``history.jsonl``, ``state_5.sqlite``), which can

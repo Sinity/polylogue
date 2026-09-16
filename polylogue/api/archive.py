@@ -3639,8 +3639,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     async def reconcile_codex_spawn_edges(self) -> CodexSpawnEdgeReconciliation | None:
         """Reconcile projected Codex spawn edges against inferred topology.
 
-        Read-only audit seam over index.db: the ``codex_thread_spawn_edges``
-        projection of the retained state export, and the ingested topology
+        Read-only audit seam over index.db: the thread-state graph
+        (``work_evidence_edges``) projected from the retained state export, and the ingested topology
         (``session_links``, ``BranchType.SUBAGENT`` edges
         ``sources/parsers/codex.py`` infers structurally from each child
         session's own transcript). Reports how many transcript-inferred

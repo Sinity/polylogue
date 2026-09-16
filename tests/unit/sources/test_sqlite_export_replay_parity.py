@@ -8,8 +8,8 @@ evidence, which is the whole contract the split-tier design rests on.
 
 Both declared shapes are covered: a Hermes ``state.db``, whose export becomes
 sessions through ``write_parsed_session_to_archive``, and a Codex
-``state_5.sqlite``, whose export becomes the ``codex_thread_state`` /
-``codex_thread_spawn_edges`` projection and never a session.
+``state_5.sqlite``, whose export becomes the provider-neutral thread-state
+graph projection and never a session.
 
 Anti-vacuity: retain the page image instead of the export (or drop the
 export-aware routing in ``_parse_one`` / ``classify_codex_sqlite_path``) and
@@ -31,6 +31,7 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
+from polylogue.storage.sqlite.agent_thread_state import read_spawn_edges, read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 _THREAD_ID = "8c1d2e3f-4a5b-4c6d-8e7f-901234567890"
@@ -113,13 +114,13 @@ _HERMES_ROWS = {
 }
 
 _CODEX_ROWS = {
-    "codex_thread_state": (
-        "SELECT thread_id, title, cwd, created_at_ms, updated_at_ms, source, model, "
-        "agent_nickname, agent_role, archived FROM codex_thread_state ORDER BY thread_id"
+    "work_evidence_nodes": (
+        "SELECT graph_id, node_ref, node_kind, label, claim_text, association_state, evidence_refs_json "
+        "FROM work_evidence_nodes ORDER BY graph_id, node_ref"
     ),
-    "codex_thread_spawn_edges": (
-        "SELECT parent_thread_id, child_thread_id, status FROM codex_thread_spawn_edges "
-        "ORDER BY parent_thread_id, child_thread_id"
+    "work_evidence_edges": (
+        "SELECT graph_id, edge_ref, edge_kind, source_ref, target_ref, source_state_label, association_state "
+        "FROM work_evidence_edges ORDER BY graph_id, edge_ref"
     ),
 }
 
@@ -183,10 +184,9 @@ async def test_codex_state_export_replays_into_the_same_projection(workspace_env
 
     await _ingest(archive_root, workspace_env["data_root"], source, [state_db])
     live = _derived_rows(archive_root / "index.db", _CODEX_ROWS)
-    assert live["codex_thread_state"] == [
-        (_THREAD_ID, "A curated thread title", "/repo", 1000, 2000, "cli", None, None, None, 0)
-    ]
-    assert live["codex_thread_spawn_edges"] == [(_THREAD_ID, _CHILD_THREAD_ID, "closed")]
+    with sqlite3.connect(archive_root / "index.db") as index_conn:
+        assert read_thread_titles(index_conn) == {_THREAD_ID: "A curated thread title"}
+        assert read_spawn_edges(index_conn) == {(_THREAD_ID, _CHILD_THREAD_ID): "closed"}
 
     _replay_from_source_tier(archive_root)
     replayed = _derived_rows(archive_root / "index.db", _CODEX_ROWS)

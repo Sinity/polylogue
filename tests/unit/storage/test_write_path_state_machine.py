@@ -20,6 +20,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope, write_parsed_session_to_archive
 from polylogue.storage.sqlite.queries.message_query_reads import get_messages
+from tests.infra.thread_state import seed_spawn_edges
 
 
 def _index(path: Path) -> sqlite3.Connection:
@@ -68,11 +69,7 @@ def test_state_parent_is_authoritative_before_prefix_normalization(tmp_path: Pat
     index = _index(tmp_path / "index.db")
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
-    index.execute(
-        "INSERT INTO codex_thread_spawn_edges (parent_thread_id, child_thread_id, status, observed_at_ms) "
-        "VALUES ('hook-parent', 'child', 'closed', 1)",
-    )
-    index.commit()
+    seed_spawn_edges(index, [("hook-parent", "child", "closed")], observed_at_ms=1)
     write_parsed_session_to_archive(
         index, _session("hook-parent", [_message("h0", "hook prefix", 0)]), source_conn=source
     )

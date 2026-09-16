@@ -20,8 +20,10 @@ from polylogue.archive.codex_title_census import (
 )
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.sqlite.agent_thread_state import read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.thread_state import seed_thread_titles
 
 
 def _human_message(text: str) -> ParsedMessage:
@@ -140,13 +142,11 @@ def test_census_round_trips_through_json_dict(tmp_path: Path) -> None:
 
 
 def _write_projected_thread_title(index_db_path: Path, *, thread_id: str, title: str) -> None:
-    """Write a real ``codex_thread_state`` projection row into ``index.db``."""
+    """Project a real thread title into ``index.db`` through the graph writer."""
     with sqlite3.connect(index_db_path) as conn:
-        conn.execute(
-            "INSERT INTO codex_thread_state (thread_id, title, archived, observed_at_ms) VALUES (?, ?, 0, 1000)",
-            (thread_id, title),
-        )
-        conn.commit()
+        existing = read_thread_titles(conn)
+        existing[thread_id] = title
+        seed_thread_titles(conn, sorted(existing.items()))
 
 
 def test_retained_state_title_coverage_reports_lower_bound(tmp_path: Path) -> None:

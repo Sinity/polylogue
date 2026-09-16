@@ -321,6 +321,15 @@ def write_thread_state_graph(
     return True
 
 
+#: Recency within one scope: a snapshot revision marks what it no longer names
+#: superseded, so a still-current object outranks retained absent evidence
+#: before any cross-scope receipt ordering applies.
+_RECENCY = (
+    "ORDER BY CASE WHEN {alias}.association_state = 'superseded' THEN 1 ELSE 0 END, "
+    "g.observed_at_ms DESC, g.observation_order DESC, g.graph_id DESC"
+)
+
+
 def _scope_predicate(source_scope: str | None) -> tuple[str, list[str]]:
     if source_scope is None:
         return "g.graph_id LIKE ?", [f"{GRAPH_PREFIX}%"]
@@ -347,7 +356,7 @@ def read_thread_titles(
         WHERE {predicate} AND e.edge_kind = 'claimed' AND n.node_kind = 'claim'
           AND n.claim_text IS NOT NULL
     """
-    ordering = "ORDER BY g.observed_at_ms DESC, g.observation_order DESC, g.graph_id DESC"
+    ordering = _RECENCY.format(alias="e")
     titles: dict[str, str] = {}
     try:
         rows: list[tuple[object, ...]] = []
@@ -394,7 +403,7 @@ def read_spawn_edges(conn: sqlite3.Connection, *, source_scope: str | None = Non
             FROM work_evidence_edges AS e
             JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
             WHERE {predicate} AND e.edge_kind = 'invoked'
-            ORDER BY g.observed_at_ms DESC, g.observation_order DESC, g.graph_id DESC
+            {_RECENCY.format(alias="e")}
             """,
             parameters,
         ).fetchall()
@@ -449,7 +458,7 @@ def read_parent_thread_id(
             FROM work_evidence_edges AS e
             JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
             WHERE {predicate} AND e.edge_kind = 'invoked' AND {child_predicate}
-            ORDER BY g.observed_at_ms DESC, g.observation_order DESC, g.graph_id DESC, e.source_ref
+            {_RECENCY.format(alias="e")}, e.source_ref
             LIMIT 1
             """,
             [*parameters, child_parameter],

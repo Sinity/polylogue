@@ -83,6 +83,7 @@ from tests.infra.frozen_clock import FrozenClock
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import db_setup
+from tests.infra.thread_state import seed_spawn_edges
 
 # ---------------------------------------------------------------------------
 # Surface enumeration
@@ -1466,12 +1467,7 @@ async def test_reconcile_codex_spawn_edges_resolves_via_the_facade(tmp_path: Pat
             "VALUES (?, ?, ?, ?, ?)",
             ("codex-session:child-facade-1", "codex-session", "parent-facade-1", "subagent", 1_000),
         )
-        index_conn.execute(
-            "INSERT INTO codex_thread_spawn_edges (parent_thread_id, child_thread_id, status, observed_at_ms) "
-            "VALUES (?, ?, ?, ?)",
-            ("parent-facade-1", "child-facade-1", "closed", 1_000),
-        )
-        index_conn.commit()
+        seed_spawn_edges(index_conn, [("parent-facade-1", "child-facade-1", "closed")])
 
     try:
         report = await archive.reconcile_codex_spawn_edges()

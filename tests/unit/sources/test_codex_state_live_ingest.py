@@ -36,6 +36,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.materials import MaterialObservation
+from polylogue.storage.sqlite.agent_thread_state import read_provenance, read_spawn_edges, read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 _THREAD_ID = "66c7b83d-1b42-43a5-977c-870299c489a6"
@@ -205,17 +206,13 @@ async def test_codex_state_thread_title_and_spawn_edge_reach_the_index_tier(
         assert state_metrics.failed_file_count == 0
 
         with sqlite3.connect(workspace_env["archive_root"] / "index.db") as index_conn:
-            threads = index_conn.execute(
-                "SELECT thread_id, title FROM codex_thread_state ORDER BY thread_id"
-            ).fetchall()
-            edges = index_conn.execute(
-                "SELECT parent_thread_id, child_thread_id, status FROM codex_thread_spawn_edges"
-            ).fetchall()
-            provenance = index_conn.execute("SELECT raw_id, blob_hash FROM codex_thread_state_provenance").fetchall()
-        assert [row[0] for row in threads] == [_THREAD_ID]
-        assert threads[0][1]
-        assert edges == [(_THREAD_ID, _CHILD_THREAD_ID, "closed")]
-        assert len(provenance) == 1
+            titles = read_thread_titles(index_conn)
+            edges = read_spawn_edges(index_conn)
+            provenance = read_provenance(index_conn)
+        assert sorted(titles) == [_THREAD_ID]
+        assert titles[_THREAD_ID]
+        assert edges == {(_THREAD_ID, _CHILD_THREAD_ID): "closed"}
+        assert provenance is not None and provenance.raw_id and provenance.blob_hash
 
         with sqlite3.connect(workspace_env["archive_root"] / "source.db") as source_conn:
             hook_payload_refs = source_conn.execute(

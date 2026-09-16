@@ -26,6 +26,12 @@ from polylogue.sources.revision_backfill import _enrich_retained_parse_results
 from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.agent_thread_state import (
+    read_provenance,
+    read_spawn_edges,
+    read_thread_titles,
+    thread_id_from_context_ref,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -230,15 +236,24 @@ def test_state_projection_keeps_disjoint_roots_and_omitted_evidence(
     _record_state_export(archive_root, initial_a, acquired_at_ms=300)
 
     with sqlite3.connect(archive_root / "index.db") as index_conn:
-        threads = index_conn.execute(
-            "SELECT thread_id, title, source_present FROM codex_thread_state ORDER BY thread_id"
-        ).fetchall()
-        edges = index_conn.execute(
-            "SELECT parent_thread_id, child_thread_id, source_present "
-            "FROM codex_thread_spawn_edges ORDER BY parent_thread_id"
-        ).fetchall()
-    assert threads == [("a-new", "A new", 1), ("a-old", "A old", 0), ("b-thread", "B title", 1)]
-    assert edges == [("a-old", "a-child", 0), ("b-thread", "b-child", 1)]
+        threads = sorted(read_thread_titles(index_conn).items())
+        edges = sorted(read_spawn_edges(index_conn))
+        states = dict(
+            index_conn.execute(
+                "SELECT node_ref, association_state FROM work_evidence_nodes WHERE node_kind = 'execution-context'"
+            ).fetchall()
+        )
+    # An object the newest snapshot of its own scope is silent about stays
+    # readable, marked superseded -- another root's evidence is untouched.
+    assert threads == [("a-new", "A new"), ("a-old", "A old"), ("b-thread", "B title")]
+    assert edges == [("a-old", "a-child"), ("b-thread", "b-child")]
+    assert {thread_id_from_context_ref(ref): state for ref, state in states.items()} == {
+        "a-new": "resolved",
+        "a-old": "superseded",
+        "a-child": "superseded",
+        "b-thread": "resolved",
+        "b-child": "resolved",
+    }
     initial_a.unlink()
     initial_b.unlink()
     assert resolve_retained_codex_state_titles(
@@ -265,6 +280,6 @@ def test_state_projection_uses_receipt_order_for_a_b_a_observations(tmp_path: Pa
         archive_root, ["thread"], source_path=str(state_path.parent / "sessions" / "rollout-thread.jsonl")
     ) == {"thread": "A title"}
     with sqlite3.connect(archive_root / "index.db") as index_conn:
-        assert index_conn.execute(
-            "SELECT observed_at_ms FROM codex_thread_state WHERE thread_id = 'thread'"
-        ).fetchone() == (300,)
+        provenance = read_provenance(index_conn)
+    assert provenance is not None
+    assert provenance.observed_at_ms == 300

@@ -58,6 +58,7 @@ from tests.infra.claude_vintage_live_proof import (
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
 )
+from tests.infra.thread_state import seed_spawn_edges
 from tests.infra.workload_artifacts import SeededArchiveArtifact
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
@@ -1274,7 +1275,7 @@ def test_two_authoritative_parents_for_one_child_trips_the_check(tmp_path: Path)
 def test_resolved_contradiction_is_reported_without_erroring(tmp_path: Path) -> None:
     """The resolved shape -- loser plus authoritative winner -- is OK.
 
-    The fixture also carries the ``codex_thread_spawn_edges`` row the verdict
+    The fixture also carries the projected spawn edge the verdict
     was decided from: a hook-derived mark whose evidence is gone is its own
     warning class (polylogue-p1naz), so a coherent archive must show the
     evidence still standing.
@@ -1283,10 +1284,7 @@ def test_resolved_contradiction_is_reported_without_erroring(tmp_path: Path) -> 
     conn = _connect(tmp_path / "index.db")
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
-        conn.execute(
-            "INSERT INTO codex_thread_spawn_edges(source_scope, parent_thread_id, child_thread_id, "
-            "status, observed_at_ms) VALUES ('', 'hook-parent', 'session', 'active', 100)"
-        )
+        seed_spawn_edges(conn, [("hook-parent", "session", "active")], observed_at_ms=100)
         conn.executemany(
             """
             INSERT INTO session_links(

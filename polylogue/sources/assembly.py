@@ -38,7 +38,7 @@ class _CodexSidecarData(TypedDict, total=False):
     history_titles: CodexHistoryTitles
     state_titles: CodexHistoryTitles
     # thread_id -> title projected from the retained state export into
-    # index.db's codex_thread_state. Resolved by the routes that own a
+    # index.db's thread-state graph. Resolved by the routes that own a
     # connection -- the pipeline ingest worker and retained-raw replay --
     # never by CodexAssemblySpec.discover_sidecars itself (file-system only,
     # no DB access). See assembly_codex.py's ladder step 3b.
