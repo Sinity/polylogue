@@ -24,6 +24,7 @@ from polylogue.cli.read_views.base import (
 )
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.surfaces.projection_spec import RenderDestination
 
 __all__ = ["EVENTS_READ_VIEW_OPTION_NAMES", "build_events_options", "run_read_events"]
 
@@ -43,7 +44,7 @@ def run_read_events(env: AppEnv, request: RootModeRequest, invocation: ReadViewI
     options = cast(ReadViewEventsOptions, invocation.options or ReadViewEventsOptions())
     output_format = invocation.output_format or "json"
 
-    if invocation.destination in ("file", "clipboard", "stdout"):
+    if invocation.destination in (RenderDestination.FILE, RenderDestination.CLIPBOARD, RenderDestination.STDOUT):
         buf = io.StringIO()
 
         def _captured_echo_events(message: object = None, **_kwargs: object) -> None:

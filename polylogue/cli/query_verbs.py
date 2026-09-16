@@ -37,6 +37,7 @@ from polylogue.cli.read_view_registry import (
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.surfaces.outcome import render_outcome_line
+from polylogue.surfaces.projection_spec import RenderDestination, RenderTimestampPolicy
 
 _FACET_TERMINAL_BUCKET_LIMIT = 12
 _FACET_TERMINAL_IDF_LIMIT = 12
@@ -226,10 +227,12 @@ def _lazy_shell_complete(source: str):  # type: ignore[no-untyped-def]
 
 _READ_VIEWS = read_view_choices()
 _READ_VIEW_HELP = "What to render (" + ", ".join(_READ_VIEWS) + ")."
-_READ_DESTINATIONS = ("terminal", "stdout", "browser", "clipboard", "file")
+#: Derived from the typed owner so the CLI cannot accept a destination the
+#: renderer has no member for, or reject one it does (polylogue-j1vs).
+_READ_DESTINATIONS = tuple(destination.value for destination in RenderDestination)
 _READ_FORMATS = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
 _READ_RENDER_LAYOUTS = ("standard", "context-image")
-_READ_TIMESTAMP_POLICIES = ("renderer-default", "include-available", "omit")
+_READ_TIMESTAMP_POLICIES = tuple(policy.value for policy in RenderTimestampPolicy)
 _READ_RENDER_EXPRESSION_KEYS = ("layout", "timestamps", "format", "destination", "to", "out")
 _READ_PROJECTION_EXPRESSION_KEYS = (
     "max-tokens",
@@ -956,7 +959,7 @@ class _ReadCommand(click.Command):
 
 def _summary_all_output_param(destination: str, out_path: str | None) -> str | None:
     """Translate read delivery options to the root query output contract."""
-    if destination == "file":
+    if destination == RenderDestination.FILE:
         if not out_path:
             raise click.UsageError("--to file requires --out <path>.")
         return out_path
@@ -1315,7 +1318,7 @@ def read_verb(
         raise click.UsageError("read --all and --first are mutually exclusive.")
     if full and limit is not None and primary_view in {"messages", "raw"}:
         raise click.UsageError("read --full and --limit are mutually exclusive for paginated session-body views.")
-    if destination == "file" and not out_path:
+    if destination == RenderDestination.FILE and not out_path:
         raise click.UsageError("read --to file requires --out.")
     (
         selection_limit,
@@ -1380,7 +1383,7 @@ def read_verb(
     if ref is not None and not _is_direct_session_ref(ref):
         if output_format not in (None, "json"):
             raise click.UsageError("Direct ref reads currently support --format json only.")
-        if destination not in ("terminal", "stdout"):
+        if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT):
             raise click.UsageError("Direct ref reads write JSON to terminal/stdout only.")
         payload = run_coroutine_sync(env.polylogue.resolve_ref(ref))
         click.echo(serialize_surface_payload(payload, exclude_none=True))
@@ -1487,7 +1490,12 @@ def read_verb(
     handler_metadata = READ_VIEW_HANDLER_METADATA[primary_view]
     session_id = None
     exact_session_ref = _spec_is_exact_session_ref(request.query_spec())
-    if destination == "browser" or first_only or exact_session_ref or not handler_metadata.accepts_query_set:
+    if (
+        destination == RenderDestination.BROWSER
+        or first_only
+        or exact_session_ref
+        or not handler_metadata.accepts_query_set
+    ):
         session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
     effective_format = _effective_read_output_format(request, view=primary_view, output_format=output_format)
     projection_spec = _build_read_projection_spec(
@@ -1527,7 +1535,7 @@ def read_verb(
             projection_spec=projection_spec,
         )
         return
-    if destination == "browser":
+    if destination == RenderDestination.BROWSER:
         run_read_view(
             env,
             request,
@@ -1660,7 +1668,7 @@ def continue_verb(
     if candidates:
         if execute:
             raise click.UsageError("continue --exec cannot be combined with --candidates.")
-        if destination not in ("terminal", "stdout") or out_path is not None:
+        if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT) or out_path is not None:
             raise click.UsageError("continue --candidates writes to terminal/stdout; omit --to/--out.")
         if not repo_path:
             raise click.UsageError("continue --candidates requires --repo.")
@@ -1687,9 +1695,9 @@ def continue_verb(
     if _wants_json(request, output_format=output_format):
         if execute:
             raise click.UsageError("continue --exec cannot be combined with --format json.")
-        if destination not in ("terminal", "stdout", "file"):
+        if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT, RenderDestination.FILE):
             raise click.UsageError("continue --format json supports terminal, stdout, or file destinations only.")
-        if destination == "file" and not out_path:
+        if destination == RenderDestination.FILE and not out_path:
             raise click.UsageError("continue --format json --to file requires --out.")
         from polylogue.context.compiler import ContextSpec
 
@@ -1720,7 +1728,7 @@ def continue_verb(
         if result.returncode:
             raise click.exceptions.Exit(result.returncode)
         return
-    if destination not in ("terminal", "stdout") or out_path is not None:
+    if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT) or out_path is not None:
         raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
     click.echo(route.command)
 
@@ -2942,7 +2950,7 @@ def run_read_context_image(
     if output_format == "json":
         content = serialize_surface_payload(image, exclude_none=True) + "\n"
     else:
-        content = _render_context_image_markdown(image, compact=destination == "terminal")
+        content = _render_context_image_markdown(image, compact=destination == RenderDestination.TERMINAL)
     _deliver_content(env, content, destination=destination, out_path=out_path)
 
 

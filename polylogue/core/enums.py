@@ -885,6 +885,27 @@ them.
 TERMINAL_STATE_VALUES: frozenset[TerminalState] = frozenset(get_args(TerminalState))
 
 
+PrincipalSurface = Literal["cli", "api", "mcp", "daemon", "maintenance", "internal"]
+"""Which surface a principal issued a *mutation* through.
+
+Written to ``audit.db operation_previews.principal_surface``. Distinct from
+:data:`TelemetrySurface` and deliberately NOT joinable with it: this names the
+authority that asked, so every daemon route is one undifferentiated ``daemon``
+principal, while telemetry needs the transport apart (polylogue-ir1wn).
+"""
+
+PRINCIPAL_SURFACE_VALUES: frozenset[PrincipalSurface] = frozenset(get_args(PrincipalSurface))
+
+TelemetrySurface = Literal["cli", "mcp", "daemon-http", "daemon-internal", "web"]
+"""Which transport served a read, for latency and call telemetry.
+
+Written to ``ops.db`` samples. The retired fourth declaration of this concept
+spelled the daemon HTTP route ``daemon-web``, a token no writer ever produced.
+"""
+
+TELEMETRY_SURFACE_VALUES: frozenset[TelemetrySurface] = frozenset(get_args(TelemetrySurface))
+
+
 __all__ = [
     "ActionResultState",
     "AssertionKind",
@@ -905,6 +926,10 @@ __all__ = [
     "PasteBoundary",
     "PlanStage",
     "PolylogueStrEnum",
+    "PRINCIPAL_SURFACE_VALUES",
+    "PrincipalSurface",
+    "TELEMETRY_SURFACE_VALUES",
+    "TelemetrySurface",
     "Provider",
     "RawAuthorityVerdict",
     "Role",

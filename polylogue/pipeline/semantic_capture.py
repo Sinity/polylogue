@@ -7,8 +7,16 @@ from typing import NotRequired
 
 from typing_extensions import TypedDict
 
+from polylogue.archive.viewport.tools import (
+    classify_tool,
+    is_file_operation,
+    is_git_operation,
+    is_search_operation,
+    is_subagent_operation,
+)
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document, json_document_list
 from polylogue.core.payload_coercion import mapping_or_empty, optional_string
+from polylogue.core.tool_identity import tool_input_command, tool_input_path
 from polylogue.pipeline.semantic_metadata import (
     ToolInputPayload,
     ToolMetadata,
@@ -205,23 +213,27 @@ def extract_tool_invocations(content_blocks: Sequence[Mapping[str, object]]) -> 
         }
         tool_name = invocation.get("tool_name")
         if tool_name:
-            invocation["is_file_operation"] = tool_name in {"Read", "Write", "Edit", "NotebookEdit"}
-            invocation["is_search_operation"] = tool_name in {"Glob", "Grep", "WebSearch"}
-            invocation["is_subagent"] = tool_name == "Task"
-            if tool_name == "Bash":
-                command = optional_string(input_payload.get("command")) or ""
-                invocation["is_git_operation"] = command.strip().startswith("git ")
+            # polylogue-exxly: one taxonomy decides what kind of operation this
+            # is, for every origin -- not a Claude-Code tool-name allowlist that
+            # disagreed with it on ~186k live blocks.
+            category = classify_tool(tool_name, input_payload)
+            invocation["is_file_operation"] = is_file_operation(category)
+            invocation["is_search_operation"] = is_search_operation(category)
+            invocation["is_subagent"] = is_subagent_operation(category)
+            invocation["is_git_operation"] = is_git_operation(category)
         invocations.append(invocation)
     return invocations
 
 
 def parse_git_operation(tool_invocation: Mapping[str, object]) -> ToolMetadata | None:
-    if tool_invocation.get("tool_name") != "Bash":
+    tool_name = optional_string(tool_invocation.get("tool_name"))
+    if not tool_name:
         return None
-    command = optional_string(json_document(tool_invocation.get("input")).get("command"))
-    if not command or not command.strip().startswith("git "):
+    payload = json_document(tool_invocation.get("input"))
+    if not is_git_operation(classify_tool(tool_name, payload)):
         return None
-    return _parse_git_command(command)
+    command = tool_input_command(payload)
+    return _parse_git_command(command) if command else None
 
 
 def extract_file_changes(tool_invocations: Sequence[Mapping[str, object]]) -> list[FileChangeSummary]:
@@ -229,11 +241,7 @@ def extract_file_changes(tool_invocations: Sequence[Mapping[str, object]]) -> li
     for invocation in tool_invocations:
         tool_name = invocation.get("tool_name")
         input_data = json_document(invocation.get("input"))
-        path = (
-            optional_string(input_data.get("file_path"))
-            or optional_string(input_data.get("path"))
-            or optional_string(input_data.get("notebook_path"))
-        )
+        path = tool_input_path(input_data)
         if not path:
             continue
 

@@ -26,7 +26,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.rendering.formatting import format_session
 from polylogue.storage.archive_identity import archive_file_set_root
-from polylogue.surfaces.projection_spec import ProjectionSpec
+from polylogue.surfaces.projection_spec import ProjectionSpec, RenderDestination
 from polylogue.surfaces.temporal_evidence import (
     TemporalEvidenceEvent,
     TemporalEvidenceWindow,
@@ -102,7 +102,7 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
     fmt = invocation.output_format or "markdown"
     if (
         invocation.view == "transcript"
-        and invocation.destination == "file"
+        and invocation.destination == RenderDestination.FILE
         and invocation.session_id is not None
         and fmt == "markdown"
         and invocation.out_path
@@ -121,11 +121,11 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
         .with_param_updates(output_format=fmt)
         .with_param_updates(view=invocation.view)
     )
-    if invocation.destination in ("stdout", "terminal"):
+    if invocation.destination in (RenderDestination.STDOUT, RenderDestination.TERMINAL):
         execute_query_request(env, updated)
-    elif invocation.destination == "clipboard":
+    elif invocation.destination == RenderDestination.CLIPBOARD:
         execute_query_request(env, updated.with_param_updates(output="clipboard"))
-    elif invocation.destination == "browser":
+    elif invocation.destination == RenderDestination.BROWSER:
         # Route through the same query-output delivery contract that
         # `find QUERY --to browser` (without `read`) already uses --
         # `QueryOutputSpec`/`deliver_query_output` (query_output.py) resolve
@@ -135,7 +135,7 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
         # `read --to browser` silently printed to the terminal
         # (polylogue-bvnz).
         execute_query_request(env, updated.with_param_updates(output="browser"))
-    elif invocation.destination == "file":
+    elif invocation.destination == RenderDestination.FILE:
         if not invocation.out_path:
             raise click.UsageError("--to file requires --out <path>.")
         execute_query_request(env, updated.with_param_updates(output=invocation.out_path))
@@ -149,7 +149,7 @@ def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     del request
     assert invocation.session_id is not None
     if (
-        invocation.destination == "file"
+        invocation.destination == RenderDestination.FILE
         and (invocation.output_format or "markdown") == "markdown"
         and invocation.out_path
         and invocation.projection_spec is None

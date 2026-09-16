@@ -23,6 +23,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.surfaces.payloads import message_row_envelope_from_domain, model_json_document
+from polylogue.surfaces.projection_spec import RenderDestination
 
 
 def build_message_options(values: ReadViewOptionValues) -> ReadViewMessageOptions:
@@ -50,7 +51,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     limit = limit if limit is not None else DEFAULT_MESSAGE_PAGE_LIMIT
     offset = projection.body_offset if projection is not None and projection.body_offset is not None else options.offset
 
-    if invocation.destination == "file" and invocation.output_format in {"json", "ndjson"}:
+    if invocation.destination == RenderDestination.FILE and invocation.output_format in {"json", "ndjson"}:
         assert invocation.out_path is not None
         _write_messages_file(
             env,
@@ -64,7 +65,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         )
         return
 
-    if invocation.destination in ("file", "clipboard"):
+    if invocation.destination in (RenderDestination.FILE, RenderDestination.CLIPBOARD):
         buf = io.StringIO()
 
         def _captured_echo(message: object = None, **_kwargs: object) -> None:
@@ -196,7 +197,7 @@ def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvo
     offset = projection.body_offset if projection is not None and projection.body_offset is not None else options.offset
     output_format = invocation.output_format or "json"
 
-    if invocation.destination in ("file", "clipboard", "stdout"):
+    if invocation.destination in (RenderDestination.FILE, RenderDestination.CLIPBOARD, RenderDestination.STDOUT):
         buf = io.StringIO()
 
         def _captured_echo_raw(message: object = None, **_kwargs: object) -> None:
@@ -275,7 +276,7 @@ def run_read_hooks(env: AppEnv, request: RootModeRequest, invocation: ReadViewIn
 
         content = yaml.dump(evidence) + "\n"
 
-    if invocation.destination in ("file", "clipboard", "stdout"):
+    if invocation.destination in (RenderDestination.FILE, RenderDestination.CLIPBOARD, RenderDestination.STDOUT):
         deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
         return
     click.echo(content, nl=False)

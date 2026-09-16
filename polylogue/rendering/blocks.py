@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from html import escape
 
 from polylogue.core.enums import BlockType
+from polylogue.core.tool_identity import tool_input_command, tool_input_path
 from polylogue.rendering.block_models import RenderableBlock
 
 # -------------------------------------------------------------------
@@ -92,11 +93,11 @@ def _tool_input_summary(name: str | None, tool_input: Mapping[str, object] | Non
         return ""
 
     # Common tool patterns
-    path = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("file")
+    path = tool_input_path(tool_input)
     if path:
         return f"`{path}`"
 
-    command = tool_input.get("command")
+    command = tool_input_command(tool_input)
     if command:
         # Truncate long commands
         if len(str(command)) > 80:
