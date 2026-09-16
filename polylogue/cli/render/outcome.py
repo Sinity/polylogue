@@ -138,6 +138,100 @@ def exit_for(outcome: OutcomeEnvelope) -> NoReturn:
     raise SystemExit(outcome_exit_code(outcome))
 
 
+#: Exit status of a read the operator interrupted. 128 + SIGINT, the shell
+#: convention, and deliberately outside ``OUTCOME_EXIT_CODES``: cancellation is
+#: not a terminal *outcome* of a read, it is the absence of one, so it cannot
+#: be spelled as an outcome state without inventing a fifth.
+CANCELLED_EXIT_CODE = 130
+
+#: Exit status of a read that failed. Derived from the ``error`` outcome so
+#: this module holds no second copy of the table.
+FAILED_READ_EXIT_CODE = outcome_exit_code(decide_outcome(matched=0, error="read_failed"))
+
+#: Remedies keyed by the operation-kernel failure code, so the operator is
+#: never told only *what* broke.
+_READ_FAILURE_REMEDIES: dict[str, str] = {
+    "daemon_required": "start the daemon with `polylogue run`, or re-run without --daemon-only",
+    "daemon_transport_error": "the daemon connection dropped mid-read; check `polylogue ops status` and retry",
+    # ``daemon_execution`` frames a deadline as the exception's own type name.
+    "QueryTimeoutError": "the read hit its deadline; narrow the selection (--limit/--since) and retry",
+    "deadline_exceeded": "narrow the selection (--limit/--since) or raise the deadline, then retry",
+    "cancelled": "the read was cancelled before it produced an answer; re-run it to get one",
+    "result_too_large": "narrow the window with --limit/--offset, or read a smaller view",
+    "stale_generation": "the archive advanced under the read; re-run to read the current generation",
+    "invalid_request": "check the option values named above against `--help`",
+}
+
+
+def read_failure_exit_code(exc: BaseException) -> int:
+    """Return the exit status of a failed CLI read.
+
+    Every typed read failure used to become a ``click.UsageError``, which exits
+    2 -- the *empty* status (:data:`EMPTY_EXIT_CODE`) -- and prints Click's
+    usage banner. A dropped daemon connection, a read that hit its deadline and
+    a cancelled read were therefore indistinguishable by exit status from
+    "matched nothing", and three of them framed a transport failure as a syntax
+    mistake (polylogue-jtrtj). ``exit_for`` is the outcome authority for a read
+    that *produced* an envelope; this is its counterpart for one that did not,
+    and neither indexes ``OUTCOME_EXIT_CODES`` by name.
+    """
+
+    from polylogue.cli.operation_kernel import OperationCancelledError
+
+    if isinstance(exc, OperationCancelledError):
+        return CANCELLED_EXIT_CODE
+    return FAILED_READ_EXIT_CODE
+
+
+def read_failure_message(exc: BaseException) -> str:
+    """Render a failed read as one operator-facing line plus its remedy.
+
+    The call id is included whenever the transport reported one: a daemon-side
+    failure is diagnosed from the daemon's log by that id, and omitting it left
+    the operator with a message they could not correlate.
+    """
+
+    from polylogue.cli.operation_kernel import OperationCancelledError, OperationFailedError
+
+    detail = str(getattr(exc, "detail", None) or exc)
+    code = "cancelled" if isinstance(exc, OperationCancelledError) else str(getattr(exc, "code", "") or "")
+    parts = [detail]
+    request_id = getattr(exc, "request_id", None)
+    if request_id:
+        parts.append(f"call {request_id}")
+    if isinstance(exc, OperationFailedError):
+        deadline_ms = exc.data.get("deadline_ms")
+        if isinstance(deadline_ms, int):
+            parts.append(f"deadline {deadline_ms} ms")
+    line = "; ".join(parts)
+    remedy = _READ_FAILURE_REMEDIES.get(code)
+    return f"{line}\nRemedy: {remedy}" if remedy else line
+
+
+def exit_for_read_failure(exc: BaseException) -> NoReturn:
+    """Emit a failed read's refusal and leave with its own status.
+
+    The single terminal for a read that produced no envelope. Machine callers
+    still receive the structured error document: ``machine_main`` re-raises a
+    bare ``SystemExit`` unchanged, so emitting it here is what keeps
+    ``--format json`` parseable on a transport failure.
+    """
+
+    import sys
+
+    from polylogue.cli.shared.machine_errors import error_runtime, extract_command, wants_json
+
+    code = read_failure_exit_code(exc)
+    message = read_failure_message(exc)
+    argv = list(sys.argv[1:])
+    if wants_json(argv):
+        error_runtime(message, command=extract_command(argv), exception_type=type(exc).__qualname__).emit(
+            exit_code=code
+        )
+    click.echo(f"Error: {message}", err=True)
+    raise SystemExit(code) from exc
+
+
 def envelope_outcome(envelope: Mapping[str, object]) -> OutcomeEnvelope:
     """Read the terminal outcome an envelope carries, defaulting to empty.
 
@@ -257,7 +351,12 @@ def emit_no_results(
 
 
 __all__ = [
+    "CANCELLED_EXIT_CODE",
     "EMPTY_EXIT_CODE",
+    "FAILED_READ_EXIT_CODE",
+    "exit_for_read_failure",
+    "read_failure_exit_code",
+    "read_failure_message",
     "convergence_warning_line",
     "diagnostics_dict",
     "emit_empty_page",
