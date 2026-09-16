@@ -12,6 +12,7 @@ from dataclasses import dataclass, fields
 from typing import Any
 
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.viewport import read_view_choices
 from polylogue.surfaces.projection_spec import (
     ProjectionSpec,
     QueryProjectionSpec,
@@ -96,27 +97,15 @@ class ReadRequest:
         )
 
 
+#: One preset per declared read view, generated from the single view
+#: declaration rather than restated here.  The hand-maintained list this
+#: replaces had drifted: it omitted ``lineage`` and ``effective_context``
+#: entirely, so two views the CLI offers had no public preset and nothing
+#: compared the two lists (polylogue-dutav).  ``archive.viewport`` is the
+#: shared declaration ``cli.read_view_registry`` already validates against, so
+#: deriving from it makes the drift impossible rather than merely detectable.
 READ_PRESETS: tuple[ReadPreset, ...] = tuple(
-    ReadPreset(name=view, description=f"Read the {view} view.", views=(view,))
-    for view in (
-        "summary",
-        "transcript",
-        "dialogue",
-        "messages",
-        "raw",
-        "hooks",
-        "events",
-        "file-edits",
-        "agent-policies",
-        "web-content",
-        "context",
-        "context-image",
-        "neighbors",
-        "correlation",
-        "temporal",
-        "chronicle",
-        "topology",
-    )
+    ReadPreset(name=view, description=f"Read the {view} view.", views=(view,)) for view in read_view_choices()
 )
 _PRESETS = {preset.name: preset for preset in READ_PRESETS}
 
