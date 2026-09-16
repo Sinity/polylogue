@@ -28,6 +28,7 @@ from polylogue.core.errors import (
     SchemaVersionMismatchError,
 )
 from polylogue.logging import get_logger
+from polylogue.mcp.archive_support import clip_with_marker
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
 from polylogue.services import RuntimeServices
@@ -120,6 +121,10 @@ class ServerCallbacks:
     capabilities: MCPCapabilities
 
 
+#: Per-block character budget for agent-facing fenced-code extraction.
+_FENCED_CODE_MAX_CHARS = 300
+
+
 def _extract_fenced_code(text: str, language: str = "") -> list[MCPFencedCodeBlock]:
     """Extract fenced code blocks from markdown text."""
     if "```" not in text:
@@ -132,7 +137,18 @@ def _extract_fenced_code(text: str, language: str = "") -> list[MCPFencedCodeBlo
         block_lang = lines[0].strip() if lines else ""
         code = lines[1] if len(lines) > 1 else block
         if not language or block_lang == language:
-            results.append({"language": block_lang, "code": code[:300]})
+            # polylogue-lb15e: this used to hand back ``code[:300]`` with no
+            # marker and no length, so a clipped snippet was indistinguishable
+            # from a complete one to the agent receiving it.
+            clipped, truncated = clip_with_marker(code, _FENCED_CODE_MAX_CHARS)
+            results.append(
+                {
+                    "language": block_lang,
+                    "code": clipped,
+                    "code_length": len(code),
+                    "truncated": truncated,
+                }
+            )
     return results
 
 

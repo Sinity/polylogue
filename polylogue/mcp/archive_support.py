@@ -804,11 +804,31 @@ def _bounded_message_payload(
     return cast(MCPMessagePayload, payload.model_copy(update={"text": text, "content_blocks": blocks}))
 
 
+#: The one marker every agent-facing surface uses to declare that it clipped
+#: text.  Sharing it means an agent never has to guess whether a short value is
+#: the whole thing (polylogue-lb15e).
+TRUNCATION_MARKER = "…[truncated]…"
+
+
+def clip_with_marker(text: str, max_chars: int) -> tuple[str, bool]:
+    """Clip ``text`` to ``max_chars`` and say whether anything was dropped.
+
+    A bare ``text[:n]`` hands an agent a value that is indistinguishable from a
+    complete short one -- the failure mode this exists to remove.  The marker is
+    included inside the budget so the result never exceeds ``max_chars``.
+    """
+    if max_chars < 0 or len(text) <= max_chars:
+        return text, False
+    if max_chars <= len(TRUNCATION_MARKER):
+        return text[:max_chars], True
+    return text[: max_chars - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER, True
+
+
 def _excerpt_text(text: str, max_chars: int, *, match_query: str | None = None) -> str:
     """Return a bounded excerpt, preferring the first requested match span."""
     if max_chars <= 1:
         return text[:max_chars]
-    marker = "…[truncated]…"
+    marker = TRUNCATION_MARKER
     if max_chars <= len(marker):
         return text[:max_chars]
     if match_query:
@@ -869,6 +889,7 @@ def _sort_value(sort: object) -> str | None:
 
 
 __all__ = [
+    "TRUNCATION_MARKER",
     "ArchiveQueryFilters",
     "active_archive_root",
     "archive_session_list_payload",
@@ -881,4 +902,5 @@ __all__ = [
     "archive_search_payload",
     "archive_summary_payload",
     "blackboard_note_payload",
+    "clip_with_marker",
 ]

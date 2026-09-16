@@ -531,8 +531,29 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_origin_sort
 ON sessions(origin, sort_key_ms DESC);
 
+-- polylogue-mon2f: ordered/range access on ``sort_key_ms`` alone, for the
+-- since/until date bounds that filter on the column without the recent-listing
+-- ordering expression.  The expression index below cannot serve those, because
+-- its leading column is the nullness expression rather than the timestamp.
 CREATE INDEX IF NOT EXISTS idx_sessions_sort_key
 ON sessions(sort_key_ms DESC);
+
+-- polylogue-lxdwy: the production recent-session readers do NOT order by
+-- ``sort_key_ms`` alone.  ``list_sessions``/``list_session_summaries``
+-- (queries/sessions_reads.py) and ``_summary_order_by``
+-- (archive_tiers/archive.py) all order by
+-- ``(sort_key_ms IS NULL) ASC, sort_key_ms DESC, session_id DESC``.  SQLite
+-- cannot satisfy that leading expression or its tie-breaker from
+-- ``idx_sessions_sort_key``, so the unfiltered global listing still planned as
+-- ``SCAN sessions | USE TEMP B-TREE FOR ORDER BY`` after that index landed.
+-- This index is declared over the actual ordering expressions, verified by
+-- ``test_global_recent_sessions_uses_production_ordering_index`` running
+-- EXPLAIN QUERY PLAN on the reader's own ORDER BY.  The ``--reverse`` (ASC)
+-- variant is deliberately not indexed: the leading nullness term stays ASC in
+-- both directions, so no single index serves both, and the descending recent
+-- listing is the hot path this addresses.
+CREATE INDEX IF NOT EXISTS idx_sessions_recent_order
+ON sessions((sort_key_ms IS NULL), sort_key_ms DESC, session_id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_parent
 ON sessions(parent_session_id)

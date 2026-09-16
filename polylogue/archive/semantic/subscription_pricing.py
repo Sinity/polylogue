@@ -6,6 +6,7 @@ hard-code current vendor prices without a documented source/update path.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict
@@ -139,6 +140,30 @@ def compute_credit_cost(
     return rate.credits_for(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
 
 
+def models_without_credit_rate(normalized_models: Iterable[str]) -> tuple[str, ...]:
+    """Return the models that carry no declared subscription credit rate.
+
+    ``compute_credit_cost`` deliberately returns 0 for an undeclared model
+    rather than fabricating a figure (docs/cost-model.md), which is the correct
+    failure mode but an invisible one: a model family that has not been added
+    to :data:`MODEL_CREDIT_RATES` silently contributes no
+    ``subscription_credit_usd`` at all, and the blind spot grows exactly where
+    usage concentrates -- the newest models (polylogue-t83q).  Callers that
+    aggregate credits over archive rows use this to name the gap instead of
+    reporting a total that quietly excludes it.
+
+    Only Anthropic-shaped model names are reported: a non-Claude model has no
+    Claude subscription credit rate by construction, and naming it would be
+    noise rather than a gap.
+    """
+    missing = {
+        model
+        for model in (str(name).strip() for name in normalized_models)
+        if model and model.startswith("claude") and model not in MODEL_CREDIT_RATES
+    }
+    return tuple(sorted(missing))
+
+
 def credits_to_usd(credit_cost: float, *, tier: str = "pro") -> float:
     """Convert a subscription credit cost to a subscription-equivalent USD figure.
 
@@ -184,4 +209,5 @@ __all__ = [
     "compute_credit_cost",
     "credits_to_usd",
     "get_credit_rate",
+    "models_without_credit_rate",
 ]

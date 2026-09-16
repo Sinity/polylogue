@@ -1706,6 +1706,15 @@ class SearchEnvelope(SurfacePayloadModel):
     failed_lanes: tuple[dict[str, str], ...] = ()
     advisories: tuple[str, ...] = ()
     authority: AuthorityEnvelope | None = None
+    # polylogue-1c6j: the ranked read route needs to name what ``total``
+    # counted -- a ``--no-root`` search counts subagent/branch rows too, and a
+    # renderer with nothing to read reports them under the "top-level
+    # sessions" label.  ``operations/daemon_reads._search_payload`` used to
+    # bolt this key onto the dumped envelope, which made the emitted document
+    # fail the published ``additionalProperties: false`` schema this model
+    # generates.  Declaring it keeps the label and the contract together.
+    # ``None`` means the surface did not resolve a unit, not "sessions".
+    total_unit: str | None = None
     outcome: OutcomeEnvelope
 
 
@@ -3804,6 +3813,7 @@ def build_search_envelope(
     request_identity: str | None = None,
     execution: Any | None = None,
     authority: AuthorityEnvelope | None = None,
+    total_unit: str | None = None,
 ) -> SearchEnvelope:
     """Construct a :class:`SearchEnvelope` with the canonical cursor logic.
 
@@ -3867,6 +3877,7 @@ def build_search_envelope(
         ),
         authority=authority,
         advisories=tuple(execution.advisories) if execution is not None else (),
+        total_unit=total_unit,
     )
 
 

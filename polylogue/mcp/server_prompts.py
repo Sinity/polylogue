@@ -15,7 +15,7 @@ from typing_extensions import TypedDict
 from polylogue.archive.query.discovery import render_query_discovery_example
 from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
 from polylogue.archive.query.transaction import run_archive_read
-from polylogue.mcp.archive_support import archive_query_filters, mcp_archive_root
+from polylogue.mcp.archive_support import archive_query_filters, clip_with_marker, mcp_archive_root
 from polylogue.mcp.payloads import MCPFencedCodeBlock
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
@@ -74,17 +74,35 @@ CompareSessionPayload: TypeAlias = SessionSummaryPayload | MissingSessionPayload
 
 @dataclass(frozen=True, slots=True)
 class PromptMessage:
+    """One message in a prompt projection, with its own clip declared.
+
+    ``text_length`` is the untruncated length and ``truncated`` says whether
+    ``text`` is a fragment.
+    """
+
     role: str
     text: str
     timestamp: str | None = None
+    text_length: int | None = None
+    truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class PromptSession:
+    """A bounded prompt projection of one session.
+
+    ``messages`` is a page, not the session.  ``message_count`` is the
+    session's real total and ``truncated`` says whether this page omits rows,
+    so a model reading the prompt can tell "this is the whole conversation"
+    from "this is the first page of it" (polylogue-lb15e).
+    """
+
     id: str
     origin: str
     display_title: str
     messages: tuple[PromptMessage, ...]
+    message_count: int | None = None
+    truncated: bool = False
 
 
 def _message_role(message: Message) -> str:
@@ -135,6 +153,10 @@ def _summarize_session(conv: Any | None) -> CompareSessionPayload:
     }
 
 
+#: Per-message character budget for agent-facing prompt projections.
+_PROMPT_MESSAGE_MAX_CHARS = 4000
+
+
 def _code_snippet_payload(block: MCPFencedCodeBlock, session_id: str) -> ExtractedCodeSnippetPayload:
     return {
         "language": block.get("language", ""),
@@ -149,22 +171,33 @@ def _archive_prompt_session_page(
     """Build prompt context from a bounded message projection."""
     summary = archive.read_summary(session_id)
     rows = archive.query_session_messages((session_id,), limit=limit, offset=0)
+
+    def _message(row: Any) -> PromptMessage:
+        text, truncated = clip_with_marker(row.text, _PROMPT_MESSAGE_MAX_CHARS)
+        return PromptMessage(
+            role=row.role,
+            text=text,
+            timestamp=(
+                datetime.fromtimestamp(row.occurred_at_ms / 1000.0, UTC).isoformat()
+                if row.occurred_at_ms is not None
+                else None
+            ),
+            text_length=len(row.text),
+            truncated=truncated,
+        )
+
+    messages = tuple(_message(row) for row in rows)
+    # polylogue-lb15e: the page used to carry neither the session total nor a
+    # truncation flag, so a 500-message session and a 20-message one were
+    # indistinguishable in the prompt.
+    total = summary.message_count
     return PromptSession(
         id=summary.session_id,
         origin=summary.origin,
         display_title=summary.display_label or summary.title or "(untitled)",
-        messages=tuple(
-            PromptMessage(
-                role=row.role,
-                text=row.text[:4000],
-                timestamp=(
-                    datetime.fromtimestamp(row.occurred_at_ms / 1000.0, UTC).isoformat()
-                    if row.occurred_at_ms is not None
-                    else None
-                ),
-            )
-            for row in rows
-        ),
+        messages=messages,
+        message_count=total,
+        truncated=len(messages) < total,
     )
 
 

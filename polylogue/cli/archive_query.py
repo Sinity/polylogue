@@ -29,6 +29,7 @@ from polylogue.archive.query.spec import (
     DEFAULT_SESSION_LIST_LIMIT,
     QuerySpecError,
     SessionQuerySpec,
+    clamp_query_limit,
     session_count_unit_label,
 )
 from polylogue.cli.lowering import aggregate_mode
@@ -341,8 +342,13 @@ def _session_result_payload(session: Mapping[str, object]) -> dict[str, object]:
         "mode": "session",
         "session_id": session.get("session_id"),
         "native_id": session.get("native_id"),
+        # polylogue-1c6j: this document used to emit the same Origin token
+        # twice, once as ``origin`` and once as ``source``.  ``Source`` is a
+        # distinct, richer acquisition identity in this codebase, so a second
+        # key spelling it as the origin taught consumers a vocabulary the
+        # archive does not have.  ``origin`` is the public filter token and
+        # the only one here.
         "origin": session.get("origin"),
-        "source": session.get("origin"),
         "title": session.get("title"),
         "active_leaf_message_id": session.get("active_leaf_message_id"),
         "messages": [
@@ -636,7 +642,14 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     tags_to_add = _tuple_tokens(params.get("add_tag"))
     metadata_to_set = _metadata_pairs(params.get("set_meta"))
     since_session_id = compiled_spec.since_session_id
-    limit = compiled_spec.limit if compiled_spec.limit is not None and compiled_spec.limit > 0 else _limit(params)
+    # polylogue-fawr7: the compiled spec can carry an explicit ``limit:`` from
+    # the query expression as well as from ``--limit``; both are explicit
+    # requests and both answer to the shared public ceiling.
+    limit = (
+        clamp_query_limit(compiled_spec.limit, default=DEFAULT_SESSION_LIST_LIMIT)
+        if compiled_spec.limit is not None and compiled_spec.limit > 0
+        else _limit(params)
+    )
     offset = compiled_spec.offset if compiled_spec.offset > 0 else _offset(params)
     cursor = _decode_cursor(_optional_str(params.get("cursor")))
     _validate_cursor_request_identity(cursor, cursor_request_identity)
@@ -1149,9 +1162,19 @@ def _optional_int(value: object) -> int | None:
 
 
 def _limit(params: dict[str, object]) -> int:
+    """Resolve the page size under the one declared public ceiling.
+
+    ``--limit`` used to be returned verbatim whenever it was a positive int,
+    so an explicit CLI limit was the single read route that could request a
+    page above ``MAX_QUERY_LIMIT`` while MCP, daemon HTTP and the operation
+    route all clamped (polylogue-fawr7).  Non-positive and non-integer input
+    keeps falling back to the list default exactly as before -- ``clamp_query_limit``
+    applies the same rule -- so this narrows the ceiling without widening
+    anything.
+    """
     value = params.get("limit")
     if isinstance(value, int) and value > 0:
-        return value
+        return clamp_query_limit(value, default=DEFAULT_SESSION_LIST_LIMIT)
     return DEFAULT_SESSION_LIST_LIMIT
 
 

@@ -29,6 +29,7 @@ from polylogue.archive.semantic.subscription_pricing import (
     SUBSCRIPTION_CATALOG_PROVENANCE,
     compute_credit_cost,
     credits_to_usd,
+    models_without_credit_rate,
 )
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.evidence_families import (
@@ -2121,6 +2122,13 @@ def _pricing_lane_reports(
             )
             if credit_cost > 0:
                 bucket.subscription_credit_usd += credits_to_usd(credit_cost, tier=subscription_tier or "pro")
+            elif models_without_credit_rate((normalized_for_credit,)):
+                # polylogue-t83q: a Claude model with no declared credit rate
+                # contributes nothing to the subscription total, which is the
+                # right refusal but an invisible one -- the aggregate reads as
+                # a complete credit figure. Name the gap so the reported total
+                # is not mistaken for coverage of every Claude row.
+                caveats_by_provenance[provenance].add(f"missing_credit_rate:{normalized_for_credit}")
 
     result: list[PricingLaneReport] = []
     for provenance, bucket in sorted(

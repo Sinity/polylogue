@@ -50,3 +50,39 @@ def test_subscription_credits_track_the_dollar_price(model: str) -> None:
     assert rate.output_credits == rate.input_credits * 5, "output credits must retain the 5x rate"
     assert rate.cache_read_credits == 0, "subscription cache reads are free"
     assert rate.cache_write_credits == rate.input_credits
+
+
+def test_declared_credit_rates_are_not_reported_as_a_gap() -> None:
+    """polylogue-t83q: every model the catalog declares must pass the check.
+
+    Anti-vacuity: dropping a model from ``MODEL_CREDIT_RATES`` -- the way the
+    Claude 5 family was absent while it was the current model -- makes this
+    name it.
+    """
+    from polylogue.archive.semantic.subscription_pricing import (
+        MODEL_CREDIT_RATES,
+        models_without_credit_rate,
+    )
+
+    assert models_without_credit_rate(sorted(MODEL_CREDIT_RATES)) == ()
+
+
+def test_undeclared_claude_model_is_named_as_a_credit_gap() -> None:
+    """An unpriced Claude model must be reported, not silently credited zero.
+
+    ``compute_credit_cost`` returns 0 for an undeclared model, which is the
+    correct refusal but indistinguishable from "this model cost nothing"; the
+    check is what makes the blind spot visible.  Non-Claude models are not a
+    gap: they have no Claude subscription rate by construction.
+
+    Anti-vacuity: making ``models_without_credit_rate`` return ``()``
+    unconditionally turns the first assertion red.
+    """
+    from polylogue.archive.semantic.subscription_pricing import (
+        compute_credit_cost,
+        models_without_credit_rate,
+    )
+
+    assert compute_credit_cost("claude-opus-9", 1_000_000, 1_000_000) == 0
+    assert models_without_credit_rate(["claude-opus-9", "claude-opus-5"]) == ("claude-opus-9",)
+    assert models_without_credit_rate(["gpt-5", "deepseek-v4-flash", ""]) == ()
