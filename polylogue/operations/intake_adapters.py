@@ -78,13 +78,87 @@ def _walk_entry_key(path: Path, *, is_dir: bool) -> str:
     return text + os.sep if is_dir else text
 
 
+def _real_path(path: Path) -> str:
+    """The resolved real path used as this walk's cycle-detection identity."""
+
+    return os.path.realpath(path)
+
+
+def _emit_discovery_fault(source: WatchSource, fault: WalkFault, *, reason: str) -> None:
+    """Report one non-fatal discovery fault without losing the rest of the page.
+
+    A symlink cycle and a dangling symlink are both permanent properties of
+    the tree: refusing the whole class for them would strand every real file
+    beside them forever. They are still evidence -- the same
+    ``daemon.intake.discovery_failed`` shape the dispatcher emits -- so the
+    entry is counted per path instead of silently vanishing.
+    """
+
+    emit(
+        "daemon.intake.discovery_failed",
+        level=WARNING,
+        outcome="degraded",
+        reason=reason,
+        component=source.name,
+        path=str(fault.path),
+        error_detail=fault.detail,
+    )
+
+
+def _admit_linked_directory(
+    source: WatchSource,
+    path: Path,
+    *,
+    visited_real_paths: set[str] | None,
+    archive_root: Path | None,
+) -> bool:
+    """Whether a directory symlink may be descended into on this walk."""
+
+    try:
+        real = _real_path(path)
+    except OSError as exc:
+        _emit_discovery_fault(
+            source,
+            WalkFault(path, f"symlink target could not be resolved: {exc}"),
+            reason="unresolvable_symlink",
+        )
+        return False
+    if archive_root is not None:
+        archive_real = _real_path(archive_root)
+        if real == archive_real or real.startswith(archive_real + os.sep):
+            # A link back into the archive would feed the archive's own
+            # storage tiers to intake as if they were export material.
+            return False
+    if visited_real_paths is not None:
+        if real in visited_real_paths:
+            _emit_discovery_fault(
+                source,
+                WalkFault(path, f"symlink cycle: {real} was already visited"),
+                reason="symlink_cycle",
+            )
+            return False
+        visited_real_paths.add(real)
+    return True
+
+
 def _ordered_children(
     source: WatchSource,
     directory: Path,
     after: str | None,
     scandir: Callable[[Path], Any] = os.scandir,
+    *,
+    visited_real_paths: set[str] | None = None,
+    archive_root: Path | None = None,
 ) -> list[tuple[str, Path, bool]]:
-    """Siblings of ``directory``, reverse-sorted so a stack pops them in order."""
+    """Siblings of ``directory``, reverse-sorted so a stack pops them in order.
+
+    Directory symlinks are followed: an operator who mounts an export tree
+    through a symlink configured a real source root, and refusing to enter it
+    made the source silently unacquired. Following links needs the two guards
+    below -- ``visited_real_paths`` (resolved real paths already entered on
+    this walk) terminates cycles, and ``archive_root`` keeps a link that
+    points back at the archive from feeding the archive to itself.
+    """
 
     children: list[tuple[str, Path, bool]] = []
     try:
@@ -104,8 +178,16 @@ def _ordered_children(
         for entry in entries:
             path = Path(entry.path)
             try:
-                if entry.is_dir(follow_symlinks=False):
+                is_link = entry.is_symlink()
+                if entry.is_dir(follow_symlinks=False) or (is_link and entry.is_dir()):
                     if source.ignores_directory(path):
+                        continue
+                    if is_link and not _admit_linked_directory(
+                        source,
+                        path,
+                        visited_real_paths=visited_real_paths,
+                        archive_root=archive_root,
+                    ):
                         continue
                     key = _walk_entry_key(path, is_dir=True)
                     # Every descendant path begins with ``key``. When the
@@ -117,6 +199,15 @@ def _ordered_children(
                     children.append((key, path, True))
                     continue
                 if not entry.is_file(follow_symlinks=False):
+                    if is_link and not entry.is_file():
+                        # A dangling link is a fault, not an absence: the
+                        # export it named is missing. Counting it keeps the
+                        # walk alive over the rest of the directory.
+                        _emit_discovery_fault(
+                            source,
+                            WalkFault(path, "symlink target does not exist"),
+                            reason="broken_symlink",
+                        )
                     continue
             except FileNotFoundError:
                 # Ordinary producer churn: the entry vanished between the
@@ -160,6 +251,7 @@ def _bounded_source_paths(
     limit: int,
     after: str | None,
     scandir: Callable[[Path], Any] = os.scandir,
+    archive_root: Path | None = None,
 ) -> list[Path]:
     """Collect at most ``limit`` files, stopping as soon as it is full.
 
@@ -171,6 +263,10 @@ def _bounded_source_paths(
     loss rather than delay. Emitting in cursor order also makes the
     ``limit`` early exit safe -- the next pass resumes at exactly the key
     the previous one stopped on, mid-directory or not.
+
+    Directory symlinks are followed, so a source root whose export tree is
+    mounted through a link is discovered. Every directory entered on this
+    walk records its resolved real path, which is what terminates a cycle.
     """
 
     if limit <= 0:
@@ -185,7 +281,17 @@ def _bounded_source_paths(
             [WalkFault(source.root, "source root is unavailable")],
         )
     found: list[Path] = []
-    stack: list[list[tuple[str, Path, bool]]] = [_ordered_children(source, source.root, after, scandir)]
+    visited_real_paths: set[str] = {_real_path(source.root)}
+    stack: list[list[tuple[str, Path, bool]]] = [
+        _ordered_children(
+            source,
+            source.root,
+            after,
+            scandir,
+            visited_real_paths=visited_real_paths,
+            archive_root=archive_root,
+        )
+    ]
     while stack and len(found) < limit:
         level = stack[-1]
         if not level:
@@ -193,7 +299,17 @@ def _bounded_source_paths(
             continue
         key, path, is_dir = level.pop()
         if is_dir:
-            stack.append(_ordered_children(source, path, after, scandir))
+            visited_real_paths.add(_real_path(path))
+            stack.append(
+                _ordered_children(
+                    source,
+                    path,
+                    after,
+                    scandir,
+                    visited_real_paths=visited_real_paths,
+                    archive_root=archive_root,
+                )
+            )
             continue
         if after is not None and key <= after:
             continue
@@ -255,7 +371,13 @@ class FileIntakeAdapter(IntakeAdapter):
         # session. Revisiting an already-admitted file is explicitly harmless
         # (durable cursor/raw identity, see above), so the conservative
         # direction here is to re-discover, never to skip.
-        paths = _bounded_source_paths(self.source, self.context.sources, limit=limit, after=self._after)
+        paths = _bounded_source_paths(
+            self.source,
+            self.context.sources,
+            limit=limit,
+            after=self._after,
+            archive_root=self.context.archive_root,
+        )
         items: list[IntakeItem] = []
         for path in paths:
             try:
