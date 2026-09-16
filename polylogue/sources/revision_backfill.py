@@ -90,7 +90,12 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     apply_source_raw_state_update,
     upsert_raw_artifact,
 )
-from polylogue.storage.sqlite.archive_tiers.write import PreparedRows, prepare_session_rows, prepare_session_shard
+from polylogue.storage.sqlite.archive_tiers.write import (
+    PreparedRows,
+    PreparedSessionWriteRefusedError,
+    prepare_session_rows,
+    prepare_session_shard,
+)
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
@@ -680,6 +685,14 @@ class RevisionBackfillResult:
     replayed_logical_sources: int
     quarantined: int
     adoption_deferred: int = 0
+    #: How many replay units fell back from shard-resident lowering to inline
+    #: lowering because the writer refused the prepared rows (polylogue-k00uq).
+    #: A shard is sealed by a parse worker with no archive connection, so it
+    #: cannot slice the prefix-tail a prefix-sharing child actually stores --
+    #: ``_extract_prefix_tail`` needs a live read of the already-archived
+    #: parent. The unit is still written, by the ordinary inline path; this
+    #: names and counts the degradation instead of aborting the whole replay.
+    shard_lowering_degraded: int = 0
     #: Wall-clock seconds per named stage of this backfill call, keyed by the
     #: SAME names logged as ``"backfill stage timings: ..."`` below --
     #: ``census``/``census_receipt``/``spill_load`` (decode-side, computed
@@ -2529,6 +2542,7 @@ def backfill_historical_revision_evidence(
 
     adoption_deferred = 0
     quarantined = 0
+    shard_lowering_degraded = 0
     stage_timings: dict[str, float] = {}
     whale_envelope: dict[str, int] = {}
     logical_keys: set[str] = set()
@@ -2843,8 +2857,40 @@ def backfill_historical_revision_evidence(
                             if len(plan.accepted_raw_ids) == 1
                             else shard_transport.add_composed(tip_raw_id, composed[0])
                         )
-                        with archive.attached_session_shard(shard_path, required=True) as bindings:
-                            prepared = _required_shard_prepared_rows(tip_raw_id, composed[0], bindings)
+                        try:
+                            with archive.attached_session_shard(shard_path, required=True) as bindings:
+                                prepared = _required_shard_prepared_rows(tip_raw_id, composed[0], bindings)
+                                archive.apply_raw_revision_replay(
+                                    plan,
+                                    parsed_by_raw_id,
+                                    acquired_at_ms=0,
+                                    stage_timings_s=stage_timings,
+                                    manage_transaction=True,
+                                    bulk_fts=bulk_fts,
+                                    bulk_build=bulk_build,
+                                    fresh_build=fresh_build,
+                                    fresh_build_batch=fresh_build_batch,
+                                    prepared_aggregate_rows=prepared[tip_raw_id],
+                                    prepared_required_raw_ids=frozenset({tip_raw_id}),
+                                )
+                        except PreparedSessionWriteRefusedError as exc:
+                            # polylogue-k00uq: the writer sliced this session's
+                            # messages against an already-archived parent
+                            # (``lineage_inheritance == 'prefix-sharing'``), so
+                            # the shard's rows -- sealed off-thread with no DB
+                            # read -- describe the unsliced session and are
+                            # correctly refused. The refusal is raised before
+                            # the write transaction opens, so nothing of this
+                            # unit landed; write it by the ordinary inline path
+                            # and count the named degradation. Never a skip.
+                            shard_lowering_degraded += 1
+                            _LOGGER.warning(
+                                "shard_lowering_degraded: logical_key=%s tip_raw_id=%s falling back to inline "
+                                "lowering (%s)",
+                                plan.logical_source_key,
+                                tip_raw_id,
+                                exc,
+                            )
                             archive.apply_raw_revision_replay(
                                 plan,
                                 parsed_by_raw_id,
@@ -2855,8 +2901,6 @@ def backfill_historical_revision_evidence(
                                 bulk_build=bulk_build,
                                 fresh_build=fresh_build,
                                 fresh_build_batch=fresh_build_batch,
-                                prepared_aggregate_rows=prepared[tip_raw_id],
-                                prepared_required_raw_ids=frozenset({tip_raw_id}),
                             )
                 except sqlite3.IntegrityError as exc:
                     raise sqlite3.IntegrityError(
@@ -2985,10 +3029,37 @@ def backfill_historical_revision_evidence(
                     else:
                         accepted_raw_id = classification.accepted_raw_ids[-1]
                         accepted_session = member_sessions[accepted_raw_id]
-                        with archive.attached_session_shard(
-                            shard_transport.path_for_raw(accepted_raw_id), required=True
-                        ) as bindings:
-                            prepared = _required_shard_prepared_rows(accepted_raw_id, accepted_session, bindings)
+                        try:
+                            with archive.attached_session_shard(
+                                shard_transport.path_for_raw(accepted_raw_id), required=True
+                            ) as bindings:
+                                prepared = _required_shard_prepared_rows(accepted_raw_id, accepted_session, bindings)
+                                archive.apply_raw_membership_classification(
+                                    logical_key,
+                                    classification,
+                                    member_sessions,
+                                    projections,
+                                    acquired_at_ms=0,
+                                    stage_timings_s=stage_timings,
+                                    manage_transaction=True,
+                                    bulk_fts=bulk_fts,
+                                    bulk_build=bulk_build,
+                                    fresh_build=fresh_build,
+                                    fresh_build_batch=fresh_build_batch,
+                                    prepared_by_raw_id=prepared,
+                                    prepared_required_raw_ids=frozenset({accepted_raw_id}),
+                                )
+                        except PreparedSessionWriteRefusedError as exc:
+                            # polylogue-k00uq, membership half: same cause and
+                            # same remedy as the byte-replay branch above.
+                            shard_lowering_degraded += 1
+                            _LOGGER.warning(
+                                "shard_lowering_degraded: logical_key=%s accepted_raw_id=%s falling back to "
+                                "inline lowering (%s)",
+                                logical_key,
+                                accepted_raw_id,
+                                exc,
+                            )
                             archive.apply_raw_membership_classification(
                                 logical_key,
                                 classification,
@@ -3001,8 +3072,6 @@ def backfill_historical_revision_evidence(
                                 bulk_build=bulk_build,
                                 fresh_build=fresh_build,
                                 fresh_build_batch=fresh_build_batch,
-                                prepared_by_raw_id=prepared,
-                                prepared_required_raw_ids=frozenset({accepted_raw_id}),
                             )
                 except sqlite3.IntegrityError as exc:
                     raise sqlite3.IntegrityError(
@@ -3063,6 +3132,7 @@ def backfill_historical_revision_evidence(
         replayed,
         census.quarantined + quarantined,
         adoption_deferred,
+        shard_lowering_degraded,
         stage_timings_s=stage_timings,
         whale_envelope=whale_envelope,
     )

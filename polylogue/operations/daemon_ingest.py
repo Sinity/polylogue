@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from time import monotonic, time
 from typing import TypeVar
@@ -94,6 +94,11 @@ class IngestExecution:
         self.executor = OperationExecutor(audit=self.audit, archive_root=context.archive_root)
         self.snapshot: PinnedOperationRead | None = None
         self.binding: MachineRequestBinding | None = None
+        # polylogue-cois9: the live archive identity digest observed when this
+        # execution first pinned a read.  It folds in the rebuildable index
+        # tier's inode, so it is only good for detecting a generation change
+        # *within* this run -- never as the durable audit key.
+        self.observed_identity: str | None = None
         self.record: dict[str, object] | None = None
         self.started_mutation: StartedBoundMutation | None = None
         self.resumed = False
@@ -124,22 +129,45 @@ class IngestExecution:
         if reason is not None:
             raise IngestStoppedError(reason)
 
+    def recover_machine_request(self) -> dict[str, object] | None:
+        """Recover this exchange's durable row and adopt the identity it is keyed by.
+
+        polylogue-cois9: ``machine_requests`` rows (and their
+        ``machine_request_parts`` children) are keyed by the archive identity
+        digest that was live when they were written.  That digest folds in the
+        rebuildable index tier's inode, so an index-generation promotion across
+        a daemon restart re-derives a different one.  The audit lookup is now
+        keyed on ``request_id`` within this audit database, and this adopts the
+        stored identity so every later part read and write addresses the same
+        durable rows rather than starting a second, unlinked exchange.
+        """
+
+        assert self.binding is not None
+        record = self.audit.machine_request(self.binding)
+        if record is not None:
+            stored = str(record["archive_identity"])
+            if stored != self.binding.archive_identity:
+                self.binding = replace(self.binding, archive_identity=stored)
+        return record
+
     async def read(self, work: Callable[[PinnedOperationRead], _T]) -> _T:
         def observed() -> _T:
             self.check_stop()
             with open_operation_read(
                 self.context.archive_root, publication_guard=self.runtime.publication_guard
             ) as snapshot:
+                identity = snapshot.identity.authority_identity_digest
                 if self.binding is None:
                     _validate_identity(self.request, self.context, snapshot)
+                    self.observed_identity = identity
                     self.binding = MachineRequestBinding(
-                        snapshot.identity.authority_identity_digest,
+                        identity,
                         str(self.request.request_id),
                         self.context.principal.actor_ref,
                         self.request.fingerprint,
                         self.request.operation,
                     )
-                elif snapshot.identity.authority_identity_digest != self.binding.archive_identity:
+                elif identity != self.observed_identity:
                     raise ValueError("archive_identity_stale")
                 self.snapshot = snapshot
                 self.runtime.observe_snapshot(self.request, snapshot)
@@ -195,9 +223,8 @@ class IngestExecution:
         self.runtime.require_session_maintenance()
 
         def recover(_snapshot: PinnedOperationRead) -> dict[str, object] | None:
-            assert self.binding is not None
             with self.audit.settled_machine_read():
-                return self.audit.machine_request(self.binding)
+                return self.recover_machine_request()
 
         self.record = await self.read(recover)
         if self.record is None:
@@ -242,7 +269,7 @@ class IngestExecution:
                     deadline_unix_ms=self.runtime.request_deadline_unix_ms(self.request),
                 ):
                     self.audit.accept_ingest(manifest, self.context.principal, plan=plan, authorization=authorization)
-                record = self.audit.machine_request(self.binding)
+                record = self.recover_machine_request()
                 assert record is not None
                 return record
 
@@ -284,7 +311,7 @@ class IngestExecution:
         def read() -> dict[str, object]:
             assert self.binding is not None
             with self.audit.settled_machine_read():
-                record = self.audit.machine_request(self.binding)
+                record = self.recover_machine_request()
                 if record is None:
                     raise ValueError("ingest request has no durable binding")
                 self.record = record

@@ -45,6 +45,8 @@ from polylogue.operations.mutation_actuators import (
     BlackboardPostArgs,
     BlockerResolveActuator,
     BlockerResolveArgs,
+    BulkMetadataSetActuator,
+    BulkMetadataSetArgs,
     BulkTagActuator,
     BulkTagArgs,
     CaptureAssertionCandidateActuator,
@@ -867,6 +869,63 @@ class TestBulkTagActuator:
                 "SELECT COUNT(*) FROM assertions WHERE kind = 'tag' AND status != 'deleted'"
             ).fetchone()[0]
         assert count == 2
+
+    def test_unresolved_session_id_is_a_degraded_outcome(self, tmp_path: Path) -> None:
+        """A caller-named id the archive cannot resolve is a named gap.
+
+        Anti-vacuity: restore the silent ``except KeyError: continue`` split
+        (dropping the id instead of returning it as unresolved) and the
+        receipt reports ``ok`` over the smaller set -- this test is then red
+        on the outcome state, the gap reason, and the named id.
+        """
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="bulk-degraded")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator = BulkTagActuator()
+            executor = OperationExecutor()
+            args = BulkTagArgs(archive=archive, session_ids=(session_id, "excised-mid-flight"), tags=("a",))
+            plan = executor.prepare(actuator, args)
+            assert plan.target_refs == (f"session:{session_id}",)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+
+        outcome = cast("dict[str, Any]", receipt.domain_receipt["outcome"])
+        assert outcome["state"] == "degraded"
+        assert outcome["reason"] == "unresolved_session_ids"
+        assert outcome["detail"]["unresolved_session_ids"] == ["excised-mid-flight"]
+        assert receipt.domain_receipt["unresolved_session_ids"] == ["excised-mid-flight"]
+        assert receipt.detail == "unresolved_session_ids"
+
+    def test_every_id_unresolved_is_degraded_not_empty(self, tmp_path: Path) -> None:
+        """Zero rows behind a named gap is never reported as an empty scope.
+
+        Anti-vacuity: decide the outcome from ``matched`` alone (dropping the
+        gap) and this returns ``empty``.
+        """
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="bulk-all-gone")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator = BulkMetadataSetActuator()
+            executor = OperationExecutor()
+            args = BulkMetadataSetArgs(archive=archive, session_ids=("gone-a", "gone-b"), pairs=(("k", "v"),))
+            plan = executor.prepare(actuator, args)
+            assert plan.target_refs == ()
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+
+        outcome = cast("dict[str, Any]", receipt.domain_receipt["outcome"])
+        assert outcome["state"] == "degraded"
+        assert receipt.domain_receipt["unresolved_session_ids"] == ["gone-a", "gone-b"]
 
 
 class TestMetadataSetActuator:

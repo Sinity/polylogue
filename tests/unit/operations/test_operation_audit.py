@@ -2714,3 +2714,154 @@ def test_list_recovery_operations_discovers_interrupted_runs_without_operation_i
         ("session:one", "unknown"),
         ("session:two", "unknown"),
     ]
+
+
+def _excise_binding(actuator: _Actuator) -> OperationBinding[object, object]:
+    """Like ``_delete_binding``, but the effective destructive class is ``excise``."""
+
+    spec = OperationSpec(
+        name="mutate-fixture",
+        kind=OperationKind.MAINTENANCE,
+        description="fixture",
+        mutates_state=True,
+        executor_status="executor-routed",
+        allowed_surfaces=("internal",),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="session",
+                target_kinds=("session",),
+                required_capabilities=("archive.fixture.write",),
+                destructive_class="excise",
+                required_confirmation="bound_token",
+                allowed_durabilities=("derived",),
+                allowed_recovery=("none",),
+            ),
+        ),
+        affected_tiers=("user",),
+    )
+    return OperationBinding(spec, actuator)
+
+
+def test_recovered_applied_excise_barrier_survives_an_index_generation_promotion(tmp_path: Path) -> None:
+    """polylogue-cois9 (A): promoting a new index generation must not reopen a duplicate excise.
+
+    ``operation_runs.archive_identity_digest`` records the live archive
+    identity digest, which folds in the *rebuildable* index tier's inode.
+    Promoting a new index generation is an ordinary rebuild, not an incident,
+    and it moves that digest.  The duplicate-effect barrier must still refuse:
+    ``excise`` is not re-ingest-resurrectable and carries no compensating
+    idempotency argument, so a silently unfindable barrier row would
+    re-execute an already durably applied excise.
+
+    Anti-vacuity: restoring ``AND archive_identity_digest = ?`` to
+    ``AuditRepository.has_recovered_effect``'s WHERE clause makes this test
+    red -- the second retry, whose plan names the promoted generation, would
+    find no barrier row, apply, and leave ``actuator.calls == 1``.
+    """
+
+    actuator = _DestructiveClassActuator(
+        destructive_class="excise",
+        recovery_disposition=RecoveryDisposition("confirmed-applied", "forward"),
+    )
+    audit, _operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    binding = _excise_binding(actuator)
+
+    first = OperationExecutor(audit=audit, token_factory=lambda: "excise-barrier-first")
+    first_preview = first.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:generation-one",
+        parameter_digest="params:recovery",
+    )
+    first_authorization = first.authorize_bound(
+        binding, first_preview, _principal(), confirmation_strength="bound_token"
+    )
+    # The first retry is the one that discovers and classifies the dead
+    # overlapping operation; it installs the durable ``recovered_applied`` row.
+    with pytest.raises(RecoveryBlockedError):
+        first.execute_bound(binding, first_preview, first_authorization, object())
+
+    # An ordinary index-generation promotion: same durable archive lineage,
+    # different live archive identity digest.
+    second = OperationExecutor(audit=audit, token_factory=lambda: "excise-barrier-second")
+    second_preview = second.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:generation-two",
+        parameter_digest="params:recovery",
+    )
+    second_authorization = second.authorize_bound(
+        binding, second_preview, _principal(), confirmation_strength="bound_token"
+    )
+    with pytest.raises(RecoveryBlockedError, match="already proved"):
+        second.execute_bound(binding, second_preview, second_authorization, object())
+
+    assert actuator.calls == 0
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM operation_runs WHERE terminal_reason = 'recovered_applied'").fetchone()[
+                0
+            ]
+            == 1
+        )
+
+
+def test_machine_request_dedup_survives_an_index_generation_promotion(tmp_path: Path) -> None:
+    """polylogue-cois9 (B): a replayed request id stays deduped across a promotion.
+
+    ``machine_requests`` is durable audit state whose primary key leads with
+    the live archive identity digest.  After a daemon restart across an index
+    generation promotion the binding is re-derived from the new live identity,
+    so a primary-key lookup silently returned ``None`` and the retried request
+    re-executed as new.  The audit database is itself the durable archive
+    scope, so ``request_id`` is the durable dedup key within it, and the row's
+    stored identity is returned so the caller can rebind to the key its
+    ``machine_request_parts`` already use.
+
+    Anti-vacuity: restoring ``WHERE archive_identity = ? AND request_id = ?``
+    makes this test red -- ``promoted`` becomes ``None`` and the conflicting
+    principal/fingerprint lookups stop raising.
+    """
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "machine-promotion-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:fixture",
+        archive_identity_digest="identity:generation-one",
+        parameter_digest="params:fixture",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    binding = MachineRequestBinding(
+        "identity:generation-one", "request:promotion", "actor:test", "a" * 64, "mutation.fixture"
+    )
+    with audit.bind_machine_request(binding, transition="consume_authorization_and_start"):
+        executor.execute_bound(_binding(actuator), preview, authorization, object())
+
+    restarted = AuditRepository.for_archive_root(tmp_path)
+    promoted = restarted.machine_request(replace(binding, archive_identity="identity:generation-two"))
+    assert promoted is not None
+    assert promoted["request_id"] == "request:promotion"
+    # The stored key is the one the durable rows (and their parts) use.
+    assert promoted["archive_identity"] == "identity:generation-one"
+    assert (
+        restarted.machine_request_for_principal("identity:generation-two", "request:promotion", "actor:test")
+        is not None
+    )
+    # A moved generation is not conflicting intent, but a different principal
+    # or fingerprint still is.
+    with pytest.raises(MachineRequestConflictError):
+        restarted.machine_request(replace(binding, archive_identity="identity:generation-two", fingerprint="b" * 64))
+    with pytest.raises(MachineRequestConflictError):
+        restarted.machine_request(
+            replace(binding, archive_identity="identity:generation-two", principal_ref="actor:other")
+        )
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM machine_requests").fetchone()[0] == 1

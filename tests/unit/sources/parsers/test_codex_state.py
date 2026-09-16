@@ -443,8 +443,10 @@ def test_state_export_retains_unprojected_thread_evidence(tmp_path: Path) -> Non
 def test_parse_goals_db(tmp_path: Path) -> None:
     path = tmp_path / "goals_1.sqlite"
     _write_goals_db(path)
-    goals = parse_codex_goals_db(path)
+    goals, bound = parse_codex_goals_db(path)
     assert len(goals) == 1
+    assert bound.bounded is False
+    assert bound.rows_available == 1
     assert goals[0].thread_id == "0000-thread-parent"
     assert goals[0].objective == "Land the retry fix"
     assert goals[0].status == "active"
@@ -454,8 +456,9 @@ def test_parse_goals_db(tmp_path: Path) -> None:
 def test_parse_memories_db_preserves_generated_memory_text(tmp_path: Path) -> None:
     path = tmp_path / "memories_1.sqlite"
     _write_memories_db(path)
-    records = parse_codex_memories_db(path)
+    records, bound = parse_codex_memories_db(path)
     assert len(records) == 1
+    assert bound.bounded is False
     record = records[0]
     assert record.thread_id == "0000-thread-parent"
     assert record.raw_memory == "summary text"

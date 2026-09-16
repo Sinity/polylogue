@@ -244,11 +244,31 @@ class ExcisionTarget:
     #: Per-member disposition of the manifest containers that hold these raw
     #: acquisitions (polylogue-q4f6d).
     containers: ContainerDisposition = field(default_factory=lambda: ContainerDisposition())
+    #: Materials whose ``material_observations.referrer_ref`` names this
+    #: session. Provider-generated evidence retained through the material
+    #: route (today Codex ``codex://state/...`` goals and memories) carries
+    #: no ``sessions`` row and no ``raw_sessions`` row of its own, so no raw
+    #: target reaches it -- its bytes are owned by ``material_observations``
+    #: directly (polylogue-xrba4).
+    #:
+    #: Resolved per referrer rather than through the state export's raw:
+    #: one Codex state database holds every thread in the install, so
+    #: excising the raw for one thread would destroy unrelated threads'
+    #: evidence. The material is the thread-scoped unit.
+    material_ids: tuple[str, ...] = ()
+    #: Blob hashes those materials own, read with them so the apply can mark
+    #: each one excised before the rows that name it are gone.
+    material_blob_hashes: tuple[bytes, ...] = ()
 
     @property
     def found(self) -> bool:
         return self.session_exists or bool(
-            self.raw_targets or self.message_ids or self.block_ids or self.hook_event_ids or self.otlp_span_ids
+            self.raw_targets
+            or self.message_ids
+            or self.block_ids
+            or self.hook_event_ids
+            or self.otlp_span_ids
+            or self.material_ids
         )
 
 
@@ -311,6 +331,8 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
     fact_raw_ids: tuple[str, ...] = ()
     otlp_span_ids: tuple[str, ...] = ()
     containers = ContainerDisposition()
+    material_ids: tuple[str, ...] = ()
+    material_blob_hashes: tuple[bytes, ...] = ()
     if source_db.exists():
         conn = _connect_ro(source_db)
         try:
@@ -337,6 +359,7 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
                 containers = _resolve_container_disposition(conn, tuple(t.raw_id for t in raw_targets))
             hook_event_ids = _session_hook_event_ids(conn, session_id)
             otlp_span_ids = _session_otlp_span_ids(conn, session_id)
+            material_ids, material_blob_hashes = _session_material_targets(conn, session_id)
         finally:
             conn.close()
 
@@ -350,7 +373,30 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
         fact_raw_ids=fact_raw_ids,
         otlp_span_ids=otlp_span_ids,
         containers=containers,
+        material_ids=material_ids,
+        material_blob_hashes=material_blob_hashes,
     )
+
+
+def _session_material_targets(conn: sqlite3.Connection, session_id: str) -> tuple[tuple[str, ...], tuple[bytes, ...]]:
+    """Materials retained under this session id, with the blobs they own.
+
+    ``material_observations.referrer_ref`` is the durable, session-scoped
+    coordinate the material route writes, and a material's bytes hang off
+    that row's own ``blob_hash`` -- there is no ``blob_refs`` row and no
+    ``raw_sessions`` row for a material, so nothing the raw-target closure
+    resolves reaches it. Missing table is checked, not caught, so a real
+    query failure still surfaces.
+    """
+    if not _table_exists(conn, "material_observations"):
+        return (), ()
+    rows = conn.execute(
+        "SELECT material_id, blob_hash FROM material_observations WHERE referrer_ref = ? ORDER BY material_id",
+        (session_id,),
+    ).fetchall()
+    material_ids = tuple(str(row[0]) for row in rows)
+    blob_hashes = tuple({bytes(row[1]) for row in rows if row[1]})
+    return material_ids, blob_hashes
 
 
 def _index_revision_raw_ids(conn: sqlite3.Connection, session_id: str) -> list[str]:
@@ -712,6 +758,10 @@ class ExcisionPlan:
     #: Containers that survive because another session's member is still
     #: live: the excised bytes stay inside that container blob.
     retained_source_containers: tuple[str, ...] = ()
+    #: ``material_observations`` rows retained under this session id that an
+    #: apply will remove, marking every blob they own excised
+    #: (polylogue-xrba4).
+    source_materials: int = 0
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -732,6 +782,7 @@ class ExcisionPlan:
             "source_container_members": self.source_container_members,
             "source_container_items": self.source_container_items,
             "retained_source_containers": list(self.retained_source_containers),
+            "source_materials": self.source_materials,
         }
 
 
@@ -748,9 +799,12 @@ def plan_session_excision(archive_root: Path, session_id: str) -> ExcisionPlan:
 
     source_blob_refs = 0
     already_excised: list[str] = []
-    if source_db.exists() and target.raw_targets:
+    if source_db.exists() and (target.raw_targets or target.material_ids):
         conn = _connect_ro(source_db)
         try:
+            for material_hash in target.material_blob_hashes:
+                if is_blob_hash_excised(conn, material_hash):
+                    already_excised.append(material_hash.hex())
             for raw_target in target.raw_targets:
                 row = conn.execute(
                     "SELECT COUNT(*) FROM blob_refs WHERE ref_id = ?",
@@ -814,6 +868,7 @@ def plan_session_excision(archive_root: Path, session_id: str) -> ExcisionPlan:
         source_container_members=len(target.containers.members),
         source_container_items=len(target.containers.removable_items),
         retained_source_containers=tuple(item.label for item in target.containers.retained_items),
+        source_materials=len(target.material_ids),
     )
 
 
@@ -921,6 +976,7 @@ def _apply_single_session_excision(
         "source_container_members": 0,
         "source_container_items": 0,
         "source_publication_reservations": 0,
+        "source_materials": 0,
         "user_assertions_removed": 0,
     }
 
@@ -984,7 +1040,9 @@ def _apply_single_session_excision(
     removed_hashes: list[str] = []
     retained_hook_events: tuple[str, ...] = ()
     retained_source_containers = tuple(item.label for item in target.containers.retained_items)
-    if source_db.exists() and (target.raw_targets or target.hook_event_ids or target.otlp_span_ids):
+    if source_db.exists() and (
+        target.raw_targets or target.hook_event_ids or target.otlp_span_ids or target.material_ids
+    ):
         conn = _connect_rw(source_db)
         conn.execute("PRAGMA foreign_keys = ON")
         try:
@@ -1119,6 +1177,41 @@ def _apply_single_session_excision(
                         )
                         removed_hashes.append(blob_hash.hex())
 
+                # Materials retained under this session id own their bytes
+                # through material_observations.blob_hash alone. Mark every
+                # hash excised BEFORE deleting the rows that name it, or the
+                # bytes stay both readable in the blob store and
+                # re-admissible under the same content hash. The evidence
+                # links cascade with the row (foreign_keys is ON above).
+                for material_blob_hash in target.material_blob_hashes:
+                    record_excised_blob_hash(
+                        conn,
+                        blob_hash=material_blob_hash,
+                        reason=reason,
+                        actor=actor,
+                        prior_revision=None,
+                        span=None,
+                        excised_at_ms=timestamp,
+                    )
+                    removed_hashes.append(material_blob_hash.hex())
+                if target.material_ids:
+                    # supersedes_material_id is a plain (non-deferred) FK
+                    # between materials, and a superseded revision of the
+                    # same material shares this referrer, so deleting the
+                    # older row first would abort the whole apply. Drop the
+                    # chain first; the rows it points at are all going.
+                    placeholders = ",".join("?" for _ in target.material_ids)
+                    conn.execute(
+                        f"UPDATE material_observations SET supersedes_material_id = NULL "
+                        f"WHERE supersedes_material_id IN ({placeholders})",
+                        target.material_ids,
+                    )
+                for material_id in target.material_ids:
+                    cursor = conn.execute(
+                        "DELETE FROM material_observations WHERE material_id = ?",
+                        (material_id,),
+                    )
+                    counts["source_materials"] += max(cursor.rowcount, 0)
                 # A publication reservation is a durable claim on a blob by
                 # hash. Left standing it keeps an excised blob reserved --- and
                 # named --- after the evidence it published is gone

@@ -1194,3 +1194,71 @@ def test_tcp_pre_dispatch_refusal_is_marked_rejected_not_indeterminate() -> None
     assert payload["outcome"] == "rejected"
     assert payload["pre_dispatch"] is True
     assert payload["error"] == {"code": "unsupported_media_type", "detail": None, "retryable": False}
+
+
+def test_delete_preview_plan_is_reconstructed_by_its_audit_owner(tmp_path: Path) -> None:
+    """The stored plan payload, not the preview columns, defines the plan.
+
+    ``delete_authorization`` used to rebuild the plan from ``operation_previews``
+    columns with its own rules (notably a hardcoded ``reversible=False``), so
+    two readers of one durable row could disagree about what was authorized.
+    Reconstruction now goes through the audit tier's own payload reader, and
+    the loaded plan is bound by the same integrity check the authorize/begin
+    path applies.
+
+    Anti-vacuity: reinstate the column-based reconstruction and the first
+    assertion is red (the tampered ``reversible`` in ``plan_json`` would be
+    ignored); drop ``validate_mutation_plan_integrity`` from the load path and
+    the second assertion is red (a rewritten context would load happily).
+    """
+
+    from polylogue.operations.delete_authorization import (
+        DeleteAuthorizationError,
+        _audit_repository,
+        _load_preview,
+        prepare_cli_delete,
+    )
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (session_id,) = _seed_delete_authority_archive(archive_root, 1)
+    principal = MutationPrincipal(
+        "daemon:bearer:reconstruction",
+        frozenset({"archive.delete_session"}),
+        "cli",
+        "daemon-authenticated",
+    )
+    preview = prepare_cli_delete(archive_root, (session_id,), principal)
+    audit = _audit_repository(archive_root)
+
+    loaded = _load_preview(audit, preview.preview_ref, principal, require_prepared=True)
+    assert loaded.plan.target_refs == (f"session:{session_id}",)
+    assert loaded.plan.reversible is False
+
+    def _rewrite_plan_json(mutate: Callable[[dict[str, object]], None]) -> None:
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            stored = json.loads(
+                conn.execute(
+                    "SELECT plan_json FROM operation_previews WHERE preview_id = ?", (preview.preview_ref,)
+                ).fetchone()[0]
+            )
+            mutate(stored)
+            conn.execute(
+                "UPDATE operation_previews SET plan_json = ? WHERE preview_id = ?",
+                (json.dumps(stored, sort_keys=True, separators=(",", ":")), preview.preview_ref),
+            )
+
+    def _set_reversible(document: dict[str, object]) -> None:
+        document["reversible"] = True
+
+    _rewrite_plan_json(_set_reversible)
+    assert _load_preview(audit, preview.preview_ref, principal, require_prepared=True).plan.reversible is True
+
+    def _rewrite_context(document: dict[str, object]) -> None:
+        document["reversible"] = False
+        document["context"] = {"session_ids": ["codex-session:not-authorized"]}
+
+    _rewrite_plan_json(_rewrite_context)
+    with pytest.raises(DeleteAuthorizationError, match="preview_plan_invalid"):
+        _load_preview(audit, preview.preview_ref, principal, require_prepared=True)
