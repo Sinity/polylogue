@@ -38,6 +38,30 @@ assignments, virtual tables, triggers, extensions, and unlisted operations are
 denied. This exception is not a general read-profile relaxation; ordinary
 readers continue to require `query_only=ON`.
 
+## The writable-open boundary
+
+`write_lease.py` makes every declared write-mode factory take the lease.
+`write_guard.py` makes that boundary *total*: while the daemon holds its
+process-lifetime writer ownership it also installs a guard over
+`sqlite3.connect`, so a writable open whose file name is one of the six tiers
+asserts the lease before the connection exists. Roughly seventy production
+sites open `sqlite3.connect` directly; without the guard, a writer that reaches
+a tier that way contends through the busy timeout instead of being refused, and
+the factory census cannot see it.
+
+Read-only opens (`mode=ro`, `immutable=1`), in-memory databases and non-archive
+files -- spill databases, provider caches, the Sinex database, export
+destinations -- are untouched. Tier membership is decided by file name, not by
+directory, so a generation build or a staging copy named `index.db` is also a
+guarded open; the guard therefore asserts only that *a* lease is held and
+leaves archive-root binding to the factories, which know which archive they
+were asked for.
+
+`declared_unguarded_write(reason)` is the single named bypass, for the
+authorities that own an archive without a daemon: first-time bootstrap,
+offline exclusive rebuild, migration behind its own backup, and test fixtures.
+It is thread-local, so one bootstrap never unlocks a concurrent writer.
+
 ## Checkpoint ownership
 
 A process that runs the recurring coordinator claims it with
