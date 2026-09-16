@@ -252,3 +252,21 @@ def test_run_receipt_carries_the_suite_cost_beside_pytest_aggregate(tmp_path: Pa
     assert suite_cost["archive_tier_initializations"] == 12
     assert suite_cost["write_bytes"] == 8192
     assert suite_cost["tests"] == 4
+
+
+def test_detail_without_a_durable_history_row_is_reported_not_silently_retained(tmp_path: Path) -> None:
+    """A run whose summary was never appended is outside the bound, and says so.
+
+    Anti-vacuity: drop the orphan accounting and a checkout holding hundreds of
+    pre-history detail trees looks like a bound that stopped running, which is
+    what the retention report was read as.
+    """
+    history = tmp_path / ".cache" / "verify" / "history.jsonl"
+    orphan = _finished_run(tmp_path, index=0, exit_code=0)
+    recorded = _finished_run(tmp_path, index=1, exit_code=0)
+    append_verify_history(recorded, path=history)
+
+    receipt = prune_successful_verify_runs(root=tmp_path, history_path=history, max_successful=1, now=_TEST_NOW)
+
+    assert receipt["orphaned_detail_run_ids"] == [orphan["run_id"]]
+    assert (tmp_path / str(orphan["artifact_dir"])).exists()

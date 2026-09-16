@@ -92,7 +92,6 @@ def test_bench_daemon_warm_status(benchmark: BenchmarkFixture, bench_daemon_uds_
         record_metrics(
             benchmark,
             warm_roundtrip_ms=elapsed_ms,
-            full_render_ms=elapsed_ms,
             bytes=len(result.stdout),
             rows=result.stdout.count("\n"),
         )
@@ -150,14 +149,17 @@ def test_bench_daemon_concurrent_reads(benchmark: BenchmarkFixture, bench_daemon
     elapsed: list[int] = []
 
     def run() -> list[dict[str, object]]:
-        def one() -> dict[str, object]:
+        def one(index: int) -> dict[str, object]:
+            # Distinct params per worker: identical requests are served from the
+            # daemon read cache, which measures the cache rather than the
+            # interference this benchmark names.
             client = DaemonClient(socket_path, timeout_s=2)
-            result = _operation(client, "cli.query", {"params": {"limit": 5}})
+            result = _operation(client, "cli.query", {"params": {"limit": 5 + index, "offset": index}})
             elapsed.append(client.last_elapsed_ms or 0)
             return result
 
         with ThreadPoolExecutor(max_workers=4) as pool:
-            return list(pool.map(lambda _index: one(), range(4)))
+            return list(pool.map(one, range(4)))
 
     results = benchmark_one_shot(benchmark, run)
     assert len(results) == 4

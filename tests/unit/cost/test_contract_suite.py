@@ -14,12 +14,15 @@ contracts that any one of those layers could silently break:
 * per-model breakdown rows sum to the session aggregate within rounding
   tolerance;
 * ``partial`` status is used when at least one priced row is missing;
-* quota pressure is ``QuotaPressureMissing`` for plans without a
-  configured quota — no synthetic zero;
+* a curated plan's declared quota reaches the outlook as typed quota
+  pressure;
 * outlook projection is monotone on monotone daily-usage input;
-* cycle-window math is deterministic across month-end and DST edges;
-* the curated subscription seed never claims to be vendor-authoritative;
 * CLI/MCP cost surfaces share the same typed ``CycleOutlook`` envelope.
+
+Cases whose route and oracle were already owned by a focused suite live
+there instead: quota-pressure absence and the cycle-window month-end and DST
+edges moved to ``test_outlook.py``/``test_plans.py``, and the curated seed's
+non-authoritative notice is asserted in ``test_plans.py``.
 
 """
 
@@ -46,17 +49,11 @@ from polylogue.cost.outlook import (
     CycleOutlook,
     DailyUsage,
     QuotaPressure,
-    QuotaPressureMissing,
     build_cycle_outlook,
     project_linear,
 )
 from polylogue.cost.plans import (
-    CURATED_SEED_SOURCE,
-    WELL_KNOWN_PLANS,
-    OverageRule,
     QuotaBasis,
-    SubscriptionPlan,
-    cycle_for,
     plan_by_name,
 )
 from tests.infra.builders import make_conv, make_msg
@@ -254,47 +251,6 @@ def test_unavailable_status_when_hydrated_messages_carry_no_typed_cost() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_curated_seed_marks_non_authoritative() -> None:
-    """Every curated subscription plan carries a non-authoritative notice.
-
-    The cost cluster's public contract is that subscription-quota math is an
-    estimate from a dated curated seed. Stripping the notice would make the
-    UX look authoritative and is therefore a contract violation.
-    """
-    notices = []
-    for plan in WELL_KNOWN_PLANS.values():
-        assert plan.source == CURATED_SEED_SOURCE
-        assert plan.notice
-        assert "Non-authoritative" in plan.notice or "non-authoritative" in plan.notice
-        notices.append(plan.name)
-
-
-def test_quota_pressure_missing_when_plan_has_no_quota() -> None:
-    """Plans without ``quota`` and ``quota_basis`` produce ``QuotaPressureMissing``.
-
-    The outlook engine must not fabricate a zero quota or pretend a plan
-    enforces a limit it does not declare. The explicit-absence row is itself
-    part of the contract surface.
-    """
-    plan = SubscriptionPlan(
-        name="plus-without-quota",
-        provider="openai",
-        display_name="ChatGPT Plus (no quota declared)",
-        monthly_cost_usd=20.0,
-        cycle_anchor_day=1,
-        quota=None,
-        quota_basis=None,
-        overage_rule=OverageRule.soft,
-    )
-    now = datetime(2026, 5, 11, tzinfo=UTC)
-    daily = [DailyUsage(day=datetime(2026, 5, 1).date(), basis="usd", amount=2.5)]
-    outlook = build_cycle_outlook(plan, daily, now=now)
-    assert outlook is not None
-    assert isinstance(outlook.quota_pressure, QuotaPressureMissing)
-    assert outlook.quota_pressure.reason == "no_quota_configured"
-    assert outlook.overage_rows == ()
-
-
 def test_quota_pressure_present_when_quota_declared() -> None:
     """When the plan declares a quota, the outlook reports typed quota pressure."""
     plan = plan_by_name("claude-pro")
@@ -343,60 +299,6 @@ def test_build_outlook_monotone_in_used() -> None:
     values = [project(amt) for amt in (1_000.0, 10_000.0, 100_000.0, 1_000_000.0)]
     for left, right in zip(values, values[1:], strict=False):
         assert right >= left
-
-
-def test_cycle_window_handles_month_end_anchor_deterministically() -> None:
-    """Cycle math is deterministic for any ``cycle_anchor_day`` in [1, 28].
-
-    The plan model already rejects anchor days 29-31 (the documented
-    month-length edge cases). For supported anchors, ``cycle_for`` must
-    return a half-open ``[start, end)`` covering ``now`` and producing
-    stable ISO instants regardless of the current month length.
-    """
-    plan = SubscriptionPlan(
-        name="month-end-anchor",
-        provider="anthropic",
-        display_name="Edge anchor",
-        monthly_cost_usd=10.0,
-        cycle_anchor_day=28,
-    )
-    # February (28 days), March (31), and a transition into April.
-    for now in (
-        datetime(2026, 2, 15, tzinfo=UTC),
-        datetime(2026, 3, 1, tzinfo=UTC),
-        datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
-        datetime(2026, 4, 5, tzinfo=UTC),
-    ):
-        window = cycle_for(plan, now)
-        assert window is not None
-        start_iso, end_iso = window
-        assert start_iso < end_iso
-        # The cycle window always contains ``now`` (or starts exactly at it).
-        assert start_iso <= now.isoformat().replace("+00:00", "Z") < end_iso
-
-
-def test_cycle_window_dst_invariant() -> None:
-    """All cycle math operates in UTC, so DST transitions are a no-op.
-
-    The plan model normalizes ``now`` to UTC inside ``cycle_for``. Pin the
-    invariant by computing the cycle across a DST transition and asserting
-    the boundaries differ by exactly ``billing_cycle_days * 86400`` seconds.
-    """
-    plan = SubscriptionPlan(
-        name="dst-anchor",
-        provider="anthropic",
-        display_name="DST-spanning",
-        monthly_cost_usd=10.0,
-        cycle_anchor_day=15,
-        billing_cycle_days=30,
-    )
-    # US DST starts mid-March 2026. UTC math must remain stable.
-    now = datetime(2026, 3, 20, 7, 0, tzinfo=UTC)
-    window = cycle_for(plan, now)
-    assert window is not None
-    start = datetime.fromisoformat(window[0].replace("Z", "+00:00"))
-    end = datetime.fromisoformat(window[1].replace("Z", "+00:00"))
-    assert (end - start).total_seconds() == 30 * 86400
 
 
 # ---------------------------------------------------------------------------

@@ -37,7 +37,11 @@ def test_well_known_plans_modeled() -> None:
     assert expected.issubset(set(WELL_KNOWN_PLANS))
     for plan in WELL_KNOWN_PLANS.values():
         assert plan.source == CURATED_SEED_SOURCE
-        assert plan.notice  # must carry non-authoritative notice
+        assert plan.notice
+        # The public contract is that subscription-quota math is an estimate
+        # from a dated curated seed; stripping the notice would make the UX
+        # look vendor-authoritative.
+        assert "non-authoritative" in plan.notice.lower()
 
 
 def test_plan_by_name_unknown_raises_typed() -> None:
@@ -223,3 +227,57 @@ def test_subscription_plan_is_frozen() -> None:
     plan = plan_by_name("claude-pro")
     with pytest.raises(ValidationError):
         plan.monthly_cost_usd = 999.0
+
+
+def test_cycle_window_handles_month_end_anchor_deterministically() -> None:
+    """Cycle math is deterministic for any ``cycle_anchor_day`` in [1, 28].
+
+    The plan model already rejects anchor days 29-31 (the documented
+    month-length edge cases). For supported anchors, ``cycle_for`` must
+    return a half-open ``[start, end)`` covering ``now`` and producing
+    stable ISO instants regardless of the current month length.
+    """
+    plan = SubscriptionPlan(
+        name="month-end-anchor",
+        provider="anthropic",
+        display_name="Edge anchor",
+        monthly_cost_usd=10.0,
+        cycle_anchor_day=28,
+    )
+    # February (28 days), March (31), and a transition into April.
+    for now in (
+        datetime(2026, 2, 15, tzinfo=UTC),
+        datetime(2026, 3, 1, tzinfo=UTC),
+        datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
+        datetime(2026, 4, 5, tzinfo=UTC),
+    ):
+        window = cycle_for(plan, now)
+        assert window is not None
+        start_iso, end_iso = window
+        assert start_iso < end_iso
+        # The cycle window always contains ``now`` (or starts exactly at it).
+        assert start_iso <= now.isoformat().replace("+00:00", "Z") < end_iso
+
+
+def test_cycle_window_dst_invariant() -> None:
+    """All cycle math operates in UTC, so DST transitions are a no-op.
+
+    The plan model normalizes ``now`` to UTC inside ``cycle_for``. Pin the
+    invariant by computing the cycle across a DST transition and asserting
+    the boundaries differ by exactly ``billing_cycle_days * 86400`` seconds.
+    """
+    plan = SubscriptionPlan(
+        name="dst-anchor",
+        provider="anthropic",
+        display_name="DST-spanning",
+        monthly_cost_usd=10.0,
+        cycle_anchor_day=15,
+        billing_cycle_days=30,
+    )
+    # US DST starts mid-March 2026. UTC math must remain stable.
+    now = datetime(2026, 3, 20, 7, 0, tzinfo=UTC)
+    window = cycle_for(plan, now)
+    assert window is not None
+    start = datetime.fromisoformat(window[0].replace("Z", "+00:00"))
+    end = datetime.fromisoformat(window[1].replace("Z", "+00:00"))
+    assert (end - start).total_seconds() == 30 * 86400
