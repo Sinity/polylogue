@@ -22,11 +22,10 @@ AFFECTED_MAX_ESTIMATED_SECONDS: Final = 15 * 60
 #: are this module's own policy, but width is not: an affected run occupies the
 #: same ``agentctl-pytest.slice`` as the corpus run, so the memory owner
 #: (``worker_memory.width_within`` over that slice's MemoryHigh) bounds both.
-#: This was a hand-set ``4`` that had already drifted past that bound -- four
-#: workers plus the controller peak at 10127 MiB against a 9830 MiB headroom
-#: budget -- admitting the *selective* run wider than the full corpus in the
-#: same cgroup. Taking the minimum keeps this module free to be stricter than
-#: memory allows while never claiming more than the owner says fits.
+#: This was a hand-set ``4`` maintained independently of that bound, free to
+#: admit the *selective* run wider than the full corpus in the same cgroup.
+#: Taking the minimum keeps this module free to be stricter than memory allows
+#: while never claiming more than the owner says fits.
 AFFECTED_POLICY_MAX_WORKERS: Final = 4
 AFFECTED_MAX_WORKERS: Final = min(AFFECTED_POLICY_MAX_WORKERS, CORPUS_MAX_WORKERS)
 NEXT_VERIFICATION_BOUNDARY: Final = "devtools verify --all at the explicit master/corpus boundary"

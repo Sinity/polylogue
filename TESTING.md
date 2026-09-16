@@ -17,7 +17,7 @@ devtools verify
 devtools test tests/unit/storage/test_hybrid_laws.py
 devtools test -k "test_name"
 devtools test tests/unit/pipeline -x
-POLYLOGUE_PYTEST_WORKERS=8 devtools test tests/unit/storage   # override workers
+POLYLOGUE_PYTEST_WORKERS=8 devtools test tests/unit/storage   # ask for a wider run
 
 # Raw pytest still works for ad-hoc needs the wrapper does not cover:
 pytest -x tests/unit/storage/test_hybrid_laws.py
@@ -61,6 +61,17 @@ share one workstation, so `devtools test` and the pytest step of
 
 `POLYLOGUE_PYTEST_SLOT=held` is the explicit assertion that the caller already
 holds the slot, for the hermetic test of this mechanism.
+
+Worker width is bounded by the pytest cgroup, never by host cores or by
+instantaneous host free memory: this suite is SQLite-IO bound, and admission
+under host pressure is already the pool's decision when the job starts. The
+default is `worker_memory.CORPUS_MAX_WORKERS`, derived as
+`(agentctl-pytest.slice MemoryHigh - controller peak) // worker peak`; the
+slice's ceiling is Sinnix's to set (`flake/data/runtime-defaults.nix`) and it
+already carries the safety margin, so nothing is discounted a second time
+here. A `POLYLOGUE_PYTEST_WORKERS` override above what the slice's *remaining*
+budget holds is narrowed when the run takes the slot, and the receipt records
+which bound narrowed it.
 
 Managed runs keep their temporary trees under `.cache/verify/tmp-<pid>-*`
 inside the checkout and remove them on every exit except a failed run's,

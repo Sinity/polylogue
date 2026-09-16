@@ -63,7 +63,6 @@ Anti-vacuity:
 from __future__ import annotations
 
 import json
-import math
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -74,7 +73,6 @@ import pytest
 from devtools.worker_memory import (
     CONTROLLER_PEAK_MIB,
     CORPUS_MAX_WORKERS,
-    MEMORY_HEADROOM_FRACTION,
     PYTEST_SLICE_MEMORY_HIGH_MIB,
     WORKER_PEAK_MIB,
     available_memory_mib,
@@ -195,14 +193,14 @@ def _peak_mib(workers: int) -> int:
 def _budget_for_width(workers: int) -> int:
     """The smallest budget, in MiB, that ``width_within`` answers with ``workers``.
 
-    Derived rather than chosen: the closed form is the peak divided by what the
-    headroom leaves, and the loop settles the flooring so the result is exactly
-    the boundary -- one MiB less holds fewer workers. Every fixture that wants
-    "a bound that holds exactly N workers" is built from this, so moving a peak
-    or the headroom fraction moves the fixtures with it instead of leaving them
-    asserting a width the production constants can no longer produce.
+    Derived rather than chosen: the peak is the closed form and the loop settles
+    the flooring, so the result is exactly the boundary -- one MiB less holds
+    fewer workers. Every fixture that wants "a bound that holds exactly N
+    workers" is built from this, so moving a peak moves the fixtures with it
+    instead of leaving them asserting a width the production constants can no
+    longer produce.
     """
-    budget = math.ceil(_peak_mib(workers) / (1.0 - MEMORY_HEADROOM_FRACTION))
+    budget = _peak_mib(workers)
     while width_within(budget) < workers:
         budget += 1
     return budget
@@ -480,10 +478,10 @@ def test_an_idle_pytest_slice_runs_the_declared_corpus_width(tmp_path: Path) -> 
     assert workers == CORPUS_MAX_WORKERS
     assert basis["narrowed"] is False
     assert basis["basis"] == "cgroup_budget"
-    # The declared width is the widest one that still keeps the headroom back.
-    headroom_budget = PYTEST_SLICE_HIGH_MIB * (1.0 - MEMORY_HEADROOM_FRACTION)
-    assert _peak_mib(CORPUS_MAX_WORKERS) <= headroom_budget
-    assert _peak_mib(CORPUS_MAX_WORKERS + 1) > headroom_budget
+    # The declared width is the widest whose peak fits the ceiling as its owner
+    # sized it -- no second discount applied to an already-headroomed figure.
+    assert _peak_mib(CORPUS_MAX_WORKERS) <= PYTEST_SLICE_HIGH_MIB
+    assert _peak_mib(CORPUS_MAX_WORKERS + 1) > PYTEST_SLICE_HIGH_MIB
 
 
 def test_the_pytest_slice_bounds_a_host_with_memory_to_spare(tmp_path: Path) -> None:
@@ -541,6 +539,33 @@ def test_a_host_narrower_than_the_slice_does_not_decide(tmp_path: Path) -> None:
     assert basis["host_available_mib"] == host_mib
     assert host_mib < basis["cgroup_available_mib"]
     assert workers == CORPUS_MAX_WORKERS
+
+
+def test_the_slice_ceiling_is_not_discounted_a_second_time(tmp_path: Path) -> None:
+    """The slice's ceiling already carries its headroom; sizing does not re-apply it.
+
+    Sinnix picks ``MemoryHigh`` by taking the intended width's peak and
+    multiplying by 1.2, so the number this module reads is a headroomed figure
+    already. Discounting it again here cost a worker: a 12 GiB slice justified
+    for four derived three, roughly a quarter of corpus throughput, with no
+    correctness gain. One owner keeps the margin, and it is the Sinnix value.
+
+    Anti-vacuity: restore any fractional discount inside ``width_within`` --
+    ``budget * 0.8`` was the shipped form -- and the slice provisioned for its
+    declared peak stops yielding the width that peak fits.
+    """
+    provisioned = _peak_mib(CORPUS_MAX_WORKERS)
+    assert provisioned <= PYTEST_SLICE_HIGH_MIB
+    assert width_within(provisioned) == CORPUS_MAX_WORKERS
+
+    paths = _pytest_slice(tmp_path, current_mib=0)
+    workers, basis = memory_bounded_worker_cap(
+        requested=CORPUS_MAX_WORKERS, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **paths
+    )
+    assert workers == CORPUS_MAX_WORKERS
+    # The margin's owner is named in the receipt, not a fraction applied here.
+    assert basis["headroom_owner"] == "sinnix agentctl-pytest.slice MemoryHigh"
+    assert "headroom_fraction" not in basis
 
 
 def test_a_hosted_verify_launch_stays_inside_the_pytest_slice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
