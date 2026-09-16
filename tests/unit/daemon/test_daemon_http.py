@@ -174,3 +174,127 @@ def test_evidence_summary_outcomes_read_the_canonical_result_state(tmp_path: Pat
     assert isinstance(payload, dict)
     assert payload["tool_calls"] == 3
     assert payload["outcomes"] == {"ok": 1, "failed": 1, "unknown": 1}
+
+
+def _reset_handler(body: bytes, *, content_length: str | None = None) -> tuple[object, list[tuple[HTTPStatus, object]]]:
+    """Build a socket-free ``_handle_reset`` handler over one request body."""
+    from io import BytesIO
+
+    from polylogue.daemon.http import DaemonAPIHandler
+
+    sent: list[tuple[HTTPStatus, object]] = []
+
+    class _Headers:
+        def __init__(self, values: dict[str, str]) -> None:
+            self._values = values
+
+        def get(self, key: str, default: str | None = None) -> str | None:
+            return self._values.get(key, default)
+
+    class _RecordingHandler(DaemonAPIHandler):
+        def __init__(self) -> None:
+            self.path = "/api/reset"
+            self.command = "POST"
+            self.requestline = "POST /api/reset HTTP/1.1"
+            self.client_address = ("127.0.0.1", 12345)
+            self.rfile = BytesIO(body)
+            self.wfile = BytesIO()
+            self.headers = _Headers({"Content-Length": str(len(body)) if content_length is None else content_length})
+
+        def _send_json(
+            self, status: HTTPStatus, payload: object, *, extra_headers: Mapping[str, str] | None = None
+        ) -> None:
+            sent.append((status, payload))
+
+        def _send_error(
+            self,
+            status: HTTPStatus,
+            code: str,
+            detail: str | None = None,
+            *,
+            extra_headers: Mapping[str, str] | None = None,
+            extra_payload: Mapping[str, object] | None = None,
+        ) -> None:
+            payload: dict[str, object] = {"error": code, "detail": detail}
+            if extra_payload:
+                payload.update(extra_payload)
+            sent.append((status, payload))
+
+        def _sync_run(self, handler: Callable[..., object]) -> object:  # pragma: no cover - refusals never reach it
+            raise AssertionError("a refused reset must not reach the writer")
+
+    return _RecordingHandler(), sent
+
+
+def test_reset_refuses_the_unimplemented_default_scope() -> None:
+    """polylogue-peo7o: POST /api/reset with no scope refuses instead of lying.
+
+    At the reported head, ``scope`` defaulted to ``"all"`` while ``_do_reset``
+    acted only for ``scope == "session"``; every other scope fell through to
+    ``{"ok": True}``, so the route answered 200 with detail ``reset all - no
+    sessions matched`` and emitted a ``reset`` daemon event with
+    ``operation_id=reset-all-all`` having touched nothing.
+
+    Anti-vacuity: restoring the ``{"ok": True}`` fallthrough (or defaulting
+    ``scope`` back to ``"all"`` without a membership check) turns this red --
+    the assertion below demands a 4xx typed code, which a 200 ``ok`` envelope
+    cannot satisfy. ``_sync_run`` also raises if a refused request ever
+    reaches the writer.
+    """
+    import json
+
+    handler, sent = _reset_handler(json.dumps({}).encode())
+    handler._handle_reset()
+
+    assert len(sent) == 1
+    status, payload = sent[0]
+    assert status is HTTPStatus.BAD_REQUEST, payload
+    assert isinstance(payload, dict)
+    assert payload["error"] == "unsupported_scope"
+    assert payload["supported_scopes"] == ["session"]
+
+
+def test_reset_refuses_an_explicitly_unsupported_scope() -> None:
+    """Every scope outside the implemented set is refused by name.
+
+    Anti-vacuity: widening ``RESET_SUPPORTED_SCOPES`` to accept ``"all"``
+    without implementing it turns this red.
+    """
+    import json
+
+    handler, sent = _reset_handler(json.dumps({"scope": "all"}).encode())
+    handler._handle_reset()
+
+    status, payload = sent[0]
+    assert status is HTTPStatus.BAD_REQUEST
+    assert isinstance(payload, dict)
+    assert payload["error"] == "unsupported_scope"
+
+
+def test_reset_refuses_a_malformed_content_length_with_400() -> None:
+    """A malformed Content-Length is a client framing error, not a 500.
+
+    Anti-vacuity: restoring the bare ``int(self.headers.get(...))`` makes the
+    ValueError escape into ``daemon_safe_handler``, which answers 500
+    ``internal_error`` -- and this assertion on 400 turns red.
+    """
+    handler, sent = _reset_handler(b'{"scope": "session", "session_id": "x"}', content_length="not-a-number")
+    handler._handle_reset()
+
+    status, payload = sent[0]
+    assert status is HTTPStatus.BAD_REQUEST
+    assert isinstance(payload, dict)
+    assert payload["error"] == "invalid_request"
+
+
+def test_reset_session_scope_requires_a_session_id() -> None:
+    """The one implemented scope still refuses without its target."""
+    import json
+
+    handler, sent = _reset_handler(json.dumps({"scope": "session"}).encode())
+    handler._handle_reset()
+
+    status, payload = sent[0]
+    assert status is HTTPStatus.BAD_REQUEST
+    assert isinstance(payload, dict)
+    assert payload["error"] == "invalid_request"
