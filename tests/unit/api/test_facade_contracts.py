@@ -6574,3 +6574,103 @@ async def test_resolve_ref_actions_quote_archive_derived_refs(tmp_path: Path) ->
             assert shlex.join(tokens) == command, command
     finally:
         await archive.close()
+
+
+async def test_blocked_receipt_is_not_rendered_as_a_no_op(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``blocked`` receipt is a refusal, never an idempotent no-op.
+
+    ``SessionExcisionActuator.apply`` returns ``status="blocked"`` with
+    ``affected_count=0`` when lineage dependents refuse the excision, so a
+    facade that reads only ``affected_count`` reports the refusal as
+    ``no_op``/``already_present``. This drives the same shape through the
+    real ``add_tag`` facade route.
+
+    Anti-vacuity: restore ``changed = receipt.affected_count`` as the only
+    thing read from the receipt (i.e. drop the ``blocked`` check in
+    ``_execute_facade_mutation``) and this returns ``no_op`` instead of
+    raising, making the test red.
+    """
+    from polylogue.api.archive import MutationBlockedError
+    from polylogue.operations.mutation_transaction import MutationReceipt, OperationExecutor
+
+    archive = _archive(tmp_path)
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="blocked-receipt",
+            title="Blocked receipt",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="blocked")],
+                )
+            ],
+        )
+        with ArchiveStore(tmp_path) as archive_db:
+            session_id = write_index_session(archive_db, session)
+
+        def _blocked(self: object, binding: Any, preview: Any, authorization: Any, args: Any) -> MutationReceipt:
+            return MutationReceipt(
+                operation=preview.plan.operation,
+                plan_hash=preview.plan.plan_hash,
+                status="blocked",
+                target_refs=preview.plan.target_refs,
+                affected_count=0,
+                detail="lineage_dependents_present",
+                receipt_ref=None,
+                applied_at=preview.plan.prepared_at,
+            )
+
+        monkeypatch.setattr(OperationExecutor, "execute_bound", _blocked)
+        with pytest.raises(MutationBlockedError) as blocked:
+            await archive.add_tag(session_id, "review")
+        assert blocked.value.detail == "lineage_dependents_present"
+    finally:
+        await archive.close()
+
+
+async def test_apply_time_keyerror_is_not_reported_as_a_missing_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A target that vanishes after AUTHORIZE is not a missing input.
+
+    Anti-vacuity: re-widen the facade handler back to ``except KeyError ->
+    SessionNotFoundError`` around the whole mutation cycle and this test is
+    red, because the apply-time failure is again reported as a session that
+    does not exist.
+    """
+    from polylogue.api.archive import MutationTargetVanishedError
+    from polylogue.operations.mutation_transaction import OperationExecutor
+
+    archive = _archive(tmp_path)
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="vanished-target",
+            title="Vanished target",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="vanish")],
+                )
+            ],
+        )
+        with ArchiveStore(tmp_path) as archive_db:
+            session_id = write_index_session(archive_db, session)
+
+        def _vanish(self: object, binding: Any, preview: Any, authorization: Any, args: Any) -> None:
+            raise KeyError(session_id)
+
+        monkeypatch.setattr(OperationExecutor, "execute_bound", _vanish)
+        with pytest.raises(MutationTargetVanishedError):
+            await archive.add_tag(session_id, "review")
+
+        # The unknown-session route still answers SessionNotFoundError, from
+        # the narrowed lookup window rather than the whole cycle.
+        monkeypatch.undo()
+        with pytest.raises(SessionNotFoundError):
+            await archive.add_tag("codex-session:never-existed", "review")
+    finally:
+        await archive.close()

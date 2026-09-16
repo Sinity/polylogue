@@ -10,7 +10,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from polylogue.operations.audit import AuditRepository, token_sha256
+# The audit tier owns the stored plan format; this module reads it through
+# that owner instead of keeping a second reconstruction. ``audit.py`` has no
+# public alias for it yet, so the private owner is imported by name rather
+# than duplicating its rules here.
+from polylogue.operations.audit import AuditRepository, plan_from_stored_payload, token_sha256
 from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
 from polylogue.operations.mutation_transaction import (
@@ -27,11 +31,12 @@ from polylogue.operations.mutation_transaction import (
     PlanStaleError,
     TokenConsumedError,
     TokenExpiredError,
+    validate_mutation_plan_integrity,
 )
 from polylogue.operations.specs import build_runtime_operation_catalog
 from polylogue.storage.archive_identity import ArchiveIdentity
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.managed_connection import sqlite_connection
+from polylogue.storage.sqlite.audit_leaf import open_verified_audit_read_connection
 
 _DELETE_CAPABILITY = "archive.delete_session"
 # A preview persists one durable target row and one exact effect identity per
@@ -266,7 +271,7 @@ def _load_preview(
     require_prepared: bool,
     require_unexpired: bool = True,
 ) -> MutationPreview:
-    with sqlite_connection(audit.path) as conn:
+    with open_verified_audit_read_connection(audit.path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
@@ -291,7 +296,7 @@ def _load_active_authorization(
     token: str,
     principal: MutationPrincipal,
 ) -> tuple[MutationPreview, MutationAuthorization]:
-    with sqlite_connection(audit.path) as conn:
+    with open_verified_audit_read_connection(audit.path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
@@ -379,44 +384,32 @@ def _plan_from_row(
     targets: tuple[MutationTarget, ...],
     capabilities: tuple[str, ...],
 ) -> MutationPlan:
+    """Rebuild one durable plan through the audit tier's own reconstruction.
+
+    The audit repository owns the stored plan format; reconstructing the same
+    row from its columns here produced a *second* set of rules (it hardcoded
+    ``reversible=False`` and re-derived context and capabilities), so two
+    readers of one durable row could disagree about what was authorized. The
+    normalized target/capability rows stay the durable index; the plan itself
+    comes from its one owner and is bound by the same integrity check the
+    authorize/begin path applies.
+    """
+
     try:
-        document = json.loads(str(row["plan_json"]))
-    except (json.JSONDecodeError, TypeError) as exc:
+        plan = plan_from_stored_payload(json.loads(str(row["plan_json"])))
+    except (json.JSONDecodeError, TypeError, KeyError, ValueError) as exc:
         raise DeleteAuthorizationError("preview_plan_invalid") from exc
-    if not isinstance(document, dict):
+    if plan.plan_hash != str(row["plan_hash"]) or plan.operation != str(row["operation_name"]):
         raise DeleteAuthorizationError("preview_plan_invalid")
-    affected_tiers_value = document.get("affected_tiers")
-    context_value = document.get("context", {})
-    if (
-        not isinstance(affected_tiers_value, list)
-        or not all(isinstance(tier, str) for tier in affected_tiers_value)
-        or not isinstance(context_value, dict)
-        or not all(isinstance(key, str) for key in context_value)
+    if tuple(target.ref for target in targets) != plan.target_refs or (
+        capabilities and tuple(capabilities) != plan.required_capabilities
     ):
         raise DeleteAuthorizationError("preview_plan_invalid")
-    prepared_at_ms = int(row["created_at_ms"])
-    return MutationPlan(
-        operation=str(row["operation_name"]),
-        destructive_class=cast(
-            Literal["additive", "reversible", "maintenance", "reset", "delete", "excise"], row["destructive_class"]
-        ),
-        target_refs=tuple(target.ref for target in targets),
-        affected_tiers=tuple(affected_tiers_value),
-        reversible=False,
-        prepared_at=datetime.fromtimestamp(prepared_at_ms / 1000, UTC).isoformat(),
-        plan_hash=str(row["plan_hash"]),
-        context=context_value,
-        operation_version=int(row["operation_version"]),
-        archive_instance_id=str(row["archive_instance_id"]),
-        archive_identity_digest=str(row["archive_identity_digest"]),
-        required_capabilities=capabilities,
-        required_confirmation=cast(ConfirmationStrength, str(row["required_confirmation"])),
-        targets=targets,
-        parameter_digest=str(row["parameter_digest"]),
-        target_digest=str(row["target_digest"]),
-        prepared_at_ms=prepared_at_ms,
-        expires_at_ms=int(row["expires_at_ms"]),
-    )
+    try:
+        validate_mutation_plan_integrity(plan)
+    except Exception as exc:
+        raise DeleteAuthorizationError("preview_plan_invalid") from exc
+    return plan
 
 
 def _session_ids_from_preview(preview: MutationPreview) -> tuple[str, ...]:

@@ -319,6 +319,37 @@ class SessionNotFoundError(PolylogueError):
     http_status_code = 404
 
 
+class MutationBlockedError(PolylogueError):
+    """Raised when a mutation cycle returned a ``blocked`` receipt.
+
+    A blocked receipt is a refusal that carries its reason (for example the
+    lineage-dependents refusal in ``SessionExcisionActuator.apply``). Reading
+    only ``affected_count`` would render that refusal as an idempotent no-op,
+    which is the one thing it is not: nothing was applied and the caller's
+    intent was declined.
+    """
+
+    http_status_code = 409
+
+    def __init__(self, operation: str, detail: str | None, target_refs: tuple[str, ...] = ()) -> None:
+        super().__init__(f"{operation} was blocked: {detail or 'no reason recorded'}")
+        self.operation = operation
+        self.detail = detail
+        self.target_refs = target_refs
+
+
+class MutationTargetVanishedError(PolylogueError):
+    """Raised when a mutation's target disappeared after it was authorized.
+
+    Distinct from :class:`SessionNotFoundError`: the lookup succeeded, the
+    plan was prepared and authorized, and the target went absent during
+    revalidation or apply. Reporting that as "session not found" hides a
+    concurrent-mutation hazard behind an ordinary missing-input answer.
+    """
+
+    http_status_code = 409
+
+
 def _archive_query_date_ms(field: str, value: str | None) -> int | None:
     parsed = parse_query_date(field, value)
     if parsed is None:
@@ -2942,6 +2973,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         build_args: Callable[[ArchiveStore], _MutationArgsT],
         *,
         capability: str,
+        session_id: str | None = None,
     ) -> tuple[MutationReceipt, MutationPlan]:
         """Run one PREPARE/AUTHORIZE/EXECUTE cycle against a fresh archive handle.
 
@@ -2956,20 +2988,43 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         stronger confirmation contract to its own callers), so it stays
         outside this helper. Returns ``(receipt, plan)`` because a couple of
         callers read ``plan.context`` back after the archive handle closes.
+
+        ``session_id`` names the caller's lookup target: a ``KeyError`` raised
+        while building args or preparing/authorizing the plan is that lookup
+        failing, and becomes :class:`SessionNotFoundError`. After AUTHORIZE the
+        targets are resolved, so a ``KeyError`` there is
+        :class:`MutationTargetVanishedError`. A ``blocked`` receipt is raised as
+        :class:`MutationBlockedError` here rather than left for each caller to
+        mistake for a zero-``affected_count`` no-op.
         """
         from polylogue.operations.bindings import runtime_operation_binding
         from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            args = build_args(archive)
             root = _active_archive_root(self.config)
             executor = OperationExecutor.for_archive_root(root)
             binding = runtime_operation_binding(actuator)
             principal = MutationPrincipal("facade", frozenset({capability}), "api", "write")
-            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-            authorization = executor.authorize_bound(binding, preview, principal)
-            receipt = executor.execute_bound(binding, preview, authorization, args)
+            # Only the target lookup answers "no such session". Everything
+            # after AUTHORIZE has already resolved its targets, so a KeyError
+            # there is a concurrent-mutation hazard, not a missing input.
+            try:
+                args = build_args(archive)
+                preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+                authorization = executor.authorize_bound(binding, preview, principal)
+            except KeyError:
+                if session_id is None:
+                    raise
+                raise SessionNotFoundError(session_id) from None
+            try:
+                receipt = executor.execute_bound(binding, preview, authorization, args)
+            except KeyError as exc:
+                raise MutationTargetVanishedError(
+                    f"{actuator.operation!r} target disappeared during execution: {exc}"
+                ) from exc
+        if receipt.status == "blocked":
+            raise MutationBlockedError(receipt.operation, receipt.detail, receipt.target_refs)
         return receipt, preview.plan
 
     async def import_annotation_batch(
@@ -7213,6 +7268,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
             authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
             receipt = executor.execute_bound(binding, preview, authorization, args)
+        if receipt.status == "blocked":
+            raise MutationBlockedError(receipt.operation, receipt.detail, receipt.target_refs)
         deleted = receipt.affected_count > 0
         return DeleteSessionResult(
             outcome="deleted" if deleted else "not_found",
@@ -7244,21 +7301,17 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.operations.mutation_actuators import TagAddActuator, TagAddArgs
         from polylogue.surfaces.payloads import TagMutationResult
 
-        try:
-            # Covers both the initial resolve (session never existed) and
-            # EXECUTE's fresh-PREPARE revalidation (session deleted by a
-            # concurrent actor between AUTHORIZE and EXECUTE) -- both
-            # collapse to the same "session not found" outcome for this
-            # reversible-class operation.
-            receipt, _plan = self._execute_facade_mutation(
-                TagAddActuator(),
-                lambda archive: TagAddArgs(
-                    archive=archive, session_id=session_id, tag=tag, author_ref=author_ref, author_kind=author_kind
-                ),
-                capability="archive.add_tag",
-            )
-        except KeyError:
-            raise SessionNotFoundError(session_id) from None
+        # The lookup window (``session_id=``) is what answers "session never
+        # existed". A target that disappears after AUTHORIZE surfaces as
+        # ``MutationTargetVanishedError``, not as a missing session.
+        receipt, _plan = self._execute_facade_mutation(
+            TagAddActuator(),
+            lambda archive: TagAddArgs(
+                archive=archive, session_id=session_id, tag=tag, author_ref=author_ref, author_kind=author_kind
+            ),
+            capability="archive.add_tag",
+            session_id=session_id,
+        )
         changed = receipt.affected_count
         return TagMutationResult(
             outcome="added" if changed else "no_op",
@@ -7278,14 +7331,12 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.operations.mutation_actuators import TagRemoveActuator, TagRemoveArgs
         from polylogue.surfaces.payloads import TagMutationResult
 
-        try:
-            receipt, _plan = self._execute_facade_mutation(
-                TagRemoveActuator(),
-                lambda archive: TagRemoveArgs(archive=archive, session_id=session_id, tag=tag),
-                capability="archive.remove_tag",
-            )
-        except KeyError:
-            raise SessionNotFoundError(session_id) from None
+        receipt, _plan = self._execute_facade_mutation(
+            TagRemoveActuator(),
+            lambda archive: TagRemoveArgs(archive=archive, session_id=session_id, tag=tag),
+            capability="archive.remove_tag",
+            session_id=session_id,
+        )
         changed = receipt.affected_count
         return TagMutationResult(
             outcome="removed" if changed else "not_present",
@@ -7342,14 +7393,12 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if validation_error is not None:
             raise MetadataKeyValidationError(validation_error)
 
-        try:
-            receipt, plan = self._execute_facade_mutation(
-                MetadataSetActuator(),
-                lambda archive: MetadataSetArgs(archive=archive, session_id=session_id, key=key, value=value),
-                capability="archive.set_metadata",
-            )
-        except KeyError:
-            raise SessionNotFoundError(session_id) from None
+        receipt, plan = self._execute_facade_mutation(
+            MetadataSetActuator(),
+            lambda archive: MetadataSetArgs(archive=archive, session_id=session_id, key=key, value=value),
+            capability="archive.set_metadata",
+            session_id=session_id,
+        )
         changed = receipt.affected_count
         resolved = str(plan.context["session_id"])
         return MetadataMutationResult(
@@ -7381,14 +7430,12 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if validation_error is not None:
             raise MetadataKeyValidationError(validation_error)
 
-        try:
-            receipt, plan = self._execute_facade_mutation(
-                MetadataDeleteActuator(),
-                lambda archive: MetadataDeleteArgs(archive=archive, session_id=session_id, key=key),
-                capability="archive.delete_metadata",
-            )
-        except KeyError:
-            raise SessionNotFoundError(session_id) from None
+        receipt, plan = self._execute_facade_mutation(
+            MetadataDeleteActuator(),
+            lambda archive: MetadataDeleteArgs(archive=archive, session_id=session_id, key=key),
+            capability="archive.delete_metadata",
+            session_id=session_id,
+        )
         changed = receipt.affected_count
         resolved = str(plan.context["session_id"])
         return MetadataMutationResult(
@@ -8317,22 +8364,20 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         parse_correction_kind(kind)
         from polylogue.operations.mutation_actuators import CorrectionRecordActuator, CorrectionRecordArgs
 
-        try:
-            receipt, _plan = self._execute_facade_mutation(
-                CorrectionRecordActuator(),
-                lambda archive: CorrectionRecordArgs(
-                    archive=archive,
-                    session_id=session_id,
-                    kind=kind,
-                    payload=normalized_payload,
-                    note=note,
-                    author_ref=author_ref,
-                    author_kind=author_kind,
-                ),
-                capability="archive.record_correction",
-            )
-        except KeyError:
-            raise SessionNotFoundError(session_id) from None
+        receipt, _plan = self._execute_facade_mutation(
+            CorrectionRecordActuator(),
+            lambda archive: CorrectionRecordArgs(
+                archive=archive,
+                session_id=session_id,
+                kind=kind,
+                payload=normalized_payload,
+                note=note,
+                author_ref=author_ref,
+                author_kind=author_kind,
+            ),
+            capability="archive.record_correction",
+            session_id=session_id,
+        )
         return cast("LearningCorrection", receipt.domain_receipt["correction"])
 
     async def list_corrections(
@@ -8368,14 +8413,12 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         parse_correction_kind(kind)
         from polylogue.operations.mutation_actuators import CorrectionDeleteActuator, CorrectionDeleteArgs
 
-        try:
-            receipt, _plan = self._execute_facade_mutation(
-                CorrectionDeleteActuator(),
-                lambda archive: CorrectionDeleteArgs(archive=archive, session_id=session_id, kind=kind),
-                capability="archive.delete_correction",
-            )
-        except KeyError:
-            raise SessionNotFoundError(session_id) from None
+        receipt, _plan = self._execute_facade_mutation(
+            CorrectionDeleteActuator(),
+            lambda archive: CorrectionDeleteArgs(archive=archive, session_id=session_id, kind=kind),
+            capability="archive.delete_correction",
+            session_id=session_id,
+        )
         return receipt.status == "applied"
 
     async def clear_corrections(self, session_id: str) -> int:
@@ -8390,14 +8433,12 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         from polylogue.operations.mutation_actuators import CorrectionsClearActuator, CorrectionsClearArgs
 
-        try:
-            receipt, _plan = self._execute_facade_mutation(
-                CorrectionsClearActuator(),
-                lambda archive: CorrectionsClearArgs(archive=archive, session_id=session_id),
-                capability="archive.clear_corrections",
-            )
-        except KeyError:
-            raise SessionNotFoundError(session_id) from None
+        receipt, _plan = self._execute_facade_mutation(
+            CorrectionsClearActuator(),
+            lambda archive: CorrectionsClearArgs(archive=archive, session_id=session_id),
+            capability="archive.clear_corrections",
+            session_id=session_id,
+        )
         return int(receipt.affected_count)
 
     async def post_blackboard_note(

@@ -348,6 +348,17 @@ def _replay_plan_payload(plan: MutationPlan) -> dict[str, object]:
     return payload
 
 
+def plan_from_stored_payload(raw: object) -> MutationPlan:
+    """Reconstruct a MutationPlan from its stored plan_json payload.
+
+    The single owner of plan reconstruction. Every consumer that reads a
+    persisted plan - preview loading, authorization resume, delete
+    authorization - goes through here, so the rules cannot diverge per
+    call site (polylogue-1ifhp).
+    """
+    return _plan_from_payload(raw)
+
+
 def _plan_from_payload(raw: object) -> MutationPlan:
     value = cast(dict[str, object], raw)
     raw_context = value.get("context")
@@ -3097,4 +3108,4 @@ class AuditRepository:
         )
 
 
-__all__ = ["AuditRepository", "AuditTargetState", "token_sha256"]
+__all__ = ["AuditRepository", "AuditTargetState", "plan_from_stored_payload", "token_sha256"]
