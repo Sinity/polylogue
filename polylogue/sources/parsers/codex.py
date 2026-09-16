@@ -24,7 +24,7 @@ from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.timestamps import parse_timestamp_pair
-from polylogue.logging import WARNING, emit, get_logger
+from polylogue.logging import DEBUG, WARNING, emit, get_logger
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.sources.tool_result_reasons import unknown_reason
 
@@ -359,11 +359,14 @@ def _validate_record(item: object, *, index: int, context: str = "record") -> Co
         # log line (2026-07-31 leak audit L13, polylogue-tztk). Only the
         # structural coordinates -- which field failed and how -- are needed
         # to diagnose a parse skip, and those carry no content.
-        logger.debug(
-            "Skipping invalid %s at index %d: %s",
-            context,
-            index,
-            _redacted_validation_errors(exc),
+        emit(
+            "parser.codex.record_skipped",
+            level=DEBUG,
+            outcome="degraded",
+            reason="record failed CodexRecord validation",
+            context=context,
+            index=index,
+            errors=_redacted_validation_errors(exc),
         )
         return None
 
