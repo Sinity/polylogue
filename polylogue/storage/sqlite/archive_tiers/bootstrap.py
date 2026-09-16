@@ -147,15 +147,29 @@ _PROTOTYPE_CACHEABLE_TIERS = frozenset(ArchiveTier)
 #: with. SQLite fixes ``page_size`` permanently when the first page is
 #: allocated, so this is a creation-time decision that no later connection
 #: profile can revise -- before this constant existed the only choice was
-#: SQLite's compiled-in 4096, taken silently.
+#: SQLite's compiled-in 4096, taken silently and recorded nowhere.
 #:
-#: 8192 is the recorded default. It is chosen rather than measured-per-build:
-#: the sweep over a seeded benchmark index (2026-09-16, receipts in the
-#: campaign's scratch directory) put 4096, 8192 and 16384 within noise of each
-#: other on read p95, while the larger page reduces page count and therefore
-#: per-page overhead on a 5M-block generation. Re-measure before changing it;
-#: a change re-creates generations, it does not migrate existing ones.
-DEFAULT_ARCHIVE_PAGE_SIZE = 8192
+#: Measured 2026-09-16 on a 149 MB index built through the production parse
+#: and write route (400 codex sessions x 40 turns: 64,400 blocks, 18.3 MB of
+#: block text), re-laid out with VACUUM INTO at each candidate:
+#:
+#:   page_size  file bytes   pages   blocks-by-session p95  FTS p95  trigram p95
+#:   4096       148,967,424  36,369  0.071 ms               1.927 ms  12.532 ms
+#:   8192       149,118,976  18,203  0.072 ms               1.926 ms  13.499 ms
+#:   16384      149,995,520   9,155  0.069 ms               1.954 ms  14.088 ms
+#:
+#: File bytes and point-read latency are flat across the three (0.1 and 0.7
+#: percent on bytes). The trigram LIKE probe is not: it degrades monotonically,
+#: 7.7 percent at 8192 and 12.4 percent at 16384, because a trigram scan reads
+#: whole pages to reach a few postings and a larger page moves more bytes per
+#: hit. So 4096 wins or ties on every axis measured and is the recorded
+#: default. That is also SQLite's own default, which is the point: the value
+#: did not change, the fact that it is now chosen, validated and recorded did.
+#:
+#: Re-measure before changing it. A change re-creates generations rather than
+#: migrating them, and the sweep above is worth re-running at the real corpus
+#: size, where the trigram index is far larger relative to cache.
+DEFAULT_ARCHIVE_PAGE_SIZE = 4096
 
 #: SQLite accepts only these; anything else is silently ignored by the pragma,
 #: which would make a wrong value look like it took effect.
