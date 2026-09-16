@@ -725,7 +725,8 @@ def _embedding_message_count(conn: sqlite3.Connection, *, status_table: str = ""
 
 
 def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> EmbeddingMetricState:
-    total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions") if _table_exists(conn, "sessions") else 0
+    sessions_present = _table_exists(conn, "sessions")
+    total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions") if sessions_present else 0
     embedded_sessions = 0
     pending_sessions = 0
     failed_sessions = 0
@@ -750,7 +751,15 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
               AND error_message IS NULL
             """,
         )
-        pending_sessions = max(total_sessions - embedded_sessions, 0)
+        if sessions_present:
+            pending_sessions = max(total_sessions - embedded_sessions, 0)
+        else:
+            # A partial index without a sessions table can still name what the
+            # status table itself says is owed.
+            pending_sessions = _scalar_int(
+                conn,
+                f"SELECT COUNT(*) FROM {status_table} WHERE COALESCE(needs_reindex, 0) <> 0 AND error_message IS NULL",
+            )
         failed_sessions = _scalar_int(
             conn,
             f"SELECT COUNT(*) FROM {status_table} WHERE error_message IS NOT NULL",

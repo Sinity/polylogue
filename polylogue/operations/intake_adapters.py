@@ -675,7 +675,7 @@ class RawMaterializationDiscovery:
                 self._held_page = None
                 return ()
             held = self._held_page
-            if held is not None and held[0] == page_cursor and set(held[1]) >= set(selected):
+            if held is not None and held[0] == page_cursor and set(held[1]) == set(selected):
                 # Re-inspected the same page and nothing moved: the blockage is
                 # not budget pressure, so stop pinning the traversal behind it
                 # and go on to the next page in this same call.
