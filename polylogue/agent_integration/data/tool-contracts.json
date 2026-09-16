@@ -61,63 +61,83 @@
           "required_initial": false
         },
         {
-          "description": "Public origin filter.",
-          "enum_values": [],
+          "description": "Declared sort for session projections.",
+          "enum_values": [
+            "date",
+            "tokens",
+            "messages",
+            "words",
+            "longest",
+            "random"
+          ],
+          "kind": "string",
+          "name": "sort",
+          "required_initial": false
+        },
+        {
+          "description": "Optional session-origin scope for terminal row results.",
+          "enum_values": [
+            "claude-code-session",
+            "codex-session",
+            "gemini-cli-session",
+            "hermes-session",
+            "antigravity-session",
+            "beads-issue",
+            "grok-export",
+            "chatgpt-export",
+            "claude-ai-export",
+            "claude-design-session",
+            "aistudio-drive",
+            "unknown-export"
+          ],
           "kind": "string",
           "name": "origin",
           "required_initial": false
         },
         {
-          "description": "Tag filter.",
+          "description": "Optional session tag scope for terminal row results.",
           "enum_values": [],
           "kind": "string",
           "name": "tag",
           "required_initial": false
         },
         {
-          "description": "Repository filter.",
+          "description": "Optional comma-separated repo-name scope for terminal row results.",
           "enum_values": [],
           "kind": "string",
           "name": "repo",
           "required_initial": false
         },
         {
-          "description": "Lower time bound.",
+          "description": "Optional session lower time bound, using the shared query date parser.",
           "enum_values": [],
           "kind": "string",
           "name": "since",
           "required_initial": false
         },
         {
-          "description": "Upper time bound.",
+          "description": "Optional session upper time bound, using the shared query date parser.",
           "enum_values": [],
           "kind": "string",
           "name": "until",
           "required_initial": false
         },
         {
-          "description": "Declared sort for session projections.",
-          "enum_values": [],
-          "kind": "string",
-          "name": "sort",
-          "required_initial": false
-        },
-        {
-          "description": "Minimum message count.",
+          "description": "Restrict terminal rows to sessions with at least this many messages.",
           "enum_values": [],
           "kind": "integer",
           "name": "min_messages",
           "required_initial": false
         },
         {
-          "description": "Maximum message count.",
+          "description": "Restrict terminal rows to sessions with at most this many messages.",
           "enum_values": [],
           "kind": "integer",
           "name": "max_messages",
           "required_initial": false
         },
         {
-          "description": "Minimum authored word count.",
+          "description": "Restrict terminal rows to sessions with at least this many words.",
           "enum_values": [],
           "kind": "integer",
           "name": "min_words",

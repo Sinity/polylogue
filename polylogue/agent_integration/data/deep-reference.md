@@ -29,15 +29,15 @@ Arguments:
 | `session_operation` | `string` | no | Declared session operation; required by the session-operations projection. |
 | `continuation` | `string` | no | Opaque token from the preceding response; send alone. |
 | `offset` | `integer` | no | Offset for projections that use decimal offset pagination. |
-| `origin` | `string` | no | Public origin filter. |
-| `tag` | `string` | no | Tag filter. |
-| `repo` | `string` | no | Repository filter. |
-| `since` | `string` | no | Lower time bound. |
-| `until` | `string` | no | Upper time bound. |
 | `sort` | `string` | no | Declared sort for session projections. |
-| `min_messages` | `integer` | no | Minimum message count. |
-| `max_messages` | `integer` | no | Maximum message count. |
-| `min_words` | `integer` | no | Minimum authored word count. |
+| `origin` | `string` | no | Optional session-origin scope for terminal row results. |
+| `tag` | `string` | no | Optional session tag scope for terminal row results. |
+| `repo` | `string` | no | Optional comma-separated repo-name scope for terminal row results. |
+| `since` | `string` | no | Optional session lower time bound, using the shared query date parser. |
+| `until` | `string` | no | Optional session upper time bound, using the shared query date parser. |
+| `min_messages` | `integer` | no | Restrict terminal rows to sessions with at least this many messages. |
+| `max_messages` | `integer` | no | Restrict terminal rows to sessions with at most this many messages. |
+| `min_words` | `integer` | no | Restrict terminal rows to sessions with at least this many words. |
 
 Example — Find recent edits under the query subsystem:
 

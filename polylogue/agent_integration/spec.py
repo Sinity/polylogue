@@ -11,10 +11,12 @@ their count.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, get_args
 
+from polylogue.archive.filter.types import SortField
 from polylogue.archive.query.discovery import query_discovery_example, query_discovery_examples
-from polylogue.core.enums import Origin
+from polylogue.archive.query.unit_results import TERMINAL_FILTER_PARAMETER_BY_NAME
+from polylogue.core.enums import Origin, enum_values
 from polylogue.declarations import JSONValue
 from polylogue.mcp.declarations import (
     MCP_TOOL_DECLARATIONS,
@@ -242,6 +244,28 @@ def _example(id: str, title: str, result_note: str, **arguments: JSONValue) -> T
     return ToolExample(id=id, title=title, arguments=_args(**arguments), result_note=result_note)
 
 
+def _declared_filter_arguments(*names: str) -> tuple[ToolArgument, ...]:
+    """Project declared terminal session filters into manual tool arguments.
+
+    The names, types and meanings come from
+    ``polylogue.archive.query.unit_results.TERMINAL_FILTER_PARAMETERS``, the
+    same declaration the ``/api/query-units`` OpenAPI parameters are generated
+    from, so the MCP manual and the HTTP schema cannot describe the shared
+    filter surface differently. Closed vocabularies come from the enum the
+    filter validates against.
+    """
+
+    vocabularies: dict[str, tuple[str, ...]] = {"origin": enum_values(Origin)}
+    arguments: list[ToolArgument] = []
+    for name in names:
+        parameter = TERMINAL_FILTER_PARAMETER_BY_NAME[name]
+        kind: ArgumentKind = "integer" if parameter.kind == "integer" else parameter.kind
+        arguments.append(
+            ToolArgument(parameter.name, kind, False, parameter.description, vocabularies.get(parameter.name, ()))
+        )
+    return tuple(arguments)
+
+
 def _target_declaration_index() -> dict[str, MCPTransactionDeclaration]:
     return {item.name: item for item in (*TARGET_DEFAULT_READ_ALGEBRA, *PRIVILEGED_ALGEBRA)}
 
@@ -349,15 +373,10 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             ),
             _arg("continuation", "string", False, "Opaque token from the preceding response; send alone."),
             _arg("offset", "integer", False, "Offset for projections that use decimal offset pagination."),
-            _arg("origin", "string", False, "Public origin filter."),
-            _arg("tag", "string", False, "Tag filter."),
-            _arg("repo", "string", False, "Repository filter."),
-            _arg("since", "string", False, "Lower time bound."),
-            _arg("until", "string", False, "Upper time bound."),
-            _arg("sort", "string", False, "Declared sort for session projections."),
-            _arg("min_messages", "integer", False, "Minimum message count."),
-            _arg("max_messages", "integer", False, "Maximum message count."),
-            _arg("min_words", "integer", False, "Minimum authored word count."),
+            _arg("sort", "string", False, "Declared sort for session projections.", get_args(SortField)),
+            *_declared_filter_arguments(
+                "origin", "tag", "repo", "since", "until", "min_messages", "max_messages", "min_words"
+            ),
         ),
         examples=(
             _example(

@@ -824,6 +824,7 @@ export type QueryUnitsParameters = {
   readonly continuation?: string;
   readonly cwd_prefix?: string;
   readonly exclude_action?: string;
+  readonly exclude_origin?: string;
   readonly exclude_tag?: string;
   readonly exclude_tool?: string;
   readonly expression?: string;
@@ -839,6 +840,7 @@ export type QueryUnitsParameters = {
   readonly min_words?: number;
   readonly offset?: number;
   readonly origin?: string;
+  readonly origins?: string;
   readonly referenced_path?: string;
   readonly repo?: string;
   readonly since?: string;
@@ -987,6 +989,7 @@ export class PolylogueClient {
           continuation: parameters.continuation,
           cwd_prefix: parameters.cwd_prefix,
           exclude_action: parameters.exclude_action,
+          exclude_origin: parameters.exclude_origin,
           exclude_tag: parameters.exclude_tag,
           exclude_tool: parameters.exclude_tool,
           expression: parameters.expression,
@@ -1002,6 +1005,7 @@ export class PolylogueClient {
           min_words: parameters.min_words,
           offset: parameters.offset,
           origin: parameters.origin,
+          origins: parameters.origins,
           referenced_path: parameters.referenced_path,
           repo: parameters.repo,
           since: parameters.since,
