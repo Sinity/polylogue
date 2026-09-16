@@ -12,11 +12,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.index_convergence import INDEX_BENIGN_DDL_REGISTRY
+from polylogue.storage.sqlite.archive_tiers.ops import OPS_BENIGN_DDL_CONVERGENCE_PLAN
 from polylogue.storage.sqlite.archive_tiers.schema_inventory import _objects_from_connection
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema_manifest import SchemaManifest, canonical_schema_manifest, schema_manifest_diff
@@ -38,6 +41,66 @@ class _MigrationChange:
     status: str
     old_path: str
     new_path: str
+
+
+#: The only statement shapes a same-version benign-DDL entry may take. Each is
+#: idempotent on re-application and adds or removes an empty-of-consequence
+#: schema object.
+_ALLOWED_BENIGN_DDL = (
+    re.compile(r"^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+\S", re.I),
+    re.compile(r"^CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+\S", re.I),
+    re.compile(r"^DROP\s+TABLE\s+IF\s+EXISTS\s+\S", re.I),
+)
+#: Tails and verbs that transform data. ``AS``/``SELECT``/``VALUES`` are the
+#: reason a prefix allowlist is not enough on its own: ``CREATE TABLE IF NOT
+#: EXISTS x AS SELECT ...`` matches the idempotent prefix, carries no second
+#: statement, and still rewrites derived content on every same-version archive
+#: open, with no version bump and no reparse (polylogue-d0kj).
+_FORBIDDEN_BENIGN_DDL = (
+    re.compile(r"\bAS\b", re.I),
+    re.compile(r"\bSELECT\b", re.I),
+    re.compile(r"\bVALUES\b", re.I),
+    re.compile(r"\bWITH\b", re.I),
+    re.compile(r"\bALTER\s+TABLE\b", re.I),
+    re.compile(r"\bINSERT\s+INTO\b", re.I),
+    re.compile(r"\bUPDATE\b", re.I),
+    re.compile(r"\bDELETE\s+FROM\b", re.I),
+    re.compile(r"\bREPLACE\s+INTO\b", re.I),
+)
+
+
+def invalid_benign_ddl_entries(entries: Iterable[tuple[str, str]]) -> list[str]:
+    """Return one violation per ``(name, sql)`` that is not benign same-version DDL.
+
+    ``entries`` are the registered statements applied on every same-version
+    open of an already-populated archive, so each must be idempotent and
+    data-non-transforming. Validation is shape-based on purpose: the statement
+    must match exactly one allowed idempotent form, carry no second statement,
+    and contain no data-producing tail.
+    """
+    violations: list[str] = []
+    for name, sql in entries:
+        statement = " ".join(sql.split()).strip()
+        body = statement[:-1].strip() if statement.endswith(";") else statement
+        if ";" in body:
+            violations.append(f"{name}: benign DDL carries more than one statement")
+            continue
+        if not any(pattern.match(body) for pattern in _ALLOWED_BENIGN_DDL):
+            violations.append(f"{name}: benign DDL is not an allowed idempotent shape: {body}")
+            continue
+        for pattern in _FORBIDDEN_BENIGN_DDL:
+            match = pattern.search(body)
+            if match is not None:
+                violations.append(f"{name}: benign DDL carries a data-transforming tail: {match.group(0).upper()}")
+                break
+    return violations
+
+
+def _benign_ddl_violations() -> list[str]:
+    """Validate every registered same-version benign-DDL statement."""
+    entries: list[tuple[str, str]] = [(entry.name, entry.sql) for entry in INDEX_BENIGN_DDL_REGISTRY]
+    entries.extend((f"ops[{index}]", sql) for index, sql in enumerate(OPS_BENIGN_DDL_CONVERGENCE_PLAN))
+    return invalid_benign_ddl_entries(entries)
 
 
 def _current_schema_state() -> _SchemaState:
@@ -333,12 +396,20 @@ def main(argv: list[str] | None = None) -> int:
     for tier in ArchiveTier:
         path = args.archive_root / f"{tier.value}.db" if args.archive_root is not None else None
         results.append(_check_tier(tier, path))
-    payload = {"kind": "polylogue.schema-manifest", "ok": all(item["ok"] for item in results), "tiers": results}
+    benign_violations = _benign_ddl_violations()
+    payload = {
+        "kind": "polylogue.schema-manifest",
+        "ok": all(item["ok"] for item in results) and not benign_violations,
+        "tiers": results,
+        "benign_ddl_violations": benign_violations,
+    }
     if args.json:
         print(json.dumps(payload, sort_keys=True))
     else:
         for item in results:
             print(f"{item['tier']}: {'PASS' if item['ok'] else 'FAIL'} (v{item['version']})")
+        for violation in benign_violations:
+            print(f"FAIL: benign-ddl {violation}")
         print("schema-manifest: PASS" if payload["ok"] else "schema-manifest: FAIL")
     return 0 if payload["ok"] else 1
 

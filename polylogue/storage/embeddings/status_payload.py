@@ -25,7 +25,6 @@ from polylogue.storage.embeddings.materialization import (
     archive_embedding_messages_table_ref,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
-from polylogue.storage.embeddings.progress import EmbeddingCatchupRunPayload
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.search_providers.sqlite_vec_support import (
     ESTIMATED_TOKENS_PER_MESSAGE,
@@ -115,6 +114,29 @@ class EmbeddingFailureDetailPayload(TypedDict):
     resolution_action: str | None
     supported_actions: list[str]
     resolution_command: str
+
+
+class EmbeddingCatchupRunPayload(TypedDict):
+    run_id: str
+    started_at: str
+    updated_at: str
+    completed_at: str | None
+    status: str
+    stop_reason: str | None
+    rebuild: bool
+    max_sessions: int | None
+    max_messages: int | None
+    stop_after_seconds: int | None
+    max_errors: int | None
+    planned_sessions: int
+    planned_messages: int
+    processed_sessions: int
+    embedded_sessions: int
+    skipped_sessions: int
+    error_count: int
+    embedded_messages: int
+    estimated_cost_usd: float
+    last_session_id: str | None
 
 
 class EmbeddingStatusPayload(TypedDict):
@@ -1436,9 +1458,6 @@ def embedding_status_payload(
     """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.config import load_polylogue_config
     from polylogue.storage.archive_identity import archive_file_set_root
-    from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
-    from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
-    from polylogue.storage.embeddings.support import table_exists_sync_missing_safe
 
     cfg = load_polylogue_config()
     db_path = Path(env.config.db_path)
@@ -1462,41 +1481,14 @@ def embedding_status_payload(
     )
     if archive_payload is not None:
         return archive_payload
-    if not db_path.exists():
-        return _payload_from_stats(
-            settings=settings,
-            total_sessions=0,
-            stats=EmbeddingStatsSnapshot(),
-            latest_catchup_run=None,
-            latest_material_catchup_run=None,
-            pending_messages_exact=include_detail,
-        )
-
-    # A status projection describes whatever the tier holds, including a
-    # schema the runtime has moved past.
-    conn = open_readonly_connection(db_path, validate_schema=False)
-    try:
-        total_sessions = _total_sessions(conn)
-        embedding_stats = read_embedding_stats_sync(
-            conn,
-            include_retrieval_bands=include_retrieval_bands,
-            detail=include_detail,
-        )
-        latest_run = (
-            latest_embedding_catchup_run(conn)
-            if table_exists_sync_missing_safe(conn, "embedding_catchup_runs")
-            else None
-        )
-    finally:
-        conn.close()
-
+    # The split-file archive is the sole runtime. An index tier that yields no
+    # archive-shaped embedding state has nothing to measure; there is no
+    # pre-split single-file shape to fall back to.
     return _payload_from_stats(
         settings=settings,
-        total_sessions=total_sessions,
-        stats=embedding_stats,
-        latest_catchup_run=latest_run,
-        latest_material_catchup_run=latest_run
-        if latest_run is not None and _run_has_material_signal(latest_run)
-        else None,
+        total_sessions=0,
+        stats=EmbeddingStatsSnapshot(),
+        latest_catchup_run=None,
+        latest_material_catchup_run=None,
         pending_messages_exact=include_detail,
     )

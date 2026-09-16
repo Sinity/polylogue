@@ -104,15 +104,14 @@ class AlertDedupState:
 def load_thresholds_from_config(cfg: PolylogueConfig | None = None) -> ConvergenceDebtThresholds:
     """Load convergence-debt thresholds from the resolved Polylogue config.
 
-    Reads the ``health.convergence_debt`` raw dict written by
+    Reads the ``health.convergence_debt`` table through the typed
+    ``PolylogueConfig.health_convergence_debt`` accessor, written by
     :func:`polylogue.config._merge_toml`. Unknown families are accepted —
     the operator may pre-declare overrides for families that the local
     archive has not yet seen.
     """
     cfg = cfg if cfg is not None else load_polylogue_config()
-    raw = cfg.raw.get("health_convergence_debt")
-    if not isinstance(raw, dict):
-        return ConvergenceDebtThresholds()
+    raw = cfg.health_convergence_debt
     default_warning = _coerce_int(raw.get("default_warning"), DEFAULT_WARNING_COUNT)
     default_error = _coerce_int(raw.get("default_error"), DEFAULT_ERROR_COUNT)
     dedup_window_s = _coerce_int(raw.get("dedup_window_s"), DEFAULT_DEDUP_WINDOW_S)

@@ -123,15 +123,14 @@ class CursorLagDedupState:
 def load_thresholds_from_config(cfg: PolylogueConfig | None = None) -> CursorLagThresholds:
     """Load cursor-lag thresholds from the resolved Polylogue config.
 
-    Reads the ``health.cursor_lag`` raw dict written by
+    Reads the ``health.cursor_lag`` table through the typed
+    ``PolylogueConfig.health_cursor_lag`` accessor, written by
     :func:`polylogue.config._merge_toml`. Unknown families are accepted — the
     operator may pre-declare overrides for families the local archive has not
     yet seen.
     """
     cfg = cfg if cfg is not None else load_polylogue_config()
-    raw = cfg.raw.get("health_cursor_lag")
-    if not isinstance(raw, dict):
-        return CursorLagThresholds()
+    raw = cfg.health_cursor_lag
     default_warning = _coerce_int(raw.get("default_warning_s"), DEFAULT_WARNING_S)
     default_error = _coerce_int(raw.get("default_error_s"), DEFAULT_ERROR_S)
     default_critical = _coerce_int(raw.get("default_critical_s"), DEFAULT_CRITICAL_S)

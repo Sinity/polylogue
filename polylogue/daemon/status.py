@@ -10,7 +10,7 @@ import threading
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, get_args
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -690,8 +690,13 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         location = ArchiveLocation.resolve(root)
         conflicts = archive_identity_conflicts(configured_root=configured_root, active_root=root)
     tier_paths: dict[ArchiveTierName, Path] = {
+        # Membership is owned by ARCHIVE_TIER_SPECS (polylogue-b1vr1); this
+        # derives from the module Literal, whose membership
+        # tests/unit/storage/test_archive_tier_enumerations.py pins to
+        # ARCHIVE_TIER_ORDER. Importing archive_layout here would grow the
+        # daemon->storage layering ratchet.
         name: location.active_tier(name).configured_path
-        for name in ("source", "index", "embeddings", "user", "audit", "ops")
+        for name in get_args(ArchiveTierName)
     }
     identity = ArchiveIdentity.resolve_location(location)
     tiers = [_archive_tier_status(name, path) for name, path in tier_paths.items()]

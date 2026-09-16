@@ -241,10 +241,10 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                     context.runtime.observe_snapshot(request, snapshot)
                 if mutating:
                     assert context.runtime is not None
-                    from polylogue.operations import daemon_mutations
+                    from polylogue.operations.daemon_protocol import resolve_operation_handler
 
                     audit = context.runtime.audit_for_request(request, context)
-                    handler = getattr(daemon_mutations, spec.handler)
+                    handler = resolve_operation_handler(spec)
                     result = handler(request, context, audit, snapshot)
                 else:
                     from polylogue.operations.daemon_reads import execute_read_operation

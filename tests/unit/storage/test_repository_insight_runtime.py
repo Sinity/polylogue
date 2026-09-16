@@ -10,9 +10,6 @@ import pytest
 
 from polylogue.storage.derived.insight_read_support import hydrate_mapping, hydrate_optional, hydrate_sequence
 from polylogue.storage.repository.insight.profile_reads import RepositoryInsightProfileReadMixin
-from polylogue.storage.repository.insight.summary_reads import RepositoryInsightSummaryReadMixin
-from polylogue.storage.repository.insight.thread_reads import RepositoryInsightThreadReadMixin
-from polylogue.storage.repository.insight.timeline_reads import RepositoryInsightTimelineReadMixin
 from polylogue.storage.repository.raw.repository_raw import RepositoryRawMixin
 
 
@@ -24,11 +21,16 @@ def test_insight_read_support_hydrates_optional_sequence_and_mapping() -> None:
 
 
 @pytest.mark.asyncio
-async def test_repository_insight_profile_reads_build_typed_queries() -> None:
+async def test_repository_profile_batch_read_hydrates_records() -> None:
+    """``get_session_profiles_batch`` is the one repository-level profile read
+    with a production caller (``api/archive.py`` analyzed-session batches).
+
+    Anti-vacuity: dropping the hydration step (returning the raw record map)
+    makes this red -- the caller would receive ``SessionProfileRecord`` rows
+    where it expects hydrated ``SessionProfile`` objects.
+    """
     queries = SimpleNamespace(
-        get_session_profile=AsyncMock(return_value="record"),
         get_session_profiles_batch=AsyncMock(return_value={"conv-1": "record-a"}),
-        _list_session_profiles_query=AsyncMock(return_value=["record-a", "record-b"]),
     )
 
     class _Repo(RepositoryInsightProfileReadMixin):
@@ -41,152 +43,10 @@ async def test_repository_insight_profile_reads_build_typed_queries() -> None:
         "polylogue.storage.repository.insight.profile_reads.hydrate_session_profile",
         side_effect=lambda record: f"profile:{record}",
     ):
-        assert await repo.get_session_profile_record("conv-1") == "record"
-        assert await repo.get_session_profile("conv-1") == "profile:record"
+        assert await repo.get_session_profile_records_batch(["conv-1"]) == {"conv-1": "record-a"}
         assert await repo.get_session_profiles_batch(["conv-1"]) == {"conv-1": "profile:record-a"}
-        assert await repo.list_session_profiles(
-            origin="claude-code-session",
-            since="2026-01-01",
-            until="2026-01-02",
-            first_message_since="2026-01-01T00:00:00Z",
-            first_message_until="2026-01-02T00:00:00Z",
-            session_date_since="2026-01-01",
-            session_date_until="2026-01-02",
-            min_wallclock_seconds=300,
-            max_wallclock_seconds=900,
-            workflow_shape="agentic_loop",
-            terminal_state="clean_finish",
-            sort="wallclock",
-            tier="evidence",
-            limit=5,
-            offset=2,
-            query="refactor",
-        ) == ["profile:record-a", "profile:record-b"]
-        assert await repo.list_session_profile_records(query="refactor") == ["record-a", "record-b"]
-        assert await repo.get_session_enrichment_record("conv-1") == "record"
-        assert await repo.list_session_enrichment_records(query="enrichment") == ["record-a", "record-b"]
 
-    list_query = queries._list_session_profiles_query.await_args_list[0].args[0]
-    assert list_query.origin == "claude-code-session"
-    assert list_query.first_message_since == "2026-01-01T00:00:00Z"
-    assert list_query.session_date_until == "2026-01-02"
-    assert list_query.min_wallclock_seconds == 300
-    assert list_query.max_wallclock_seconds == 900
-    assert list_query.workflow_shape == "agentic_loop"
-    assert list_query.terminal_state == "clean_finish"
-    assert list_query.sort == "wallclock"
-    assert list_query.tier == "evidence"
-    assert list_query.limit == 5
-    assert list_query.offset == 2
-    assert list_query.query == "refactor"
-
-    enrichment_query = queries._list_session_profiles_query.await_args_list[-1].args[0]
-    assert enrichment_query.tier == "enrichment"
-    assert enrichment_query.query == "enrichment"
-
-
-@pytest.mark.asyncio
-async def test_repository_insight_thread_and_timeline_reads_build_typed_queries() -> None:
-    queries = SimpleNamespace(
-        get_thread=AsyncMock(return_value="thread-record"),
-        _list_threads_query=AsyncMock(return_value=["thread-record"]),
-        get_session_work_events=AsyncMock(return_value=["event-record"]),
-        get_session_phases=AsyncMock(return_value=["phase-record"]),
-        _list_session_work_events_query=AsyncMock(return_value=["event-record"]),
-        _list_session_phases_query=AsyncMock(return_value=["phase-record"]),
-    )
-
-    class _Repo(RepositoryInsightThreadReadMixin, RepositoryInsightTimelineReadMixin):
-        def __init__(self, queries: object) -> None:
-            self.queries = queries
-
-    repo = _Repo(queries)
-
-    with (
-        patch(
-            "polylogue.storage.repository.insight.thread_reads.hydrate_thread",
-            side_effect=lambda record: f"thread:{record}",
-        ),
-        patch(
-            "polylogue.storage.repository.insight.timeline_reads.hydrate_work_event",
-            side_effect=lambda record: f"event:{record}",
-        ),
-        patch(
-            "polylogue.storage.repository.insight.timeline_reads.hydrate_session_phase",
-            side_effect=lambda record: f"phase:{record}",
-        ),
-    ):
-        assert await repo.get_thread_record("thread-1") == "thread-record"
-        assert await repo.get_thread("thread-1") == "thread:thread-record"
-        assert await repo.list_threads(since="2026-01-01", until="2026-01-02", limit=3, offset=1, query="repo") == [
-            "thread:thread-record"
-        ]
-        assert await repo.list_thread_records(query="repo") == ["thread-record"]
-
-        assert await repo.get_session_work_event_records("conv-1") == ["event-record"]
-        assert await repo.get_session_phase_records("conv-1") == ["phase-record"]
-        assert await repo.get_session_work_events("conv-1") == ["event:event-record"]
-        assert await repo.get_session_phases("conv-1") == ["phase:phase-record"]
-        assert await repo.list_session_work_events(
-            session_id="conv-1",
-            origin="claude-code-session",
-            since="2026-01-01",
-            until="2026-01-02",
-            session_date_since="2026-01-01",
-            session_date_until="2026-01-02",
-            heuristic_label="implementation",
-            limit=4,
-            offset=2,
-            query="editor",
-        ) == ["event:event-record"]
-        assert await repo.list_session_work_event_records(query="editor") == ["event-record"]
-        assert await repo.list_session_phases(
-            session_id="conv-1",
-            origin="claude-code-session",
-            since="2026-01-01",
-            until="2026-01-02",
-            kind="planning",
-            limit=2,
-            offset=1,
-        ) == ["phase:phase-record"]
-        assert await repo.list_session_phase_records(kind="planning") == ["phase-record"]
-
-    thread_query = queries._list_threads_query.await_args_list[0].args[0]
-    assert thread_query.since == "2026-01-01"
-    assert thread_query.offset == 1
-    assert thread_query.query == "repo"
-
-    timeline_query = queries._list_session_work_events_query.await_args_list[0].args[0]
-    assert timeline_query.session_id == "conv-1"
-    assert timeline_query.origin == "claude-code-session"
-    assert timeline_query.heuristic_label == "implementation"
-    assert timeline_query.session_date_since == "2026-01-01"
-    assert timeline_query.session_date_until == "2026-01-02"
-    assert timeline_query.query == "editor"
-
-
-@pytest.mark.asyncio
-async def test_repository_insight_summary_reads_build_typed_queries() -> None:
-    queries = SimpleNamespace(
-        _list_session_tag_rollup_rows_query=AsyncMock(return_value=["tag-row"]),
-    )
-
-    class _Repo(RepositoryInsightSummaryReadMixin):
-        def __init__(self, queries: object) -> None:
-            self.queries = queries
-
-    repo = _Repo(queries)
-
-    assert await repo.list_session_tag_rollup_records(
-        origin="claude-code-session",
-        since="2026-01-01",
-        until="2026-01-02",
-        query="tag",
-    ) == ["tag-row"]
-
-    tag_query = queries._list_session_tag_rollup_rows_query.await_args.args[0]
-    assert tag_query.origin == "claude-code-session"
-    assert tag_query.query == "tag"
+    queries.get_session_profiles_batch.assert_awaited_with(["conv-1"])
 
 
 class _ConnectionContext:

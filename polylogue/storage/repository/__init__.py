@@ -22,18 +22,6 @@ from polylogue.storage.repository.archive.repository_writes import RepositoryWri
 from polylogue.storage.repository.insight.profile_reads import (
     RepositoryInsightProfileReadMixin,
 )
-from polylogue.storage.repository.insight.run_projection_reads import (
-    RepositoryInsightRunProjectionReadMixin,
-)
-from polylogue.storage.repository.insight.summary_reads import (
-    RepositoryInsightSummaryReadMixin,
-)
-from polylogue.storage.repository.insight.thread_reads import (
-    RepositoryInsightThreadReadMixin,
-)
-from polylogue.storage.repository.insight.timeline_reads import (
-    RepositoryInsightTimelineReadMixin,
-)
 from polylogue.storage.repository.insight.topology_reads import (
     RepositoryInsightTopologyReadMixin,
 )
@@ -45,11 +33,7 @@ from polylogue.storage.repository.vectors.repository_vectors import RepositoryVe
 class SessionRepository(
     RepositoryArchiveReadMixin,
     RepositoryInsightProfileReadMixin,
-    RepositoryInsightRunProjectionReadMixin,
     RepositoryWorkEvidenceMixin,
-    RepositoryInsightTimelineReadMixin,
-    RepositoryInsightThreadReadMixin,
-    RepositoryInsightSummaryReadMixin,
     RepositoryInsightTopologyReadMixin,
     RepositoryRawMixin,
     RepositoryWriteMixin,

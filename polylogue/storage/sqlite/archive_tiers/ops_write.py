@@ -673,8 +673,14 @@ def upsert_ingest_cursor(
     next_retry_at: str | None = None,
     excluded: bool = False,
     deferred_end_offset: int | None = None,
+    manage_transaction: bool = True,
 ) -> None:
-    """Create or refresh one cursor row in ``ingest_cursor``."""
+    """Create or refresh one cursor row in ``ingest_cursor``.
+
+    ``manage_transaction=False`` is required whenever the caller already owns a
+    transaction: committing here would end it and leave every later write in the
+    batch running in autocommit (polylogue-5pv1p).
+    """
     conn.execute(
         """
         INSERT INTO ingest_cursor (
@@ -738,7 +744,8 @@ def upsert_ingest_cursor(
             updated_at_ms,
         ),
     )
-    conn.commit()
+    if manage_transaction:
+        conn.commit()
 
 
 def record_ingest_attempt(

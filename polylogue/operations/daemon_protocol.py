@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -648,6 +648,15 @@ class DaemonOperationSpec:
     result_model: type[BaseModel] = _OperationResult
     idempotent: bool = False
     handler: str = ""
+    handler_module: str = "polylogue.operations.daemon_mutations"
+    """Module that owns :attr:`handler`.
+
+    Execution resolves the handler on this module, so a spec that names a
+    function living elsewhere is a declaration error rather than a dispatch-time
+    ``AttributeError`` (polylogue-ms4uy). Read operations dispatch through
+    :mod:`polylogue.operations.daemon_reads` and ``operation.*`` control
+    operations through the daemon runtime, so neither consults this field.
+    """
     cancellation_outcomes: tuple[str, ...] = (
         "cancelled",
         "timed-out",
@@ -717,6 +726,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_model=InsightRebuildResult,
         idempotent=True,
         handler="execute_insights_rebuild_operation",
+        handler_module="polylogue.operations.daemon_insights",
     ),
     DaemonOperationSpec(
         "operation.status",
@@ -843,6 +853,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="IngestResult",
         request_model=IngestRequest,
         result_model=IngestResult,
+        handler="execute_ingest_operation",
+        handler_module="polylogue.operations.daemon_ingest",
     ),
     DaemonOperationSpec(
         "mutation.session.delete.preview",
@@ -1099,6 +1111,46 @@ target-authority check, which reads as the mutation simply never applying.
 
 if len({spec.name for spec in DAEMON_OPERATION_SPECS}) != len(DAEMON_OPERATION_SPECS):
     raise RuntimeError("daemon operation names must be unique")
+
+
+def module_dispatched_specs() -> tuple[DaemonOperationSpec, ...]:
+    """Specs whose handler is resolved on :attr:`DaemonOperationSpec.handler_module`.
+
+    Read operations are dispatched by name through
+    :mod:`polylogue.operations.daemon_reads` and ``operation.*`` control
+    operations by the daemon runtime; every other declaration names a handler
+    function that must exist on its declared module.
+    """
+    return tuple(
+        spec
+        for spec in DAEMON_OPERATION_SPECS
+        if spec.authority is not DaemonAuthority.READ and not spec.name.startswith("operation.")
+    )
+
+
+def resolve_operation_handler(spec: DaemonOperationSpec) -> Callable[..., Any]:
+    """Resolve one declaration's handler, raising when it is not on its module."""
+    import importlib
+
+    module = importlib.import_module(spec.handler_module)
+    try:
+        handler = getattr(module, spec.handler)
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"operation {spec.name!r} declares handler {spec.handler!r} which does not exist on {spec.handler_module!r}"
+        ) from exc
+    return cast(Callable[..., Any], handler)
+
+
+def validate_declared_handlers() -> None:
+    """Resolve every module-dispatched handler; raise on the first that is missing.
+
+    Registry-level validation rather than an import-time side effect: the
+    handler modules import this one, so resolving them here at import would be
+    circular (polylogue-ms4uy).
+    """
+    for spec in module_dispatched_specs():
+        resolve_operation_handler(spec)
 
 
 def daemon_operation_schema() -> dict[str, dict[str, object]]:
@@ -1367,6 +1419,9 @@ def archive_identity(
 __all__ = [
     "DAEMON_OPERATION_PROTOCOL",
     "DAEMON_OPERATION_SPECS",
+    "module_dispatched_specs",
+    "resolve_operation_handler",
+    "validate_declared_handlers",
     "DAEMON_PRINCIPAL_CAPABILITIES",
     "MUTATION_OPERATION_NAMES",
     "MAX_DECLARED_OPERATION_BODY_BYTES",

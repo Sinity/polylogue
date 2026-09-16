@@ -45,9 +45,11 @@ from devtools.pytest_invocation import (
 from devtools.pytest_slot import (
     PytestSlotUnavailableError,
     basetemp_root,
+    guard_temp_trees,
     remove_temp_tree,
     run_pytest,
     run_pytest_isolated,
+    sweep_stale_temp_trees,
 )
 from devtools.pytest_stream_report import report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
@@ -531,8 +533,15 @@ def main(argv: list[str] | None = None) -> int:
     # Unique per invocation: pytest creates the basetemp itself and fails if it
     # already exists, so a fixed path makes two runs in one checkout collide —
     # and lanes, batches and the coordinator do run concurrently here.
-    run_temp = basetemp_root(os.environ, root=ROOT) / f"tmp-{os.getpid()}-{time.time_ns():x}"
+    temp_root = basetemp_root(os.environ, root=ROOT)
+    # A killed run leaves its basetemp behind; the next run is the first moment
+    # anything can notice, so it reclaims every tree whose owner is gone.
+    sweep_stale_temp_trees(temp_root)
+    run_temp = temp_root / f"tmp-{os.getpid()}-{time.time_ns():x}"
     remove_temp_tree(run_temp)
+    # Guards the abnormal exits: a signal or an interpreter teardown that never
+    # reaches the disposition below. Cancelled once that disposition is made.
+    temp_guard = guard_temp_trees(run_temp)
     _prepare_nodatacow_parent(run_temp)
     cmd = [*cmd, "--basetemp", str(run_temp)]
     _clear_pytest_report(report_path)
@@ -606,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
                 "devtools test: the selection collected no tests; every path exists, "
                 "so check the -k/-m expression or retry if runs are contending.\n"
             )
+    temp_guard.cancel()
     if rc == 0:
         remove_temp_tree(run_temp)
     payload = run.finish(

@@ -724,64 +724,6 @@ def _embedding_message_count(conn: sqlite3.Connection, *, status_table: str = ""
     return 0
 
 
-def _embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> EmbeddingMetricState:
-    """Return bounded embedding backlog and latest catch-up state."""
-
-    if _table_exists(conn, "sessions"):
-        return _archive_embedding_state(conn, ops_db=ops_db)
-
-    total_sessions = 0
-    embedded_sessions = 0
-    pending_sessions = total_sessions
-    failed_sessions = 0
-    if _table_exists(conn, "embedding_status"):
-        columns = _columns(conn, "embedding_status")
-        embedded_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0")
-        pending_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1")
-        if "error_message" in columns:
-            failed_sessions = _scalar_int(
-                conn,
-                "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL",
-            )
-    embedded_messages = _embedding_message_count(conn)
-    coverage_percent = max(0, total_sessions - pending_sessions) / total_sessions * 100 if total_sessions > 0 else 0.0
-    if total_sessions <= 0 and pending_sessions <= 0 and embedded_messages <= 0:
-        status = "empty"
-    elif embedded_messages <= 0:
-        status = "none"
-    elif pending_sessions > 0:
-        status = "partial"
-    else:
-        status = "complete"
-
-    latest_run = None
-    if _table_exists(conn, "embedding_catchup_runs"):
-        from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
-
-        latest_run = latest_embedding_catchup_run(conn)
-
-    return {
-        "total_sessions": total_sessions,
-        "embedded_sessions": embedded_sessions,
-        "pending_sessions": pending_sessions,
-        "failed_sessions": failed_sessions,
-        "embedded_messages": embedded_messages,
-        "coverage_percent": coverage_percent,
-        "status": status,
-        "retrieval_ready": 1 if embedded_messages > 0 else 0,
-        "latest_status": latest_run["status"] if latest_run is not None else None,
-        "latest_rebuild": str(bool(latest_run["rebuild"])).lower() if latest_run is not None else "false",
-        "latest_planned_sessions": int(latest_run["planned_sessions"]) if latest_run is not None else 0,
-        "latest_processed_sessions": int(latest_run["processed_sessions"]) if latest_run is not None else 0,
-        "latest_embedded_sessions": int(latest_run["embedded_sessions"]) if latest_run is not None else 0,
-        "latest_skipped_sessions": int(latest_run["skipped_sessions"]) if latest_run is not None else 0,
-        "latest_error_count": int(latest_run["error_count"]) if latest_run is not None else 0,
-        "latest_planned_messages": int(latest_run["planned_messages"]) if latest_run is not None else 0,
-        "latest_embedded_messages": int(latest_run["embedded_messages"]) if latest_run is not None else 0,
-        "latest_estimated_cost_usd": float(latest_run["estimated_cost_usd"]) if latest_run is not None else 0.0,
-    }
-
-
 def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> EmbeddingMetricState:
     total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
     embedded_sessions = 0
@@ -1340,7 +1282,7 @@ def format_metrics(
             samples=[({"kind": kind}, value) for kind, value in memory],
         )
 
-        _emit_embedding_metrics(lines, _embedding_state(conn, ops_db=ops_db))
+        _emit_embedding_metrics(lines, _archive_embedding_state(conn, ops_db=ops_db))
 
         # ── Rich instrumentation (#1321 ambitious scope) ──────────
         _emit_archive_metrics(lines, conn)

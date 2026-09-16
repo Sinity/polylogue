@@ -276,6 +276,7 @@ select = [
     "C4",  # flake8-comprehensions
     "SIM", # flake8-simplify
     "RUF100", # unused noqa directives
+    "RUF068", # duplicate entries in __all__
 ]
 ignore = [
     "E501",  # line too long (handled by formatter)

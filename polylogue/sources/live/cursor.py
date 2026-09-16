@@ -547,6 +547,7 @@ class CursorStore:
                             deferred_end_offset=None,
                             updated_at=datetime.now(UTC).isoformat(),
                         ),
+                        manage_transaction=False,
                     )
 
         best_effort_cursor_write("archive ops rewind interrupted unparsed cursor", write)
@@ -610,7 +611,15 @@ class CursorStore:
         best_effort_cursor_write("archive ops convergence-debt stage migration", write)
 
     @staticmethod
-    def _write_cursor_record_on_conn(conn: sqlite3.Connection, record: CursorRecord) -> None:
+    def _write_cursor_record_on_conn(
+        conn: sqlite3.Connection, record: CursorRecord, *, manage_transaction: bool = True
+    ) -> None:
+        """Write one cursor row on an existing connection.
+
+        Callers that opened their own ``BEGIN IMMEDIATE`` pass
+        ``manage_transaction=False`` so the batch stays one transaction
+        (polylogue-5pv1p).
+        """
         origin = _origin_value_for_source_name(record.source_name)
         upsert_archive_ingest_cursor(
             conn,
@@ -632,6 +641,7 @@ class CursorStore:
             next_retry_at=record.next_retry_at,
             excluded=bool(record.excluded),
             deferred_end_offset=record.deferred_end_offset,
+            manage_transaction=manage_transaction,
         )
 
     def _write_cursor_record_to_ops(self, record: CursorRecord) -> None:
@@ -1479,6 +1489,7 @@ class CursorStore:
                             st_ino=rebase.st_ino,
                             mtime_ns=rebase.mtime_ns,
                         ),
+                        manage_transaction=False,
                     )
                     updated += 1
 

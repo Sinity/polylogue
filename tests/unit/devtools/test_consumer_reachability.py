@@ -96,3 +96,47 @@ def test_table_reader_can_share_its_creation_module(tmp_path: Path, with_reader:
     assert [(finding.kind, finding.target) for finding in report.findings] == (
         [] if with_reader else [("table", "source_evidence")]
     )
+
+
+def test_polylogue_8errr_added_consumer_reaches_an_added_module(tmp_path: Path) -> None:
+    """A diff adding a module plus a production consumer passes without a waiver.
+
+    This is the shape of a revert that restores a module together with the
+    entrypoint-reachable file importing it: both files are in the diff's
+    additions set. Anti-vacuity: deleting the ``from polylogue.parsers import
+    beads`` line -- the only thing that reaches the added module -- turns this
+    red with a ``module`` finding, so the check is not passing vacuously on an
+    empty additions set.
+    """
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=tmp_path, text=True, stderr=subprocess.PIPE).strip()
+
+    git("init")
+    git("config", "user.name", "Fixture")
+    git("config", "user.email", "fixture@example.test")
+    (tmp_path / "polylogue").mkdir()
+    (tmp_path / "pyproject.toml").write_text("[project.scripts]\n", encoding="utf-8")
+    (tmp_path / "polylogue" / "__init__.py").write_text("", encoding="utf-8")
+    git("add", "pyproject.toml", "polylogue/__init__.py")
+    git("commit", "-m", "Initialize fixture")
+    base = git("rev-parse", "HEAD")
+
+    (tmp_path / "polylogue" / "parsers").mkdir()
+    (tmp_path / "polylogue" / "parsers" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "polylogue" / "parsers" / "beads.py").write_text(
+        '"""Restored parser."""\n\n\ndef looks_like(payload: object) -> bool:\n    return bool(payload)\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "polylogue" / "api.py").write_text(
+        '"""Restored consumer."""\n\nfrom polylogue.parsers import beads\n\n\n'
+        "def detect(payload: object) -> bool:\n    return beads.looks_like(payload)\n",
+        encoding="utf-8",
+    )
+    git("add", "polylogue")
+    git("commit", "-m", "Restore the parser and its consumer")
+
+    report = check(tmp_path, base=base, head=git("rev-parse", "HEAD"))
+
+    assert [(finding.kind, finding.target) for finding in report.findings] == []
+    assert report.ok
