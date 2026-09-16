@@ -13,6 +13,7 @@ from polylogue.agent_integration.spec import (
     TOOL_CONTRACT_BY_NAME,
     TOOL_CONTRACTS,
 )
+from polylogue.archive.query.discovery import QUERY_DISCOVERY_EXAMPLES
 from polylogue.archive.query.expression import compile_expression, explain_expression, parse_unit_source_expression
 from polylogue.archive.query.transaction import QueryContinuation
 from polylogue.cli.query_group import _looks_like_query_expression, _split_query_mode_args
@@ -62,6 +63,28 @@ def test_every_documented_query_round_trips_the_production_parser() -> None:
         else:
             compiled = compile_expression(query.expression)
             assert compiled is not None
+
+
+def test_no_manual_query_expression_is_written_outside_the_discovery_corpus() -> None:
+    """Mutation: hand-typing an ``expression`` argument into a recipe step, or teaching a
+    query whose text is not a declared discovery row, makes this red."""
+    declared = {example.expression for example in QUERY_DISCOVERY_EXAMPLES}
+    declared_keys = {example.key for example in QUERY_DISCOVERY_EXAMPLES}
+
+    for query in QUERY_EXAMPLES:
+        assert query.declaration_id in declared_keys
+        assert query.expression in declared
+
+    for recipe in RECIPES:
+        for step in recipe.steps:
+            arguments = step.arguments_dict()
+            if "expression" not in arguments:
+                continue
+            assert step.example_key in declared_keys, (
+                f"{recipe.id}: step carries a hand-written expression instead of a declaration id"
+            )
+            assert arguments["expression"] in declared
+        assert set(recipe.query_declarations) <= declared_keys
 
 
 def test_strict_command_floor_retains_all_three_query_intent_signals() -> None:

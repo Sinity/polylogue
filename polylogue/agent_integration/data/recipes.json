@@ -10,17 +10,21 @@
       ],
       "queries": [
         {
-          "expression": "sessions where repo:polylogue AND NOT tag:complete",
-          "purpose": "Likely unfinished work for session resumption.",
-          "source_test": "tests/unit/cli/test_query_expression.py Boolean predicate coverage",
+          "declaration_id": "session-negated-tag",
+          "expression": "repo:example-repo AND NOT tag:stale",
+          "purpose": "Finds repository sessions that are not tagged stale.",
           "surface": "session"
         },
         {
-          "expression": "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
-          "purpose": "Recent failed effects for resumption or forensics.",
-          "source_test": "tests/unit/cli/test_query_expression.py terminal session-field scoping coverage",
+          "declaration_id": "actions-unacknowledged-failures",
+          "expression": "actions where session.repo:example-repo AND session.since:7d AND output:failed",
+          "purpose": "Returns recent failed action evidence for one repository.",
           "surface": "terminal"
         }
+      ],
+      "query_declarations": [
+        "session-negated-tag",
+        "actions-unacknowledged-failures"
       ],
       "resources": [
         "polylogue://session/{id}",
@@ -38,26 +42,29 @@
             "scope": "archive"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Establish which archive and source generations can support the answer.",
           "tool": "status"
         },
         {
           "arguments": {
-            "expression": "sessions where repo:polylogue AND NOT tag:complete",
+            "expression": "repo:example-repo AND NOT tag:stale",
             "limit": 20,
             "projection": "session-summary"
           },
           "capture": "candidate_result_ref",
+          "example_key": "session-negated-tag",
           "purpose": "Find likely unfinished sessions.",
           "tool": "query"
         },
         {
           "arguments": {
-            "expression": "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
+            "expression": "actions where session.repo:example-repo AND session.since:7d AND output:failed",
             "limit": 20,
             "projection": "action-evidence"
           },
           "capture": "failure_result_ref",
+          "example_key": "actions-unacknowledged-failures",
           "purpose": "Find recent failed effects that may invalidate an optimistic handoff.",
           "tool": "query"
         },
@@ -68,6 +75,7 @@
             "view": "chronicle"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Read the strongest candidate with evidence refs; continue until the needed boundary is reached.",
           "tool": "read"
         },
@@ -78,6 +86,7 @@
             "result_ref": "result:0123456789abcdef01234567"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Compile a bounded resume packet from the selected result set and retain its receipt.",
           "tool": "context"
         }
@@ -94,17 +103,21 @@
       ],
       "queries": [
         {
-          "expression": "observed-events where kind:tool_finished AND handler:shell | group by status | count",
-          "purpose": "Terminal aggregate with declared group field.",
-          "source_test": "tests/unit/cli/test_query_expression.py::test_terminal_observed_event_tool_finished_aggregate_reads_blocks_without_materialization",
+          "declaration_id": "aggregate-events-by-status",
+          "expression": "observed-events where kind:tool_finished | group by status | count",
+          "purpose": "Counts tool-finished observed events by status.",
           "surface": "terminal"
         },
         {
-          "expression": "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
-          "purpose": "Recent failed effects for resumption or forensics.",
-          "source_test": "tests/unit/cli/test_query_expression.py terminal session-field scoping coverage",
+          "declaration_id": "actions-unacknowledged-failures",
+          "expression": "actions where session.repo:example-repo AND session.since:7d AND output:failed",
+          "purpose": "Returns recent failed action evidence for one repository.",
           "surface": "terminal"
         }
+      ],
+      "query_declarations": [
+        "aggregate-events-by-status",
+        "actions-unacknowledged-failures"
       ],
       "resources": [
         "polylogue://block/{id}",
@@ -113,30 +126,33 @@
       "steps": [
         {
           "arguments": {
-            "expression": "observed-events where kind:tool_finished AND handler:shell | group by status | count",
+            "expression": "observed-events where kind:tool_finished | group by status | count",
             "subject": "query"
           },
           "capture": null,
+          "example_key": "aggregate-events-by-status",
           "purpose": "Confirm grammar, group field, selected unit, and aggregate semantics before execution.",
           "tool": "explain"
         },
         {
           "arguments": {
-            "expression": "observed-events where kind:tool_finished AND handler:shell | group by status | count",
+            "expression": "observed-events where kind:tool_finished | group by status | count",
             "limit": 20,
             "projection": "aggregate-with-evidence"
           },
           "capture": "aggregate_result_ref",
-          "purpose": "Measure failed versus successful shell events.",
+          "example_key": "aggregate-events-by-status",
+          "purpose": "Measure failed versus successful tool-finished events.",
           "tool": "query"
         },
         {
           "arguments": {
-            "expression": "actions where session.repo:polylogue AND output:failed | sort by time desc | limit 20",
+            "expression": "actions where session.repo:example-repo AND session.since:7d AND output:failed",
             "limit": 20,
             "projection": "action-evidence"
           },
           "capture": "failure_result_ref",
+          "example_key": "actions-unacknowledged-failures",
           "purpose": "Locate exact failed action refs.",
           "tool": "query"
         },
@@ -146,6 +162,7 @@
             "ref": "block:codex-session:demo-receipts:call-receipts-test-fail:0"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Resolve the exact cited failure block rather than quoting a search snippet.",
           "tool": "get"
         },
@@ -156,6 +173,7 @@
             "view": "chronicle"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Read the surrounding chronology and any recovery verification.",
           "tool": "read"
         }
@@ -172,17 +190,21 @@
       ],
       "queries": [
         {
-          "expression": "sessions where semantic:\"confirmation gate binding\"",
-          "purpose": "Semantic prior-art retrieval.",
-          "source_test": "tests/unit/cli/test_query_expression.py::test_boolean_semantic_predicate_lowers",
+          "declaration_id": "ranked-boolean-semantic",
+          "expression": "sessions where semantic:\"query compiler failure\"",
+          "purpose": "Ranks sessions relevant to a query-compiler failure.",
           "surface": "session"
         },
         {
-          "expression": "files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
-          "purpose": "File-touch history with deterministic ordering and limit.",
-          "source_test": "tests/unit/cli/test_query_expression.py file-source coverage",
+          "declaration_id": "files-repository-path",
+          "expression": "files where session.repo:example-repo AND path:src/mcp/server.py",
+          "purpose": "Returns file evidence for one path within one repository.",
           "surface": "terminal"
         }
+      ],
+      "query_declarations": [
+        "ranked-boolean-semantic",
+        "files-repository-path"
       ],
       "resources": [
         "polylogue://query/{id}",
@@ -192,30 +214,33 @@
       "steps": [
         {
           "arguments": {
-            "expression": "sessions where semantic:\"confirmation gate binding\"",
+            "expression": "sessions where semantic:\"query compiler failure\"",
             "subject": "query"
           },
           "capture": null,
+          "example_key": "ranked-boolean-semantic",
           "purpose": "Verify semantic lowering and any readiness dependency.",
           "tool": "explain"
         },
         {
           "arguments": {
-            "expression": "sessions where semantic:\"confirmation gate binding\"",
+            "expression": "sessions where semantic:\"query compiler failure\"",
             "limit": 20,
             "projection": "session-summary"
           },
           "capture": "semantic_result_ref",
+          "example_key": "ranked-boolean-semantic",
           "purpose": "Find conceptually related sessions even when vocabulary differs.",
           "tool": "query"
         },
         {
           "arguments": {
-            "expression": "files where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
+            "expression": "files where session.repo:example-repo AND path:src/mcp/server.py",
             "limit": 20,
             "projection": "file-evidence"
           },
           "capture": "file_result_ref",
+          "example_key": "files-repository-path",
           "purpose": "Find concrete edits under the relevant subsystem.",
           "tool": "query"
         },
@@ -226,6 +251,7 @@
             "view": "ranked-evidence"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Read the retained result set rather than rerunning a changed query.",
           "tool": "read"
         },
@@ -235,6 +261,7 @@
             "ref": "message:codex-session:demo-lineage-fork:fork-a3"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Resolve the exact message containing the rationale selected from the result set.",
           "tool": "get"
         }
@@ -250,11 +277,14 @@
       ],
       "queries": [
         {
-          "expression": "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
-          "purpose": "Provider cohort for a cost audit.",
-          "source_test": "tests/unit/cli/test_query_expression.py origin alternatives and readable date comparison coverage",
+          "declaration_id": "sample-origin-cohort-window",
+          "expression": "sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01",
+          "purpose": "Selects a bounded origin cohort from a start date, the shape a cost audit measures.",
           "surface": "session"
         }
+      ],
+      "query_declarations": [
+        "sample-origin-cohort-window"
       ],
       "resources": [
         "polylogue://result-set/{id}",
@@ -271,16 +301,18 @@
             "scope": "sources"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Establish which origins have exact, partial, estimated, or absent usage evidence.",
           "tool": "status"
         },
         {
           "arguments": {
-            "expression": "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
+            "expression": "sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01",
             "limit": 50,
             "projection": "cost-rollup"
           },
           "capture": "cost_result_ref",
+          "example_key": "sample-origin-cohort-window",
           "purpose": "Compute the requested cohort using declared cost semantics.",
           "tool": "query"
         },
@@ -290,6 +322,7 @@
             "subject": "result"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Inspect denominator, physical/logical grain, missing counts, estimate policy, and continuation state.",
           "tool": "explain"
         },
@@ -300,6 +333,7 @@
             "view": "cost-evidence"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Read per-session evidence and continue through every exhaustive page required by the claim.",
           "tool": "read"
         },
@@ -309,6 +343,7 @@
             "ref": "session:codex-session:demo-receipts"
           },
           "capture": null,
+          "example_key": null,
           "purpose": "Resolve a representative source record when a counter or estimate is disputed.",
           "tool": "get"
         }

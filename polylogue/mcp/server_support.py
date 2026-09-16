@@ -8,10 +8,11 @@ from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol, TypeVar, overload
+from typing import TYPE_CHECKING, Protocol, TypeVar, get_args, overload
 
 from pydantic import BaseModel
 
+from polylogue.archive.filter.types import SortField
 from polylogue.archive.query.spec import (
     QUERY_ACTION_TYPES,
     QUERY_RETRIEVAL_LANES,
@@ -44,7 +45,9 @@ TResult = TypeVar("TResult")
 MCP_RESPONSE_BUDGET_BYTES = 25_000
 MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES = 4_096
 _QUERY_ERROR_VALID_VALUES: dict[str, tuple[str, ...]] = {
-    "sort": ("date", "tokens", "messages", "words", "longest", "random"),
+    # Projected from the canonical SortField literal rather than re-spelled:
+    # a sort the archive stops accepting must not stay in refinement guidance.
+    "sort": get_args(SortField),
     "origin": enum_values(Origin),
     "exclude_origin": enum_values(Origin),
     "message_type": enum_values(MessageType),

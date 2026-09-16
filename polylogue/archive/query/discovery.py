@@ -644,6 +644,14 @@ QUERY_DISCOVERY_EXAMPLES: tuple[QueryDiscoveryExample, ...] = (
         route="sampled-query",
     ),
     _example(
+        "sample-origin-cohort-window",
+        "sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01",
+        "sessions",
+        "Selects a bounded origin cohort from a start date, the shape a cost audit measures.",
+        result_semantics="sample",
+        route="sampled-query",
+    ),
+    _example(
         "sample-tool-using",
         "sessions where tool_use_messages >= 1",
         "sessions",

@@ -361,6 +361,18 @@ paths:
         required: false
         schema:
           type: string
+      - name: origins
+        in: query
+        description: Optional comma-separated session-origin scope for terminal row results.
+        required: false
+        schema:
+          type: string
+      - name: exclude_origin
+        in: query
+        description: Optional comma-separated session origins excluded from terminal row results.
+        required: false
+        schema:
+          type: string
       - name: tag
         in: query
         description: Optional session tag scope for terminal row results.

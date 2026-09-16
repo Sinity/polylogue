@@ -17,6 +17,7 @@ from polylogue.agent_integration.spec import (
     DEFAULT_READ_TOOLS,
     ORIGIN_MEANINGS,
     PRIVILEGED_TOOLS,
+    QUERY_EXAMPLES,
     RECIPES,
     TOOL_CONTRACTS,
 )
@@ -71,7 +72,10 @@ def test_manual_contains_tool_continuation_role_and_origin_contract() -> None:
     assert "same tool with **only** the returned opaque token" in manual
     assert "Never cite a continuation token" in manual
     assert "strict command floor" in manual
-    assert "confirmation gate binding" in manual
+    # The taught query text is declared, not a literal pinned here: every
+    # expression the manual teaches must be the exact declared discovery row.
+    for query in QUERY_EXAMPLES:
+        assert query.expression in manual
     for name in declared_tool_names():
         assert f"| `{name}` |" in manual
     for name in DEFAULT_READ_TOOLS:

@@ -123,6 +123,33 @@ def _read_view_http_description() -> str:
     )
 
 
+def _terminal_filter_parameters() -> list[dict[str, object]]:
+    """Project the declared terminal session filters into OpenAPI parameters.
+
+    ``polylogue.archive.query.unit_results.TERMINAL_FILTER_PARAMETERS`` is the
+    single declaration of this surface; the previous hand-typed list had
+    already lost ``origins`` and ``exclude_origin``.
+    """
+
+    from polylogue.archive.query.unit_results import TERMINAL_FILTER_PARAMETERS
+
+    schemas: dict[str, dict[str, object]] = {
+        "string": {"type": "string"},
+        "boolean": {"type": "boolean", "default": False},
+        "integer": {"type": "integer", "minimum": 0},
+    }
+    return [
+        {
+            "name": parameter.name,
+            "in": "query",
+            "description": parameter.description,
+            "required": False,
+            "schema": dict(schemas[parameter.kind]),
+        }
+        for parameter in TERMINAL_FILTER_PARAMETERS
+    ]
+
+
 def _read_view_parameter(name: str) -> dict[str, Any]:
     """Return an OpenAPI query parameter for a contract-owned read-view option."""
 
@@ -581,181 +608,7 @@ def _build_openapi_document() -> dict[str, Any]:
                             "required": False,
                             "schema": {"type": "integer", "minimum": 0, "default": 0},
                         },
-                        {
-                            "name": "origin",
-                            "in": "query",
-                            "description": "Optional session-origin scope for terminal row results.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "tag",
-                            "in": "query",
-                            "description": "Optional session tag scope for terminal row results.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "exclude_tag",
-                            "in": "query",
-                            "description": "Optional comma-separated session tags to exclude from terminal row results.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "repo",
-                            "in": "query",
-                            "description": "Optional comma-separated repo-name scope for terminal row results.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "has_type",
-                            "in": "query",
-                            "description": "Optional comma-separated block types required on the containing session.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "referenced_path",
-                            "in": "query",
-                            "description": "Optional comma-separated referenced paths required on the containing session.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "cwd_prefix",
-                            "in": "query",
-                            "description": "Optional working-directory prefix required on the containing session.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "tool",
-                            "in": "query",
-                            "description": "Optional comma-separated tool names required on the containing session.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "exclude_tool",
-                            "in": "query",
-                            "description": "Optional comma-separated tool names excluded from the containing session.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "action",
-                            "in": "query",
-                            "description": "Optional comma-separated action kinds required on the containing session.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "exclude_action",
-                            "in": "query",
-                            "description": "Optional comma-separated action kinds excluded from the containing session.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "action_sequence",
-                            "in": "query",
-                            "description": "Optional action sequence required on the containing session.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "action_text",
-                            "in": "query",
-                            "description": "Optional action text required on the containing session.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "title",
-                            "in": "query",
-                            "description": "Optional session-title substring scope for terminal row results.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "since",
-                            "in": "query",
-                            "description": "Optional session lower time bound, using the shared query date parser.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "until",
-                            "in": "query",
-                            "description": "Optional session upper time bound, using the shared query date parser.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
-                        {
-                            "name": "has_tool_use",
-                            "in": "query",
-                            "description": "Restrict terminal rows to sessions with tool-use evidence.",
-                            "required": False,
-                            "schema": {"type": "boolean", "default": False},
-                        },
-                        {
-                            "name": "has_paste_evidence",
-                            "in": "query",
-                            "description": "Restrict terminal rows to sessions with paste evidence.",
-                            "required": False,
-                            "schema": {"type": "boolean", "default": False},
-                        },
-                        {
-                            "name": "has_thinking",
-                            "in": "query",
-                            "description": "Restrict terminal rows to sessions with thinking blocks.",
-                            "required": False,
-                            "schema": {"type": "boolean", "default": False},
-                        },
-                        {
-                            "name": "typed_only",
-                            "in": "query",
-                            "description": "Restrict terminal rows to typed sessions without paste evidence.",
-                            "required": False,
-                            "schema": {"type": "boolean", "default": False},
-                        },
-                        {
-                            "name": "min_messages",
-                            "in": "query",
-                            "description": "Restrict terminal rows to sessions with at least this many messages.",
-                            "required": False,
-                            "schema": {"type": "integer", "minimum": 0},
-                        },
-                        {
-                            "name": "max_messages",
-                            "in": "query",
-                            "description": "Restrict terminal rows to sessions with at most this many messages.",
-                            "required": False,
-                            "schema": {"type": "integer", "minimum": 0},
-                        },
-                        {
-                            "name": "min_words",
-                            "in": "query",
-                            "description": "Restrict terminal rows to sessions with at least this many words.",
-                            "required": False,
-                            "schema": {"type": "integer", "minimum": 0},
-                        },
-                        {
-                            "name": "max_words",
-                            "in": "query",
-                            "description": "Restrict terminal rows to sessions with at most this many words.",
-                            "required": False,
-                            "schema": {"type": "integer", "minimum": 0},
-                        },
-                        {
-                            "name": "message_type",
-                            "in": "query",
-                            "description": "Restrict terminal rows by session message-type evidence.",
-                            "required": False,
-                            "schema": {"type": "string"},
-                        },
+                        *_terminal_filter_parameters(),
                     ],
                     "responses": {
                         "200": {
