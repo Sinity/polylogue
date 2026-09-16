@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.config import Config, PolylogueConfig
     from polylogue.core.protocols import VectorProvider
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 
@@ -33,6 +34,19 @@ class VectorReadBinding:
     voyage_key: str
     model: str
     dimension: int
+
+    @property
+    def recipe(self) -> EmbeddingRecipe:
+        """The whole configured embedding recipe this binding addresses with.
+
+        Vector addressing is a function of model *and* dimension (and request
+        shape); passing the model alone forced a hardcoded 1024 dimensions and
+        made selection disagree with the embed path (polylogue-crcst).
+        """
+
+        from polylogue.storage.embeddings.identity import EmbeddingRecipe
+
+        return EmbeddingRecipe.current(model=self.model, dimensions=self.dimension)
 
     def provider_for_snapshot(self, connection: sqlite3.Connection) -> VectorProvider:
         """Create a reader over ``connection`` without resolving any path."""

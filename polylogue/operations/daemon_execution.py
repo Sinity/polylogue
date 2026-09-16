@@ -213,8 +213,8 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
             from polylogue.operations.daemon_reads import requires_vector_snapshot
 
             vector_binding = context.read_dependencies.vector_binding if context.read_dependencies is not None else None
-            vector_model = (
-                vector_binding.model
+            vector_recipe = (
+                vector_binding.recipe
                 if vector_binding is not None and requires_vector_snapshot(request.operation, request.payload)
                 else None
             )
@@ -233,7 +233,7 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
             with open_operation_read(
                 context.archive_root,
                 publication_guard=guard,
-                vector_model=vector_model,
+                vector_recipe=vector_recipe,
                 execution_context=read_control,
             ) as snapshot:
                 _validate_identity(request, context, snapshot)

@@ -14,10 +14,12 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.types import ContentHash, MessageId, SessionId
+from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 
 Embedding: TypeAlias = list[float]
 
@@ -136,7 +138,7 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
         connection: sqlite3.Connection,
         *,
         index_path: Path | None = None,
-        model: str,
+        recipe: EmbeddingRecipe,
         attach_index: bool = True,
         register_identity: bool = True,
     ) -> None:
@@ -151,7 +153,7 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
             writer.execute("UPDATE messages SET role = 'system'")
         configure_projection(
             connection,
-            model=model,
+            recipe=recipe,
             attach_index=attach_index,
             register_identity=register_identity,
         )
@@ -161,7 +163,7 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
     connection = open_vector_read_snapshot(
         embeddings_path=embeddings_path,
         index_path=pinned_index_path,
-        model="voyage-4",
+        recipe=EmbeddingRecipe.current(model="voyage-4", dimensions=EMBEDDING_DIMENSION),
     )
     try:
         assert connection.in_transaction
