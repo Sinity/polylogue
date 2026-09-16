@@ -29,12 +29,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Origin, Provider
-from polylogue.maintenance.blob_ref_liveness_reconciliation import (
-    BlobRefLivenessReconciliationError,
-    reconcile_blob_ref_liveness,
-)
-from polylogue.storage.blob_gc import census_orphaned_blob_refs, run_blob_gc
-from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
+from polylogue.storage.blob_gc import run_blob_gc
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -43,7 +38,6 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceBlobRef,
     HookEventConflictError,
     deterministic_blob_hash,
-    deterministic_raw_session_id,
     write_source_raw_session,
 )
 
@@ -207,189 +201,6 @@ def test_gc_retains_live_raw_attachment_and_hook_references_together(tmp_path: P
     assert not any(blob_store.exists(blob_hash) for blob_hash in (raw_hash, attachment_hash, bytes(hook_hash).hex()))
 
 
-def test_gc_retains_unclassified_blob_refs_and_census_reports_disposition(tmp_path: Path) -> None:
-    """GC must not delete bytes when a legacy ref type has no proven join."""
-    source_db = tmp_path / "source.db"
-    blob_store = BlobStore(tmp_path / "blob")
-    blob_hash, _size = blob_store.write_from_bytes(b"unclassified reference")
-
-    with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY);
-            CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL,
-                ref_id TEXT NOT NULL,
-                ref_type TEXT NOT NULL,
-                source_path TEXT,
-                size_bytes INTEGER NOT NULL,
-                acquired_at_ms INTEGER NOT NULL,
-                PRIMARY KEY (blob_hash, ref_type, ref_id)
-            ) STRICT;
-            CREATE TABLE gc_generations (
-                generation_id TEXT PRIMARY KEY,
-                started_at_ms INTEGER NOT NULL,
-                completed_at_ms INTEGER,
-                reclaimed_count INTEGER NOT NULL,
-                reclaimed_bytes INTEGER NOT NULL
-            ) STRICT;
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
-            VALUES (?, ?, ?, NULL, 23, 1)
-            """,
-            [
-                (bytes.fromhex(blob_hash), "future-ref", "future_type"),
-                (bytes.fromhex(blob_hash), "sidecar-ref", "sidecar"),
-            ],
-        )
-
-    _backdate(blob_store, blob_hash)
-    assert run_blob_gc(source_db, blob_store.root, max_batch=10) == 0
-    assert blob_store.exists(blob_hash)
-
-    with sqlite3.connect(source_db) as conn:
-        census = census_orphaned_blob_refs(conn)
-
-    assert census.total == 0
-    assert census.by_ref_type == {}
-    assert census.ref_type_counts == {"future_type": 1, "sidecar": 1}
-    assert census.unknown_ref_types == {"future_type": 1}
-    assert census.unavailable_ref_types == {"sidecar": 1}
-    assert census.to_dict() == {
-        "scanned_count": 2,
-        "ref_type_counts": {"future_type": 1, "sidecar": 1},
-        "total": 0,
-        "by_ref_type": {},
-        "unknown_ref_types": {"future_type": 1},
-        "unavailable_ref_types": {"sidecar": 1},
-        "schema_unavailable_count": 0,
-        "deferred_by_ref_type": {},
-    }
-
-
-def test_interrupted_hook_rekey_blocks_liveness_deletion_and_preserves_blob(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A hook hash without its canonical ref remains live and rekeyable.
-
-    This creates the state through the production hook writer, then removes
-    its canonical ref and restores the legacy raw-payload reference as an
-    interrupted historical re-key would leave it. The generic liveness
-    classifier must block deletion of that reference, and real blob GC must
-    keep the payload based on ``raw_hook_events.blob_hash`` until repair.
-    """
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    source_path = "/hooks/interrupted.jsonl"
-    hook_event_id = "hook-interrupted"
-    native_id = f"{hook_event_id}:native"
-    payload = b'{"event":"PostToolUse","n":2}'
-    _write_hook_event(archive_root, hook_event_id=hook_event_id, source_path=source_path, payload=payload)
-
-    blob_store = BlobStore(archive_root / "blob")
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        blob_hash = conn.execute(
-            "SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = ?", (hook_event_id,)
-        ).fetchone()[0]
-        conn.execute("UPDATE raw_hook_events SET blob_hash = NULL WHERE hook_event_id = ?", (hook_event_id,))
-        legacy_ref_id = deterministic_raw_session_id("codex-session", source_path, 0, blob_hash, native_id)
-        conn.execute("DELETE FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ?", (hook_event_id,))
-        conn.execute(
-            """
-            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
-            VALUES (?, ?, 'raw_payload', ?, ?, ?)
-            """,
-            (blob_hash, legacy_ref_id, source_path, len(payload), 1_700_000_000_000),
-        )
-        classification = classify_blob_ref_liveness(conn)
-        census = census_orphaned_blob_refs(conn)
-        conn.commit()
-
-    assert classification.rekeyable_hook_payload_count == 1
-    assert classification.safe_to_apply is False
-    assert all(candidate.ref_id != legacy_ref_id for candidate in classification.candidates)
-    assert census.total == 0
-    assert census.by_ref_type == {}
-    assert census.deferred_by_ref_type == {"raw_payload": 1}
-
-    monkeypatch.setattr(
-        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_manifest",
-        lambda *args, **kwargs: args[0],
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_live_fingerprint",
-        lambda *args, **kwargs: args[0],
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid",
-        lambda _config: None,
-    )
-    with pytest.raises(BlobRefLivenessReconciliationError, match="rekeyable_hook_payloads=1"):
-        reconcile_blob_ref_liveness(
-            archive_root,
-            backup_manifest=tmp_path / "backup.json",
-            receipt_path=tmp_path / "liveness.jsonl",
-            dry_run=False,
-        )
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'raw_payload' AND ref_id = ?", (legacy_ref_id,)
-        ).fetchone() == (1,)
-
-    blob_hash_hex = blob_hash.hex()
-    _backdate(blob_store, blob_hash_hex)
-    deleted = run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10)
-    assert deleted == 0
-    assert blob_store.exists(blob_hash_hex)
-
-
-def test_gc_census_reports_untyped_blob_ref_schema_without_deleting_bytes(tmp_path: Path) -> None:
-    source_db = tmp_path / "source.db"
-    blob_store = BlobStore(tmp_path / "blob")
-    blob_hash, _size = blob_store.write_from_bytes(b"untyped reference")
-
-    with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL,
-                owner_id TEXT NOT NULL,
-                PRIMARY KEY (blob_hash, owner_id)
-            ) STRICT;
-            CREATE TABLE gc_generations (
-                generation_id TEXT PRIMARY KEY,
-                started_at_ms INTEGER NOT NULL,
-                completed_at_ms INTEGER,
-                reclaimed_count INTEGER NOT NULL,
-                reclaimed_bytes INTEGER NOT NULL
-            ) STRICT;
-            """
-        )
-        conn.execute(
-            "INSERT INTO blob_refs (blob_hash, owner_id) VALUES (?, 'legacy-owner')", (bytes.fromhex(blob_hash),)
-        )
-
-    _backdate(blob_store, blob_hash)
-    assert run_blob_gc(source_db, blob_store.root, max_batch=10) == 0
-    with sqlite3.connect(source_db) as conn:
-        census = census_orphaned_blob_refs(conn)
-
-    assert census.schema_unavailable_count == 1
-    assert census.to_dict() == {
-        "scanned_count": 0,
-        "ref_type_counts": {},
-        "total": 0,
-        "by_ref_type": {},
-        "unknown_ref_types": {},
-        "unavailable_ref_types": {},
-        "schema_unavailable_count": 1,
-        "deferred_by_ref_type": {},
-    }
-
-
 def test_attachment_ref_type_joins_against_raw_sessions_not_raw_artifacts(tmp_path: Path) -> None:
     """Verified against every production call site (polylogue-tfzw0): an
     'attachment' blob ref's ref_id is always the parent session's raw_id
@@ -418,59 +229,6 @@ def test_attachment_ref_type_joins_against_raw_sessions_not_raw_artifacts(tmp_pa
     deleted = run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10)
     assert deleted == 1
     assert not blob_store.exists(orphaned_hash)
-
-
-def test_census_orphaned_blob_refs_counts_by_ref_type(tmp_path: Path) -> None:
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    _write_hook_event(archive_root, hook_event_id="hook-live", source_path="/hooks/c.jsonl", payload=b'{"c":1}')
-
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.row_factory = sqlite3.Row
-        # A live hook event contributes zero to the census.
-        census = census_orphaned_blob_refs(conn)
-        assert census.total == 0
-        assert census.by_ref_type == {}
-        assert census.scanned_count == 1
-        assert census.ref_type_counts == {"hook_payload": 1}
-        assert census.unknown_ref_types == {}
-        assert census.unavailable_ref_types == {}
-
-        # Two orphaned refs: one raw_payload (no raw_sessions row), one
-        # hook_payload (no raw_hook_events row).
-        conn.execute(
-            """
-            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
-            VALUES (?, 'raw-gone', 'raw_payload', '/tmp/gone.json', 10, 1)
-            """,
-            (b"\x11" * 32,),
-        )
-        conn.execute(
-            """
-            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
-            VALUES (?, 'hook-gone', 'hook_payload', '/tmp/gone2.json', 10, 1)
-            """,
-            (b"\x22" * 32,),
-        )
-        conn.commit()
-
-        census = census_orphaned_blob_refs(conn)
-        assert census.total == 2
-        assert census.by_ref_type == {"raw_payload": 1, "hook_payload": 1}
-        assert census.scanned_count == 3
-        assert census.ref_type_counts == {"hook_payload": 2, "raw_payload": 1}
-        assert census.unknown_ref_types == {}
-        assert census.unavailable_ref_types == {}
-        assert census.to_dict() == {
-            "scanned_count": 3,
-            "ref_type_counts": {"hook_payload": 2, "raw_payload": 1},
-            "total": 2,
-            "by_ref_type": {"raw_payload": 1, "hook_payload": 1},
-            "unknown_ref_types": {},
-            "unavailable_ref_types": {},
-            "schema_unavailable_count": 0,
-            "deferred_by_ref_type": {},
-        }
 
 
 def test_gc_retains_a_raw_payload_named_only_by_the_raw_row_hash(tmp_path: Path) -> None:

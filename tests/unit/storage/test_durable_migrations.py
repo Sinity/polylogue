@@ -940,9 +940,7 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
         "\n"
         "    -- v22 (polylogue-tfzw0): the SHA-256 of this hook event's own durable\n"
         "    -- raw_payload blob (see blob_refs above). Populated at write time by\n"
-        "    -- write_source_hook_event; NULL for rows written before v22 until a\n"
-        "    -- one-shot reconciliation pass backfills them (see\n"
-        "    -- polylogue.storage.hook_payload_ref_reconciliation).\n"
+        "    -- write_source_hook_event; NULL only for rows written before v22.\n"
         "    ,blob_hash       BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)\n",
         "",
     )
